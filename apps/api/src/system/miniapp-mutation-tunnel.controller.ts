@@ -42,6 +42,8 @@ type TunnelRouteRule = {
 
 const ENTITY_ID_SEGMENT = '[^/?#]+';
 const DIALOG_TYPE_SEGMENT = '[^/?#]+';
+const PUBLISHER_VK_PARSING_PATH =
+  `/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/vk-parsing`;
 
 const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   { method: 'POST', pattern: /^\/system\/miniapp-boot-trace$/u },
@@ -278,44 +280,40 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
 
   {
     method: 'PATCH',
-    pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/settings$`),
+    pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/settings$`),
   },
   {
     method: 'POST',
-    pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/(rollback|refresh)$`),
+    pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/(rollback|refresh)$`),
   },
   {
     method: 'POST',
-    pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/sources(/bulk)?$`),
+    pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/sources(/bulk)?$`),
   },
   {
     method: 'PATCH',
-    pattern: new RegExp(
-      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/sources/${ENTITY_ID_SEGMENT}$`,
-    ),
+    pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/sources/${ENTITY_ID_SEGMENT}$`),
   },
   {
     method: 'DELETE',
-    pattern: new RegExp(
-      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/sources/${ENTITY_ID_SEGMENT}$`,
-    ),
+    pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/sources/${ENTITY_ID_SEGMENT}$`),
   },
   {
     method: 'POST',
     pattern: new RegExp(
-      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/sources/${ENTITY_ID_SEGMENT}/refresh$`,
+      `^${PUBLISHER_VK_PARSING_PATH}/sources/${ENTITY_ID_SEGMENT}/refresh$`,
     ),
   },
   {
     method: 'PATCH',
     pattern: new RegExp(
-      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/posts/${ENTITY_ID_SEGMENT}/(schedule|review-draft)$`,
+      `^${PUBLISHER_VK_PARSING_PATH}/posts/${ENTITY_ID_SEGMENT}/(schedule|review-draft)$`,
     ),
   },
   {
     method: 'POST',
     pattern: new RegExp(
-      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/posts/${ENTITY_ID_SEGMENT}/(retry|cancel|publish|publish-now)$`,
+      `^${PUBLISHER_VK_PARSING_PATH}/posts/${ENTITY_ID_SEGMENT}/(retry|cancel|publish|publish-now)$`,
     ),
   },
 

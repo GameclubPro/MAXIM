@@ -472,8 +472,10 @@ export class VkSourceService {
   async syncDueSources(reason: VkParsingSyncReason = 'scheduled'): Promise<number> {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
+    const ownerScope = this.ownership.getPublisherScope();
     const sources = await this.prisma.vkParsingSource.findMany({
       where: {
+        ...ownerScope,
         status: VK_SOURCE_STATUS_ACTIVE,
         importEnabled: true,
         syncStatus: { not: VK_SOURCE_SYNC_STATUS_ERROR },
@@ -522,9 +524,11 @@ export class VkSourceService {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
     const resetCircuitState = reason === 'manual' || reason === 'source-added';
+    const ownerScope = this.ownership.getPublisherScope();
     const updated = await this.prisma.vkParsingSource.updateMany({
       where: {
         id: sourceId,
+        ...ownerScope,
         status: VK_SOURCE_STATUS_ACTIVE,
         importEnabled: true,
         OR: [
@@ -563,7 +567,7 @@ export class VkSourceService {
       return 0;
     }
 
-    const job = this.buildSyncJob(sourceId, reason, now);
+    const job = this.buildSyncJob(sourceId, reason, now, ownerScope.ownerBotId);
     const jobId = this.buildSyncJobId(sourceId);
     const recovered = await this.recoverExistingSyncJob(jobId, job);
     if (recovered !== null) {
@@ -582,10 +586,13 @@ export class VkSourceService {
     sourceId: string,
     reason: VkParsingSyncReason,
     createdAt: Date,
+    ownerBotId: string,
   ): VkParsingSyncJob {
     return {
       sourceId,
       reason,
+      ownerProfile: 'PUBLISHER',
+      ownerBotId,
       retryPolicyName: 'vk-parsing-sync',
       createdAt: createdAt.toISOString(),
     };
@@ -607,6 +614,30 @@ export class VkSourceService {
         this.logger.warn(
           { jobId, sourceId: job.sourceId },
           'Removed orphaned VK parsing sync job before recovery',
+        );
+        return null;
+      }
+      const existingData =
+        typeof existingJob.data === 'object' && existingJob.data !== null
+          ? (existingJob.data as Partial<VkParsingSyncJob>)
+          : null;
+      const ownershipMatches =
+        existingData?.sourceId === job.sourceId &&
+        existingData.reason === job.reason &&
+        existingData.ownerProfile === job.ownerProfile &&
+        existingData.ownerBotId === job.ownerBotId;
+      if (!ownershipMatches) {
+        if (state === 'active') {
+          this.logger.error(
+            { jobId, sourceId: job.sourceId, state },
+            'Quarantined active VK parsing sync job with mismatched ownership payload',
+          );
+          return false;
+        }
+        await existingJob.remove();
+        this.logger.warn(
+          { jobId, sourceId: job.sourceId, state },
+          'Removed inactive VK parsing sync job with mismatched ownership payload',
         );
         return null;
       }

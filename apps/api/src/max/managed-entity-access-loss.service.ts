@@ -126,8 +126,6 @@ type ManagedEntityRuntimeCleanupClient = Pick<
   | 'managedBroadcastDelivery'
   | 'managedBroadcastCalendarReservation'
   | 'managedBroadcastOccurrence'
-  | 'vkParsingPost'
-  | 'vkParsingSource'
 >;
 
 @Injectable()
@@ -600,10 +598,7 @@ export class ManagedEntityAccessLossService {
 
       const cleanup = this.createEmptyCleanupResult();
       await this.pauseManagedAutopostRules(normalized, tx);
-      await Promise.all([
-        this.cancelManagedBroadcastRuntime(normalized, cleanup, tx),
-        this.clearVkParsingRuntime(normalized, cleanup, tx),
-      ]);
+      await this.cancelManagedBroadcastRuntime(normalized, cleanup, tx);
       return {
         applied: true,
         skippedReason: null,
@@ -837,7 +832,6 @@ export class ManagedEntityAccessLossService {
     await Promise.all([
       this.clearNightModeJobs(params.chatId, cleanup),
       this.cancelManagedBroadcastRuntime(params, cleanup),
-      this.clearVkParsingRuntime(params, cleanup),
       this.clearRosterSyncJobs(params.chatId, cleanup),
     ]);
 
@@ -1253,71 +1247,6 @@ export class ManagedEntityAccessLossService {
     cleanup.canceledBroadcasts = this.readCount(broadcasts);
     cleanup.canceledBroadcastDeliveries = this.readCount(deliveries);
     cleanup.canceledBroadcastOccurrences = this.readCount(occurrences);
-  }
-
-  private async clearVkParsingRuntime(
-    params: {
-      chatId: string;
-      reason: ManagedEntityAccessLossReason;
-      source: string;
-    },
-    cleanup: ManagedEntityAccessLossCleanupResult,
-    db: ManagedEntityRuntimeCleanupClient = this.prisma,
-  ): Promise<void> {
-    const lastError = this.buildCleanupReasonMessage(params);
-    const [posts, sources] = await Promise.all([
-      typeof db.vkParsingPost?.updateMany === 'function'
-        ? db.vkParsingPost.updateMany({
-            where: {
-              chatId: params.chatId,
-              status: { in: ['NEW', 'FAILED'] },
-              OR: [
-                { publishQueuedAt: { not: null } },
-                { publishLockedAt: { not: null } },
-                { publishIdempotencyKey: { not: null } },
-                { publishReason: { not: null } },
-                { publishScheduledAt: { not: null } },
-              ],
-            },
-            data: {
-              publishQueuedAt: null,
-              publishLockedAt: null,
-              publishIdempotencyKey: null,
-              publishReason: null,
-              publishScheduledAt: null,
-              lastError,
-              autoPublishError: lastError,
-            },
-          })
-        : Promise.resolve(null),
-      typeof db.vkParsingSource?.updateMany === 'function'
-        ? db.vkParsingSource.updateMany({
-            where: {
-              chatId: params.chatId,
-              status: 'ACTIVE',
-            },
-            data: {
-              nextSyncAt: null,
-              syncStatus: 'ERROR',
-              syncLockedAt: null,
-              syncLockedBy: null,
-              syncLockDeadlineAt: null,
-              syncHeartbeatAt: null,
-              lastErrorCode: 'max.access_lost',
-              lastError,
-              circuitOpenedAt: new Date(),
-              circuitReasonCode: 'max.access_lost',
-              circuitReason: lastError,
-              circuitRetryAt: null,
-              autoPublishPausedAt: new Date(),
-              autoPublishPausedReason: lastError,
-            },
-          })
-        : Promise.resolve(null),
-    ]);
-
-    cleanup.clearedVkPublishPosts = this.readCount(posts);
-    cleanup.pausedVkSources = this.readCount(sources);
   }
 
   private async clearRosterSyncJobs(

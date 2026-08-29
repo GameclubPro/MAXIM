@@ -81,6 +81,31 @@ The first command is preview-only; `--apply` is the explicit database mutation:
 The role has exact table grants, aggregate activity visibility, read-only resource defaults, and a
 single connection. It does not receive `pg_read_all_data`.
 
+## Legacy VK Publish Queue Retirement
+
+After the release that removes every `vk-parsing-publish` producer and worker is active, preview the
+one-time Redis cleanup:
+
+```bash
+./infra/scripts/vps-connect.sh vk-parsing-retire-legacy-queue
+```
+
+The preview is read-only and reports only fixed BullMQ counters plus the worker count. Apply only
+after the preview shows no legacy worker:
+
+```bash
+./infra/scripts/vps-connect.sh vk-parsing-retire-legacy-queue --apply
+```
+
+Apply holds the shared deploy lock, refuses a live worker, pauses only `vk-parsing-publish`, then
+rechecks that worker and active counts are zero before calling BullMQ obliteration with `force`
+disabled. If active work remains, the command fails and deliberately leaves the legacy queue
+paused. An already absent queue is a successful no-op, so the same command is safe to repeat. It
+does not query or mutate Postgres and never touches `vk-parsing-sync` or `vk-parsing-publisher`.
+Obliteration uses batches of 1,000 with a 120-second wrapper deadline. A timeout can leave a
+partially removed queue paused; inspect it again and repeat the same apply command after review.
+Keep the legacy queue in `monitor-readonly` as a zero-count regression sentinel after cleanup.
+
 If direct SSH is blocked after an IP change and Yandex security-group configuration is present:
 
 ```bash

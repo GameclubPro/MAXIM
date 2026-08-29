@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { ChatEntityType } from '../prisma/prisma-client';
+import { ChatEntityType, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import { SafetyDeskService } from './safety-desk.service';
 
 function createReviewPost(overrides: Record<string, unknown> = {}) {
@@ -7,6 +7,8 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
     id: 'post-1',
     sourceId: 'source-1',
     chatId: 'channel-1',
+    ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+    ownerBotId: 'publisher-bot',
     vkOwnerId: -36819802,
     vkPostId: 101,
     vkPublishedAt: new Date('2026-06-27T10:00:00.000Z'),
@@ -58,6 +60,8 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
     },
     source: {
       id: 'source-1',
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: 'publisher-bot',
       title: 'Источник MAXIM',
       url: 'https://vk.ru/source',
       status: 'ACTIVE',
@@ -234,8 +238,7 @@ function createFixture() {
   );
   const vkPublishService = {
     publishPost: jest.fn().mockResolvedValue({
-      messageId: 'mid-1',
-      url: 'https://max.ru/channels/channel-1/message/mid-1',
+      queued: 1,
       post: {},
     }),
   };
@@ -279,6 +282,12 @@ function createFixture() {
     vkPublishService as never,
     maxBotRegistry as never,
     moderationDeleteIntents as never,
+    {
+      getPublisherScope: () => ({
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: 'publisher-bot',
+      }),
+    } as never,
   );
 
   return {
@@ -904,13 +913,24 @@ describe('SafetyDeskService', () => {
     );
     expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({
+          ownerProfile: 'PUBLISHER',
+          ownerBotId: 'publisher-bot',
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          source: expect.objectContaining({
+            ownerProfile: 'PUBLISHER',
+            ownerBotId: 'publisher-bot',
+          }),
+        }),
         include: expect.objectContaining({
           chat: expect.objectContaining({
             select: expect.objectContaining({
               vkParsingSettings: {
                 where: {
-                  ownerProfile: 'MAJOR',
-                  ownerBotId: '',
+                  ownerProfile: 'PUBLISHER',
+                  ownerBotId: 'publisher-bot',
                 },
                 take: 1,
               },
@@ -1124,10 +1144,24 @@ describe('SafetyDeskService', () => {
           chatId: 'channel-1',
           actorUserId: 'maxim',
           action: 'SAFETY_DESK_APPROVE',
+          payload: expect.objectContaining({ queued: 1 }),
         }),
       }),
     );
-    expect(result.message).toContain('опубликован');
+    expect(result.message).toContain('принят в очередь публикации');
+    expect(result.message).not.toContain('опубликован');
+  });
+
+  it('does not audit approval when the queue intent loses its compare-and-set race', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    prisma.vkParsingPost.findFirst.mockResolvedValue(createReviewPost());
+    vkPublishService.publishPost.mockResolvedValueOnce({ queued: 0, post: {} });
+
+    await expect(service.approveItem('post-1', 'maxim', {})).rejects.toThrow(
+      'Материал проверки уже обработан или недоступен',
+    );
+
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('preserves markdown format when Safety Desk approves an edited review draft', async () => {
@@ -1231,7 +1265,8 @@ describe('SafetyDeskService', () => {
       }),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledTimes(2);
-    expect(result.message).toContain('2');
+    expect(result.message).toContain('Принято в очередь публикации материалов: 2');
+    expect(result.message).not.toContain('опубликовано');
     expect(result.queue.summary.review).toBe(0);
   });
 
@@ -1307,11 +1342,15 @@ describe('SafetyDeskService', () => {
       where: expect.objectContaining({
         id: 'post-1',
         publishCancelledAt: null,
+        publishQueuedAt: null,
         publishLockedAt: null,
-        source: {
+        publishIdempotencyKey: null,
+        source: expect.objectContaining({
+          ownerProfile: 'PUBLISHER',
+          ownerBotId: 'publisher-bot',
           status: 'ACTIVE',
           publishMode: 'REVIEW',
-        },
+        }),
       }),
       data: expect.objectContaining({
         publishCancelledAt: expect.any(Date),

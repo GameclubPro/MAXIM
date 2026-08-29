@@ -133,7 +133,7 @@ describe('runtime reliability queue group health', () => {
       queueSnapshot({
         auxiliaryQueues: {
           ...Object.fromEntries(AUXILIARY_QUEUE_NAMES.map((queueName) => [queueName, counters()])),
-          'vk-parsing-publish': counters({ waiting: 50, delayed: 5000 }),
+          'vk-parsing-publisher': counters({ waiting: 50, delayed: 5000 }),
         } as QueueMetricsSnapshot['auxiliaryQueues'],
       }),
     );
@@ -142,7 +142,7 @@ describe('runtime reliability queue group health', () => {
     expect(health.groups).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          name: 'aux:vk-parsing-publish',
+          name: 'aux:vk-parsing-publisher',
           waiting: 50,
           delayed: 5000,
           pressure: 50,

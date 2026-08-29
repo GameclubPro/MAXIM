@@ -12,7 +12,6 @@ const CHAT_SETTINGS_FOCUS = new Set([
   'polls',
   'requiredSubscription',
   'rules',
-  'vkParsing',
 ]);
 const CHANNEL_SETTINGS_FOCUS = new Set([
   'broadcast',
@@ -20,7 +19,6 @@ const CHANNEL_SETTINGS_FOCUS = new Set([
   'giveaway',
   'polls',
   'postSuggestions',
-  'vkParsing',
 ]);
 const PUBLICATIONS_VIEWS = new Set(['plan', 'schedules', 'history']);
 

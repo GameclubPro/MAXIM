@@ -31,7 +31,7 @@ import type { PreviewState } from './preview-transport-state';
 import {
   PREVIEW_NOT_HANDLED,
   readPreviewClock,
-  resolvePreviewEntityRequest,
+  type PreviewRequestContext,
   type PreviewRequestHandler,
 } from './preview-transport-runtime';
 
@@ -431,6 +431,29 @@ export function buildPreviewVkParsingPage(
 }
 
 export type PreviewVkParsingRouteResult = { handled: false } | { handled: true; value: unknown };
+
+function resolvePublisherVkParsingRequest(context: PreviewRequestContext): {
+  entityType: 'chat' | 'channel';
+  entityId: string;
+  tail: string[];
+} | null {
+  const [publisher, entities, entityType, encodedEntityId, ...tail] = context.segments;
+  if (
+    publisher !== 'publisher' ||
+    entities !== 'entities' ||
+    (entityType !== 'chat' && entityType !== 'channel') ||
+    !encodedEntityId ||
+    tail[0] !== 'vk-parsing'
+  ) {
+    return null;
+  }
+
+  return {
+    entityType,
+    entityId: decodeURIComponent(encodedEntityId),
+    tail,
+  };
+}
 
 export function handleVkParsingPreviewRequest(
   state: PreviewState,
@@ -1126,8 +1149,12 @@ export function handleVkParsingPreviewRequest(
 }
 
 export const handleVkPreviewRequest: PreviewRequestHandler = (context) => {
-  const entity = resolvePreviewEntityRequest(context);
-  if (!entity || entity.tail[0] !== 'vk-parsing') {
+  if (context.state.me.profile !== 'publisher') {
+    return PREVIEW_NOT_HANDLED;
+  }
+
+  const entity = resolvePublisherVkParsingRequest(context);
+  if (!entity) {
     return PREVIEW_NOT_HANDLED;
   }
   const result = handleVkParsingPreviewRequest(

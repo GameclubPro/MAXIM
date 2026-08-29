@@ -414,14 +414,6 @@ describe('QueueMetricsService', () => {
       failed: 2,
       completed: 80,
     });
-    expect(snapshot.auxiliaryQueues['vk-parsing-publish']).toEqual({
-      waiting: 0,
-      prioritized: 0,
-      active: 0,
-      delayed: 0,
-      failed: 0,
-      completed: 0,
-    });
     expect(snapshot.auxiliaryQueues[MODERATION_DELETE_INTENT_QUEUE]).toEqual({
       waiting: 6,
       prioritized: 1,

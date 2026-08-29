@@ -793,8 +793,6 @@ export async function handleChannelRequest(
         ...state.channelPostSignature,
         ...payload,
       });
-      state.channelVkParsing.settings.appendChannelLinkEnabled = state.channelPostSignature.enabled;
-      state.channelVkParsing.settings.channelLinkText = state.channelPostSignature.text;
       return cloneJson(state.channelPostSignature);
     }
   }

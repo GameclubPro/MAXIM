@@ -33,8 +33,7 @@ import type { ApiTransport } from './transport';
 export type VkParsingEntityType = 'chat' | 'channel';
 
 function buildVkParsingPath(entityType: VkParsingEntityType, chatId: string): string {
-  const prefix = entityType === 'channel' ? 'channels' : 'chats';
-  return `/${prefix}/${chatId}/vk-parsing`;
+  return `/publisher/entities/${entityType}/${encodeURIComponent(chatId)}/vk-parsing`;
 }
 
 function buildVkParsingQuery(query: Partial<VkParsingFeedQuery> | undefined): string {

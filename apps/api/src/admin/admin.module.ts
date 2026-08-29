@@ -30,7 +30,7 @@ import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
 import { AdminSettingsController } from './admin-settings.controller';
-import { AdminVkParsingController } from './admin-vk-parsing.controller';
+import { PublisherVkParsingController } from './publisher-vk-parsing.controller';
 import { ChannelDialogService } from './channel-dialog.service';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { CHANNEL_DIALOG_LEGACY_PORT } from './channel-dialog-legacy.port';
@@ -59,12 +59,10 @@ import { PublisherDialogContextService } from './publisher-dialog-context.servic
 import { PublisherPublicationDispatchRunnerService } from './publisher-publication-dispatch-runner.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
-import { VkParsingPublishProcessor } from './vk-parsing-publish.processor';
 import { VkParsingPublisherProcessor } from './vk-parsing-publisher.processor';
 import { VkParsingRunnerService } from './vk-parsing-runner.service';
 import { VkParsingSyncProcessor } from './vk-parsing-sync.processor';
 import {
-  VK_PARSING_PUBLISH_QUEUE,
   VK_PARSING_PUBLISHER_QUEUE,
   VK_PARSING_SYNC_QUEUE,
 } from './vk-parsing.queue';
@@ -107,7 +105,6 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     BullModule.registerQueue({ name: ADMIN_SUPER_BAN_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_SUGGESTION_DELIVERY_QUEUE }),
     BullModule.registerQueue({ name: VK_PARSING_SYNC_QUEUE }),
-    BullModule.registerQueue({ name: VK_PARSING_PUBLISH_QUEUE }),
     BullModule.registerQueue({ name: VK_PARSING_PUBLISHER_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_PUBLICATION_QUEUE }),
     AuthModule,
@@ -124,7 +121,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminSettingsController,
     AdminAutopostController,
     AdminBroadcastController,
-    AdminVkParsingController,
+    PublisherVkParsingController,
     AdminDialogController,
     AdminGiveawayController,
     AdminPollController,
@@ -207,9 +204,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SafetyDeskAdminGuard,
     SafetyDeskService,
     SupportRequestsService,
-    ...(roleRunsAction(getAppRole()) ? [VkParsingRunnerService] : []),
-    ...(roleRunsAction(getAppRole()) ? [VkParsingSyncProcessor] : []),
-    ...(roleRunsAction(getAppRole()) ? [VkParsingPublishProcessor] : []),
+    ...(roleRunsPublisher(getAppRole()) ? [VkParsingRunnerService] : []),
+    ...(roleRunsPublisher(getAppRole()) ? [VkParsingSyncProcessor] : []),
     ...(roleRunsPublisher(getAppRole()) ? [VkParsingPublisherProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManagedEntitiesRefreshProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),

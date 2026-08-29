@@ -60,6 +60,8 @@ Commands:
   publisher-dispatch-disable [--apply]
                               Preview or fail-closed disable Publik dispatch
   publisher-dispatch-status   Read privacy-safe Publik dispatch rollout status
+  vk-parsing-retire-legacy-queue [--apply]
+                              Preview or remove the retired vk-parsing-publish queue
   install-publisher-secrets [token-file]
                               Install initial Publik credentials over SSH stdin
   ps [services...]            Show main production docker compose status
@@ -552,6 +554,19 @@ publisher_dispatch_command() {
     prepend_webhook_rollout_recovery_env remote_command
   fi
   remote_exec "$remote_command"
+}
+
+vk_parsing_retire_legacy_queue() {
+  local apply="${1:-}"
+  if [[ -n "$apply" && "$apply" != "--apply" ]] || [[ $# -gt 1 ]]; then
+    echo "Usage: $0 vk-parsing-retire-legacy-queue [--apply]" >&2
+    exit 2
+  fi
+  local remote_args=(./infra/scripts/vps-retire-legacy-vk-publish-queue.sh)
+  if [[ "$apply" == "--apply" ]]; then
+    remote_args+=(--apply)
+  fi
+  remote_exec "$(shell_quote_args "${remote_args[@]}")"
 }
 
 open_shell() {
@@ -1103,6 +1118,9 @@ case "$command" in
     ;;
   publisher-dispatch-status)
     publisher_dispatch_command status "$@"
+    ;;
+  vk-parsing-retire-legacy-queue)
+    vk_parsing_retire_legacy_queue "$@"
     ;;
   install-publisher-secrets)
     install_publisher_secrets "$@"

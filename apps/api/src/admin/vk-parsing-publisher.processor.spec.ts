@@ -27,6 +27,9 @@ describe('VkParsingPublisherProcessor', () => {
       if (!dispatchEnabled) throw new PublisherDispatchDisabledError();
     }),
   });
+  const createOwnership = () => ({
+    getPublisherScope: () => ({ ownerProfile: 'PUBLISHER', ownerBotId: 'publisher-bot' }),
+  });
 
   it('fails closed when the publisher queue is instantiated outside api-publisher', async () => {
     process.env.APP_ROLE = 'action';
@@ -38,6 +41,7 @@ describe('VkParsingPublisherProcessor', () => {
       identityAttestation as never,
       createDispatchHealth() as never,
       createRuntimeBoundary() as never,
+      createOwnership() as never,
     );
 
     await expect(
@@ -64,11 +68,14 @@ describe('VkParsingPublisherProcessor', () => {
     process.env.APP_SERVICE_NAME = 'api-publisher';
     const service = { processPublishPostJob: jest.fn() };
     const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
+    const dispatchHealth = createDispatchHealth();
+    const runtimeBoundary = createRuntimeBoundary();
     const processor = new VkParsingPublisherProcessor(
       service as never,
       identityAttestation as never,
-      createDispatchHealth() as never,
-      createRuntimeBoundary() as never,
+      dispatchHealth as never,
+      runtimeBoundary as never,
+      createOwnership() as never,
     );
 
     await expect(
@@ -84,8 +91,141 @@ describe('VkParsingPublisherProcessor', () => {
         opts: { attempts: 5 },
       } as never),
     ).rejects.toThrow('invalid route payload');
-    expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
+    expect(runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
     expect(service.processPublishPostJob).not.toHaveBeenCalled();
+  });
+
+  it('retires a stale publisher job for another bot before any delay guard', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const service = {
+      processPublishPostJob: jest.fn(),
+      processPublisherRollbackJob: jest.fn(),
+    };
+    const identityAttestation = { assertAttested: jest.fn() };
+    const dispatchHealth = createDispatchHealth();
+    const runtimeBoundary = createRuntimeBoundary(false);
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      identityAttestation as never,
+      dispatchHealth as never,
+      runtimeBoundary as never,
+      createOwnership() as never,
+    );
+    const moveToDelayed = jest.fn();
+
+    await expect(
+      processor.process(
+        {
+          data: {
+            kind: 'publish',
+            postId: 'post-1',
+            chatId: 'channel-1',
+            requiredBotId: 'old-publisher-bot',
+            dispatchProfile: 'PUBLIK_V1',
+            reason: 'manual-retry',
+            idempotencyKey: 'intent-1',
+          },
+          attemptsMade: 0,
+          opts: { attempts: 5 },
+          moveToDelayed,
+        } as never,
+        'worker-token',
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(moveToDelayed).not.toHaveBeenCalled();
+    expect(runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
+    expect(service.processPublishPostJob).not.toHaveBeenCalled();
+    expect(service.processPublisherRollbackJob).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed rollback before any delay guard', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const service = { processPublisherRollbackJob: jest.fn() };
+    const identityAttestation = { assertAttested: jest.fn() };
+    const dispatchHealth = createDispatchHealth();
+    const runtimeBoundary = createRuntimeBoundary(false);
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      identityAttestation as never,
+      dispatchHealth as never,
+      runtimeBoundary as never,
+      createOwnership() as never,
+    );
+    const moveToDelayed = jest.fn();
+
+    await expect(
+      processor.process(
+        {
+          data: {
+            kind: 'rollback-delete',
+            postId: 'post-1',
+            chatId: 'channel-1',
+            requiredBotId: 'publisher-bot',
+            idempotencyKey: 'rollback-1',
+          },
+          attemptsMade: 0,
+          opts: { attempts: 5 },
+          moveToDelayed,
+        } as never,
+        'worker-token',
+      ),
+    ).rejects.toThrow('missing messageId');
+
+    expect(moveToDelayed).not.toHaveBeenCalled();
+    expect(runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
+    expect(service.processPublisherRollbackJob).not.toHaveBeenCalled();
+  });
+
+  it('delays an exact Publisher rollback while dispatch is disabled', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const service = { processPublisherRollbackJob: jest.fn() };
+    const identityAttestation = { assertAttested: jest.fn() };
+    const dispatchHealth = createDispatchHealth();
+    const runtimeBoundary = createRuntimeBoundary(false);
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      identityAttestation as never,
+      dispatchHealth as never,
+      runtimeBoundary as never,
+      createOwnership() as never,
+    );
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: {
+        kind: 'rollback-delete',
+        postId: 'post-1',
+        chatId: 'channel-1',
+        messageId: 'message-1',
+        requiredBotId: 'publisher-bot',
+        idempotencyKey: 'rollback-1',
+      },
+      attemptsMade: 4,
+      opts: { attempts: 5 },
+      moveToDelayed,
+    };
+
+    await expect(processor.process(job as never, 'worker-token')).rejects.toBeInstanceOf(
+      DelayedError,
+    );
+
+    expect(moveToDelayed).toHaveBeenCalledWith(
+      Date.parse('2026-08-26T12:00:00.000Z') + PUBLISHER_DISPATCH_PAUSE_DEFER_MS,
+      'worker-token',
+    );
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
+    expect(service.processPublisherRollbackJob).not.toHaveBeenCalled();
   });
 
   it('delays VK intent processing while identity is unattested', async () => {
@@ -103,6 +243,7 @@ describe('VkParsingPublisherProcessor', () => {
       identityAttestation as never,
       createDispatchHealth() as never,
       createRuntimeBoundary() as never,
+      createOwnership() as never,
     );
 
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
@@ -143,6 +284,7 @@ describe('VkParsingPublisherProcessor', () => {
       { assertAttested: jest.fn().mockRejectedValue(failure) } as never,
       createDispatchHealth() as never,
       createRuntimeBoundary() as never,
+      createOwnership() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -182,6 +324,7 @@ describe('VkParsingPublisherProcessor', () => {
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       dispatchHealth as never,
       createRuntimeBoundary() as never,
+      createOwnership() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -227,6 +370,7 @@ describe('VkParsingPublisherProcessor', () => {
       identityAttestation as never,
       dispatchHealth as never,
       createRuntimeBoundary(false) as never,
+      createOwnership() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {

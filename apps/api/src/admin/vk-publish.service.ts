@@ -100,11 +100,7 @@ import {
   isMaxAttachmentNotReadyError,
 } from './vk-parsing-errors';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
-import {
-  MAJOR_VK_OWNER_SCOPE,
-  type VkParsingOwnerScope,
-  VkParsingOwnershipService,
-} from './vk-parsing-ownership.service';
+import { type VkParsingOwnerScope, VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import {
   VK_IMAGE_FETCH_TIMEOUT_MS,
   VK_IMAGE_MAX_BYTES,
@@ -115,7 +111,6 @@ import {
   type VkParsingMediaCacheRow,
 } from './vk-parsing-media-cache.service';
 import {
-  VK_PARSING_PUBLISH_QUEUE,
   VK_PARSING_PUBLISHER_QUEUE,
   VK_PARSING_PUBLISH_RETRY_POLICY,
   type VkParsingPublishJob,
@@ -245,7 +240,6 @@ export class VkPublishService {
   private readonly publisherDispatchConfigured: boolean;
   private duePublishRecoveryCursorId: string | null = null;
   private futurePublishRecoveryCursor: VkPublishRecoveryCursor | null = null;
-  private publishRecoveryScope: 'all' | 'legacy' | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -255,8 +249,6 @@ export class VkPublishService {
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly mediaCache: VkParsingMediaCacheService,
     private readonly feedService: VkParsingFeedService,
-    @InjectQueue(VK_PARSING_PUBLISH_QUEUE)
-    private readonly publishQueue: Queue<VkParsingPublishJob>,
     configService: ConfigService,
     private readonly ownership: VkParsingOwnershipService,
     @Optional()
@@ -311,34 +303,20 @@ export class VkPublishService {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.publishLeaseTtlMs);
     const publisherRecoveryAllowed = await this.isPublisherRecoveryAllowed();
-    const recoveryScope = publisherRecoveryAllowed ? 'all' : 'legacy';
-    if (this.publishRecoveryScope !== recoveryScope) {
+    if (!publisherRecoveryAllowed) {
       this.duePublishRecoveryCursorId = null;
       this.futurePublishRecoveryCursor = null;
-      this.publishRecoveryScope = recoveryScope;
+      return 0;
     }
-    const recoveredRollbacks = publisherRecoveryAllowed
-      ? await this.recoverStalePublisherRollbackJobs(staleLockBefore)
-      : 0;
-    const posts = await this.findRecoverableStalePublishPosts(
-      now,
-      staleLockBefore,
-      publisherRecoveryAllowed,
-    );
+    const posts = await this.findRecoverableStalePublishPosts(now, staleLockBefore);
     if (posts.length === 0) {
-      return recoveredRollbacks;
+      return 0;
     }
 
     const settingsByScope = new Map<string, VkParsingSettingsLike>();
     let recovered = 0;
     let expiredAutoPublishRecoveries = 0;
     for (const post of posts) {
-      if (
-        !publisherRecoveryAllowed &&
-        post.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-      ) {
-        continue;
-      }
       const idempotencyKey = post.publishIdempotencyKey;
       if (!idempotencyKey) {
         continue;
@@ -410,7 +388,15 @@ export class VkPublishService {
       );
     }
 
-    return recovered + recoveredRollbacks;
+    return recovered;
+  }
+
+  async recoverStalePublisherRollbackJobs(): Promise<number> {
+    if (!(await this.isPublisherRecoveryAllowed())) {
+      return 0;
+    }
+    const staleLockBefore = new Date(Date.now() - this.publishLeaseTtlMs);
+    return this.recoverStalePublisherRollbackJobsBefore(staleLockBefore);
   }
 
   private isBeyondAutoPublishRecoveryFreshnessHorizon(
@@ -437,30 +423,14 @@ export class VkPublishService {
   private async findRecoverableStalePublishPosts(
     now: Date,
     staleLockBefore: Date,
-    includePublisher: boolean,
   ): Promise<VkParsingPostWithSource[]> {
     const publisherOwnerScope = this.getPublisherOwnerScope();
-    const ownershipWhere: Prisma.VkParsingPostWhereInput = includePublisher
-      ? {
-          OR: [
-            {
-              dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
-              ...MAJOR_VK_OWNER_SCOPE,
-              source: MAJOR_VK_OWNER_SCOPE,
-            },
-            {
-              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-              ...publisherOwnerScope,
-              requiredBotId: publisherOwnerScope.ownerBotId,
-              source: publisherOwnerScope,
-            },
-          ],
-        }
-      : {
-          dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
-          ...MAJOR_VK_OWNER_SCOPE,
-          source: MAJOR_VK_OWNER_SCOPE,
-        };
+    const ownershipWhere: Prisma.VkParsingPostWhereInput = {
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      ...publisherOwnerScope,
+      requiredBotId: publisherOwnerScope.ownerBotId,
+      source: publisherOwnerScope,
+    };
     const baseWhere: Prisma.VkParsingPostWhereInput = {
       publishQueuedAt: { not: null },
       publishIdempotencyKey: { not: null },
@@ -666,90 +636,21 @@ export class VkPublishService {
       throw new BadRequestException(describeVkParsingSkipReason(skipReason));
     }
     this.assertPreparedPublishPayload(prepared);
-    if (this.newDispatchRoute) {
-      const queued = await this.enqueuePostPublish(post, 'manual-retry', new Date(), {
-        actorUserId,
-        storedDraft,
-      });
-      const updated = await this.prisma.vkParsingPost.findFirst({
-        where: { id: post.id, chatId, ...ownerScope, source: ownerScope },
-        include: { source: true },
-      });
-      return publishVkParsingPostResultSchema.parse({
-        post: this.feedService.mapPost(updated ?? { ...post, ...storedDraft }),
-        queued,
-      });
+    if (!this.newDispatchRoute) {
+      throw new ServiceUnavailableException('Publik VK dispatch is not configured.');
     }
-    const publishLockAt = await this.lockManualPublishPost(post.id, chatId, storedDraft);
-    if (!publishLockAt) {
-      throw new BadRequestException('Этот VK-пост уже публикуется.');
-    }
-    let maxMessage: VkParsingMaxMessageText;
-    try {
-      maxMessage = await this.prepareMaxMessageText(
-        chatId,
-        prepared,
-        settings,
-        'interactive',
-        PublicationDispatchProfile.LEGACY_ROUTED,
-      );
-    } catch (error) {
-      try {
-        await this.releaseManualPublishLock(post.id, chatId, publishLockAt, post.publishReason);
-      } catch (releaseError) {
-        this.logger.warn(
-          { postId: post.id, chatId, err: releaseError },
-          'Failed to release VK manual publish lock after message preparation error',
-        );
-      }
-      throw error;
-    }
-
-    const publishIdempotencyKey = this.buildMaxPublicationIntentKey(post.id, prepared, maxMessage);
-    try {
-      const recoveryArmed = await this.armManualPublishRecovery(
-        post,
-        publishLockAt,
-        publishIdempotencyKey,
-      );
-      if (!recoveryArmed) {
-        await this.releaseManualPublishLock(post.id, chatId, publishLockAt, post.publishReason);
-        throw new ServiceUnavailableException(
-          'Не удалось зафиксировать отправку перед публикацией. Обновите список и повторите попытку.',
-        );
-      }
-    } catch (error) {
-      if (!(error instanceof ServiceUnavailableException)) {
-        try {
-          await this.releaseManualPublishLock(post.id, chatId, publishLockAt, post.publishReason);
-        } catch (releaseError) {
-          this.logger.warn(
-            { postId: post.id, chatId, err: releaseError },
-            'Failed to release VK manual publish lock after recovery persistence error',
-          );
-        }
-      }
-      throw error;
-    }
-
-    return this.publishPreparedPostToMax(
-      {
-        ...post,
-        publishQueuedAt: publishLockAt,
-        publishScheduledAt: publishLockAt,
-        publishIdempotencyKey,
-        publishReason: 'manual-retry',
-      },
-      prepared,
-      maxMessage,
-      {
-        actorUserId,
-        trafficClass: 'interactive',
-        debugAction: 'publish_post',
-        auto: false,
-        storedDraft,
-      },
-    );
+    const queued = await this.enqueuePostPublish(post, 'manual-retry', new Date(), {
+      actorUserId,
+      storedDraft,
+    });
+    const updated = await this.prisma.vkParsingPost.findFirst({
+      where: { id: post.id, chatId, ...ownerScope, source: ownerScope },
+      include: { source: true },
+    });
+    return publishVkParsingPostResultSchema.parse({
+      post: this.feedService.mapPost(updated ?? { ...post, ...storedDraft }),
+      queued,
+    });
   }
 
   async retryPost(
@@ -1003,7 +904,7 @@ export class VkPublishService {
       take: 100,
     });
 
-    let deleted = 0;
+    const deleted = 0;
     let queued = 0;
     let failed = 0;
     if (request.deleteMessages) {
@@ -1013,30 +914,15 @@ export class VkPublishService {
           continue;
         }
         try {
-          if (post.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
-            if (await this.enqueuePublisherRollback(post)) {
-              queued += 1;
-            } else {
-              failed += 1;
-            }
+          if (post.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1) {
+            failed += 1;
             continue;
           }
-          const botId =
-            post.publishedBotId ??
-            (await this.maxBotLinkService.resolveBotIdForModerationAction({
-              chatId: post.chatId,
-              action: 'delete_message',
-            }));
-          if (!botId) {
-            throw new Error('No bot with delete_message access is available for VK rollback');
+          if (await this.enqueuePublisherRollback(post)) {
+            queued += 1;
+          } else {
+            failed += 1;
           }
-          await this.maxClient.deleteMessage(post.chatId, post.publishedMessageId, {
-            immediate: true,
-            botId,
-            trafficClass: 'interactive',
-            sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-          });
-          deleted += 1;
         } catch (error) {
           failed += 1;
           this.logger.warn({ postId: post.id, chatId, err: error }, 'VK rollback delete failed');
@@ -1263,7 +1149,7 @@ export class VkPublishService {
     }
   }
 
-  private async recoverStalePublisherRollbackJobs(staleLockBefore: Date): Promise<number> {
+  private async recoverStalePublisherRollbackJobsBefore(staleLockBefore: Date): Promise<number> {
     if (!this.publisherQueue) {
       return 0;
     }
@@ -1273,6 +1159,7 @@ export class VkPublishService {
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         ...publisherOwnerScope,
         requiredBotId: publisherOwnerScope.ownerBotId,
+        source: publisherOwnerScope,
         rollbackQueuedAt: { not: null },
         rollbackIdempotencyKey: { not: null },
         rollbackDeletedAt: null,
@@ -1419,43 +1306,35 @@ export class VkPublishService {
     attemptsMade?: number;
     maxAttempts?: number;
   }): Promise<void> {
-    const expectedDispatchProfile =
-      params.dispatchProfile === 'PUBLIK_V1'
-        ? PublicationDispatchProfile.PUBLIK_V1
-        : PublicationDispatchProfile.LEGACY_ROUTED;
-    const expectedOwnerScope =
-      expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-        ? {
-            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
-            ownerBotId: params.requiredBotId?.trim() ?? '',
-          }
-        : MAJOR_VK_OWNER_SCOPE;
-    if (expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
-      if (!params.requiredBotId?.trim()) {
-        throw new Error('Publik VK queue job is missing requiredBotId');
-      }
-      if (params.requiredBotId !== this.getPublisherOwnerScope().ownerBotId) {
+    if (params.dispatchProfile !== 'PUBLIK_V1' || !params.requiredBotId?.trim()) {
+      throw new Error('Legacy VK publish execution is disabled');
+    }
+    const expectedDispatchProfile = PublicationDispatchProfile.PUBLIK_V1;
+    const expectedOwnerScope = {
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: params.requiredBotId,
+    } as const;
+    if (params.requiredBotId !== this.getPublisherOwnerScope().ownerBotId) {
+      return;
+    }
+    try {
+      this.assertPublisherRuntimeBeforeClaim();
+      await this.assertPublisherHealthAllowed();
+    } catch (error) {
+      if (error instanceof PublisherVkDispatchBlockedError) {
+        await this.markPublisherIntentBlocked(
+          {
+            id: params.postId,
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            requiredBotId: params.requiredBotId,
+          },
+          params.idempotencyKey,
+          params.reason,
+          error.blockerCode,
+        );
         return;
       }
-      try {
-        this.assertPublisherRuntimeBeforeClaim();
-        await this.assertPublisherHealthAllowed();
-      } catch (error) {
-        if (error instanceof PublisherVkDispatchBlockedError) {
-          await this.markPublisherIntentBlocked(
-            {
-              id: params.postId,
-              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-              requiredBotId: params.requiredBotId,
-            },
-            params.idempotencyKey,
-            params.reason,
-            error.blockerCode,
-          );
-          return;
-        }
-        throw error;
-      }
+      throw error;
     }
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.publishLeaseTtlMs);
@@ -1467,10 +1346,7 @@ export class VkPublishService {
         publishReason: params.reason,
         dispatchProfile: expectedDispatchProfile,
         ...expectedOwnerScope,
-        requiredBotId:
-          expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-            ? params.requiredBotId
-            : null,
+        requiredBotId: params.requiredBotId,
         status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
         OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
       },
@@ -1491,10 +1367,7 @@ export class VkPublishService {
         publishReason: params.reason,
         dispatchProfile: expectedDispatchProfile,
         ...expectedOwnerScope,
-        requiredBotId:
-          expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-            ? params.requiredBotId
-            : null,
+        requiredBotId: params.requiredBotId,
         source: expectedOwnerScope,
       },
       include: { source: true },
@@ -1627,7 +1500,9 @@ export class VkPublishService {
     }
 
     const ownerScope = this.ownerScopeFromRow(posts[0]!);
+    const publisherOwnerScope = this.getPublisherOwnerScope();
     if (
+      !this.ownership.isExactScope(ownerScope, publisherOwnerScope) ||
       posts.some(
         (post) =>
           post.chatId !== chatId ||
@@ -1683,7 +1558,7 @@ export class VkPublishService {
 
   async clearQueuedAutoPublishForChat(
     chatId: string,
-    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+    ownerScope: VkParsingOwnerScope = this.getPublisherOwnerScope(),
     prisma: Pick<PrismaService, 'vkParsingPost'> = this.prisma,
   ): Promise<void> {
     await prisma.vkParsingPost.updateMany({
@@ -1713,7 +1588,7 @@ export class VkPublishService {
   async clearQueuedAutoPublishForSource(
     chatId: string,
     sourceId: string,
-    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+    ownerScope: VkParsingOwnerScope = this.getPublisherOwnerScope(),
   ): Promise<void> {
     await this.clearQueuedAutoPublishForSources(chatId, [sourceId], ownerScope);
   }
@@ -1721,7 +1596,7 @@ export class VkPublishService {
   async clearQueuedAutoPublishForSources(
     chatId: string,
     sourceIds: string[],
-    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+    ownerScope: VkParsingOwnerScope = this.getPublisherOwnerScope(),
   ): Promise<void> {
     const uniqueSourceIds = [...new Set(sourceIds.filter(Boolean))];
     if (uniqueSourceIds.length === 0) {
@@ -1765,6 +1640,14 @@ export class VkPublishService {
       queuedIdempotencyKey?: string;
     },
   ): Promise<PublishVkParsingPostResult> {
+    if (
+      post.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+      post.ownerProfile !== VkParsingOwnerProfile.PUBLISHER ||
+      post.ownerBotId !== post.requiredBotId ||
+      post.requiredBotId !== this.getPublisherOwnerScope().ownerBotId
+    ) {
+      throw new Error('Major-owned or legacy VK publish execution is disabled');
+    }
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
     const storedVideoUrls = this.readStringArray(post.videoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
@@ -2219,14 +2102,11 @@ export class VkPublishService {
     prepareAttempt: (botId: string) => Promise<MaxSendMessageOptions>;
     onAttempt?: (botId: string) => void;
   }): Promise<MaxRoutedPublicationResult> {
-    if (params.publisherExactBotId && !this.maxRoutedPublicationService) {
+    const publisherExactBotId =
+      params.publisherExactBotId?.trim() || this.getPublisherOwnerScope().ownerBotId;
+    if (!this.maxRoutedPublicationService) {
       throw new ServiceUnavailableException(
         'Routed MAX publication service is required for Publik VK publications',
-      );
-    }
-    if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
-      throw new ServiceUnavailableException(
-        'Routed MAX publication service is required for production VK publications',
       );
     }
     let lastError: unknown = null;
@@ -2236,57 +2116,28 @@ export class VkPublishService {
     const attempts = readinessRetryDelaysMs.length + 1;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        if (this.maxRoutedPublicationService) {
-          return await this.maxRoutedPublicationService.publish({
-            entityId: params.chatId,
-            logicalIdempotencyKey: params.logicalIdempotencyKey,
-            text: params.text || ' ',
-            options: params.baseOptions,
-            trafficClass: params.trafficClass,
-            sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-            ...(params.publisherExactBotId
-              ? { publisherExactBotId: params.publisherExactBotId }
-              : {}),
-            prepareAttempt: async ({ botId }) => ({
-              options: await params.prepareAttempt(botId),
-            }),
-            onDispatchAttempt: ({ botId }) => {
-              params.onAttempt?.(botId);
-            },
-            ...(params.beforeSendMutation
-              ? {
-                  beforeSendMutation: async () => {
-                    await params.beforeSendMutation!();
-                  },
-                }
-              : {}),
-          });
-        }
-
-        const botId = await this.maxBotLinkService.resolveBotIdForSend({
-          chatId: params.chatId,
-        });
-        if (!botId) {
-          throw new Error('No bot with send access is available for VK publish');
-        }
-        const options = await params.prepareAttempt(botId);
-        params.onAttempt?.(botId);
-        const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
-          params.chatId,
-          params.text || ' ',
-          options,
-          {
-            botId,
-            trafficClass: params.trafficClass,
-            sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+        return await this.maxRoutedPublicationService.publish({
+          entityId: params.chatId,
+          logicalIdempotencyKey: params.logicalIdempotencyKey,
+          text: params.text || ' ',
+          options: params.baseOptions,
+          trafficClass: params.trafficClass,
+          sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+          publisherExactBotId,
+          prepareAttempt: async ({ botId }) => ({
+            options: await params.prepareAttempt(botId),
+          }),
+          onDispatchAttempt: ({ botId }) => {
+            params.onAttempt?.(botId);
           },
-        );
-        return {
-          ...published,
-          botId,
-          candidateBotIds: [botId],
-          routingVersion: null,
-        };
+          ...(params.beforeSendMutation
+            ? {
+                beforeSendMutation: async () => {
+                  await params.beforeSendMutation!();
+                },
+              }
+            : {}),
+        });
       } catch (error) {
         lastError = error;
         if (!isMaxAttachmentNotReadyError(error) || attempt >= attempts) {
@@ -2455,11 +2306,8 @@ export class VkPublishService {
       post.publishIdempotencyKey?.trim() || post.publishQueuedAt || post.publishReason?.trim(),
     );
     const ownerScope = this.ownerScopeFromRow(post);
-    if (ownerScope.ownerProfile === VkParsingOwnerProfile.MAJOR) {
-      if (persisted.dispatchProfile !== PublicationDispatchProfile.LEGACY_ROUTED) {
-        throw new Error('Major-owned VK data has a non-legacy dispatch intent');
-      }
-      return persisted;
+    if (!this.ownership.isExactScope(ownerScope, this.getPublisherOwnerScope())) {
+      throw new Error('Major-owned VK publish execution is disabled');
     }
     if (
       !this.newDispatchRoute ||
@@ -2616,7 +2464,7 @@ export class VkPublishService {
       createdAt: createdAt.toISOString(),
     };
     if (route.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1) {
-      return base;
+      throw new Error(`Legacy VK publish intent ${post.id} is disabled`);
     }
     if (!route.requiredBotId) {
       throw new Error(`Publik VK intent ${post.id} is missing requiredBotId`);
@@ -2630,13 +2478,13 @@ export class VkPublishService {
   }
 
   private resolvePublishQueue(dispatchProfile: PublicationDispatchProfile): Queue<unknown> {
-    if (dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
-      if (!this.publisherQueue) {
-        throw new ServiceUnavailableException('Publik VK queue is unavailable.');
-      }
-      return this.publisherQueue as unknown as Queue<unknown>;
+    if (dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1) {
+      throw new Error('Legacy VK publish queue is retired');
     }
-    return this.publishQueue as unknown as Queue<unknown>;
+    if (!this.publisherQueue) {
+      throw new ServiceUnavailableException('Publik VK queue is unavailable.');
+    }
+    return this.publisherQueue as unknown as Queue<unknown>;
   }
 
   private async recoverExistingPublishJob(
@@ -4295,6 +4143,12 @@ export class VkPublishService {
     dispatchProfile: PublicationDispatchProfile,
     requiredPublisherBotId?: string | null,
   ): Promise<VkParsingMaxMessageText> {
+    if (
+      dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+      requiredPublisherBotId !== this.getPublisherOwnerScope().ownerBotId
+    ) {
+      throw new Error('Legacy VK message preparation is disabled');
+    }
     const usesRichText = payload.textFormat === 'markdown';
     const renderedText = usesRichText
       ? renderSupportedMarkdownAsHtml(payload.text, { blockMode: 'raw' })
@@ -4398,6 +4252,9 @@ export class VkPublishService {
     }
 
     const publisherBotId = exactPublisherBotId?.trim() ?? '';
+    if (!publisherBotId || publisherBotId !== this.getPublisherOwnerScope().ownerBotId) {
+      throw new ServiceUnavailableException('Publik bot is required to resolve the channel link.');
+    }
     if (!publisherBotId) {
       try {
         const audienceSnapshot = await this.prisma.channelAudienceSnapshot.findFirst({

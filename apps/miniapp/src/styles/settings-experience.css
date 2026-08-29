@@ -1901,43 +1901,6 @@
     line-height: 1.35;
   }
 
-  /* VK parsing shares the surrounding settings surface language in both themes. */
-  body.settings-drilldown-open
-    .settings-drilldown
-    .settings-drilldown__panel--vk-parsing
-    .vk-parsing-card {
-    --vk-bg: var(--surface-page);
-    --vk-surface: var(--surface-card);
-    --vk-soft: var(--surface-card-muted);
-    --vk-line: var(--border-subtle);
-    --vk-line-strong: var(--border-strong);
-    --vk-shadow: none;
-  }
-
-  body.settings-drilldown-open
-    .settings-drilldown
-    .settings-drilldown__panel.settings-drilldown__panel--vk-parsing {
-    border-color: var(--border-subtle);
-    background: var(--surface-page);
-    box-shadow: var(--shadow-md);
-  }
-
-  body.settings-drilldown-open
-    .settings-drilldown
-    .settings-drilldown__panel.settings-drilldown__panel--vk-parsing
-    :is(.settings-drilldown__header, .settings-drilldown__footer) {
-    border-color: var(--border-subtle);
-    background: var(--surface-card);
-    box-shadow: none;
-  }
-
-  body.settings-drilldown-open
-    .settings-drilldown
-    .settings-drilldown__panel.settings-drilldown__panel--vk-parsing
-    :is(.settings-drilldown__content, .settings-drilldown__body) {
-    background: var(--surface-page);
-  }
-
   @media (max-width: 430px) {
     body.settings-drilldown-open
       .settings-drilldown
@@ -2033,6 +1996,5 @@
     .settings-drilldown__header-action {
       max-width: 88px;
     }
-
   }
 }

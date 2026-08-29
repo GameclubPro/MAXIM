@@ -1,7 +1,6 @@
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 
 export const VK_PARSING_SYNC_QUEUE = 'vk-parsing-sync';
-export const VK_PARSING_PUBLISH_QUEUE = 'vk-parsing-publish';
 export const VK_PARSING_PUBLISHER_QUEUE = 'vk-parsing-publisher';
 
 export const VK_PARSING_SYNC_RETRY_POLICY = {
@@ -25,6 +24,8 @@ export type VkParsingSyncJob = QueueJobEnvelope<
   {
     sourceId: string;
     reason: VkParsingSyncReason;
+    ownerProfile: 'PUBLISHER';
+    ownerBotId: string;
   },
   {
     retryPolicyName?: Extract<QueueRetryPolicyName, 'vk-parsing-sync'>;

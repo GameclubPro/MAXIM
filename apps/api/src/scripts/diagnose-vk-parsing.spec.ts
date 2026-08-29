@@ -1,8 +1,20 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { PublicationDispatchProfile, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import {
+  loadOwnedPublishDatabaseSnapshot,
   readCliOptions,
   reconcilePublishQueueSnapshots,
   renderTextDiagnostics,
 } from './diagnose-vk-parsing';
+
+const PUBLISHER_BOT_ID = 'publisher-bot';
+const PUBLISHER_JOB_ROUTE = {
+  kind: 'publish',
+  dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+  requiredBotId: PUBLISHER_BOT_ID,
+} as const;
+const diagnoseSource = readFileSync(resolve(__dirname, 'diagnose-vk-parsing.ts'), 'utf8');
 
 function createStableQueueSnapshots(counts: Record<string, number> = {}, paused = true) {
   return {
@@ -31,6 +43,7 @@ describe('diagnose-vk-parsing script helpers', () => {
     expect(
       readCliOptions(['--json', '--limit', '5', '--window-hours', '12'], {
         REDIS_URL: 'redis://localhost:6379/0',
+        MAX_PUBLISHER_BOT_ID: ` ${PUBLISHER_BOT_ID} `,
       } as NodeJS.ProcessEnv),
     ).toEqual({
       json: true,
@@ -38,7 +51,47 @@ describe('diagnose-vk-parsing script helpers', () => {
       reconcileCap: 5_000,
       windowHours: 12,
       redisUrl: 'redis://localhost:6379/0',
+      publisherBotId: PUBLISHER_BOT_ID,
     });
+  });
+
+  it('uses read-only handles for only the active Publisher queues', () => {
+    expect(diagnoseSource).toContain("const VK_PUBLISHER_QUEUE = 'vk-parsing-publisher'");
+    expect(diagnoseSource).not.toMatch(/['"]vk-parsing-publish['"]/u);
+    expect(diagnoseSource).toContain('skipMetasUpdate: true');
+    expect([...diagnoseSource.matchAll(/new Queue\(/gu)]).toHaveLength(3);
+    expect([
+      ...diagnoseSource.matchAll(/new Queue\([^,\n]+, diagnosticQueueOptions\)/gu),
+    ]).toHaveLength(3);
+  });
+
+  it('loads only exact Publisher-owned Publik rows for the configured bot', async () => {
+    const count = jest.fn().mockResolvedValue(0);
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = { vkParsingPost: { count, findMany } };
+    const ownershipWhere = {
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: PUBLISHER_BOT_ID,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: PUBLISHER_BOT_ID,
+      publishQueuedAt: { not: null },
+      source: {
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: PUBLISHER_BOT_ID,
+      },
+    };
+
+    await loadOwnedPublishDatabaseSnapshot(prisma as never, 100, PUBLISHER_BOT_ID);
+
+    expect(count).toHaveBeenCalledTimes(2);
+    expect(count).toHaveBeenNthCalledWith(1, { where: ownershipWhere });
+    expect(count).toHaveBeenNthCalledWith(2, { where: ownershipWhere });
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: ownershipWhere,
+        select: expect.objectContaining({ requiredBotId: true }),
+      }),
+    );
   });
 
   it('renders a compact operational summary', () => {
@@ -76,7 +129,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         available: true,
         error: null,
         sync: { name: 'vk-parsing-sync', counts: { waiting: 0 }, jobs: [] },
-        publish: { name: 'vk-parsing-publish', counts: { waiting: 2 }, jobs: [] },
+        publish: { name: 'vk-parsing-publisher', counts: { waiting: 2 }, jobs: [] },
       },
     });
 
@@ -107,7 +160,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         error: null,
         sync: { name: 'vk-parsing-sync', counts: {}, jobs: [] },
         publish: {
-          name: 'vk-parsing-publish',
+          name: 'vk-parsing-publisher',
           counts: { waiting: 0, active: 0, delayed: 0 },
           jobs: [],
           referencedJobs: [
@@ -137,6 +190,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         publishScheduledAt: new Date('2026-07-30T13:00:00.000Z'),
         publishLockedAt: null,
         publishIdempotencyKey: 'key-1',
+        requiredBotId: PUBLISHER_BOT_ID,
       },
       {
         id: 'post-2',
@@ -148,6 +202,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         publishScheduledAt: new Date('2026-07-30T14:00:00.000Z'),
         publishLockedAt: null,
         publishIdempotencyKey: 'key-2',
+        requiredBotId: PUBLISHER_BOT_ID,
       },
       {
         id: 'post-3',
@@ -159,6 +214,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         publishScheduledAt: new Date('2026-08-04T12:00:00.000Z'),
         publishLockedAt: null,
         publishIdempotencyKey: 'key-3',
+        requiredBotId: PUBLISHER_BOT_ID,
       },
     ];
     const firstJob = {
@@ -172,6 +228,7 @@ describe('diagnose-vk-parsing script helpers', () => {
       processedOn: null,
       finishedOn: null,
       data: {
+        ...PUBLISHER_JOB_ROUTE,
         postId: 'post-1',
         chatId: 'chat-1',
         reason: 'autopublish',
@@ -189,6 +246,8 @@ describe('diagnose-vk-parsing script helpers', () => {
       processedOn: null,
       finishedOn: null,
       data: {
+        ...PUBLISHER_JOB_ROUTE,
+        requiredBotId: 'other-publisher-bot',
         postId: 'post-3',
         chatId: 'wrong-chat',
         reason: 'autopublish',
@@ -206,6 +265,7 @@ describe('diagnose-vk-parsing script helpers', () => {
       processedOn: null,
       finishedOn: null,
       data: {
+        ...PUBLISHER_JOB_ROUTE,
         postId: 'orphan',
         chatId: 'chat-orphan',
         reason: 'autopublish',
@@ -278,7 +338,11 @@ describe('diagnose-vk-parsing script helpers', () => {
       state: 'delayed',
     });
     expect(result.payloadMismatches.count).toBe(1);
-    expect(result.payloadMismatches.samples[0]?.mismatchedFields).toEqual(['chatId', 'reason']);
+    expect(result.payloadMismatches.samples[0]?.mismatchedFields).toEqual([
+      'chatId',
+      'reason',
+      'requiredBotId',
+    ]);
     expect(result.scheduleDrift.count).toBe(1);
     expect(result.scheduleDrift.comparableJobs).toBe(2);
     expect(result.scheduleDrift.complete).toBe(false);
@@ -318,6 +382,7 @@ describe('diagnose-vk-parsing script helpers', () => {
             publishScheduledAt: new Date('2026-07-30T13:00:00.000Z'),
             publishLockedAt: null,
             publishIdempotencyKey: null,
+            requiredBotId: PUBLISHER_BOT_ID,
           },
         ],
       },
@@ -365,6 +430,7 @@ describe('diagnose-vk-parsing script helpers', () => {
             publishScheduledAt: new Date('2026-07-30T13:00:00.000Z'),
             publishLockedAt: null,
             publishIdempotencyKey: 'key-1',
+            requiredBotId: PUBLISHER_BOT_ID,
           },
         ],
       },
@@ -382,6 +448,7 @@ describe('diagnose-vk-parsing script helpers', () => {
           processedOn: null,
           finishedOn: null,
           data: {
+            ...PUBLISHER_JOB_ROUTE,
             postId: 'post-2',
             chatId: 'chat-2',
             reason: 'autopublish',
@@ -414,6 +481,7 @@ describe('diagnose-vk-parsing script helpers', () => {
       publishScheduledAt: new Date('2026-07-30T13:00:00.000Z'),
       publishLockedAt: null,
       publishIdempotencyKey: `key-${id}`,
+      requiredBotId: PUBLISHER_BOT_ID,
     }));
     const jobs = [
       {
@@ -427,6 +495,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         processedOn: null,
         finishedOn: null,
         data: {
+          ...PUBLISHER_JOB_ROUTE,
           postId: 'promoted',
           chatId: 'chat-1',
           reason: 'autopublish',
@@ -444,6 +513,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         processedOn: generatedAt.getTime() - 30_000,
         finishedOn: null,
         data: {
+          ...PUBLISHER_JOB_ROUTE,
           postId: 'retry',
           chatId: 'chat-1',
           reason: 'autopublish',

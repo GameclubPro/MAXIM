@@ -266,6 +266,8 @@ describe('VkParsingService', () => {
       recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
     };
     const configService = createConfig({
+      MAX_PUBLISHER_BOT_ID: 'publisher-bot',
+      MAX_PUBLISHER_DISPATCH_ENABLED: true,
       VK_SERVICE_TOKEN: 'vk-service-token',
       VK_API_BASE_URL: 'https://api.vk.ru',
       VK_API_VERSION: '5.199',
@@ -299,6 +301,63 @@ describe('VkParsingService', () => {
       configService as never,
     );
     const vkApiClient = new VkApiClientService(configService as never, vkRateLimitService as never);
+    const publisherReadiness = {
+      assertEntityReady: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        entityType: 'channel',
+        requiredBotId: 'publisher-bot',
+        policyRevision: 1,
+      }),
+    };
+    const publisherRuntimeBoundary = {
+      dispatchEnabled: true,
+      assertDispatchEnabled: jest.fn(),
+    };
+    const publisherDispatchHealth = {
+      assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
+      isGloballyPaused: jest.fn().mockResolvedValue(false),
+      recordSendSuccess: jest.fn().mockResolvedValue(undefined),
+      recordSendFailure: jest.fn().mockResolvedValue('transient'),
+    };
+    const publisherDialogContext = {
+      version: 1,
+      dialogBotId: 'publisher-bot',
+      buttons: [],
+      reference: null,
+    };
+    const publisherDialogContextService = {
+      prepare: jest.fn().mockResolvedValue(publisherDialogContext),
+      read: jest.fn((value: unknown, expectedBotId: string) => {
+        const context = value as typeof publisherDialogContext | null;
+        return context?.version === 1 && context.dialogBotId === expectedBotId ? context : null;
+      }),
+    };
+    const defaultMaxRoutedPublicationService = {
+      publish: jest.fn(async (request: any) => {
+        await request.beforeSendMutation?.();
+        const botId = request.publisherExactBotId;
+        const prepared = await request.prepareAttempt({ botId, job: {} });
+        request.onDispatchAttempt?.({ botId, job: {} });
+        const sent = await maxClient.sendMessageImmediateWithResolvedLink(
+          request.entityId,
+          request.text,
+          prepared.options,
+          {
+            botId,
+            trafficClass: request.trafficClass,
+            sourceTag: request.sourceTag,
+          },
+        );
+        return {
+          ...sent,
+          botId,
+          candidateBotIds: [botId],
+          routingVersion: null,
+        };
+      }),
+    };
+    const maxRoutedPublicationService =
+      dependencies.maxRoutedPublicationService ?? defaultMaxRoutedPublicationService;
     const sourceService = new VkSourceService(
       prisma as never,
       feedService,
@@ -315,12 +374,17 @@ describe('VkParsingService', () => {
       maxBotLinkService as never,
       mediaCache,
       feedService,
-      publishQueue as never,
       configService as never,
       ownership,
       undefined,
       managedEntityAccessLossService as never,
-      dependencies.maxRoutedPublicationService as never,
+      maxRoutedPublicationService as never,
+      undefined,
+      publishQueue as never,
+      publisherReadiness as never,
+      publisherRuntimeBoundary as never,
+      publisherDispatchHealth as never,
+      publisherDialogContextService as never,
     );
     const syncService = new VkSyncService(
       prisma as never,
@@ -329,6 +393,7 @@ describe('VkParsingService', () => {
       mediaCache,
       postImportRepository,
       configService as never,
+      ownership,
     );
 
     const service = new VkParsingService(
@@ -340,6 +405,13 @@ describe('VkParsingService', () => {
       publishService,
       ownership,
     );
+    const processPublishPostJob = service.processPublishPostJob.bind(service);
+    (service as any).processPublishPostJob = (params: Record<string, unknown>) =>
+      processPublishPostJob({
+        ...params,
+        dispatchProfile: params.dispatchProfile ?? 'PUBLIK_V1',
+        requiredBotId: params.requiredBotId ?? 'publisher-bot',
+      } as never);
 
     return {
       service,
@@ -359,7 +431,11 @@ describe('VkParsingService', () => {
       sourceService,
       syncService,
       publishService,
-      maxRoutedPublicationService: dependencies.maxRoutedPublicationService,
+      maxRoutedPublicationService,
+      publisherReadiness,
+      publisherRuntimeBoundary,
+      publisherDispatchHealth,
+      publisherDialogContextService,
     };
   }
 
@@ -367,8 +443,8 @@ describe('VkParsingService', () => {
     return {
       id: 'source-1',
       chatId: 'channel-1',
-      ownerProfile: VkParsingOwnerProfile.MAJOR,
-      ownerBotId: '',
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: 'publisher-bot',
       ownerId: 36819802,
       wallOwnerId: -36819802,
       screenName: 'avto_prodaja_rb',
@@ -442,7 +518,12 @@ describe('VkParsingService', () => {
 
   function createQueueJob(state: string, data: Record<string, unknown> = {}) {
     return {
-      data,
+      data: {
+        kind: 'publish',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+        ...data,
+      },
       getState: jest.fn().mockResolvedValue(state),
       remove: jest.fn().mockResolvedValue(undefined),
       updateData: jest.fn().mockResolvedValue(undefined),
@@ -450,9 +531,24 @@ describe('VkParsingService', () => {
     };
   }
 
+  function createSyncQueueJob(state: string, data: Record<string, unknown> = {}) {
+    return createQueueJob(state, {
+      sourceId: 'source-1',
+      reason: 'scheduled',
+      ownerProfile: 'PUBLISHER',
+      ownerBotId: 'publisher-bot',
+      ...data,
+    });
+  }
+
   function createPostRow(overrides: Record<string, unknown> = {}) {
-    const source =
-      (overrides.source as ReturnType<typeof createSource> | undefined) ?? createSource();
+    const source = createSource((overrides.source as Record<string, unknown> | undefined) ?? {});
+    const publisherDialogContext = {
+      version: 1,
+      dialogBotId: 'publisher-bot',
+      buttons: [],
+      reference: null,
+    };
     return {
       id: 'post-1',
       sourceId: source.id,
@@ -499,6 +595,21 @@ describe('VkParsingService', () => {
       publishAttemptCount: 0,
       publishIdempotencyKey: null,
       publishReason: null,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'publisher-bot',
+      publishDialogContext: publisherDialogContext,
+      publicationPolicyRevision: 1,
+      publishActorUserId: null,
+      publishedBotId: null,
+      dispatchBlockerCode: null,
+      dispatchBlockedAt: null,
+      rollbackQueuedAt: null,
+      rollbackLockedAt: null,
+      rollbackDeletedAt: null,
+      rollbackAttemptCount: 0,
+      rollbackIdempotencyKey: null,
+      rollbackLastError: null,
       lastError: null,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -1564,7 +1675,7 @@ describe('VkParsingService', () => {
       syncStatus: 'QUEUED',
       updatedAt: new Date('2026-05-25T09:55:00.000Z'),
     });
-    const failedJob = createQueueJob('failed');
+    const failedJob = createSyncQueueJob('failed', { reason: 'manual' });
     prisma.vkParsingSource.findFirst.mockResolvedValue(source);
     prisma.vkParsingSource.updateMany.mockResolvedValueOnce({ count: 1 });
     syncQueue.getJob.mockResolvedValueOnce(failedJob);
@@ -1579,6 +1690,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         sourceId: 'source-1',
         reason: 'manual',
+        ownerProfile: 'PUBLISHER',
+        ownerBotId: 'publisher-bot',
         retryPolicyName: 'vk-parsing-sync',
       }),
     );
@@ -1611,6 +1724,141 @@ describe('VkParsingService', () => {
       expect.objectContaining({ sourceId: 'source-1', reason: 'manual' }),
       expect.objectContaining({ jobId: 'vk-parsing-sync__source-1' }),
     );
+  });
+
+  it.each(['waiting', 'delayed', 'failed', 'completed'])(
+    'replaces an inactive %s VK source sync job with a stale ownership envelope',
+    async (state) => {
+      const { service, prisma, syncQueue } = createFixture();
+      const source = createSource({
+        syncStatus: 'QUEUED',
+        updatedAt: new Date('2026-05-25T09:55:00.000Z'),
+      });
+      const staleJob = createSyncQueueJob(state, {
+        ownerProfile: 'MAJOR',
+        ownerBotId: '',
+      });
+      prisma.vkParsingSource.findFirst.mockResolvedValue(source);
+      prisma.vkParsingSource.updateMany.mockResolvedValueOnce({ count: 1 });
+      syncQueue.getJob.mockResolvedValueOnce(staleJob);
+
+      const result = await service.refreshSource('channel-1', 'source-1', {
+        userId: '183470701',
+      } as never);
+
+      expect(result.queued).toBe(1);
+      expect(staleJob.remove).toHaveBeenCalledTimes(1);
+      expect(staleJob.updateData).not.toHaveBeenCalled();
+      expect(staleJob.retry).not.toHaveBeenCalled();
+      expect(syncQueue.add).toHaveBeenCalledWith(
+        'sync-vk-source',
+        expect.objectContaining({
+          sourceId: 'source-1',
+          ownerProfile: 'PUBLISHER',
+          ownerBotId: 'publisher-bot',
+        }),
+        expect.objectContaining({ jobId: 'vk-parsing-sync__source-1' }),
+      );
+    },
+  );
+
+  it('replaces an inactive VK source sync job with a stale reason', async () => {
+    const { service, prisma, syncQueue } = createFixture();
+    const source = createSource({
+      syncStatus: 'QUEUED',
+      updatedAt: new Date('2026-05-25T09:55:00.000Z'),
+    });
+    const staleJob = createSyncQueueJob('waiting', { reason: 'source-added' });
+    prisma.vkParsingSource.findFirst.mockResolvedValue(source);
+    prisma.vkParsingSource.updateMany.mockResolvedValueOnce({ count: 1 });
+    syncQueue.getJob.mockResolvedValueOnce(staleJob);
+
+    const result = await service.refreshSource('channel-1', 'source-1', {
+      userId: '183470701',
+    } as never);
+
+    expect(result.queued).toBe(1);
+    expect(staleJob.remove).toHaveBeenCalledTimes(1);
+    expect(syncQueue.add).toHaveBeenCalledWith(
+      'sync-vk-source',
+      expect.objectContaining({ sourceId: 'source-1', reason: 'manual' }),
+      expect.objectContaining({ jobId: 'vk-parsing-sync__source-1' }),
+    );
+  });
+
+  it('replaces an inactive VK source sync job with malformed data', async () => {
+    const { service, prisma, syncQueue } = createFixture();
+    const source = createSource({
+      syncStatus: 'QUEUED',
+      updatedAt: new Date('2026-05-25T09:55:00.000Z'),
+    });
+    const staleJob = createSyncQueueJob('delayed');
+    staleJob.data = null as never;
+    prisma.vkParsingSource.findFirst.mockResolvedValue(source);
+    prisma.vkParsingSource.updateMany.mockResolvedValueOnce({ count: 1 });
+    syncQueue.getJob.mockResolvedValueOnce(staleJob);
+
+    const result = await service.refreshSource('channel-1', 'source-1', {
+      userId: '183470701',
+    } as never);
+
+    expect(result.queued).toBe(1);
+    expect(staleJob.remove).toHaveBeenCalledTimes(1);
+    expect(syncQueue.add).toHaveBeenCalledWith(
+      'sync-vk-source',
+      expect.objectContaining({
+        sourceId: 'source-1',
+        ownerProfile: 'PUBLISHER',
+        ownerBotId: 'publisher-bot',
+      }),
+      expect.objectContaining({ jobId: 'vk-parsing-sync__source-1' }),
+    );
+  });
+
+  it('quarantines an active VK source sync job with a stale ownership envelope', async () => {
+    const { service, prisma, syncQueue } = createFixture();
+    const source = createSource({
+      syncStatus: 'QUEUED',
+      updatedAt: new Date('2026-05-25T09:55:00.000Z'),
+    });
+    const staleJob = createSyncQueueJob('active', {
+      ownerProfile: undefined,
+      ownerBotId: undefined,
+    });
+    prisma.vkParsingSource.findFirst.mockResolvedValue(source);
+    prisma.vkParsingSource.updateMany.mockResolvedValueOnce({ count: 1 });
+    syncQueue.getJob.mockResolvedValueOnce(staleJob);
+
+    const result = await service.refreshSource('channel-1', 'source-1', {
+      userId: '183470701',
+    } as never);
+
+    expect(result.queued).toBe(0);
+    expect(staleJob.remove).not.toHaveBeenCalled();
+    expect(staleJob.updateData).not.toHaveBeenCalled();
+    expect(staleJob.retry).not.toHaveBeenCalled();
+    expect(syncQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not acquire or execute a Major-owned VK source', async () => {
+    const { service, prisma } = createFixture();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(
+      createSource({ ownerProfile: VkParsingOwnerProfile.MAJOR, ownerBotId: '' }),
+    );
+    global.fetch = jest.fn() as unknown as typeof fetch;
+
+    await expect(service.processSyncSourceJob('source-1', 'scheduled')).resolves.toBe(0);
+
+    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'source-1',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+        }),
+      }),
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('imports text, direct VK videos and links from a public VK community', async () => {
@@ -3747,13 +3995,13 @@ describe('VkParsingService', () => {
   it('renders imported VK strong markup in queued background publications', async () => {
     const maxRoutedPublicationService = {
       publish: jest.fn().mockImplementation(async (request: any) => {
-        const prepared = await request.prepareAttempt({ botId: 'bot-2', job: {} });
-        request.onDispatchAttempt({ botId: 'bot-2', job: { options: prepared.options } });
+        const prepared = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+        request.onDispatchAttempt({ botId: 'publisher-bot', job: { options: prepared.options } });
         return {
           messageId: 'mid-1',
           url: 'https://max.ru/channels/channel-1/message/mid-1',
-          botId: 'bot-2',
-          candidateBotIds: ['bot-1', 'bot-2'],
+          botId: 'publisher-bot',
+          candidateBotIds: ['publisher-bot'],
           routingVersion: 5,
         };
       }),
@@ -3819,19 +4067,14 @@ describe('VkParsingService', () => {
         }),
       }),
     );
-    expect(adminService.recordChannelPublicationEngagement).toHaveBeenCalledWith(
-      expect.objectContaining({
-        actorUserId: 'vk-parsing-autopost',
-        source: 'vk_parsing',
-        botId: 'bot-2',
-      }),
-    );
+    expect(adminService.recordChannelPublicationEngagement).not.toHaveBeenCalled();
   });
 
   it('fails closed in production when routed VK publication wiring is missing', async () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const { publishService, maxClient } = createFixture();
+    (publishService as any).maxRoutedPublicationService = undefined;
 
     try {
       await expect(
@@ -3845,7 +4088,7 @@ describe('VkParsingService', () => {
           prepareAttempt: jest.fn(),
         }),
       ).rejects.toThrow(
-        'Routed MAX publication service is required for production VK publications',
+        'Routed MAX publication service is required for Publik VK publications',
       );
       expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     } finally {
@@ -3939,11 +4182,17 @@ describe('VkParsingService', () => {
     ).toBeNull();
   });
 
-  it('records MAX access loss and clears VK publish queue when a target chat is denied', async () => {
+  it('keeps Publisher access loss out of generic Major runtime cleanup', async () => {
     const maxSendAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
     jest.useFakeTimers().setSystemTime(maxSendAttemptStartedAt);
-    const { service, prisma, maxClient, publishQueue, managedEntityAccessLossService } =
-      createFixture();
+    const {
+      service,
+      prisma,
+      maxClient,
+      publishQueue,
+      managedEntityAccessLossService,
+      publisherDispatchHealth,
+    } = createFixture();
     const source = createSource();
     const post = createPostRow({
       source,
@@ -4000,17 +4249,12 @@ describe('VkParsingService', () => {
       }),
     ).rejects.toBe(error);
 
-    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
-      chatId: 'channel-1',
-      botId: 'bot-1',
-      entityType: ChatEntityType.CHANNEL,
-      source: 'vk_parsing:publish',
-      operation: 'send',
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+    expect(publisherDispatchHealth.recordSendFailure).toHaveBeenCalledWith(
+      'channel-1',
       error,
-      lifecycleEventAt: maxSendAttemptStartedAt,
-      lifecycleEventType: 'live_probe',
-      lifecycleSource: 'live_probe',
-    });
+      maxSendAttemptStartedAt,
+    );
     expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ id: 'post-1' }),
@@ -4106,8 +4350,8 @@ describe('VkParsingService', () => {
     expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
-  it('quarantines Safety Desk manual publish after an ambiguous MAX send timeout', async () => {
-    const { publishService, prisma, maxClient } = createFixture();
+  it('queues Safety Desk manual publish through Publisher without direct MAX dispatch', async () => {
+    const { publishService, prisma, maxClient, publishQueue } = createFixture();
     const source = createSource({ publishMode: 'REVIEW' });
     const post = createPostRow({
       source,
@@ -4115,10 +4359,8 @@ describe('VkParsingService', () => {
       photoUrls: [],
       linkUrls: [],
     });
-    const timeoutError = new Error('request timed out before response body arrived');
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
-    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(timeoutError);
 
     await expect(
       publishService.publishPost('channel-1', 'post-1', 'safety-desk-owner', {
@@ -4126,28 +4368,19 @@ describe('VkParsingService', () => {
         photoUrls: [],
         linkUrls: [],
       }),
-    ).rejects.toBe(timeoutError);
+    ).resolves.toMatchObject({ queued: 1 });
 
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
       expect.objectContaining({
-        where: expect.objectContaining({ id: 'post-1' }),
-        data: expect.objectContaining({
-          status: 'FAILED',
-          lastError: expect.stringContaining('[max.send_ambiguous]'),
-          publishQueuedAt: null,
-          publishScheduledAt: null,
-          publishIdempotencyKey: null,
-          publishReason: null,
-          publishLockedAt: null,
-        }),
+        kind: 'publish',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+        postId: 'post-1',
       }),
+      expect.any(Object),
     );
-    const failureData = prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0]?.data as Record<
-      string,
-      unknown
-    >;
-    expect(failureData.lastError).toEqual(expect.stringContaining('Safety Desk retry is blocked'));
   });
 
   it('defers VK autopublish jobs while the runtime governor reports pressure', async () => {
@@ -4512,7 +4745,7 @@ describe('VkParsingService', () => {
         'Продам авто',
         expect.any(Object),
         {
-          botId: 'bot-1',
+          botId: 'publisher-bot',
           trafficClass: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
         },
@@ -4527,7 +4760,7 @@ describe('VkParsingService', () => {
         }),
       );
       expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
-        2,
+        3,
         expect.objectContaining({
           where: {
             id: 'post-1',
@@ -4740,7 +4973,7 @@ describe('VkParsingService', () => {
         'Продам авто',
         expect.any(Object),
         {
-          botId: 'bot-1',
+          botId: 'publisher-bot',
           trafficClass: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
         },
@@ -5083,7 +5316,7 @@ describe('VkParsingService', () => {
       'Текст останется',
       expect.any(Object),
       {
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       },
@@ -5184,7 +5417,7 @@ describe('VkParsingService', () => {
       'small.jpg',
       'image/jpeg',
       {
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       },
@@ -5234,7 +5467,7 @@ describe('VkParsingService', () => {
         contentLength: null,
         maxUploadPayload: {
           token: 'cached-token',
-          [VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD]: 'bot-1',
+          [VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD]: 'publisher-bot',
         },
         maxUploadToken: 'cached-token',
         maxUploadedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -5272,7 +5505,7 @@ describe('VkParsingService', () => {
       'Текст с фото',
       expect.objectContaining({ imagePayload: { token: 'cached-token' } }),
       {
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       },
@@ -5372,7 +5605,7 @@ describe('VkParsingService', () => {
       'video-720.mp4',
       'video/mp4',
       {
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
         timeoutMs: 120_000,
@@ -5385,7 +5618,7 @@ describe('VkParsingService', () => {
         attachments: [{ type: 'video', payload: { token: 'video-token' } }],
       }),
       {
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       },
@@ -5478,7 +5711,7 @@ describe('VkParsingService', () => {
       'video-720.mp4',
       'video/mp4',
       expect.objectContaining({
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       }),
@@ -5490,7 +5723,7 @@ describe('VkParsingService', () => {
         attachments: [{ type: 'video', payload: { token: 'video-token' } }],
       }),
       expect.objectContaining({
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       }),
@@ -6025,7 +6258,7 @@ describe('VkParsingService', () => {
       postUrl,
       expect.any(Object),
       expect.objectContaining({
-        botId: 'bot-1',
+        botId: 'publisher-bot',
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       }),
@@ -6301,9 +6534,23 @@ describe('VkParsingService', () => {
 
     await service.syncDueSources('scheduled');
 
+    expect(prisma.vkParsingSource.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+        }),
+      }),
+    );
     const update = prisma.vkParsingSource.updateMany.mock.calls.at(-1)?.[0] as
-      | { data?: Record<string, unknown> }
+      | { data?: Record<string, unknown>; where?: Record<string, unknown> }
       | undefined;
+    expect(update?.where).toEqual(
+      expect.objectContaining({
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: 'publisher-bot',
+      }),
+    );
     expect(update?.data).toEqual(
       expect.objectContaining({
         syncStatus: 'QUEUED',
@@ -6514,8 +6761,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['missing-post-1'] },
-          ownerProfile: VkParsingOwnerProfile.MAJOR,
-          ownerBotId: '',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -6589,8 +6836,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['found-post-1'] },
-          ownerProfile: VkParsingOwnerProfile.MAJOR,
-          ownerBotId: '',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -6604,8 +6851,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['missing-post-1'] },
-          ownerProfile: VkParsingOwnerProfile.MAJOR,
-          ownerBotId: '',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -6658,8 +6905,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['missing-post-1'] },
-          ownerProfile: VkParsingOwnerProfile.MAJOR,
-          ownerBotId: '',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -6678,12 +6925,14 @@ describe('VkParsingService', () => {
     );
   });
 
-  it('publishes an edited VK post to MAX with selected photos and links', async () => {
-    const { service, prisma, maxClient, maxBotLinkService } = createFixture();
+  it('queues an edited VK post with selected photos and links for Publisher', async () => {
+    const { service, prisma, maxClient, maxBotLinkService, publishQueue } = createFixture();
     const post = {
       id: 'post-1',
       sourceId: 'source-1',
       chatId: 'channel-1',
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: 'publisher-bot',
       vkOwnerId: -36819802,
       vkPostId: 101,
       vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -6703,6 +6952,8 @@ describe('VkParsingService', () => {
       source: {
         id: 'source-1',
         chatId: 'channel-1',
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: 'publisher-bot',
         ownerId: 36819802,
         wallOwnerId: -36819802,
         screenName: 'avto_prodaja_rb',
@@ -6747,32 +6998,24 @@ describe('VkParsingService', () => {
       },
     );
 
-    expect(maxBotLinkService.resolveBotIdForSend).toHaveBeenCalledWith({ chatId: 'channel-1' });
-    expect(maxClient.uploadImage).toHaveBeenCalledWith(
-      Buffer.from([1, 2, 3]),
-      'large.jpg',
-      'image/jpeg',
-      {
-        botId: 'bot-1',
-        trafficClass: 'interactive',
-        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-      },
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
+      expect.objectContaining({
+        kind: 'publish',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+        postId: 'post-1',
+      }),
+      expect.any(Object),
     );
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      'Мой текст\nhttps://example.com/car',
-      expect.objectContaining({ imagePayload: { token: 'image-token' } }),
-      {
-        botId: 'bot-1',
-        trafficClass: 'interactive',
-        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-      },
-    );
-    expect(result.messageId).toBe('mid-1');
+    expect(result).toMatchObject({ queued: 1 });
   });
 
-  it('renders manually formatted VK text as safe MAX HTML', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('stores manually formatted VK text in the Publisher queue intent', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const post = createPostRow({ text: 'Текст из VK' });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
@@ -6789,18 +7032,8 @@ describe('VkParsingService', () => {
       linkUrls: [],
     });
 
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      '<strong>Важное</strong> и <a href="https://example.com/news">подробности</a>',
-      expect.objectContaining({ textFormat: 'html' }),
-      expect.objectContaining({
-        botId: 'bot-1',
-        trafficClass: 'interactive',
-        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-      }),
-    );
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
-      1,
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           text: '**Важное** и [подробности](https://example.com/news)',
@@ -6809,22 +7042,23 @@ describe('VkParsingService', () => {
           videoUrls: [],
           linkUrls: [],
           manualContentEditedAt: expect.any(Date),
-          publishLockedAt: expect.any(Date),
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
         }),
       }),
     );
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
       expect.objectContaining({
-        data: expect.objectContaining({
-          text: '**Важное** и [подробности](https://example.com/news)',
-          textFormat: 'markdown',
-          status: 'PUBLISHED',
-        }),
+        kind: 'publish',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
       }),
+      expect.any(Object),
     );
   });
 
-  it('arms a manual VK send for queue recovery before dispatch', async () => {
+  it('replaces an old manual schedule with a new Publisher queue intent', async () => {
     const publish = jest.fn().mockResolvedValue({
       messageId: 'mid-manual-recovery',
       url: 'https://max.ru/channels/channel-1/message/mid-manual-recovery',
@@ -6832,7 +7066,7 @@ describe('VkParsingService', () => {
       candidateBotIds: ['bot-1'],
       routingVersion: 1,
     });
-    const { service, prisma, maxRoutedPublicationService } = createFixture(
+    const { service, prisma, maxRoutedPublicationService, publishQueue } = createFixture(
       {},
       { maxRoutedPublicationService: { publish } },
     );
@@ -6853,45 +7087,25 @@ describe('VkParsingService', () => {
       linkUrls: [],
     });
 
-    const publishLockAt = prisma.vkParsingPost.updateMany.mock.calls[0]?.[0]?.data.publishLockedAt;
-    expect(publishLockAt).toBeInstanceOf(Date);
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(2, {
-      where: expect.objectContaining({
-        id: 'post-1',
-        chatId: 'channel-1',
-        publishLockedAt: publishLockAt,
-        publishQueuedAt: new Date('2026-05-25T09:00:00.000Z'),
-        publishScheduledAt: new Date('2026-05-25T12:00:00.000Z'),
-        publishIdempotencyKey: 'old-schedule-key',
-        publishReason: 'manual-schedule',
-      }),
-      data: expect.objectContaining({
-        publishQueuedAt: publishLockAt,
-        publishScheduledAt: publishLockAt,
-        publishCancelledAt: null,
-        publishCancelledByUserId: null,
-        publishIdempotencyKey: expect.stringMatching(/^[a-f0-9]{32}$/u),
-        publishReason: 'manual-retry',
-      }),
-    });
-    const armedKey = prisma.vkParsingPost.updateMany.mock.calls[1]?.[0]?.data.publishIdempotencyKey;
-    expect(armedKey).not.toBe('old-schedule-key');
-    expect(maxRoutedPublicationService?.publish).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        logicalIdempotencyKey: `vk-parsing:publish:post-1:${armedKey}`,
-        trafficClass: 'interactive',
+        data: expect.objectContaining({
+          publishIdempotencyKey: expect.any(String),
+          publishReason: 'manual-retry',
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+        }),
       }),
     );
+    expect(publishQueue.add).toHaveBeenCalled();
+    expect(maxRoutedPublicationService?.publish).not.toHaveBeenCalled();
   });
 
-  it('releases a manual VK lock when recovery persistence loses its CAS', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('does not enqueue a manual Publisher intent when its persistence CAS loses', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const post = createPostRow();
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
-    prisma.vkParsingPost.updateMany
-      .mockResolvedValueOnce({ count: 1 })
-      .mockResolvedValueOnce({ count: 0 })
-      .mockResolvedValueOnce({ count: 1 });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(
       service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
@@ -6901,25 +7115,14 @@ describe('VkParsingService', () => {
         videoUrls: [],
         linkUrls: [],
       }),
-    ).rejects.toThrow('Не удалось зафиксировать отправку');
+    ).resolves.toMatchObject({ queued: 0 });
 
-    const publishLockAt = prisma.vkParsingPost.updateMany.mock.calls[0]?.[0]?.data.publishLockedAt;
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(3, {
-      where: {
-        id: 'post-1',
-        chatId: 'channel-1',
-        publishLockedAt: publishLockAt,
-      },
-      data: {
-        publishLockedAt: null,
-        publishReason: null,
-      },
-    });
+    expect(publishQueue.add).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
-  it('publishes user-added markdown when the original link-only text is stripped', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('queues user-added markdown when the original link-only text is stripped', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const sourceUrl = 'https://example.com/original';
     const post = createPostRow({
       text: sourceUrl,
@@ -6944,11 +7147,12 @@ describe('VkParsingService', () => {
       linkUrls: [],
     });
 
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      '<strong>Новый текст</strong>',
-      expect.objectContaining({ textFormat: 'html' }),
-      expect.any(Object),
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(publishQueue.add).toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ text: '**Новый текст**', textFormat: 'markdown' }),
+      }),
     );
     expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({
@@ -6957,8 +7161,8 @@ describe('VkParsingService', () => {
     );
   });
 
-  it('stores a formatted manual draft before MAX send failure so retry keeps it', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('stores a formatted manual draft before Publisher queue handoff', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const post = createPostRow({
       text: 'Исходный текст',
       linkUrls: ['https://example.com/catalog'],
@@ -6977,24 +7181,25 @@ describe('VkParsingService', () => {
         videoUrls: [],
         linkUrls: ['https://example.com/catalog'],
       }),
-    ).rejects.toThrow('temporary network failure');
+    ).resolves.toMatchObject({ queued: 1 });
 
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
-      1,
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           text: '**Новый текст**',
           textFormat: 'markdown',
           linkUrls: ['https://example.com/catalog'],
           manualContentEditedAt: expect.any(Date),
-          publishLockedAt: expect.any(Date),
+          requiredBotId: 'publisher-bot',
         }),
       }),
     );
+    expect(publishQueue.add).toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
-  it('keeps a formatted manual draft when channel link lookup fails before send', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('queues a formatted manual draft without a Major channel-link lookup', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const post = createPostRow({
       text: 'Исходный текст',
       publishQueuedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -7020,36 +7225,25 @@ describe('VkParsingService', () => {
         videoUrls: [],
         linkUrls: [],
       }),
-    ).rejects.toThrow('Не удалось получить ссылку канала');
+    ).resolves.toMatchObject({ queued: 1 });
 
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
-      1,
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           text: '**Сохранённый текст**',
           textFormat: 'markdown',
           manualContentEditedAt: expect.any(Date),
-          publishLockedAt: expect.any(Date),
+          requiredBotId: 'publisher-bot',
         }),
       }),
     );
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        data: {
-          publishLockedAt: null,
-          publishReason: 'manual-schedule',
-        },
-      }),
-    );
-    const releaseData = prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0]?.data;
-    expect(releaseData).not.toHaveProperty('publishQueuedAt');
-    expect(releaseData).not.toHaveProperty('publishScheduledAt');
-    expect(releaseData).not.toHaveProperty('publishIdempotencyKey');
+    expect(publishQueue.add).toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
-  it('appends a custom channel link after VK text and escapes plain HTML', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('defers custom channel-link rendering to the Publisher worker', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const post = createPostRow({ text: 'Текст из VK' });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
@@ -7074,20 +7268,13 @@ describe('VkParsingService', () => {
       linkUrls: [],
     });
 
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      '&lt;b&gt;Не HTML&lt;/b&gt; &amp; текст\n\n<a href="https://max.ru/our-channel">Читать наш канал</a>',
-      expect.objectContaining({ textFormat: 'html' }),
-      expect.objectContaining({
-        botId: 'bot-1',
-        trafficClass: 'interactive',
-        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-      }),
-    );
+    expect(publishQueue.add).toHaveBeenCalled();
+    expect(prisma.managedBotChatCatalog.findFirst).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
-  it('uses the persisted channel audience link without a live MAX lookup', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('does not consult Major audience snapshots during Publisher queue handoff', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const post = createPostRow({ text: 'Текст из VK' });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
@@ -7112,159 +7299,121 @@ describe('VkParsingService', () => {
       linkUrls: [],
     });
 
-    expect(prisma.channelAudienceSnapshot.findFirst).toHaveBeenCalledWith({
-      where: {
-        chatId: 'channel-1',
-        link: { not: null },
-      },
-      orderBy: { capturedAt: 'desc' },
-      select: { link: true },
-    });
+    expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
     expect(prisma.managedBotChatCatalog.findFirst).not.toHaveBeenCalled();
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      'Текст из VK\n\n<a href="https://max.ru/join/channel-invite">Вступить в канал</a>',
-      expect.objectContaining({ textFormat: 'html' }),
-      expect.any(Object),
-    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(publishQueue.add).toHaveBeenCalled();
   });
 
   it('enforces the final MAX HTML limit after adding the channel link', async () => {
-    const { service, prisma, maxClient } = createFixture();
-    const post = createPostRow({ text: 'Текст из VK' });
+    const { publishService, prisma } = createFixture();
     const signature = '<a href="https://max.ru/our-channel">Наш канал</a>';
     const exactText = 'x'.repeat(
       VK_PARSING_MAX_PUBLISH_TEXT_LENGTH - '\n\n'.length - signature.length,
     );
-    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
-    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
-    prisma.vkParsingSettings.findUnique.mockResolvedValue({
-      chatId: 'channel-1',
-      appendChannelLinkEnabled: true,
-      channelLinkText: 'Наш канал',
-    });
     prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
       link: 'https://max.ru/our-channel',
     });
-    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
-      messageId: 'mid-exact-limit',
-      url: 'https://max.ru/channels/channel-1/message/mid-exact-limit',
-    });
 
-    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-      text: exactText,
-      textFormat: 'plain',
-      photoUrls: [],
-      videoUrls: [],
-      linkUrls: [],
-    });
+    const prepared = await (publishService as any).prepareMaxMessageText(
+      'channel-1',
+      { text: exactText, textFormat: 'plain', photoUrls: [], videoUrls: [], linkUrls: [] },
+      { appendChannelLinkEnabled: true, channelLinkText: 'Наш канал' },
+      'background',
+      PublicationDispatchProfile.PUBLIK_V1,
+      'publisher-bot',
+    );
 
-    const sentText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
-    expect(sentText).toHaveLength(VK_PARSING_MAX_PUBLISH_TEXT_LENGTH);
+    expect(prepared.text).toHaveLength(VK_PARSING_MAX_PUBLISH_TEXT_LENGTH);
 
     await expect(
-      service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-        text: `${exactText}x`,
-        textFormat: 'plain',
-        photoUrls: [],
-        videoUrls: [],
-        linkUrls: [],
-      }),
+      (publishService as any).prepareMaxMessageText(
+        'channel-1',
+        { text: `${exactText}x`, textFormat: 'plain', photoUrls: [], videoUrls: [], linkUrls: [] },
+        { appendChannelLinkEnabled: true, channelLinkText: 'Наш канал' },
+        'background',
+        PublicationDispatchProfile.PUBLIK_V1,
+        'publisher-bot',
+      ),
     ).rejects.toThrow('Текст вместе со ссылкой слишком длинный');
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
   });
 
   it('combines formatted VK text with the channel link in safe MAX HTML', async () => {
-    const { service, prisma, maxClient } = createFixture();
-    const post = createPostRow({ text: 'Текст из VK' });
-    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
-    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
-    prisma.vkParsingSettings.findUnique.mockResolvedValue({
-      chatId: 'channel-1',
-      appendChannelLinkEnabled: true,
-      channelLinkText: 'Наш канал',
-    });
+    const { publishService, prisma } = createFixture();
     prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
       link: 'https://max.ru/our-channel',
     });
-    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
-      messageId: 'mid-rich-channel-link',
-      url: 'https://max.ru/channels/channel-1/message/mid-rich-channel-link',
-    });
-
-    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-      text: '**Важное**',
-      textFormat: 'markdown',
-      photoUrls: [],
-      videoUrls: [],
-      linkUrls: [],
-    });
-
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      '<strong>Важное</strong>\n\n<a href="https://max.ru/our-channel">Наш канал</a>',
-      expect.objectContaining({ textFormat: 'html' }),
-      expect.objectContaining({ trafficClass: 'interactive' }),
+    await expect(
+      (publishService as any).prepareMaxMessageText(
+        'channel-1',
+        { text: '**Важное**', textFormat: 'markdown', photoUrls: [], videoUrls: [], linkUrls: [] },
+        { appendChannelLinkEnabled: true, channelLinkText: 'Наш канал' },
+        'background',
+        PublicationDispatchProfile.PUBLIK_V1,
+        'publisher-bot',
+      ),
+    ).resolves.toMatchObject(
+      {
+        text: '<strong>Важное</strong>\n\n<a href="https://max.ru/our-channel">Наш канал</a>',
+        textFormat: 'html',
+      },
     );
   });
 
   it('renders selected URLs after markdown without interpreting URL punctuation', async () => {
-    const { service, prisma, maxClient } = createFixture();
+    const { publishService } = createFixture();
     const selectedUrl = 'https://example.com/a_b_c';
-    const post = createPostRow({ linkUrls: [selectedUrl] });
-    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
-    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
-    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
-      messageId: 'mid-rich-link',
-      url: 'https://max.ru/channels/channel-1/message/mid-rich-link',
-    });
 
-    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-      text: '**Смотрите**',
-      textFormat: 'markdown',
-      photoUrls: [],
-      videoUrls: [],
-      linkUrls: [selectedUrl],
-    });
-
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      `<strong>Смотрите</strong>\n<a href="${selectedUrl}">${selectedUrl}</a>`,
-      expect.objectContaining({ textFormat: 'html' }),
-      expect.any(Object),
+    await expect(
+      (publishService as any).prepareMaxMessageText(
+        'channel-1',
+        {
+          text: '**Смотрите**',
+          textFormat: 'markdown',
+          photoUrls: [],
+          videoUrls: [],
+          linkUrls: [selectedUrl],
+        },
+        { appendChannelLinkEnabled: false, channelLinkText: '' },
+        'background',
+        PublicationDispatchProfile.PUBLIK_V1,
+        'publisher-bot',
+      ),
+    ).resolves.toMatchObject(
+      {
+        text: `<strong>Смотрите</strong>\n<a href="${selectedUrl}">${selectedUrl}</a>`,
+        textFormat: 'html',
+      },
     );
   });
 
   it('does not append a selected URL already present as Markdown-escaped text', async () => {
-    const { service, prisma, maxClient } = createFixture();
+    const { publishService } = createFixture();
     const selectedUrl = 'https://example.com/a_b';
-    const post = createPostRow({ linkUrls: [selectedUrl] });
-    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
-    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
-    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
-      messageId: 'mid-rich-existing-link',
-      url: 'https://max.ru/channels/channel-1/message/mid-rich-existing-link',
-    });
 
-    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-      text: 'Смотрите https://example.com/a\\_b',
-      textFormat: 'markdown',
-      photoUrls: [],
-      videoUrls: [],
-      linkUrls: [selectedUrl],
-    });
-
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      'Смотрите https://example.com/a_b',
-      expect.objectContaining({ textFormat: 'html' }),
-      expect.any(Object),
+    await expect(
+      (publishService as any).prepareMaxMessageText(
+        'channel-1',
+        {
+          text: 'Смотрите https://example.com/a\\_b',
+          textFormat: 'markdown',
+          photoUrls: [],
+          videoUrls: [],
+          linkUrls: [selectedUrl],
+        },
+        { appendChannelLinkEnabled: false, channelLinkText: '' },
+        'background',
+        PublicationDispatchProfile.PUBLIK_V1,
+        'publisher-bot',
+      ),
+    ).resolves.toMatchObject(
+      { text: 'Смотрите https://example.com/a_b', textFormat: 'html' },
     );
   });
 
-  it('publishes VK posts to chats without channel engagement buttons', async () => {
-    const { service, prisma, adminService, maxClient } = createFixture();
+  it('queues chat VK posts through Publisher without Major engagement buttons', async () => {
+    const { service, prisma, adminService, maxClient, publishQueue } = createFixture();
     const source = createSource({ chatId: 'chat-1' });
     const post = createPostRow({
       chatId: 'chat-1',
@@ -7300,21 +7449,21 @@ describe('VkParsingService', () => {
     expect(adminService.assertChatAdmin).toHaveBeenCalledWith('chat-1', 'chat-admin', 'chat');
     expect(adminService.buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
     expect(adminService.recordChannelPublicationEngagement).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'chat-1',
-      'Публикуем в чат',
-      expect.not.objectContaining({ buttons: expect.anything() }),
-      {
-        botId: 'bot-1',
-        trafficClass: 'interactive',
-        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-      },
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
+      expect.objectContaining({
+        kind: 'publish',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+      }),
+      expect.any(Object),
     );
-    expect(result.messageId).toBe('mid-chat-1');
+    expect(result).toMatchObject({ queued: 1 });
   });
 
-  it('returns success when a VK post disappears after MAX accepts the publish', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('returns a queued result before the Publisher worker observes later row races', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const source = createSource();
     const post = createPostRow({ source, text: 'Пост после stale-row гонки' });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
@@ -7338,17 +7487,9 @@ describe('VkParsingService', () => {
       },
     );
 
-    expect(result.messageId).toBe('mid-stale');
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
-    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'post-1' }),
-        data: expect.objectContaining({
-          status: 'PUBLISHED',
-          publishedMessageId: 'mid-stale',
-        }),
-      }),
-    );
+    expect(result).toMatchObject({ queued: 1 });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(publishQueue.add).toHaveBeenCalled();
   });
 
   it('does not publish the same VK post twice', async () => {
@@ -7392,8 +7533,8 @@ describe('VkParsingService', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
-  it('does not manually publish a VK post while another publish is locked', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('does not enqueue a manual VK post when the Publisher intent CAS loses', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const source = createSource();
     const post = createPostRow({ source, text: 'Уже публикуется' });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
@@ -7405,9 +7546,10 @@ describe('VkParsingService', () => {
         photoUrls: [],
         linkUrls: [],
       }),
-    ).rejects.toThrow('уже публикуется');
+    ).resolves.toMatchObject({ queued: 0 });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(publishQueue.add).not.toHaveBeenCalled();
     expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
   });
 
@@ -7703,9 +7845,7 @@ describe('VkParsingService', () => {
         }),
       }),
     );
-    expect(adminService.recordChannelPublicationEngagement).toHaveBeenCalledWith(
-      expect.objectContaining({ actorUserId: 'safety-desk-owner' }),
-    );
+    expect(adminService.recordChannelPublicationEngagement).not.toHaveBeenCalled();
   });
 
   it('clears stale autopublish jobs for review-mode VK sources without publishing', async () => {
@@ -7750,33 +7890,15 @@ describe('VkParsingService', () => {
   it('uses cached media preflight failures with a photo-specific publish error', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
-    const post = {
-      id: 'post-1',
-      sourceId: source.id,
-      chatId: 'channel-1',
-      vkOwnerId: -36819802,
-      vkPostId: 101,
-      vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
+    const post = createPostRow({
+      source,
       text: 'Продам авто',
-      url: 'https://vk.ru/wall-36819802_101',
       photoUrls: ['https://sun1.example/missing.jpg'],
       linkUrls: [],
-      attachments: [],
-      raw: {},
-      contentHash: 'content-hash',
-      publishedContentHash: null,
-      status: 'NEW',
-      publishedMessageId: null,
-      publishedUrl: null,
-      publishedAtMax: null,
-      lastSeenAt: new Date('2026-05-25T10:00:00.000Z'),
-      missingSinceAt: null,
-      unavailableAt: null,
-      lastError: null,
-      createdAt: new Date('2026-05-25T10:00:00.000Z'),
-      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
-      source,
-    };
+      ...createFreshQueuedPublishTimes(),
+      publishIdempotencyKey: 'manual-media-key',
+      publishReason: 'manual-retry',
+    });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingMediaCache.findUnique.mockResolvedValue({
@@ -7792,10 +7914,11 @@ describe('VkParsingService', () => {
     });
 
     await expect(
-      service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-        text: 'Мой текст',
-        photoUrls: ['https://sun1.example/missing.jpg'],
-        linkUrls: [],
+      service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'manual-retry',
+        idempotencyKey: 'manual-media-key',
       }),
     ).rejects.toThrow('Фото 1');
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
@@ -7819,6 +7942,9 @@ describe('VkParsingService', () => {
     const post = createPostRow({
       source,
       photoUrls: ['https://sun1.example/large.jpg'],
+      ...createFreshQueuedPublishTimes(),
+      publishIdempotencyKey: 'expired-media-key',
+      publishReason: 'manual-retry',
     });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.update.mockResolvedValue({
@@ -7859,10 +7985,11 @@ describe('VkParsingService', () => {
         arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
-    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-      text: 'Мой текст',
-      photoUrls: ['https://sun1.example/large.jpg'],
-      linkUrls: [],
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'manual-retry',
+      idempotencyKey: 'expired-media-key',
     });
 
     expect(maxClient.uploadImage).toHaveBeenCalledWith(
@@ -7870,8 +7997,8 @@ describe('VkParsingService', () => {
       'large.jpg',
       'image/jpeg',
       {
-        botId: 'bot-1',
-        trafficClass: 'interactive',
+        botId: 'publisher-bot',
+        trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       },
     );
@@ -8018,33 +8145,15 @@ describe('VkParsingService', () => {
   it('falls back to a ranged GET when media preflight HEAD is blocked', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
-    const post = {
-      id: 'post-1',
-      sourceId: source.id,
-      chatId: 'channel-1',
-      vkOwnerId: -36819802,
-      vkPostId: 101,
-      vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
+    const post = createPostRow({
+      source,
       text: 'Продам авто',
-      url: 'https://vk.ru/wall-36819802_101',
       photoUrls: ['https://sun1.example/large.jpg'],
       linkUrls: [],
-      attachments: [],
-      raw: {},
-      contentHash: 'content-hash',
-      publishedContentHash: null,
-      status: 'NEW',
-      publishedMessageId: null,
-      publishedUrl: null,
-      publishedAtMax: null,
-      lastSeenAt: new Date('2026-05-25T10:00:00.000Z'),
-      missingSinceAt: null,
-      unavailableAt: null,
-      lastError: null,
-      createdAt: new Date('2026-05-25T10:00:00.000Z'),
-      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
-      source,
-    };
+      ...createFreshQueuedPublishTimes(),
+      publishIdempotencyKey: 'ranged-media-key',
+      publishReason: 'manual-retry',
+    });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingPost.update.mockResolvedValue({
       ...post,
@@ -8082,10 +8191,11 @@ describe('VkParsingService', () => {
         arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
-    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
-      text: 'Мой текст',
-      photoUrls: ['https://sun1.example/large.jpg'],
-      linkUrls: [],
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'manual-retry',
+      idempotencyKey: 'ranged-media-key',
     });
 
     expect(global.fetch).toHaveBeenNthCalledWith(
@@ -8108,7 +8218,7 @@ describe('VkParsingService', () => {
     expect(maxClient.uploadImage).toHaveBeenCalled();
   });
 
-  it('adds channel comments and suggestion buttons when publishing a VK post', async () => {
+  it('does not add Major channel engagement buttons to Publisher VK posts', async () => {
     const { service, prisma, adminService, maxClient } = createFixture();
     const engagementContext = {
       buttons: [
@@ -8124,6 +8234,8 @@ describe('VkParsingService', () => {
     const source = {
       id: 'source-1',
       chatId: 'channel-1',
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: 'publisher-bot',
       ownerId: 36819802,
       wallOwnerId: -36819802,
       screenName: 'avto_prodaja_rb',
@@ -8140,6 +8252,8 @@ describe('VkParsingService', () => {
       id: 'post-1',
       sourceId: source.id,
       chatId: 'channel-1',
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: 'publisher-bot',
       vkOwnerId: -36819802,
       vkPostId: 101,
       vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -8150,6 +8264,22 @@ describe('VkParsingService', () => {
       attachments: [],
       raw: {},
       status: 'NEW',
+      publishQueuedAt: new Date('2026-05-25T10:00:00.000Z'),
+      publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+      publishLockedAt: null,
+      publishIdempotencyKey: 'publisher-engagement-key',
+      publishReason: 'manual-retry',
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'publisher-bot',
+      publishDialogContext: {
+        version: 1,
+        dialogBotId: 'publisher-bot',
+        buttons: [],
+        reference: null,
+      },
+      publicationPolicyRevision: 1,
+      publishActorUserId: '183470701',
       publishedMessageId: null,
       publishedUrl: null,
       publishedAtMax: null,
@@ -8173,37 +8303,24 @@ describe('VkParsingService', () => {
       url: 'https://max.ru/channels/channel-1/message/mid-1',
     });
 
-    await service.publishPost('channel-1', 'post-1', { userId: '183470701' } as never, {
-      text: 'Мой текст',
-      photoUrls: [],
-      linkUrls: [],
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'manual-retry',
+      idempotencyKey: 'publisher-engagement-key',
     });
 
-    expect(adminService.buildChannelPublicationEngagementContext).toHaveBeenCalledWith(
-      'channel-1',
-      'bot-1',
-    );
+    expect(adminService.buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'Мой текст',
-      expect.objectContaining({
-        buttons: engagementContext.buttons,
-      }),
+      'Продам авто',
+      expect.not.objectContaining({ buttons: expect.anything() }),
       {
-        botId: 'bot-1',
-        trafficClass: 'interactive',
+        botId: 'publisher-bot',
+        trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       },
     );
-    expect(adminService.recordChannelPublicationEngagement).toHaveBeenCalledWith({
-      chatId: 'channel-1',
-      actorUserId: '183470701',
-      messageId: 'mid-1',
-      text: 'Мой текст',
-      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
-      context: engagementContext,
-      source: 'vk_parsing',
-      botId: 'bot-1',
-    });
+    expect(adminService.recordChannelPublicationEngagement).not.toHaveBeenCalled();
   });
 });

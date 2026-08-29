@@ -89,7 +89,4 @@ export const queryKeys = {
   ) => ['vk-parsing', entityType, chatId, ...scope] as const,
   vkParsingCapability: (entityType: string, chatId: string | null | undefined) =>
     ['vk-parsing-capability', entityType, chatId] as const,
-  channelVkParsing: (chatId: string | null | undefined) => ['channel-vk-parsing', chatId] as const,
-  channelVkParsingCapability: (chatId: string | null | undefined) =>
-    ['channel-vk-parsing-capability', chatId] as const,
 };

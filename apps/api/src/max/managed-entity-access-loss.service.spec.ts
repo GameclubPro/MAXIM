@@ -639,8 +639,8 @@ describe('ManagedEntityAccessLossService', () => {
         canceledBroadcasts: 1,
         canceledBroadcastDeliveries: 2,
         canceledBroadcastOccurrences: 3,
-        clearedVkPublishPosts: 4,
-        pausedVkSources: 5,
+        clearedVkPublishPosts: null,
+        pausedVkSources: null,
         removedRosterSyncJobs: null,
       },
     });
@@ -648,7 +648,8 @@ describe('ManagedEntityAccessLossService', () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(tx.managedAutopostRule.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.managedBroadcast.updateMany).toHaveBeenCalledTimes(1);
-    expect(tx.vkParsingSource.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(tx.vkParsingSource.updateMany).not.toHaveBeenCalled();
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
     expect(rosterSyncQueue.getJob).not.toHaveBeenCalled();
   });
@@ -972,8 +973,8 @@ describe('ManagedEntityAccessLossService', () => {
         canceledBroadcasts: 1,
         canceledBroadcastDeliveries: 3,
         canceledBroadcastOccurrences: 1,
-        clearedVkPublishPosts: 4,
-        pausedVkSources: 2,
+        clearedVkPublishPosts: null,
+        pausedVkSources: null,
         removedRosterSyncJobs: 1,
       },
     });
@@ -1036,15 +1037,8 @@ describe('ManagedEntityAccessLossService', () => {
     );
     expect(rosterSyncQueue.getJob).toHaveBeenCalledWith('chat-admin-roster-sync__chat-1');
     expect(rosterSyncJob.remove).toHaveBeenCalledTimes(1);
-    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          syncStatus: 'ERROR',
-          nextSyncAt: null,
-          circuitReasonCode: 'max.access_lost',
-        }),
-      }),
-    );
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
   });
 
   it('keeps publication envelopes and healthy targets active while canceling the lost target', async () => {
@@ -1509,8 +1503,8 @@ describe('ManagedEntityAccessLossService', () => {
           canceledBroadcasts: 1,
           canceledBroadcastDeliveries: 2,
           canceledBroadcastOccurrences: 1,
-          clearedVkPublishPosts: 3,
-          pausedVkSources: 1,
+          clearedVkPublishPosts: null,
+          pausedVkSources: null,
           removedRosterSyncJobs: 0,
         }),
       }),
@@ -1611,8 +1605,8 @@ describe('ManagedEntityAccessLossService', () => {
           canceledBroadcasts: 1,
           canceledBroadcastDeliveries: 2,
           canceledBroadcastOccurrences: 1,
-          clearedVkPublishPosts: 3,
-          pausedVkSources: 1,
+          clearedVkPublishPosts: null,
+          pausedVkSources: null,
           removedRosterSyncJobs: 0,
         }),
       }),
@@ -1634,7 +1628,8 @@ describe('ManagedEntityAccessLossService', () => {
     });
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('channel-1');
     expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
-    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
     expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
       'channel-1',
       'channel',
@@ -1736,7 +1731,8 @@ describe('ManagedEntityAccessLossService', () => {
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
     expect(rosterSyncQueue.getJob).toHaveBeenCalledWith('chat-admin-roster-sync__chat-1');
     expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
-    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
   });
 
   it('keeps runtime work when a fresh granted edge belongs to an active surviving bot membership', async () => {
@@ -2037,8 +2033,8 @@ describe('ManagedEntityAccessLossService', () => {
           canceledBroadcasts: 1,
           canceledBroadcastDeliveries: 2,
           canceledBroadcastOccurrences: 1,
-          clearedVkPublishPosts: 3,
-          pausedVkSources: 1,
+          clearedVkPublishPosts: null,
+          pausedVkSources: null,
           removedRosterSyncJobs: 0,
         }),
       }),
@@ -2046,7 +2042,8 @@ describe('ManagedEntityAccessLossService', () => {
 
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
     expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
-    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
   });
 
   it('does not mutate private direct dialogs', async () => {

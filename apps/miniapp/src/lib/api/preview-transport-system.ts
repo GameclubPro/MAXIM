@@ -444,7 +444,7 @@ export function buildPreviewSystemDashboard(state: PreviewState): SystemDashboar
         failed: 0,
         completed: 640,
       },
-      'vk-parsing-publish': {
+      'vk-parsing-publisher': {
         waiting: inDegrade ? 2 : 0,
         active: 0,
         delayed: inDegrade ? 12 : 4,

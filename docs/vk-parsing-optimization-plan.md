@@ -1,10 +1,15 @@
 # VK-парсинг: аудит и план оптимизации
 
-Дата ревизии: 2026-05-27.
+Дата ревизии: 2026-08-29.
 
 Документ фиксирует состояние VK-парсинга и автопубликации после инцидента, актуальные ограничения официальных VK/MAX API, основные риски и современный план оптимизации.
 
 ## Текущее состояние прода
+
+- VK import принадлежит только профилю и боту «Публик». Публичный API использует namespace `/api/v1/publisher/entities/:entityType/:entityId/vk-parsing`; старые Major routes удалены.
+- Sync и publish исполняются только `api-publisher`. `api-action` больше не запускает VK runner, sync worker или publish worker.
+- `vk-parsing-publish` выведена из эксплуатации и удаляется отдельной fail-closed командой после перехода runtime. Активная очередь публикации — только `vk-parsing-publisher`.
+- Scheduler, sync job и DB lease проверяют точный `PUBLISHER` owner scope и bot ID. Сохранённый Major source не может быть синхронизирован или опубликован.
 
 - Аварийные действия уже выполнены: VK-автопубликация отключена для всех managed entities, очередь публикации очищена, publish-маркеры в БД очищены, спам-сообщения MAX, которые успел создать runaway-autoposting, удалены.
 - Runtime API уже усилен коммитами `fa68d97b` и `9196e512`:
@@ -70,13 +75,13 @@
 
 ## Текущая архитектура
 
-- VK-парсинг доступен для managed chats и channels. Видимость в mini app идёт через server capability endpoint; backend проверяет managed entity admin access.
+- VK-парсинг доступен для Publisher-owned chats и channels. Видимость в mini app идёт через server capability endpoint; backend проверяет exact Publisher entity access.
 - Источники лежат в `vk_parsing_sources`.
 - Настройки автоматизации лежат в `vk_parsing_settings`.
 - Импортированные посты лежат в `vk_parsing_posts`; media preflight/upload cache хранится отдельно.
 - Sync источников идёт через BullMQ queue `vk-parsing-sync`.
-- Autopublish/manual retry идут через BullMQ queue `vk-parsing-publish`.
-- Runner планирует due sources только на action-capable API roles.
+- Autopublish/manual retry идут только через BullMQ queue `vk-parsing-publisher`.
+- Runner и sync processor работают только на точном runtime `api-publisher`; queue job содержит Publisher owner scope.
 - Sync/publish processors работают с concurrency `2`.
 - DB source leases защищают от конкурентного sync одного источника.
 - Publish idempotency опирается на content-derived idempotency key и DB queued/locked поля.
@@ -109,7 +114,7 @@
 - Media reliability: VK media URLs могут истекать или блокировать HEAD/Range. Preflight помогает, но media publish остаётся самой хрупкой частью автопоста.
 - Attachment fidelity: сейчас поддерживаются text/photos/links. Reposts, videos, clips, polls, docs, albums, market items и сложные articles импортируются частично или помечаются unsupported.
 - Advertising detection: текущая эвристика использует VK flags и текстовые маркеры. Она намеренно консервативна, но возможны false positives/false negatives.
-- Multi-bot routing: публикация должна продолжать резолвить правильного runtime bot для managed entity и оставаться на background MAX lane.
+- Publisher routing: публикация обязана использовать точный Publisher bot, Publisher-owned access и background MAX lane; fallback на moderation bot запрещён.
 
 ## Roadmap
 
@@ -158,7 +163,7 @@
   - backoff для repeated empty fetches или terminal-looking errors;
   - достаточно большой jitter, чтобы не создавать synchronized bursts.
 - Ввести source health score и показывать last terminal VK code в UI.
-- Добавить operator queue dashboard/runbook для `vk-parsing-sync` и `vk-parsing-publish`.
+- Добавить operator queue dashboard/runbook для `vk-parsing-sync` и `vk-parsing-publisher`; retired `vk-parsing-publish` остаётся только нулевым regression sentinel.
 - Добавить stale-lock cleanup task для publish locks, не только opportunistic lock windows.
 - Добавить deletion/rollback helper по autopublished window, chat, source и system actor.
 - Расширить tests на multi-source/multi-chat idempotency и stale BullMQ jobs после изменения settings.
@@ -189,7 +194,8 @@ Production после API deploy:
 - health checks live/ready;
 - `vk_parsing_settings.auto_publish_enabled` остаётся disabled, если админ явно не включал;
 - `vk_parsing_posts.publish_queued_at`, `publish_locked_at`, `publish_idempotency_key` не имеют неожиданного backlog;
-- `vk-parsing-sync` и `vk-parsing-publish` не имеют неожиданных waiting/active/delayed jobs;
+- `vk-parsing-sync` и `vk-parsing-publisher` не имеют неожиданных waiting/active/delayed jobs;
+- retired `vk-parsing-publish` отсутствует и не имеет workers;
 - нет свежих `auto_published_at` rows, пока автопубликация disabled.
 
 ## Emergency runbook
@@ -198,7 +204,7 @@ Production после API deploy:
 
 1. Отключить автопубликацию в БД для affected scope или глобально.
 2. Очистить queued/locked/idempotency publish-маркеры affected posts.
-3. Obliterate/pause `vk-parsing-publish`, если она активно draining плохие jobs.
+3. После Publisher-only runtime проверить и удалить retired queue только через `./infra/scripts/vps-connect.sh vk-parsing-retire-legacy-queue --apply`; команда откажет при worker или active job и не использует force.
 4. Удалять уже published MAX messages только по записанным incident rows с сохранёнными message IDs/URLs.
 5. Проверить DB counts и BullMQ counts.
 6. Задеплоить code guard до любого повторного включения automation.

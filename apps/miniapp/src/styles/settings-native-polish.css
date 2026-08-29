@@ -834,110 +834,6 @@
     height: 18px;
   }
 
-  .vk-autopost-panel,
-  .vk-source-card,
-  .vk-feed-section,
-  .vk-source-empty {
-    border-radius: 8px;
-    background: var(--surface-card);
-    box-shadow: none;
-  }
-
-  .vk-autopost-panel__main {
-    gap: 8px;
-  }
-
-  .vk-autopost-mode {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 3px;
-    padding: 3px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    background: var(--surface-card-muted);
-  }
-
-  .vk-autopost-mode button {
-    min-width: 0;
-    min-height: 40px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 0.78rem;
-    font-weight: 720;
-  }
-
-  .vk-autopost-mode button.is-active {
-    background: var(--surface-card);
-    color: var(--accent);
-    box-shadow: var(--shadow-xs);
-  }
-
-  .vk-source-card__head {
-    gap: 8px;
-  }
-
-  .vk-source-card__tools {
-    gap: 4px;
-  }
-
-  .vk-source-card__summary-row {
-    grid-template-columns: minmax(132px, 0.82fr) minmax(0, 1.18fr);
-    gap: 8px;
-  }
-
-  .vk-source-auto-control {
-    width: 100%;
-    min-width: 0;
-    min-height: 50px;
-    padding: 7px 8px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 6px;
-  }
-
-  .vk-source-auto-control b {
-    min-width: 0;
-    overflow: visible;
-    font-size: 0.78rem;
-    text-overflow: clip;
-    white-space: normal;
-  }
-
-  .vk-source-card__metrics {
-    gap: 4px;
-  }
-
-  .vk-source-card__metrics span {
-    min-width: 0;
-  }
-
-  .vk-source-card__metrics b {
-    font-size: 0.8rem;
-  }
-
-  .vk-source-card__metrics small {
-    font-size: 0.62rem;
-  }
-
-  .settings-drilldown__panel--vk-parsing .vk-source-card .vk-source-status,
-  .settings-drilldown__panel--vk-parsing .vk-source-card .vk-source-auto-control b,
-  .settings-drilldown__panel--vk-parsing .vk-source-card .vk-source-card__problem span,
-  .settings-drilldown__panel--vk-parsing .vk-parsing-card .vk-parsing-status-pill,
-  .settings-drilldown__panel--vk-parsing .vk-parsing-card .vk-parsing-video-preview__source {
-    color: var(--text-primary);
-  }
-
-  .settings-drilldown__panel--vk-parsing .vk-source-card .vk-source-auto-control b {
-    overflow: visible;
-    text-overflow: clip;
-    white-space: normal;
-  }
-
   .settings-drilldown__panel--broadcast-screen .broadcast-stage-card,
   .settings-drilldown__panel--rules-screen .broadcast-stage-card {
     border-radius: 8px;
@@ -1126,8 +1022,7 @@
   html[data-max-theme='dark'] .settings-drilldown__header-action,
   html[data-max-theme='dark'] .settings-drilldown__close,
   html[data-max-theme='dark'] .settings-command-card__row input,
-  html[data-max-theme='dark'] .settings-word-banlist__preset-toggle,
-  html[data-max-theme='dark'] .vk-autopost-mode {
+  html[data-max-theme='dark'] .settings-word-banlist__preset-toggle {
     border-color: var(--color-border);
     background: var(--color-surface-muted);
     color: var(--text-primary);
@@ -1139,12 +1034,6 @@
 
   html[data-max-theme='dark'] .settings-word-banlist__preset-toggle {
     color: var(--text-primary);
-  }
-
-  html[data-max-theme='dark'] .vk-autopost-mode button.is-active {
-    background: var(--color-accent-soft);
-    color: var(--color-accent);
-    box-shadow: none;
   }
 
   @media (max-width: 430px) {
@@ -1190,10 +1079,6 @@
     .settings-speech-style-grid {
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
-
-    .vk-source-card__summary-row {
-      grid-template-columns: minmax(128px, 0.8fr) minmax(0, 1.2fr);
-    }
   }
 
   @media (max-width: 380px) {
@@ -1223,56 +1108,6 @@
       min-width: 76px;
       padding-inline: 7px;
     }
-
-    .vk-source-card__summary-row {
-      grid-template-columns: minmax(124px, 0.82fr) minmax(0, 1.18fr);
-    }
-  }
-
-  .settings-drilldown__panel--vk-parsing .vk-source-card__summary-row {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 7px;
-  }
-
-  .settings-drilldown__panel--vk-parsing .vk-source-mode-control {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 3px;
-    padding: 3px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    background: var(--surface-card-muted);
-  }
-
-  .settings-drilldown__panel--vk-parsing .vk-source-mode-control button {
-    min-width: 0;
-    min-height: 44px;
-    padding: 0 6px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 0.72rem;
-    font-weight: 720;
-  }
-
-  .settings-drilldown__panel--vk-parsing .vk-source-mode-control button.is-active {
-    background: var(--surface-card);
-    color: var(--accent);
-    box-shadow: var(--shadow-xs);
-  }
-
-  html[data-max-theme='dark'] .settings-drilldown__panel--vk-parsing .vk-source-mode-control {
-    border-color: var(--color-border);
-    background: var(--color-surface-muted);
-  }
-
-  html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
-    .vk-source-mode-control
-    button.is-active {
-    background: var(--color-surface-raised);
   }
 
   .settings-drilldown__panel--links .allowlist-add-row > input:only-child {

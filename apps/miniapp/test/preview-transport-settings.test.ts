@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-entities';
+import type { VkParsingFeed } from '@maxim/contracts/vk-parsing';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
@@ -78,8 +79,10 @@ test('preview settings include schema-complete managed broadcast summaries', asy
   });
 });
 
-test('preview channel signature update is isolated from channel settings', async () => {
-  const api = createPreviewApiTransport();
+test('preview channel signature update is isolated from settings and Publik VK import', async () => {
+  const api = createPreviewApiTransport({ search: '?profile=publisher' });
+  const publisherVkPath = '/publisher/entities/channel/preview-channel/vk-parsing';
+  const vkBefore = (await api.request(publisherVkPath)) as VkParsingFeed;
 
   await api.request('/channels/preview-channel/post-signature', {
     method: 'PATCH',
@@ -97,6 +100,7 @@ test('preview channel signature update is isolated from channel settings', async
   const screen = (await api.request('/channels/preview-channel/settings-screen')) as {
     postSignature: { enabled: boolean; text: string; url: string };
   };
+  const vkAfter = (await api.request(publisherVkPath)) as VkParsingFeed;
 
   assert.deepEqual(signature, {
     enabled: true,
@@ -104,6 +108,11 @@ test('preview channel signature update is isolated from channel settings', async
     url: 'https://max.ru/advertising-manager',
   });
   assert.deepEqual(screen.postSignature, signature);
+  assert.equal(
+    vkAfter.settings.appendChannelLinkEnabled,
+    vkBefore.settings.appendChannelLinkEnabled,
+  );
+  assert.equal(vkAfter.settings.channelLinkText, vkBefore.settings.channelLinkText);
 });
 
 test('preview access query exposes deterministic lost and degraded settings diagnostics', async () => {

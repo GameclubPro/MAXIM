@@ -307,6 +307,10 @@ export class VkParsingService {
     return this.publishService.recoverStalePublishJobs();
   }
 
+  async recoverStalePublisherRollbackJobs(): Promise<number> {
+    return this.publishService.recoverStalePublisherRollbackJobs();
+  }
+
   async publishPost(
     chatId: string,
     postId: string,

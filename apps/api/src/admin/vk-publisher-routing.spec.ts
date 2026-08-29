@@ -127,20 +127,6 @@ function createPost(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createMajorPost(overrides: Record<string, unknown> = {}) {
-  const post = createPost(overrides);
-  return {
-    ...post,
-    ownerProfile: VkParsingOwnerProfile.MAJOR,
-    ownerBotId: '',
-    source: {
-      ...post.source,
-      ownerProfile: VkParsingOwnerProfile.MAJOR,
-      ownerBotId: '',
-    },
-  };
-}
-
 function createFixture() {
   const prisma = {
     vkParsingPost: {
@@ -258,7 +244,6 @@ function createFixture() {
     maxBotLinkService as never,
     {} as never,
     feedService as never,
-    legacyQueue as never,
     configService,
     ownership,
     undefined,
@@ -290,70 +275,40 @@ function createFixture() {
 }
 
 describe('VK Publik routing', () => {
-  it('continues legacy stale recovery without scanning or enqueueing Publik while paused', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
-    try {
-      const fixture = createFixture();
-      fixture.health.isGloballyPaused.mockResolvedValue(true);
-      const legacyPost = createMajorPost({
-        id: 'legacy-recovery-post',
-        dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
-        publishQueuedAt: new Date('2026-08-26T10:00:00.000Z'),
-        publishScheduledAt: new Date('2026-08-26T10:05:00.000Z'),
-        publishLockedAt: null,
-        publishIdempotencyKey: 'legacy-recovery-key',
-        publishReason: 'manual-retry',
-      });
-      const publisherPost = createPost({
-        id: 'publisher-recovery-post',
-        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-        requiredBotId: 'publisher-bot',
-        dialogBotId: 'publisher-bot',
-        publishQueuedAt: new Date('2026-08-26T10:00:00.000Z'),
-        publishScheduledAt: new Date('2026-08-26T10:05:00.000Z'),
-        publishLockedAt: null,
-        publishIdempotencyKey: 'publisher-recovery-key',
-        publishReason: 'manual-retry',
-      });
-      fixture.prisma.vkParsingPost.findMany
-        .mockResolvedValueOnce([legacyPost, publisherPost])
-        .mockResolvedValueOnce([]);
+  it('does not scan any VK recovery work while Publisher dispatch is paused', async () => {
+    const fixture = createFixture();
+    fixture.health.isGloballyPaused.mockResolvedValue(true);
 
-      await expect(fixture.service.recoverStalePublishJobs()).resolves.toBe(1);
+    await expect(fixture.service.recoverStalePublishJobs()).resolves.toBe(0);
 
-      expect(fixture.health.isGloballyPaused).toHaveBeenCalledTimes(1);
-      expect(fixture.prisma.vkParsingPost.findMany).toHaveBeenCalledTimes(2);
-      for (const [query] of fixture.prisma.vkParsingPost.findMany.mock.calls) {
-        expect(query.where.AND).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
-              ownerProfile: VkParsingOwnerProfile.MAJOR,
-              ownerBotId: '',
-              source: {
-                ownerProfile: VkParsingOwnerProfile.MAJOR,
-                ownerBotId: '',
-              },
-            }),
-          ]),
-        );
-        expect(query.where).not.toEqual(
-          expect.objectContaining({ rollbackQueuedAt: expect.anything() }),
-        );
-      }
-      expect(fixture.legacyQueue.add).toHaveBeenCalledWith(
-        'publish-vk-post',
-        expect.objectContaining({
-          postId: 'legacy-recovery-post',
-          idempotencyKey: 'legacy-recovery-key',
-        }),
-        expect.any(Object),
+    expect(fixture.prisma.vkParsingPost.findMany).not.toHaveBeenCalled();
+    expect(fixture.legacyQueue.add).not.toHaveBeenCalled();
+    expect(fixture.publisherQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('scans stale recovery only in the exact Publisher-owned PUBLIK_V1 scope', async () => {
+    const fixture = createFixture();
+
+    await expect(fixture.service.recoverStalePublishJobs()).resolves.toBe(0);
+
+    expect(fixture.prisma.vkParsingPost.findMany).toHaveBeenCalled();
+    for (const [query] of fixture.prisma.vkParsingPost.findMany.mock.calls) {
+      expect(query.where.AND).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: 'publisher-bot',
+            requiredBotId: 'publisher-bot',
+            source: {
+              ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+              ownerBotId: 'publisher-bot',
+            },
+          }),
+        ]),
       );
-      expect(fixture.publisherQueue.getJob).not.toHaveBeenCalled();
-      expect(fixture.publisherQueue.add).not.toHaveBeenCalled();
-    } finally {
-      jest.useRealTimers();
     }
+    expect(fixture.legacyQueue.add).not.toHaveBeenCalled();
   });
 
   it('queues a new manual intent with one immutable Publisher-owned bot route', async () => {
@@ -488,72 +443,25 @@ describe('VK Publik routing', () => {
     );
   });
 
-  it('keeps an already queued legacy intent on managed-bot routing', async () => {
+  it('rejects an already queued legacy intent before any database claim or MAX call', async () => {
     const fixture = createFixture();
-    const queuedAt = new Date(Date.now() - 1_000);
-    const post = createMajorPost({
-      publishQueuedAt: queuedAt,
-      publishScheduledAt: queuedAt,
-      publishIdempotencyKey: 'legacy-intent',
-      publishReason: 'manual-schedule',
-    });
-    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
-    fixture.maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
-      const context = { botId: 'main-origin-bot', job: {} };
-      await request.prepareAttempt(context);
-      await request.onDispatchAttempt(context);
-      return {
-        messageId: 'legacy-message',
-        url: null,
-        botId: 'main-origin-bot',
-        candidateBotIds: ['main-origin-bot'],
-        routingVersion: 7,
-      };
-    });
 
-    await fixture.service.processPublishPostJob({
-      postId: post.id,
-      chatId: post.chatId,
-      reason: 'manual-schedule',
-      idempotencyKey: 'legacy-intent',
-    });
+    await expect(
+      fixture.service.processPublishPostJob({
+        postId: 'legacy-post',
+        chatId: 'channel-1',
+        reason: 'manual-schedule',
+        idempotencyKey: 'legacy-intent',
+        dispatchProfile: 'LEGACY_ROUTED',
+      }),
+    ).rejects.toThrow('Legacy VK publish execution is disabled');
 
-    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          ownerProfile: VkParsingOwnerProfile.MAJOR,
-          ownerBotId: '',
-          dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
-        }),
-      }),
-    );
-    expect(fixture.prisma.vkParsingPost.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          ownerProfile: VkParsingOwnerProfile.MAJOR,
-          ownerBotId: '',
-          source: {
-            ownerProfile: VkParsingOwnerProfile.MAJOR,
-            ownerBotId: '',
-          },
-        }),
-      }),
-    );
-    expect(fixture.maxRoutedPublicationService.publish).toHaveBeenCalledWith(
-      expect.not.objectContaining({ publisherExactBotId: expect.anything() }),
-    );
+    expect(fixture.prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(fixture.prisma.vkParsingPost.findFirst).not.toHaveBeenCalled();
+    expect(fixture.maxRoutedPublicationService.publish).not.toHaveBeenCalled();
     expect(fixture.readiness.assertEntityReady).not.toHaveBeenCalled();
     expect(fixture.runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
-    expect(fixture.channelPostSignatureService.preparePostText).toHaveBeenCalled();
-    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          publishedBotId: 'main-origin-bot',
-          publishedMessageId: 'legacy-message',
-        }),
-      }),
-    );
+    expect(fixture.channelPostSignatureService.preparePostText).not.toHaveBeenCalled();
   });
 
   it('sends a publisher job and its dialog only through the exact Publisher bot', async () => {

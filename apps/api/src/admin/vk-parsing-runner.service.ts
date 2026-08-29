@@ -1,4 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
+import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { VkParsingService } from './vk-parsing.service';
 
 @Injectable()
@@ -7,9 +9,16 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
 
-  constructor(private readonly vkParsingService: VkParsingService) {}
+  constructor(
+    private readonly vkParsingService: VkParsingService,
+    private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
+  ) {}
 
   onModuleInit(): void {
+    this.assertPublisherRuntime();
+    if (!this.runtimeBoundary.dispatchEnabled) {
+      return;
+    }
     const intervalMs = this.vkParsingService.getSyncIntervalMs();
     this.timer = setInterval(() => void this.run('scheduled'), intervalMs);
     this.timer.unref?.();
@@ -24,7 +33,8 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async run(reason: 'startup' | 'scheduled'): Promise<void> {
-    if (this.inFlight) {
+    this.assertPublisherRuntime();
+    if (!this.runtimeBoundary.dispatchEnabled || this.inFlight) {
       return;
     }
 
@@ -41,8 +51,20 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
       } catch (error) {
         this.logger.warn({ err: error, reason }, 'VK parsing publish recovery failed');
       }
+
+      try {
+        await this.vkParsingService.recoverStalePublisherRollbackJobs();
+      } catch (error) {
+        this.logger.warn({ err: error, reason }, 'VK parsing rollback recovery failed');
+      }
     } finally {
       this.inFlight = false;
+    }
+  }
+
+  private assertPublisherRuntime(): void {
+    if (!roleRunsPublisher(getAppRole()) || process.env.APP_SERVICE_NAME !== 'api-publisher') {
+      throw new Error('VK parsing runner may only run inside api-publisher');
     }
   }
 }

@@ -276,9 +276,6 @@ export function LazyActionConfirmMarkdownPreview({
     </Suspense>
   );
 }
-export const LazyVkParsingCard = lazy(() =>
-  import('../../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
-);
 export const LazyManagedAutopostRuleCard = lazy(() =>
   import('../../components/managed-autopost-rule-card').then((module) => ({
     default: module.ManagedAutopostRuleCard,
@@ -690,8 +687,7 @@ export type SettingsSectionKey =
   | 'giveaway'
   | 'polls'
   | 'comments'
-  | 'mailing'
-  | 'vkParsing';
+  | 'mailing';
 
 export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
@@ -712,7 +708,6 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   storefront: false,
   comments: false,
   mailing: false,
-  vkParsing: false,
   extra: false,
 };
 

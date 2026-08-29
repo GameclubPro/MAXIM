@@ -9,8 +9,19 @@ import {
 import { PublisherIdentityAttestationService } from '../publisher/publisher-identity-attestation.service';
 import { assertPublisherIdentityOrDelay } from '../publisher/publisher-identity-attestation-job-guard';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
-import { VK_PARSING_PUBLISHER_QUEUE, type VkParsingPublisherJob } from './vk-parsing.queue';
+import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
+import {
+  VK_PARSING_PUBLISHER_QUEUE,
+  type VkParsingPublisherJob,
+  type VkParsingPublishReason,
+} from './vk-parsing.queue';
 import { VkParsingService } from './vk-parsing.service';
+
+const VK_PARSING_PUBLISH_REASONS = new Set<VkParsingPublishReason>([
+  'autopublish',
+  'manual-retry',
+  'manual-schedule',
+]);
 
 @Processor(VK_PARSING_PUBLISHER_QUEUE, {
   concurrency: 2,
@@ -21,6 +32,7 @@ export class VkParsingPublisherProcessor extends WorkerHost {
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
+    private readonly ownership: VkParsingOwnershipService,
   ) {
     super();
   }
@@ -29,37 +41,67 @@ export class VkParsingPublisherProcessor extends WorkerHost {
     if (!roleRunsPublisher(getAppRole()) || process.env.APP_SERVICE_NAME !== 'api-publisher') {
       throw new Error('VK Publik queue may only be consumed by api-publisher');
     }
-    await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
-    await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
-    await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
+    const data =
+      typeof job.data === 'object' && job.data !== null
+        ? (job.data as Partial<VkParsingPublisherJob>)
+        : null;
+    const requiredBotId =
+      typeof data?.requiredBotId === 'string' ? data.requiredBotId.trim() : '';
+    if (!requiredBotId) {
+      throw new Error('Publik VK queue job is missing requiredBotId');
+    }
+    if (requiredBotId !== this.ownership.getPublisherScope().ownerBotId) {
+      return;
+    }
+    if (
+      typeof data?.postId !== 'string' ||
+      !data.postId.trim() ||
+      typeof data.chatId !== 'string' ||
+      !data.chatId.trim() ||
+      typeof data.idempotencyKey !== 'string' ||
+      !data.idempotencyKey.trim()
+    ) {
+      throw new Error('Publik VK queue job has an invalid base payload');
+    }
 
-    if (job.data.kind === 'rollback-delete') {
-      if (!job.data.messageId) {
+    if (data.kind === 'rollback-delete') {
+      if (typeof data.messageId !== 'string' || !data.messageId.trim()) {
         throw new Error('Publik VK rollback job is missing messageId');
       }
+      await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
+      await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
+      await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
       await this.vkParsingService.processPublisherRollbackJob({
-        postId: job.data.postId,
-        chatId: job.data.chatId,
-        messageId: job.data.messageId,
-        requiredBotId: job.data.requiredBotId,
-        idempotencyKey: job.data.idempotencyKey,
+        postId: data.postId,
+        chatId: data.chatId,
+        messageId: data.messageId,
+        requiredBotId,
+        idempotencyKey: data.idempotencyKey,
         attemptsMade: job.attemptsMade,
         maxAttempts: typeof job.opts.attempts === 'number' ? job.opts.attempts : undefined,
       });
       return;
     }
 
-    if (!job.data.reason || job.data.dispatchProfile !== 'PUBLIK_V1') {
+    if (
+      data.kind !== 'publish' ||
+      !data.reason ||
+      !VK_PARSING_PUBLISH_REASONS.has(data.reason) ||
+      data.dispatchProfile !== 'PUBLIK_V1'
+    ) {
       throw new Error('Publik VK publish job has an invalid route payload');
     }
+    await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
+    await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
+    await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
 
     await this.vkParsingService.processPublishPostJob({
-      postId: job.data.postId,
-      chatId: job.data.chatId,
-      reason: job.data.reason,
-      idempotencyKey: job.data.idempotencyKey,
-      dispatchProfile: job.data.dispatchProfile,
-      requiredBotId: job.data.requiredBotId,
+      postId: data.postId,
+      chatId: data.chatId,
+      reason: data.reason,
+      idempotencyKey: data.idempotencyKey,
+      dispatchProfile: data.dispatchProfile,
+      requiredBotId,
       attemptsMade: job.attemptsMade,
       maxAttempts: typeof job.opts.attempts === 'number' ? job.opts.attempts : undefined,
     });

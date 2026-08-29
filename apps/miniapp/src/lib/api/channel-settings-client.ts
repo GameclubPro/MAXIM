@@ -51,21 +51,6 @@ import {
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
 } from '@maxim/contracts/settings';
-import {
-  addVkParsingSourceRequestSchema,
-  publishVkParsingPostRequestSchema,
-  publishVkParsingPostResultSchema,
-  updateVkParsingSettingsRequestSchema,
-  vkParsingCapabilitySchema,
-  vkParsingFeedSchema,
-  vkParsingRefreshResultSchema,
-  type PublishVkParsingPostRequest,
-  type PublishVkParsingPostResult,
-  type UpdateVkParsingSettingsRequest,
-  type VkParsingCapability,
-  type VkParsingFeed,
-  type VkParsingRefreshResult,
-} from '@maxim/contracts/vk-parsing';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from './shared-types';
 import type { ApiTransport } from './transport';
 
@@ -445,83 +430,6 @@ export async function deleteChannelManagedAutopostRule(
     method: 'DELETE',
   });
   return managedAutopostRuleDetailsSchema.parse(response);
-}
-
-export async function getChannelVkParsing(
-  api: ApiTransport,
-  chatId: string,
-): Promise<VkParsingFeed> {
-  const response = await api.request(`/channels/${chatId}/vk-parsing`);
-  return vkParsingFeedSchema.parse(response);
-}
-
-export async function getChannelVkParsingCapability(
-  api: ApiTransport,
-  chatId: string,
-): Promise<VkParsingCapability> {
-  const response = await api.request(`/channels/${chatId}/vk-parsing/capability`);
-  return vkParsingCapabilitySchema.parse(response);
-}
-
-export async function updateChannelVkParsingSettings(
-  api: ApiTransport,
-  chatId: string,
-  payload: UpdateVkParsingSettingsRequest,
-): Promise<VkParsingFeed> {
-  const requestBody = updateVkParsingSettingsRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/vk-parsing/settings`, {
-    method: 'PATCH',
-    body: JSON.stringify(requestBody),
-  });
-  return vkParsingFeedSchema.parse(response);
-}
-
-export async function addChannelVkParsingSource(
-  api: ApiTransport,
-  chatId: string,
-  url: string,
-): Promise<VkParsingRefreshResult> {
-  const requestBody = addVkParsingSourceRequestSchema.parse({ url });
-  const response = await api.request(`/channels/${chatId}/vk-parsing/sources`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return vkParsingRefreshResultSchema.parse(response);
-}
-
-export async function removeChannelVkParsingSource(
-  api: ApiTransport,
-  chatId: string,
-  sourceId: string,
-): Promise<VkParsingFeed> {
-  const response = await api.request(`/channels/${chatId}/vk-parsing/sources/${sourceId}`, {
-    method: 'DELETE',
-  });
-  return vkParsingFeedSchema.parse(response);
-}
-
-export async function refreshChannelVkParsing(
-  api: ApiTransport,
-  chatId: string,
-): Promise<VkParsingRefreshResult> {
-  const response = await api.request(`/channels/${chatId}/vk-parsing/refresh`, {
-    method: 'POST',
-  });
-  return vkParsingRefreshResultSchema.parse(response);
-}
-
-export async function publishChannelVkParsingPost(
-  api: ApiTransport,
-  chatId: string,
-  postId: string,
-  payload: PublishVkParsingPostRequest,
-): Promise<PublishVkParsingPostResult> {
-  const requestBody = publishVkParsingPostRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/vk-parsing/posts/${postId}/publish`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return publishVkParsingPostResultSchema.parse(response);
 }
 
 export async function publishChannelEngagement(

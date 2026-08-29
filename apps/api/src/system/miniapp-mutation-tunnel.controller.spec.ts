@@ -270,7 +270,7 @@ describe('MiniappMutationTunnelController', () => {
     await controller.tunnel(
       {
         method: 'PATCH',
-        path: '/channels/-68195407437828/vk-parsing/posts/vkpost-1/review-draft',
+        path: '/publisher/entities/channel/-68195407437828/vk-parsing/posts/vkpost-1/review-draft',
         body,
         contentType: 'application/json',
       },
@@ -280,13 +280,36 @@ describe('MiniappMutationTunnelController', () => {
     );
 
     expect(global.fetch).toHaveBeenCalledWith(
-      'http://127.0.0.1:3001/api/v1/channels/-68195407437828/vk-parsing/posts/vkpost-1/review-draft',
+      'http://127.0.0.1:3001/api/v1/publisher/entities/channel/-68195407437828/vk-parsing/posts/vkpost-1/review-draft',
       expect.objectContaining({
         method: 'PATCH',
         body: payload,
       }),
     );
     expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
+  it.each([
+    '/chats/chat-1/vk-parsing/settings',
+    '/channels/channel-1/vk-parsing/posts/post-1/publish',
+  ])('rejects retired moderation-profile VK mutation target %s', async (path) => {
+    const controller = new MiniappMutationTunnelController();
+    global.fetch = jest.fn() as typeof fetch;
+
+    await expect(
+      controller.tunnel(
+        {
+          method: path.endsWith('/settings') ? 'PATCH' : 'POST',
+          path,
+          body: Buffer.from('{}', 'utf8').toString('base64url'),
+          contentType: 'application/json',
+        },
+        'InitData auth_date=1&hash=test',
+        TEST_USER,
+        createReply() as never,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it.each([

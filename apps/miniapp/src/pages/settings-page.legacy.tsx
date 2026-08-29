@@ -585,7 +585,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'stopWords' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'polls' &&
-      focusSection !== 'vkParsing' &&
       focusSection !== 'broadcast' &&
       focusSection !== 'requiredSubscription' &&
       focusSection !== 'storefront'
@@ -607,13 +606,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 ? { giveaway: true }
                 : focusSection === 'polls'
                   ? { polls: true }
-                  : focusSection === 'vkParsing'
-                    ? { vkParsing: true }
-                    : focusSection === 'requiredSubscription'
-                      ? { requiredSubscription: true }
-                      : focusSection === 'storefront'
-                        ? { storefront: true }
-                        : { mailing: true }),
+                  : focusSection === 'requiredSubscription'
+                    ? { requiredSubscription: true }
+                    : focusSection === 'storefront'
+                      ? { storefront: true }
+                      : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -1467,10 +1464,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
   const isHeaderSaving =
-    isSavingSettings ||
-    isSavingRules ||
-    isSavingSpeechStyle ||
-    updateRulesAttachMutation.isPending;
+    isSavingSettings || isSavingRules || isSavingSpeechStyle || updateRulesAttachMutation.isPending;
   const activeSpeechStyle = draft?.botSpeechStyle ?? null;
   const pendingSpeechStyleSamples = pendingSpeechStyle
     ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
@@ -3827,7 +3821,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       (section === 'mailing' && focusSection === 'broadcast') ||
       (section === 'giveaway' && focusSection === 'giveaway') ||
       (section === 'polls' && focusSection === 'polls') ||
-      (section === 'vkParsing' && focusSection === 'vkParsing') ||
       (section === 'requiredSubscription' && focusSection === 'requiredSubscription') ||
       (section === 'storefront' && focusSection === 'storefront')
     ) {

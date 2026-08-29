@@ -10,7 +10,6 @@ import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from '../admin/admin-suggestion-deliv
 import { ADMIN_SUPER_BAN_QUEUE } from '../admin/admin-super-ban.queue';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
 import {
-  VK_PARSING_PUBLISH_QUEUE,
   VK_PARSING_PUBLISHER_QUEUE,
   VK_PARSING_SYNC_QUEUE,
 } from '../admin/vk-parsing.queue';
@@ -63,7 +62,6 @@ export type QueueCounters = {
 export const AUXILIARY_QUEUE_NAMES = [
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
   VK_PARSING_SYNC_QUEUE,
-  VK_PARSING_PUBLISH_QUEUE,
   VK_PARSING_PUBLISHER_QUEUE,
   PUBLISHER_BINDING_REFRESH_QUEUE,
   PUBLISHER_CHAT_COMMENT_QUEUE,

@@ -63,6 +63,7 @@ import {
   type VkParsingTextFormat,
 } from './vk-parsing-content';
 import { VkPublishService } from './vk-publish.service';
+import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 
 type ReviewPostRow = Prisma.VkParsingPostGetPayload<{
   include: {
@@ -72,8 +73,8 @@ type ReviewPostRow = Prisma.VkParsingPostGetPayload<{
         entityType: true;
         vkParsingSettings: {
           where: {
-            ownerProfile: typeof VkParsingOwnerProfile.MAJOR;
-            ownerBotId: '';
+            ownerProfile: typeof VkParsingOwnerProfile.PUBLISHER;
+            ownerBotId: string;
           };
           take: 1;
         };
@@ -364,6 +365,7 @@ export class SafetyDeskService {
     private readonly vkPublishService: VkPublishService,
     private readonly maxBotRegistry: MaxBotRegistryService,
     private readonly moderationDeleteIntents: ModerationDeleteIntentService,
+    private readonly vkParsingOwnership: VkParsingOwnershipService,
   ) {}
 
   async getQueue(): Promise<SafetyDeskQueueResponse> {
@@ -1252,7 +1254,7 @@ export class SafetyDeskService {
     return safetyDeskDecisionResponseSchema.parse({
       item: null,
       queue: await this.getQueue(),
-      message: 'Материал одобрен и опубликован в MAX.',
+      message: 'Материал одобрен и принят в очередь публикации в MAX.',
     });
   }
 
@@ -1377,11 +1379,16 @@ export class SafetyDeskService {
   }
 
   private async loadReviewPosts(options: { itemIds?: string[] } = {}): Promise<ReviewPostRow[]> {
+    const ownerScope = this.vkParsingOwnership.getPublisherScope();
     const posts = await this.prisma.vkParsingPost.findMany({
       where: {
+        ...ownerScope,
         ...(options.itemIds ? { id: { in: options.itemIds } } : {}),
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
         publishCancelledAt: null,
+        publishQueuedAt: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
         skippedAt: null,
         unavailableAt: null,
         hasUnsupportedAttachments: false,
@@ -1392,6 +1399,7 @@ export class SafetyDeskService {
           { linkUrls: { not: [] } },
         ],
         source: {
+          ...ownerScope,
           status: VK_SOURCE_STATUS_ACTIVE,
           publishMode: VK_SOURCE_PUBLISH_MODE_REVIEW,
         },
@@ -1403,8 +1411,7 @@ export class SafetyDeskService {
             entityType: true,
             vkParsingSettings: {
               where: {
-                ownerProfile: VkParsingOwnerProfile.MAJOR,
-                ownerBotId: '',
+                ...ownerScope,
               },
               take: 1,
             },
@@ -1430,6 +1437,7 @@ export class SafetyDeskService {
     itemId: string,
     options: { includeCancelled: boolean },
   ): Promise<ReviewPostRow> {
+    const ownerScope = this.vkParsingOwnership.getPublisherScope();
     const post = await this.prisma.vkParsingPost.findFirst({
       where: this.buildReviewPostWhere(itemId, options),
       include: {
@@ -1439,8 +1447,7 @@ export class SafetyDeskService {
             entityType: true,
             vkParsingSettings: {
               where: {
-                ownerProfile: VkParsingOwnerProfile.MAJOR,
-                ownerBotId: '',
+                ...ownerScope,
               },
               take: 1,
             },
@@ -1468,15 +1475,21 @@ export class SafetyDeskService {
     itemId: string,
     options: { includeCancelled: boolean },
   ): Prisma.VkParsingPostWhereInput {
+    const ownerScope = this.vkParsingOwnership.getPublisherScope();
     return {
       id: itemId,
+      ...ownerScope,
       status: {
         notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE, VK_POST_STATUS_SKIPPED],
       },
       skippedAt: null,
       unavailableAt: null,
       ...(options.includeCancelled ? {} : { publishCancelledAt: null }),
+      publishQueuedAt: null,
+      publishLockedAt: null,
+      publishIdempotencyKey: null,
       source: {
+        ...ownerScope,
         status: VK_SOURCE_STATUS_ACTIVE,
         publishMode: VK_SOURCE_PUBLISH_MODE_REVIEW,
       },
@@ -1808,13 +1821,15 @@ export class SafetyDeskService {
         linkUrls,
       },
     );
+    if (result.queued < 1) {
+      throw new NotFoundException('Материал проверки уже обработан или недоступен.');
+    }
     await this.writeAuditLog(post.chatId, actorUserId, 'SAFETY_DESK_APPROVE', {
       postId: post.id,
       sourceId: post.sourceId,
       itemTitle: this.buildTitle(post),
       reason,
-      messageId: result.messageId,
-      url: result.url,
+      queued: result.queued,
     });
   }
 
@@ -2245,12 +2260,12 @@ export class SafetyDeskService {
         : 'Нет материалов, доступных для массового одобрения.';
     }
     if (failed > 0) {
-      return `Одобрено ${approved} из ${eligible}. Не удалось опубликовать: ${failed}.${unavailableSuffix}`;
+      return `Принято в очередь публикации: ${approved} из ${eligible}. Не удалось поставить в очередь: ${failed}.${unavailableSuffix}`;
     }
     if (approved === 0) {
       return 'Нет материалов, доступных для массового одобрения.';
     }
-    return `Одобрено и опубликовано материалов: ${approved}.${unavailableSuffix}`;
+    return `Принято в очередь публикации материалов: ${approved}.${unavailableSuffix}`;
   }
 
   private readStringArray(value: Prisma.JsonValue | unknown): string[] {

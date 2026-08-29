@@ -3,7 +3,9 @@ import {
   createPrismaClient,
   PublicationDispatchProfile,
   type PrismaClient,
+  VkParsingOwnerProfile,
 } from '../prisma/prisma-client';
+import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 
 type CliOptions = {
   json: boolean;
@@ -11,6 +13,7 @@ type CliOptions = {
   reconcileCap: number;
   windowHours: number;
   redisUrl: string | null;
+  publisherBotId: string;
 };
 
 type QueueCounts = Awaited<ReturnType<Queue['getJobCounts']>>;
@@ -46,6 +49,7 @@ export type OwnedPublishRow = {
   publishScheduledAt: Date | null;
   publishLockedAt: Date | null;
   publishIdempotencyKey: string | null;
+  requiredBotId: string | null;
 };
 
 export type OwnedPublishDatabaseSnapshot = {
@@ -196,7 +200,7 @@ const SCHEDULE_DRIFT_TOLERANCE_MS = 5_000;
 const DEFAULT_WINDOW_HOURS = 6;
 const MAX_WINDOW_HOURS = 24 * 7;
 const VK_SYNC_QUEUE = 'vk-parsing-sync';
-const VK_PUBLISH_QUEUE = 'vk-parsing-publish';
+const VK_PUBLISHER_QUEUE = 'vk-parsing-publisher';
 const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
 const QUEUE_RECONCILIATION_STATES = [
   'waiting',
@@ -229,6 +233,7 @@ export function readCliOptions(argv: readonly string[], env = process.env): CliO
     reconcileCap,
     windowHours,
     redisUrl: readStringOption(argv, '--redis-url') ?? env.REDIS_URL?.trim() ?? null,
+    publisherBotId: buildPublisherBotDescriptor({ id: env.MAX_PUBLISHER_BOT_ID }).id,
   };
 }
 
@@ -292,7 +297,7 @@ export async function loadVkParsingDiagnostics(
     loadMediaStatus(prisma),
     loadMediaIdentityConflicts(prisma, options.limit),
     loadRecentMediaFailures(prisma, since, options.limit),
-    loadOwnedPublishDatabaseSnapshot(prisma, options.reconcileCap),
+    loadOwnedPublishDatabaseSnapshot(prisma, options.reconcileCap, options.publisherBotId),
   ]);
   const { queues, publishQueueReconciliation } = await loadQueueDiagnostics(
     options.redisUrl,
@@ -597,14 +602,21 @@ async function loadRecentMediaFailures(
   `;
 }
 
-async function loadOwnedPublishDatabaseSnapshot(
+export async function loadOwnedPublishDatabaseSnapshot(
   prisma: PrismaClient,
   cap: number,
+  publisherBotId: string,
 ): Promise<OwnedPublishDatabaseSnapshot> {
   const ownershipWhere = {
-    // The reconciliation below inspects the legacy action-owned queue only.
-    dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+    ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+    ownerBotId: publisherBotId,
+    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    requiredBotId: publisherBotId,
     publishQueuedAt: { not: null },
+    source: {
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId: publisherBotId,
+    },
   } as const;
   const totalRowsBefore = await prisma.vkParsingPost.count({ where: ownershipWhere });
   const rows: OwnedPublishRow[] = [];
@@ -624,6 +636,7 @@ async function loadOwnedPublishDatabaseSnapshot(
         publishScheduledAt: true,
         publishLockedAt: true,
         publishIdempotencyKey: true,
+        requiredBotId: true,
       },
       orderBy: { id: 'asc' },
       take,
@@ -691,15 +704,16 @@ async function loadQueueDiagnostics(
     maxRetriesPerRequest: 1,
     retryStrategy: (attempt) => (attempt <= 1 ? 250 : null),
   };
-  const syncQueue = new Queue(VK_SYNC_QUEUE, { connection });
-  const publishSampleQueue = new Queue(VK_PUBLISH_QUEUE, { connection });
-  const publishReconciliationQueue = new Queue(VK_PUBLISH_QUEUE, { connection });
+  const diagnosticQueueOptions = { connection, skipMetasUpdate: true } as const;
+  const syncQueue = new Queue(VK_SYNC_QUEUE, diagnosticQueueOptions);
+  const publishSampleQueue = new Queue(VK_PUBLISHER_QUEUE, diagnosticQueueOptions);
+  const publishReconciliationQueue = new Queue(VK_PUBLISHER_QUEUE, diagnosticQueueOptions);
   const diagnosticQueues = [syncQueue, publishSampleQueue, publishReconciliationQueue];
   try {
     const [sync, publish, publishQueueReconciliation] = await withTimeout(
       Promise.all([
         loadQueueDiagnostic(syncQueue, VK_SYNC_QUEUE, limit),
-        loadQueueDiagnostic(publishSampleQueue, VK_PUBLISH_QUEUE, limit, publishReferenceJobIds),
+        loadQueueDiagnostic(publishSampleQueue, VK_PUBLISHER_QUEUE, limit, publishReferenceJobIds),
         loadPublishQueueReconciliation(
           publishReconciliationQueue,
           ownedPublishDatabase,
@@ -976,21 +990,36 @@ export function reconcilePublishQueueSnapshots(params: {
 
     const expectedPayload = {
       name: VK_PUBLISH_JOB_NAME,
+      kind: 'publish',
       postId: row.id,
       chatId: row.chatId,
       reason: row.publishReason,
       idempotencyKey: row.publishIdempotencyKey,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: row.requiredBotId,
     };
     const data = asRecord(job.data);
     const actualPayload = {
       name: job.name || null,
+      kind: readStringOrNull(data?.kind),
       postId: readStringOrNull(data?.postId),
       chatId: readStringOrNull(data?.chatId),
       reason: readStringOrNull(data?.reason),
       idempotencyKey: readStringOrNull(data?.idempotencyKey),
+      dispatchProfile: readStringOrNull(data?.dispatchProfile),
+      requiredBotId: readStringOrNull(data?.requiredBotId),
     };
     const mismatchedFields = (
-      ['name', 'postId', 'chatId', 'reason', 'idempotencyKey'] as const
+      [
+        'name',
+        'kind',
+        'postId',
+        'chatId',
+        'reason',
+        'idempotencyKey',
+        'dispatchProfile',
+        'requiredBotId',
+      ] as const
     ).filter((field) => expectedPayload[field] !== actualPayload[field]);
     if (mismatchedFields.length > 0) {
       payloadMismatchCount += 1;

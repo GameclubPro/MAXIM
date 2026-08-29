@@ -3,6 +3,8 @@ import test from 'node:test';
 import type { VkParsingFeed } from '@maxim/contracts';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
+import { getVkParsingCapability } from '../src/lib/api/vk-parsing-client';
+import type { ApiTransport } from '../src/lib/api/transport';
 import {
   buildVkParsingAutopostModeUpdate,
   buildVkParsingSourceConnectionToast,
@@ -14,6 +16,8 @@ import {
   VK_PARSING_INITIAL_STATUS_FILTER,
   VK_PARSING_STATUS_FILTERS,
 } from '../src/components/vk-parsing/types';
+
+const PUBLISHER_CHANNEL_VK_PATH = '/publisher/entities/channel/preview-channel/vk-parsing';
 
 const HEALTHY_MANUAL_SOURCE = {
   importEnabled: true,
@@ -148,11 +152,49 @@ test('VK mutation feed does not seed an empty scoped cache with unfiltered posts
   assert.equal(mergeVkParsingMutationFeed(undefined, mutationFeed), undefined);
 });
 
+test('VK client uses only Publisher entity routes for chats and channels', async () => {
+  const paths: string[] = [];
+  const api: ApiTransport = {
+    request: async (path) => {
+      paths.push(path);
+      return { enabled: true, canUse: true, reasonCode: null, reason: null };
+    },
+  };
+
+  await getVkParsingCapability(api, 'chat', 'chat/with symbols');
+  await getVkParsingCapability(api, 'channel', 'channel-1');
+
+  assert.deepEqual(paths, [
+    '/publisher/entities/chat/chat%2Fwith%20symbols/vk-parsing/capability',
+    '/publisher/entities/channel/channel-1/vk-parsing/capability',
+  ]);
+  assert.equal(
+    paths.some((path) => /^\/(?:chats|channels)\//u.test(path)),
+    false,
+  );
+});
+
+test('VK preview accepts only Publisher profile and Publisher entity routes', async () => {
+  const moderationApi = createPreviewApiTransport();
+  const publisherApi = createPreviewApiTransport({ search: '?profile=publisher' });
+
+  await assert.rejects(() => moderationApi.request(PUBLISHER_CHANNEL_VK_PATH), {
+    message: `Preview transport does not implement GET ${PUBLISHER_CHANNEL_VK_PATH}`,
+  });
+  await assert.rejects(() => publisherApi.request('/channels/preview-channel/vk-parsing'), {
+    message: 'Preview transport does not implement GET /channels/preview-channel/vk-parsing',
+  });
+
+  const feed = (await publisherApi.request(PUBLISHER_CHANNEL_VK_PATH)) as VkParsingFeed;
+  assert.equal(feed.settings.chatId, 'preview-channel');
+});
+
 test('VK preview applies atomic modes without persisting the command as settings', async () => {
   const api = createPreviewApiTransport({
+    search: '?profile=publisher',
     clock: { now: () => new Date('2031-04-05T06:07:08.009Z') },
   });
-  const path = '/channels/preview-channel/vk-parsing';
+  const path = PUBLISHER_CHANNEL_VK_PATH;
 
   const pausedAutoFeed = (await api.request(`${path}/settings`, {
     method: 'PATCH',
@@ -205,8 +247,8 @@ test('VK preview applies atomic modes without persisting the command as settings
 });
 
 test('VK preview normalizes legacy raw mode flags through the atomic mode behavior', async () => {
-  const api = createPreviewApiTransport();
-  const path = '/channels/preview-channel/vk-parsing';
+  const api = createPreviewApiTransport({ search: '?profile=publisher' });
+  const path = PUBLISHER_CHANNEL_VK_PATH;
 
   const manualFeed = (await api.request(`${path}/settings`, {
     method: 'PATCH',
@@ -249,8 +291,11 @@ test('VK preview normalizes legacy raw mode flags through the atomic mode behavi
 
 test('VK preview bulk presets preserve and establish source automation baselines', async () => {
   const nowIso = '2031-04-05T06:07:08.009Z';
-  const api = createPreviewApiTransport({ clock: { now: () => new Date(nowIso) } });
-  const path = '/channels/preview-channel/vk-parsing';
+  const api = createPreviewApiTransport({
+    search: '?profile=publisher',
+    clock: { now: () => new Date(nowIso) },
+  });
+  const path = PUBLISHER_CHANNEL_VK_PATH;
   const initialFeed = (await api.request(path)) as VkParsingFeed;
   const [alreadyAuto, manual] = initialFeed.sources;
   assert.ok(alreadyAuto?.autoPublishEnabledAt);
@@ -293,8 +338,11 @@ test('VK preview bulk presets preserve and establish source automation baselines
 
 test('VK preview add and re-add inherit paused Auto and stay idempotent', async () => {
   const nowIso = '2031-04-05T06:07:08.009Z';
-  const api = createPreviewApiTransport({ clock: { now: () => new Date(nowIso) } });
-  const path = '/channels/preview-channel/vk-parsing';
+  const api = createPreviewApiTransport({
+    search: '?profile=publisher',
+    clock: { now: () => new Date(nowIso) },
+  });
+  const path = PUBLISHER_CHANNEL_VK_PATH;
   await api.request(`${path}/settings`, {
     method: 'PATCH',
     body: JSON.stringify({ autoPublishMode: 'PAUSED' }),
@@ -338,8 +386,8 @@ test('VK preview add and re-add inherit paused Auto and stay idempotent', async 
 });
 
 test('VK preview disconnect clears source publication queue before re-add', async () => {
-  const api = createPreviewApiTransport();
-  const path = '/channels/preview-channel/vk-parsing';
+  const api = createPreviewApiTransport({ search: '?profile=publisher' });
+  const path = PUBLISHER_CHANNEL_VK_PATH;
   const initialFeed = (await api.request(path)) as VkParsingFeed;
   const queuedPost = initialFeed.queue[0];
   assert.ok(queuedPost);
@@ -371,13 +419,10 @@ test('VK preview disconnect clears source publication queue before re-add', asyn
 });
 
 test('VK preview dry-run rejects an unknown source like the API', async () => {
-  const api = createPreviewApiTransport();
+  const api = createPreviewApiTransport({ search: '?profile=publisher' });
 
   await assert.rejects(
-    () =>
-      api.request(
-        '/channels/preview-channel/vk-parsing/autopublish/dry-run?sourceId=missing-source',
-      ),
+    () => api.request(`${PUBLISHER_CHANNEL_VK_PATH}/autopublish/dry-run?sourceId=missing-source`),
     (error: unknown) => {
       assert.ok(error instanceof ApiRequestError);
       assert.equal(error.status, 404);

@@ -22,6 +22,7 @@ import {
   VkApiRequestError,
 } from './vk-parsing-errors';
 import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
+import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import {
   VkParsingPostImportRepository,
   type ExistingVkPostImportState,
@@ -110,6 +111,7 @@ export class VkSyncService {
     private readonly mediaCache: VkParsingMediaCacheService,
     private readonly postImportRepository: VkParsingPostImportRepository,
     configService: ConfigService,
+    private readonly ownership: VkParsingOwnershipService,
   ) {
     this.syncIntervalMs = configService.get<number>('VK_PARSING_SYNC_INTERVAL_MS') ?? 600_000;
     this.minSyncIntervalMs =
@@ -453,9 +455,11 @@ export class VkSyncService {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
     const syncLockDeadlineAt = new Date(now.getTime() + this.syncLeaseTtlMs);
+    const ownerScope = this.ownership.getPublisherScope();
     const updated = await this.prisma.vkParsingSource.updateMany({
       where: {
         id: sourceId,
+        ...ownerScope,
         status: VK_SOURCE_STATUS_ACTIVE,
         importEnabled: true,
         circuitOpenedAt: null,
@@ -484,7 +488,7 @@ export class VkSyncService {
     }
 
     const source = await this.prisma.vkParsingSource.findUnique({ where: { id: sourceId } });
-    if (!source) {
+    if (!source || !this.ownership.isExactScope(source, ownerScope)) {
       return null;
     }
 
@@ -506,6 +510,7 @@ export class VkSyncService {
   private buildOwnedSourceLeaseWhere(sourceId: string): Prisma.VkParsingSourceWhereInput {
     return {
       id: sourceId,
+      ...this.ownership.getPublisherScope(),
       syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
       syncLockedBy: this.workerId,
     };
