@@ -736,7 +736,7 @@ export class PublisherAutoReplyAuthoringService {
         callbackId: session.callbackId,
       });
     }
-    const notification = toAuthoringNotification(session.notificationKind);
+    const notification = parseAutoReplyNotification(session.notificationKind);
     if (session.notificationPending && notification) {
       await this.enqueueNotificationSafe(
         session.id,
@@ -846,7 +846,7 @@ function isTerminalState(state: PublisherAutoReplyAuthoringState): boolean {
   );
 }
 
-function toAuthoringNotification(
+function parseAutoReplyNotification(
   value: string | null,
 ): PublisherAutoReplyAuthoringNotification | null {
   switch (value) {
