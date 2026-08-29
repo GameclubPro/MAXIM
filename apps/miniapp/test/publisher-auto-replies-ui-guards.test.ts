@@ -28,6 +28,10 @@ const pageCss = readFileSync(
   new URL('../src/pages/publisher-auto-replies-page.css', import.meta.url),
   'utf8',
 );
+const draftStorageSource = readFileSync(
+  new URL('../src/lib/auto-reply-draft.ts', import.meta.url),
+  'utf8',
+);
 
 test('auto-replies are a lazy Publisher chat workspace with guarded native back', () => {
   assert.match(appSource, /import\('\.\/pages\/publisher-auto-replies-page'\)/u);
@@ -55,6 +59,27 @@ test('rich editor keeps retained assets by reference and new images inline', () 
   assert.doesNotMatch(pageSource, /data:\$\{asset\.mimeType\}/u);
   assert.match(pageSource, /<BroadcastContentComposer/u);
   assert.match(pageSource, /<MaxMarkdownPreview/u);
+});
+
+test('auto-reply buttons reuse the posting editor and persist across create and edit', () => {
+  assert.match(pageSource, /import\('\.\.\/features\/publications\/publication-buttons-sheet'\)/u);
+  assert.match(pageSource, /<PublicationButtonsSheet/u);
+  assert.match(pageSource, /buttons=\{draft\.buttons\}/u);
+  assert.match(pageSource, /buttonsPerRow=\{1\}/u);
+  assert.match(pageSource, /onOpenButtons=\{\(\) => setButtonsOpen\(true\)\}/u);
+  assert.match(pageSource, /buttons: normalized\.buttons\.map/u);
+  assert.match(pageSource, /formatBroadcastButtonsStatus\(rule\.content\.buttons\)/u);
+  assert.match(draftStorageSource, /buttons: readButtons\(draft\.buttons\)/u);
+});
+
+test('new rules are enabled directly while edit and list keep their switches', () => {
+  assert.match(pageSource, /createPublisherAutoReply[\s\S]*?enabled: true/u);
+  assert.match(
+    pageSource,
+    /\{rule \? \([\s\S]*?<strong>Правило включено<\/strong>[\s\S]*?<AutoReplySwitch/u,
+  );
+  assert.match(pageSource, /<AutoReplyRuleRow[\s\S]*?onToggle=/u);
+  assert.match(pageSource, /rule \? \(draft\.enabled \? 'включён' : 'выключен'\) : null/u);
 });
 
 test('auto-reply controls and fixed media geometry stay usable on narrow WebViews', () => {

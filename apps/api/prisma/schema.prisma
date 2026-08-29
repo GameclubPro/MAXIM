@@ -600,6 +600,7 @@ model PublisherAutoReplyContentRevision {
   revision        Int
   text            String                   @default("")
   textFormat      PublicationContentFormat @default(PLAIN) @map("text_format")
+  buttons         Json                     @default("[]")
   createdByUserId String                   @map("created_by_user_id")
   createdAt       DateTime                 @default(now()) @map("created_at")
 

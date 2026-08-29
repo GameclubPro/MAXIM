@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { UnrecoverableError } from 'bullmq';
-import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import { buildManagedBroadcastLinkButtonRows } from '../admin/admin-managed-broadcast-buttons';
+import { readStoredPublicationButtons } from '../admin/publication-buttons';
 import { extractHttpStatusCode } from '../common/http-error.util';
+import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -37,6 +39,7 @@ type DeliveryContent = {
   ruleId: string;
   text: string;
   textFormat: PublicationContentFormat;
+  buttons: Prisma.JsonValue;
   assets: Array<{
     position: number;
     asset: {
@@ -205,6 +208,10 @@ export class PublisherAutoReplyDeliveryService {
     }
 
     const rendered = this.renderContent(delivery.contentRevision);
+    const buttonRows = buildManagedBroadcastLinkButtonRows(
+      readStoredPublicationButtons(delivery.contentRevision.buttons),
+      { buttonsPerRow: 1 },
+    );
     let fenceActive = false;
     let refreshedInvalidAttachments = false;
     for (;;) {
@@ -215,6 +222,7 @@ export class PublisherAutoReplyDeliveryService {
           {
             ...(rendered.textFormat ? { textFormat: rendered.textFormat } : {}),
             ...this.buildMediaOptions(payloads),
+            ...(buttonRows.length > 0 ? { buttons: buttonRows } : {}),
             messageLink: { type: 'reply', mid: delivery.sourceMessageId },
             beforeSend: async () => {
               await this.dispatchHealth.assertDispatchAllowed();
@@ -350,6 +358,7 @@ export class PublisherAutoReplyDeliveryService {
               ruleId: true,
               text: true,
               textFormat: true,
+              buttons: true,
               assets: {
                 orderBy: { position: 'asc' },
                 select: {
@@ -431,7 +440,14 @@ export class PublisherAutoReplyDeliveryService {
             },
           },
           contentRevision: {
-            select: { id: true, ruleId: true, text: true, textFormat: true, assets: false },
+            select: {
+              id: true,
+              ruleId: true,
+              text: true,
+              textFormat: true,
+              buttons: true,
+              assets: false,
+            },
           },
         },
       })) as LeasedDelivery | null;

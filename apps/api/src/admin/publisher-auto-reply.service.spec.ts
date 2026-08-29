@@ -33,6 +33,7 @@ function ruleRow(overrides: Record<string, unknown> = {}) {
       revision: 1,
       text: '**Ответ**',
       textFormat: PublicationContentFormat.MARKDOWN,
+      buttons: [{ text: 'Подробнее', url: 'https://example.com/help', row: 0 }],
       createdByUserId: user.userId,
       createdAt: now,
       assets: [],
@@ -98,12 +99,21 @@ describe('PublisherAutoReplyService', () => {
       fixture.service.create('chat-1', user, {
         requestId: 'request_create_1',
         phrase: '  ПРАЙС\n ',
-        content: { text: '**Ответ**', textFormat: 'markdown' },
+        content: {
+          text: '**Ответ**',
+          textFormat: 'markdown',
+          buttons: [{ text: 'Подробнее', url: 'https://example.com/help', row: 0 }],
+        },
       }),
     ).resolves.toMatchObject({
       id: 'rule-1',
       phrase: 'ПРАЙС',
-      content: { revision: 1, text: '**Ответ**', textFormat: 'markdown' },
+      content: {
+        revision: 1,
+        text: '**Ответ**',
+        textFormat: 'markdown',
+        buttons: [{ text: 'Подробнее', url: 'https://example.com/help', row: 0 }],
+      },
     });
 
     expect(fixture.policy.getEntity).toHaveBeenCalledWith('chat', 'chat-1', user);
@@ -123,6 +133,7 @@ describe('PublisherAutoReplyService', () => {
         revision: 1,
         text: '**Ответ**',
         textFormat: PublicationContentFormat.MARKDOWN,
+        buttons: [{ text: 'Подробнее', url: 'https://example.com/help', row: 0 }],
       }),
       select: { id: true },
     });
@@ -143,6 +154,7 @@ describe('PublisherAutoReplyService', () => {
         revision: 1,
         textLength: 9,
         textSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        buttonCount: 1,
         images: [],
       },
       autoRepliesModuleEnabled: true,
@@ -150,6 +162,8 @@ describe('PublisherAutoReplyService', () => {
     });
     expect(JSON.stringify(audit)).not.toContain('ПРАЙС');
     expect(JSON.stringify(audit)).not.toContain('Ответ');
+    expect(JSON.stringify(audit)).not.toContain('Подробнее');
+    expect(JSON.stringify(audit)).not.toContain('example.com');
   });
 
   it('does not churn the module revision when it is already enabled', async () => {
@@ -176,7 +190,7 @@ describe('PublisherAutoReplyService', () => {
         sessionId: 'session-1',
         phrase: ' ПРАЙС ',
         normalizedPhrase: 'прайс',
-        content: { text: '**Ответ**', textFormat: 'markdown', images: [] },
+        content: { text: '**Ответ**', textFormat: 'markdown', images: [], buttons: [] },
       }),
     ).resolves.toEqual({ ruleId: 'rule-1', contentRevisionId: 'content-1', version: 1 });
 
@@ -247,6 +261,7 @@ describe('PublisherAutoReplyService', () => {
         content: {
           text: '',
           textFormat: 'plain',
+          buttons: [],
           images: [{ kind: 'reference', assetId: 'foreign-asset' }],
         },
       }),

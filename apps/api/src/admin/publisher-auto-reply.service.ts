@@ -2,16 +2,19 @@ import {
   archivePublisherAutoReplyRequestSchema,
   archivePublisherAutoReplyResponseSchema,
   createPublisherAutoReplyRequestSchema,
+  MAX_PUBLISHER_AUTO_REPLY_BUTTONS,
   MAX_PUBLISHER_AUTO_REPLY_IMAGES,
   MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH,
   MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH,
   normalizePublisherAutoReplyPhrase,
   normalizePublisherAutoReplyPhraseDisplay,
+  publisherAutoReplyButtonSchema,
   publisherAutoReplyListResponseSchema,
   publisherAutoReplyRequestIdSchema,
   publisherAutoReplyRuleSchema,
   updatePublisherAutoReplyRequestSchema,
   type ArchivePublisherAutoReplyResponse,
+  type PublisherAutoReplyButton,
   type PublisherAutoReplyContentInput,
   type PublisherAutoReplyListResponse,
   type PublisherAutoReplyRule,
@@ -34,6 +37,7 @@ import {
   PUBLICATION_MAX_IMAGE_BYTES,
   PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
 } from './publication-media-limits';
+import { readStoredPublicationButtons } from './publication-buttons';
 import { PublisherPolicyService } from './publisher-policy.service';
 
 const AUTO_REPLY_RULE_INCLUDE = {
@@ -66,6 +70,7 @@ export type PreparedPublisherAutoReplyContent = {
   text: string;
   textFormat: 'plain' | 'markdown';
   images: PreparedPublisherAutoReplyImage[];
+  buttons: PublisherAutoReplyButton[];
 };
 
 export type PersistPublisherAutoReplyContentParams = {
@@ -92,6 +97,7 @@ type PersistedContentSummary = {
   textLength: number;
   textSha256: string;
   textFormat: 'plain' | 'markdown';
+  buttonCount: number;
   images: Array<{
     position: number;
     assetId: string;
@@ -597,7 +603,12 @@ export class PublisherAutoReplyService {
     if (totalBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
       throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
     }
-    return { text: content.text, textFormat: content.textFormat, images };
+    return {
+      text: content.text,
+      textFormat: content.textFormat,
+      images,
+      buttons: content.buttons,
+    };
   }
 
   async persistPreparedContentRevision(
@@ -613,6 +624,7 @@ export class PublisherAutoReplyService {
           params.content.textFormat === 'markdown'
             ? PublicationContentFormat.MARKDOWN
             : PublicationContentFormat.PLAIN,
+        buttons: params.content.buttons as Prisma.InputJsonValue,
         createdByUserId: params.actorUserId,
       },
       select: { id: true },
@@ -671,6 +683,7 @@ export class PublisherAutoReplyService {
       textLength: params.content.text.length,
       textSha256: this.sha256(params.content.text),
       textFormat: params.content.textFormat,
+      buttonCount: params.content.buttons.length,
       images,
     };
   }
@@ -719,6 +732,7 @@ export class PublisherAutoReplyService {
           sizeBytes: asset.sizeBytes,
           previewUrl: this.assetPreviewUrl(rule.chatId, rule.id, asset.id),
         })),
+        buttons: readStoredPublicationButtons(content.buttons),
         createdAt: content.createdAt.toISOString(),
       },
       createdByUserId: rule.createdByUserId,
@@ -855,6 +869,14 @@ export class PublisherAutoReplyService {
     if (content.images.length > MAX_PUBLISHER_AUTO_REPLY_IMAGES) {
       throw new BadRequestException('Можно добавить не больше 10 фото.');
     }
+    if (
+      !publisherAutoReplyButtonSchema
+        .array()
+        .max(MAX_PUBLISHER_AUTO_REPLY_BUTTONS)
+        .safeParse(content.buttons).success
+    ) {
+      throw new BadRequestException('Кнопки автоответа повреждены.');
+    }
     let totalBytes = 0;
     for (const image of content.images) {
       if (image.kind === 'reference') {
@@ -883,6 +905,7 @@ export class PublisherAutoReplyService {
     return {
       text: content.text,
       textFormat: content.textFormat,
+      buttons: content.buttons,
       images: content.images.map((image) =>
         image.kind === 'reference'
           ? { kind: image.kind, assetId: image.assetId }

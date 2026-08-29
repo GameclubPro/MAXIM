@@ -1,4 +1,4 @@
-import type { BroadcastImage } from '@maxim/contracts';
+import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import {
   createEmptyAutoReplyDraft,
   normalizeAutoReplyDraft,
@@ -14,7 +14,7 @@ import {
   writeNativeStorageItem,
 } from './native-storage';
 
-const AUTO_REPLY_DRAFT_VERSION = 1;
+const AUTO_REPLY_DRAFT_VERSION = 2;
 const AUTO_REPLY_DRAFT_DB_NAME = 'maxim-publisher-auto-replies';
 const AUTO_REPLY_DRAFT_DB_VERSION = 1;
 const AUTO_REPLY_DRAFT_STORE_NAME = 'drafts';
@@ -63,6 +63,19 @@ function readImages(value: unknown): BroadcastImage[] {
   });
 }
 
+function readButtons(value: unknown): BroadcastLinkButton[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.text !== 'string' || typeof item.url !== 'string') {
+      return [];
+    }
+    return [{ text: item.text, url: item.url }];
+  });
+}
+
 function parseAutoReplyDraftEnvelope(value: unknown): AutoReplyDraft | null {
   if (!isRecord(value) || value.version !== AUTO_REPLY_DRAFT_VERSION || !isRecord(value.draft)) {
     return null;
@@ -75,6 +88,7 @@ function parseAutoReplyDraftEnvelope(value: unknown): AutoReplyDraft | null {
     text: typeof draft.text === 'string' ? draft.text : '',
     images: readImages(draft.images),
     retainedAssets: readAssetMetadata(draft.retainedAssets),
+    buttons: readButtons(draft.buttons),
     cooldownSeconds:
       typeof draft.cooldownSeconds === 'number' ? draft.cooldownSeconds : fallback.cooldownSeconds,
     enabled: typeof draft.enabled === 'boolean' ? draft.enabled : fallback.enabled,

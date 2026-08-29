@@ -30,10 +30,12 @@ test('publisher auto-reply preview transport supports revisioned rich-content CR
       text: '**Доставим сегодня**',
       textFormat: 'markdown',
       images: [{ type: 'image', base64: 'AAAA', mimeType: 'image/png', fileName: 'delivery.png' }],
+      buttons: [{ text: 'Условия', url: 'https://max.ru/delivery', row: 0 }],
     },
   });
   assert.equal(created.phrase, 'Доставка');
   assert.equal(created.content.images.length, 1);
+  assert.equal(created.content.buttons[0]?.text, 'Условия');
 
   const retainedAssetId = created.content.images[0]!.id;
   const updated = await updatePublisherAutoReply(api, PREVIEW_CHAT_ID, created.id, {
@@ -44,11 +46,13 @@ test('publisher auto-reply preview transport supports revisioned rich-content CR
       text: '_Ответ обновлён_',
       textFormat: 'markdown',
       images: [{ type: 'image-ref', assetId: retainedAssetId }],
+      buttons: [{ text: 'Подробнее', url: 'https://max.ru/details', row: 0 }],
     },
   });
   assert.equal(updated.version, 2);
   assert.equal(updated.enabled, false);
   assert.equal(updated.content.images[0]?.id, retainedAssetId);
+  assert.equal(updated.content.buttons[0]?.text, 'Подробнее');
 
   const archived = await archivePublisherAutoReply(api, PREVIEW_CHAT_ID, updated.id, {
     requestId: createPublisherAutoReplyRequestId(),

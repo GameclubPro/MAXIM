@@ -83,6 +83,8 @@ const FEATURE_SOURCE_GLOBS = {
   'auto-replies': [
     'apps/miniapp/src/components/auto-reply-*.tsx',
     'apps/miniapp/src/components/auto-reply-*.css',
+    'apps/miniapp/src/components/broadcast-content-composer.*',
+    'apps/miniapp/src/features/publications/publication-buttons-sheet.*',
     'apps/miniapp/src/lib/api/publisher-auto-replies-client.ts',
     'apps/miniapp/src/lib/auto-reply-draft.ts',
     'apps/miniapp/src/lib/use-auto-reply-draft.ts',
@@ -475,6 +477,7 @@ const baseScenarios = [
     ['publisher-auto-replies-cold', { searchParams: { profile: 'publisher' } }],
     ['publisher-auto-replies-create-sheet', { searchParams: { profile: 'publisher' } }],
     ['publisher-auto-replies-editor', { searchParams: { profile: 'publisher' } }],
+    ['publisher-auto-replies-editor-buttons', { searchParams: { profile: 'publisher' } }],
     [
       'publisher-auto-replies-editor-bottom',
       { searchParams: { profile: 'publisher' }, keyboard: false },

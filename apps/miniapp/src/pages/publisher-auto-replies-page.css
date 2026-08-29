@@ -354,8 +354,15 @@
     font-weight: 700;
   }
 
+  .publisher-auto-reply-row__footer > span:first-child {
+    min-width: 0;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
   .publisher-auto-reply-row__actions {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 4px;
   }

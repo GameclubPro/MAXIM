@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS,
+  MAX_PUBLISHER_AUTO_REPLY_BUTTONS,
   MAX_PUBLISHER_AUTO_REPLY_IMAGES,
   createPublisherAutoReplyRequestSchema,
   normalizePublisherAutoReplyPhrase,
@@ -27,8 +28,38 @@ describe('publisher auto-reply contracts', () => {
       phrase: 'ПРАЙС',
       enabled: true,
       cooldownSeconds: DEFAULT_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS,
-      content: { images: [] },
+      content: { images: [], buttons: [] },
     });
+  });
+
+  it('accepts up to eight publication-compatible link buttons', () => {
+    const buttons = Array.from({ length: MAX_PUBLISHER_AUTO_REPLY_BUTTONS }, (_, index) => ({
+      text: `Кнопка ${index + 1}`,
+      url: `https://example.com/${index + 1}`,
+      row: index,
+    }));
+
+    expect(publisherAutoReplyContentInputSchema.safeParse({ text: 'Ответ', buttons }).success).toBe(
+      true,
+    );
+    expect(
+      publisherAutoReplyContentInputSchema.safeParse({
+        text: 'Ответ',
+        buttons: [...buttons, { text: 'Лишняя', url: 'https://example.com/extra', row: 8 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      publisherAutoReplyContentInputSchema.safeParse({
+        text: 'Ответ',
+        buttons: [{ text: 'Опасная', url: 'javascript:alert(1)', row: 0 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      publisherAutoReplyContentInputSchema.safeParse({
+        text: 'Ответ',
+        buttons: [{ text: 'Чужой профиль', url: 'https://max.ru/bot?start=pmh-secret', row: 0 }],
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts text, images, or both but rejects empty and oversized image sets', () => {
@@ -81,6 +112,7 @@ describe('publisher auto-reply contracts', () => {
         text: 'Ответ',
         textFormat: 'plain',
         images: [],
+        buttons: [],
         createdAt: '2026-08-29T10:00:00.000Z',
       },
       createdByUserId: 'admin-1',

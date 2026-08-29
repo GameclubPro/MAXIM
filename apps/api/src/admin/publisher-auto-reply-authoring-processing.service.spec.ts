@@ -30,22 +30,73 @@ function fixture() {
     renew: jest.fn().mockResolvedValue(true),
     release: jest.fn().mockResolvedValue(true),
   };
+  const captureService = { capture: jest.fn() };
+  const autoReplies = { createFromPreparedContent: jest.fn() };
   return {
     service: new PublisherAutoReplyAuthoringProcessingService(
       prisma as never,
-      {} as never,
-      {} as never,
+      captureService as never,
+      autoReplies as never,
       policy as never,
       privateFlows as never,
     ),
     prisma,
     policy,
     privateFlows,
+    captureService,
+    autoReplies,
     publisherAutoReplyAuthoringSession,
   };
 }
 
-describe('PublisherAutoReplyAuthoringProcessingService activation', () => {
+describe('PublisherAutoReplyAuthoringProcessingService', () => {
+  it('preserves captured safe link buttons in the immutable draft content', async () => {
+    const { service, prisma, captureService, autoReplies, publisherAutoReplyAuthoringSession } =
+      fixture();
+    publisherAutoReplyAuthoringSession.findFirst.mockResolvedValue({
+      ...savingSession(),
+      state: PublisherAutoReplyAuthoringState.PROCESSING,
+      stageRevision: 2,
+      privateChatId: '42',
+      contentMessageId: 'message-1',
+      phrase: 'Каталог',
+      sourceWebhookEventId: 'webhook-1',
+    });
+    captureService.capture.mockResolvedValue({
+      text: '**Выберите раздел**',
+      textFormat: 'markdown',
+      images: [],
+      buttons: [{ text: 'Каталог', url: 'https://example.com/catalog', row: 0 }],
+      omissions: [],
+    });
+    autoReplies.createFromPreparedContent.mockResolvedValue({
+      ruleId: 'rule-1',
+      contentRevisionId: 'content-1',
+      version: 1,
+    });
+    const tx = {
+      publisherAutoReplyAuthoringSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    prisma.$transaction.mockImplementation((run: (client: typeof tx) => Promise<unknown>) =>
+      run(tx),
+    );
+
+    await expect(service.processContent('session-1')).resolves.toBe('ready');
+
+    expect(autoReplies.createFromPreparedContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: {
+          text: '**Выберите раздел**',
+          textFormat: 'markdown',
+          images: [],
+          buttons: [{ text: 'Каталог', url: 'https://example.com/catalog', row: 0 }],
+        },
+      }),
+    );
+  });
+
   it('atomically enables module settings without a create race', async () => {
     const { service, prisma, privateFlows } = fixture();
     let settingsQueryText = '';

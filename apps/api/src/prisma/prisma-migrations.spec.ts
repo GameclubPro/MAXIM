@@ -1078,4 +1078,22 @@ describe('Prisma migrations', () => {
     expect(migration.match(/NOT VALID/gu)).toHaveLength(3);
     expect(migration.match(/VALIDATE CONSTRAINT/gu)).toHaveLength(3);
   });
+
+  it('adds bounded immutable buttons to Publisher auto-reply content revisions', () => {
+    const migration = readMigration('20260829131000_add_publisher_auto_reply_buttons');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+    const schema = readSchema();
+
+    expect(schema).toContain('buttons         Json                     @default("[]")');
+    expect(compact).toContain('ADD COLUMN "buttons" JSONB NOT NULL DEFAULT \'[]\'::jsonb');
+    expect(compact).toContain(
+      'ADD CONSTRAINT "publisher_auto_reply_content_revisions_buttons_check"',
+    );
+    expect(compact).toContain(
+      `jsonb_typeof("buttons") = 'array' AND jsonb_array_length("buttons") <= 8`,
+    );
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE)\b/i,
+    );
+  });
 });

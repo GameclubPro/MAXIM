@@ -242,6 +242,20 @@ async function openPublisherButtonsSheet(page) {
   return { sheet, trigger };
 }
 
+async function openPublisherAutoReplyButtonsSheet(page) {
+  const editor = await openPublisherAutoReplyEditor(page);
+  const trigger = editor.getByRole('button', { name: 'Добавить кнопки', exact: true });
+  await trigger.waitFor({ state: 'visible' });
+  await trigger.click();
+
+  const sheet = page.locator('.publication-buttons-sheet');
+  await sheet.waitFor({ state: 'visible' });
+  await sheet.getByRole('dialog', { name: 'Кнопки', exact: true }).waitFor({ state: 'visible' });
+  await sheet.getByLabel('Название', { exact: true }).first().fill('Открыть каталог');
+  await sheet.getByLabel('Ссылка', { exact: true }).first().fill('https://max.ru/catalog');
+  return sheet;
+}
+
 async function assertPublisherButtonsSheetIsDirect(sheet) {
   if ((await sheet.getByRole('checkbox').count()) !== 0) {
     throw new Error('Publisher buttons sheet restored the obsolete enable toggle.');
@@ -696,6 +710,13 @@ const scenarioBehaviors = [
     name: 'publisher-auto-replies-editor',
     beforeShot: async (page) => {
       await openPublisherAutoReplyEditor(page);
+    },
+  },
+  {
+    name: 'publisher-auto-replies-editor-buttons',
+    beforeShot: async (page) => {
+      await openPublisherAutoReplyButtonsSheet(page);
+      await page.waitForTimeout(120);
     },
   },
   {

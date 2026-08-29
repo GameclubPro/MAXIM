@@ -335,6 +335,7 @@ test('publisher auto replies cover cold list, create sheet, editor bottom, and k
     'publisher-auto-replies-cold',
     'publisher-auto-replies-create-sheet',
     'publisher-auto-replies-editor',
+    'publisher-auto-replies-editor-buttons',
     'publisher-auto-replies-editor-bottom',
     'publisher-auto-replies-editor-keyboard',
   ];
@@ -361,6 +362,7 @@ test('publisher auto replies cover cold list, create sheet, editor bottom, and k
   assert.equal(scenarios.get('publisher-auto-replies-editor-keyboard')?.keyboard, true);
   assert.equal(scenarios.get('publisher-auto-replies-editor-bottom')?.keyboard, false);
   assert.equal(scenarios.get('publisher-auto-replies-editor')?.keyboard, undefined);
+  assert.equal(scenarios.get('publisher-auto-replies-editor-buttons')?.keyboard, undefined);
 
   const selection = selectMiniappVisualScenarios({
     changedFiles: ['apps/miniapp/src/pages/publisher-auto-replies-page.tsx'],
@@ -384,6 +386,9 @@ test('publisher auto replies cover cold list, create sheet, editor bottom, and k
   assert.match(bottomBehavior, /\.publisher-auto-reply-editor__section/u);
   assert.match(bottomBehavior, /scrollIntoView/u);
   assert.match(bottomBehavior, /assertLocatorWithinViewport/u);
+  assert.match(captureSource, /openPublisherAutoReplyButtonsSheet/u);
+  assert.match(captureSource, /name: 'Добавить кнопки'/u);
+  assert.match(captureSource, /fill\('Открыть каталог'\)/u);
 });
 
 test('large publisher catalog scenario activates pagination without pointer interception', () => {

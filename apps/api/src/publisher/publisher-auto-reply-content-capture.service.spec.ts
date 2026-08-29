@@ -100,9 +100,42 @@ describe('PublisherAutoReplyContentCaptureService', () => {
           fileName: 'auto-reply-image-2.jpg',
         },
       ],
+      buttons: [],
       omissions: [],
     });
     expect(maxClient.validateMediaUploadPayload).toHaveBeenCalledTimes(2);
+  });
+
+  it('imports safe link buttons and reports unsupported keyboard actions', async () => {
+    const { service } = createFixture(
+      exactMessage({
+        body: {
+          text: 'Выберите раздел',
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    { type: 'link', text: 'Каталог', url: 'https://example.com/catalog' },
+                    { type: 'callback', text: 'Внутреннее действие', payload: 'private-action' },
+                  ],
+                  [{ type: 'link', text: 'Поддержка', url: 'https://max.ru/support' }],
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await expect(service.capture(captureParams)).resolves.toMatchObject({
+      buttons: [
+        { text: 'Каталог', url: 'https://example.com/catalog' },
+        { text: 'Поддержка', url: 'https://max.ru/support' },
+      ],
+      omissions: ['buttons_not_imported'],
+    });
   });
 
   it('rejects two downloaded images with the same SHA-256 content', async () => {

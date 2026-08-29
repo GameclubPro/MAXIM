@@ -156,6 +156,13 @@ function listPreviewPublisherAutoReplies(
             previewUrl: `/publisher/entities/chat/${encodeURIComponent(chatId)}/auto-replies/preview-auto-reply-${encodeURIComponent(chatId)}-1/assets/preview-auto-reply-asset-${encodeURIComponent(chatId)}-1`,
           },
         ],
+        buttons: [
+          {
+            text: 'Открыть прайс',
+            url: 'https://max.ru/publik_preview_bot',
+            row: 0,
+          },
+        ],
         createdAt: state.clock.now().toISOString(),
       },
       createdByUserId: 'preview-user',
@@ -497,6 +504,7 @@ function buildPreviewPublisherAutoReplyContent(
     text: input.text,
     textFormat: input.textFormat,
     images,
+    buttons: input.buttons,
     createdAt: state.clock.now().toISOString(),
   };
 }

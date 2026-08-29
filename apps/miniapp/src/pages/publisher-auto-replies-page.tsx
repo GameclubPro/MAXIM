@@ -1,4 +1,4 @@
-import type { BroadcastImage } from '@maxim/contracts';
+import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import {
   type PublisherAutoReplyAsset,
   type PublisherAutoReplyRule,
@@ -14,7 +14,7 @@ import {
   WarningCircle,
   Xmark,
 } from 'iconoir-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { AutoReplyCreateSheet } from '../components/auto-reply-create-sheet';
 import { BroadcastContentComposer } from '../components/broadcast-content-composer';
@@ -38,6 +38,7 @@ import { getPublisherEntity, updatePublisherModules } from '../lib/api/publisher
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { clearAutoReplyDraft } from '../lib/auto-reply-draft';
+import { formatBroadcastButtonsStatus } from '../lib/broadcast-link-buttons';
 import { useManagedEntityLeaveGuard } from '../lib/managed-entity-navigation';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
@@ -63,6 +64,11 @@ import './publisher-auto-replies-page.css';
 
 const AUTO_REPLY_QUERY_ROOT = ['publisher-auto-replies'] as const;
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
+const PublicationButtonsSheet = lazy(() =>
+  import('../features/publications/publication-buttons-sheet').then((module) => ({
+    default: module.PublicationButtonsSheet,
+  })),
+);
 
 type EditorTarget = { kind: 'create' } | { kind: 'edit'; rule: PublisherAutoReplyRule };
 
@@ -198,6 +204,7 @@ function createDraftFromRule(rule: PublisherAutoReplyRule): AutoReplyDraft {
       fileName: asset.fileName,
       mimeType: asset.mimeType,
     })),
+    buttons: rule.content.buttons.map(({ text, url }) => ({ text, url })),
     cooldownSeconds: rule.cooldownSeconds,
     enabled: rule.enabled,
   };
@@ -237,6 +244,7 @@ function PublisherAutoReplyEditor({
   });
   const [issues, setIssues] = useState<AutoReplyDraftIssues>({});
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [buttonsOpen, setButtonsOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [imagesPreparing, setImagesPreparing] = useState(false);
@@ -261,6 +269,7 @@ function PublisherAutoReplyEditor({
             fileName: image.fileName,
           })),
         ],
+        buttons: normalized.buttons.map((button, index) => ({ ...button, row: index })),
       };
 
       return rule
@@ -275,7 +284,7 @@ function PublisherAutoReplyEditor({
         : createPublisherAutoReply(api, chatId, {
             requestId: requestIdRef.current,
             phrase: normalized.phrase,
-            enabled: normalized.enabled,
+            enabled: true,
             cooldownSeconds: normalized.cooldownSeconds,
             content,
           });
@@ -320,7 +329,9 @@ function PublisherAutoReplyEditor({
   const validateAndReview = useCallback(() => {
     const nextIssues = validateAutoReplyDraft(draft);
     setIssues(nextIssues);
-    if (Object.keys(nextIssues).length === 0) {
+    if (nextIssues.buttons) {
+      setButtonsOpen(true);
+    } else if (Object.keys(nextIssues).length === 0) {
       setReviewOpen(true);
     }
   }, [draft]);
@@ -341,7 +352,7 @@ function PublisherAutoReplyEditor({
       requestClose();
       return true;
     },
-    { enabled: !reviewOpen && !closeConfirmOpen, priority: 500 },
+    { enabled: !buttonsOpen && !reviewOpen && !closeConfirmOpen, priority: 500 },
   );
 
   useManagedEntityLeaveGuard({
@@ -465,6 +476,11 @@ function PublisherAutoReplyEditor({
           sourceFormat="markdown"
           maxLength={AUTO_REPLY_TEXT_MAX_LENGTH}
           images={draft.images}
+          buttons={draft.buttons}
+          buttonsPerRow={1}
+          buttonsStatusLabel="Кнопка"
+          buttonsActive={draft.buttons.length > 0}
+          buttonsError={Boolean(issues.buttons)}
           maxImages={Math.max(1, AUTO_REPLY_MAX_IMAGES - draft.retainedAssets.length)}
           allowImages={draft.retainedAssets.length < AUTO_REPLY_MAX_IMAGES}
           disabled={saveMutation.isPending}
@@ -473,6 +489,7 @@ function PublisherAutoReplyEditor({
           textPlaceholder="Текст ответа"
           textAriaLabel="Текст автоответа"
           showToolLabels
+          onOpenButtons={() => setButtonsOpen(true)}
           onTextChange={(text) => {
             updateDraft({ text });
             if (issues.content) {
@@ -499,15 +516,17 @@ function PublisherAutoReplyEditor({
         <header>
           <h2>Настройки</h2>
         </header>
-        <div className="publisher-auto-reply-editor__toggle-row">
-          <strong>Правило включено</strong>
-          <AutoReplySwitch
-            checked={draft.enabled}
-            disabled={saveMutation.isPending}
-            label={draft.enabled ? 'Выключить правило' : 'Включить правило'}
-            onChange={(enabled) => updateDraft({ enabled })}
-          />
-        </div>
+        {rule ? (
+          <div className="publisher-auto-reply-editor__toggle-row">
+            <strong>Правило включено</strong>
+            <AutoReplySwitch
+              checked={draft.enabled}
+              disabled={saveMutation.isPending}
+              label={draft.enabled ? 'Выключить правило' : 'Включить правило'}
+              onChange={(enabled) => updateDraft({ enabled })}
+            />
+          </div>
+        ) : null}
         <label className="publisher-auto-reply-editor__select-field">
           <span>Пауза для одного участника</span>
           <select
@@ -534,6 +553,22 @@ function PublisherAutoReplyEditor({
         </button>
       </footer>
 
+      {buttonsOpen ? (
+        <Suspense fallback={null}>
+          <PublicationButtonsSheet
+            open
+            buttons={draft.buttons}
+            disabled={saveMutation.isPending}
+            onApply={(buttons: BroadcastLinkButton[]) => {
+              updateDraft({ buttons });
+              setIssues((current) => ({ ...current, buttons: undefined }));
+              setButtonsOpen(false);
+            }}
+            onClose={() => setButtonsOpen(false)}
+          />
+        </Suspense>
+      ) : null}
+
       <ActionConfirmSheet
         id="publisher-auto-reply-review"
         open={reviewOpen}
@@ -546,11 +581,14 @@ function PublisherAutoReplyEditor({
             fallback={totalImages > 0 ? 'Ответ без текста' : null}
           />
         }
-        previewMeta={`${
-          totalImages > 0 ? `${totalImages} фото · ` : ''
-        }Пауза: ${getAutoReplyCooldownLabel(draft.cooldownSeconds)} · ${
-          draft.enabled ? 'включён' : 'выключен'
-        }`}
+        previewMeta={[
+          totalImages > 0 ? `${totalImages} фото` : null,
+          draft.buttons.length > 0 ? formatBroadcastButtonsStatus(draft.buttons) : null,
+          `Пауза: ${getAutoReplyCooldownLabel(draft.cooldownSeconds)}`,
+          rule ? (draft.enabled ? 'включён' : 'выключен') : null,
+        ]
+          .filter((item): item is string => item !== null)
+          .join(' · ')}
         confirmLabel={rule ? 'Сохранить' : 'Создать'}
         confirmBusyLabel="Сохраняю..."
         tone="accent"
@@ -640,8 +678,15 @@ function AutoReplyRuleRow({
 
       <footer className="publisher-auto-reply-row__footer">
         <span>
-          {rule.content.images.length > 0 ? `${rule.content.images.length} фото · ` : ''}
-          Пауза: {getAutoReplyCooldownLabel(rule.cooldownSeconds)}
+          {[
+            rule.content.images.length > 0 ? `${rule.content.images.length} фото` : null,
+            rule.content.buttons.length > 0
+              ? formatBroadcastButtonsStatus(rule.content.buttons)
+              : null,
+            `Пауза: ${getAutoReplyCooldownLabel(rule.cooldownSeconds)}`,
+          ]
+            .filter((item): item is string => item !== null)
+            .join(' · ')}
         </span>
         <span className="publisher-auto-reply-row__actions">
           <button

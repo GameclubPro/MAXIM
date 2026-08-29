@@ -62,6 +62,7 @@ function delivery(overrides: Record<string, unknown> = {}) {
       ruleId: 'rule-1',
       text: '**Цена** сегодня',
       textFormat: PublicationContentFormat.MARKDOWN,
+      buttons: [],
       assets: [],
     },
     ...overrides,
@@ -199,7 +200,6 @@ describe('PublisherAutoReplyDeliveryService', () => {
     );
   });
 
-
   it('cancels before upload or send when the frozen rule revision changed', async () => {
     const leased = delivery({ rule: { ...delivery().rule, version: 4 } });
     const { service, maxClient, deliveryUpdateMany } = harness({ leased });
@@ -264,6 +264,38 @@ describe('PublisherAutoReplyDeliveryService', () => {
     expect(
       JSON.stringify((maxClient.sendMessageImmediateWithId as jest.Mock).mock.calls),
     ).not.toContain('__maximUploadBotId');
+  });
+
+  it('sends publication-compatible link buttons from the frozen content revision in full-width rows', async () => {
+    const leased = delivery({
+      contentRevision: {
+        ...delivery().contentRevision,
+        buttons: [
+          { text: 'Первая', url: 'https://example.com/1', row: 0 },
+          { text: 'Вторая', url: 'https://example.com/2', row: 1 },
+          { text: 'Третья', url: 'https://example.com/3', row: 2 },
+          { text: 'Четвёртая', url: 'https://example.com/4', row: 3 },
+        ],
+      },
+    });
+    const { service, maxClient } = harness({ leased });
+
+    await service.process(job, attempt);
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '-100',
+      '<strong>Цена</strong> сегодня',
+      expect.objectContaining({
+        buttons: [
+          [{ type: 'link', text: 'Первая', url: 'https://example.com/1' }],
+          [{ type: 'link', text: 'Вторая', url: 'https://example.com/2' }],
+          [{ type: 'link', text: 'Третья', url: 'https://example.com/3' }],
+          [{ type: 'link', text: 'Четвёртая', url: 'https://example.com/4' }],
+        ],
+        messageLink: { type: 'reply', mid: 'source-message-1' },
+      }),
+      expect.objectContaining({ botId: 'publisher-bot' }),
+    );
   });
 
   it('does not retry an unknown failure after crossing the send fence', async () => {

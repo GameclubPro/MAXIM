@@ -84,6 +84,7 @@ export class PublisherAutoReplyAuthoringProcessingService {
       const prepared: PreparedPublisherAutoReplyContent = {
         text: captured.text,
         textFormat: captured.textFormat,
+        buttons: captured.buttons,
         images: captured.images.map((image) => ({
           kind: 'prepared',
           sha256: createHash('sha256').update(image.bytes).digest('hex'),

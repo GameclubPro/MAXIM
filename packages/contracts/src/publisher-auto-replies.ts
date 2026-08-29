@@ -1,15 +1,19 @@
 import { z } from 'zod';
 import {
+  MAX_PUBLICATION_BUTTONS,
   MAX_PUBLICATION_IMAGE_BASE64_LENGTH,
   MAX_PUBLICATION_IMAGES,
   MAX_PUBLICATION_IMAGES_TOTAL_BASE64_LENGTH,
   MAX_PUBLICATION_TEXT_LENGTH,
+  publicationButtonSchema,
   publicationTextFormatSchema,
+  type PublicationButton,
 } from './publication.js';
 
 export const MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH = 80;
 export const MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH = MAX_PUBLICATION_TEXT_LENGTH;
 export const MAX_PUBLISHER_AUTO_REPLY_IMAGES = MAX_PUBLICATION_IMAGES;
+export const MAX_PUBLISHER_AUTO_REPLY_BUTTONS = MAX_PUBLICATION_BUTTONS;
 export const MAX_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS = 86_400;
 export const DEFAULT_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS = 30;
 export const MAX_PUBLISHER_AUTO_REPLY_REQUEST_ID_LENGTH = 128;
@@ -56,6 +60,9 @@ export const publisherAutoReplyImageInputSchema = z.discriminatedUnion('type', [
 ]);
 export type PublisherAutoReplyImageInput = z.infer<typeof publisherAutoReplyImageInputSchema>;
 
+export const publisherAutoReplyButtonSchema = publicationButtonSchema;
+export type PublisherAutoReplyButton = PublicationButton;
+
 export const publisherAutoReplyContentInputSchema = z
   .object({
     text: z.string().max(MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH).default(''),
@@ -63,6 +70,10 @@ export const publisherAutoReplyContentInputSchema = z
     images: z
       .array(publisherAutoReplyImageInputSchema)
       .max(MAX_PUBLISHER_AUTO_REPLY_IMAGES)
+      .default([]),
+    buttons: z
+      .array(publisherAutoReplyButtonSchema)
+      .max(MAX_PUBLISHER_AUTO_REPLY_BUTTONS)
       .default([]),
   })
   .strict()
@@ -119,6 +130,10 @@ export const publisherAutoReplyContentSchema = z
     text: z.string().max(MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH),
     textFormat: publicationTextFormatSchema,
     images: z.array(publisherAutoReplyAssetSchema).max(MAX_PUBLISHER_AUTO_REPLY_IMAGES),
+    buttons: z
+      .array(publisherAutoReplyButtonSchema)
+      .max(MAX_PUBLISHER_AUTO_REPLY_BUTTONS)
+      .default([]),
     createdAt: z.string().datetime(),
   })
   .strict();

@@ -12,6 +12,7 @@ import type {
   PublisherAutoReplyAuthoringJob,
   PublisherAutoReplyAuthoringNotification,
 } from '../publisher/publisher-auto-reply-authoring.queue';
+import { readStoredPublicationButtons } from './publication-buttons';
 
 const NOTIFICATION_LEASE_MS = 30_000;
 
@@ -31,7 +32,12 @@ export class PublisherAutoReplyAuthoringDeliveryService {
         rule: {
           include: {
             currentContentRevision: {
-              select: { text: true, textFormat: true, _count: { select: { assets: true } } },
+              select: {
+                text: true,
+                textFormat: true,
+                buttons: true,
+                _count: { select: { assets: true } },
+              },
             },
           },
         },
@@ -86,12 +92,10 @@ export class PublisherAutoReplyAuthoringDeliveryService {
 
     if (job.callbackId?.trim()) {
       try {
-        await this.maxClient.answerCallback(
-          job.callbackId,
-          'Готово',
-          undefined,
-          { ...requestOptions, rateLimitEntityId: privateChatId },
-        );
+        await this.maxClient.answerCallback(job.callbackId, 'Готово', undefined, {
+          ...requestOptions,
+          rateLimitEntityId: privateChatId,
+        });
       } catch {
         this.logger.warn(
           { sessionId: session.id, notification: job.notification },
@@ -186,6 +190,7 @@ export class PublisherAutoReplyAuthoringDeliveryService {
       omissions: unknown;
       rule: {
         currentContentRevision: {
+          buttons: unknown;
           _count: { assets: number };
         } | null;
       } | null;
@@ -201,12 +206,19 @@ export class PublisherAutoReplyAuthoringDeliveryService {
         }
         return 'Отправьте кодовую фразу для автоответа.';
       case 'prompt_content':
-        return `Фраза «${session.phrase ?? ''}» сохранена. Пришлите одним сообщением ответ, который Публик будет отправлять участникам. Можно использовать форматирование и добавить до 10 фото. Готовое сообщение можно переслать.`;
+        return `Фраза «${session.phrase ?? ''}» сохранена. Пришлите одним сообщением ответ, который Публик будет отправлять участникам. Можно использовать форматирование и добавить до 10 фото. Кнопки-ссылки можно добавить после сохранения в мини-приложении.`;
       case 'processing':
-        return 'Готовлю автоответ и сохраняю фотографии.';
+        return 'Готовлю автоответ.';
       case 'ready': {
         const imageCount = session.rule?.currentContentRevision?._count.assets ?? 0;
-        const summary = `Автоответ для фразы «${session.phrase ?? ''}» готов${imageCount ? `. Фото: ${imageCount}.` : '.'}`;
+        const buttonCount = readStoredPublicationButtons(
+          session.rule?.currentContentRevision?.buttons,
+        ).length;
+        const details = [
+          ...(imageCount ? [`Фото: ${imageCount}`] : []),
+          ...(buttonCount ? [`Кнопки: ${buttonCount}`] : []),
+        ];
+        const summary = `Автоответ для фразы «${session.phrase ?? ''}» готов.${details.length > 0 ? ` ${details.join('. ')}.` : ''}`;
         return `${summary}${this.omissionText(session.omissions)}`;
       }
       case 'conflict':
@@ -225,7 +237,7 @@ export class PublisherAutoReplyAuthoringDeliveryService {
     const omissions = new Set(value.filter((item): item is string => typeof item === 'string'));
     const notices = [
       ...(omissions.has('formatting_not_preserved') ? [' Часть форматирования упрощена.'] : []),
-      ...(omissions.has('buttons_not_imported') ? [' Кнопки не добавлены.'] : []),
+      ...(omissions.has('buttons_not_imported') ? [' Некоторые кнопки не добавлены.'] : []),
       ...(omissions.has('attachments_not_imported') ? [' Другие вложения не добавлены.'] : []),
     ];
     return notices.join('');
@@ -285,7 +297,7 @@ export class PublisherAutoReplyAuthoringDeliveryService {
       case 'media_too_large':
         return 'Суммарный размер фотографий слишком большой.';
       case 'unsupported_content':
-        return 'Для автоответа поддерживаются форматированный текст и фотографии.';
+        return 'Для автоответа поддерживаются текст, фотографии и кнопки-ссылки.';
       case 'access_or_activation_failed':
         return 'Не удалось подтвердить доступ к чату. Откройте Публик и проверьте права.';
       default:

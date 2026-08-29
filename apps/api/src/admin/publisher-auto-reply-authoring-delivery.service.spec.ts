@@ -20,7 +20,12 @@ function notificationSession(overrides: Record<string, unknown> = {}) {
     notificationLockToken: null,
     notificationDispatchStartedAt: null,
     rule: {
-      currentContentRevision: { text: '**Ответ**', textFormat: 'markdown', _count: { assets: 2 } },
+      currentContentRevision: {
+        text: '**Ответ**',
+        textFormat: 'markdown',
+        buttons: [],
+        _count: { assets: 2 },
+      },
     },
     ...overrides,
   };
@@ -89,7 +94,7 @@ describe('PublisherAutoReplyAuthoringDeliveryService', () => {
     const [chatId, text] = maxClient.sendMessageImmediateWithId.mock.calls[0] ?? [];
     expect(chatId).toBe('42');
     expect(text).toBe(
-      'Фраза «Каталог» сохранена. Пришлите одним сообщением ответ, который Публик будет отправлять участникам. Можно использовать форматирование и добавить до 10 фото. Готовое сообщение можно переслать.',
+      'Фраза «Каталог» сохранена. Пришлите одним сообщением ответ, который Публик будет отправлять участникам. Можно использовать форматирование и добавить до 10 фото. Кнопки-ссылки можно добавить после сохранения в мини-приложении.',
     );
     expect(updateMany.mock.calls[2]?.[0]).toEqual(
       expect.objectContaining({

@@ -1,5 +1,10 @@
 import { maxUpdateSchema } from '@maxim/contracts';
 import type { PublicationTextFormat } from '@maxim/contracts/publication';
+import {
+  MAX_PUBLISHER_AUTO_REPLY_BUTTONS,
+  publisherAutoReplyButtonSchema,
+  type PublisherAutoReplyButton,
+} from '@maxim/contracts/publisher-auto-replies';
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import {
@@ -58,6 +63,7 @@ export type PublisherAutoReplyCapturedContent = {
   text: string;
   textFormat: PublicationTextFormat;
   images: PublisherAutoReplyCapturedImage[];
+  buttons: PublisherAutoReplyButton[];
   omissions: Array<
     'buttons_not_imported' | 'attachments_not_imported' | 'formatting_not_preserved'
   >;
@@ -133,14 +139,16 @@ export class PublisherAutoReplyContentCaptureService {
     }
 
     const rawAttachments = extractAttachments(source);
+    const capturedButtons = extractLinkButtons(rawAttachments);
+    if (capturedButtons.omitted) {
+      omissions.push('buttons_not_imported');
+    }
     const imageAttachments: Record<string, unknown>[] = [];
     for (const attachment of rawAttachments) {
       const type = readLowerString(attachment.type);
       if (type === 'image' || type === 'photo') {
         imageAttachments.push(attachment);
-      } else if (type === 'inline_keyboard') {
-        omissions.push('buttons_not_imported');
-      } else if (type !== 'share') {
+      } else if (type !== 'inline_keyboard' && type !== 'share') {
         omissions.push('attachments_not_imported');
       }
     }
@@ -203,6 +211,7 @@ export class PublisherAutoReplyContentCaptureService {
       text: importedText,
       textFormat: rendered ? 'markdown' : 'plain',
       images,
+      buttons: capturedButtons.buttons,
       omissions: [...new Set(omissions)],
     };
   }
@@ -428,6 +437,51 @@ function extractAttachments(message: Record<string, unknown>): Record<string, un
     const row = asRecord(value);
     return row ? [row] : [];
   });
+}
+
+function extractLinkButtons(attachments: readonly Record<string, unknown>[]): {
+  buttons: PublisherAutoReplyButton[];
+  omitted: boolean;
+} {
+  const buttons: PublisherAutoReplyButton[] = [];
+  let omitted = false;
+
+  for (const attachment of attachments) {
+    if (readLowerString(attachment.type) !== 'inline_keyboard') {
+      continue;
+    }
+    const payload = asRecord(attachment.payload);
+    const rows = Array.isArray(payload?.buttons) ? payload.buttons : null;
+    if (!rows) {
+      omitted = true;
+      continue;
+    }
+
+    for (const rawRow of rows) {
+      if (!Array.isArray(rawRow)) {
+        omitted = true;
+        continue;
+      }
+      for (const rawButton of rawRow) {
+        const button = asRecord(rawButton);
+        if (!button || readLowerString(button.type) !== 'link') {
+          omitted = true;
+          continue;
+        }
+        const parsed = publisherAutoReplyButtonSchema.safeParse({
+          text: readString(button.text) ?? '',
+          url: readString(button.url) ?? '',
+        });
+        if (!parsed.success || buttons.length >= MAX_PUBLISHER_AUTO_REPLY_BUTTONS) {
+          omitted = true;
+          continue;
+        }
+        buttons.push(parsed.data);
+      }
+    }
+  }
+
+  return { buttons, omitted };
 }
 
 function extractAttachmentUrl(attachment: Record<string, unknown>): string | null {

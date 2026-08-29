@@ -1,10 +1,12 @@
-import type { BroadcastImage } from '@maxim/contracts';
+import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import {
   DEFAULT_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS,
+  MAX_PUBLISHER_AUTO_REPLY_BUTTONS,
   MAX_PUBLISHER_AUTO_REPLY_IMAGES,
   MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH,
   MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH,
   normalizePublisherAutoReplyPhraseDisplay,
+  publisherAutoReplyButtonSchema,
   type PublisherAutoReplyAuthoringState,
 } from '@maxim/contracts/publisher-auto-replies';
 import { ApiRequestError } from '../lib/api-request-error';
@@ -12,6 +14,7 @@ import { ApiRequestError } from '../lib/api-request-error';
 export const AUTO_REPLY_TEXT_MAX_LENGTH = MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH;
 export const AUTO_REPLY_PHRASE_MAX_LENGTH = MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH;
 export const AUTO_REPLY_MAX_IMAGES = MAX_PUBLISHER_AUTO_REPLY_IMAGES;
+export const AUTO_REPLY_MAX_BUTTONS = MAX_PUBLISHER_AUTO_REPLY_BUTTONS;
 export const AUTO_REPLY_DEFAULT_COOLDOWN_SECONDS = DEFAULT_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS;
 
 export const AUTO_REPLY_COOLDOWN_OPTIONS = [
@@ -34,6 +37,7 @@ export type AutoReplyDraft = {
   text: string;
   images: BroadcastImage[];
   retainedAssets: AutoReplyAssetMetadata[];
+  buttons: BroadcastLinkButton[];
   cooldownSeconds: number;
   enabled: boolean;
 };
@@ -41,6 +45,7 @@ export type AutoReplyDraft = {
 export type AutoReplyDraftIssues = {
   phrase?: string;
   content?: string;
+  buttons?: string;
 };
 
 export function createEmptyAutoReplyDraft(): AutoReplyDraft {
@@ -49,6 +54,7 @@ export function createEmptyAutoReplyDraft(): AutoReplyDraft {
     text: '',
     images: [],
     retainedAssets: [],
+    buttons: [],
     cooldownSeconds: AUTO_REPLY_DEFAULT_COOLDOWN_SECONDS,
     enabled: true,
   };
@@ -76,6 +82,16 @@ export function validateAutoReplyDraft(draft: AutoReplyDraft): AutoReplyDraftIss
     issues.content = `Можно добавить до ${AUTO_REPLY_MAX_IMAGES} фото.`;
   }
 
+  if (
+    draft.buttons.length > AUTO_REPLY_MAX_BUTTONS ||
+    draft.buttons.some(
+      (button, index) =>
+        !publisherAutoReplyButtonSchema.safeParse({ ...button, row: index }).success,
+    )
+  ) {
+    issues.buttons = 'Проверьте названия и ссылки кнопок.';
+  }
+
   return issues;
 }
 
@@ -90,6 +106,10 @@ export function normalizeAutoReplyDraft(draft: AutoReplyDraft): AutoReplyDraft {
     text: draft.text.replace(/\r\n?/gu, '\n'),
     images: draft.images.slice(0, AUTO_REPLY_MAX_IMAGES),
     retainedAssets: draft.retainedAssets.slice(0, AUTO_REPLY_MAX_IMAGES),
+    buttons: draft.buttons.slice(0, AUTO_REPLY_MAX_BUTTONS).map((button) => ({
+      text: button.text.trim(),
+      url: button.url.trim(),
+    })),
     cooldownSeconds: AUTO_REPLY_COOLDOWN_OPTIONS.some(
       (option) => option.value === draft.cooldownSeconds,
     )
