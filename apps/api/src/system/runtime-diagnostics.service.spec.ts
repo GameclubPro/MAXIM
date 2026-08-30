@@ -5,6 +5,7 @@ type RedisHashes = Map<string, Record<string, string>>;
 const redisInstances: Array<{
   hashes: RedisHashes;
   strings: Map<string, string>;
+  scan: jest.Mock;
   pipeline: jest.Mock;
   quit: jest.Mock<Promise<void>, []>;
 }> = [];
@@ -113,6 +114,37 @@ describe('RuntimeDiagnosticsService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('keeps readiness diagnostics on fixed-key Redis reads', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-21T12:00:00.000Z'));
+    const service = new RuntimeDiagnosticsService(createConfigMock() as never);
+
+    await service.recordQueueLagSnapshot({
+      queues: {
+        effectiveLagSec: 3,
+        userFacingEffectiveLagSec: 3,
+        generatedAt: '2026-06-21T12:00:00.000Z',
+        bots: {},
+      },
+      mode: {
+        mode: 'degrade',
+        reason: 'queue lag',
+      },
+    });
+
+    const redis = redisInstances.at(-1)!;
+    const snapshot = await service.getReadinessSnapshot();
+
+    expect(snapshot.burst).toEqual(
+      expect.objectContaining({
+        active: true,
+        peakLagSec: 3,
+      }),
+    );
+    expect(redis.scan).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
   });
 
   it('aggregates spammer read-model rollout health counters', async () => {

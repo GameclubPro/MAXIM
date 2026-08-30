@@ -8,10 +8,7 @@ import {
   isSystemModeRecoveryWindow,
   type SystemModeSnapshot,
 } from './system-mode.service';
-import {
-  MaxApiMetricsService,
-  type MaxApiRateLimitOutcomeSnapshot,
-} from './max-api-metrics.service';
+import { MaxApiMetricsService } from './max-api-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 
 export type BackgroundRuntimeGovernorAction = 'run' | 'slow' | 'pause';
@@ -310,9 +307,7 @@ export class BackgroundRuntimeGovernorService {
 
   async getCriticalLimiterSnapshot(): Promise<BackgroundCriticalLimiterSnapshot> {
     const pressureSnapshot = await this.getPressureSnapshot();
-    if (
-      pressureSnapshot.criticalLimiter?.windowSec === CRITICAL_LIMITER_ALERT_WINDOW_SEC
-    ) {
+    if (pressureSnapshot.criticalLimiter?.windowSec === CRITICAL_LIMITER_ALERT_WINDOW_SEC) {
       return pressureSnapshot.criticalLimiter;
     }
 
@@ -325,12 +320,9 @@ export class BackgroundRuntimeGovernorService {
 
     if (!this.pendingCriticalLimiterSnapshot) {
       this.pendingCriticalLimiterSnapshot = this.maxApiMetricsService
-        .getRateLimitOutcomeSnapshot({ windowSec: CRITICAL_LIMITER_ALERT_WINDOW_SEC })
+        .getStackCriticalLimiterSnapshot({ windowSec: CRITICAL_LIMITER_ALERT_WINDOW_SEC })
         .then((snapshot) => {
-          const result = {
-            windowSec: snapshot.windowSec,
-            internalRejects: snapshot.stack.trafficClasses.critical.internalLimiterRejects,
-          };
+          const result = { ...snapshot };
           this.cachedCriticalLimiterSnapshot = result;
           this.cachedCriticalLimiterSnapshotAtMs = Date.now();
           return result;
@@ -383,22 +375,25 @@ export class BackgroundRuntimeGovernorService {
 
   private async buildPressureSnapshot(): Promise<BackgroundPressureSnapshot> {
     const rateLimitWindowSec = Math.min(60, this.sourceWindowSec);
-    const [mode, queues, maxApi, stackRateLimit, systemPressure] = await Promise.all([
-      this.systemModeService.getEffectiveSnapshot(),
-      this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
-      this.maxApiMetricsService.getSourceSnapshot({ windowSec: this.sourceWindowSec }),
-      this.maxApiMetricsService.getStackRateLimitSnapshot({
-        windowSec: rateLimitWindowSec,
-        capacityScope: 'service',
-      }),
-      this.buildSystemPressureSnapshot(),
-    ]);
+    const [mode, queues, maxApi, stackRateLimit, criticalLimiter, systemPressure] =
+      await Promise.all([
+        this.systemModeService.getEffectiveSnapshot(),
+        this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
+        this.maxApiMetricsService.getSourceTrafficSnapshot({ windowSec: this.sourceWindowSec }),
+        this.maxApiMetricsService.getStackRateLimitSnapshot({
+          windowSec: rateLimitWindowSec,
+          capacityScope: 'service',
+        }),
+        this.maxApiMetricsService.getStackCriticalLimiterSnapshot({
+          windowSec: CRITICAL_LIMITER_ALERT_WINDOW_SEC,
+        }),
+        this.buildSystemPressureSnapshot(),
+      ]);
     const totalRequests = maxApi.overall.totalRequests;
     const backgroundRequests = maxApi.overall.trafficClasses.background.totalRequests;
     const backgroundShare = totalRequests > 0 ? backgroundRequests / totalRequests : 0;
     const stackLoad = this.buildStackLoadSnapshot(stackRateLimit);
     const botLoad = await this.buildBotLoadSnapshot(queues, 'service');
-    const criticalLimiter = this.readCriticalLimiterFromSourceSnapshot(maxApi);
     const workerGroups = Object.entries(queues.webhookDefaultWorkerGroups ?? {}).map(
       ([groupName, metrics]) => ({
         groupName,
@@ -443,28 +438,6 @@ export class BackgroundRuntimeGovernorService {
         totalPressure,
         share: totalPressure > 0 ? primary.pressure / totalPressure : 0,
       },
-    };
-  }
-
-  private readCriticalLimiterFromSourceSnapshot(
-    snapshot: unknown,
-  ): BackgroundCriticalLimiterSnapshot | null {
-    const rateLimitOutcomes = (
-      snapshot as { rateLimitOutcomes?: MaxApiRateLimitOutcomeSnapshot }
-    ).rateLimitOutcomes;
-    const internalRejects =
-      rateLimitOutcomes?.stack.trafficClasses.critical.internalLimiterRejects;
-    if (
-      !rateLimitOutcomes ||
-      typeof internalRejects !== 'number' ||
-      !Number.isFinite(internalRejects)
-    ) {
-      return null;
-    }
-
-    return {
-      windowSec: rateLimitOutcomes.windowSec,
-      internalRejects,
     };
   }
 

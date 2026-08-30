@@ -170,6 +170,11 @@ export type RuntimeDiagnosticsDashboardSnapshot = {
   spammerReadModel: SpammerReadModelSummary;
 };
 
+export type RuntimeDiagnosticsReadinessSnapshot = Pick<
+  RuntimeDiagnosticsDashboardSnapshot,
+  'burst'
+>;
+
 const HOT_PATH_BUCKET_PREFIX = 'runtime:diag:hot-path:v1';
 const HOT_CHAT_COUNT_BUCKET_PREFIX = 'runtime:diag:hot-chat:count:v1';
 const HOT_CHAT_LAST_BUCKET_PREFIX = 'runtime:diag:hot-chat:last:v1';
@@ -637,6 +642,13 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       problemChats,
       spammerSurfaces,
       spammerReadModel,
+    };
+  }
+
+  // FLAG: Readiness is polled frequently; keep this path O(1) and free of keyspace scans.
+  async getReadinessSnapshot(): Promise<RuntimeDiagnosticsReadinessSnapshot> {
+    return {
+      burst: await this.getBurstSnapshot(),
     };
   }
 

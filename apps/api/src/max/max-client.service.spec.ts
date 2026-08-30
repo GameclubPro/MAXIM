@@ -17,6 +17,10 @@ import {
   MAX_ACTION_CRITICAL_QUEUE,
   MAX_ACTION_INTERACTIVE_QUEUE,
 } from './max-action.queue';
+import {
+  MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
+  serializeMaxApiSourceMetricDimension,
+} from './max-api-metrics-key.util';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
 import {
   MAX_FILE_UPLOAD_MAX_BYTES,
@@ -52,6 +56,7 @@ function createMp4Fixture(size = TINY_VALID_MP4.length, fill = 0): Buffer {
 
 jest.mock('ioredis', () => {
   const store = new Map<string, { value: string; expiresAtMs: number | null }>();
+  const setStore = new Map<string, Set<string>>();
   const readEntry = (key: string) => {
     const entry = store.get(key);
     if (!entry) {
@@ -133,6 +138,21 @@ jest.mock('ioredis', () => {
           }
           return deleted;
         }),
+        sadd: jest.fn().mockImplementation(async (key: string, ...members: string[]) => {
+          const values = setStore.get(key) ?? new Set<string>();
+          let added = 0;
+          for (const member of members) {
+            if (!values.has(member)) {
+              values.add(member);
+              added += 1;
+            }
+          }
+          setStore.set(key, values);
+          return added;
+        }),
+        smembers: jest
+          .fn()
+          .mockImplementation(async (key: string) => [...(setStore.get(key) ?? new Set<string>())]),
         eval: jest
           .fn()
           .mockImplementation(
@@ -311,8 +331,12 @@ jest.mock('ioredis', () => {
           ),
         quit: jest.fn().mockResolvedValue(undefined),
         multi: jest.fn().mockImplementation(() => {
-          const operations: Array<['incr' | 'expire', ...unknown[]]> = [];
+          const operations: Array<['incr' | 'expire' | 'sadd', ...unknown[]]> = [];
           const pipeline = {
+            sadd: (key: string, ...members: string[]) => {
+              operations.push(['sadd', key, ...members]);
+              return pipeline;
+            },
             incr: (key: string) => {
               operations.push(['incr', key]);
               return pipeline;
@@ -3271,7 +3295,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ),
     };
     const service = createService(httpService);
-    const limiterRedis = (service as unknown as { limiterRedis: { get: jest.Mock } }).limiterRedis;
+    const limiterRedis = (
+      service as unknown as {
+        limiterRedis: { get: jest.Mock; sadd: jest.Mock; smembers: jest.Mock };
+      }
+    ).limiterRedis;
     const nowSec = Math.floor(Date.now() / 1_000);
 
     await service.answerCallback('callback-2', 'Открываю', undefined, {
@@ -10173,7 +10201,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ),
     };
     const service = createService(httpService);
-    const limiterRedis = (service as unknown as { limiterRedis: { get: jest.Mock } }).limiterRedis;
+    const limiterRedis = (
+      service as unknown as {
+        limiterRedis: { get: jest.Mock; sadd: jest.Mock; smembers: jest.Mock };
+      }
+    ).limiterRedis;
     const nowSec = Math.floor(Date.now() / 1_000);
 
     await expect(
@@ -10191,6 +10223,35 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await expect(
       limiterRedis.get(`maxapi:rps:source:v1:777000_bot:background:managed_refresh:${nowSec}`),
     ).resolves.toBe('1');
+    await expect(limiterRedis.smembers(MAX_API_SOURCE_DIMENSION_CATALOG_KEY)).resolves.toContain(
+      serializeMaxApiSourceMetricDimension({
+        botId: '777000_bot',
+        trafficClass: 'background',
+        sourceTag: 'managed_refresh',
+      }),
+    );
+    expect(limiterRedis.sadd).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('retries source dimension registration after a Redis transaction failure and then caches it', async () => {
+    const service = createService({ request: jest.fn() });
+    const internal = service as unknown as {
+      limiterRedis: { sadd: jest.Mock };
+      recordRateLimitUsage: (
+        botId: string,
+        trafficClass: 'background',
+        sourceTag: string,
+      ) => Promise<void>;
+    };
+    internal.limiterRedis.sadd.mockRejectedValueOnce(new Error('catalog unavailable'));
+
+    await internal.recordRateLimitUsage('catalog-retry-bot', 'background', 'catalog_retry_source');
+    await internal.recordRateLimitUsage('catalog-retry-bot', 'background', 'catalog_retry_source');
+    await internal.recordRateLimitUsage('catalog-retry-bot', 'background', 'catalog_retry_source');
+
+    expect(internal.limiterRedis.sadd).toHaveBeenCalledTimes(2);
 
     await service.onModuleDestroy();
   });

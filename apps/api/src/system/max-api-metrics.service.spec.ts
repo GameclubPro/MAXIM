@@ -1,9 +1,23 @@
 import { MaxApiMetricsService } from './max-api-metrics.service';
+import {
+  buildMaxApiSourceMetricKey,
+  MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY,
+  MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_KEY,
+  MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
+  parseMaxApiSourceMetricDimension,
+  serializeMaxApiSourceMetricDimension,
+} from '../max/max-api-metrics-key.util';
 
 const redisStores: Array<Map<string, string>> = [];
+const redisSetStores: Array<Map<string, Set<string>>> = [];
 const redisInstances: Array<{
   scan: jest.Mock<Promise<[string, string[]]>, [string, string, string, string, string]>;
   mget: jest.Mock<Promise<Array<string | null>>, string[]>;
+  get: jest.Mock;
+  set: jest.Mock;
+  sadd: jest.Mock;
+  smembers: jest.Mock;
+  eval: jest.Mock;
   quit: jest.Mock<Promise<void>, []>;
 }> = [];
 
@@ -11,6 +25,7 @@ jest.mock('ioredis', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => {
     const store = new Map<string, string>();
+    const sets = new Map<string, Set<string>>();
     const instance = {
       scan: jest
         .fn()
@@ -32,9 +47,47 @@ jest.mock('ioredis', () => ({
       mget: jest
         .fn()
         .mockImplementation(async (...keys: string[]) => keys.map((key) => store.get(key) ?? null)),
+      get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
+      set: jest.fn().mockImplementation(async (key: string, value: string, ...args: unknown[]) => {
+        if (args.includes('NX') && store.has(key)) {
+          return null;
+        }
+        store.set(key, value);
+        return 'OK';
+      }),
+      sadd: jest.fn().mockImplementation(async (key: string, ...members: string[]) => {
+        const values = sets.get(key) ?? new Set<string>();
+        let added = 0;
+        for (const member of members) {
+          if (!values.has(member)) {
+            values.add(member);
+            added += 1;
+          }
+        }
+        sets.set(key, values);
+        return added;
+      }),
+      smembers: jest
+        .fn()
+        .mockImplementation(async (key: string) => [...(sets.get(key) ?? new Set<string>())]),
+      eval: jest
+        .fn()
+        .mockImplementation(
+          async (script: string, _keyCount: number, key: string, token: string) => {
+            if (store.get(key) !== token) {
+              return 0;
+            }
+            if (script.includes("redis.call('PEXPIRE'")) {
+              return 1;
+            }
+            store.delete(key);
+            return 1;
+          },
+        ),
       quit: jest.fn().mockResolvedValue(undefined),
     };
     redisStores.push(store);
+    redisSetStores.push(sets);
     redisInstances.push(instance);
     return instance;
   }),
@@ -70,12 +123,182 @@ function createConfigMock(appServiceName?: string) {
 describe('MaxApiMetricsService', () => {
   beforeEach(() => {
     redisStores.length = 0;
+    redisSetStores.length = 0;
     redisInstances.length = 0;
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:10:00.000Z'));
   });
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('round-trips source metric dimensions without delimiter ambiguity', () => {
+    const dimension = {
+      botId: 'bot-a',
+      trafficClass: 'background' as const,
+      sourceTag: 'managed_refresh',
+    };
+
+    expect(
+      parseMaxApiSourceMetricDimension(serializeMaxApiSourceMetricDimension(dimension)),
+    ).toEqual(dimension);
+    expect(parseMaxApiSourceMetricDimension('not-json')).toBeNull();
+    expect(parseMaxApiSourceMetricDimension('["bot-a","unknown","source"]')).toBeNull();
+  });
+
+  it('bootstraps legacy source dimensions once and keeps later traffic reads scan-free', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const sets = redisSetStores[0]!;
+    const redis = redisInstances[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const dimension = {
+      botId: 'bot-a',
+      trafficClass: 'background' as const,
+      sourceTag: 'managed_refresh',
+    };
+    store.set(buildMaxApiSourceMetricKey({ ...dimension, sec: nowSec }), '3');
+
+    const [first, concurrent] = await Promise.all([
+      service.getSourceTrafficSnapshot({ windowSec: 60 }),
+      service.getSourceTrafficSnapshot({ windowSec: 60 }),
+    ]);
+    const later = await service.getSourceTrafficSnapshot({ windowSec: 60 });
+
+    expect(first.overall.totalRequests).toBe(3);
+    expect(concurrent.overall.totalRequests).toBe(3);
+    expect(later.overall.totalRequests).toBe(3);
+    expect(redis.scan).toHaveBeenCalledTimes(1);
+    expect(store.get(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)).toBe('1');
+    expect(sets.get(MAX_API_SOURCE_DIMENSION_CATALOG_KEY)).toEqual(
+      new Set([serializeMaxApiSourceMetricDimension(dimension)]),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('uses the completed source catalog without scanning Redis', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const sets = redisSetStores[0]!;
+    const redis = redisInstances[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const dimension = {
+      botId: 'bot-a',
+      trafficClass: 'critical' as const,
+      sourceTag: 'moderation_delete',
+    };
+    store.set(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY, '1');
+    sets.set(
+      MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
+      new Set([serializeMaxApiSourceMetricDimension(dimension), 'malformed']),
+    );
+    store.set(buildMaxApiSourceMetricKey({ ...dimension, sec: nowSec }), '2');
+
+    await expect(service.getSourceTrafficSnapshot({ windowSec: 60 })).resolves.toMatchObject({
+      overall: {
+        totalRequests: 2,
+        trafficClasses: { critical: { totalRequests: 2 } },
+      },
+      sources: { moderation_delete: { totalRequests: 2 } },
+    });
+    expect(redis.scan).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('renews bootstrap ownership during a long multi-page source scan', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const redis = redisInstances[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const dimension = {
+      botId: 'bot-a',
+      trafficClass: 'background' as const,
+      sourceTag: 'managed_refresh',
+    };
+    const metricKey = buildMaxApiSourceMetricKey({ ...dimension, sec: nowSec });
+    store.set(metricKey, '1');
+    redis.scan
+      .mockImplementationOnce(async () => {
+        jest.setSystemTime(new Date(Date.now() + 31_000));
+        return ['1', [metricKey]];
+      })
+      .mockResolvedValueOnce(['0', []]);
+
+    await service.getSourceTrafficSnapshot({ windowSec: 60 });
+
+    const renewCalls = redis.eval.mock.calls.filter(([script]) =>
+      String(script).includes("redis.call('PEXPIRE'"),
+    );
+    expect(renewCalls).toHaveLength(2);
+    expect(store.get(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)).toBe('1');
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not publish bootstrap completion after a failed scan and retries cleanly', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const redis = redisInstances[0]!;
+    redis.scan.mockRejectedValueOnce(new Error('scan unavailable'));
+
+    await expect(service.getSourceTrafficSnapshot({ windowSec: 60 })).rejects.toThrow(
+      'scan unavailable',
+    );
+    expect(store.has(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)).toBe(false);
+
+    await expect(service.getSourceTrafficSnapshot({ windowSec: 60 })).resolves.toMatchObject({
+      overall: { totalRequests: 0 },
+    });
+    expect(redis.scan).toHaveBeenCalledTimes(2);
+    expect(store.get(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)).toBe('1');
+
+    await service.onModuleDestroy();
+  });
+
+  it('refuses to publish bootstrap completion after losing lock ownership', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const redis = redisInstances[0]!;
+    redis.eval.mockImplementation(
+      async (script: string, _keyCount: number, key: string, token: string) => {
+        if (script.includes("redis.call('PEXPIRE'")) {
+          store.set(key, 'another-owner');
+          return 0;
+        }
+        if (store.get(key) !== token) {
+          return 0;
+        }
+        store.delete(key);
+        return 1;
+      },
+    );
+
+    await expect(service.getSourceTrafficSnapshot({ windowSec: 60 })).rejects.toThrow(
+      'Lost the MAX API source metric dimension bootstrap lock',
+    );
+    expect(store.has(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)).toBe(false);
+    expect(store.get(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_KEY)).toBe('another-owner');
+
+    await service.onModuleDestroy();
+  });
+
+  it('reads critical stack limiter rejects by exact keys without scanning Redis', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const redis = redisInstances[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    store.set(`maxapi:rate-limit:v1:internal_limiter:stack:critical:${nowSec}`, '3');
+    store.set(`maxapi:rate-limit:v1:internal_limiter:stack:critical:${nowSec - 1}`, '2');
+
+    await expect(service.getStackCriticalLimiterSnapshot({ windowSec: 10 })).resolves.toEqual({
+      windowSec: 60,
+      internalRejects: 5,
+    });
+    expect(redis.scan).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
   });
 
   it('aggregates source-level MAX API metrics by bot and traffic class', async () => {

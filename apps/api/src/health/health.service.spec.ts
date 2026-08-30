@@ -914,7 +914,8 @@ describe('HealthService', () => {
     };
     const runtimeDiagnosticsService = {
       recordQueueLagSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
-      getDashboardSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      getReadinessSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      getDashboardSnapshot: jest.fn(),
     };
 
     const service = new HealthService(
@@ -940,7 +941,8 @@ describe('HealthService', () => {
       }),
     );
     expect(runtimeDiagnosticsService.recordQueueLagSnapshot).toHaveBeenCalledTimes(1);
-    expect(runtimeDiagnosticsService.getDashboardSnapshot).toHaveBeenCalledTimes(1);
+    expect(runtimeDiagnosticsService.getReadinessSnapshot).toHaveBeenCalledTimes(1);
+    expect(runtimeDiagnosticsService.getDashboardSnapshot).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

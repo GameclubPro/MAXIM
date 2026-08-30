@@ -61,7 +61,10 @@ import type {
 import {
   buildMaxApiServiceBotClassMetricKey,
   buildMaxApiServiceStackClassMetricKey,
+  buildMaxApiSourceMetricKey,
+  MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
   normalizeMaxApiRateLimitServiceScope,
+  serializeMaxApiSourceMetricDimension,
 } from './max-api-metrics-key.util';
 import {
   markMaxSendDispatchLedgerFinalized,
@@ -838,6 +841,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly rateLimitLogAtMsByKey = new Map<string, number>();
+  private readonly registeredSourceMetricDimensions = new Set<string>();
   private readonly listBotChatsInFlight = new Map<string, Promise<MaxBotChat[]>>();
   private readonly currentChatMemberAccessInFlight = new Map<
     string,
@@ -7040,6 +7044,15 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<void> {
     const normalizedSourceTag = this.normalizeMetricSourceTag(sourceTag);
     const nowSec = Math.floor(Date.now() / 1_000);
+    const sourceDimension = normalizedSourceTag
+      ? serializeMaxApiSourceMetricDimension({
+          botId,
+          trafficClass,
+          sourceTag: normalizedSourceTag,
+        })
+      : null;
+    const registerSourceDimension =
+      sourceDimension !== null && !this.registeredSourceMetricDimensions.has(sourceDimension);
     const metrics = [
       { key: `maxapi:rps:global:${botId}:${nowSec}`, ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC },
       {
@@ -7071,7 +7084,12 @@ export class MaxClientService implements OnModuleDestroy {
       ...(normalizedSourceTag
         ? [
             {
-              key: `maxapi:rps:source:v1:${botId}:${trafficClass}:${normalizedSourceTag}:${nowSec}`,
+              key: buildMaxApiSourceMetricKey({
+                botId,
+                trafficClass,
+                sourceTag: normalizedSourceTag,
+                sec: nowSec,
+              }),
               ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC,
             },
           ]
@@ -7080,10 +7098,21 @@ export class MaxClientService implements OnModuleDestroy {
 
     try {
       const pipeline = this.limiterRedis.multi();
+      // FLAG: A dimension's first metric and catalog registration must share one MULTI.
+      if (registerSourceDimension && sourceDimension) {
+        pipeline.sadd(MAX_API_SOURCE_DIMENSION_CATALOG_KEY, sourceDimension);
+      }
       for (const metric of metrics) {
         pipeline.incr(metric.key).expire(metric.key, metric.ttlSec);
       }
-      await pipeline.exec();
+      const results = await pipeline.exec();
+      const commandError = results?.find(([error]) => error !== null)?.[0];
+      if (commandError) {
+        throw commandError;
+      }
+      if (registerSourceDimension && sourceDimension) {
+        this.registeredSourceMetricDimensions.add(sourceDimension);
+      }
     } catch (error: unknown) {
       this.logger.debug(
         {

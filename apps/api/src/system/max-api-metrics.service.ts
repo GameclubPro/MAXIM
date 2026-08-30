@@ -1,10 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import {
   buildMaxApiServiceBotClassMetricKey,
   buildMaxApiServiceStackClassMetricKey,
+  buildMaxApiSourceMetricKey,
+  MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY,
+  MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_KEY,
+  MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
+  MAX_API_SOURCE_RPS_METRICS_KEY_PREFIX,
   normalizeMaxApiRateLimitServiceScope,
+  parseMaxApiSourceMetricDimension,
+  parseMaxApiSourceMetricKey,
+  serializeMaxApiSourceMetricDimension,
+  type MaxApiSourceMetricDimension,
 } from '../max/max-api-metrics-key.util';
 
 export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
@@ -56,12 +66,36 @@ type SourceCounterBucket = {
   trafficClassBuckets: Record<MaxApiTrafficClass, Map<number, number>>;
 };
 
-const MAX_API_SOURCE_METRICS_KEY_PREFIX = 'maxapi:rps:source:v1';
+type SourceBotCounterBucket = {
+  overall: SourceCounterBucket;
+  sources: Map<string, SourceCounterBucket>;
+};
+
 const MAX_API_GLOBAL_METRICS_KEY_PREFIX = 'maxapi:rps:global';
 const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
 const DEFAULT_MAX_API_SOURCE_METRICS_WINDOW_SEC = 10 * 60;
 const MAX_API_SOURCE_METRICS_WINDOW_SEC_LIMIT = 6 * 60 * 60;
 const MAX_API_SOURCE_METRICS_SCAN_COUNT = 500;
+const MAX_API_SOURCE_METRICS_READ_BATCH_SIZE = 2_000;
+const MAX_API_SOURCE_DIMENSION_CATALOG_WRITE_BATCH_SIZE = 500;
+const MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_TTL_MS = 5 * 60_000;
+const MAX_API_SOURCE_DIMENSION_BOOTSTRAP_RENEW_INTERVAL_MS = 30_000;
+const MAX_API_SOURCE_DIMENSION_BOOTSTRAP_WAIT_MS =
+  MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_TTL_MS + 30_000;
+const MAX_API_SOURCE_DIMENSION_BOOTSTRAP_POLL_MS = 250;
+const MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_VALUE = '1';
+const RELEASE_SOURCE_DIMENSION_BOOTSTRAP_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+const RENEW_SOURCE_DIMENSION_BOOTSTRAP_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`;
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LOAD_SMOOTHING_SEC = 5;
 const MAX_API_TRAFFIC_CLASSES: readonly MaxApiTrafficClass[] = [
@@ -78,6 +112,8 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
   private readonly rateLimitServiceScope: string;
+  private sourceDimensionCatalogReady = false;
+  private sourceDimensionCatalogPromise: Promise<void> | null = null;
 
   constructor(configService: ConfigService) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
@@ -113,70 +149,64 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   }
 
   async getSourceSnapshot(options: { windowSec?: number } = {}) {
+    const [traffic, rateLimitOutcomes] = await Promise.all([
+      this.getSourceTrafficSnapshot(options),
+      this.getRateLimitOutcomeSnapshot(options),
+    ]);
+
+    return {
+      ...traffic,
+      rateLimitOutcomes,
+    };
+  }
+
+  async getSourceTrafficSnapshot(options: { windowSec?: number } = {}) {
     const nowSec = Math.floor(Date.now() / 1_000);
     const windowSec = this.normalizeWindowSec(options.windowSec);
     const startSec = nowSec - windowSec + 1;
-    const rateLimitOutcomes = await this.getRateLimitOutcomeSnapshot({ windowSec });
-    const keys = await this.scanKeys(`${MAX_API_SOURCE_METRICS_KEY_PREFIX}:*`);
-    const parsedEntries = keys
-      .map((key) => this.parseMetricKey(key))
-      .filter(
-        (entry): entry is NonNullable<ReturnType<typeof this.parseMetricKey>> =>
-          entry !== null && entry.sec >= startSec && entry.sec <= nowSec,
-      );
-
-    if (parsedEntries.length === 0) {
-      return {
-        generatedAt: new Date().toISOString(),
-        windowSec,
-        windowStartAt: new Date(startSec * 1_000).toISOString(),
-        windowEndAt: new Date(nowSec * 1_000).toISOString(),
-        overall: this.buildEmptyStats(windowSec),
-        sources: {},
-        bots: {},
-        rateLimitOutcomes,
-      };
-    }
-
-    const countsByKey = await this.readCounts(parsedEntries.map((entry) => entry.key));
+    await this.ensureSourceDimensionCatalog();
+    const dimensions = this.parseSourceMetricDimensions(
+      await this.redis.smembers(MAX_API_SOURCE_DIMENSION_CATALOG_KEY),
+    );
     const overallBucket = this.createSourceCounterBucket();
     const sourceBuckets = new Map<string, SourceCounterBucket>();
-    const botBuckets = new Map<
-      string,
-      {
-        overall: SourceCounterBucket;
-        sources: Map<string, SourceCounterBucket>;
+    const botBuckets = new Map<string, SourceBotCounterBucket>();
+    let readBatch: Array<MaxApiSourceMetricDimension & { key: string; sec: number }> = [];
+    const flushReadBatch = async (): Promise<void> => {
+      if (readBatch.length === 0) {
+        return;
       }
-    >();
+      const currentBatch = readBatch;
+      readBatch = [];
+      const values = await this.redis.mget(...currentBatch.map((entry) => entry.key));
+      currentBatch.forEach((entry, index) => {
+        const count = Number(values[index] ?? 0);
+        if (!Number.isFinite(count) || count <= 0) {
+          return;
+        }
+        this.recordSourceMetricCount({
+          entry,
+          count: Math.trunc(count),
+          overallBucket,
+          sourceBuckets,
+          botBuckets,
+        });
+      });
+    };
 
-    for (const entry of parsedEntries) {
-      const count = countsByKey.get(entry.key) ?? 0;
-      if (count <= 0) {
-        continue;
+    for (const dimension of dimensions) {
+      for (let sec = startSec; sec <= nowSec; sec += 1) {
+        readBatch.push({
+          ...dimension,
+          sec,
+          key: buildMaxApiSourceMetricKey({ ...dimension, sec }),
+        });
+        if (readBatch.length >= MAX_API_SOURCE_METRICS_READ_BATCH_SIZE) {
+          await flushReadBatch();
+        }
       }
-
-      this.incrementBucket(overallBucket, entry.trafficClass, entry.sec, count);
-
-      const sourceBucket = sourceBuckets.get(entry.sourceTag) ?? this.createSourceCounterBucket();
-      this.incrementBucket(sourceBucket, entry.trafficClass, entry.sec, count);
-      sourceBuckets.set(entry.sourceTag, sourceBucket);
-
-      const botEntry =
-        botBuckets.get(entry.botId) ??
-        (() => {
-          const next = {
-            overall: this.createSourceCounterBucket(),
-            sources: new Map<string, SourceCounterBucket>(),
-          };
-          botBuckets.set(entry.botId, next);
-          return next;
-        })();
-      this.incrementBucket(botEntry.overall, entry.trafficClass, entry.sec, count);
-      const botSourceBucket =
-        botEntry.sources.get(entry.sourceTag) ?? this.createSourceCounterBucket();
-      this.incrementBucket(botSourceBucket, entry.trafficClass, entry.sec, count);
-      botEntry.sources.set(entry.sourceTag, botSourceBucket);
     }
+    await flushReadBatch();
 
     return {
       generatedAt: new Date().toISOString(),
@@ -207,7 +237,23 @@ export class MaxApiMetricsService implements OnModuleDestroy {
             },
           ]),
       ),
-      rateLimitOutcomes,
+    };
+  }
+
+  async getStackCriticalLimiterSnapshot(
+    options: { windowSec?: number } = {},
+  ): Promise<{ windowSec: number; internalRejects: number }> {
+    const windowSec = this.normalizeWindowSec(options.windowSec);
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const startSec = nowSec - windowSec + 1;
+    const keys: string[] = [];
+    for (let sec = startSec; sec <= nowSec; sec += 1) {
+      keys.push(`${MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX}:internal_limiter:stack:critical:${sec}`);
+    }
+    const counts = await this.readCounts(keys);
+    return {
+      windowSec,
+      internalRejects: keys.reduce((total, key) => total + (counts.get(key) ?? 0), 0),
     };
   }
 
@@ -415,6 +461,176 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     );
   }
 
+  private async ensureSourceDimensionCatalog(): Promise<void> {
+    if (this.sourceDimensionCatalogReady) {
+      return;
+    }
+    if (!this.sourceDimensionCatalogPromise) {
+      const promise = this.bootstrapOrAwaitSourceDimensionCatalog().finally(() => {
+        if (this.sourceDimensionCatalogPromise === promise) {
+          this.sourceDimensionCatalogPromise = null;
+        }
+      });
+      this.sourceDimensionCatalogPromise = promise;
+    }
+    await this.sourceDimensionCatalogPromise;
+    this.sourceDimensionCatalogReady = true;
+  }
+
+  private async bootstrapOrAwaitSourceDimensionCatalog(): Promise<void> {
+    const deadlineAtMs = Date.now() + MAX_API_SOURCE_DIMENSION_BOOTSTRAP_WAIT_MS;
+    while (Date.now() < deadlineAtMs) {
+      if (
+        (await this.redis.get(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY)) ===
+        MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_VALUE
+      ) {
+        return;
+      }
+
+      const lockToken = randomUUID();
+      const acquired = await this.redis.set(
+        MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_KEY,
+        lockToken,
+        'PX',
+        MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_TTL_MS,
+        'NX',
+      );
+      if (acquired === 'OK') {
+        try {
+          await this.bootstrapSourceDimensionCatalog(lockToken);
+          await this.assertSourceDimensionBootstrapOwnership(lockToken);
+          // FLAG: Publish completion only after every scanned dimension was added idempotently.
+          await this.redis.set(
+            MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_KEY,
+            MAX_API_SOURCE_DIMENSION_BOOTSTRAP_COMPLETE_VALUE,
+          );
+          return;
+        } finally {
+          await this.redis
+            .eval(
+              RELEASE_SOURCE_DIMENSION_BOOTSTRAP_LOCK_SCRIPT,
+              1,
+              MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_KEY,
+              lockToken,
+            )
+            .catch(() => undefined);
+        }
+      }
+
+      await this.sleep(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_POLL_MS);
+    }
+
+    throw new Error('Timed out waiting for the MAX API source metric dimension bootstrap');
+  }
+
+  private async bootstrapSourceDimensionCatalog(lockToken: string): Promise<void> {
+    let cursor = '0';
+    const discoveredDimensions = new Set<string>();
+    let nextRenewAtMs = Date.now() + MAX_API_SOURCE_DIMENSION_BOOTSTRAP_RENEW_INTERVAL_MS;
+    do {
+      const [nextCursor, keys] = await this.redis.scan(
+        cursor,
+        'MATCH',
+        `${MAX_API_SOURCE_RPS_METRICS_KEY_PREFIX}:*`,
+        'COUNT',
+        String(MAX_API_SOURCE_METRICS_SCAN_COUNT),
+      );
+      cursor = nextCursor;
+      const dimensions: string[] = [];
+      for (const key of keys) {
+        const entry = parseMaxApiSourceMetricKey(key);
+        if (entry) {
+          const dimension = serializeMaxApiSourceMetricDimension(entry);
+          if (!discoveredDimensions.has(dimension)) {
+            discoveredDimensions.add(dimension);
+            dimensions.push(dimension);
+          }
+        }
+      }
+      for (
+        let index = 0;
+        index < dimensions.length;
+        index += MAX_API_SOURCE_DIMENSION_CATALOG_WRITE_BATCH_SIZE
+      ) {
+        await this.redis.sadd(
+          MAX_API_SOURCE_DIMENSION_CATALOG_KEY,
+          ...dimensions.slice(index, index + MAX_API_SOURCE_DIMENSION_CATALOG_WRITE_BATCH_SIZE),
+        );
+      }
+      if (Date.now() >= nextRenewAtMs) {
+        await this.assertSourceDimensionBootstrapOwnership(lockToken);
+        nextRenewAtMs = Date.now() + MAX_API_SOURCE_DIMENSION_BOOTSTRAP_RENEW_INTERVAL_MS;
+      }
+    } while (cursor !== '0');
+  }
+
+  private async assertSourceDimensionBootstrapOwnership(lockToken: string): Promise<void> {
+    const renewed = Number(
+      await this.redis.eval(
+        RENEW_SOURCE_DIMENSION_BOOTSTRAP_LOCK_SCRIPT,
+        1,
+        MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_KEY,
+        lockToken,
+        String(MAX_API_SOURCE_DIMENSION_BOOTSTRAP_LOCK_TTL_MS),
+      ),
+    );
+    if (renewed !== 1) {
+      throw new Error('Lost the MAX API source metric dimension bootstrap lock');
+    }
+  }
+
+  private parseSourceMetricDimensions(values: readonly string[]): MaxApiSourceMetricDimension[] {
+    const dimensions = new Map<string, MaxApiSourceMetricDimension>();
+    for (const value of values) {
+      const dimension = parseMaxApiSourceMetricDimension(value);
+      if (!dimension) {
+        continue;
+      }
+      dimensions.set(serializeMaxApiSourceMetricDimension(dimension), dimension);
+    }
+    return [...dimensions.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, dimension]) => dimension);
+  }
+
+  private recordSourceMetricCount(params: {
+    entry: MaxApiSourceMetricDimension & { sec: number };
+    count: number;
+    overallBucket: SourceCounterBucket;
+    sourceBuckets: Map<string, SourceCounterBucket>;
+    botBuckets: Map<string, SourceBotCounterBucket>;
+  }): void {
+    const { entry, count, overallBucket, sourceBuckets, botBuckets } = params;
+    this.incrementBucket(overallBucket, entry.trafficClass, entry.sec, count);
+
+    const sourceBucket = sourceBuckets.get(entry.sourceTag) ?? this.createSourceCounterBucket();
+    this.incrementBucket(sourceBucket, entry.trafficClass, entry.sec, count);
+    sourceBuckets.set(entry.sourceTag, sourceBucket);
+
+    const botEntry =
+      botBuckets.get(entry.botId) ??
+      (() => {
+        const next = {
+          overall: this.createSourceCounterBucket(),
+          sources: new Map<string, SourceCounterBucket>(),
+        };
+        botBuckets.set(entry.botId, next);
+        return next;
+      })();
+    this.incrementBucket(botEntry.overall, entry.trafficClass, entry.sec, count);
+    const botSourceBucket =
+      botEntry.sources.get(entry.sourceTag) ?? this.createSourceCounterBucket();
+    this.incrementBucket(botSourceBucket, entry.trafficClass, entry.sec, count);
+    botEntry.sources.set(entry.sourceTag, botSourceBucket);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref();
+    });
+  }
+
   private async scanKeys(pattern: string): Promise<string[]> {
     const keys: string[] = [];
     let cursor = '0';
@@ -451,42 +667,6 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     }
 
     return counts;
-  }
-
-  private parseMetricKey(key: string): {
-    key: string;
-    botId: string;
-    trafficClass: MaxApiTrafficClass;
-    sourceTag: string;
-    sec: number;
-  } | null {
-    const prefix = `${MAX_API_SOURCE_METRICS_KEY_PREFIX}:`;
-    if (!key.startsWith(prefix)) {
-      return null;
-    }
-
-    const [botId, trafficClassRaw, sourceTag, secRaw, ...rest] = key
-      .slice(prefix.length)
-      .split(':');
-    if (!botId || !sourceTag || rest.length > 0) {
-      return null;
-    }
-    if (!MAX_API_TRAFFIC_CLASSES.includes(trafficClassRaw as MaxApiTrafficClass)) {
-      return null;
-    }
-
-    const sec = Number.parseInt(secRaw ?? '', 10);
-    if (!Number.isFinite(sec)) {
-      return null;
-    }
-
-    return {
-      key,
-      botId,
-      trafficClass: trafficClassRaw as MaxApiTrafficClass,
-      sourceTag,
-      sec,
-    };
   }
 
   private parseRateLimitOutcomeKey(key: string): {

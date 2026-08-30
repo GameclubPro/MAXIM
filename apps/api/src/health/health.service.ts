@@ -591,7 +591,7 @@ export class HealthService implements OnModuleDestroy {
     const maxApiBotSnapshots = await this.tryGetMaxApiBotSnapshots(
       Object.keys(cachedQueueMetrics?.bots ?? {}),
     );
-    const runtimeDiagnostics = await this.tryGetRuntimeDiagnosticsSnapshot();
+    const runtimeDiagnostics = await this.tryGetRuntimeReadinessSnapshot();
 
     const effectiveLagSec =
       queueMetrics?.userFacingEffectiveLagSec ??
@@ -1012,8 +1012,8 @@ export class HealthService implements OnModuleDestroy {
     }
   }
 
-  private async tryGetRuntimeDiagnosticsSnapshot(): Promise<Awaited<
-    ReturnType<RuntimeDiagnosticsService['getDashboardSnapshot']>
+  private async tryGetRuntimeReadinessSnapshot(): Promise<Awaited<
+    ReturnType<RuntimeDiagnosticsService['getReadinessSnapshot']>
   > | null> {
     if (!this.runtimeDiagnosticsService) {
       return null;
@@ -1021,9 +1021,9 @@ export class HealthService implements OnModuleDestroy {
 
     try {
       return await this.withTimeout(
-        this.runtimeDiagnosticsService.getDashboardSnapshot(),
+        this.runtimeDiagnosticsService.getReadinessSnapshot(),
         this.readinessOptionalDiagnosticsTimeoutMs,
-        'runtime diagnostics snapshot',
+        'runtime readiness diagnostics snapshot',
       );
     } catch {
       return null;
