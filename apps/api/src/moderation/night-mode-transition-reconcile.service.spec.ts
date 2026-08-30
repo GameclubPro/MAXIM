@@ -374,7 +374,7 @@ describe('NightModeTransitionReconcileService', () => {
     expect(statement).toContain('"last_attempt_at" =');
   });
 
-  it('does not resurrect an expired lease or mutate the scheduler before another claim', async () => {
+  it('renews an expired lease while its exact generation and token are still owned', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:00:00.000Z'));
     try {
       const request = { chat_id: 'chat-lost-lease', generation: 3n };
@@ -394,12 +394,7 @@ describe('NightModeTransitionReconcileService', () => {
           values[1] === request.chat_id &&
           values[2] === request.generation &&
           values[3] === leaseToken;
-        const requiresUnexpiredLease = statement.includes('"lease_expires_at" > CURRENT_TIMESTAMP');
-        if (
-          exactOwner &&
-          (!requiresUnexpiredLease ||
-            (leaseExpiresAt !== null && leaseExpiresAt.getTime() > Date.now()))
-        ) {
+        if (exactOwner) {
           leaseExpiresAt = values[0] as Date;
           return [{ chat_id: request.chat_id }];
         }
@@ -419,8 +414,45 @@ describe('NightModeTransitionReconcileService', () => {
       expect(ownershipStatement).toContain('UPDATE "night_mode_transition_reconcile_requests"');
       expect(ownershipStatement).toContain('"generation" =');
       expect(ownershipStatement).toContain('"lease_token" =');
-      expect(ownershipStatement).toContain('"lease_expires_at" > CURRENT_TIMESTAMP');
+      expect(ownershipStatement).not.toContain('"lease_expires_at" > CURRENT_TIMESTAMP');
       expect(ownershipStatement).toContain('RETURNING "chat_id"');
+      expect(scheduler.repairAccessSchedule).toHaveBeenCalledTimes(1);
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not renew an expired lease after another claim replaces its token', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:00:00.000Z'));
+    try {
+      const request = { chat_id: 'chat-reclaimed-lease', generation: 8n };
+      let currentToken: string | null = null;
+      const queryRaw = jest.fn(async (query: unknown) => {
+        const statement = extractSqlText(query);
+        const values = extractSqlValues(query);
+        if (statement.includes('WITH candidates AS')) {
+          currentToken = 'replacement-owner-token';
+          const leaseExpiresAt = values[4] as Date;
+          jest.setSystemTime(new Date(leaseExpiresAt.getTime() + 1));
+          return [request];
+        }
+        return values[3] === currentToken ? [{ chat_id: request.chat_id }] : [];
+      });
+      const { prisma, scheduler, service } = createService({ requests: [request], queryRaw });
+
+      await expect(
+        (
+          service as unknown as {
+            reconcileBatch: () => Promise<number>;
+          }
+        ).reconcileBatch(),
+      ).resolves.toBe(1);
+
+      const ownershipStatement = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
+      expect(ownershipStatement).toContain('"generation" =');
+      expect(ownershipStatement).toContain('"lease_token" =');
+      expect(ownershipStatement).not.toContain('"lease_expires_at" > CURRENT_TIMESTAMP');
       expect(scheduler.repairAccessSchedule).not.toHaveBeenCalled();
       expect(prisma.$executeRaw).not.toHaveBeenCalled();
     } finally {
@@ -451,6 +483,36 @@ describe('NightModeTransitionReconcileService', () => {
       leaseToken: expect.any(String),
     });
     expect(prisma.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('heartbeats an expired batch lease only by its exact generation and token', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValue([{ chat_id: 'chat-heartbeat-expired', generation: 9n }]);
+    const { service } = createService({ queryRaw });
+
+    await (
+      service as unknown as {
+        renewBatchLeases(
+          requests: Array<{ chat_id: string; generation: bigint }>,
+          leaseToken: string,
+        ): Promise<void>;
+      }
+    ).renewBatchLeases(
+      [{ chat_id: 'chat-heartbeat-expired', generation: 9n }],
+      'lease-heartbeat-expired',
+    );
+
+    const statement = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+    expect(statement).toContain('request."generation" = expected."generation"');
+    expect(statement).toContain('request."lease_token" =');
+    expect(statement).not.toContain('request."lease_expires_at" > CURRENT_TIMESTAMP');
+    expect(extractSqlValues(queryRaw.mock.calls[0]?.[0])).toEqual([
+      'chat-heartbeat-expired',
+      9n,
+      expect.any(Date),
+      'lease-heartbeat-expired',
+    ]);
   });
 
   it('settles a preserved tombstone at the exact repaired generation instead of deleting it', async () => {
@@ -690,7 +752,7 @@ describe('NightModeTransitionReconcileService', () => {
         leaseExpiresAt: Date | null;
         deleted: boolean;
       };
-      const rows: FakeRequestRow[] = Array.from({ length: 9 }, (_, index) => ({
+      const rows: FakeRequestRow[] = Array.from({ length: 4 }, (_, index) => ({
         chat_id: `chat-tail-${index + 1}`,
         generation: BigInt(index + 1),
         requestedAt: new Date(),
@@ -721,9 +783,6 @@ describe('NightModeTransitionReconcileService', () => {
           if (statement.includes('WITH expected("chat_id", "generation") AS')) {
             const leaseExpiresAt = values[values.length - 2] as Date;
             const leaseToken = values[values.length - 1] as string;
-            const requiresUnexpiredLease = statement.includes(
-              'request."lease_expires_at" > CURRENT_TIMESTAMP',
-            );
             const renewed: Array<{ chat_id: string; generation: bigint }> = [];
             for (let index = 0; index < values.length - 2; index += 2) {
               const chatId = values[index] as string;
@@ -733,10 +792,7 @@ describe('NightModeTransitionReconcileService', () => {
                   !candidate.deleted &&
                   candidate.chat_id === chatId &&
                   candidate.generation === generation &&
-                  candidate.leaseToken === leaseToken &&
-                  (!requiresUnexpiredLease ||
-                    (candidate.leaseExpiresAt !== null &&
-                      candidate.leaseExpiresAt.getTime() > Date.now())),
+                  candidate.leaseToken === leaseToken,
               );
               if (row) {
                 row.leaseExpiresAt = leaseExpiresAt;
@@ -750,18 +806,12 @@ describe('NightModeTransitionReconcileService', () => {
           const chatId = values[1] as string;
           const generation = values[2] as bigint;
           const leaseToken = values[3] as string;
-          const requiresUnexpiredLease = statement.includes(
-            '"lease_expires_at" > CURRENT_TIMESTAMP',
-          );
           const row = rows.find(
             (candidate) =>
               !candidate.deleted &&
               candidate.chat_id === chatId &&
               candidate.generation === generation &&
-              candidate.leaseToken === leaseToken &&
-              (!requiresUnexpiredLease ||
-                (candidate.leaseExpiresAt !== null &&
-                  candidate.leaseExpiresAt.getTime() > Date.now())),
+              candidate.leaseToken === leaseToken,
           );
           if (!row) {
             return [];
@@ -808,7 +858,7 @@ describe('NightModeTransitionReconcileService', () => {
           firstStartedCount += 1;
           activeRepairCount += 1;
           maxActiveRepairCount = Math.max(maxActiveRepairCount, activeRepairCount);
-          if (firstStartedCount === 2) {
+          if (firstStartedCount === 1) {
             markFirstWaveStarted();
           }
           try {
@@ -851,9 +901,11 @@ describe('NightModeTransitionReconcileService', () => {
       expect(heartbeatStatements[0]).toContain('::BIGINT');
       expect(heartbeatStatements[0]).toContain('request."generation" = expected."generation"');
       expect(heartbeatStatements[0]).toContain('request."lease_token" =');
-      expect(heartbeatStatements[0]).toContain('request."lease_expires_at" > CURRENT_TIMESTAMP');
+      expect(heartbeatStatements[0]).not.toContain(
+        'request."lease_expires_at" > CURRENT_TIMESTAMP',
+      );
       const claimValues = extractSqlValues(firstPrisma.$queryRaw.mock.calls[0]?.[0]);
-      expect(claimValues.filter((value) => value === 16)).toHaveLength(2);
+      expect(claimValues.filter((value) => value === 4)).toHaveLength(2);
 
       await expect(
         (secondService as unknown as { reconcileBatch: () => Promise<number> }).reconcileBatch(),
@@ -861,12 +913,12 @@ describe('NightModeTransitionReconcileService', () => {
       expect(secondScheduler.repairAccessSchedule).not.toHaveBeenCalled();
 
       releaseFirstWave();
-      await expect(firstBatch).resolves.toBe(9);
+      await expect(firstBatch).resolves.toBe(4);
 
-      expect(firstScheduler.repairAccessSchedule).toHaveBeenCalledTimes(9);
-      expect(maxActiveRepairCount).toBe(2);
-      expect(firstScheduler.repairAccessSchedule).toHaveBeenCalledWith('chat-tail-9', {
-        generation: 9n,
+      expect(firstScheduler.repairAccessSchedule).toHaveBeenCalledTimes(4);
+      expect(maxActiveRepairCount).toBe(1);
+      expect(firstScheduler.repairAccessSchedule).toHaveBeenCalledWith('chat-tail-4', {
+        generation: 4n,
         leaseToken: expect.any(String),
       });
       expect(
@@ -878,6 +930,36 @@ describe('NightModeTransitionReconcileService', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('continues through the claimed batch after an unexpected settlement failure', async () => {
+    const requests = Array.from({ length: 4 }, (_, index) => ({
+      chat_id: `chat-settle-${index + 1}`,
+      generation: BigInt(index + 1),
+    }));
+    const settlementError = new Error('settlement connection unavailable');
+    const executeRaw = jest.fn(async (query: unknown) => {
+      const values = extractSqlValues(query);
+      if (values[0] === requests[0]!.chat_id) {
+        throw settlementError;
+      }
+      return 1;
+    });
+    const { scheduler, service } = createService({ requests, executeRaw });
+
+    await expect(
+      (
+        service as unknown as {
+          reconcileBatch: () => Promise<number>;
+        }
+      ).reconcileBatch(),
+    ).rejects.toBe(settlementError);
+
+    expect(scheduler.repairAccessSchedule).toHaveBeenCalledTimes(requests.length);
+    expect(executeRaw).toHaveBeenCalledTimes(requests.length);
+    expect(executeRaw.mock.calls.map(([query]) => extractSqlValues(query)[0])).toEqual(
+      requests.map((request) => request.chat_id),
+    );
   });
 
   it('continues beyond the former lock batch when one chat needs a durable retry', async () => {

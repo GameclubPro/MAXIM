@@ -15,10 +15,24 @@ describe('night mode transition durable migration', () => {
       __dirname,
       '../../prisma/migrations/20260821140000_add_night_mode_transition_manual_acknowledgement/migration.sql',
     );
+    const runtimeVersionMigrationPath = join(
+      __dirname,
+      '../../prisma/migrations/20260830013000_add_night_mode_scheduled_job_runtime_version/migration.sql',
+    );
+    const perChatRecoveryIndexMigrationPath = join(
+      __dirname,
+      '../../prisma/migrations/20260830014000_add_night_mode_per_chat_recovery_index/migration.sql',
+    );
 
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
-      [scriptPath, baseMigrationPath, acknowledgementMigrationPath],
+      [
+        scriptPath,
+        baseMigrationPath,
+        acknowledgementMigrationPath,
+        runtimeVersionMigrationPath,
+        perChatRecoveryIndexMigrationPath,
+      ],
       {
         timeout: 20_000,
         maxBuffer: 1_000_000,

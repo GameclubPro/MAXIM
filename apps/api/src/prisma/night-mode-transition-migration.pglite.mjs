@@ -45,9 +45,36 @@ try {
       "bot_access_checked_at" TIMESTAMPTZ,
       "bot_access_expires_at" TIMESTAMPTZ
     );
+    CREATE TABLE "max_action_ledger" (
+      "id" TEXT PRIMARY KEY,
+      "job_id" TEXT NOT NULL,
+      "action_type" TEXT NOT NULL,
+      "chat_id" TEXT NOT NULL,
+      "source_tag" TEXT,
+      "status" TEXT NOT NULL,
+      "ambiguous" BOOLEAN NOT NULL DEFAULT FALSE,
+      "terminal" BOOLEAN NOT NULL DEFAULT FALSE,
+      "completed_at" TIMESTAMP(3),
+      "dispatch_bot_id" TEXT,
+      "remote_message_id" TEXT
+    );
+    CREATE TABLE "moderation_events" (
+      "id" TEXT PRIMARY KEY,
+      "chat_id" TEXT NOT NULL,
+      "bot_id" TEXT,
+      "message_id" TEXT,
+      "rule_code" TEXT NOT NULL,
+      "metadata" JSONB
+    );
+    CREATE INDEX "moderation_events_chat_message_idx"
+      ON "moderation_events"("chat_id", "message_id");
   `);
   for (const migrationPath of migrationPaths) {
-    await db.exec(await readFile(migrationPath, 'utf8'));
+    const sql = (await readFile(migrationPath, 'utf8')).replace(
+      /CREATE INDEX CONCURRENTLY/gu,
+      'CREATE INDEX',
+    );
+    await db.exec(sql);
   }
 
   const timestampColumns = await db.query(`
@@ -88,6 +115,77 @@ try {
       column.column_name === 'created_at',
   );
   assert.match(String(scheduledCreatedAt?.column_default), /CURRENT_TIMESTAMP/u);
+  const runtimeVersionColumn = await db.query(`
+    SELECT "column_default", "is_nullable"
+    FROM information_schema.columns
+    WHERE "table_name" = 'night_mode_transition_scheduled_jobs'
+      AND "column_name" = 'runtime_version'
+  `);
+  assert.equal(runtimeVersionColumn.rows.length, 1);
+  assert.equal(runtimeVersionColumn.rows[0]?.column_default, '3');
+  assert.equal(runtimeVersionColumn.rows[0]?.is_nullable, 'NO');
+
+  await db.exec(`
+    INSERT INTO "max_action_ledger" (
+      "id", "job_id", "action_type", "chat_id", "source_tag", "status",
+      "ambiguous", "terminal", "completed_at", "dispatch_bot_id", "remote_message_id"
+    )
+    SELECT
+      'ledger-' || LPAD(series::TEXT, 6, '0'),
+      'night-mode:close:chat-' || (series % 100)::TEXT ||
+        ':session:v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      'SEND_MESSAGE',
+      'chat-' || (series % 100)::TEXT,
+      'night_mode_transition',
+      'SUCCEEDED',
+      FALSE,
+      TRUE,
+      TIMESTAMP '2026-05-30 20:00:00' + series * INTERVAL '1 second',
+      'bot-1',
+      'message-' || series::TEXT
+    FROM GENERATE_SERIES(1, 10000) series;
+    ANALYZE "max_action_ledger";
+    ANALYZE "moderation_events";
+  `);
+  const recoveryPlan = await db.query(`
+    EXPLAIN (FORMAT JSON, COSTS FALSE)
+    SELECT
+      ledger."id",
+      ledger."job_id",
+      ledger."completed_at",
+      ledger."dispatch_bot_id",
+      ledger."remote_message_id"
+    FROM "max_action_ledger" ledger
+    WHERE ledger."chat_id" = 'chat-42'
+      AND ledger."terminal" = true
+      AND ledger."completed_at" IS NOT NULL
+      AND ledger."status" = 'SUCCEEDED'
+      AND ledger."ambiguous" = false
+      AND ledger."action_type" = 'SEND_MESSAGE'
+      AND ledger."source_tag" = 'night_mode_transition'
+      AND ledger."remote_message_id" IS NOT NULL
+      AND BTRIM(ledger."remote_message_id") <> ''
+      AND ledger."dispatch_bot_id" IS NOT NULL
+      AND BTRIM(ledger."dispatch_bot_id") <> ''
+      AND ledger."job_id" LIKE 'night-mode:close:%'
+      AND LEFT(ledger."job_id", CHAR_LENGTH('night-mode:close:chat-42:session:')) =
+        'night-mode:close:chat-42:session:'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "moderation_events" event
+        WHERE event."chat_id" = ledger."chat_id"
+          AND event."message_id" = ledger."remote_message_id"
+          AND event."bot_id" = ledger."dispatch_bot_id"
+          AND event."rule_code" = 'NIGHT_MODE_CLOSE_NOTICE'
+          AND event."metadata" ->> 'sessionKey' = SUBSTRING(
+            ledger."job_id" FROM CHAR_LENGTH('night-mode:close:chat-42:session:') + 1
+          )
+      )
+    ORDER BY ledger."completed_at" DESC, ledger."id" DESC
+    LIMIT 20
+  `);
+  const recoveryPlanJson = JSON.stringify(recoveryPlan.rows);
+  assert.match(recoveryPlanJson, /max_action_ledger_night_mode_close_chat_recovery_idx/u);
 
   const reconcileIndexes = await db.query(`
     SELECT "indexname", "indexdef"

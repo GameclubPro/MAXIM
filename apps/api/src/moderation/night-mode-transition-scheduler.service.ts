@@ -27,6 +27,7 @@ import {
   buildNightModeTransitionRecoveryJobId,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
   NIGHT_MODE_TRANSITION_JOB_NAME,
+  NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_QUEUE,
   parseNightModeTransitionRecoveryOnly,
@@ -52,7 +53,9 @@ import { RedisCounterService } from './redis-counter.service';
 
 const NIGHT_MODE_TRANSITION_JOB_ATTEMPTS = 3;
 const NIGHT_MODE_TRANSITION_JOB_BACKOFF_MS = 15_000;
+const NIGHT_MODE_TRANSITION_RUNTIME_VERSION = 4 as const;
 const NIGHT_MODE_TRANSITION_BOOTSTRAP_BATCH_SIZE = 200;
+const NIGHT_MODE_TRANSITION_BOOTSTRAP_RETRY_MS = 30_000;
 const NIGHT_MODE_TRANSITION_RECONCILE_MAX_PASSES = 3;
 const NIGHT_MODE_QUEUE_MUTATION_LOCK_TTL_MS = 120_000;
 const NIGHT_MODE_QUEUE_MUTATION_LOCK_HEARTBEAT_MS = 30_000;
@@ -136,6 +139,7 @@ type NightModeScheduledJobRegistryRow = {
   session_key: string;
   scheduled_for: Date;
   schedule_fingerprint: string;
+  runtime_version?: number;
 };
 
 type NightModeCloseLedgerRow = {
@@ -153,6 +157,14 @@ type NightModeCloseLedgerRow = {
   dispatchStartedAt?: Date | null;
   dispatchBotId: string | null;
   remoteMessageId: string | null;
+};
+
+type NightModeCompletedCloseLedgerRecoveryRow = {
+  id: string;
+  jobId: string;
+  completedAt: Date;
+  dispatchBotId: string;
+  remoteMessageId: string;
 };
 
 type NightModeQueueMutationLockApi = Pick<
@@ -186,10 +198,13 @@ export type NightModeTransitionReconcileResult = {
 @Injectable()
 export class NightModeTransitionSchedulerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NightModeTransitionSchedulerService.name);
+  private readonly runtimeStartedAtMs = Date.now();
   private readonly startupDelayMs: number;
   private readonly backgroundTasksEnabled: boolean;
   private startupTimer: NodeJS.Timeout | null = null;
   private bootstrapInFlight = false;
+  private bootstrapRetryRequested = false;
+  private shuttingDown = false;
   private readonly localQueueMutationChains = new Map<string, Promise<void>>();
   private readonly fallbackScheduledJobRegistry = new Map<
     string,
@@ -219,14 +234,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       return;
     }
 
-    this.startupTimer = setTimeout(() => {
-      this.startupTimer = null;
-      void this.bootstrapEnabledChats();
-    }, this.startupDelayMs);
-    this.startupTimer.unref();
+    this.scheduleBootstrap(this.startupDelayMs);
   }
 
   onModuleDestroy(): void {
+    this.shuttingDown = true;
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
@@ -271,6 +283,8 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         });
 
         const eligibleSettingsRows = await this.filterEligibleSettingsRows(settingsRows);
+        // Startup may inspect the current boundary, but canEnqueueCurrentCatchUp authorizes it only
+        // when v4 durable proof shows that this process generation accepted it while still future.
         await this.enqueueChatSettingsRows(eligibleSettingsRows, {
           includeCurrentClose: true,
           includeCurrentOpen: true,
@@ -288,8 +302,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         },
         'Failed to bootstrap night mode transition jobs',
       );
+      this.requestBootstrapRetry();
     } finally {
       this.bootstrapInFlight = false;
+      if (this.bootstrapRetryRequested) {
+        this.bootstrapRetryRequested = false;
+        this.scheduleBootstrap(NIGHT_MODE_TRANSITION_BOOTSTRAP_RETRY_MS);
+      }
     }
   }
 
@@ -345,7 +364,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       // FLAG: Settings and membership writes durably request this repair in PostgreSQL. Eligible
       // schedules only fill missing deterministic jobs so routine refreshes do not churn the queue.
       for (let pass = 1; pass <= NIGHT_MODE_TRANSITION_RECONCILE_MAX_PASSES; pass += 1) {
-        const recovery = await this.ensureCloseEventRecoveryJob(normalizedChatId, reconcileFence);
+        const recovery = await this.ensureCloseEventRecoveryJob(normalizedChatId, reconcileFence, {
+          scanHistoricalLedger: true,
+        });
         const expectation = snapshot.settings
           ? await this.ensureAccessScheduleOccurrences(snapshot.settings, reconcileFence, recovery)
           : null;
@@ -353,6 +374,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           await this.clearChatJobsForChatIds(normalizedChatIds, {
             strict: true,
             keepJobIds: recovery.jobId ? new Set([recovery.jobId]) : undefined,
+            reconcileFence,
           });
         }
 
@@ -372,7 +394,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         }
         // FLAG: Any effective state change invalidates jobs observed or created in this pass.
         // Clear them before rebuilding from the newly committed snapshot.
-        await this.clearChatJobsForChatIds(normalizedChatIds, { strict: true });
+        await this.clearChatJobsForChatIds(normalizedChatIds, {
+          strict: true,
+          reconcileFence,
+        });
         snapshot = verified;
       }
 
@@ -604,6 +629,18 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           },
           'Deferred failed night mode bootstrap chat to its durable request',
         );
+        try {
+          await this.requestDurableReconcile(initialSettings.chatId);
+        } catch (requestError: unknown) {
+          this.logger.error(
+            {
+              chatId: initialSettings.chatId,
+              error: requestError instanceof Error ? requestError.message : String(requestError),
+            },
+            'Failed to retain a durable night mode bootstrap retry',
+          );
+          this.requestBootstrapRetry();
+        }
       }
     }
   }
@@ -630,7 +667,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         if (!currentSettings) {
           return;
         }
-        const recovery = await this.ensureCloseEventRecoveryJob(currentSettings.chatId);
+        const recovery = await this.ensureCloseEventRecoveryJob(currentSettings.chatId, undefined, {
+          scanHistoricalLedger: false,
+        });
         const occurrences = this.resolveTransitionOccurrences(currentSettings, options);
         await this.clearChatJobsForChatIds([currentSettings.chatId], {
           strict: true,
@@ -682,7 +721,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     // another exact replacement. A later writer owns its existing post-commit reconciliation.
     for (let pass = 1; pass <= NIGHT_MODE_TRANSITION_RECONCILE_MAX_PASSES; pass += 1) {
       let enqueueResult: NightModeEnqueueOccurrencesResult | null = null;
-      const recovery = await this.ensureCloseEventRecoveryJob(chatId);
+      const recovery = await this.ensureCloseEventRecoveryJob(chatId, undefined, {
+        scanHistoricalLedger: false,
+      });
       if (snapshot.settings) {
         const occurrences = this.resolveTransitionOccurrences(snapshot.settings, options);
         await this.clearChatJobsForChatIds([chatId], {
@@ -1002,9 +1043,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
               jobId,
               sessionKey: occurrence.sessionKey,
               transition: occurrence.transition,
+              scheduledFor,
               fingerprint: scheduleFingerprint,
             },
-            { strict: options.strict },
+            { strict: options.strict, reconcileFence: options.reconcileFence },
           )
         : ({ kind: 'enqueue' } satisfies NightModeCurrentCatchUpResolution);
       if (catchUpResolution.kind === 'blocked') {
@@ -1016,7 +1058,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         continue;
       }
 
-      await this.upsertScheduledJobRegistryIntent(
+      const durableReconcileRetained = await this.upsertScheduledJobRegistryIntent(
         {
           chat_id: chatId,
           job_id: jobId,
@@ -1024,33 +1066,46 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           session_key: occurrence.sessionKey,
           scheduled_for: occurrence.dueAt,
           schedule_fingerprint: scheduleFingerprint,
+          runtime_version: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
         },
         options.reconcileFence,
       );
-      await this.queue.add(
-        NIGHT_MODE_TRANSITION_JOB_NAME,
-        {
-          chatId,
-          transition: occurrence.transition,
-          scheduledFor,
-          sessionKey: occurrence.sessionKey,
-          retryPolicyName: 'night-mode-transition',
-          transitionRuntimeVersion: 3,
-          scheduleFingerprint,
-          createdAt: new Date().toISOString(),
-        },
-        {
-          jobId,
-          delay: Math.max(0, occurrence.dueAt.getTime() - nowMs),
-          attempts: NIGHT_MODE_TRANSITION_JOB_ATTEMPTS,
-          backoff: {
-            type: 'fixed',
-            delay: NIGHT_MODE_TRANSITION_JOB_BACKOFF_MS,
+      try {
+        if (!isCurrentCatchUp) {
+          await this.promoteFutureTransitionJob(jobId, scheduleFingerprint);
+        }
+        await this.queue.add(
+          NIGHT_MODE_TRANSITION_JOB_NAME,
+          {
+            chatId,
+            transition: occurrence.transition,
+            scheduledFor,
+            sessionKey: occurrence.sessionKey,
+            retryPolicyName: 'night-mode-transition',
+            transitionRuntimeVersion: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
+            scheduleFingerprint,
+            createdAt: new Date().toISOString(),
           },
-          removeOnComplete: true,
-          removeOnFail: 1_000,
-        },
-      );
+          {
+            jobId,
+            delay: Math.max(0, occurrence.dueAt.getTime() - nowMs),
+            attempts: NIGHT_MODE_TRANSITION_JOB_ATTEMPTS,
+            backoff: {
+              type: 'fixed',
+              delay: NIGHT_MODE_TRANSITION_JOB_BACKOFF_MS,
+            },
+            removeOnComplete: true,
+            removeOnFail: 1_000,
+          },
+        );
+      } catch (error: unknown) {
+        await this.retainDurableReconcileAfterQueueFailure(
+          chatId,
+          durableReconcileRetained,
+          options.reconcileFence,
+        );
+        throw error;
+      }
     }
 
     return {
@@ -1098,7 +1153,12 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     );
 
     const expectedJobs = await Promise.all(futureJobIds.map((jobId) => queue.getJob(jobId)));
-    const futureScheduleComplete = expectedJobs.every(Boolean);
+    const futureScheduleComplete = expectedJobs.every(
+      (job) =>
+        Boolean(job) &&
+        (job?.data === undefined ||
+          job.data.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION),
+    );
     const currentCatchUpRequired =
       recovery.blocksCurrentCatchUp ||
       ((await this.isCurrentCatchUpRequired(settings)) ?? !futureScheduleComplete);
@@ -1126,6 +1186,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         ...(currentCatchUp ? [currentCatchUp.jobId] : []),
         ...(recovery.jobId ? [recovery.jobId] : []),
       ]),
+      reconcileFence,
     });
     if (futureScheduleComplete && !currentCatchUpRequired) {
       return {
@@ -1335,8 +1396,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   private async ensureCloseEventRecoveryJob(
     chatId: string,
     reconcileFence?: NightModeTransitionReconcileFence,
+    options: { scanHistoricalLedger?: boolean } = {},
   ): Promise<NightModeRecoveryScheduleResult> {
-    const resolution = await this.resolveChatCloseEventRecovery(chatId);
+    const resolution = await this.resolveChatCloseEventRecovery(chatId, options);
     if (resolution.kind === 'none' || resolution.kind === 'already_complete') {
       return { jobId: null, manualReview: null, blocksCurrentCatchUp: false };
     }
@@ -1427,6 +1489,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         session_key: recovery.sessionKey,
         scheduled_for: closeAt,
         schedule_fingerprint: fingerprint,
+        runtime_version: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
       },
       reconcileFence,
     );
@@ -1438,7 +1501,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         scheduledFor: closeAt.toISOString(),
         sessionKey: recovery.sessionKey,
         retryPolicyName: 'night-mode-transition',
-        transitionRuntimeVersion: 3,
+        transitionRuntimeVersion: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
         scheduleFingerprint: fingerprint,
         recoveryOnly: recovery,
         createdAt: new Date().toISOString(),
@@ -1456,6 +1519,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
 
   private async resolveChatCloseEventRecovery(
     chatId: string,
+    options: { scanHistoricalLedger?: boolean } = {},
   ): Promise<NightModeCloseRecoveryResolution> {
     let selectedNeeded: Extract<NightModeCloseRecoveryResolution, { kind: 'needed' }> | null = null;
     let selectedBlocked: Extract<NightModeCloseRecoveryResolution, { kind: 'blocked' }> | null =
@@ -1593,7 +1657,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       }
     }
 
-    await this.scanCompletedCloseLedgerRecoveries(chatId, seenSessions, consider);
+    if (options.scanHistoricalLedger !== false) {
+      await this.scanCompletedCloseLedgerRecoveries(chatId, seenSessions, consider);
+    }
 
     const rows = (await this.listScheduledJobRegistryRows([chatId])).filter(
       (row) => row.scheduled_for.getTime() <= Date.now(),
@@ -1617,36 +1683,19 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       return;
     }
     const jobIdPrefix = buildNightModeNoticeIdempotencyKey('close', chatId, '');
-    let cursorId: string | null = null;
+    let cursor: { completedAt: Date; id: string } | null = null;
     while (true) {
-      const page = (await this.prisma.maxActionLedgerEntry.findMany({
-        where: {
-          chatId,
+      const page = await this.listMissingCloseEventLedgerPage(chatId, jobIdPrefix, cursor);
+      for (const row of page) {
+        const ledger: NightModeCloseLedgerRow & { id: string; jobId: string } = {
+          ...row,
           actionType: 'SEND_MESSAGE',
+          chatId,
           sourceTag: NIGHT_MODE_TRANSITION_SOURCE_TAG,
-          jobId: { startsWith: jobIdPrefix },
-        },
-        select: {
-          id: true,
-          jobId: true,
-          updatedAt: true,
-          actionType: true,
-          chatId: true,
-          sourceTag: true,
-          status: true,
-          ambiguous: true,
+          status: MaxActionLedgerStatus.SUCCEEDED,
+          ambiguous: false,
           terminal: true,
-          completedAt: true,
-          dispatchToken: true,
-          dispatchStartedAt: true,
-          dispatchBotId: true,
-          remoteMessageId: true,
-        },
-        orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
-        take: NIGHT_MODE_RECOVERY_LEDGER_PAGE_SIZE,
-        ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
-      })) as Array<NightModeCloseLedgerRow & { id: string; jobId: string }>;
-      for (const ledger of page) {
+        };
         if (!ledger.jobId.startsWith(jobIdPrefix)) {
           continue;
         }
@@ -1681,42 +1730,111 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           continue;
         }
         if (!this.isExactCompletedCloseLedger(ledger, chatId) || !messageId || !botId) {
-          await consider(
-            this.blockRecovery(
-              chatId,
-              fallbackJobId,
-              sessionKey,
-              fingerprint,
-              'Ledger-backed night mode close recovery has unsafe provenance',
-            ),
-          );
           continue;
         }
-        await consider(
-          await this.inspectRecoveryCandidate(
-            chatId,
-            {
-              kind: NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
-              version: 1,
-              sessionKey,
-              messageId,
-              botId,
-              timezone: parsed.timezone,
-              startMinutes: parsed.startMinutes,
-              endMinutes: parsed.endMinutes,
-            },
-            false,
-            fallbackJobId,
-            fingerprint,
-            ledger,
-          ),
+        const resolution = await this.inspectRecoveryCandidate(
+          chatId,
+          {
+            kind: NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+            version: 1,
+            sessionKey,
+            messageId,
+            botId,
+            timezone: parsed.timezone,
+            startMinutes: parsed.startMinutes,
+            endMinutes: parsed.endMinutes,
+          },
+          false,
+          fallbackJobId,
+          fingerprint,
+          ledger,
         );
+        await consider(resolution);
+        if (resolution.kind === 'needed') {
+          return;
+        }
       }
       if (page.length < NIGHT_MODE_RECOVERY_LEDGER_PAGE_SIZE) {
         return;
       }
-      cursorId = page[page.length - 1]!.id;
+      const lastRow = page[page.length - 1]!;
+      cursor = { completedAt: lastRow.completedAt, id: lastRow.id };
     }
+  }
+
+  private async listMissingCloseEventLedgerPage(
+    chatId: string,
+    jobIdPrefix: string,
+    cursor: { completedAt: Date; id: string } | null,
+  ): Promise<NightModeCompletedCloseLedgerRecoveryRow[]> {
+    if (typeof this.prisma.$queryRaw === 'function') {
+      const cursorPredicate = cursor
+        ? Prisma.sql`
+            AND (ledger."completed_at", ledger."id") < (${cursor.completedAt}, ${cursor.id})
+          `
+        : Prisma.empty;
+      return this.prisma.$queryRaw<NightModeCompletedCloseLedgerRecoveryRow[]>(Prisma.sql`
+        SELECT
+          ledger."id",
+          ledger."job_id" AS "jobId",
+          ledger."completed_at" AS "completedAt",
+          ledger."dispatch_bot_id" AS "dispatchBotId",
+          ledger."remote_message_id" AS "remoteMessageId"
+        FROM "max_action_ledger" ledger
+        WHERE ledger."chat_id" = ${chatId}
+          AND ledger."terminal" = true
+          AND ledger."completed_at" IS NOT NULL
+          AND ledger."status" = 'SUCCEEDED'
+          AND ledger."ambiguous" = false
+          AND ledger."action_type" = 'SEND_MESSAGE'
+          AND ledger."source_tag" = 'night_mode_transition'
+          AND ledger."remote_message_id" IS NOT NULL
+          AND BTRIM(ledger."remote_message_id") <> ''
+          AND ledger."dispatch_bot_id" IS NOT NULL
+          AND BTRIM(ledger."dispatch_bot_id") <> ''
+          AND ledger."job_id" LIKE 'night-mode:close:%'
+          AND LEFT(ledger."job_id", CHAR_LENGTH(${jobIdPrefix})) = ${jobIdPrefix}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "moderation_events" event
+            WHERE event."chat_id" = ledger."chat_id"
+              AND event."message_id" = ledger."remote_message_id"
+              AND event."bot_id" = ledger."dispatch_bot_id"
+              AND event."rule_code" = 'NIGHT_MODE_CLOSE_NOTICE'
+              AND event."metadata" ->> 'sessionKey' = SUBSTRING(
+                ledger."job_id" FROM CHAR_LENGTH(${jobIdPrefix}) + 1
+              )
+          )
+          ${cursorPredicate}
+        ORDER BY ledger."completed_at" DESC, ledger."id" DESC
+        LIMIT ${NIGHT_MODE_RECOVERY_LEDGER_PAGE_SIZE}
+      `);
+    }
+
+    return (await this.prisma.maxActionLedgerEntry.findMany({
+      where: {
+        chatId,
+        actionType: 'SEND_MESSAGE',
+        sourceTag: NIGHT_MODE_TRANSITION_SOURCE_TAG,
+        jobId: { startsWith: jobIdPrefix },
+        status: MaxActionLedgerStatus.SUCCEEDED,
+        ambiguous: false,
+        terminal: true,
+        completedAt: { not: null },
+        dispatchBotId: { not: null },
+        remoteMessageId: { not: null },
+      },
+      select: {
+        id: true,
+        jobId: true,
+        completedAt: true,
+        dispatchBotId: true,
+        remoteMessageId: true,
+      },
+      orderBy: [{ completedAt: 'desc' }, { id: 'desc' }],
+      take: NIGHT_MODE_RECOVERY_LEDGER_PAGE_SIZE,
+      ...(cursor ? { cursor: { id: cursor.id }, skip: 1 } : {}),
+    })) as NightModeCompletedCloseLedgerRecoveryRow[];
   }
 
   private compareRecoverySessions(leftSessionKey: string, rightSessionKey: string): number {
@@ -1937,14 +2055,21 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     transition: NightModeTransitionOccurrence['transition'];
     fingerprint: string;
   }): Promise<NightModeCurrentCatchUpResolution> {
-    if (
-      params.transition !== 'open' ||
-      typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function'
-    ) {
-      return { kind: 'enqueue' };
+    if (typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function') {
+      return {
+        kind: 'blocked',
+        manualReview: {
+          category: 'failed_job_unclassified',
+          reason: `Night mode catch-up ledger is unavailable (${params.jobId})`,
+          jobId: params.jobId,
+          ledgerJobId: null,
+          sessionKey: params.sessionKey,
+          fingerprint: params.fingerprint,
+        },
+      };
     }
     const ledgerJobId = buildNightModeNoticeIdempotencyKey(
-      'open',
+      params.transition,
       params.chatId,
       params.sessionKey,
     );
@@ -1998,11 +2123,12 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         ledger.status === MaxActionLedgerStatus.FAILED_RETRYABLE) &&
       !ledger.terminal &&
       ledger.completedAt === null &&
-      ledger.lastError !== NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER
+      (params.transition !== 'open' || ledger.lastError !== NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER)
     ) {
       return { kind: 'enqueue' };
     }
     const potentiallyRecoverable =
+      params.transition === 'open' &&
       exactIdentity &&
       noDispatchFence &&
       !ledger.remoteMessageId &&
@@ -2051,9 +2177,14 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       jobId: string;
       sessionKey: string;
       transition: NightModeTransitionOccurrence['transition'];
+      scheduledFor: string;
       fingerprint: string;
     },
-    options: { strict?: boolean; ignoreManualReview?: boolean } = {},
+    options: {
+      strict?: boolean;
+      ignoreManualReview?: boolean;
+      reconcileFence?: NightModeTransitionReconcileFence;
+    } = {},
   ): Promise<NightModeCurrentCatchUpResolution> {
     try {
       if (!options.ignoreManualReview) {
@@ -2076,27 +2207,86 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         }
       }
       if (!this.queue || typeof this.queue.getJob !== 'function') {
-        return this.resolveMissingBullOpenCatchUp(params);
+        await this.deleteScheduledJobRegistryRow(params.chatId, params.jobId);
+        return { kind: 'skip' };
       }
       const existing = await this.queue.getJob(params.jobId);
       if (!existing) {
+        const registry = await this.findScheduledJobRegistryRow(params.chatId, params.jobId);
+        const currentRuntimeRegistry =
+          registry?.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
+          Boolean(registry && registry.scheduled_for.getTime() >= this.runtimeStartedAtMs);
+        if (!currentRuntimeRegistry) {
+          if (registry) {
+            await this.deleteScheduledJobRegistryRow(params.chatId, params.jobId);
+          }
+          return { kind: 'skip' };
+        }
         return this.resolveMissingBullOpenCatchUp(params);
+      }
+      let transitionRuntimeVersion = existing.data?.transitionRuntimeVersion;
+      const registry = await this.findScheduledJobRegistryRow(params.chatId, params.jobId);
+      const existingState =
+        typeof existing.getState === 'function' ? await existing.getState() : null;
+      const currentRuntimeJob =
+        existing.data === undefined ||
+        transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
+        registry?.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
+        (existing.data !== undefined &&
+          Number.isFinite(Date.parse(params.scheduledFor)) &&
+          Date.parse(params.scheduledFor) >= this.runtimeStartedAtMs);
+      if (!currentRuntimeJob) {
+        if (existingState !== 'active') {
+          if (await this.removeJob(existing, { strict: true })) {
+            await this.deleteScheduledJobRegistryRow(params.chatId, params.jobId);
+          }
+        }
+        return { kind: 'skip' };
+      }
+      if (
+        existing.data !== undefined &&
+        transitionRuntimeVersion !== NIGHT_MODE_TRANSITION_RUNTIME_VERSION
+      ) {
+        if (existingState === 'active') {
+          return { kind: 'skip' };
+        }
+        await this.upsertScheduledJobRegistryIntent(
+          {
+            chat_id: params.chatId,
+            job_id: params.jobId,
+            transition: params.transition,
+            session_key: params.sessionKey,
+            scheduled_for: new Date(params.scheduledFor),
+            schedule_fingerprint: params.fingerprint,
+            runtime_version: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
+          },
+          options.reconcileFence,
+        );
+        await this.promoteTransitionJob(existing, params);
+        transitionRuntimeVersion = NIGHT_MODE_TRANSITION_RUNTIME_VERSION;
       }
       if (typeof existing.getState !== 'function') {
         return { kind: 'enqueue' };
       }
 
-      if ((await existing.getState()) !== 'failed') {
+      if (existingState !== 'failed') {
         return { kind: 'enqueue' };
       }
 
-      const transitionRuntimeVersion = existing.data.transitionRuntimeVersion;
+      const retryablePreDispatchLedger = await this.hasExactRetryablePreDispatchLedger(params);
+      if (retryablePreDispatchLedger) {
+        await this.retryFailedTransitionJob(existing, params.jobId);
+        return { kind: 'enqueue' };
+      }
       const legacyPreDispatchNoRouteFailure =
         existing.failedReason ===
         buildMaxActionNoExecutableRouteMessage('SEND_MESSAGE', params.chatId);
       const preDispatchRouteQuarantineFailure =
         existing.failedReason ===
         buildMaxActionRouteQuarantinedMessage('SEND_MESSAGE', params.chatId);
+      const preDispatchLockContentionFailure =
+        existing.failedReason ===
+        `${NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX} (${params.chatId})`;
       const recoverableLegacyOpenFailure =
         params.transition === 'open' &&
         transitionRuntimeVersion === undefined &&
@@ -2108,20 +2298,23 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       );
       const recoverableVersionedLedgerFailure =
         params.transition === 'open' &&
-        (transitionRuntimeVersion === 2 || transitionRuntimeVersion === 3) &&
+        currentRuntimeJob &&
+        (transitionRuntimeVersion === 2 ||
+          transitionRuntimeVersion === 3 ||
+          transitionRuntimeVersion === 4) &&
         existing.failedReason ===
           `MAX SEND_MESSAGE ledger entry ${ledgerJobId} is no longer executable (${MaxActionLedgerStatus.FAILED_TERMINAL})`;
       const retryablePostExecutionCleanupFailure =
         params.transition === 'open' &&
-        transitionRuntimeVersion === 3 &&
+        currentRuntimeJob &&
+        (transitionRuntimeVersion === 3 || transitionRuntimeVersion === 4) &&
         existing.failedReason?.startsWith(
           `${NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX}: `,
         ) === true;
       if (retryablePostExecutionCleanupFailure) {
         const ledgerResolution = await this.resolveMissingBullOpenCatchUp(params);
         if (ledgerResolution.kind === 'enqueue') {
-          await existing.remove();
-          await this.deleteScheduledJobRegistryRow(params.chatId, params.jobId);
+          await this.retryFailedTransitionJob(existing, params.jobId);
           return ledgerResolution;
         }
         if (ledgerResolution.kind === 'blocked') {
@@ -2157,8 +2350,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             },
           };
         }
-        await existing.remove();
-        await this.deleteScheduledJobRegistryRow(params.chatId, params.jobId);
+        await this.retryFailedTransitionJob(existing, params.jobId);
         return { kind: 'enqueue' };
       }
       if (recoverableLegacyOpenFailure) {
@@ -2174,7 +2366,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           },
         };
       }
-      if (!legacyPreDispatchNoRouteFailure && !preDispatchRouteQuarantineFailure) {
+      if (
+        !legacyPreDispatchNoRouteFailure &&
+        !preDispatchRouteQuarantineFailure &&
+        !preDispatchLockContentionFailure
+      ) {
         this.logger.warn(
           {
             chatId: params.chatId,
@@ -2198,8 +2394,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         };
       }
 
-      await existing.remove();
-      await this.deleteScheduledJobRegistryRow(params.chatId, params.jobId);
+      await this.retryFailedTransitionJob(existing, params.jobId);
       return { kind: 'enqueue' };
     } catch (error: unknown) {
       if (this.isBullMqMissingJobRemovalError(error, params.jobId)) {
@@ -2234,6 +2429,51 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   private isRecoverableCurrentOpenFailure(failedReason: string | undefined): boolean {
     const normalized = failedReason?.trim().toLowerCase() ?? '';
     return normalized.includes('user.not.admin') || normalized.includes('user is not an admin');
+  }
+
+  private async hasExactRetryablePreDispatchLedger(params: {
+    chatId: string;
+    sessionKey: string;
+    transition: NightModeTransitionOccurrence['transition'];
+  }): Promise<boolean> {
+    if (typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function') {
+      return false;
+    }
+    const ledger = await this.prisma.maxActionLedgerEntry.findUnique({
+      where: {
+        jobId: buildNightModeNoticeIdempotencyKey(
+          params.transition,
+          params.chatId,
+          params.sessionKey,
+        ),
+      },
+      select: {
+        actionType: true,
+        chatId: true,
+        sourceTag: true,
+        status: true,
+        ambiguous: true,
+        terminal: true,
+        dispatchToken: true,
+        dispatchStartedAt: true,
+        dispatchBotId: true,
+        remoteMessageId: true,
+      },
+    });
+    return (
+      ledger?.actionType === 'SEND_MESSAGE' &&
+      ledger.chatId === params.chatId &&
+      ledger.sourceTag === NIGHT_MODE_TRANSITION_SOURCE_TAG &&
+      (ledger.status === MaxActionLedgerStatus.ENQUEUED ||
+        ledger.status === MaxActionLedgerStatus.IN_PROGRESS ||
+        ledger.status === MaxActionLedgerStatus.FAILED_RETRYABLE) &&
+      !ledger.ambiguous &&
+      !ledger.terminal &&
+      !ledger.dispatchToken &&
+      !ledger.dispatchStartedAt &&
+      !ledger.dispatchBotId &&
+      !ledger.remoteMessageId
+    );
   }
 
   private resolveTransitionOccurrences(
@@ -2382,12 +2622,35 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     await new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
+  private scheduleBootstrap(delayMs: number): void {
+    if (this.shuttingDown || this.startupTimer) {
+      return;
+    }
+    this.startupTimer = setTimeout(() => {
+      this.startupTimer = null;
+      void this.bootstrapEnabledChats();
+    }, delayMs);
+    this.startupTimer.unref();
+  }
+
+  private requestBootstrapRetry(): void {
+    if (this.shuttingDown) {
+      return;
+    }
+    if (this.bootstrapInFlight) {
+      this.bootstrapRetryRequested = true;
+      return;
+    }
+    this.scheduleBootstrap(NIGHT_MODE_TRANSITION_BOOTSTRAP_RETRY_MS);
+  }
+
   private async clearChatJobsForChatIds(
     chatIds: readonly string[],
     options: {
       strict?: boolean;
       throwOnActive?: boolean;
       keepJobIds?: ReadonlySet<string>;
+      reconcileFence?: NightModeTransitionReconcileFence;
     } = {},
   ): Promise<void> {
     if (!this.queue) {
@@ -2412,7 +2675,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       }
       if (typeof job.getState === 'function' && (await job.getState()) === 'active') {
         activeJobIds.push(row.job_id);
-        await this.requestDurableReconcile(row.chat_id);
+        // A fenced durable repair already owns a request. Re-enqueueing that same chat here would
+        // increment its generation and revoke the lease that is about to report the active job.
+        if (!options.reconcileFence) {
+          await this.requestDurableReconcile(row.chat_id);
+        }
         continue;
       }
       if (await this.removeJob(job, options)) {
@@ -2437,7 +2704,8 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           "transition",
           "session_key",
           "scheduled_for",
-          "schedule_fingerprint"
+          "schedule_fingerprint",
+          "runtime_version"
         FROM "night_mode_transition_scheduled_jobs"
         WHERE "chat_id" IN (${Prisma.join(chatIds)})
         ORDER BY "chat_id" ASC, "scheduled_for" ASC, "job_id" ASC
@@ -2455,12 +2723,20 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       );
   }
 
+  private async findScheduledJobRegistryRow(
+    chatId: string,
+    jobId: string,
+  ): Promise<NightModeScheduledJobRegistryRow | null> {
+    const rows = await this.listScheduledJobRegistryRows([chatId]);
+    return rows.find((row) => row.job_id === jobId) ?? null;
+  }
+
   private async upsertScheduledJobRegistryIntent(
     row: NightModeScheduledJobRegistryRow,
     reconcileFence?: NightModeTransitionReconcileFence,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (typeof this.prisma.$executeRaw === 'function') {
-      await this.prisma.$executeRaw(Prisma.sql`
+      const retained = await this.prisma.$executeRaw(Prisma.sql`
         WITH request_owner AS (
           SELECT
             ${reconcileFence?.generation ?? null}::BIGINT AS "generation",
@@ -2473,6 +2749,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             "session_key",
             "scheduled_for",
             "schedule_fingerprint",
+            "runtime_version",
             "created_at",
             "updated_at"
           )
@@ -2483,6 +2760,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             ${row.session_key},
             ${row.scheduled_for},
             ${row.schedule_fingerprint},
+            ${row.runtime_version ?? 3},
             CURRENT_TIMESTAMP,
             CURRENT_TIMESTAMP
           )
@@ -2492,7 +2770,21 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             "session_key" = EXCLUDED."session_key",
             "scheduled_for" = EXCLUDED."scheduled_for",
             "schedule_fingerprint" = EXCLUDED."schedule_fingerprint",
+            "runtime_version" = EXCLUDED."runtime_version",
             "updated_at" = CURRENT_TIMESTAMP
+          WHERE ROW(
+            "night_mode_transition_scheduled_jobs"."transition",
+            "night_mode_transition_scheduled_jobs"."session_key",
+            "night_mode_transition_scheduled_jobs"."scheduled_for",
+            "night_mode_transition_scheduled_jobs"."schedule_fingerprint",
+            "night_mode_transition_scheduled_jobs"."runtime_version"
+          ) IS DISTINCT FROM ROW(
+            EXCLUDED."transition",
+            EXCLUDED."session_key",
+            EXCLUDED."scheduled_for",
+            EXCLUDED."schedule_fingerprint",
+            EXCLUDED."runtime_version"
+          )
           RETURNING "chat_id"
         )
         INSERT INTO "night_mode_transition_reconcile_requests" (
@@ -2519,8 +2811,6 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
               "night_mode_transition_reconcile_requests"."generation"
             AND owner."lease_token" =
               "night_mode_transition_reconcile_requests"."lease_token"
-            AND "night_mode_transition_reconcile_requests"."lease_expires_at" >
-              CURRENT_TIMESTAMP
             AND (
               "night_mode_transition_reconcile_requests"."manual_blocked_at" IS NULL
               OR "night_mode_transition_reconcile_requests"."generation" >
@@ -2528,15 +2818,17 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             )
         )
       `);
-      return;
+      return retained > 0;
     }
 
     this.fallbackScheduledJobRegistry.set(
       this.buildScheduledJobRegistryKey(row.chat_id, row.job_id),
       {
         ...row,
+        runtime_version: row.runtime_version ?? 3,
       },
     );
+    return false;
   }
 
   private async deleteScheduledJobRegistryRow(chatId: string, jobId: string): Promise<void> {
@@ -2561,8 +2853,47 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     `);
   }
 
+  private async retainDurableReconcileAfterQueueFailure(
+    chatId: string,
+    durableReconcileRetained: boolean,
+    reconcileFence?: NightModeTransitionReconcileFence,
+  ): Promise<void> {
+    if (reconcileFence || durableReconcileRetained) {
+      return;
+    }
+    try {
+      await this.requestDurableReconcile(chatId);
+    } catch (error: unknown) {
+      this.logger.error(
+        {
+          chatId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to retain durable night mode reconcile after queue mutation failure',
+      );
+    }
+  }
+
   private buildScheduledJobRegistryKey(chatId: string, jobId: string): string {
     return `${chatId}\u0000${jobId}`;
+  }
+
+  private async promoteFutureTransitionJob(jobId: string, fingerprint: string): Promise<void> {
+    if (!this.queue || typeof this.queue.getJob !== 'function') {
+      return;
+    }
+    const existing = await this.queue.getJob(jobId);
+    if (
+      !existing ||
+      existing.data === undefined ||
+      existing.data?.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION
+    ) {
+      return;
+    }
+    if (typeof existing.getState === 'function' && (await existing.getState()) === 'active') {
+      return;
+    }
+    await this.promoteTransitionJob(existing, { jobId, fingerprint });
   }
 
   private normalizeChatIds(chatIds: readonly string[]): string[] {
@@ -2589,6 +2920,33 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       }
       return this.isBullMqMissingJobRemovalError(error, job.id);
     }
+  }
+
+  private async retryFailedTransitionJob(
+    job: { id?: string; retry?: () => Promise<void> },
+    expectedJobId: string,
+  ): Promise<void> {
+    if (job.id !== expectedJobId || typeof job.retry !== 'function') {
+      throw new Error(`Night mode failed job cannot be retried in place (${expectedJobId})`);
+    }
+    await job.retry();
+  }
+
+  private async promoteTransitionJob(
+    job: {
+      data?: NightModeTransitionJob;
+      updateData?: (data: NightModeTransitionJob) => Promise<void>;
+    },
+    params: { jobId: string; fingerprint: string },
+  ): Promise<void> {
+    if (!job.data || typeof job.updateData !== 'function') {
+      throw new Error(`Night mode future job cannot be promoted in place (${params.jobId})`);
+    }
+    await job.updateData({
+      ...job.data,
+      transitionRuntimeVersion: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
+      scheduleFingerprint: params.fingerprint,
+    });
   }
 
   private isBullMqMissingJobRemovalError(error: unknown, jobId: string | undefined): boolean {

@@ -673,6 +673,32 @@ describe('Prisma migrations', () => {
     );
   });
 
+  it('adds a per-chat partial index for missing night mode close-event recovery', () => {
+    const migration = readMigration('20260830014000_add_night_mode_per_chat_recovery_index');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "max_action_ledger_night_mode_close_chat_recovery_idx"',
+    );
+    expect(compact).toContain('ON "max_action_ledger"("chat_id", "completed_at" DESC, "id" DESC)');
+    expect(compact).toContain('INCLUDE ("job_id", "remote_message_id", "dispatch_bot_id")');
+    expect(compact).toContain('BTRIM("remote_message_id") <> \'\'');
+    expect(compact).toContain('BTRIM("dispatch_bot_id") <> \'\'');
+    expect(compact).toContain('"job_id" LIKE \'night-mode:close:%\'');
+    expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE)\b/i);
+  });
+
+  it('versions durable night mode scheduled jobs without activating old rows', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260830013000_add_night_mode_scheduled_job_runtime_version');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('runtimeVersion      Int      @default(3) @map("runtime_version")');
+    expect(compact).toContain('ADD COLUMN "runtime_version" INTEGER NOT NULL DEFAULT 3');
+    expect(compact).toContain('CHECK ("runtime_version" BETWEEN 2 AND 4)');
+    expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE)\b/i);
+  });
+
   it('adds a non-destructive routed giveaway send lock discriminator', () => {
     const schema = readSchema();
     const migration = readMigration('20260711130000_managed_giveaway_send_lock_key');

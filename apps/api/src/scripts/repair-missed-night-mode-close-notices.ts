@@ -3,6 +3,7 @@ import { Logger } from 'nestjs-pino';
 import type { INestApplicationContext } from '@nestjs/common';
 import { AppModule } from '../app.module';
 import { ModerationExecutionService } from '../moderation/moderation-execution.service';
+import { buildNightModeTransitionScheduleFingerprint } from '../moderation/night-mode-transition-generation.util';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -328,6 +329,13 @@ async function main() {
           scheduledFor: candidate.scheduledFor.toISOString(),
           sessionKey: candidate.sessionKey,
           retryPolicyName: 'night-mode-transition',
+          transitionRuntimeVersion: 4,
+          scheduleFingerprint: buildNightModeTransitionScheduleFingerprint({
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: candidate.startMinutes,
+            nightModeEndTimeMinutes: candidate.endMinutes,
+            nightModeTimezone: candidate.timezone,
+          }),
           createdAt: new Date().toISOString(),
         });
         const hasNoticeAfterRepair = await hasCloseNoticeEvent(prisma, candidate);

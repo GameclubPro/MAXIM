@@ -1,9 +1,10 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { ChatEntityType, type ChatSettings, type Prisma } from '../prisma/prisma-client';
+import { ChatEntityType, Prisma, type ChatSettings } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   buildNightModeTransitionJobId,
+  NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
   NIGHT_MODE_TRANSITION_PROCESS_STOP,
   parseNightModeTransitionRecoveryOnly,
@@ -39,7 +40,6 @@ const NIGHT_MODE_TRANSITION_LOCK_HEARTBEAT_MS = Math.max(
   1_000,
   Math.floor(NIGHT_MODE_TRANSITION_LOCK_TTL_MS / 3),
 );
-const NIGHT_MODE_TRANSITION_LEGACY_JOB_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 type NightModeTransitionExecutionFence = {
   chatId: string;
@@ -164,6 +164,7 @@ class NightModeTransitionLockLostError extends Error {
 @Injectable()
 export class NightModeTransitionRuntimeService {
   private readonly logger = new Logger(NightModeTransitionRuntimeService.name);
+  private readonly runtimeStartedAtMs = Date.now();
   private readonly nightModeTransitionMemoryState = new Map<string, NightModeTransitionState>();
   private readonly nightModeTransitionMemoryLocks = new Map<string, string>();
 
@@ -178,6 +179,20 @@ export class NightModeTransitionRuntimeService {
   ): Promise<NightModeTransitionProcessResult> {
     if (job.recoveryOnly !== undefined) {
       return this.processCloseEventRecoveryOnly(job, hooks);
+    }
+    const scheduledForMs = Date.parse(job.scheduledFor);
+    const carriedByCurrentRuntimeIntent =
+      job.transitionRuntimeVersion !== 4 &&
+      Number.isFinite(scheduledForMs) &&
+      scheduledForMs < this.runtimeStartedAtMs
+        ? await this.hasExactCurrentRuntimeIntent(job)
+        : false;
+    if (
+      job.transitionRuntimeVersion !== 4 &&
+      (!Number.isFinite(scheduledForMs) ||
+        (scheduledForMs < this.runtimeStartedAtMs && !carriedByCurrentRuntimeIntent))
+    ) {
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
     const executionFence = this.buildExecutionFence(job);
     if (executionFence && (await this.isExactTransitionManuallyFenced(executionFence))) {
@@ -210,13 +225,12 @@ export class NightModeTransitionRuntimeService {
       return NIGHT_MODE_TRANSITION_PROCESS_STOP;
     }
     const scheduleFingerprint = buildNightModeTransitionScheduleFingerprint(settings);
-    if (
-      job.transitionRuntimeVersion === 3 &&
-      (!job.scheduleFingerprint || job.scheduleFingerprint !== scheduleFingerprint)
-    ) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-    if (job.transitionRuntimeVersion === 2 && this.isExpiredLegacyTransitionJob(job)) {
+    const jobScheduleFingerprint =
+      job.scheduleFingerprint?.trim() ||
+      (job.transitionRuntimeVersion !== 4
+        ? this.resolveSessionScheduleFingerprint(job.sessionKey)
+        : null);
+    if (!jobScheduleFingerprint || jobScheduleFingerprint !== scheduleFingerprint) {
       return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
@@ -356,11 +370,19 @@ export class NightModeTransitionRuntimeService {
 
     const lock = await this.acquireNightModeTransitionLock(settings.chatId);
     if (!lock) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
+      throw new Error(`${NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX} (${settings.chatId})`);
     }
 
     try {
       let currentState = await this.readNightModeTransitionState(settings.chatId);
+      let suppressOpenedNotice = false;
+      // FLAG: Recovery and cleanup are session-scoped. A stale closed state must not make a later
+      // session retry or mutate the old notice. A stale opening may still recover and clean up exact
+      // current-session proof, but it must not publish an unmatched opening notice.
+      if (currentState && currentState.sessionKey !== snapshot.sessionKey) {
+        suppressOpenedNotice = snapshot.status === 'open';
+        currentState = null;
+      }
       let recoveredCloseNoticeEvent: NightModeRecoveredCloseNoticeEvent | null = null;
       if (currentState?.closeNoticeEventRecovery?.pending === true) {
         const recovery = await this.recoverPendingCloseNoticeEvent(
@@ -526,7 +548,8 @@ export class NightModeTransitionRuntimeService {
       if (
         !transitionAlreadyRecorded &&
         snapshot.isOpenBoundary &&
-        settings.nightModeOpenMessageEnabled
+        settings.nightModeOpenMessageEnabled &&
+        !suppressOpenedNotice
       ) {
         transitionAlreadyRecorded = await this.hasPersistedOpenNotice(
           settings.chatId,
@@ -580,7 +603,8 @@ export class NightModeTransitionRuntimeService {
       if (
         snapshot.isOpenBoundary &&
         settings.nightModeOpenMessageEnabled &&
-        !transitionAlreadyRecorded
+        !transitionAlreadyRecorded &&
+        !suppressOpenedNotice
       ) {
         const sideEffectSettings = await this.readCurrentSideEffectSettings(
           settings.chatId,
@@ -647,6 +671,50 @@ export class NightModeTransitionRuntimeService {
     now = new Date(),
   ): NightModeTransitionSnapshot | null {
     return resolveNightModeTransitionSnapshotValue(settings, now);
+  }
+
+  private async hasExactCurrentRuntimeIntent(job: NightModeTransitionJob): Promise<boolean> {
+    if (typeof this.prisma.$queryRaw !== 'function') {
+      return false;
+    }
+    const chatId = job.chatId.trim();
+    const scheduledFor = new Date(job.scheduledFor);
+    const scheduleFingerprint =
+      job.scheduleFingerprint?.trim() || this.resolveSessionScheduleFingerprint(job.sessionKey);
+    if (!chatId || Number.isNaN(scheduledFor.getTime()) || !scheduleFingerprint) {
+      return false;
+    }
+    const jobId = buildNightModeTransitionJobId(
+      chatId,
+      job.transition,
+      job.scheduledFor,
+      job.sessionKey,
+    );
+    const rows = await this.prisma.$queryRaw<Array<{ job_id: string }>>(Prisma.sql`
+      SELECT "job_id"
+      FROM "night_mode_transition_scheduled_jobs"
+      WHERE "chat_id" = ${chatId}
+        AND "job_id" = ${jobId}
+        AND "transition" = ${job.transition}
+        AND "session_key" = ${job.sessionKey}
+        AND "scheduled_for" = ${scheduledFor}
+        AND "schedule_fingerprint" = ${scheduleFingerprint}
+        AND "runtime_version" = 4
+      LIMIT 1
+    `);
+    return rows.length === 1 && rows[0]?.job_id === jobId;
+  }
+
+  private resolveSessionScheduleFingerprint(sessionKey: string): string | null {
+    const parsed = parseNightModeTransitionSessionKey(sessionKey);
+    return parsed
+      ? buildNightModeTransitionScheduleFingerprint({
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: parsed.startMinutes,
+          nightModeEndTimeMinutes: parsed.endMinutes,
+          nightModeTimezone: parsed.timezone,
+        })
+      : null;
   }
 
   // FLAG: Queue cleanup cannot remove an active BullMQ job. Re-read committed SQL state under the
@@ -1216,16 +1284,5 @@ export class NightModeTransitionRuntimeService {
       lock.healthy = false;
       throw new NightModeTransitionLockLostError(chatId);
     }
-  }
-
-  private isExpiredLegacyTransitionJob(job: NightModeTransitionJob): boolean {
-    if (typeof job.createdAt !== 'string') {
-      return false;
-    }
-    const createdAt = new Date(job.createdAt);
-    return (
-      !Number.isFinite(createdAt.getTime()) ||
-      Date.now() - createdAt.getTime() > NIGHT_MODE_TRANSITION_LEGACY_JOB_MAX_AGE_MS
-    );
   }
 }

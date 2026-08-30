@@ -32,6 +32,17 @@ import {
   type MaxUpdate,
 } from './moderation.service.spec-support';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
+import { buildNightModeTransitionScheduleFingerprint } from './night-mode-transition-generation.util';
+
+const NIGHT_MODE_V4_JOB_METADATA = {
+  transitionRuntimeVersion: 4 as const,
+  scheduleFingerprint: buildNightModeTransitionScheduleFingerprint({
+    nightModeEnabled: true,
+    nightModeStartTimeMinutes: 23 * 60,
+    nightModeEndTimeMinutes: 8 * 60,
+    nightModeTimezone: 'Europe/Moscow',
+  }),
+};
 
 jest
   .spyOn(MaxActionLedgerService.prototype, 'inspectCompletedNightModeCloseNoticeDispatch')
@@ -512,6 +523,7 @@ describe('ModerationService', () => {
       );
 
       await service.processNightModeTransitionJob({
+        ...NIGHT_MODE_V4_JOB_METADATA,
         chatId: 'chat-1',
         transition: 'close',
         scheduledFor: '2026-05-30T20:00:00.000Z',
@@ -573,6 +585,7 @@ describe('ModerationService', () => {
 
       await expect(
         service.processNightModeTransitionJob({
+          ...NIGHT_MODE_V4_JOB_METADATA,
           chatId: 'channel-1',
           transition: 'close',
           scheduledFor: '2026-05-30T20:00:00.000Z',
@@ -653,6 +666,7 @@ describe('ModerationService', () => {
       );
 
       await service.processNightModeTransitionJob({
+        ...NIGHT_MODE_V4_JOB_METADATA,
         chatId: 'chat-1',
         transition: 'close',
         scheduledFor: '2026-05-30T20:00:00.000Z',
@@ -735,6 +749,7 @@ describe('ModerationService', () => {
       );
 
       await service.processNightModeTransitionJob({
+        ...NIGHT_MODE_V4_JOB_METADATA,
         chatId: 'chat-1',
         transition: 'close',
         scheduledFor: '2026-05-30T20:00:00.000Z',
@@ -908,6 +923,7 @@ describe('ModerationService', () => {
       );
       (service as any).maxActionLedgerService = maxActionLedgerService;
       const closeJob = {
+        ...NIGHT_MODE_V4_JOB_METADATA,
         chatId: 'chat-1',
         transition: 'close' as const,
         scheduledFor: '2026-05-30T20:00:00.000Z',
@@ -950,6 +966,7 @@ describe('ModerationService', () => {
       jest.setSystemTime(new Date('2026-05-31T05:00:10.000Z'));
       await expect(
         service.processNightModeTransitionJob({
+          ...NIGHT_MODE_V4_JOB_METADATA,
           chatId: 'chat-1',
           transition: 'open',
           scheduledFor: '2026-05-31T05:00:00.000Z',
@@ -1064,6 +1081,7 @@ describe('ModerationService', () => {
       );
 
       await service.processNightModeTransitionJob({
+        ...NIGHT_MODE_V4_JOB_METADATA,
         chatId: 'chat-1',
         transition: 'close',
         scheduledFor: '2026-05-30T20:00:00.000Z',
@@ -1151,6 +1169,7 @@ describe('ModerationService', () => {
       );
 
       await service.processNightModeTransitionJob({
+        ...NIGHT_MODE_V4_JOB_METADATA,
         chatId: 'chat-1',
         transition: 'open',
         scheduledFor: '2026-05-31T05:00:00.000Z',

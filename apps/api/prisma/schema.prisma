@@ -879,6 +879,7 @@ model NightModeTransitionScheduledJob {
   sessionKey          String   @map("session_key")
   scheduledFor        DateTime @map("scheduled_for")
   scheduleFingerprint String   @map("schedule_fingerprint")
+  runtimeVersion      Int      @default(3) @map("runtime_version")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 

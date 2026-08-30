@@ -10,6 +10,7 @@ export const NIGHT_MODE_TRANSITION_JOB_NAME = 'night-mode-transition';
 export const NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY = 'close_notice_event' as const;
 export const NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX =
   'Night mode transition post-execution scheduling failed';
+export const NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX = 'Night mode transition lock is busy';
 
 export type NightModeTransitionRecoveryOnly = {
   kind: typeof NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY;
@@ -32,7 +33,7 @@ export type NightModeTransitionJob = QueueJobEnvelope<
   {
     retryPolicyName?: Extract<QueueRetryPolicyName, 'night-mode-transition'>;
     createdAt?: string;
-    transitionRuntimeVersion?: 2 | 3;
+    transitionRuntimeVersion?: 2 | 3 | 4;
     scheduleFingerprint?: string;
     recoveryOnly?: NightModeTransitionRecoveryOnly;
   }

@@ -10,10 +10,10 @@ import { parseNightModeTransitionSessionKey } from './night-mode-transition-time
 import { RedisCounterService } from './redis-counter.service';
 
 const NIGHT_MODE_RECONCILE_INTERVAL_MS = 500;
-const NIGHT_MODE_RECONCILE_BATCH_SIZE = 16;
-// api-enqueue has four production Prisma connections. Leave capacity for webhook enqueue and
-// the batch heartbeat while durable night-mode recovery drains in the background.
-const NIGHT_MODE_RECONCILE_CONCURRENCY = 2;
+const NIGHT_MODE_RECONCILE_BATCH_SIZE = 4;
+// The background role has two production Prisma connections and also owns queue processors.
+// Keep one reconcile worker so its batch heartbeat and unrelated background work can make progress.
+const NIGHT_MODE_RECONCILE_CONCURRENCY = 1;
 const NIGHT_MODE_RECONCILE_REQUEUE_DELAY_MS = 5_000;
 const NIGHT_MODE_RECONCILE_LEASE_MS = 30_000;
 const NIGHT_MODE_RECONCILE_HEARTBEAT_MS = 10_000;
@@ -377,6 +377,8 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
 
     const heartbeat = this.startBatchLeaseHeartbeat(requests, leaseToken);
     let nextIndex = 0;
+    let requestFailed = false;
+    let firstRequestFailure: unknown;
     const workerCount = Math.max(1, Math.min(NIGHT_MODE_RECONCILE_CONCURRENCY, requests.length));
     const runWorker = async () => {
       while (true) {
@@ -387,21 +389,21 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         }
         try {
           await this.reconcileRequest(request, leaseToken);
+        } catch (error: unknown) {
+          if (!requestFailed) {
+            requestFailed = true;
+            firstRequestFailure = error;
+          }
         } finally {
           heartbeat.release(request);
         }
       }
     };
 
-    const workerResults = await Promise.allSettled(
-      Array.from({ length: workerCount }, () => runWorker()),
-    );
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
     await heartbeat.stop();
-    const failedWorker = workerResults.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    );
-    if (failedWorker) {
-      throw failedWorker.reason;
+    if (requestFailed) {
+      throw firstRequestFailure;
     }
     return requests.length;
   }
@@ -562,7 +564,6 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         WHERE "chat_id" = ${request.chat_id}
           AND "generation" = ${request.generation}
           AND "lease_token" = ${leaseToken}
-          AND "lease_expires_at" > CURRENT_TIMESTAMP
           AND (
             "manual_blocked_at" IS NULL
             OR "generation" > "manual_blocked_generation"
@@ -642,7 +643,6 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
       WHERE request."chat_id" = expected."chat_id"
         AND request."generation" = expected."generation"
         AND request."lease_token" = ${leaseToken}
-        AND request."lease_expires_at" > CURRENT_TIMESTAMP
         AND (
           request."manual_blocked_at" IS NULL
           OR request."generation" > request."manual_blocked_generation"

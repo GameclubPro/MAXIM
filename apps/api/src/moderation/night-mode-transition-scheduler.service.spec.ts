@@ -17,6 +17,12 @@ import {
 } from './night-mode-transition.queue';
 
 const CLOSE_SESSION_A = 'v1:Europe/Moscow:23:00:08:00:2026-05-30';
+const SCHEDULE_FINGERPRINT = buildNightModeTransitionScheduleFingerprint({
+  nightModeEnabled: true,
+  nightModeStartTimeMinutes: 23 * 60,
+  nightModeEndTimeMinutes: 8 * 60,
+  nightModeTimezone: 'Europe/Moscow',
+});
 
 function buildCloseRecoveryA(chatId: string) {
   return {
@@ -49,6 +55,7 @@ async function seedRegisteredJob(
     transition?: 'open' | 'close';
     sessionKey?: string;
     scheduledFor?: string;
+    runtimeVersion?: number;
   },
 ): Promise<void> {
   await (
@@ -60,6 +67,7 @@ async function seedRegisteredJob(
         session_key: string;
         scheduled_for: Date;
         schedule_fingerprint: string;
+        runtime_version: number;
       }): Promise<void>;
     }
   ).upsertScheduledJobRegistryIntent({
@@ -69,6 +77,7 @@ async function seedRegisteredJob(
     session_key: params.sessionKey ?? 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
     scheduled_for: new Date(params.scheduledFor ?? '2026-05-30T20:00:00.000Z'),
     schedule_fingerprint: `sha256:${'a'.repeat(64)}`,
+    runtime_version: params.runtimeVersion ?? 4,
   });
 }
 
@@ -243,6 +252,33 @@ describe('NightModeTransitionSchedulerService', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
+  it('retries the bootstrap after a transient page query failure', async () => {
+    jest.useFakeTimers();
+    try {
+      const prisma = {
+        chatSettings: {
+          findMany: jest
+            .fn()
+            .mockRejectedValueOnce(new Error('temporary database failure'))
+            .mockResolvedValueOnce([]),
+        },
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        { add: jest.fn() } as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await service.bootstrapEnabledChats();
+      expect(prisma.chatSettings.findMany).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(prisma.chatSettings.findMany).toHaveBeenCalledTimes(2);
+      service.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('does not bootstrap a schedule backed only by a non-actionable bot', async () => {
     const prisma = {
       chatSettings: {
@@ -391,7 +427,7 @@ describe('NightModeTransitionSchedulerService', () => {
 
       await service.bootstrapEnabledChats();
 
-      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(queue.add).toHaveBeenCalledTimes(2);
       expect(queue.getJobs).not.toHaveBeenCalled();
       expect(storedJobs.size).toBe(0);
       expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
@@ -488,6 +524,7 @@ describe('NightModeTransitionSchedulerService', () => {
             botMemberships: [],
           })),
         },
+        $executeRaw: jest.fn().mockResolvedValue(1),
       };
       const queue = {
         getJobs: jest.fn().mockResolvedValue([]),
@@ -523,6 +560,94 @@ describe('NightModeTransitionSchedulerService', () => {
       expect(prisma.chat.findUnique).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: 'chat-bootstrap-ok' } }),
       );
+      expect(
+        prisma.$executeRaw.mock.calls.some(([query]) => {
+          const sql = extractSqlText(query);
+          const values = extractSqlValues(query);
+          return (
+            sql.includes('enqueue_night_mode_transition_reconcile_request') &&
+            values.includes('chat-bootstrap-busy')
+          );
+        }),
+      ).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('retains a bootstrap retry requested while a later chat is still in flight', async () => {
+    jest.useFakeTimers();
+    try {
+      const settingsRows = ['chat-bootstrap-request-fails', 'chat-bootstrap-slow'].map(
+        (chatId) => ({
+          chatId,
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: 8 * 60,
+          nightModeEndTimeMinutes: 8 * 60,
+          nightModeTimezone: 'Europe/Moscow',
+        }),
+      );
+      let releaseSlowChat: () => void = () => undefined;
+      const slowChatGate = new Promise<void>((resolve) => {
+        releaseSlowChat = resolve;
+      });
+      let markSlowChatStarted: () => void = () => undefined;
+      const slowChatStarted = new Promise<void>((resolve) => {
+        markSlowChatStarted = resolve;
+      });
+      const prisma = {
+        chatSettings: {
+          findMany: jest.fn().mockResolvedValueOnce(settingsRows).mockResolvedValueOnce([]),
+        },
+        chat: {
+          findMany: jest.fn().mockResolvedValue(
+            settingsRows.map(({ chatId }) => ({
+              id: chatId,
+              entityType: ChatEntityType.CHAT,
+              botMemberships: [],
+            })),
+          ),
+          findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
+            if (where.id === 'chat-bootstrap-slow') {
+              markSlowChatStarted();
+              await slowChatGate;
+            }
+            return {
+              entityType: ChatEntityType.CHAT,
+              settings: settingsRows.find((settings) => settings.chatId === where.id),
+              botMemberships: [],
+            };
+          }),
+        },
+        $executeRaw: jest.fn().mockRejectedValueOnce(new Error('request database unavailable')),
+      };
+      const redisCounter = {
+        acquireLock: jest.fn(async (key: string) =>
+          key.endsWith(':chat-bootstrap-request-fails') ? null : 'slow-chat-token',
+        ),
+        renewLock: jest.fn().mockResolvedValue(true),
+        releaseLock: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        { add: jest.fn() } as unknown as Queue<NightModeTransitionJob>,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      const bootstrap = service.bootstrapEnabledChats();
+      await jest.advanceTimersByTimeAsync(4_100);
+      await slowChatStarted;
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(prisma.chatSettings.findMany).toHaveBeenCalledTimes(1);
+
+      releaseSlowChat();
+      await bootstrap;
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      expect(prisma.chatSettings.findMany).toHaveBeenCalledTimes(2);
+      service.onModuleDestroy();
     } finally {
       jest.useRealTimers();
     }
@@ -738,7 +863,7 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('bootstraps a catch-up close job when the current night session already started', async () => {
+  it('bootstraps only future jobs when the current night session already started', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:40:00.000Z'));
     try {
       const prisma = {
@@ -764,34 +889,21 @@ describe('NightModeTransitionSchedulerService', () => {
 
       await service.bootstrapEnabledChats();
 
-      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(queue.add).toHaveBeenCalledTimes(2);
       expect(queue.add).toHaveBeenNthCalledWith(
         1,
-        NIGHT_MODE_TRANSITION_JOB_NAME,
-        expect.objectContaining({
-          chatId: 'chat-1',
-          transition: 'close',
-          scheduledFor: '2026-05-30T20:00:00.000Z',
-          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
-        }),
-        expect.objectContaining({
-          delay: 0,
-        }),
-      );
-      expect(queue.add).toHaveBeenNthCalledWith(
-        2,
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.objectContaining({
           chatId: 'chat-1',
           transition: 'open',
           scheduledFor: '2026-05-31T05:00:00.000Z',
           sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
-          transitionRuntimeVersion: 3,
+          transitionRuntimeVersion: 4,
         }),
         expect.any(Object),
       );
       expect(queue.add).toHaveBeenNthCalledWith(
-        3,
+        2,
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.objectContaining({
           chatId: 'chat-1',
@@ -806,7 +918,107 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('bootstraps a catch-up open job when the current night session already ended', async () => {
+  it('reconstructs a current boundary at startup only from a durable v4 intent', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:40:00.000Z'));
+    try {
+      const chatId = 'chat-startup-v4-current';
+      const settings = {
+        chatId,
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const scheduledFor = '2026-05-30T20:00:00.000Z';
+      const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, CLOSE_SESSION_A);
+      const prisma = {
+        chatSettings: { findMany: jest.fn().mockResolvedValue([settings]) },
+        maxActionLedgerEntry: {
+          findMany: jest.fn().mockResolvedValue([]),
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+      await seedRegisteredJob(service, {
+        chatId,
+        jobId,
+        transition: 'close',
+        sessionKey: CLOSE_SESSION_A,
+        scheduledFor,
+        runtimeVersion: 4,
+      });
+
+      await service.bootstrapEnabledChats();
+
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          chatId,
+          transition: 'close',
+          scheduledFor,
+          transitionRuntimeVersion: 4,
+        }),
+        expect.objectContaining({ jobId }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not treat process startup before a boundary as proof of a missing current intent', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T19:55:00.000Z'));
+    try {
+      const chatId = 'chat-enabled-after-boundary';
+      const settings = {
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const ledgerLookup = jest.fn();
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        {
+          maxActionLedgerEntry: { findUnique: ledgerLookup },
+        } as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+      jest.setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
+
+      await expect(
+        (
+          service as unknown as {
+            enqueueChatSettingsOccurrences(
+              targetChatId: string,
+              targetSettings: typeof settings,
+              options: { includeCurrentClose: boolean; includeFuture: boolean },
+            ): Promise<{ manualReview: unknown }>;
+          }
+        ).enqueueChatSettingsOccurrences(chatId, settings, {
+          includeCurrentClose: true,
+          includeFuture: false,
+        }),
+      ).resolves.toEqual(expect.objectContaining({ manualReview: null }));
+
+      expect(queue.getJob).toHaveBeenCalledTimes(1);
+      expect(ledgerLookup).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('bootstraps only future jobs when the current night session already ended', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
       const prisma = {
@@ -832,25 +1044,12 @@ describe('NightModeTransitionSchedulerService', () => {
 
       await service.bootstrapEnabledChats();
 
-      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(queue.add).toHaveBeenCalledTimes(2);
       expect(queue.add).toHaveBeenNthCalledWith(
         1,
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.objectContaining({
           chatId: 'chat-1',
-          transition: 'open',
-          scheduledFor: '2026-05-31T05:00:00.000Z',
-          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
-          transitionRuntimeVersion: 3,
-        }),
-        expect.objectContaining({
-          delay: 0,
-        }),
-      );
-      expect(queue.add).toHaveBeenNthCalledWith(
-        2,
-        NIGHT_MODE_TRANSITION_JOB_NAME,
-        expect.objectContaining({
           transition: 'close',
           scheduledFor: '2026-05-31T20:00:00.000Z',
           sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-31',
@@ -858,7 +1057,7 @@ describe('NightModeTransitionSchedulerService', () => {
         expect.any(Object),
       );
       expect(queue.add).toHaveBeenNthCalledWith(
-        3,
+        2,
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.objectContaining({
           transition: 'open',
@@ -872,7 +1071,7 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('reconciles a catch-up open job when the current night session already ended', async () => {
+  it('does not synthesize a missing current job during explicit reconciliation', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
       const queue = {
@@ -891,25 +1090,18 @@ describe('NightModeTransitionSchedulerService', () => {
         nightModeTimezone: 'Europe/Moscow',
       });
 
-      expect(queue.add).toHaveBeenNthCalledWith(
-        1,
+      expect(queue.add).toHaveBeenCalledTimes(2);
+      expect(queue.add).not.toHaveBeenCalledWith(
         NIGHT_MODE_TRANSITION_JOB_NAME,
-        expect.objectContaining({
-          chatId: 'chat-1',
-          transition: 'open',
-          scheduledFor: '2026-05-31T05:00:00.000Z',
-          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
-        }),
-        expect.objectContaining({
-          delay: 0,
-        }),
+        expect.objectContaining({ scheduledFor: '2026-05-31T05:00:00.000Z' }),
+        expect.any(Object),
       );
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('keeps a legacy failed current open job blocked despite a missing-key removal outcome', async () => {
+  it('retires a legacy pre-start current job without re-enqueueing it during bootstrap', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
       const jobId = buildNightModeTransitionJobId(
@@ -939,7 +1131,9 @@ describe('NightModeTransitionSchedulerService', () => {
         },
       };
       const queue = {
-        getJob: jest.fn().mockResolvedValue(failedJob),
+        getJob: jest.fn(async (requestedJobId: string) =>
+          requestedJobId === jobId ? failedJob : null,
+        ),
         add: jest.fn(),
       };
       const service = new NightModeTransitionSchedulerService(
@@ -951,7 +1145,7 @@ describe('NightModeTransitionSchedulerService', () => {
 
       expect(queue.getJob).toHaveBeenCalledWith(jobId);
       expect(failedJob.getState).toHaveBeenCalledTimes(1);
-      expect(failedJob.remove).not.toHaveBeenCalled();
+      expect(failedJob.remove).toHaveBeenCalledTimes(1);
       expect(queue.add).not.toHaveBeenCalledWith(
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.any(Object),
@@ -963,7 +1157,7 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('does not re-add a legacy current open job when the failed job cannot be removed', async () => {
+  it('does not re-add a legacy current open job after a removal failure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
       const jobId = buildNightModeTransitionJobId(
@@ -1001,15 +1195,37 @@ describe('NightModeTransitionSchedulerService', () => {
         queue as unknown as Queue<NightModeTransitionJob>,
       );
 
-      await service.bootstrapEnabledChats();
+      await (
+        service as unknown as {
+          enqueueChatSettingsOccurrences(
+            chatId: string,
+            settings: {
+              nightModeEnabled: boolean;
+              nightModeStartTimeMinutes: number;
+              nightModeEndTimeMinutes: number;
+              nightModeTimezone: string;
+            },
+            options: { includeCurrentOpen: boolean; includeFuture: boolean },
+          ): Promise<unknown>;
+        }
+      ).enqueueChatSettingsOccurrences(
+        'chat-1',
+        {
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: 23 * 60,
+          nightModeEndTimeMinutes: 8 * 60,
+          nightModeTimezone: 'Europe/Moscow',
+        },
+        { includeCurrentOpen: true, includeFuture: false },
+      );
 
-      expect(failedJob.remove).not.toHaveBeenCalled();
+      expect(failedJob.remove).toHaveBeenCalledTimes(1);
       expect(queue.add).not.toHaveBeenCalledWith(
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.any(Object),
         expect.objectContaining({ jobId }),
       );
-      expect(queue.add).toHaveBeenCalledTimes(2);
+      expect(queue.add).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -1053,25 +1269,38 @@ describe('NightModeTransitionSchedulerService', () => {
         queue as unknown as Queue<NightModeTransitionJob>,
       );
 
-      await service.bootstrapEnabledChats();
-
-      expect(failedJob.remove).not.toHaveBeenCalled();
-      expect(queue.add).toHaveBeenCalledTimes(2);
-      expect(queue.add).toHaveBeenNthCalledWith(
-        1,
-        NIGHT_MODE_TRANSITION_JOB_NAME,
-        expect.objectContaining({
-          transition: 'close',
-          scheduledFor: '2026-05-31T20:00:00.000Z',
-        }),
-        expect.any(Object),
+      await (
+        service as unknown as {
+          enqueueChatSettingsOccurrences(
+            chatId: string,
+            settings: {
+              nightModeEnabled: boolean;
+              nightModeStartTimeMinutes: number;
+              nightModeEndTimeMinutes: number;
+              nightModeTimezone: string;
+            },
+            options: { includeCurrentOpen: boolean; includeFuture: boolean },
+          ): Promise<unknown>;
+        }
+      ).enqueueChatSettingsOccurrences(
+        'chat-1',
+        {
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: 23 * 60,
+          nightModeEndTimeMinutes: 8 * 60,
+          nightModeTimezone: 'Europe/Moscow',
+        },
+        { includeCurrentOpen: true, includeFuture: false },
       );
+
+      expect(failedJob.remove).toHaveBeenCalledTimes(1);
+      expect(queue.add).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('revives a versioned current job after the exact legacy pre-dispatch no-route failure', async () => {
+  it('retires a pre-v4 current job after the exact legacy pre-dispatch no-route failure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
       const jobId = buildNightModeTransitionJobId(
@@ -1109,24 +1338,38 @@ describe('NightModeTransitionSchedulerService', () => {
         queue as unknown as Queue<NightModeTransitionJob>,
       );
 
-      await service.bootstrapEnabledChats();
+      await (
+        service as unknown as {
+          enqueueChatSettingsOccurrences(
+            chatId: string,
+            settings: {
+              nightModeEnabled: boolean;
+              nightModeStartTimeMinutes: number;
+              nightModeEndTimeMinutes: number;
+              nightModeTimezone: string;
+            },
+            options: { includeCurrentOpen: boolean; includeFuture: boolean },
+          ): Promise<unknown>;
+        }
+      ).enqueueChatSettingsOccurrences(
+        'chat-1',
+        {
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: 23 * 60,
+          nightModeEndTimeMinutes: 8 * 60,
+          nightModeTimezone: 'Europe/Moscow',
+        },
+        { includeCurrentOpen: true, includeFuture: false },
+      );
 
       expect(failedJob.remove).toHaveBeenCalledTimes(1);
-      expect(queue.add).toHaveBeenCalledWith(
-        NIGHT_MODE_TRANSITION_JOB_NAME,
-        expect.objectContaining({
-          chatId: 'chat-1',
-          transition: 'open',
-          scheduledFor: '2026-05-31T05:00:00.000Z',
-        }),
-        expect.objectContaining({ jobId }),
-      );
+      expect(queue.add).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('revives a versioned current close job after an exact pre-dispatch route quarantine', async () => {
+  it('retires a pre-v4 current close job after an exact pre-dispatch route quarantine', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
     try {
       const jobId = buildNightModeTransitionJobId(
@@ -1164,18 +1407,32 @@ describe('NightModeTransitionSchedulerService', () => {
         queue as unknown as Queue<NightModeTransitionJob>,
       );
 
-      await service.bootstrapEnabledChats();
+      await (
+        service as unknown as {
+          enqueueChatSettingsOccurrences(
+            chatId: string,
+            settings: {
+              nightModeEnabled: boolean;
+              nightModeStartTimeMinutes: number;
+              nightModeEndTimeMinutes: number;
+              nightModeTimezone: string;
+            },
+            options: { includeCurrentClose: boolean; includeFuture: boolean },
+          ): Promise<unknown>;
+        }
+      ).enqueueChatSettingsOccurrences(
+        'chat-1',
+        {
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: 23 * 60,
+          nightModeEndTimeMinutes: 8 * 60,
+          nightModeTimezone: 'Europe/Moscow',
+        },
+        { includeCurrentClose: true, includeFuture: false },
+      );
 
       expect(failedJob.remove).toHaveBeenCalledTimes(1);
-      expect(queue.add).toHaveBeenCalledWith(
-        NIGHT_MODE_TRANSITION_JOB_NAME,
-        expect.objectContaining({
-          chatId: 'chat-1',
-          transition: 'close',
-          scheduledFor: '2026-05-30T20:00:00.000Z',
-        }),
-        expect.objectContaining({ jobId }),
-      );
+      expect(queue.add).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -1489,7 +1746,7 @@ describe('NightModeTransitionSchedulerService', () => {
       });
 
       expect(queue.getJobs).not.toHaveBeenCalled();
-      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(queue.add).toHaveBeenCalledTimes(2);
       expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
     } finally {
       jest.useRealTimers();
@@ -1550,8 +1807,8 @@ describe('NightModeTransitionSchedulerService', () => {
       });
 
       expect(queue.getJobs).not.toHaveBeenCalled();
-      expect(queue.getJob).toHaveBeenCalledTimes(6);
-      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(queue.getJob).toHaveBeenCalledTimes(7);
+      expect(queue.add).toHaveBeenCalledTimes(2);
       expect(queue.add).toHaveBeenCalledWith(
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.objectContaining({ chatId: 'chat-recovered', transition: 'close' }),
@@ -1562,7 +1819,7 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('recovers an exact failed v2 open after definitive non-delivery and fresh access', async () => {
+  it('recovers an exact failed v4 open after definitive non-delivery and fresh access', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
       const chatId = 'chat-ledger-recovery';
@@ -1578,9 +1835,10 @@ describe('NightModeTransitionSchedulerService', () => {
         failedReason:
           `MAX SEND_MESSAGE ledger entry night-mode:open:${chatId}:session:${sessionKey} ` +
           'is no longer executable (FAILED_TERMINAL)',
-        data: { transitionRuntimeVersion: 2 },
+        data: { transitionRuntimeVersion: 4 },
         getState: jest.fn().mockResolvedValue('failed'),
         remove: jest.fn(),
+        retry: jest.fn().mockResolvedValue(undefined),
       };
       const storedJobs = new Map<string, unknown>();
       const settings = {
@@ -1613,9 +1871,6 @@ describe('NightModeTransitionSchedulerService', () => {
         );
       }
       storedJobs.set(currentJobId, failedJob);
-      failedJob.remove.mockImplementation(async () => {
-        storedJobs.delete(currentJobId);
-      });
       const tx = {
         chatBotMembership: {
           findFirst: jest.fn().mockResolvedValue({ id: 'membership-1' }),
@@ -1682,7 +1937,7 @@ describe('NightModeTransitionSchedulerService', () => {
       });
 
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-      expect(failedJob.remove).toHaveBeenCalledTimes(1);
+      expect(failedJob.retry).toHaveBeenCalledTimes(1);
       expect(queue.add).toHaveBeenCalledTimes(1);
       expect(queue.add).toHaveBeenCalledWith(
         NIGHT_MODE_TRANSITION_JOB_NAME,
@@ -1711,7 +1966,7 @@ describe('NightModeTransitionSchedulerService', () => {
         failedReason:
           `MAX SEND_MESSAGE ledger entry night-mode:open:${chatId}:session:${sessionKey} ` +
           'is no longer executable (FAILED_TERMINAL)',
-        data: { transitionRuntimeVersion: 2 },
+        data: { transitionRuntimeVersion: 4 },
         getState: jest.fn().mockResolvedValue('failed'),
         remove: jest.fn(),
       };
@@ -1918,8 +2173,8 @@ describe('NightModeTransitionSchedulerService', () => {
       });
 
       expect(queue.getJobs).not.toHaveBeenCalled();
-      expect(queue.add).toHaveBeenCalledTimes(3);
-      expect(storedJobs.size).toBe(3);
+      expect(queue.add).toHaveBeenCalledTimes(2);
+      expect(storedJobs.size).toBe(2);
     } finally {
       jest.useRealTimers();
     }
@@ -2156,7 +2411,7 @@ describe('NightModeTransitionSchedulerService', () => {
       };
       const activeJob = {
         id: currentJobId,
-        data: { transitionRuntimeVersion: 2 },
+        data: { transitionRuntimeVersion: 4 },
         getState: jest.fn().mockResolvedValue('active'),
       };
       const queue = {
@@ -2348,8 +2603,11 @@ describe('NightModeTransitionSchedulerService', () => {
       };
       const queueError = new Error('queue unavailable after future SQL intent');
       const queue = {
-        getJob: jest.fn(() => {
-          throw new Error('Bull must not be read for an exact tombstone');
+        getJob: jest.fn((requestedJobId: string) => {
+          if (requestedJobId === currentJobId) {
+            throw new Error('Bull must not be read for an exact tombstone');
+          }
+          return null;
         }),
         add: jest.fn().mockRejectedValue(queueError),
       };
@@ -2381,7 +2639,7 @@ describe('NightModeTransitionSchedulerService', () => {
         }),
       ).rejects.toBe(queueError);
 
-      expect(queue.getJob).not.toHaveBeenCalled();
+      expect(queue.getJob).not.toHaveBeenCalledWith(currentJobId);
       expect(redisCounter.getString).not.toHaveBeenCalled();
       expect(queue.add).toHaveBeenCalledTimes(1);
       expect(queue.add).toHaveBeenCalledWith(
@@ -2464,7 +2722,7 @@ describe('NightModeTransitionSchedulerService', () => {
           }),
         ).resolves.toEqual(expect.objectContaining({ manualReview: null }));
 
-        expect(queue.getJob).toHaveBeenCalledTimes(1);
+        expect(queue.getJob).toHaveBeenCalledTimes(3);
         expect(queue.getJob).toHaveBeenCalledWith(currentJobId);
         expect(redisCounter.getString).not.toHaveBeenCalled();
         expect(queue.add).toHaveBeenCalledTimes(2);
@@ -2499,7 +2757,7 @@ describe('NightModeTransitionSchedulerService', () => {
     );
     const failedJob = {
       id: jobId,
-      data: { transitionRuntimeVersion: 3 },
+      data: { transitionRuntimeVersion: 4 },
       failedReason: 'Ambiguous MAX SEND_MESSAGE transport outcome',
       getState: jest.fn().mockResolvedValue('failed'),
       remove: jest.fn(),
@@ -2686,11 +2944,12 @@ describe('NightModeTransitionSchedulerService', () => {
       const fingerprint = buildNightModeTransitionScheduleFingerprint(settings);
       const failedJob = {
         id: buildNightModeTransitionJobId(chatId, 'open', '2026-05-31T05:00:00.000Z', sessionKey),
-        data: { transitionRuntimeVersion: 3, scheduleFingerprint: fingerprint },
+        data: { transitionRuntimeVersion: 4, scheduleFingerprint: fingerprint },
         attemptsMade: 4,
         failedReason: `${NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX}: db unavailable`,
         getState: jest.fn().mockResolvedValue('failed'),
         remove: jest.fn().mockResolvedValue(undefined),
+        retry: jest.fn().mockResolvedValue(undefined),
       };
       const closeLedgerJobId = `night-mode:close:${chatId}:session:${sessionKey}`;
       const prisma = {
@@ -2760,7 +3019,7 @@ describe('NightModeTransitionSchedulerService', () => {
       ).resolves.toEqual({ manualReview: null });
 
       expect(failedJob.attemptsMade).toBeGreaterThan(3);
-      expect(failedJob.remove).toHaveBeenCalledTimes(1);
+      expect(failedJob.retry).toHaveBeenCalledTimes(1);
       expect(queue.add).toHaveBeenCalledWith(
         NIGHT_MODE_TRANSITION_JOB_NAME,
         expect.objectContaining({
@@ -2789,11 +3048,12 @@ describe('NightModeTransitionSchedulerService', () => {
     );
     const failedJob = {
       id: jobId,
-      data: { transitionRuntimeVersion: 3 },
+      data: { transitionRuntimeVersion: 4 },
       attemptsMade: 5,
       failedReason: `${NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX}: db unavailable`,
       getState: jest.fn().mockResolvedValue('failed'),
       remove: jest.fn().mockResolvedValue(undefined),
+      retry: jest.fn().mockResolvedValue(undefined),
     };
     const service = new NightModeTransitionSchedulerService(
       {
@@ -2839,7 +3099,541 @@ describe('NightModeTransitionSchedulerService', () => {
       }),
     ).resolves.toEqual({ kind: 'enqueue' });
     expect(failedJob.attemptsMade).toBeGreaterThan(3);
-    expect(failedJob.remove).toHaveBeenCalledTimes(1);
+    expect(failedJob.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    MaxActionLedgerStatus.ENQUEUED,
+    MaxActionLedgerStatus.IN_PROGRESS,
+    MaxActionLedgerStatus.FAILED_RETRYABLE,
+  ])('retries a versioned close after exact pre-dispatch %s ledger proof', async (status) => {
+    const chatId = `chat-safe-close-${status.toLowerCase()}`;
+    const sessionKey = CLOSE_SESSION_A;
+    const jobId = buildNightModeTransitionJobId(
+      chatId,
+      'close',
+      '2026-05-30T20:00:00.000Z',
+      sessionKey,
+    );
+    const failedJob = {
+      id: jobId,
+      data: { transitionRuntimeVersion: 4 },
+      failedReason: 'MAX API background rate limit exceeded before dispatch',
+      getState: jest.fn().mockResolvedValue('failed'),
+      remove: jest.fn().mockResolvedValue(undefined),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: {
+          findUnique: jest.fn().mockResolvedValue({
+            actionType: 'SEND_MESSAGE',
+            chatId,
+            sourceTag: 'night_mode_transition',
+            status,
+            ambiguous: false,
+            terminal: false,
+            dispatchToken: null,
+            dispatchStartedAt: null,
+            dispatchBotId: null,
+            remoteMessageId: null,
+          }),
+        },
+      } as never,
+      { getJob: jest.fn().mockResolvedValue(failedJob) } as never,
+    );
+
+    await expect(
+      (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'close';
+            fingerprint: string;
+          }): Promise<{ kind: string }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition: 'close',
+        fingerprint: `sha256:${'a'.repeat(64)}`,
+      }),
+    ).resolves.toEqual({ kind: 'enqueue' });
+    expect(failedJob.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed v4 boundary after exact pre-dispatch lock contention', async () => {
+    const chatId = 'chat-lock-contention';
+    const sessionKey = CLOSE_SESSION_A;
+    const scheduledFor = '2026-05-30T20:00:00.000Z';
+    const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+    const failedJob = {
+      id: jobId,
+      data: { transitionRuntimeVersion: 4 },
+      failedReason: `Night mode transition lock is busy (${chatId})`,
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: { findUnique: jest.fn().mockResolvedValue(null) },
+      } as never,
+      { getJob: jest.fn().mockResolvedValue(failedJob) } as never,
+    );
+
+    await expect(
+      (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'close';
+            scheduledFor: string;
+            fingerprint: string;
+          }): Promise<{ kind: string }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition: 'close',
+        scheduledFor,
+        fingerprint: SCHEDULE_FINGERPRINT,
+      }),
+    ).resolves.toEqual({ kind: 'enqueue' });
+
+    expect(failedJob.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists v4 intent before promoting a future pre-v4 Bull job in place', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T19:55:00.000Z'));
+    try {
+      const chatId = 'chat-durable-first-promotion';
+      const settings = {
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const scheduledFor = '2026-05-30T20:00:00.000Z';
+      const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, CLOSE_SESSION_A);
+      const order: string[] = [];
+      const existingJob = {
+        id: jobId,
+        data: {
+          chatId,
+          transition: 'close',
+          scheduledFor,
+          sessionKey: CLOSE_SESSION_A,
+          transitionRuntimeVersion: 3,
+        } as NightModeTransitionJob,
+        getState: jest.fn().mockResolvedValue('delayed'),
+        updateData: jest.fn(async (data: NightModeTransitionJob) => {
+          order.push('bull-promote');
+          existingJob.data = data;
+        }),
+        remove: jest.fn(),
+      };
+      const prisma = {
+        $executeRaw: jest.fn(async () => {
+          order.push('registry-v4');
+          return 1;
+        }),
+      };
+      const queue = {
+        getJob: jest.fn(async (requestedJobId: string) =>
+          requestedJobId === jobId ? existingJob : null,
+        ),
+        add: jest.fn(
+          async (_name: string, _data: NightModeTransitionJob, options: { jobId: string }) => {
+            if (options.jobId === jobId) {
+              order.push('queue-add');
+            }
+          },
+        ),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await (
+        service as unknown as {
+          enqueueChatSettingsOccurrences(
+            targetChatId: string,
+            targetSettings: typeof settings,
+          ): Promise<unknown>;
+        }
+      ).enqueueChatSettingsOccurrences(chatId, settings);
+
+      expect(order.slice(0, 3)).toEqual(['registry-v4', 'bull-promote', 'queue-add']);
+      expect(existingJob.remove).not.toHaveBeenCalled();
+      expect(existingJob.data).toEqual(
+        expect.objectContaining({
+          transitionRuntimeVersion: 4,
+          scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(settings),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    { name: 'missing ledger', ledger: null },
+    {
+      name: 'safe pre-dispatch ledger',
+      ledger: {
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-evicted-close-safe',
+        sourceTag: 'night_mode_transition',
+        status: MaxActionLedgerStatus.ENQUEUED,
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 0,
+        completedAt: null,
+        lastError: null,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      },
+    },
+  ])('reconstructs an evicted v4 close job with $name', async ({ ledger }) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
+    try {
+      const chatId = 'chat-evicted-close-safe';
+      const sessionKey = CLOSE_SESSION_A;
+      const scheduledFor = '2026-05-30T20:00:00.000Z';
+      const settings = {
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+      const prisma = {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: { findUnique: jest.fn().mockResolvedValue(ledger) },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+      await seedRegisteredJob(service, {
+        chatId,
+        jobId,
+        transition: 'close',
+        sessionKey,
+        scheduledFor,
+        runtimeVersion: 4,
+      });
+
+      await expect(
+        (
+          service as unknown as {
+            enqueueChatSettingsOccurrences(
+              targetChatId: string,
+              targetSettings: typeof settings,
+              options: { includeCurrentClose: boolean; includeFuture: boolean },
+            ): Promise<{ manualReview: unknown }>;
+          }
+        ).enqueueChatSettingsOccurrences(chatId, settings, {
+          includeCurrentClose: true,
+          includeFuture: false,
+        }),
+      ).resolves.toEqual(expect.objectContaining({ manualReview: null }));
+
+      expect(queue.getJob).toHaveBeenCalledWith(jobId);
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          chatId,
+          transition: 'close',
+          sessionKey,
+          transitionRuntimeVersion: 4,
+        }),
+        expect.objectContaining({ jobId }),
+      );
+      expect(queue.add).not.toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({ recoveryOnly: expect.anything() }),
+        expect.any(Object),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('turns an evicted v4 close with exact completed proof into recovery-only work', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
+    try {
+      const chatId = 'chat-evicted-close-completed';
+      const recovery = buildCloseRecoveryA(chatId);
+      const scheduledFor = '2026-05-30T20:00:00.000Z';
+      const jobId = buildNightModeTransitionJobId(
+        chatId,
+        'close',
+        scheduledFor,
+        recovery.sessionKey,
+      );
+      const recoveryJobId = buildNightModeTransitionRecoveryJobId(chatId, recovery);
+      const completedLedger = {
+        id: 'ledger-evicted-close-completed',
+        jobId: `night-mode:close:${chatId}:session:${recovery.sessionKey}`,
+        updatedAt: new Date('2026-05-30T20:00:01.000Z'),
+        actionType: 'SEND_MESSAGE',
+        chatId,
+        sourceTag: 'night_mode_transition',
+        status: MaxActionLedgerStatus.SUCCEEDED,
+        ambiguous: false,
+        terminal: true,
+        completedAt: new Date('2026-05-30T20:00:01.000Z'),
+        dispatchToken: 'dispatch-evicted-close-completed',
+        dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+        dispatchBotId: recovery.botId,
+        remoteMessageId: recovery.messageId,
+      };
+      const prisma = {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: { findMany: jest.fn().mockResolvedValue([completedLedger]) },
+        moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+        undefined,
+        undefined,
+        { getString: jest.fn().mockResolvedValue(null) } as never,
+      );
+      await seedRegisteredJob(service, {
+        chatId,
+        jobId,
+        transition: 'close',
+        sessionKey: recovery.sessionKey,
+        scheduledFor,
+        runtimeVersion: 4,
+      });
+
+      await expect(
+        (
+          service as unknown as {
+            ensureCloseEventRecoveryJob(targetChatId: string): Promise<{
+              jobId: string | null;
+              manualReview: unknown;
+              blocksCurrentCatchUp: boolean;
+            }>;
+          }
+        ).ensureCloseEventRecoveryJob(chatId),
+      ).resolves.toEqual({
+        jobId: recoveryJobId,
+        manualReview: null,
+        blocksCurrentCatchUp: true,
+      });
+
+      expect(queue.getJob).toHaveBeenCalledWith(recoveryJobId);
+      expect(queue.getJob).not.toHaveBeenCalledWith(jobId);
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({
+          chatId,
+          transition: 'close',
+          sessionKey: recovery.sessionKey,
+          transitionRuntimeVersion: 4,
+          recoveryOnly: recovery,
+        }),
+        expect.objectContaining({ jobId: recoveryJobId }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      name: 'ambiguous dispatch',
+      ledger: {
+        status: MaxActionLedgerStatus.AMBIGUOUS,
+        ambiguous: true,
+        terminal: true,
+        dispatchToken: 'dispatch-ambiguous',
+        dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+        dispatchBotId: 'bot-a',
+      },
+    },
+    {
+      name: 'terminal post-dispatch failure',
+      ledger: {
+        status: MaxActionLedgerStatus.FAILED_TERMINAL,
+        ambiguous: false,
+        terminal: true,
+        dispatchToken: 'dispatch-terminal',
+        dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+        dispatchBotId: 'bot-a',
+      },
+    },
+  ])('manually blocks an evicted v4 close with $name provenance', async ({ ledger }) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
+    try {
+      const chatId = 'chat-evicted-close-unsafe';
+      const sessionKey = CLOSE_SESSION_A;
+      const scheduledFor = '2026-05-30T20:00:00.000Z';
+      const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+      const unsafeLedger = {
+        actionType: 'SEND_MESSAGE',
+        chatId,
+        sourceTag: 'night_mode_transition',
+        completedAt: new Date('2026-05-30T20:00:01.000Z'),
+        remoteMessageId: null,
+        ...ledger,
+      };
+      const prisma = {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: {
+          findMany: jest.fn().mockResolvedValue([]),
+          findUnique: jest.fn().mockResolvedValue(unsafeLedger),
+        },
+      };
+      const queue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+        undefined,
+        undefined,
+        { getString: jest.fn().mockResolvedValue(null) } as never,
+      );
+      await seedRegisteredJob(service, {
+        chatId,
+        jobId,
+        transition: 'close',
+        sessionKey,
+        scheduledFor,
+        runtimeVersion: 4,
+      });
+
+      await expect(
+        (
+          service as unknown as {
+            ensureCloseEventRecoveryJob(targetChatId: string): Promise<{
+              jobId: string | null;
+              manualReview: { category: string; jobId: string; sessionKey: string } | null;
+              blocksCurrentCatchUp: boolean;
+            }>;
+          }
+        ).ensureCloseEventRecoveryJob(chatId),
+      ).resolves.toEqual({
+        jobId: null,
+        manualReview: expect.objectContaining({
+          category: 'unsafe_prior_provenance',
+          jobId,
+          sessionKey,
+        }),
+        blocksCurrentCatchUp: true,
+      });
+
+      expect(queue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('promotes and retries a pre-v4 boundary that was future at process startup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T19:55:00.000Z'));
+    try {
+      const chatId = 'chat-promote-future-v3';
+      const sessionKey = CLOSE_SESSION_A;
+      const scheduledFor = '2026-05-30T20:00:00.000Z';
+      const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+      const failedJob = {
+        id: jobId,
+        data: {
+          chatId,
+          transition: 'close',
+          scheduledFor,
+          sessionKey,
+          transitionRuntimeVersion: 3,
+        } as NightModeTransitionJob,
+        failedReason: 'MAX API background rate limit exceeded before dispatch',
+        getState: jest.fn().mockResolvedValue('failed'),
+        updateData: jest.fn(async (data: NightModeTransitionJob) => {
+          failedJob.data = data;
+        }),
+        retry: jest.fn().mockResolvedValue(undefined),
+        remove: jest.fn(),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        {
+          nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+          maxActionLedgerEntry: {
+            findUnique: jest.fn().mockResolvedValue({
+              actionType: 'SEND_MESSAGE',
+              chatId,
+              sourceTag: 'night_mode_transition',
+              status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+              ambiguous: false,
+              terminal: false,
+              dispatchToken: null,
+              dispatchStartedAt: null,
+              dispatchBotId: null,
+              remoteMessageId: null,
+            }),
+          },
+        } as never,
+        { getJob: jest.fn().mockResolvedValue(failedJob) } as never,
+      );
+      jest.setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
+
+      await expect(
+        (
+          service as unknown as {
+            canEnqueueCurrentCatchUp(params: {
+              chatId: string;
+              jobId: string;
+              sessionKey: string;
+              transition: 'close';
+              scheduledFor: string;
+              fingerprint: string;
+            }): Promise<{ kind: string }>;
+          }
+        ).canEnqueueCurrentCatchUp({
+          chatId,
+          jobId,
+          sessionKey,
+          transition: 'close',
+          scheduledFor,
+          fingerprint: `sha256:${'a'.repeat(64)}`,
+        }),
+      ).resolves.toEqual({ kind: 'enqueue' });
+
+      expect(failedJob.updateData).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transitionRuntimeVersion: 4,
+          scheduleFingerprint: `sha256:${'a'.repeat(64)}`,
+        }),
+      );
+      expect(failedJob.retry).toHaveBeenCalledTimes(1);
+      expect(failedJob.remove).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('never resets an ordinary exhausted send failure without close recovery proof', async () => {
@@ -2855,7 +3649,7 @@ describe('NightModeTransitionSchedulerService', () => {
       };
       const failedJob = {
         id: buildNightModeTransitionJobId(chatId, 'open', '2026-05-31T05:00:00.000Z', sessionKey),
-        data: { transitionRuntimeVersion: 3 },
+        data: { transitionRuntimeVersion: 4 },
         attemptsMade: 4,
         failedReason: 'Ambiguous MAX SEND_MESSAGE transport outcome',
         getState: jest.fn().mockResolvedValue('failed'),
@@ -2977,6 +3771,14 @@ describe('NightModeTransitionSchedulerService', () => {
       undefined,
       { getString: jest.fn().mockResolvedValue(null) } as never,
     );
+    await seedRegisteredJob(service, {
+      chatId,
+      jobId: 'evicted-open-job',
+      transition: 'open',
+      sessionKey,
+      scheduledFor: '2026-05-31T05:00:00.000Z',
+      runtimeVersion: 4,
+    });
 
     const resolution = await (
       service as unknown as {
@@ -3038,6 +3840,14 @@ describe('NightModeTransitionSchedulerService', () => {
       undefined,
       { getString: jest.fn().mockResolvedValue(null) } as never,
     );
+    await seedRegisteredJob(service, {
+      chatId,
+      jobId: 'evicted-open-job',
+      transition: 'open',
+      sessionKey,
+      scheduledFor: '2026-05-31T05:00:00.000Z',
+      runtimeVersion: 4,
+    });
 
     const resolution = await (
       service as unknown as {
@@ -3431,6 +4241,19 @@ describe('NightModeTransitionSchedulerService', () => {
     ).resolves.toEqual(expect.objectContaining({ jobId: expect.any(String) }));
 
     expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenCalledTimes(2);
+    expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: MaxActionLedgerStatus.SUCCEEDED,
+          ambiguous: false,
+          terminal: true,
+          completedAt: { not: null },
+          dispatchBotId: { not: null },
+          remoteMessageId: { not: null },
+        }),
+      }),
+    );
     expect(queue.add).toHaveBeenCalledWith(
       NIGHT_MODE_TRANSITION_JOB_NAME,
       expect.objectContaining({
@@ -3439,6 +4262,41 @@ describe('NightModeTransitionSchedulerService', () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it('uses one indexed anti-join query for per-chat historical recovery', async () => {
+    const prisma = {
+      maxActionLedgerEntry: { findMany: jest.fn() },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    };
+    const service = new NightModeTransitionSchedulerService(prisma as never);
+
+    await expect(
+      (
+        service as unknown as {
+          listMissingCloseEventLedgerPage(
+            chatId: string,
+            jobIdPrefix: string,
+            cursor: null,
+          ): Promise<unknown[]>;
+        }
+      ).listMissingCloseEventLedgerPage(
+        'chat-indexed-recovery',
+        'night-mode:close:chat-indexed-recovery:session:',
+        null,
+      ),
+    ).resolves.toEqual([]);
+
+    expect(prisma.maxActionLedgerEntry.findMany).not.toHaveBeenCalled();
+    const sql = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(sql).toContain('ledger."chat_id" =');
+    expect(sql).toContain('BTRIM(ledger."remote_message_id") <> \'\'');
+    expect(sql).toContain('BTRIM(ledger."dispatch_bot_id") <> \'\'');
+    expect(sql).toContain('ledger."job_id" LIKE \'night-mode:close:%\'');
+    expect(sql).toContain('AND NOT EXISTS');
+    expect(sql).toContain('event."rule_code" = \'NIGHT_MODE_CLOSE_NOTICE\'');
+    expect(sql).toContain('ORDER BY ledger."completed_at" DESC, ledger."id" DESC');
+    expect(sql).toContain('LIMIT');
   });
 
   it('replaces an existing failed deterministic recovery job and refreshes its registry intent', async () => {
@@ -4153,8 +5011,8 @@ describe('NightModeTransitionSchedulerService', () => {
       await service.reconcileChats(chatIds);
 
       expect(queue.getJobs).not.toHaveBeenCalled();
-      expect(queue.getJob).toHaveBeenCalledTimes(chatIds.length);
-      expect(queue.add).toHaveBeenCalledTimes(chatIds.length * 3);
+      expect(queue.getJob).toHaveBeenCalledTimes(chatIds.length * 3);
+      expect(queue.add).toHaveBeenCalledTimes(chatIds.length * 2);
       expect(prisma.chat.findUnique).toHaveBeenCalledTimes(chatIds.length * 2);
     } finally {
       jest.useRealTimers();
@@ -4236,7 +5094,8 @@ describe('NightModeTransitionSchedulerService', () => {
       expect(requestInsert).toContain('WHERE NOT EXISTS');
       expect(requestInsert).toContain('owner."generation" =');
       expect(requestInsert).toContain('owner."lease_token" =');
-      expect(requestInsert).toContain('"lease_expires_at" >');
+      expect(requestInsert).not.toContain('"lease_expires_at" >');
+      expect(registryInsert).toContain('IS DISTINCT FROM');
       const conflictSet = requestInsert.slice(
         requestInsert.indexOf('SET'),
         requestInsert.indexOf('WHERE NOT EXISTS'),
@@ -4248,8 +5107,8 @@ describe('NightModeTransitionSchedulerService', () => {
         scheduleEnabled: true,
         passes: 1,
       });
-      expect(queue.add).toHaveBeenCalledTimes(4);
-      expect(storedJobs.size).toBe(3);
+      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(storedJobs.size).toBe(2);
     } finally {
       jest.useRealTimers();
     }
@@ -4291,6 +5150,52 @@ describe('NightModeTransitionSchedulerService', () => {
     expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain(
       'enqueue_night_mode_transition_reconcile_request',
     );
+  });
+
+  it('does not revoke a fenced reconcile lease for an active obsolete job', async () => {
+    const chatId = 'chat-active-fenced-repair';
+    const activeJob = {
+      id: 'night-mode-active-fenced-repair',
+      getState: jest.fn().mockResolvedValue('active'),
+      remove: jest.fn(),
+    };
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([
+        {
+          chat_id: chatId,
+          job_id: activeJob.id,
+          transition: 'close',
+          session_key: CLOSE_SESSION_A,
+          scheduled_for: new Date('2026-05-30T20:00:00.000Z'),
+          schedule_fingerprint: `sha256:${'a'.repeat(64)}`,
+        },
+      ]),
+      $executeRaw: jest.fn(),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      { getJob: jest.fn().mockResolvedValue(activeJob) } as never,
+    );
+
+    await expect(
+      (
+        service as unknown as {
+          clearChatJobsForChatIds(
+            chatIds: string[],
+            options: {
+              strict: boolean;
+              reconcileFence: { generation: bigint; leaseToken: string };
+            },
+          ): Promise<void>;
+        }
+      ).clearChatJobsForChatIds([chatId], {
+        strict: true,
+        reconcileFence: { generation: 4n, leaseToken: 'lease-owner-4' },
+      }),
+    ).rejects.toThrow('Night mode transition jobs are active during schedule replacement');
+
+    expect(activeJob.remove).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('does not fail a completed transition while enqueue-next still observes its active job', async () => {
