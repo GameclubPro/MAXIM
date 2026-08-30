@@ -150,6 +150,16 @@ export class PublisherAutoReplyService {
       return this.presentRule(await this.requireRuleById(replay.ruleId, chatId, true));
     }
 
+    if (request.enabled) {
+      await this.policy.assertBotCapabilityForFeatureEnablement(
+        'chat',
+        chatId,
+        entity.moduleSettings.autoRepliesEnabled === true
+          ? ['enabled']
+          : ['enabled', 'autoRepliesEnabled'],
+      );
+    }
+
     const content = await this.prepareContent(request.content);
     const normalizedPhrase = normalizePublisherAutoReplyPhrase(request.phrase);
     let createdRuleId: string;
@@ -256,6 +266,19 @@ export class PublisherAutoReplyService {
     }
 
     const existing = await this.requireRule(chatId, ruleId);
+    if (
+      request.enabled === true &&
+      (existing.enabled !== true || entity.moduleSettings.autoRepliesEnabled !== true)
+    ) {
+      await this.policy.assertBotCapabilityForFeatureEnablement(
+        'chat',
+        chatId,
+        [
+          ...(existing.enabled !== true ? ['enabled'] : []),
+          ...(entity.moduleSettings.autoRepliesEnabled !== true ? ['autoRepliesEnabled'] : []),
+        ],
+      );
+    }
     const content = request.content ? await this.prepareContent(request.content) : null;
     const nextVersion = request.expectedVersion + 1;
     try {

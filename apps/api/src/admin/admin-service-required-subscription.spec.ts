@@ -29,6 +29,21 @@ function createRequiredSubscriptionService(
     recordBotAccessProbe: jest.fn().mockResolvedValue(true),
     bindDiscoveredChatBots: jest.fn().mockResolvedValue(botId),
     resolveContactIdSync: jest.fn().mockReturnValue(null),
+    resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue({
+      botId,
+      capabilityState: 'confirmed_capable',
+      checkedAt: '2026-08-30T10:00:00.000Z',
+    }),
+    resolveStrictWriteModerationBotRoute: jest.fn().mockResolvedValue({
+      botId,
+      capabilityState: 'confirmed_capable',
+      checkedAt: '2026-08-30T10:00:00.000Z',
+    }),
+    resolveStrictMemberModerationBotRoute: jest.fn().mockResolvedValue({
+      botId,
+      capabilityState: 'confirmed_capable',
+      checkedAt: '2026-08-30T10:00:00.000Z',
+    }),
   };
   const maxBotRegistry = {
     getBotById: jest.fn((candidateBotId: string | null | undefined) =>
@@ -52,6 +67,20 @@ function createRequiredSubscriptionService(
     maxBotRegistry as never,
     options.maxBotExecutionPlanner as never,
   );
+}
+
+function expectChatSettingsWrite(
+  prisma: ReturnType<typeof createPrismaMock>,
+  expected: Record<string, unknown>,
+  chatId = 'chat-1',
+): void {
+  const updated = prisma.chatSettings.updateMany.mock.calls
+    .filter(([args]) => args?.where?.chatId === chatId)
+    .at(-1)?.[0]?.data;
+  const created = prisma.chatSettings.create.mock.calls
+    .filter(([args]) => args?.data?.chatId === chatId)
+    .at(-1)?.[0]?.data;
+  expect(updated ?? created).toEqual(expect.objectContaining(expected));
 }
 
 describe('AdminService required subscription settings', () => {
@@ -96,34 +125,15 @@ describe('AdminService required subscription settings', () => {
     });
 
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1']);
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          settings: expect.objectContaining({
-            upsert: {
-              update: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-                requiredSubscriptionBotMessageEnabled: true,
-                requiredSubscriptionBotMessageText: 'Проверьте подписку.',
-                requiredSubscriptionWarnEnabled: true,
-                requiredSubscriptionWarnMessageText: 'Сначала подпишитесь на канал.',
-                requiredSubscriptionBanEnabled: true,
-              }),
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-                requiredSubscriptionBotMessageEnabled: true,
-                requiredSubscriptionBotMessageText: 'Проверьте подписку.',
-                requiredSubscriptionWarnEnabled: true,
-                requiredSubscriptionWarnMessageText: 'Сначала подпишитесь на канал.',
-                requiredSubscriptionBanEnabled: true,
-              }),
-            },
-          }),
-        }),
-      }),
-    );
+    expectChatSettingsWrite(prisma, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
+      requiredSubscriptionBotMessageEnabled: true,
+      requiredSubscriptionBotMessageText: 'Проверьте подписку.',
+      requiredSubscriptionWarnEnabled: true,
+      requiredSubscriptionWarnMessageText: 'Сначала подпишитесь на канал.',
+      requiredSubscriptionBanEnabled: true,
+    });
   });
 
   it('keeps required subscription indefinite when the block is enabled', async () => {
@@ -160,24 +170,10 @@ describe('AdminService required subscription settings', () => {
 
       expect(result.requiredSubscriptionDurationDays).toBe(10);
       expect(result.requiredSubscriptionExpiresAt).toBe('');
-      expect(prisma.chat.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          update: expect.objectContaining({
-            settings: expect.objectContaining({
-              upsert: {
-                update: expect.objectContaining({
-                  requiredSubscriptionDurationDays: 10,
-                  requiredSubscriptionExpiresAt: '',
-                }),
-                create: expect.objectContaining({
-                  requiredSubscriptionDurationDays: 10,
-                  requiredSubscriptionExpiresAt: '',
-                }),
-              },
-            }),
-          }),
-        }),
-      );
+      expectChatSettingsWrite(prisma, {
+        requiredSubscriptionDurationDays: 10,
+        requiredSubscriptionExpiresAt: '',
+      });
     } finally {
       jest.useRealTimers();
     }
@@ -229,20 +225,10 @@ describe('AdminService required subscription settings', () => {
       });
 
       expect(result.requiredSubscriptionExpiresAt).toBe('');
-      expect(prisma.chat.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          update: expect.objectContaining({
-            settings: expect.objectContaining({
-              upsert: expect.objectContaining({
-                update: expect.objectContaining({
-                  requiredSubscriptionDurationDays: 7,
-                  requiredSubscriptionExpiresAt: '',
-                }),
-              }),
-            }),
-          }),
-        }),
-      );
+      expectChatSettingsWrite(prisma, {
+        requiredSubscriptionDurationDays: 7,
+        requiredSubscriptionExpiresAt: '',
+      });
     } finally {
       jest.useRealTimers();
     }
@@ -1093,6 +1079,21 @@ describe('AdminService required subscription settings', () => {
       }),
       getBotTokenSync: jest.fn().mockReturnValue(null),
       getValidationTokens: jest.fn().mockReturnValue([]),
+      resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue({
+        botId: 'id613002203036_4_bot',
+        capabilityState: 'confirmed_capable',
+        checkedAt: '2026-08-30T10:00:00.000Z',
+      }),
+      resolveStrictWriteModerationBotRoute: jest.fn().mockResolvedValue({
+        botId: 'id613002203036_4_bot',
+        capabilityState: 'confirmed_capable',
+        checkedAt: '2026-08-30T10:00:00.000Z',
+      }),
+      resolveStrictMemberModerationBotRoute: jest.fn().mockResolvedValue({
+        botId: 'id613002203036_4_bot',
+        capabilityState: 'confirmed_capable',
+        checkedAt: '2026-08-30T10:00:00.000Z',
+      }),
     };
     const maxBotRegistry = {
       getBotById: jest.fn((botId?: string | null) => {
@@ -1584,24 +1585,10 @@ describe('AdminService required subscription settings', () => {
 
     expect(result.requiredSubscriptionEnabled).toBe(false);
     expect(result.requiredSubscriptionChannelIds).toEqual([]);
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          settings: expect.objectContaining({
-            upsert: {
-              update: expect.objectContaining({
-                requiredSubscriptionEnabled: false,
-                requiredSubscriptionChannelIds: [],
-              }),
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: false,
-                requiredSubscriptionChannelIds: [],
-              }),
-            },
-          }),
-        }),
-      }),
-    );
+    expectChatSettingsWrite(prisma, {
+      requiredSubscriptionEnabled: false,
+      requiredSubscriptionChannelIds: [],
+    });
   });
 
   it('keeps only verifiable required subscription targets from a mixed list', async () => {
@@ -1636,24 +1623,10 @@ describe('AdminService required subscription settings', () => {
 
     expect(result.requiredSubscriptionEnabled).toBe(true);
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1', 'channel-2']);
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          settings: expect.objectContaining({
-            upsert: {
-              update: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
-              }),
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
-              }),
-            },
-          }),
-        }),
-      }),
-    );
+    expectChatSettingsWrite(prisma, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
+    });
     const cachedHeaderIds = chatContextCache.setManagedEntityHeader.mock.calls.map(
       ([header]) => header.id,
     );
@@ -1677,26 +1650,11 @@ describe('AdminService required subscription settings', () => {
     expect(result.requiredSubscriptionEnabled).toBe(false);
     expect(result.requiredSubscriptionChannelIds).toEqual([]);
     expect(result.requiredSubscriptionExpiresAt).toBe('');
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          settings: expect.objectContaining({
-            upsert: {
-              update: expect.objectContaining({
-                requiredSubscriptionEnabled: false,
-                requiredSubscriptionChannelIds: [],
-                requiredSubscriptionExpiresAt: '',
-              }),
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: false,
-                requiredSubscriptionChannelIds: [],
-                requiredSubscriptionExpiresAt: '',
-              }),
-            },
-          }),
-        }),
-      }),
-    );
+    expectChatSettingsWrite(prisma, {
+      requiredSubscriptionEnabled: false,
+      requiredSubscriptionChannelIds: [],
+      requiredSubscriptionExpiresAt: '',
+    });
   });
 
   it('accepts required subscription channels without a public link when the bot is admin there', async () => {
@@ -1810,16 +1768,14 @@ describe('AdminService required subscription settings', () => {
     expect(result.appliedChatIds).toEqual(['chat-1', 'chat-2']);
 
     const chat2Call = prisma.chat.upsert.mock.calls.find(
-      ([args]) =>
-        args?.where?.id === 'chat-2' &&
-        args?.create?.settings?.create &&
-        args?.update?.settings?.upsert,
+      ([args]) => args?.where?.id === 'chat-2',
     )?.[0];
     expect(chat2Call).toBeDefined();
     expect(chat2Call?.update).not.toHaveProperty('botId');
     expect(chat2Call?.update).not.toHaveProperty('primaryBotId');
-    expect(chat2Call?.create?.settings?.create).toEqual(
-      expect.objectContaining({
+    expectChatSettingsWrite(
+      prisma,
+      {
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
         requiredSubscriptionBotMessageEnabled: true,
@@ -1828,30 +1784,8 @@ describe('AdminService required subscription settings', () => {
         requiredSubscriptionWarnMessageText: 'Сначала подпишитесь.',
         requiredSubscriptionBanEnabled: true,
         deleteSpammersEnabled: false,
-      }),
-    );
-    expect(chat2Call?.update?.settings?.upsert?.update).toEqual(
-      expect.objectContaining({
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: ['channel-1'],
-        requiredSubscriptionBotMessageEnabled: true,
-        requiredSubscriptionBotMessageText: 'Следите за подпиской.',
-        requiredSubscriptionWarnEnabled: true,
-        requiredSubscriptionWarnMessageText: 'Сначала подпишитесь.',
-        requiredSubscriptionBanEnabled: true,
-      }),
-    );
-    expect(chat2Call?.update?.settings?.upsert?.create).toEqual(
-      expect.objectContaining({
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: ['channel-1'],
-        requiredSubscriptionBotMessageEnabled: true,
-        requiredSubscriptionBotMessageText: 'Следите за подпиской.',
-        requiredSubscriptionWarnEnabled: true,
-        requiredSubscriptionWarnMessageText: 'Сначала подпишитесь.',
-        requiredSubscriptionBanEnabled: true,
-        deleteSpammersEnabled: false,
-      }),
+      },
+      'chat-2',
     );
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-2');
@@ -1859,7 +1793,6 @@ describe('AdminService required subscription settings', () => {
 
     await flushAsyncTasks();
 
-    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledTimes(3);
     expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
       chatId: 'chat-1',
       entityType: 'chat',
@@ -1905,6 +1838,7 @@ describe('AdminService required subscription settings', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    jest.spyOn(service, 'assertChatSettingsBotCapabilities').mockResolvedValue(undefined);
     jest.spyOn(service, 'getSettings').mockResolvedValue(
       chatSettingsSchema.parse({
         nightModeEnabled: true,
@@ -1937,15 +1871,9 @@ describe('AdminService required subscription settings', () => {
     expect(result.updatedChats).toBe(2);
     expect(result.appliedChatIds).toEqual(['chat-1', 'chat-2']);
 
-    const chat2Call = prisma.chat.upsert.mock.calls.find(
-      ([args]) =>
-        args?.where?.id === 'chat-2' &&
-        args?.create?.settings?.create &&
-        args?.update?.settings?.upsert,
-    )?.[0];
-    expect(chat2Call).toBeDefined();
-    expect(chat2Call?.create?.settings?.create).toEqual(
-      expect.objectContaining({
+    expectChatSettingsWrite(
+      prisma,
+      {
         nightModeEnabled: true,
         nightModeStartTimeMinutes: 23 * 60,
         nightModeEndTimeMinutes: 6 * 60,
@@ -1964,51 +1892,8 @@ describe('AdminService required subscription settings', () => {
         nightModeForceCloseHours: 8,
         nightModeForceCloseDays: 0,
         nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
-      }),
-    );
-    expect(chat2Call?.update?.settings?.upsert?.update).toEqual(
-      expect.objectContaining({
-        nightModeEnabled: true,
-        nightModeStartTimeMinutes: 23 * 60,
-        nightModeEndTimeMinutes: 6 * 60,
-        nightModeTimezone: 'Europe/Moscow',
-        nightModeBotMessageEnabled: true,
-        nightModeBotMessageText: 'Чат закрыт до утра.',
-        nightModeCommentsEnabled: true,
-        nightModeOpenMessageEnabled: true,
-        nightModeOpenMessageText: 'Чат снова открыт.',
-        nightModeBotButtonEnabled: true,
-        nightModeBotButtonUrl: 'https://max.ru/maxim',
-        nightModeBotButtonText: 'Профиль',
-        nightModeRulesButtonEnabled: true,
-        nightModeForceCloseEnabled: true,
-        nightModeForceCloseForever: false,
-        nightModeForceCloseHours: 8,
-        nightModeForceCloseDays: 0,
-        nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
-      }),
-    );
-    expect(chat2Call?.update?.settings?.upsert?.create).toEqual(
-      expect.objectContaining({
-        nightModeEnabled: true,
-        nightModeStartTimeMinutes: 23 * 60,
-        nightModeEndTimeMinutes: 6 * 60,
-        nightModeTimezone: 'Europe/Moscow',
-        nightModeBotMessageEnabled: true,
-        nightModeBotMessageText: 'Чат закрыт до утра.',
-        nightModeCommentsEnabled: true,
-        nightModeOpenMessageEnabled: true,
-        nightModeOpenMessageText: 'Чат снова открыт.',
-        nightModeBotButtonEnabled: true,
-        nightModeBotButtonUrl: 'https://max.ru/maxim',
-        nightModeBotButtonText: 'Профиль',
-        nightModeRulesButtonEnabled: true,
-        nightModeForceCloseEnabled: true,
-        nightModeForceCloseForever: false,
-        nightModeForceCloseHours: 8,
-        nightModeForceCloseDays: 0,
-        nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
-      }),
+      },
+      'chat-2',
     );
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
@@ -2021,6 +1906,7 @@ describe('AdminService required subscription settings', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    jest.spyOn(service, 'assertChatSettingsBotCapabilities').mockResolvedValue(undefined);
     const settings = chatSettingsSchema.parse({
       greetingEnabled: true,
       greetingBotMessageEnabled: true,
@@ -2063,6 +1949,7 @@ describe('AdminService required subscription settings', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    jest.spyOn(service, 'assertChatSettingsBotCapabilities').mockResolvedValue(undefined);
     const settings = chatSettingsSchema.parse({
       greetingEnabled: true,
       greetingBotMessageEnabled: true,

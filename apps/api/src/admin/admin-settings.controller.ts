@@ -1,5 +1,6 @@
 import {
   Body,
+  BadRequestException,
   Controller,
   Delete,
   Get,
@@ -7,6 +8,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
@@ -45,8 +47,14 @@ export class AdminSettingsController {
     @Param('chatId') chatId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @Query('recheckBotCapabilities') recheckBotCapabilities?: string,
   ) {
-    return this.settingsService.updateSettings(chatId, user, body);
+    if (recheckBotCapabilities !== undefined && recheckBotCapabilities !== '1') {
+      throw new BadRequestException('recheckBotCapabilities must equal 1');
+    }
+    return this.settingsService.updateSettings(chatId, user, body, 'miniapp', {
+      forceLiveBotCapabilityCheck: recheckBotCapabilities === '1',
+    });
   }
 
   @Get('chats/:chatId/rules')

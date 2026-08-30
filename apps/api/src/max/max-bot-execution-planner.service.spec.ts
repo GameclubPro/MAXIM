@@ -719,6 +719,30 @@ describe('MaxBotExecutionPlannerService', () => {
     expect(fixture.prisma.chatBotMembership.update).not.toHaveBeenCalled();
   });
 
+  it('forces a live access refresh even when the persisted snapshot is fresh', async () => {
+    const fixture = createFixture();
+    const botId = 'id613002203036_4_bot';
+    fixture.memberships.find((membership) => membership.botId === botId)!.permissionsSnapshot = {
+      checkedAt: new Date().toISOString(),
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    };
+
+    await fixture.service.refreshChatBotCapabilitySnapshots({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId,
+      force: true,
+    });
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ botId, bypassCache: true }),
+    );
+  });
+
   it('uses stored snapshots without warning when managed_refresh source pressure defers refresh', async () => {
     const fixture = createFixture();
     const warnSpy = jest.spyOn((fixture.service as any).logger, 'warn');

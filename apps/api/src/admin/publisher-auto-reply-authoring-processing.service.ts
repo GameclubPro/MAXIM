@@ -17,6 +17,7 @@ import {
   type PreparedPublisherAutoReplyContent,
 } from './publisher-auto-reply.service';
 import { PublisherPolicyService } from './publisher-policy.service';
+import { BotCapabilityRequiredException } from './bot-capability-required.error';
 
 const PROCESSING_LEASE_MS = 2 * 60_000;
 const REVIEW_TTL_MS = 20 * 60_000;
@@ -170,6 +171,11 @@ export class PublisherAutoReplyAuthoringProcessingService {
 
     try {
       await this.policy.getEntity('chat', session.targetChatId, this.authUser(session.actorUserId));
+      await this.policy.assertBotCapabilityForFeatureEnablement(
+        'chat',
+        session.targetChatId,
+        ['enabled', 'autoRepliesEnabled'],
+      );
       const mutationRequestId = this.activationRequestId(session.id);
       const requestHash = createHash('sha256')
         .update(
@@ -263,6 +269,10 @@ export class PublisherAutoReplyAuthoringProcessingService {
       await this.releaseLease(session);
       return 'activated';
     } catch (error: unknown) {
+      if (error instanceof BotCapabilityRequiredException) {
+        await this.failSavingSession(session.id, 'bot_capability_required');
+        return 'failed';
+      }
       if (this.isPhraseConflict(error)) {
         await this.returnToReviewAfterPhraseConflict(session);
         return 'conflict';

@@ -76,6 +76,20 @@ function expectImmediateMemberMutationOptions(overrides: Record<string, unknown>
   });
 }
 
+function expectChatSettingsWrite(
+  prisma: ReturnType<typeof createPrismaMock>,
+  expected: Record<string, unknown>,
+  chatId = 'chat-1',
+): void {
+  const updated = prisma.chatSettings.updateMany.mock.calls
+    .filter(([args]) => args?.where?.chatId === chatId)
+    .at(-1)?.[0]?.data;
+  const created = prisma.chatSettings.create.mock.calls
+    .filter(([args]) => args?.data?.chatId === chatId)
+    .at(-1)?.[0]?.data;
+  expect(updated ?? created).toEqual(expect.objectContaining(expected));
+}
+
 describe('AdminService dialog admin fallback reads', () => {
   it('routes dialog admin id lookups through background action health lane', async () => {
     const prisma = createPrismaMock();
@@ -255,19 +269,7 @@ describe('AdminService night mode settings normalization', () => {
         invitationAccessRequiredCount: 4,
       }),
     );
-    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          settings: expect.objectContaining({
-            upsert: expect.objectContaining({
-              update: expect.objectContaining({
-                invitationAccessEnabled: false,
-              }),
-            }),
-          }),
-        }),
-      }),
-    );
+    expectChatSettingsWrite(prisma, { invitationAccessEnabled: false });
   });
 
   it('uses a resolved channel settings bot only for create without overwriting an existing route', async () => {
@@ -377,30 +379,13 @@ describe('AdminService night mode settings normalization', () => {
     expect(result.nightModeCommentsEnabled).toBe(false);
     expect(result.nightModeBotButtonEnabled).toBe(false);
     expect(result.nightModeRulesButtonEnabled).toBe(false);
-    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: expect.objectContaining({
-                nightModeEnabled: false,
-                nightModeBotMessageEnabled: false,
-                nightModeCommentsEnabled: false,
-                nightModeBotButtonEnabled: false,
-                nightModeRulesButtonEnabled: false,
-              }),
-              create: expect.objectContaining({
-                nightModeEnabled: false,
-                nightModeBotMessageEnabled: false,
-                nightModeCommentsEnabled: false,
-                nightModeBotButtonEnabled: false,
-                nightModeRulesButtonEnabled: false,
-              }),
-            },
-          },
-        }),
-      }),
-    );
+    expectChatSettingsWrite(prisma, {
+      nightModeEnabled: false,
+      nightModeBotMessageEnabled: false,
+      nightModeCommentsEnabled: false,
+      nightModeBotButtonEnabled: false,
+      nightModeRulesButtonEnabled: false,
+    });
   });
 
   it('rejects legacy profile handoff button urls on update', async () => {
@@ -418,7 +403,6 @@ describe('AdminService night mode settings normalization', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-
     await expect(
       service.updateSettings(
         'chat-1',
@@ -720,6 +704,7 @@ describe('AdminService night mode settings normalization', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest.spyOn(service, 'assertChatSettingsBotCapabilities').mockResolvedValue(undefined);
 
     const before = Date.now();
     const result = await service.updateSettings(
@@ -777,6 +762,7 @@ describe('AdminService night mode settings normalization', () => {
       undefined,
       maxChatAdminRosterSyncService as never,
     );
+    jest.spyOn(service, 'assertChatSettingsBotCapabilities').mockResolvedValue(undefined);
 
     await service.updateSettings(
       'chat-1',
@@ -17625,6 +17611,7 @@ describe('AdminService settings screen endpoints', () => {
         createdAt: '2026-03-02T00:00:00.000Z',
       }),
     ]);
+    jest.spyOn(service, 'assertChatSettingsBotCapabilities').mockResolvedValue(undefined);
 
     await service.applySettingsSectionToAllChats(
       'chat-1',

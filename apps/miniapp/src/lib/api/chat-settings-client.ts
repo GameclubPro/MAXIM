@@ -207,8 +207,10 @@ export async function updateSettings(
   api: ApiTransport,
   chatId: string,
   data: ChatSettings,
+  options: { recheckBotCapabilities?: boolean } = {},
 ): Promise<ChatSettings> {
-  const response = await api.request(`/chats/${chatId}/settings`, {
+  const query = options.recheckBotCapabilities ? '?recheckBotCapabilities=1' : '';
+  const response = await api.request(`/chats/${chatId}/settings${query}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   });

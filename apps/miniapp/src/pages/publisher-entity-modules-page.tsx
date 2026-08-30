@@ -25,6 +25,7 @@ import {
   updatePublisherModules,
 } from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
+import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
 import { describeUserFacingError } from '../lib/user-facing-error';
@@ -47,6 +48,20 @@ const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
 const PUBLISHER_CATALOG_QUERY_ROOT = ['publications', 'sources', 'publisher'] as const;
 
 type PublisherEntityRecheckPhase = 'enqueueing' | 'polling';
+
+let botPermissionErrorModulePromise: Promise<typeof import('../lib/bot-permission-error')> | null =
+  null;
+
+function loadBotPermissionErrorModule() {
+  botPermissionErrorModulePromise ??= import('../lib/bot-permission-error');
+  return botPermissionErrorModulePromise;
+}
+
+const LazyBotPermissionRequiredDialog = lazy(() =>
+  import('../components/bot-permission-required-dialog').then((module) => ({
+    default: module.BotPermissionRequiredDialog,
+  })),
+);
 
 const LazyVkParsingCard = lazy(async () => {
   const module = await import('../components/vk-parsing-card');
@@ -93,6 +108,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     params.entityType === 'chat' || params.entityType === 'channel' ? params.entityType : null;
   const entityId = params.entityId?.trim() ?? '';
   const [vkOpen, setVkOpen] = useState(false);
+  const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [entityRecheckPhase, setEntityRecheckPhase] = useState<PublisherEntityRecheckPhase | null>(
     null,
   );
@@ -125,13 +141,20 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       });
     },
     onSuccess: async () => {
+      setPermissionBlocker(null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey }),
         queryClient.invalidateQueries({ queryKey: PUBLISHER_CATALOG_QUERY_ROOT }),
       ]);
     },
-    onError: (error) => {
+    onError: async (error) => {
       void queryClient.invalidateQueries({ queryKey });
+      const { parseBotPermissionBlocker } = await loadBotPermissionErrorModule();
+      const blocker = parseBotPermissionBlocker(error);
+      if (blocker) {
+        setPermissionBlocker(blocker);
+        return;
+      }
       pushToast({
         tone: 'danger',
         title: describeUserFacingError(error, 'Не удалось сохранить'),
@@ -542,6 +565,19 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           ) : null}
         </section>
       </div>
+
+      <Suspense fallback={null}>
+        <LazyBotPermissionRequiredDialog
+          id="publisher-module-permission"
+          blocker={permissionBlocker}
+          isRechecking={entityRecheckPhase !== null}
+          onClose={() => setPermissionBlocker(null)}
+          onRecheck={() => {
+            setPermissionBlocker(null);
+            void handleEntityRecheck();
+          }}
+        />
+      </Suspense>
     </section>
   );
 }

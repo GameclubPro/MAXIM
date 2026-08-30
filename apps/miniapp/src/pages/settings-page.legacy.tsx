@@ -186,6 +186,7 @@ import {
 } from '../lib/message-limits-blocked-words';
 import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
 import { maxNotify, openMaxBotLink } from '../lib/max-bridge';
+import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { shouldRetryTransientApiError } from '../lib/api-retry';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
@@ -213,8 +214,6 @@ import { SettingsDuplicatesSection } from './settings/settings-duplicates-sectio
 import { SettingsExtraSection } from './settings/settings-extra-section';
 import { SettingsLimitsSection } from './settings/settings-limits-section';
 import { SettingsNightSection } from './settings/settings-night-section';
-import { SettingsPollsSection } from './settings/settings-polls-section';
-import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
 import { SettingsStopWordsSection } from './settings/settings-stop-words-section';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
@@ -359,12 +358,23 @@ import {
   BroadcastPublishBar,
   PublisherPolicyCardEntry,
   SettingsLoadErrorState,
+  SettingsPollsSection,
   SettingsStorefrontSection,
 } from './settings/settings-lazy-surfaces';
 
 const LazyActionConfirmSheet = lazy(() =>
   import('../components/ui/action-confirm-sheet').then((module) => ({
     default: module.ActionConfirmSheet,
+  })),
+);
+const LazyBotPermissionRequiredDialog = lazy(() =>
+  import('../components/bot-permission-required-dialog').then((module) => ({
+    default: module.BotPermissionRequiredDialog,
+  })),
+);
+const LazySettingsSectionSaveFooter = lazy(() =>
+  import('./settings/settings-section-save-footer').then((module) => ({
+    default: module.SettingsSectionSaveFooter,
   })),
 );
 let settingsApplyTargetSheetPromise: Promise<{
@@ -392,6 +402,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
+  const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [rulesTextError, setRulesTextError] = useState('');
@@ -501,6 +512,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   > | null>(null);
   const [applyTargetPreviewLoading, setApplyTargetPreviewLoading] = useState(false);
   const [applyTargetPreviewError, setApplyTargetPreviewError] = useState<string | null>(null);
+  const applyTargetSavedSourceRef = useRef<{
+    section: ApplySectionKey;
+    settings: ChatSettings;
+  } | null>(null);
+  const pendingPermissionRetryRef = useRef<{
+    section: ApplySectionKey;
+    payload: ChatSettings;
+  } | null>(null);
   const applyTargetOverlayStyle = useVisualViewportOverlayStyle(Boolean(applyTargetSheet));
 
   useEffect(() => {
@@ -1276,14 +1295,44 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const hasRulesChanges = Boolean(
     rulesDraft && rulesQuery.data && rulesDraftSnapshot !== rulesServerSnapshot,
   );
+  async function handleSettingsPermissionError(
+    error: unknown,
+    section: ApplySectionKey | null,
+    retry?: { section: ApplySectionKey; payload: ChatSettings },
+  ): Promise<boolean> {
+    const { resolveChatSettingsSaveError } = await import('../lib/chat-settings-save-error');
+    const persisted = settingsQuery.data;
+    const resolution = resolveChatSettingsSaveError(
+      error,
+      persisted ? normalizeRequiredSubscriptionDraftSettings(persisted) : null,
+      section ? SECTION_SETTING_KEYS[section] : undefined,
+      retry !== undefined,
+    );
+    if (resolution?.kind !== 'permission' || !resolution.revert) {
+      return false;
+    }
+
+    setDraft((current) => (current ? (resolution.revert?.(current) ?? current) : current));
+    pendingPermissionRetryRef.current = retry ?? null;
+    setPermissionBlocker(resolution.blocker);
+    return true;
+  }
+
   const rulesPublishedMessageId =
     rulesDraft?.publishedMessageId ?? rulesQuery.data?.publishedMessageId ?? null;
   const rulesPublishedUrl = rulesDraft?.publishedUrl ?? rulesQuery.data?.publishedUrl ?? null;
   const hasPublishedRules = Boolean(rulesPublishedMessageId || rulesPublishedUrl);
   const saveSectionMutation = useMutation({
-    mutationFn: ({ payload }: { section: ApplySectionKey; payload: ChatSettings }) =>
-      updateSettings(api, chatId ?? '', payload),
+    mutationFn: ({
+      payload,
+      recheckBotCapabilities,
+    }: {
+      section: ApplySectionKey;
+      payload: ChatSettings;
+      recheckBotCapabilities?: boolean;
+    }) => updateSettings(api, chatId ?? '', payload, { recheckBotCapabilities }),
     onSuccess: (saved, variables) => {
+      pendingPermissionRetryRef.current = null;
       syncSavedSectionSettings(variables.section, saved);
       pushToast({
         tone: 'success',
@@ -1291,7 +1340,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       });
       maxNotify('success');
     },
-    onError: (error, variables) => {
+    onError: async (error, variables) => {
+      if (await handleSettingsPermissionError(error, variables.section, variables)) {
+        maxNotify('error');
+        return;
+      }
+      pendingPermissionRetryRef.current = null;
       pushToast({
         tone: 'danger',
         title: `Не удалось сохранить блок «${SECTION_LABELS[variables.section]}»`,
@@ -1544,7 +1598,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         throw new Error('Чат не выбран');
       }
 
+      applyTargetSavedSourceRef.current = null;
       const savedSourceSettings = await updateSettings(api, chatId, sourceSettings);
+      applyTargetSavedSourceRef.current = { section, settings: savedSourceSettings };
       const result = await applySettingsSectionToAll(api, chatId, section, target);
       return {
         ...result,
@@ -1553,6 +1609,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       };
     },
     onSuccess: (result) => {
+      applyTargetSavedSourceRef.current = null;
       syncSavedSectionSettings(result.section, result.sourceSettings);
       pushToast({
         tone: 'success',
@@ -1562,7 +1619,40 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setApplyTargetSheet(null);
       maxNotify('success');
     },
-    onError: (error) => {
+    onError: async (error, variables) => {
+      const savedSource = applyTargetSavedSourceRef.current;
+      applyTargetSavedSourceRef.current = null;
+      const sourceSaved = savedSource?.section === variables.section;
+      if (sourceSaved) {
+        syncSavedSectionSettings(savedSource.section, savedSource.settings);
+      }
+      const { resolveChatSettingsSaveError } = await import('../lib/chat-settings-save-error');
+      const persisted = settingsQuery.data;
+      const resolution = resolveChatSettingsSaveError(
+        error,
+        persisted ? normalizeRequiredSubscriptionDraftSettings(persisted) : null,
+        SECTION_SETTING_KEYS[variables.section],
+      );
+      if (resolution?.kind === 'permission' && (sourceSaved || resolution.revert)) {
+        if (!sourceSaved) {
+          setDraft((current) => (current ? (resolution.revert?.(current) ?? current) : current));
+        }
+        pendingPermissionRetryRef.current = null;
+        setPermissionBlocker(resolution.blocker);
+        setApplyTargetSheet(null);
+        maxNotify('error');
+        return;
+      }
+      if (resolution?.kind === 'concurrent') {
+        setApplyTargetSheet(null);
+        pushToast({
+          tone: 'info',
+          title: resolution.title,
+          description: resolution.description,
+        });
+        maxNotify('warning');
+        return;
+      }
       pushToast({
         tone: 'danger',
         title: 'Не удалось применить блок ко всем чатам',
@@ -5047,6 +5137,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     saveRules: () => saveRulesDraftNow({ forceButtonErrors: true }),
     setDraft,
     setRulesDraft,
+    onSettingsSaveError: (error) => handleSettingsPermissionError(error, null),
     clearValidationErrors: () => {
       setFieldErrors({});
       setRulesTextError('');
@@ -5067,15 +5158,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     return (
-      <SettingsSectionSaveFooter
-        section={section}
-        options={options}
-        isSavingSettings={isSavingSettings}
-        savingSection={savingSection}
-        isApplyingSectionToAll={isApplyingSectionToAll}
-        applyingSection={applyingSection}
-        onSaveSection={(targetSection) => void handleSaveSection(targetSection)}
-      />
+      <Suspense fallback={null}>
+        <LazySettingsSectionSaveFooter
+          section={section}
+          options={options}
+          isSavingSettings={isSavingSettings}
+          savingSection={savingSection}
+          isApplyingSectionToAll={isApplyingSectionToAll}
+          applyingSection={applyingSection}
+          onSaveSection={(targetSection) => void handleSaveSection(targetSection)}
+        />
+      </Suspense>
     );
   }
 
@@ -5148,6 +5241,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           />
         </Suspense>
       ) : null}
+
+      <Suspense fallback={null}>
+        <LazyBotPermissionRequiredDialog
+          id="chat-settings-bot-permission"
+          blocker={permissionBlocker}
+          isRechecking={saveSectionMutation.isPending}
+          onClose={() => {
+            pendingPermissionRetryRef.current = null;
+            setPermissionBlocker(null);
+          }}
+          onRecheck={() => {
+            const pendingRetry = pendingPermissionRetryRef.current;
+            if (!pendingRetry) {
+              setPermissionBlocker(null);
+              return;
+            }
+            setPermissionBlocker(null);
+            saveSectionMutation.mutate({
+              ...pendingRetry,
+              recheckBotCapabilities: true,
+            });
+          }}
+        />
+      </Suspense>
 
       {handoffMode ? (
         <Suspense fallback={null}>

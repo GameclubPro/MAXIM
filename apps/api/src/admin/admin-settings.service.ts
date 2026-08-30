@@ -56,6 +56,7 @@ import {
 } from './admin-settings-apply';
 import { AdminService } from './admin.service';
 import { AdminManualMessageCleanupService } from './admin-manual-message-cleanup.service';
+import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { sanitizePublicManagedEntityHeader } from './admin-managed-entity-header';
 import {
@@ -84,6 +85,7 @@ export class AdminSettingsService {
     private readonly prisma: PrismaService,
     private readonly chatContextCache: ChatContextCacheService,
     private readonly maxClient: MaxClientService,
+    private readonly settingsBotCapabilities: AdminSettingsBotCapabilityService,
     private readonly managedEntitiesService: ManagedEntitiesService,
     private readonly manualModerationService: ManualModerationService,
     private readonly managedBroadcastService: ManagedBroadcastService,
@@ -191,6 +193,7 @@ export class AdminSettingsService {
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
+    options: { forceLiveBotCapabilityCheck?: boolean } = {},
   ): Promise<ChatSettings> {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
     const shouldReconcileNightModeTransitions =
@@ -206,6 +209,12 @@ export class AdminSettingsService {
         this.legacyAdminService.resolveChatSettingsWriteBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      assertBotCapabilities: (requirements) =>
+        options.forceLiveBotCapabilityCheck
+          ? this.settingsBotCapabilities.assertChatSettingsBotCapabilities(chatId, requirements, {
+              forceLive: true,
+            })
+          : this.settingsBotCapabilities.assertChatSettingsBotCapabilities(chatId, requirements),
       refreshExecutionReadiness: (settings) =>
         this.legacyAdminService.refreshChatSettingsExecutionReadiness(chatId, settings),
     });
@@ -610,6 +619,14 @@ export class AdminSettingsService {
         this.legacyAdminService.resolveSettingsApplyBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      assertBotCapabilities: (chatId, requirements) =>
+        this.settingsBotCapabilities.assertChatSettingsBotCapabilities(chatId, requirements),
+      recordConcurrentWriteConflict: (params) =>
+        this.logger.warn(params, 'Bulk chat settings write stopped after a revision conflict'),
+      onPartialApplied: (chatIds) =>
+        shouldReconcileNightModeTransitions
+          ? this.reconcileNightModeTransitions(chatIds)
+          : Promise.resolve(),
       isRequiredSubscriptionCurrentlyActive: (settings) =>
         this.legacyAdminService.isRequiredSubscriptionCurrentlyActiveForSettings(settings),
       scheduleReadinessRefresh: (params) =>

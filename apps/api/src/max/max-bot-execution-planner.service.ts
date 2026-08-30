@@ -252,6 +252,7 @@ export class MaxBotExecutionPlannerService {
     chatId: string;
     entityType: ManagedEntityType;
     botId?: string | null;
+    force?: boolean;
   }): Promise<ManagedEntityBotExecutionPlan> {
     const chatId = params.chatId.trim();
     const requestedBotId = this.maxBotRegistry.getBotById(params.botId)?.id ?? null;
@@ -268,7 +269,9 @@ export class MaxBotExecutionPlannerService {
       if (!bot || !canDiscoverChatsForBotState(bot.state)) {
         continue;
       }
-      const cachedSnapshot = this.readFreshPermissionsSummary(membership.permissionsSnapshot);
+      const cachedSnapshot = params.force
+        ? null
+        : this.readFreshPermissionsSummary(membership.permissionsSnapshot);
       if (cachedSnapshot) {
         if (this.permissionsSummaryExplicitlyLacksAdminAccess(cachedSnapshot)) {
           await this.clearMembershipAssistCapabilities(chatId, bot.id);

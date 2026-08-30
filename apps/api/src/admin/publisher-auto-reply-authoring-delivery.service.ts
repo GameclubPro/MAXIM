@@ -300,6 +300,8 @@ export class PublisherAutoReplyAuthoringDeliveryService {
         return 'Для автоответа поддерживаются текст, фотографии и кнопки-ссылки.';
       case 'access_or_activation_failed':
         return 'Не удалось подтвердить доступ к чату. Откройте Публик и проверьте права.';
+      case 'bot_capability_required':
+        return 'Боту не хватает прав для автоответов. Проверьте права бота в чате.';
       default:
         return 'Не удалось подготовить автоответ. Начните создание ещё раз.';
     }

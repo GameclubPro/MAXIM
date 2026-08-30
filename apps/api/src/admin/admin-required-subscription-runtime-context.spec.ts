@@ -8,13 +8,13 @@ describe('AdminRequiredSubscriptionRuntimeContext', () => {
       maxClient: { getChatSnapshot: jest.fn() },
       chatContextCache: { setManagedEntityHeader: jest.fn() },
       logger: { warn: jest.fn() },
+      maxBotExecutionPlanner: { refreshChatBotCapabilitySnapshots: jest.fn() },
       maxBotLinkService: { bindDiscoveredChatBots: jest.fn() },
       maxBotRegistry: { getBotById: jest.fn() },
       createManagedEntityHeader: jest.fn(),
       mergeManagedBotChatCatalogRows: jest.fn(),
       resolveBotAssignment: jest.fn(),
       resolveCandidateBotIdsForChat: jest.fn(),
-      refreshManagedEntityBotAccessSnapshots: jest.fn(),
     };
     const context = createAdminRequiredSubscriptionRuntimeContext(target);
 
@@ -29,11 +29,13 @@ describe('AdminRequiredSubscriptionRuntimeContext', () => {
   it('delegates required subscription ports without losing the legacy target context', async () => {
     const target = {
       prefix: 'legacy',
-      refreshed: [] as string[],
       prisma: { chat: {} },
       maxClient: { getChatSnapshot: jest.fn() },
       chatContextCache: { setManagedEntityHeader: jest.fn() },
       logger: { warn: jest.fn() },
+      maxBotExecutionPlanner: {
+        refreshChatBotCapabilitySnapshots: jest.fn().mockResolvedValue(undefined),
+      },
       createManagedEntityHeader(params: { id: string; title: string }) {
         return {
           id: params.id,
@@ -61,14 +63,6 @@ describe('AdminRequiredSubscriptionRuntimeContext', () => {
         return Promise.resolve([
           `${this.prefix}:${chatId}:${options?.includeDiscoveryFallback ?? false}`,
         ]);
-      },
-      refreshManagedEntityBotAccessSnapshots(
-        chatId: string,
-        entityType: string,
-        reason: string,
-      ): Promise<void> {
-        this.refreshed.push(`${this.prefix}:${chatId}:${entityType}:${reason}`);
-        return Promise.resolve();
       },
     };
     const context = createAdminRequiredSubscriptionRuntimeContext(target);
@@ -109,6 +103,9 @@ describe('AdminRequiredSubscriptionRuntimeContext', () => {
     ).resolves.toEqual(['legacy:channel-1:true']);
     await context.refreshManagedEntityBotAccessSnapshots('channel-1', 'channel', 'settings');
 
-    expect(target.refreshed).toEqual(['legacy:channel-1:channel:settings']);
+    expect(target.maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      entityType: 'channel',
+    });
   });
 });

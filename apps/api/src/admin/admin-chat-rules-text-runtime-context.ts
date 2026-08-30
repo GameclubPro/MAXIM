@@ -5,7 +5,10 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { MaxClientService } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
-import type { ResolvedBotAssignmentData } from './admin-chat-settings';
+import {
+  isRequiredSubscriptionCurrentlyActive as isRequiredSubscriptionActive,
+  type ResolvedBotAssignmentData,
+} from './admin-chat-settings';
 
 export type AdminChatRulesTextRuntimeContext = {
   readonly prisma: PrismaService;
@@ -33,7 +36,6 @@ type AdminChatRulesTextRuntimeContextTarget = {
   maxBotTokenValidationSecrets: readonly string[];
   getSettings(chatId: string, user: AuthUser): Promise<ChatSettings>;
   getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]>;
-  isRequiredSubscriptionCurrentlyActive(settings: ChatSettings): boolean;
   resolveRequiredSubscriptionChannelHeaders(
     channelIds: readonly string[],
   ): Promise<ManagedEntityHeader[]>;
@@ -70,7 +72,7 @@ export function createAdminChatRulesTextRuntimeContext(
       return typedTarget.getDomainAllowlistDetails(chatId, user);
     },
     isRequiredSubscriptionCurrentlyActive(settings: ChatSettings): boolean {
-      return typedTarget.isRequiredSubscriptionCurrentlyActive(settings);
+      return isRequiredSubscriptionActive(settings);
     },
     resolveRequiredSubscriptionChannelHeaders(
       channelIds: readonly string[],

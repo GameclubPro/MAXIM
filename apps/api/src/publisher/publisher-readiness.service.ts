@@ -101,7 +101,7 @@ export class PublisherReadinessService {
 
   resolveReadiness(
     source: PublisherReadinessSource,
-    options: { now?: Date; runtimeAvailable?: boolean } = {},
+    options: { now?: Date; runtimeAvailable?: boolean; assumePolicyEnabled?: boolean } = {},
   ): PublisherEntityReadiness {
     const now = options.now ?? new Date();
     const policy = this.resolvePolicy(source.publicationPolicy);
@@ -115,7 +115,7 @@ export class PublisherReadinessService {
       retryAt: null,
     } as const;
 
-    if (!policy.publikEnabled) {
+    if (!policy.publikEnabled && options.assumePolicyEnabled !== true) {
       return publisherEntityReadinessSchema.parse({
         ...base,
         state: 'disabled',
@@ -180,6 +180,19 @@ export class PublisherReadinessService {
     const snapshot = normalizeMembershipAccessSnapshot(binding.permissionsSnapshot);
     const isOwner = binding.botAccessState === ChatBotAccessState.CONFIRMED_OWNER;
     if (!snapshot && !isOwner) {
+      return publisherEntityReadinessSchema.parse({
+        ...base,
+        state: 'setup_required',
+        blockerCode: 'bot_access_unconfirmed',
+      });
+    }
+    const permissionsKnown = Boolean(
+      binding.permissionsSnapshot &&
+      typeof binding.permissionsSnapshot === 'object' &&
+      !Array.isArray(binding.permissionsSnapshot) &&
+      (binding.permissionsSnapshot as Record<string, unknown>).permissionsKnown === true,
+    );
+    if (!isOwner && !permissionsKnown) {
       return publisherEntityReadinessSchema.parse({
         ...base,
         state: 'setup_required',
@@ -321,9 +334,9 @@ export class PublisherReadinessService {
           ? readiness.state === 'ready' &&
             source.entityType === ChatEntityType.CHAT &&
             source.publisherSettings?.autoRepliesEnabled === true
-        : feature === 'suggestion_publish'
-          ? readiness.canPublishSuggestions
-          : readiness.canPublish;
+          : feature === 'suggestion_publish'
+            ? readiness.canPublishSuggestions
+            : readiness.canPublish;
     if (!allowed) {
       throw new PublisherSetupRequiredException(
         [source.id],

@@ -557,6 +557,8 @@ export function createPrismaMock() {
     },
     chatSettings: {
       findUnique: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue({ chatId: 'chat-1' }),
       upsert: jest.fn().mockResolvedValue({
         chatId: 'chat-1',
         commentsEnabled: false,

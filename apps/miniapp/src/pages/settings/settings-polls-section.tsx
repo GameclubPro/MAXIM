@@ -1,5 +1,5 @@
 import { StatsUpSquare } from 'iconoir-react';
-import { Suspense, useRef } from 'react';
+import { lazy, Suspense, useRef } from 'react';
 import type { ManagedPollWorkspaceHandle } from '../../components/managed-poll-workspace';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -7,7 +7,12 @@ import { SettingsSectionToggle } from '../../components/ui/settings-section-togg
 import { SkeletonCard } from '../../components/ui/skeleton';
 import type { ApiTransport } from '../../lib/api/transport';
 import { cn } from '../../lib/cn';
-import { LazyManagedPollWorkspace } from './settings-page-helpers';
+
+const LazyManagedPollWorkspace = lazy(() =>
+  import('../../components/managed-poll-workspace').then((module) => ({
+    default: module.ManagedPollWorkspace,
+  })),
+);
 
 type SettingsPollsSectionProps = {
   api: ApiTransport;

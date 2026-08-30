@@ -147,6 +147,11 @@ import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
+import {
+  assertAdminSettingsBotCapabilities,
+  refreshAdminSettingsBotCapabilitySnapshots as refreshBots,
+} from './admin-settings-bot-capability.service';
+import type { ChatSettingsBotCapabilityRequirement } from './chat-settings-bot-capability';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import {
   escapeHtml,
@@ -6692,6 +6697,8 @@ export class AdminService implements OnModuleDestroy {
       resolveBotAssignmentData: () => this.resolveChatSettingsWriteBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.assertRequiredSubscriptionSettings(settings),
+      assertBotCapabilities: (requirements) =>
+        this.assertChatSettingsBotCapabilities(chatId, requirements),
       refreshExecutionReadiness: (settings) =>
         this.refreshExecutionReadinessAfterChatSettingsUpdate(chatId, settings),
     });
@@ -7952,6 +7959,11 @@ export class AdminService implements OnModuleDestroy {
       resolveBotAssignmentData: (chatId) => this.resolveSettingsApplyBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      assertBotCapabilities: (chatId, requirements) =>
+        this.assertChatSettingsBotCapabilities(chatId, requirements),
+      recordConcurrentWriteConflict: (params) =>
+        this.logger.warn(params, 'Bulk chat settings write stopped after a revision conflict'),
+      onPartialApplied: () => Promise.resolve(),
       isRequiredSubscriptionCurrentlyActive: (settings) =>
         this.isRequiredSubscriptionCurrentlyActiveForSettings(settings),
       scheduleReadinessRefresh: (params) =>
@@ -10286,11 +10298,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     await this.chatContextCache.invalidate(chatId);
-    await this.refreshManagedEntityBotAccessSnapshots(
-      chatId,
-      'chat',
-      'manual chat silence command',
-    );
+    await refreshBots(this.maxBotExecutionPlanner, this.logger, chatId, 'chat', 'manual silence');
     this.scheduleDestructiveModerationAdminRosterWarmup(chatId, {
       nightModeEnabled: false,
       nightModeForceCloseEnabled: true,
@@ -10357,7 +10365,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     await this.chatContextCache.invalidate(chatId);
-    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'manual open chat command');
+    await refreshBots(this.maxBotExecutionPlanner, this.logger, chatId, 'chat', 'manual open');
 
     return {
       ok: true,
@@ -14092,6 +14100,22 @@ export class AdminService implements OnModuleDestroy {
     return this.buildResolvedBotAssignmentData(resolvedBotId);
   }
 
+  async assertChatSettingsBotCapabilities(
+    chatId: string,
+    requirements: readonly ChatSettingsBotCapabilityRequirement[],
+    options: { forceLive?: boolean } = {},
+  ): Promise<void> {
+    return assertAdminSettingsBotCapabilities(
+      {
+        maxBotLinkService: this.maxBotLinkService,
+        maxBotExecutionPlanner: this.maxBotExecutionPlanner,
+      },
+      chatId,
+      requirements,
+      options,
+    );
+  }
+
   async resolveChannelSettingsReadBotAssignmentData(
     chatId: string,
   ): Promise<ResolvedBotAssignmentData> {
@@ -14202,16 +14226,24 @@ export class AdminService implements OnModuleDestroy {
     return isRequiredSubscriptionCurrentlyActive(settings);
   }
 
-  private isRequiredSubscriptionCurrentlyActive(settings: ChatSettings): boolean {
-    return isRequiredSubscriptionCurrentlyActive(settings);
-  }
-
   scheduleApplySettingsToAllReadinessRefreshForSettings(params: {
     chatIds: readonly string[];
     shouldRefreshRequiredSubscription: boolean;
     requiredSubscriptionChannelIds: readonly string[];
   }): void {
-    this.scheduleApplySettingsToAllReadinessRefresh(params);
+    if (!this.maxBotExecutionPlanner) {
+      return;
+    }
+    void this.refreshApplySettingsToAllReadiness(params).catch((error: unknown) => {
+      this.logger.warn(
+        {
+          chats: params.chatIds.length,
+          requiredSubscriptionChannels: params.requiredSubscriptionChannelIds.length,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh apply-to-all readiness snapshots in background',
+      );
+    });
   }
 
   async syncDomainAllowlistToChatsForSettings(
@@ -14326,7 +14358,13 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async refreshChannelSettingsExecutionReadiness(chatId: string): Promise<void> {
-    await this.refreshExecutionReadinessAfterChannelSettingsUpdate(chatId);
+    await refreshBots(
+      this.maxBotExecutionPlanner,
+      this.logger,
+      chatId,
+      'channel',
+      'channel settings update',
+    );
   }
 
   async resolveRequiredSubscriptionChannelHeadersForSettings(
@@ -20685,7 +20723,13 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     settings: ChatSettings,
   ): Promise<void> {
-    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'chat settings update');
+    await refreshBots(
+      this.maxBotExecutionPlanner,
+      this.logger,
+      chatId,
+      'chat',
+      'chat settings update',
+    );
     this.scheduleDestructiveModerationAdminRosterWarmup(chatId, settings);
 
     if (!isRequiredSubscriptionCurrentlyActive(settings)) {
@@ -20727,31 +20771,6 @@ export class AdminService implements OnModuleDestroy {
       });
   }
 
-  private async refreshExecutionReadinessAfterChannelSettingsUpdate(chatId: string): Promise<void> {
-    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'channel', 'channel settings update');
-  }
-
-  private scheduleApplySettingsToAllReadinessRefresh(params: {
-    chatIds: readonly string[];
-    shouldRefreshRequiredSubscription: boolean;
-    requiredSubscriptionChannelIds: readonly string[];
-  }): void {
-    if (!this.maxBotExecutionPlanner) {
-      return;
-    }
-
-    void this.refreshApplySettingsToAllReadiness(params).catch((error: unknown) => {
-      this.logger.warn(
-        {
-          chats: params.chatIds.length,
-          requiredSubscriptionChannels: params.requiredSubscriptionChannelIds.length,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to refresh apply-to-all readiness snapshots in background',
-      );
-    });
-  }
-
   private async refreshApplySettingsToAllReadiness(params: {
     chatIds: readonly string[];
     shouldRefreshRequiredSubscription: boolean;
@@ -20762,7 +20781,9 @@ export class AdminService implements OnModuleDestroy {
       APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY,
       async (chatId) => {
         await sleepIfNeeded(APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS);
-        await this.refreshManagedEntityBotAccessSnapshots(
+        await refreshBots(
+          this.maxBotExecutionPlanner,
+          this.logger,
           chatId,
           'chat',
           'chat settings apply-to-all',
@@ -20778,33 +20799,6 @@ export class AdminService implements OnModuleDestroy {
       params.requiredSubscriptionChannelIds,
       'required subscription settings apply-to-all',
     );
-  }
-
-  private async refreshManagedEntityBotAccessSnapshots(
-    chatId: string,
-    entityType: ManagedEntityType,
-    reason: string,
-  ): Promise<void> {
-    if (!this.maxBotExecutionPlanner) {
-      return;
-    }
-
-    try {
-      await this.maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots({
-        chatId,
-        entityType,
-      });
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          entityType,
-          reason,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to refresh bot access snapshots after settings update',
-      );
-    }
   }
 
   private async resolveDeliveryBotAssignmentRouteAware(

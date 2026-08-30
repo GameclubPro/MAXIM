@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { PublicationContentFormat } from '../prisma/prisma-client';
 import { PublisherAutoReplyService } from './publisher-auto-reply.service';
+import { BotCapabilityRequiredException } from './bot-capability-required.error';
 
 const user = {
   userId: 'admin-1',
@@ -81,6 +82,7 @@ function createFixture(options: { moduleEnabled?: boolean } = {}) {
       id: 'chat-1',
       moduleSettings: { autoRepliesEnabled: options.moduleEnabled ?? false },
     }),
+    assertBotCapabilityForFeatureEnablement: jest.fn().mockResolvedValue(undefined),
   };
   const maxClient = { validateMediaUploadPayload: jest.fn() };
   const service = new PublisherAutoReplyService(
@@ -117,6 +119,11 @@ describe('PublisherAutoReplyService', () => {
     });
 
     expect(fixture.policy.getEntity).toHaveBeenCalledWith('chat', 'chat-1', user);
+    expect(fixture.policy.assertBotCapabilityForFeatureEnablement).toHaveBeenCalledWith(
+      'chat',
+      'chat-1',
+      ['enabled', 'autoRepliesEnabled'],
+    );
     expect(fixture.tx.publisherAutoReplyRule.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -177,6 +184,95 @@ describe('PublisherAutoReplyService', () => {
 
     expect(fixture.tx.publisherEntitySettings.upsert).not.toHaveBeenCalled();
     expect(fixture.tx.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(fixture.policy.assertBotCapabilityForFeatureEnablement).toHaveBeenCalledWith(
+      'chat',
+      'chat-1',
+      ['enabled'],
+    );
+  });
+
+  it('rejects an ordinary enabled create before content preparation or writes', async () => {
+    const fixture = createFixture();
+    fixture.policy.assertBotCapabilityForFeatureEnablement.mockRejectedValueOnce(
+      new BotCapabilityRequiredException({
+        missingPermissions: ['write'],
+        featureKeys: ['enabled', 'autoRepliesEnabled'],
+      }),
+    );
+
+    await expect(
+      fixture.service.create('chat-1', user, {
+        requestId: 'request_create_blocked',
+        phrase: 'Прайс',
+        content: { text: 'Ответ' },
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BOT_CAPABILITY_REQUIRED',
+        featureKeys: ['enabled', 'autoRepliesEnabled'],
+      }),
+    });
+
+    expect(fixture.prisma.$transaction).not.toHaveBeenCalled();
+    expect(fixture.tx.publisherAutoReplyRule.create).not.toHaveBeenCalled();
+  });
+
+  it('preflights a disabled-to-enabled rule update before its transaction', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    fixture.prisma.publisherAutoReplyRule.findFirst.mockResolvedValue(
+      ruleRow({ enabled: false }),
+    );
+    fixture.policy.assertBotCapabilityForFeatureEnablement.mockRejectedValueOnce(
+      new BotCapabilityRequiredException({
+        missingPermissions: ['write'],
+        featureKeys: ['enabled'],
+      }),
+    );
+
+    await expect(
+      fixture.service.update('chat-1', 'rule-1', user, {
+        requestId: 'request_update_blocked',
+        expectedVersion: 1,
+        enabled: true,
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BOT_CAPABILITY_REQUIRED',
+        featureKeys: ['enabled'],
+      }),
+    });
+
+    expect(fixture.policy.assertBotCapabilityForFeatureEnablement).toHaveBeenCalledWith(
+      'chat',
+      'chat-1',
+      ['enabled'],
+    );
+    expect(fixture.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('preflights module activation even when the rule was already enabled', async () => {
+    const fixture = createFixture({ moduleEnabled: false });
+    fixture.policy.assertBotCapabilityForFeatureEnablement.mockRejectedValueOnce(
+      new BotCapabilityRequiredException({
+        missingPermissions: ['write'],
+        featureKeys: ['autoRepliesEnabled'],
+      }),
+    );
+
+    await expect(
+      fixture.service.update('chat-1', 'rule-1', user, {
+        requestId: 'request_update_module_blocked',
+        expectedVersion: 1,
+        enabled: true,
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BOT_CAPABILITY_REQUIRED',
+        featureKeys: ['autoRepliesEnabled'],
+      }),
+    });
+
+    expect(fixture.prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('persists bot-authored prepared content as an archived immutable draft', async () => {

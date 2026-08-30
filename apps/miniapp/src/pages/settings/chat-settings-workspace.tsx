@@ -23,9 +23,7 @@ import {
   normalizeLegacyChatCommentScope,
 } from './settings-page-helpers';
 
-export function normalizeRequiredSubscriptionDraftSettings(
-  settings: ChatSettings,
-): ChatSettings {
+export function normalizeRequiredSubscriptionDraftSettings(settings: ChatSettings): ChatSettings {
   const requiredSubscriptionChannelIds = Array.from(
     new Set(
       settings.requiredSubscriptionChannelIds
@@ -62,6 +60,7 @@ type ChatSettingsWorkspaceLeaveGuardOptions = {
   setDraft: Dispatch<SetStateAction<ChatSettings | null>>;
   setRulesDraft: Dispatch<SetStateAction<ChatRules | null>>;
   clearValidationErrors: () => void;
+  onSettingsSaveError?: (error: unknown) => boolean | Promise<boolean>;
 };
 
 export function useChatSettingsWorkspaceLeaveGuard({
@@ -78,6 +77,7 @@ export function useChatSettingsWorkspaceLeaveGuard({
   setDraft,
   setRulesDraft,
   clearValidationErrors,
+  onSettingsSaveError,
 }: ChatSettingsWorkspaceLeaveGuardOptions): void {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -121,6 +121,10 @@ export function useChatSettingsWorkspaceLeaveGuard({
 
         return true;
       } catch (error: unknown) {
+        if (await onSettingsSaveError?.(error)) {
+          maxNotify('error');
+          return false;
+        }
         pushToast({
           tone: 'danger',
           title: 'Не удалось сохранить изменения',

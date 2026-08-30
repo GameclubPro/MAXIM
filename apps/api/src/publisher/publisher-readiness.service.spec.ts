@@ -53,6 +53,7 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
         isAdmin: true,
         isOwner: false,
         permissions: ['write'],
+        permissionsKnown: true,
       },
       botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
       botAccessCheckedAt: new Date(now - 1_000),
@@ -68,6 +69,114 @@ describe('PublisherReadinessService', () => {
     expect(
       createService().resolveReadiness(readySource(), { runtimeAvailable: true }),
     ).toMatchObject({ state: 'ready', canPublish: true, canUseChatComments: true });
+  });
+
+  it('can evaluate an enablement against transport readiness without circular policy blocking', () => {
+    const source = readySource({
+      publicationPolicy: {
+        publikEnabled: false,
+        revision: 2,
+        updatedAt: new Date(),
+      },
+    });
+    const service = createService();
+
+    expect(service.resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+      state: 'disabled',
+      canPublish: false,
+    });
+    expect(
+      service.resolveReadiness(source, {
+        runtimeAvailable: true,
+        assumePolicyEnabled: true,
+      }),
+    ).toMatchObject({ state: 'ready', canPublish: true });
+  });
+
+  it('does not let the enablement override bypass a missing write permission', () => {
+    const source = readySource({
+      publicationPolicy: {
+        publikEnabled: false,
+        revision: 2,
+        updatedAt: new Date(),
+      },
+    });
+    if (source.publisherBinding) {
+      source.publisherBinding.permissionsSnapshot = {
+        checkedAt: new Date().toISOString(),
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+        permissionsKnown: true,
+      };
+    }
+
+    expect(
+      createService().resolveReadiness(source, {
+        runtimeAvailable: true,
+        assumePolicyEnabled: true,
+      }),
+    ).toMatchObject({
+      state: 'setup_required',
+      canPublish: false,
+      blockerCode: 'write_permission_missing',
+    });
+  });
+
+  it('does not accept partial admin permissions when MAX marks them unknown', () => {
+    const source = readySource();
+    if (source.publisherBinding) {
+      source.publisherBinding.permissionsSnapshot = {
+        checkedAt: new Date().toISOString(),
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: false,
+      };
+    }
+
+    expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+      state: 'setup_required',
+      canPublish: false,
+      blockerCode: 'bot_access_unconfirmed',
+    });
+  });
+
+  it('does not accept a legacy admin snapshot without explicit permission completeness', () => {
+    const source = readySource();
+    if (source.publisherBinding) {
+      source.publisherBinding.permissionsSnapshot = {
+        checkedAt: new Date().toISOString(),
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      };
+    }
+
+    expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+      state: 'setup_required',
+      canPublish: false,
+      blockerCode: 'bot_access_unconfirmed',
+    });
+  });
+
+  it('keeps a confirmed owner ready when granular permissions are unknown', () => {
+    const source = readySource();
+    if (source.publisherBinding) {
+      source.publisherBinding.botAccessState = ChatBotAccessState.CONFIRMED_OWNER;
+      source.publisherBinding.permissionsSnapshot = {
+        checkedAt: new Date().toISOString(),
+        isAdmin: true,
+        isOwner: true,
+        permissions: [],
+        permissionsKnown: false,
+      };
+    }
+
+    expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+      state: 'ready',
+      canPublish: true,
+    });
   });
 
   it('fails closed when the publisher runtime is unavailable', () => {

@@ -19,6 +19,7 @@ import {
   handoffKaravanStorefrontAllowlist,
   revokeKaravanStorefrontAllowlistEntry,
   getSettingsScreen,
+  updateSettings,
 } from '../src/lib/api/chat-settings-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
@@ -97,6 +98,18 @@ test('chat settings screen client only adds prefetch query when requested', asyn
   assert.equal(calls[0]?.init?.signal, controller.signal);
   assert.equal(calls[1]?.path, '/chats/chat-1/settings-screen?prefetch=1');
   assert.equal(calls[1]?.init?.signal, controller.signal);
+});
+
+test('chat settings retry requests an explicit live bot capability recheck', async () => {
+  const calls: ApiCall[] = [];
+  const settings = chatSettingsSchema.parse({ antiSpamEnabled: true });
+  const api = createApiMock(settings, calls);
+
+  await updateSettings(api, 'chat-1', settings);
+  await updateSettings(api, 'chat-1', settings, { recheckBotCapabilities: true });
+
+  assert.equal(calls[0]?.path, '/chats/chat-1/settings');
+  assert.equal(calls[1]?.path, '/chats/chat-1/settings?recheckBotCapabilities=1');
 });
 
 test('chat settings client sends typed targets and preserves legacy allowlist requests', async () => {

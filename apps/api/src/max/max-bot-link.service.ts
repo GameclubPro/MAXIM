@@ -252,6 +252,12 @@ export type MaxDeleteMessageBotRoute = {
   candidateCapabilities: MaxDeleteMessageCandidateCapability[];
 };
 
+export type MaxStrictModerationCapabilityRoute = {
+  botId: string | null;
+  capabilityState: MaxDeleteMessageCapabilityState;
+  checkedAt: string | null;
+};
+
 type ResolvedChatRouteMembership = {
   botId: string;
   role: ChatBotMembershipRole;
@@ -1714,6 +1720,94 @@ export class MaxBotLinkService implements OnModuleDestroy {
       checkedAt: aggregate?.checkedAt ?? null,
       expiresAt: aggregate?.expiresAt ?? null,
       candidateCapabilities,
+    };
+  }
+
+  async resolveStrictMemberModerationBotRoute(params: {
+    chatId: string;
+  }): Promise<MaxStrictModerationCapabilityRoute> {
+    return this.resolveStrictModerationCapabilityRoute(params.chatId, 'member');
+  }
+
+  async resolveStrictWriteModerationBotRoute(params: {
+    chatId: string;
+  }): Promise<MaxStrictModerationCapabilityRoute> {
+    return this.resolveStrictModerationCapabilityRoute(params.chatId, 'write');
+  }
+
+  private async resolveStrictModerationCapabilityRoute(
+    rawChatId: string,
+    capability: 'member' | 'write',
+  ): Promise<MaxStrictModerationCapabilityRoute> {
+    const chatId = rawChatId.trim();
+    const state = chatId ? await this.loadChatRouteState(chatId) : null;
+    if (!state) {
+      return { botId: null, capabilityState: 'stale_or_unknown', checkedAt: null };
+    }
+
+    const actionableBotIds = new Set(
+      state.activeActionableMemberships.map((membership) => membership.botId),
+    );
+    const candidates = state.activeKnownMemberships
+      .filter((membership) => actionableBotIds.has(membership.botId))
+      .map((membership) => {
+        const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        const checkedAtMs =
+          membership.botAccessCheckedAt?.getTime() ??
+          (snapshot?.checkedAt ? Date.parse(snapshot.checkedAt) : Number.NaN);
+        const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
+        const checkedAt = Number.isFinite(checkedAtMs) ? new Date(checkedAtMs).toISOString() : null;
+        const result = (state: MaxDeleteMessageCapabilityState) => ({
+          botId: membership.botId,
+          state,
+          checkedAt,
+        });
+        if (
+          membership.botAccessState === ChatBotAccessState.DENIED ||
+          membership.botAccessState === ChatBotAccessState.LOST
+        ) {
+          return result('explicitly_incapable');
+        }
+        if (!snapshot) {
+          return result('stale_or_unknown');
+        }
+        const fresh =
+          Number.isFinite(checkedAtMs) &&
+          checkedAtMs <= Date.now() &&
+          (Number.isFinite(expiresAtMs)
+            ? expiresAtMs > Date.now()
+            : isFreshMembershipAccessSnapshot(snapshot));
+        if (
+          !fresh ||
+          (membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+            membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
+          (!snapshot.isOwner && !this.membershipPermissionsAreKnown(membership.permissionsSnapshot))
+        ) {
+          return result('stale_or_unknown');
+        }
+        const explicitlyCapable =
+          snapshot.isOwner ||
+          (snapshot.isAdmin && capability === 'write'
+            ? hasConfirmedDeleteMessageAccess(snapshot, ChatEntityType.CHAT)
+            : snapshot.isAdmin &&
+              snapshot.permissions.some((permission) =>
+                MODERATE_MEMBER_PERMISSION_ALIASES.has(normalizePermissionName(permission)),
+              ));
+        return result(explicitlyCapable ? 'confirmed_capable' : 'explicitly_incapable');
+      });
+    const selected =
+      candidates.find(
+        (candidate) =>
+          candidate.botId === state.primaryBotId && candidate.state === 'confirmed_capable',
+      ) ?? candidates.find((candidate) => candidate.state === 'confirmed_capable');
+    const aggregate =
+      selected ??
+      candidates.find((candidate) => candidate.state === 'stale_or_unknown') ??
+      candidates[0];
+    return {
+      botId: selected?.botId ?? null,
+      capabilityState: aggregate?.state ?? 'stale_or_unknown',
+      checkedAt: aggregate?.checkedAt ?? null,
     };
   }
 

@@ -18,6 +18,11 @@ const LazySettingsLoadErrorState = lazy(() =>
     default: module.SettingsLoadErrorState,
   })),
 );
+const LazySettingsPollsSection = lazy(() =>
+  import('./settings-polls-section').then((module) => ({
+    default: module.SettingsPollsSection,
+  })),
+);
 const LazySettingsStorefrontSection = lazy(() =>
   import('./settings-storefront-section').then((module) => ({
     default: module.SettingsStorefrontSection,
@@ -63,6 +68,24 @@ export function SettingsLoadErrorState(props: ComponentProps<typeof LazySettings
   return (
     <Suspense fallback={<SkeletonCard lines={3} />}>
       <LazySettingsLoadErrorState {...props} />
+    </Suspense>
+  );
+}
+
+export function SettingsPollsSection(props: ComponentProps<typeof LazySettingsPollsSection>) {
+  return (
+    <Suspense
+      fallback={
+        <GlassCard
+          className="settings-section settings-home-entry settings-home-entry--list"
+          style={{ order: 24 }}
+          aria-label="Загрузка опросов"
+        >
+          <SkeletonCard lines={2} />
+        </GlassCard>
+      }
+    >
+      <LazySettingsPollsSection {...props} />
     </Suspense>
   );
 }

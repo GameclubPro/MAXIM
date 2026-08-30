@@ -1,5 +1,6 @@
 import { PublisherAutoReplyAuthoringState } from '../prisma/prisma-client';
 import { PublisherAutoReplyAuthoringProcessingService } from './publisher-auto-reply-authoring-processing.service';
+import { BotCapabilityRequiredException } from './bot-capability-required.error';
 
 function savingSession() {
   return {
@@ -25,7 +26,10 @@ function fixture() {
     publisherAutoReplyAuthoringSession,
     $transaction: jest.fn(),
   };
-  const policy = { getEntity: jest.fn().mockResolvedValue({ id: 'chat-1' }) };
+  const policy = {
+    getEntity: jest.fn().mockResolvedValue({ id: 'chat-1' }),
+    assertBotCapabilityForFeatureEnablement: jest.fn().mockResolvedValue(undefined),
+  };
   const privateFlows = {
     renew: jest.fn().mockResolvedValue(true),
     release: jest.fn().mockResolvedValue(true),
@@ -98,7 +102,7 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
   });
 
   it('atomically enables module settings without a create race', async () => {
-    const { service, prisma, privateFlows } = fixture();
+    const { service, prisma, policy, privateFlows } = fixture();
     let settingsQueryText = '';
     const tx = {
       publisherAutoReplyRule: {
@@ -125,6 +129,11 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
 
     await expect(service.activate('session-1')).resolves.toBe('activated');
 
+    expect(policy.assertBotCapabilityForFeatureEnablement).toHaveBeenCalledWith(
+      'chat',
+      'chat-1',
+      ['enabled', 'autoRepliesEnabled'],
+    );
     expect(settingsQueryText).toContain('ON CONFLICT');
     expect(settingsQueryText).toContain('auto_replies_enabled');
     expect(tx.publisherAutoReplyRule.updateMany).toHaveBeenCalledWith(
@@ -137,6 +146,33 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
       }),
     );
     expect(privateFlows.release).toHaveBeenCalled();
+  });
+
+  it('terminalizes a capability blocker as an actionable domain failure', async () => {
+    const { service, prisma, policy, publisherAutoReplyAuthoringSession } = fixture();
+    policy.assertBotCapabilityForFeatureEnablement.mockRejectedValueOnce(
+      new BotCapabilityRequiredException({
+        missingPermissions: ['write'],
+        featureKeys: ['enabled', 'autoRepliesEnabled'],
+      }),
+    );
+
+    await expect(service.activate('session-1')).resolves.toBe('failed');
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(publisherAutoReplyAuthoringSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'session-1',
+        state: PublisherAutoReplyAuthoringState.SAVING,
+        stageRevision: 4,
+      },
+      data: expect.objectContaining({
+        state: PublisherAutoReplyAuthoringState.FAILED,
+        failureCode: 'bot_capability_required',
+        notificationKind: 'failed',
+        notificationPending: true,
+      }),
+    });
   });
 
   it('does not misclassify an unrelated unique constraint as a phrase conflict', async () => {

@@ -87,6 +87,24 @@ function createActiveMembership(
   };
 }
 
+function freshMemberCapability(
+  permissions: string[],
+  permissionsKnown = true,
+): Partial<MutableMembership> {
+  return {
+    botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+    botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+    botAccessExpiresAt: new Date('2026-05-09T10:19:00.000Z'),
+    permissionsSnapshot: {
+      checkedAt: '2026-05-09T10:04:00.000Z',
+      isAdmin: true,
+      isOwner: false,
+      permissions,
+      permissionsKnown,
+    },
+  };
+}
+
 function permutations<T>(items: readonly T[]): T[][] {
   if (items.length <= 1) {
     return [[...items]];
@@ -4039,6 +4057,170 @@ describe('MaxBotLinkService', () => {
         fallbackToPrimary: false,
       }),
     ).resolves.toBe(expected ? 'id613002203036_bot' : null);
+  });
+
+  it('selects a fresh strict member-capable standby over an incapable primary', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-strict-member-standby';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Strict member standby',
+      botId: fixture.bots[0]!.id,
+      primaryBotId: fixture.bots[0]!.id,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, freshMemberCapability([])),
+      createActiveMembership(
+        chatId,
+        fixture.bots[1]!.id,
+        1,
+        freshMemberCapability(['add_remove_members']),
+      ),
+    );
+
+    await expect(
+      fixture.service.resolveStrictMemberModerationBotRoute({ chatId }),
+    ).resolves.toEqual({
+      botId: fixture.bots[1]!.id,
+      capabilityState: 'confirmed_capable',
+      checkedAt: '2026-05-09T10:04:00.000Z',
+    });
+  });
+
+  it('reports all fresh known member-permission failures as explicitly incapable', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-strict-member-missing';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Strict member missing',
+      botId: fixture.bots[0]!.id,
+      primaryBotId: fixture.bots[0]!.id,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, freshMemberCapability([])),
+      createActiveMembership(chatId, fixture.bots[1]!.id, 1, freshMemberCapability(['write'])),
+    );
+
+    await expect(
+      fixture.service.resolveStrictMemberModerationBotRoute({ chatId }),
+    ).resolves.toMatchObject({ botId: null, capabilityState: 'explicitly_incapable' });
+  });
+
+  it('keeps mixed stale and fresh-missing member snapshots recheckable', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-strict-member-mixed';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Strict member mixed',
+      botId: fixture.bots[0]!.id,
+      primaryBotId: fixture.bots[0]!.id,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, {
+        ...freshMemberCapability(['add_remove_members']),
+        botAccessExpiresAt: new Date('2026-05-09T10:03:00.000Z'),
+      }),
+      createActiveMembership(chatId, fixture.bots[1]!.id, 1, freshMemberCapability([])),
+    );
+
+    await expect(
+      fixture.service.resolveStrictMemberModerationBotRoute({ chatId }),
+    ).resolves.toMatchObject({ botId: null, capabilityState: 'stale_or_unknown' });
+  });
+
+  it('excludes inactive member-capable memberships from a strict route', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-strict-member-inactive';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Strict member inactive',
+      botId: fixture.bots[0]!.id,
+      primaryBotId: fixture.bots[0]!.id,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, {
+        ...freshMemberCapability(['add_remove_members']),
+        status: ChatBotMembershipStatus.REMOVED,
+      }),
+      createActiveMembership(chatId, fixture.bots[1]!.id, 1, freshMemberCapability([])),
+    );
+
+    await expect(
+      fixture.service.resolveStrictMemberModerationBotRoute({ chatId }),
+    ).resolves.toMatchObject({ botId: null, capabilityState: 'explicitly_incapable' });
+  });
+
+  it('treats permissionsKnown=false as unknown instead of confirmed missing', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-strict-member-unknown-permissions';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Strict member unknown',
+      botId: fixture.bots[0]!.id,
+      primaryBotId: fixture.bots[0]!.id,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, freshMemberCapability([], false)),
+    );
+
+    await expect(
+      fixture.service.resolveStrictMemberModerationBotRoute({ chatId }),
+    ).resolves.toMatchObject({ botId: null, capabilityState: 'stale_or_unknown' });
+  });
+
+  it('selects a fresh strict write-capable standby over an incapable primary', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-strict-write-standby';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Strict write standby',
+      botId: fixture.bots[0]!.id,
+      primaryBotId: fixture.bots[0]!.id,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, freshMemberCapability([])),
+      createActiveMembership(chatId, fixture.bots[1]!.id, 1, freshMemberCapability(['write'])),
+    );
+
+    await expect(fixture.service.resolveStrictWriteModerationBotRoute({ chatId })).resolves.toEqual(
+      {
+        botId: fixture.bots[1]!.id,
+        capabilityState: 'confirmed_capable',
+        checkedAt: '2026-05-09T10:04:00.000Z',
+      },
+    );
+  });
+
+  it('keeps an unknown write-permission payload recheckable', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-strict-write-unknown';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Strict write unknown',
+      botId: fixture.bots[0]!.id,
+      primaryBotId: fixture.bots[0]!.id,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.READY,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, freshMemberCapability([], false)),
+    );
+
+    await expect(
+      fixture.service.resolveStrictWriteModerationBotRoute({ chatId }),
+    ).resolves.toMatchObject({ botId: null, capabilityState: 'stale_or_unknown' });
   });
 
   it('routes through a fresh confirmed capability even while stored routing is not ready', async () => {

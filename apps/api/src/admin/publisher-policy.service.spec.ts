@@ -42,7 +42,7 @@ function createReadiness(readyEntityIds: readonly string[] = []) {
           canUseChatComments: ready && source.entityType === ChatEntityType.CHAT,
           canPublishSuggestions: false,
           blockerCode: ready ? null : 'bot_not_connected',
-          checkedAt: null,
+          checkedAt: null as string | null,
           retryAt: null,
         };
       },
@@ -286,11 +286,12 @@ function createPolicyMutationFixture(
             ? null
             : { ...storedPolicy, ...options.publicationPolicy },
         publisherSettings: existingPublisherSettings,
+        publisherBinding: createConnectedPublisherBinding(),
       }),
     },
     $transaction: transaction,
   };
-  const readiness = createReadiness();
+  const readiness = createReadiness(['channel-1', 'chat-1']);
   const managedEntities = {
     assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
   };
@@ -1687,6 +1688,216 @@ describe('PublisherPolicyService', () => {
       user,
       'channel',
     );
+  });
+
+  it('rejects a disabled-to-enabled Publik policy transition when write is missing', async () => {
+    const fixture = createPolicyMutationFixture({
+      publicationPolicy: { revision: 2, publikEnabled: false },
+    });
+    fixture.readiness.resolveReadiness.mockReturnValue({
+      state: 'setup_required',
+      canPublish: false,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: 'write_permission_missing',
+      checkedAt: '2026-08-30T10:00:00.000Z',
+      retryAt: null,
+    });
+
+    const error = (await fixture.service
+      .updatePolicy('channel', 'channel-1', user, {
+        expectedRevision: 2,
+        publikEnabled: true,
+      })
+      .catch((caught: unknown) => caught)) as { getResponse(): unknown };
+
+    expect(error.getResponse()).toEqual({
+      statusCode: 409,
+      error: 'Conflict',
+      message: 'Боту не хватает прав для включения выбранной функции.',
+      code: 'BOT_CAPABILITY_REQUIRED',
+      missingPermissions: ['write'],
+      featureKeys: ['publikEnabled'],
+      checkedAt: '2026-08-30T10:00:00.000Z',
+      blockerCode: 'write_permission_missing',
+      stale: false,
+      canRecheck: false,
+    });
+    expect(fixture.readiness.resolveReadiness).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'channel-1' }),
+      { runtimeAvailable: true, assumePolicyEnabled: true },
+    );
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it('reports stale Publisher access without claiming that write is missing', async () => {
+    const fixture = createPolicyMutationFixture({
+      publicationPolicy: { revision: 2, publikEnabled: false },
+    });
+    fixture.readiness.resolveReadiness.mockReturnValue({
+      state: 'setup_required',
+      canPublish: false,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: 'bot_access_expired',
+      checkedAt: '2026-08-29T10:00:00.000Z',
+      retryAt: null,
+    });
+
+    const error = (await fixture.service
+      .updatePolicy('channel', 'channel-1', user, {
+        expectedRevision: 2,
+        publikEnabled: true,
+      })
+      .catch((caught: unknown) => caught)) as { getResponse(): Record<string, unknown> };
+
+    expect(error.getResponse()).toMatchObject({
+      code: 'BOT_CAPABILITY_REQUIRED',
+      missingPermissions: [],
+      blockerCode: 'bot_access_expired',
+      stale: true,
+      canRecheck: false,
+    });
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it('checks only Publisher module switches that transition from false to true', async () => {
+    const fixture = createPolicyMutationFixture({
+      storedEntityType: ChatEntityType.CHAT,
+      publisherSettings: {
+        revision: 4,
+        chatCommentsEnabled: false,
+        chatCommentsAdminsEnabled: false,
+        chatCommentsPostsEnabled: true,
+        autoRepliesEnabled: false,
+      },
+    });
+    jest.spyOn(fixture.service, 'getEntity').mockResolvedValue({ id: 'chat-1' } as never);
+    fixture.readiness.resolveReadiness.mockReturnValue({
+      state: 'setup_required',
+      canPublish: false,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: 'bot_not_admin',
+      checkedAt: '2026-08-30T10:00:00.000Z',
+      retryAt: null,
+    });
+
+    const error = (await fixture.service
+      .updateModuleSettings('chat', 'chat-1', user, {
+        expectedRevision: 4,
+        chatComments: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: true,
+          commentsChatBroadcastsEnabled: true,
+        },
+        autoRepliesEnabled: true,
+      })
+      .catch((caught: unknown) => caught)) as { getResponse(): Record<string, unknown> };
+
+    expect(error.getResponse()).toMatchObject({
+      code: 'BOT_CAPABILITY_REQUIRED',
+      missingPermissions: ['administrator'],
+      featureKeys: [
+        'chatComments.commentsEnabled',
+        'chatComments.commentsAdminsEnabled',
+        'autoRepliesEnabled',
+      ],
+      blockerCode: 'bot_not_admin',
+      stale: false,
+    });
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it('allows staging nested chat comment settings while comments remain disabled', async () => {
+    const fixture = createPolicyMutationFixture({
+      storedEntityType: ChatEntityType.CHAT,
+      publisherSettings: {
+        revision: 4,
+        chatCommentsEnabled: false,
+        chatCommentsAdminsEnabled: false,
+        chatCommentsPostsEnabled: false,
+      },
+    });
+    jest.spyOn(fixture.service, 'getEntity').mockResolvedValue({ id: 'chat-1' } as never);
+
+    await expect(
+      fixture.service.updateModuleSettings('chat', 'chat-1', user, {
+        expectedRevision: 4,
+        chatComments: {
+          commentsEnabled: false,
+          commentsAdminsEnabled: true,
+          commentsChatBroadcastsEnabled: true,
+        },
+      }),
+    ).resolves.toBeDefined();
+
+    expect(fixture.readiness.isRuntimeAvailable).not.toHaveBeenCalled();
+    expect(fixture.readiness.resolveReadiness).not.toHaveBeenCalled();
+    expect(fixture.tx.publisherEntitySettings.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps Publisher heartbeat read failures to the structured capability 503', async () => {
+    const fixture = createPolicyMutationFixture({
+      publicationPolicy: { revision: 2, publikEnabled: false },
+    });
+    fixture.readiness.isRuntimeAvailable.mockRejectedValueOnce(new Error('redis unavailable'));
+
+    const error = (await fixture.service
+      .updatePolicy('channel', 'channel-1', user, {
+        expectedRevision: 2,
+        publikEnabled: true,
+      })
+      .catch((caught: unknown) => caught)) as {
+      getStatus(): number;
+      getResponse(): Record<string, unknown>;
+    };
+
+    expect(error.getStatus()).toBe(503);
+    expect(error.getResponse()).toMatchObject({
+      code: 'BOT_CAPABILITY_CHECK_UNAVAILABLE',
+      featureKeys: ['publikEnabled'],
+      blockerCode: 'publisher_runtime_unavailable',
+      stale: true,
+      canRecheck: false,
+    });
+    expect(fixture.readiness.resolveReadiness).not.toHaveBeenCalled();
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 and leaves policy unchanged while Publisher runtime readiness is transient', async () => {
+    const fixture = createPolicyMutationFixture({
+      publicationPolicy: { revision: 2, publikEnabled: false },
+    });
+    fixture.readiness.resolveReadiness.mockReturnValue({
+      state: 'temporarily_unavailable',
+      canPublish: false,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: 'publisher_runtime_unavailable',
+      checkedAt: null,
+      retryAt: null,
+    });
+
+    const error = (await fixture.service
+      .updatePolicy('channel', 'channel-1', user, {
+        expectedRevision: 2,
+        publikEnabled: true,
+      })
+      .catch((caught: unknown) => caught)) as {
+      getStatus(): number;
+      getResponse(): Record<string, unknown>;
+    };
+
+    expect(error.getStatus()).toBe(503);
+    expect(error.getResponse()).toMatchObject({
+      code: 'BOT_CAPABILITY_CHECK_UNAVAILABLE',
+      featureKeys: ['publikEnabled'],
+      blockerCode: 'publisher_runtime_unavailable',
+      stale: true,
+      canRecheck: false,
+    });
+    expect(fixture.transaction).not.toHaveBeenCalled();
   });
 
   it('reads the Major toggle without loading Publisher catalog or readiness state', async () => {

@@ -1,11 +1,27 @@
 import type { ManagedEntityType } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { lazy, Suspense, useState } from 'react';
 import type { ApiTransport } from '../lib/api/transport';
 import { getPublisherPolicy, updatePublisherPolicy } from '../lib/api/publisher-client';
+import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { cn } from '../lib/cn';
 import { useToast } from './ui/toast';
 import './publisher-policy-card.css';
+
+let botPermissionErrorModulePromise: Promise<typeof import('../lib/bot-permission-error')> | null =
+  null;
+
+function loadBotPermissionErrorModule() {
+  botPermissionErrorModulePromise ??= import('../lib/bot-permission-error');
+  return botPermissionErrorModulePromise;
+}
+
+const LazyBotPermissionRequiredDialog = lazy(() =>
+  import('./bot-permission-required-dialog').then((module) => ({
+    default: module.BotPermissionRequiredDialog,
+  })),
+);
 
 export function PublisherPolicyCard({
   api,
@@ -18,6 +34,7 @@ export function PublisherPolicyCard({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const queryKey = ['publisher-policy', entityType, entityId] as const;
   const policyQuery = useQuery({
     queryKey,
@@ -31,6 +48,7 @@ export function PublisherPolicyCard({
         publikEnabled,
       }),
     onSuccess: async () => {
+      setPermissionBlocker(null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey }),
         queryClient.invalidateQueries({
@@ -39,8 +57,14 @@ export function PublisherPolicyCard({
         queryClient.invalidateQueries({ queryKey: ['publications', 'sources', 'publisher'] }),
       ]);
     },
-    onError: (error) => {
+    onError: async (error) => {
       void queryClient.invalidateQueries({ queryKey });
+      const { parseBotPermissionBlocker } = await loadBotPermissionErrorModule();
+      const blocker = parseBotPermissionBlocker(error);
+      if (blocker) {
+        setPermissionBlocker(blocker);
+        return;
+      }
       pushToast({
         tone: 'danger',
         title: describeUserFacingError(error, 'Не удалось сохранить'),
@@ -81,6 +105,19 @@ export function PublisherPolicyCard({
           <span className="toggle-switch__thumb" />
         </span>
       </label>
+
+      <Suspense fallback={null}>
+        <LazyBotPermissionRequiredDialog
+          id="publisher-policy-permission"
+          blocker={permissionBlocker}
+          isRechecking={mutation.isPending}
+          onClose={() => setPermissionBlocker(null)}
+          onRecheck={() => {
+            setPermissionBlocker(null);
+            mutation.mutate(true);
+          }}
+        />
+      </Suspense>
     </div>
   );
 }

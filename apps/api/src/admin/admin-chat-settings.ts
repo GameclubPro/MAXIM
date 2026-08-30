@@ -19,7 +19,7 @@ import {
   type BotSpeechMedia,
   type ChatSettings,
 } from '@maxim/contracts';
-import { BadRequestException, type Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, type Logger } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -33,6 +33,11 @@ import {
   DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   omitPublisherOwnedChatSettings,
 } from './publisher-owned-chat-settings';
+import {
+  CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
+  resolveChatSettingsBotCapabilityRequirements,
+  type ChatSettingsBotCapabilityRequirement,
+} from './chat-settings-bot-capability';
 
 function readLegacyPrimaryAdminCommandName(value: unknown, fallback: string): string {
   if (typeof value !== 'string') {
@@ -764,7 +769,13 @@ export async function saveChatSettings(params: {
   source: AdminActionSource;
   resolveBotAssignmentData: () => Promise<ResolvedBotAssignmentData> | ResolvedBotAssignmentData;
   assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<ChatSettings | void>;
-  refreshExecutionReadiness: (settings: ChatSettings) => Promise<void>;
+  assertBotCapabilities: (
+    requirements: readonly ChatSettingsBotCapabilityRequirement[],
+  ) => Promise<void>;
+  refreshExecutionReadiness: (
+    settings: ChatSettings,
+    options?: { skipManagedEntityBotRefresh?: boolean },
+  ) => Promise<void>;
 }): Promise<ChatSettings> {
   const parsed = chatSettingsSchema.safeParse(params.body);
   if (!parsed.success) {
@@ -774,17 +785,17 @@ export async function saveChatSettings(params: {
   const currentSettings = await params.prisma.chatSettings.findUnique({
     where: { chatId: params.chatId },
     select: {
-      duplicatePhotoEnabled: true,
+      ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
       duplicatePhotoMatchPreset: true,
       duplicatePhotoScope: true,
       profanitySensitivity: true,
-      nightModeForceCloseEnabled: true,
       nightModeForceCloseForever: true,
       nightModeForceCloseHours: true,
       nightModeForceCloseDays: true,
       nightModeForceCloseUntil: true,
       karavanStorefrontEnabled: true,
       karavanStorefrontAdminsOnly: true,
+      updatedAt: true,
     },
   });
   const settingsInput = {
@@ -822,6 +833,14 @@ export async function saveChatSettings(params: {
   );
   normalizedSettings =
     (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
+  const capabilityRequirements = resolveChatSettingsBotCapabilityRequirements({
+    current: { ...DEFAULT_CHAT_SETTINGS, ...(currentSettings ?? {}) },
+    next: normalizedSettings,
+    requestedSettings: params.body,
+  });
+  if (capabilityRequirements.length > 0) {
+    await params.assertBotCapabilities(capabilityRequirements);
+  }
   const botAssignmentData = await params.resolveBotAssignmentData();
   // FLAG: Major never includes Publisher-owned comment fields in UPDATE, so concurrent Publisher
   // writes cannot be overwritten by a stale read-modify-write cycle.
@@ -831,42 +850,51 @@ export async function saveChatSettings(params: {
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   };
 
-  const updateSettings = params.prisma.chat.upsert({
-    where: { id: params.chatId },
-    create: {
-      id: params.chatId,
-      title: `Chat ${params.chatId}`,
-      entityType: ChatEntityType.CHAT,
-      catalogKind: ChatCatalogKind.MANAGED,
-      ...botAssignmentData,
-      settings: {
-        create: createSettings,
-      },
-    },
-    update: {
-      catalogKind: ChatCatalogKind.MANAGED,
-      settings: {
-        upsert: {
-          update: majorOwnedSettings,
-          create: createSettings,
+  try {
+    await params.prisma.$transaction(async (tx) => {
+      await tx.chat.upsert({
+        where: { id: params.chatId },
+        create: {
+          id: params.chatId,
+          title: `Chat ${params.chatId}`,
+          entityType: ChatEntityType.CHAT,
+          catalogKind: ChatCatalogKind.MANAGED,
+          ...botAssignmentData,
         },
-      },
-    },
-  });
-
-  const writeAudit = params.prisma.auditLog.create({
-    data: {
-      chatId: params.chatId,
-      actorUserId: params.actorUserId,
-      action: 'UPDATE_SETTINGS',
-      payload: buildUpdateSettingsAuditPayload({
-        requestedSettings: params.body,
-        normalizedSettings,
-        source: params.source,
-      }),
-    },
-  });
-  await params.prisma.$transaction([updateSettings, writeAudit]);
+        update: { catalogKind: ChatCatalogKind.MANAGED },
+      });
+      if (currentSettings) {
+        const changed = await tx.chatSettings.updateMany({
+          where: { chatId: params.chatId, updatedAt: currentSettings.updatedAt },
+          data: majorOwnedSettings,
+        });
+        if (changed.count !== 1) {
+          throw chatSettingsRevisionConflict();
+        }
+      } else {
+        await tx.chatSettings.create({
+          data: { chatId: params.chatId, ...createSettings },
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          chatId: params.chatId,
+          actorUserId: params.actorUserId,
+          action: 'UPDATE_SETTINGS',
+          payload: buildUpdateSettingsAuditPayload({
+            requestedSettings: params.body,
+            normalizedSettings,
+            source: params.source,
+          }),
+        },
+      });
+    });
+  } catch (error: unknown) {
+    if ((error as { code?: unknown })?.code === 'P2002') {
+      throw chatSettingsRevisionConflict();
+    }
+    throw error;
+  }
   const publisherOwnedSettings = await params.prisma.chatSettings.findUnique({
     where: { chatId: params.chatId },
     select: {
@@ -892,9 +920,22 @@ export async function saveChatSettings(params: {
       DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS.commentsChatBroadcastsEnabled,
   };
   await params.chatContextCache.invalidate(params.chatId);
-  await params.refreshExecutionReadiness(resultingSettings);
+  if (capabilityRequirements.length > 0) {
+    await params.refreshExecutionReadiness(resultingSettings, {
+      skipManagedEntityBotRefresh: true,
+    });
+  } else {
+    await params.refreshExecutionReadiness(resultingSettings);
+  }
 
   return resultingSettings;
+}
+
+function chatSettingsRevisionConflict(): ConflictException {
+  return new ConflictException({
+    code: 'CHAT_SETTINGS_CONCURRENT_UPDATE',
+    message: 'Настройки чата изменились параллельно. Обновите экран и повторите попытку.',
+  });
 }
 
 function hasOwnSetting(body: unknown, key: string): boolean {

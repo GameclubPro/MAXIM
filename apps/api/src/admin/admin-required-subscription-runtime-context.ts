@@ -3,6 +3,7 @@ import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { MaxBotLinkService } from '../max/max-bot-link.service';
+import type { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import type { MaxBotChat } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -11,6 +12,7 @@ import type {
   ManagedBotChatCatalogSnapshotRow,
   ManagedEntitiesDiscoverySnapshot,
 } from './admin.service.support';
+import { refreshAdminSettingsBotCapabilitySnapshots } from './admin-settings-bot-capability.service';
 
 export type CreateRequiredSubscriptionManagedEntityHeaderParams = {
   id: string;
@@ -59,6 +61,7 @@ type AdminRequiredSubscriptionRuntimeContextTarget = {
   chatContextCache: ChatContextCacheService;
   logger: Logger;
   maxBotLinkService?: MaxBotLinkService;
+  maxBotExecutionPlanner?: MaxBotExecutionPlannerService;
   maxBotRegistry?: MaxBotRegistryService;
   createManagedEntityHeader(
     params: CreateRequiredSubscriptionManagedEntityHeaderParams,
@@ -69,11 +72,6 @@ type AdminRequiredSubscriptionRuntimeContextTarget = {
     chatId: string,
     options?: ResolveRequiredSubscriptionCandidateBotIdsOptions,
   ): Promise<string[]>;
-  refreshManagedEntityBotAccessSnapshots(
-    chatId: string,
-    entityType: ManagedEntityType,
-    reason: string,
-  ): Promise<void>;
 };
 
 export function createAdminRequiredSubscriptionRuntimeContext(
@@ -124,7 +122,13 @@ export function createAdminRequiredSubscriptionRuntimeContext(
       entityType: ManagedEntityType,
       reason: string,
     ): Promise<void> {
-      return typedTarget.refreshManagedEntityBotAccessSnapshots(chatId, entityType, reason);
+      return refreshAdminSettingsBotCapabilitySnapshots(
+        typedTarget.maxBotExecutionPlanner,
+        typedTarget.logger,
+        chatId,
+        entityType,
+        reason,
+      );
     },
   };
 }

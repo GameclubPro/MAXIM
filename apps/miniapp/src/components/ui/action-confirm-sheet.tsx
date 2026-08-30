@@ -8,6 +8,7 @@ import './action-confirm-sheet.css';
 type ActionConfirmSheetProps = {
   id: string;
   open: boolean;
+  role?: 'dialog' | 'alertdialog';
   title: string;
   summary?: string;
   previewTitle?: ReactNode;
@@ -32,6 +33,7 @@ type ActionConfirmSheetProps = {
 export function ActionConfirmSheet({
   id,
   open,
+  role = 'dialog',
   title,
   summary,
   previewTitle,
@@ -178,7 +180,7 @@ export function ActionConfirmSheet({
       <section
         ref={panelRef}
         className={cn('action-confirm-sheet__panel', `action-confirm-sheet__panel--${tone}`)}
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={summaryId}

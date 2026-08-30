@@ -28,6 +28,7 @@ import { AdminManualModerationController } from './admin-manual-moderation.contr
 import { AdminPollController } from './admin-poll.controller';
 import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
+import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
 import { AdminSettingsController } from './admin-settings.controller';
 import { PublisherVkParsingController } from './publisher-vk-parsing.controller';
@@ -143,6 +144,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     },
     AdminManualMessageCleanupService,
     AdminDialogLinkService,
+    AdminSettingsBotCapabilityService,
     AdminSettingsService,
     ChannelDialogService,
     ChannelPostSignatureService,

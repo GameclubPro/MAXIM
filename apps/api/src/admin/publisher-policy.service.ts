@@ -23,6 +23,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  HttpStatus,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -44,6 +45,10 @@ import {
   publisherRefreshEvidenceWhere,
 } from '../publisher/publisher-entity-connection.util';
 import { ManagedEntitiesService } from './managed-entities.service';
+import {
+  BotCapabilityRequiredException,
+  type BotCapabilityPermission,
+} from './bot-capability-required.error';
 import {
   PublisherEntitiesCursorStore,
   type PublisherEntitiesCursorScope,
@@ -168,6 +173,33 @@ export class PublisherPolicyService {
     user: AuthUser,
   ): Promise<PublisherEntity> {
     return this.loadScopedEntity(entityType, entityId, user);
+  }
+
+  async assertBotCapabilityForFeatureEnablement(
+    entityType: ManagedEntityType,
+    entityId: string,
+    featureKeys: readonly string[],
+    options: { canRecheck?: boolean } = {},
+  ): Promise<void> {
+    const expectedEntityType =
+      entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
+    const source = await this.prisma.chat.findUnique({
+      where: { id: entityId },
+      select: {
+        entityType: true,
+        publicationPolicy: true,
+        publisherSettings: true,
+        publisherBinding: true,
+      },
+    });
+    if (!source || source.entityType !== expectedEntityType) {
+      throw new BadRequestException('Managed entity type does not match');
+    }
+    await this.assertPublisherBotCapabilityForEnablement(
+      { id: entityId, ...source },
+      featureKeys,
+      options.canRecheck ?? true,
+    );
   }
 
   async getPolicyForModeration(
@@ -515,10 +547,22 @@ export class PublisherPolicyService {
       entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
     const existingChat = await this.prisma.chat.findUnique({
       where: { id: entityId },
-      select: { entityType: true, publicationPolicy: true },
+      select: {
+        entityType: true,
+        publicationPolicy: true,
+        publisherSettings: true,
+        publisherBinding: true,
+      },
     });
     if (!existingChat || existingChat.entityType !== expectedEntityType) {
       throw new BadRequestException('Managed entity type does not match');
+    }
+    if (existingChat.publicationPolicy?.publikEnabled === false && request.publikEnabled) {
+      await this.assertPublisherBotCapabilityForEnablement(
+        { id: entityId, ...existingChat },
+        ['publikEnabled'],
+        false,
+      );
     }
 
     try {
@@ -599,10 +643,26 @@ export class PublisherPolicyService {
       entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
     const existingChat = await this.prisma.chat.findUnique({
       where: { id: entityId },
-      select: { entityType: true, publisherSettings: true },
+      select: {
+        entityType: true,
+        publicationPolicy: true,
+        publisherSettings: true,
+        publisherBinding: true,
+      },
     });
     if (!existingChat || existingChat.entityType !== expectedEntityType) {
       throw new BadRequestException('Managed entity type does not match');
+    }
+    const enablementFeatureKeys = this.resolveModuleEnablementFeatureKeys(
+      request,
+      existingChat.publisherSettings,
+    );
+    if (enablementFeatureKeys.length > 0) {
+      await this.assertPublisherBotCapabilityForEnablement(
+        { id: entityId, ...existingChat },
+        enablementFeatureKeys,
+        true,
+      );
     }
 
     try {
@@ -1085,6 +1145,128 @@ export class PublisherPolicyService {
     return new ConflictException({
       message: 'Publication policy changed. Refresh and retry.',
       code: 'PUBLISHER_POLICY_REVISION_CONFLICT',
+    });
+  }
+
+  private resolveModuleEnablementFeatureKeys(
+    request: {
+      chatComments?: {
+        commentsEnabled: boolean;
+        commentsAdminsEnabled: boolean;
+        commentsChatBroadcastsEnabled: boolean;
+      };
+      channelSuggestionsEnabled?: boolean;
+      autoRepliesEnabled?: boolean;
+    },
+    current: {
+      chatCommentsEnabled: boolean;
+      chatCommentsAdminsEnabled: boolean;
+      chatCommentsPostsEnabled: boolean;
+      channelSuggestionsEnabled: boolean;
+      autoRepliesEnabled: boolean;
+    } | null,
+  ): string[] {
+    const featureKeys: string[] = [];
+    const effectiveChatCommentsEnabled =
+      request.chatComments?.commentsEnabled ?? current?.chatCommentsEnabled ?? false;
+    if (request.chatComments?.commentsEnabled && current?.chatCommentsEnabled !== true) {
+      featureKeys.push('chatComments.commentsEnabled');
+    }
+    if (
+      effectiveChatCommentsEnabled &&
+      request.chatComments?.commentsAdminsEnabled &&
+      current?.chatCommentsAdminsEnabled !== true
+    ) {
+      featureKeys.push('chatComments.commentsAdminsEnabled');
+    }
+    if (
+      effectiveChatCommentsEnabled &&
+      request.chatComments?.commentsChatBroadcastsEnabled &&
+      current?.chatCommentsPostsEnabled !== true
+    ) {
+      featureKeys.push('chatComments.commentsChatBroadcastsEnabled');
+    }
+    if (request.autoRepliesEnabled && current?.autoRepliesEnabled !== true) {
+      featureKeys.push('autoRepliesEnabled');
+    }
+    if (request.channelSuggestionsEnabled && current?.channelSuggestionsEnabled !== true) {
+      featureKeys.push('channelSuggestionsEnabled');
+    }
+    return featureKeys;
+  }
+
+  private async assertPublisherBotCapabilityForEnablement(
+    source: Parameters<PublisherReadinessService['resolveReadiness']>[0],
+    featureKeys: readonly string[],
+    canRecheck: boolean,
+  ): Promise<void> {
+    let runtimeAvailable: boolean;
+    try {
+      runtimeAvailable = await this.readinessService.isRuntimeAvailable();
+    } catch {
+      throw this.publisherCapabilityCheckUnavailable(
+        featureKeys,
+        source.publisherBinding?.botAccessCheckedAt?.toISOString() ?? null,
+        'publisher_runtime_unavailable',
+        canRecheck,
+      );
+    }
+    const readiness = this.readinessService.resolveReadiness(source, {
+      runtimeAvailable,
+      assumePolicyEnabled: true,
+    });
+    if (readiness.canPublish) {
+      return;
+    }
+
+    if (
+      readiness.blockerCode === 'publisher_runtime_unavailable' ||
+      readiness.blockerCode === 'route_quarantined'
+    ) {
+      throw this.publisherCapabilityCheckUnavailable(
+        featureKeys,
+        readiness.checkedAt,
+        readiness.blockerCode,
+        canRecheck,
+      );
+    }
+
+    const missingPermissions: BotCapabilityPermission[] =
+      readiness.blockerCode === 'write_permission_missing'
+        ? ['write']
+        : readiness.blockerCode === 'bot_not_admin'
+          ? ['administrator']
+          : readiness.blockerCode === 'bot_not_connected'
+            ? ['bot_connection']
+            : [];
+    throw new BotCapabilityRequiredException({
+      missingPermissions,
+      featureKeys,
+      checkedAt: readiness.checkedAt,
+      blockerCode: readiness.blockerCode ?? 'bot_access_unconfirmed',
+      stale:
+        readiness.blockerCode === 'bot_access_expired' ||
+        readiness.blockerCode === 'bot_access_unconfirmed',
+      canRecheck,
+    });
+  }
+
+  private publisherCapabilityCheckUnavailable(
+    featureKeys: readonly string[],
+    checkedAt: string | null,
+    blockerCode: 'publisher_runtime_unavailable' | 'route_quarantined',
+    canRecheck: boolean,
+  ): ServiceUnavailableException {
+    return new ServiceUnavailableException({
+      statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+      error: 'Service Unavailable',
+      message: 'Не удалось проверить готовность бота Публика. Повторите попытку позже.',
+      code: 'BOT_CAPABILITY_CHECK_UNAVAILABLE',
+      featureKeys: [...featureKeys],
+      checkedAt,
+      blockerCode,
+      stale: true,
+      canRecheck,
     });
   }
 }

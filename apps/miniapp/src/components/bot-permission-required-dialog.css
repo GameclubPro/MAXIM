@@ -1,0 +1,29 @@
+@layer components {
+  .bot-permission-required-dialog__details {
+    display: grid;
+    gap: 8px;
+    max-height: min(35vh, 240px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+
+  .bot-permission-required-dialog__entity {
+    overflow-wrap: anywhere;
+  }
+
+  .bot-permission-required-dialog__permissions {
+    display: grid;
+    gap: 7px;
+    margin: 0;
+    padding: 0 0 0 18px;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .bot-permission-required-dialog__permissions li::marker {
+    color: var(--accent);
+  }
+}

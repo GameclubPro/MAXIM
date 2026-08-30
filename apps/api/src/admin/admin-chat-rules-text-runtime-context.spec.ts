@@ -13,7 +13,11 @@ describe('AdminChatRulesTextRuntimeContext', () => {
   });
 
   it('exposes chat rules runtime infrastructure through explicit typed accessors', async () => {
-    const settings = { linkPolicy: 'ALLOWLIST_ONLY' } as never;
+    const settings = {
+      linkPolicy: 'ALLOWLIST_ONLY',
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
+    } as never;
     const domains = [{ domain: 'example.com' }] as never;
     const headers = [{ id: 'channel-1', title: 'Канал' }] as never;
     const displayNames = new Map([['user-1', 'Admin Name']]);
@@ -26,7 +30,6 @@ describe('AdminChatRulesTextRuntimeContext', () => {
       maxBotTokenValidationSecrets: ['token-1'],
       getSettings: jest.fn().mockResolvedValue(settings),
       getDomainAllowlistDetails: jest.fn().mockResolvedValue(domains),
-      isRequiredSubscriptionCurrentlyActive: jest.fn().mockReturnValue(true),
       resolveRequiredSubscriptionChannelHeaders: jest.fn().mockResolvedValue(headers),
       resolveUserDisplayNames: jest.fn().mockResolvedValue(displayNames),
       resolveChatSettingsReadBotAssignmentData: jest.fn().mockResolvedValue(botAssignment),

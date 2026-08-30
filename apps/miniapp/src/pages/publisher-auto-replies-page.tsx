@@ -34,8 +34,13 @@ import {
   listPublisherAutoReplies,
   updatePublisherAutoReply,
 } from '../lib/api/publisher-auto-replies-client';
-import { getPublisherEntity, updatePublisherModules } from '../lib/api/publisher-client';
+import {
+  getPublisherEntity,
+  refreshPublisherEntity,
+  updatePublisherModules,
+} from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
+import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { cn } from '../lib/cn';
 import { clearAutoReplyDraft } from '../lib/auto-reply-draft';
 import { formatBroadcastButtonsStatus } from '../lib/broadcast-link-buttons';
@@ -64,6 +69,21 @@ import './publisher-auto-replies-page.css';
 
 const AUTO_REPLY_QUERY_ROOT = ['publisher-auto-replies'] as const;
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
+
+let botPermissionErrorModulePromise: Promise<typeof import('../lib/bot-permission-error')> | null =
+  null;
+
+function loadBotPermissionErrorModule() {
+  botPermissionErrorModulePromise ??= import('../lib/bot-permission-error');
+  return botPermissionErrorModulePromise;
+}
+
+const LazyBotPermissionRequiredDialog = lazy(() =>
+  import('../components/bot-permission-required-dialog').then((module) => ({
+    default: module.BotPermissionRequiredDialog,
+  })),
+);
+
 const PublicationButtonsSheet = lazy(() =>
   import('../features/publications/publication-buttons-sheet').then((module) => ({
     default: module.PublicationButtonsSheet,
@@ -223,12 +243,14 @@ function PublisherAutoReplyEditor({
   chatId,
   target,
   onClose,
+  onPermissionBlocker,
   onSaved,
 }: {
   api: ApiTransport;
   chatId: string;
   target: EditorTarget;
   onClose: () => void;
+  onPermissionBlocker: (blocker: BotPermissionBlocker) => void;
   onSaved: (rule: PublisherAutoReplyRule) => void;
 }) {
   const { pushToast } = useToast();
@@ -300,8 +322,17 @@ function PublisherAutoReplyEditor({
       });
       onSaved(savedRule);
     },
-    onError: (error) => {
+    onError: async (error) => {
       setReviewOpen(false);
+      const { parseBotPermissionBlocker } = await loadBotPermissionErrorModule();
+      const permissionBlocker = parseBotPermissionBlocker(error);
+      if (permissionBlocker) {
+        if (rule) {
+          setDraft((current) => ({ ...current, enabled: rule.enabled }));
+        }
+        onPermissionBlocker(permissionBlocker);
+        return;
+      }
       if (isAutoReplyConflictError(error)) {
         setConflict(true);
         pushToast({
@@ -732,6 +763,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
   const [editorTarget, setEditorTarget] = useState<EditorTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PublisherAutoReplyRule | null>(null);
   const [conflictRuleId, setConflictRuleId] = useState<string | null>(null);
+  const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [botBusy, setBotBusy] = useState(false);
   const completedAuthoringSessionRef = useRef<string | null>(null);
   const authoringRequestIdRef = useRef<string | null>(null);
@@ -771,15 +803,22 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
       });
     },
     onSuccess: (moduleSettings) => {
+      setPermissionBlocker(null);
       queryClient.setQueryData(entityQueryKey, (current: unknown) =>
         current && typeof current === 'object' ? { ...current, moduleSettings } : current,
       );
     },
     onError: async (error) => {
-      pushToast({
-        tone: 'danger',
-        title: describeUserFacingError(error, 'Не удалось изменить модуль.'),
-      });
+      const { parseBotPermissionBlocker } = await loadBotPermissionErrorModule();
+      const blocker = parseBotPermissionBlocker(error);
+      if (blocker) {
+        setPermissionBlocker(blocker);
+      } else {
+        pushToast({
+          tone: 'danger',
+          title: describeUserFacingError(error, 'Не удалось изменить модуль.'),
+        });
+      }
       await queryClient.invalidateQueries({ queryKey: entityQueryKey });
     },
   });
@@ -793,6 +832,9 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
       }),
     onMutate: ({ rule, enabled }) => {
       setConflictRuleId(null);
+      if (enabled) {
+        return;
+      }
       queryClient.setQueryData(queryKey, (current: unknown) => {
         if (!current || typeof current !== 'object' || !('items' in current)) {
           return current;
@@ -814,7 +856,11 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
       });
     },
     onError: async (error, variables) => {
-      if (isAutoReplyConflictError(error)) {
+      const { parseBotPermissionBlocker } = await loadBotPermissionErrorModule();
+      const blocker = parseBotPermissionBlocker(error);
+      if (blocker) {
+        setPermissionBlocker(blocker);
+      } else if (isAutoReplyConflictError(error)) {
         setConflictRuleId(variables.rule.id);
       } else {
         pushToast({
@@ -823,6 +869,25 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
         });
       }
       await queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  const permissionRecheckMutation = useMutation({
+    mutationFn: () => refreshPublisherEntity(api, 'chat', chatId),
+    onSuccess: async () => {
+      setPermissionBlocker(null);
+      await queryClient.invalidateQueries({ queryKey: entityQueryKey });
+      pushToast({
+        tone: 'info',
+        title: 'Проверка поставлена в очередь',
+        description: 'После обновления прав повторите включение автоответа.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: describeUserFacingError(error, 'Не удалось запустить проверку доступа.'),
+      });
     },
   });
 
@@ -954,8 +1019,18 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
           chatId={chatId}
           target={editorTarget}
           onClose={() => setEditorTarget(null)}
+          onPermissionBlocker={setPermissionBlocker}
           onSaved={handleSaved}
         />
+        <Suspense fallback={null}>
+          <LazyBotPermissionRequiredDialog
+            id="publisher-auto-reply-permission"
+            blocker={permissionBlocker}
+            isRechecking={permissionRecheckMutation.isPending}
+            onClose={() => setPermissionBlocker(null)}
+            onRecheck={() => permissionRecheckMutation.mutate()}
+          />
+        </Suspense>
       </section>
     );
   }
@@ -1137,6 +1212,15 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
           }
         }}
       />
+      <Suspense fallback={null}>
+        <LazyBotPermissionRequiredDialog
+          id="publisher-auto-reply-permission"
+          blocker={permissionBlocker}
+          isRechecking={permissionRecheckMutation.isPending}
+          onClose={() => setPermissionBlocker(null)}
+          onRecheck={() => permissionRecheckMutation.mutate()}
+        />
+      </Suspense>
     </section>
   );
 }

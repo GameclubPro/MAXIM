@@ -8,6 +8,7 @@ import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { resolvePhotoDuplicateRuntimePolicy } from '../moderation/photo-duplicate/photo-duplicate.runtime';
 import { UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES } from './admin-chat-settings';
 import { AdminSettingsService } from './admin-settings.service';
+import { BotCapabilityRequiredException } from './bot-capability-required.error';
 
 const user = {
   userId: 'admin-1',
@@ -74,6 +75,29 @@ function createPersistedChannelSettings(overrides: Record<string, unknown> = {})
     updatedAt: new Date('2026-03-09T09:00:00.000Z'),
     ...overrides,
   };
+}
+
+function findChatSettingsWritePayload(
+  prisma: {
+    chatSettings: { updateMany: jest.Mock; create: jest.Mock };
+  },
+  chatId = 'chat-1',
+): Record<string, unknown> | undefined {
+  const update = prisma.chatSettings.updateMany.mock.calls.find(
+    ([args]) => args?.where?.chatId === chatId,
+  )?.[0]?.data;
+  if (update) {
+    return update;
+  }
+  const created = prisma.chatSettings.create.mock.calls.find(
+    ([args]) => args?.data?.chatId === chatId,
+  )?.[0]?.data;
+  if (!created) {
+    return undefined;
+  }
+  const payload = { ...created };
+  Reflect.deleteProperty(payload, 'chatId');
+  return payload;
 }
 
 function createManagedEntityHeader(overrides: Record<string, unknown> = {}) {
@@ -198,6 +222,7 @@ function createService(
     assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
     assertManagedEntityReadAccess: jest.fn().mockResolvedValue(undefined),
     assertRequiredSubscriptionSettingsForChatSettings: jest.fn().mockResolvedValue(undefined),
+    assertChatSettingsBotCapabilities: jest.fn().mockResolvedValue(undefined),
     buildAutofilledChatRulesTextFromCurrentSettings: jest.fn().mockResolvedValue('Автоправила.'),
     buildFormattedChatRulesPublicationText: jest.fn().mockImplementation((_chatId, sourceText) =>
       Promise.resolve({
@@ -286,8 +311,13 @@ function createService(
     updateChannelSettings: jest.fn(),
     updateRules: jest.fn(),
   };
+  const transactionClient = {} as Record<string, unknown>;
   const prisma = {
-    $transaction: jest.fn().mockImplementation((operations) => Promise.all(operations)),
+    $transaction: jest
+      .fn()
+      .mockImplementation((input) =>
+        typeof input === 'function' ? input(transactionClient) : Promise.all(input),
+      ),
     chat: {
       upsert: jest.fn().mockResolvedValue({
         id: 'chat-1',
@@ -300,7 +330,12 @@ function createService(
     },
     chatSettings: {
       findUnique: jest.fn().mockResolvedValue(options.currentSettings ?? null),
+      findMany: jest.fn().mockResolvedValue([]),
+      create: jest
+        .fn()
+        .mockResolvedValue(options.persistedSettings ?? createPersistedChatSettings()),
       update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     channelSettings: {
       findUnique: jest.fn().mockResolvedValue(
@@ -328,6 +363,11 @@ function createService(
       create: jest.fn().mockResolvedValue({}),
     },
   };
+  Object.assign(transactionClient, {
+    chat: prisma.chat,
+    chatSettings: prisma.chatSettings,
+    auditLog: prisma.auditLog,
+  });
   const chatContextCache = {
     invalidate: jest.fn().mockResolvedValue(undefined),
   };
@@ -415,11 +455,15 @@ function createService(
   const accessObservability = {
     recordRejection: jest.fn(),
   };
+  const settingsBotCapabilities = {
+    assertChatSettingsBotCapabilities: legacyAdminService.assertChatSettingsBotCapabilities,
+  };
   const service = new AdminSettingsService(
     legacyAdminService as never,
     prisma as never,
     chatContextCache as never,
     maxClient as never,
+    settingsBotCapabilities as never,
     managedEntitiesService as never,
     manualModerationService as never,
     managedBroadcastService as never,
@@ -876,37 +920,24 @@ describe('AdminSettingsService chat rules', () => {
     expect(
       legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings,
     ).toHaveBeenCalledWith(expect.objectContaining({ antiSpamEnabled: false }));
-    const settingsUpsert = prisma.chat.upsert.mock.calls.find(
+    const chatUpsert = prisma.chat.upsert.mock.calls.find(
       ([args]) => args?.where?.id === 'chat-1',
     )?.[0];
-    expect(settingsUpsert).toEqual(
+    expect(chatUpsert).toEqual(
       expect.objectContaining({
         where: { id: 'chat-1' },
         create: expect.objectContaining({
           botId: 'bot-1',
           primaryBotId: 'bot-1',
-          settings: {
-            create: expect.objectContaining({
-              antiSpamEnabled: false,
-            }),
-          },
         }),
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: expect.objectContaining({
-                antiSpamEnabled: false,
-              }),
-              create: expect.objectContaining({
-                antiSpamEnabled: false,
-              }),
-            },
-          },
-        }),
+        update: { catalogKind: 'MANAGED' },
       }),
     );
-    expect(settingsUpsert?.update).not.toHaveProperty('botId');
-    expect(settingsUpsert?.update).not.toHaveProperty('primaryBotId');
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
+      expect.objectContaining({ antiSpamEnabled: false }),
+    );
+    expect(chatUpsert?.update).not.toHaveProperty('botId');
+    expect(chatUpsert?.update).not.toHaveProperty('primaryBotId');
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: {
         chatId: 'chat-1',
@@ -918,13 +949,131 @@ describe('AdminSettingsService chat rules', () => {
         },
       },
     });
-    expect(prisma.$transaction).toHaveBeenCalledWith([expect.any(Promise), expect.any(Promise)]);
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(legacyAdminService.refreshChatSettingsExecutionReadiness).toHaveBeenCalledWith(
       'chat-1',
       expect.objectContaining({ antiSpamEnabled: false }),
     );
     expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
+  });
+
+  it('checks every newly enabled capability before writing chat settings', async () => {
+    const { legacyAdminService, prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({ antiSpamEnabled: false }),
+    });
+
+    await service.updateSettings('chat-1', user as never, { antiSpamEnabled: true });
+
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).toHaveBeenCalledWith('chat-1', [
+      { permission: 'write', featureKeys: ['antiSpamEnabled'] },
+      { permission: 'add_remove_members', featureKeys: ['antiSpamEnabled'] },
+    ]);
+    expect(legacyAdminService.refreshChatSettingsExecutionReadiness).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ antiSpamEnabled: true }),
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('tunnels an explicit force-live capability recheck only for a guarded transition', async () => {
+    const { legacyAdminService, service } = createService({
+      currentSettings: createPersistedChatSettings({ nightModeEnabled: false }),
+    });
+
+    await service.updateSettings('chat-1', user as never, { nightModeEnabled: true }, 'miniapp', {
+      forceLiveBotCapabilityCheck: true,
+    });
+
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).toHaveBeenCalledWith(
+      'chat-1',
+      [{ permission: 'write', featureKeys: ['nightModeEnabled'] }],
+      { forceLive: true },
+    );
+  });
+
+  it('does not write or resolve an assignment when capability preflight rejects enablement', async () => {
+    const { legacyAdminService, prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({ nightModeEnabled: false }),
+    });
+    legacyAdminService.assertChatSettingsBotCapabilities.mockRejectedValueOnce(
+      new BotCapabilityRequiredException({
+        missingPermissions: ['write'],
+        featureKeys: ['nightModeEnabled'],
+        checkedAt: '2026-08-30T10:00:00.000Z',
+      }),
+    );
+
+    await expect(
+      service.updateSettings('chat-1', user as never, { nightModeEnabled: true }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BOT_CAPABILITY_REQUIRED',
+        missingPermissions: ['write'],
+        featureKeys: ['nightModeEnabled'],
+      }),
+    });
+
+    expect(legacyAdminService.resolveChatSettingsWriteBotAssignmentData).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not recheck a capability that was already enabled', async () => {
+    const { legacyAdminService, service } = createService({
+      currentSettings: createPersistedChatSettings({ antiSpamEnabled: true }),
+    });
+
+    await service.updateSettings('chat-1', user as never, { antiSpamEnabled: true });
+
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
+  });
+
+  it('guards required-subscription activation derived from channel ids without a raw boolean', async () => {
+    const { legacyAdminService, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        requiredSubscriptionEnabled: false,
+        requiredSubscriptionChannelIds: [],
+      }),
+    });
+
+    await service.updateSettings('chat-1', user as never, {
+      requiredSubscriptionChannelIds: ['channel-1'],
+    });
+
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).toHaveBeenCalledWith('chat-1', [
+      {
+        permission: 'write',
+        featureKeys: ['requiredSubscriptionEnabled', 'requiredSubscriptionChannelIds'],
+      },
+    ]);
+  });
+
+  it('does not guard an attempted master toggle that normalization keeps disabled', async () => {
+    const { legacyAdminService, service } = createService({
+      currentSettings: createPersistedChatSettings({ invitationAccessEnabled: false }),
+    });
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      invitationAccessEnabled: true,
+    });
+
+    expect(result.invitationAccessEnabled).toBe(false);
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
+  });
+
+  it('rejects a concurrent single-chat settings revision without writing an audit row', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({ antiSpamEnabled: false }),
+    });
+    prisma.chatSettings.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      service.updateSettings('chat-1', user as never, { antiSpamEnabled: false }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'CHAT_SETTINGS_CONCURRENT_UPDATE' }),
+    });
+
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('preserves Publik-owned chat comment settings on Major settings writes', async () => {
@@ -949,20 +1098,11 @@ describe('AdminSettingsService chat rules', () => {
       commentsAllEnabled: false,
       commentsChatBroadcastsEnabled: true,
     });
-    const settingsUpsert = prisma.chat.upsert.mock.calls.find(
-      ([args]) => args?.where?.id === 'chat-1',
-    )?.[0];
-    const updatePayload = settingsUpsert?.update?.settings?.upsert?.update;
+    const updatePayload = findChatSettingsWritePayload(prisma);
     expect(updatePayload).not.toHaveProperty('commentsEnabled');
     expect(updatePayload).not.toHaveProperty('commentsAdminsEnabled');
     expect(updatePayload).not.toHaveProperty('commentsAllEnabled');
     expect(updatePayload).not.toHaveProperty('commentsChatBroadcastsEnabled');
-    expect(settingsUpsert?.update?.settings?.upsert?.create).toMatchObject({
-      commentsEnabled: false,
-      commentsAdminsEnabled: false,
-      commentsAllEnabled: false,
-      commentsChatBroadcastsEnabled: false,
-    });
   });
 
   it('keeps UPDATE_SETTINGS audit metadata bounded and excludes bot speech media content', async () => {
@@ -1041,8 +1181,7 @@ describe('AdminSettingsService chat rules', () => {
       antiSpamEnabled: false,
     });
 
-    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
-    expect(upsert.update.settings.upsert.update).toEqual(
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
       expect.objectContaining({
         duplicatePhotoEnabled: true,
         duplicatePhotoMatchPreset: 'MINOR_EDITS',
@@ -1070,8 +1209,7 @@ describe('AdminSettingsService chat rules', () => {
       antiSpamEnabled: false,
     });
 
-    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
-    expect(upsert.update.settings.upsert.update).toEqual(
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
       expect.objectContaining({
         profanitySensitivity: 'STRICT',
       }),
@@ -1097,8 +1235,7 @@ describe('AdminSettingsService chat rules', () => {
       antiSpamEnabled: false,
     });
 
-    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
-    expect(upsert.update.settings.upsert.update).toEqual(
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
       expect.objectContaining({
         karavanStorefrontEnabled: true,
       }),
@@ -1136,26 +1273,12 @@ describe('AdminSettingsService chat rules', () => {
         requiredSubscriptionExpiresAt: '',
       }),
     );
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
       expect.objectContaining({
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-                requiredSubscriptionButtonText: 'Подписаться',
-                requiredSubscriptionExpiresAt: '',
-              }),
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-                requiredSubscriptionButtonText: 'Подписаться',
-                requiredSubscriptionExpiresAt: '',
-              }),
-            },
-          },
-        }),
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionButtonText: 'Подписаться',
+        requiredSubscriptionExpiresAt: '',
       }),
     );
   });
@@ -1177,24 +1300,11 @@ describe('AdminSettingsService chat rules', () => {
     expect(result.requiredSubscriptionEnabled).toBe(false);
     expect(result.requiredSubscriptionChannelIds).toEqual([]);
     expect(result.requiredSubscriptionExpiresAt).toBe('');
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
       expect.objectContaining({
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: expect.objectContaining({
-                requiredSubscriptionEnabled: false,
-                requiredSubscriptionChannelIds: [],
-                requiredSubscriptionExpiresAt: '',
-              }),
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: false,
-                requiredSubscriptionChannelIds: [],
-                requiredSubscriptionExpiresAt: '',
-              }),
-            },
-          },
-        }),
+        requiredSubscriptionEnabled: false,
+        requiredSubscriptionChannelIds: [],
+        requiredSubscriptionExpiresAt: '',
       }),
     );
   });
@@ -1603,37 +1713,24 @@ describe('AdminSettingsService chat rules', () => {
     );
     expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith('chat-1');
     expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith('chat-2');
-    const targetSettingsUpsert = prisma.chat.upsert.mock.calls.find(
+    const targetChatUpsert = prisma.chat.upsert.mock.calls.find(
       ([args]) => args?.where?.id === 'chat-2',
     )?.[0];
-    expect(targetSettingsUpsert).toEqual(
+    expect(targetChatUpsert).toEqual(
       expect.objectContaining({
         where: { id: 'chat-2' },
         create: expect.objectContaining({
           botId: 'bot-1',
           primaryBotId: 'bot-1',
-          settings: {
-            create: expect.objectContaining({
-              antiSpamEnabled: false,
-            }),
-          },
         }),
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: expect.objectContaining({
-                antiSpamEnabled: false,
-              }),
-              create: expect.objectContaining({
-                antiSpamEnabled: false,
-              }),
-            },
-          },
-        }),
+        update: { catalogKind: 'MANAGED' },
       }),
     );
-    expect(targetSettingsUpsert?.update).not.toHaveProperty('botId');
-    expect(targetSettingsUpsert?.update).not.toHaveProperty('primaryBotId');
+    expect(findChatSettingsWritePayload(prisma, 'chat-2')).toEqual(
+      expect.objectContaining({ antiSpamEnabled: false }),
+    );
+    expect(targetChatUpsert?.update).not.toHaveProperty('botId');
+    expect(targetChatUpsert?.update).not.toHaveProperty('primaryBotId');
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: {
@@ -1660,6 +1757,256 @@ describe('AdminSettingsService chat rules', () => {
     expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(['chat-1', 'chat-2']);
   });
 
+  it('preflights every bulk target before starting any settings transaction', async () => {
+    const { legacyAdminService, prisma, service } = createService({
+      applyTargetChats: [
+        createChatSummary({ id: 'chat-1' }),
+        createChatSummary({ id: 'chat-2', title: 'Второй чат' }),
+      ],
+    });
+    prisma.chatSettings.findMany.mockResolvedValue([
+      { chatId: 'chat-1', nightModeEnabled: false },
+      { chatId: 'chat-2', nightModeEnabled: false },
+    ]);
+    legacyAdminService.assertChatSettingsBotCapabilities.mockImplementation(
+      async (chatId: string) => {
+        if (chatId === 'chat-2') {
+          throw new BotCapabilityRequiredException({
+            missingPermissions: ['write'],
+            featureKeys: ['nightModeEnabled'],
+          });
+        }
+      },
+    );
+
+    await expect(
+      service.applySettingsToAllChats(
+        'chat-1',
+        user as never,
+        chatSettingsSchema.parse({ nightModeEnabled: true }),
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BOT_CAPABILITY_REQUIRED',
+        affectedEntities: [{ id: 'chat-2', title: 'Второй чат' }],
+      }),
+    });
+
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).toHaveBeenCalledWith('chat-1', [
+      { permission: 'write', featureKeys: ['nightModeEnabled'] },
+    ]);
+    expect(legacyAdminService.assertChatSettingsBotCapabilities).toHaveBeenCalledWith('chat-2', [
+      { permission: 'write', featureKeys: ['nightModeEnabled'] },
+    ]);
+    expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+  });
+
+  it('awaits in-flight preflights and stops taking targets after the first blocker', async () => {
+    const targetChats = Array.from({ length: 8 }, (_, index) =>
+      createChatSummary({ id: `chat-${index + 1}`, title: `Чат ${index + 1}` }),
+    );
+    const { legacyAdminService, prisma, service } = createService({
+      applyTargetChats: targetChats,
+    });
+    prisma.chatSettings.findMany.mockResolvedValue(
+      targetChats.map((chat) => ({ chatId: chat.id, nightModeEnabled: false })),
+    );
+    let releaseInFlight!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      releaseInFlight = resolve;
+    });
+    legacyAdminService.assertChatSettingsBotCapabilities.mockImplementation(
+      async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          throw new BotCapabilityRequiredException({
+            missingPermissions: ['write'],
+            featureKeys: ['nightModeEnabled'],
+          });
+        }
+        if (chatId === 'chat-2') await inFlight;
+      },
+    );
+
+    let settled = false;
+    const operation = service
+      .applySettingsToAllChats(
+        'chat-1',
+        user as never,
+        chatSettingsSchema.parse({ nightModeEnabled: true }),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseInFlight();
+    await expect(operation).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'BOT_CAPABILITY_REQUIRED' }),
+    });
+
+    const checkedChatIds = legacyAdminService.assertChatSettingsBotCapabilities.mock.calls.map(
+      ([chatId]) => chatId,
+    );
+    expect(checkedChatIds).not.toContain('chat-7');
+    expect(checkedChatIds).not.toContain('chat-8');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not schedule a duplicate bot snapshot refresh after successful bulk preflight', async () => {
+    const { legacyAdminService, prisma, service } = createService({
+      applyTargetChats: [
+        createChatSummary({ id: 'chat-1' }),
+        createChatSummary({ id: 'chat-2', title: 'Второй чат' }),
+      ],
+    });
+    prisma.chatSettings.findMany.mockResolvedValue([
+      { chatId: 'chat-1', nightModeEnabled: false },
+      { chatId: 'chat-2', nightModeEnabled: false },
+    ]);
+
+    await service.applySettingsToAllChats(
+      'chat-1',
+      user as never,
+      chatSettingsSchema.parse({ nightModeEnabled: true }),
+    );
+
+    expect(
+      legacyAdminService.scheduleApplySettingsToAllReadinessRefreshForSettings,
+    ).toHaveBeenCalledWith({
+      chatIds: ['chat-1', 'chat-2'],
+      skipManagedEntityBotRefreshChatIds: ['chat-1', 'chat-2'],
+      shouldRefreshRequiredSubscription: false,
+      requiredSubscriptionChannelIds: [],
+    });
+  });
+
+  it('aborts bulk writes when a target revision changes during capability preflight', async () => {
+    const { prisma, service } = createService({
+      applyTargetChats: [createChatSummary({ id: 'chat-1' })],
+    });
+    prisma.chatSettings.findMany
+      .mockResolvedValueOnce([
+        {
+          chatId: 'chat-1',
+          nightModeEnabled: false,
+          updatedAt: new Date('2026-08-30T10:00:00.000Z'),
+        },
+      ])
+      .mockResolvedValueOnce([
+        { chatId: 'chat-1', updatedAt: new Date('2026-08-30T10:01:00.000Z') },
+      ]);
+
+    await expect(
+      service.applySettingsToAllChats(
+        'chat-1',
+        user as never,
+        chatSettingsSchema.parse({ nightModeEnabled: true }),
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'CHAT_SETTINGS_CONCURRENT_UPDATE',
+        partialApplied: false,
+        appliedChatIds: [],
+      }),
+    });
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('awaits in-flight bulk writes and stops taking targets after the first CAS conflict', async () => {
+    const targetChats = Array.from({ length: 8 }, (_, index) =>
+      createChatSummary({ id: `chat-${index + 1}`, title: `Чат ${index + 1}` }),
+    );
+    const { legacyAdminService, nightModeTransitionScheduler, prisma, service } = createService({
+      applyTargetChats: targetChats,
+    });
+    const baselineRows = targetChats.map((chat) => ({
+      chatId: chat.id,
+      antiSpamEnabled: false,
+      updatedAt: new Date('2026-08-30T10:00:00.000Z'),
+    }));
+    prisma.chatSettings.findMany.mockResolvedValue(baselineRows);
+    let releaseInFlight!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      releaseInFlight = resolve;
+    });
+    prisma.chatSettings.updateMany.mockImplementation(
+      async (args: { where: { chatId: string } }) => {
+        if (args.where.chatId === 'chat-1') return { count: 0 };
+        if (args.where.chatId === 'chat-2') await inFlight;
+        return { count: 1 };
+      },
+    );
+
+    let settled = false;
+    const operation = service
+      .applySettingsToAllChats(
+        'chat-1',
+        user as never,
+        chatSettingsSchema.parse({ antiSpamEnabled: false }),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseInFlight();
+    const error = (await operation.catch((caught: unknown) => caught)) as { response: any };
+
+    expect(error.response).toMatchObject({
+      code: 'CHAT_SETTINGS_CONCURRENT_UPDATE',
+      partialApplied: true,
+      appliedCount: expect.any(Number),
+    });
+    expect(error.response.appliedChatIds).not.toContain('chat-7');
+    expect(error.response.appliedChatIds).not.toContain('chat-8');
+    const attemptedChatIds = prisma.chatSettings.updateMany.mock.calls.map(
+      ([args]) => args.where.chatId,
+    );
+    expect(attemptedChatIds).not.toContain('chat-7');
+    expect(attemptedChatIds).not.toContain('chat-8');
+    expect(
+      legacyAdminService.scheduleApplySettingsToAllReadinessRefreshForSettings,
+    ).toHaveBeenCalledWith(expect.objectContaining({ chatIds: error.response.appliedChatIds }));
+    expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(
+      error.response.appliedChatIds,
+    );
+  });
+
+  it('bounds partial conflict ids while reporting the full applied count', async () => {
+    const targetChats = Array.from({ length: 40 }, (_, index) =>
+      createChatSummary({ id: `chat-${index + 1}`, title: `Чат ${index + 1}` }),
+    );
+    const { prisma, service } = createService({ applyTargetChats: targetChats });
+    const baselineRows = targetChats.map((chat) => ({
+      chatId: chat.id,
+      antiSpamEnabled: false,
+      updatedAt: new Date('2026-08-30T10:00:00.000Z'),
+    }));
+    prisma.chatSettings.findMany.mockResolvedValue(baselineRows);
+    prisma.chatSettings.updateMany.mockImplementation(
+      async (args: { where: { chatId: string } }) => ({
+        count: args.where.chatId === 'chat-25' ? 0 : 1,
+      }),
+    );
+
+    const error = (await service
+      .applySettingsToAllChats(
+        'chat-1',
+        user as never,
+        chatSettingsSchema.parse({ antiSpamEnabled: false }),
+      )
+      .catch((caught: unknown) => caught)) as { response: any };
+
+    expect(error.response.code).toBe('CHAT_SETTINGS_CONCURRENT_UPDATE');
+    expect(error.response.appliedCount).toBeGreaterThan(20);
+    expect(error.response.appliedChatIds).toHaveLength(20);
+  });
+
   it('does not copy Publik-owned chat comments during Major bulk settings apply', async () => {
     const { prisma, service } = createService({
       applyTargetChats: [createChatSummary({ id: 'chat-2', title: 'Второй чат' })],
@@ -1679,15 +2026,8 @@ describe('AdminSettingsService chat rules', () => {
 
     await service.applySettingsToAllChats('chat-1', user as never, sourceSettings);
 
-    const targetSettingsUpsert = prisma.chat.upsert.mock.calls.find(
-      ([args]) => args?.where?.id === 'chat-2',
-    )?.[0];
-    const updatePayload = targetSettingsUpsert?.update?.settings?.upsert?.update;
-    expect(updatePayload).not.toHaveProperty('commentsEnabled');
-    expect(updatePayload).not.toHaveProperty('commentsAdminsEnabled');
-    expect(updatePayload).not.toHaveProperty('commentsAllEnabled');
-    expect(updatePayload).not.toHaveProperty('commentsChatBroadcastsEnabled');
-    expect(targetSettingsUpsert?.update?.settings?.upsert?.create).toMatchObject({
+    const updatePayload = findChatSettingsWritePayload(prisma, 'chat-2');
+    expect(updatePayload).toMatchObject({
       commentsEnabled: false,
       commentsAdminsEnabled: false,
       commentsAllEnabled: false,
@@ -1716,10 +2056,7 @@ describe('AdminSettingsService chat rules', () => {
 
     await service.applySettingsToAllChats('chat-1', user as never, legacyBody);
 
-    const targetSettingsUpsert = prisma.chat.upsert.mock.calls.find(
-      ([args]) => args?.where?.id === 'chat-2',
-    )?.[0];
-    expect(targetSettingsUpsert?.update.settings.upsert.update).toEqual(
+    expect(findChatSettingsWritePayload(prisma, 'chat-2')).toEqual(
       expect.objectContaining({
         antiSpamEnabled: false,
         profanitySensitivity: 'STRICT',
@@ -1753,25 +2090,11 @@ describe('AdminSettingsService chat rules', () => {
     expect(legacyAdminService.applySettingsSectionToAllChats).not.toHaveBeenCalled();
     expect(legacyAdminService.applySettingsToAllChats).not.toHaveBeenCalled();
     expect(legacyAdminService.getSettings).not.toHaveBeenCalled();
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    expect(findChatSettingsWritePayload(prisma, 'chat-2')).toEqual(
       expect.objectContaining({
-        where: { id: 'chat-2' },
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: expect.objectContaining({
-                linkPolicy: 'BLOCKLIST_ONLY',
-                linkBotMessageEnabled: true,
-                linkBotMessageText: 'Ссылки нельзя.',
-              }),
-              create: expect.objectContaining({
-                linkPolicy: 'BLOCKLIST_ONLY',
-                linkBotMessageEnabled: true,
-                linkBotMessageText: 'Ссылки нельзя.',
-              }),
-            },
-          },
-        }),
+        linkPolicy: 'BLOCKLIST_ONLY',
+        linkBotMessageEnabled: true,
+        linkBotMessageText: 'Ссылки нельзя.',
       }),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -1869,31 +2192,17 @@ describe('AdminSettingsService chat rules', () => {
     });
 
     expect(result.updatedChats).toBe(1);
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    const writePayload = findChatSettingsWritePayload(prisma, 'chat-2');
+    expect(writePayload).toEqual(
       expect.objectContaining({
-        where: { id: 'chat-2' },
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-              }),
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-              }),
-            },
-          },
-        }),
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
       }),
     );
-    const updatePayload = prisma.chat.upsert.mock.calls[0]?.[0].update.settings.upsert.update;
-    const createPayload = prisma.chat.upsert.mock.calls[0]?.[0].update.settings.upsert.create;
-    expect(updatePayload).not.toHaveProperty('requiredSubscriptionDurationDays');
-    expect(updatePayload).not.toHaveProperty('requiredSubscriptionExpiresAt');
-    expect(createPayload).not.toHaveProperty('requiredSubscriptionDurationDays');
-    expect(createPayload).not.toHaveProperty('requiredSubscriptionExpiresAt');
+    expect(writePayload).toMatchObject({
+      requiredSubscriptionDurationDays: 7,
+      requiredSubscriptionExpiresAt: '',
+    });
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-2',

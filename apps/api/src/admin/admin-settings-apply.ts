@@ -10,7 +10,7 @@ import {
   type ChatSettings,
   type ChatSummary,
 } from '@maxim/contracts';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -30,9 +30,16 @@ import {
   DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   omitPublisherOwnedChatSettings,
 } from './publisher-owned-chat-settings';
+import {
+  CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
+  resolveChatSettingsBotCapabilityRequirements,
+  type ChatSettingsBotCapabilityRequirement,
+} from './chat-settings-bot-capability';
+import { BotCapabilityRequiredException } from './bot-capability-required.error';
 
 type SettingsApplyReadinessRefresh = {
   chatIds: readonly string[];
+  skipManagedEntityBotRefreshChatIds?: readonly string[];
   shouldRefreshRequiredSubscription: boolean;
   requiredSubscriptionChannelIds: readonly string[];
 };
@@ -102,6 +109,17 @@ export async function applySettingsToAllChats(params: {
     chatId: string,
   ) => Promise<ResolvedBotAssignmentData> | ResolvedBotAssignmentData;
   assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<ChatSettings | void>;
+  assertBotCapabilities: (
+    chatId: string,
+    requirements: readonly ChatSettingsBotCapabilityRequirement[],
+  ) => Promise<void>;
+  recordConcurrentWriteConflict: (params: {
+    sourceChatId: string;
+    conflictChatId: string | null;
+    appliedCount: number;
+    appliedChatIds: readonly string[];
+  }) => void;
+  onPartialApplied: (chatIds: readonly string[]) => Promise<void>;
   isRequiredSubscriptionCurrentlyActive: (settings: ChatSettings) => boolean;
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
   getCurrentSourceSettings?: () => Promise<
@@ -186,90 +204,254 @@ export async function applySettingsToAllChats(params: {
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   };
 
+  const capabilityRelevantUpdate = Object.keys(majorSettingsUpdatePayload).some((key) =>
+    Object.hasOwn(CHAT_SETTINGS_BOT_CAPABILITY_SELECT, key) ||
+    key === 'requiredSubscriptionChannelIds',
+  );
+  const capabilityPreflightConfirmedChatIds = new Set<string>();
+  let writeBaselineByChatId = new Map<string, Date>();
+  if (capabilityRelevantUpdate) {
+    const currentRows = await params.prisma.chatSettings.findMany({
+      where: { chatId: { in: appliedChatIds } },
+      select: { chatId: true, updatedAt: true, ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT },
+    });
+    const currentByChatId = new Map(currentRows.map((row) => [row.chatId, row]));
+    const targetByChatId = new Map(targetChats.map((chat) => [chat.id, chat]));
+    let firstPreflightError: unknown = null;
+    await mapWithConcurrencyLimit(
+      appliedChatIds,
+      APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
+      async (chatId) => {
+        if (firstPreflightError) {
+          return;
+        }
+        const current = {
+          ...DEFAULT_CHAT_SETTINGS,
+          ...(currentByChatId.get(chatId) ?? {}),
+        } as ChatSettings;
+        const next = { ...current, ...majorSettingsUpdatePayload } as ChatSettings;
+        const requirements = resolveChatSettingsBotCapabilityRequirements({
+          current,
+          next,
+          requestedSettings: majorSettingsUpdatePayload,
+        });
+        if (requirements.length > 0) {
+          try {
+            await params.assertBotCapabilities(chatId, requirements);
+            capabilityPreflightConfirmedChatIds.add(chatId);
+          } catch (error: unknown) {
+            if (!firstPreflightError) {
+              const targetChat = targetByChatId.get(chatId);
+              firstPreflightError =
+                error instanceof BotCapabilityRequiredException && targetChat
+                  ? new BotCapabilityRequiredException({
+                      missingPermissions: error.missingPermissions,
+                      featureKeys: error.featureKeys,
+                      checkedAt: error.checkedAt,
+                      blockerCode: error.blockerCode,
+                      stale: error.stale,
+                      canRecheck: error.canRecheck,
+                      affectedEntities: [{ id: targetChat.id, title: targetChat.title }],
+                    })
+                  : error;
+            }
+          }
+        }
+      },
+    );
+    if (firstPreflightError) {
+      throw firstPreflightError;
+    }
+    const refreshedRows = await params.prisma.chatSettings.findMany({
+      where: { chatId: { in: appliedChatIds } },
+      select: { chatId: true, updatedAt: true },
+    });
+    const initialRevisionByChatId = new Map(
+      currentRows.map((row) => [row.chatId, row.updatedAt]),
+    );
+    writeBaselineByChatId = new Map(
+      refreshedRows.map((row) => [row.chatId, row.updatedAt]),
+    );
+    if (
+      appliedChatIds.some(
+        (chatId) =>
+          initialRevisionByChatId.get(chatId)?.getTime() !==
+          writeBaselineByChatId.get(chatId)?.getTime(),
+      )
+    ) {
+      params.recordConcurrentWriteConflict({
+        sourceChatId: params.sourceChatId,
+        conflictChatId: null,
+        appliedCount: 0,
+        appliedChatIds: [],
+      });
+      throw settingsApplyRevisionConflict(undefined, []);
+    }
+  } else {
+    const currentRows = await params.prisma.chatSettings.findMany({
+      where: { chatId: { in: appliedChatIds } },
+      select: { chatId: true, updatedAt: true },
+    });
+    writeBaselineByChatId = new Map(currentRows.map((row) => [row.chatId, row.updatedAt]));
+  }
+
+  const successfullyAppliedChatIds = new Set<string>();
+  let firstWriteError: unknown = null;
+  let conflictChatId: string | null = null;
   await mapWithConcurrencyLimit(
     appliedChatIds,
     APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
     async (chatId) => {
-      const botAssignmentData = await params.resolveBotAssignmentData(chatId);
-      const currentTargetSettings =
-        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
-          ? await params.prisma.chatSettings.findUnique({
-              where: { chatId },
-              select: { botSpeechMedia: true },
-            })
-          : null;
-      const scopedBotSpeechMedia =
-        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
-          ? mergeBotSpeechMediaForKeys(
-              currentTargetSettings?.botSpeechMedia as ChatSettings['botSpeechMedia'] | undefined,
-              normalizedSettings.botSpeechMedia,
-              botSpeechMediaKeys,
-            )
-          : normalizedSettings.botSpeechMedia;
-      const updatePayloadForChat = {
-        ...majorSettingsUpdatePayload,
-        ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
-          ? { botSpeechMedia: scopedBotSpeechMedia }
-          : {}),
-      };
-      const createPayloadForChat = {
-        ...majorSettingsCreatePayload,
-        ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
-          ? { botSpeechMedia: scopedBotSpeechMedia }
-          : {}),
-      };
-      await params.prisma.$transaction([
-        params.prisma.chat.upsert({
-          where: { id: chatId },
-          create: {
-            id: chatId,
-            title: `Chat ${chatId}`,
-            entityType: ChatEntityType.CHAT,
-            catalogKind: ChatCatalogKind.MANAGED,
-            ...botAssignmentData,
-            settings: {
+      if (firstWriteError) {
+        return;
+      }
+      try {
+        const botAssignmentData = await params.resolveBotAssignmentData(chatId);
+        const currentTargetSettings =
+          shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+            ? await params.prisma.chatSettings.findUnique({
+                where: { chatId },
+                select: { botSpeechMedia: true },
+              })
+            : null;
+        const scopedBotSpeechMedia =
+          shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+            ? mergeBotSpeechMediaForKeys(
+                currentTargetSettings?.botSpeechMedia as
+                  | ChatSettings['botSpeechMedia']
+                  | undefined,
+                normalizedSettings.botSpeechMedia,
+                botSpeechMediaKeys,
+              )
+            : normalizedSettings.botSpeechMedia;
+        const updatePayloadForChat = {
+          ...majorSettingsUpdatePayload,
+          ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+            ? { botSpeechMedia: scopedBotSpeechMedia }
+            : {}),
+        };
+        const createPayloadForChat = {
+          ...majorSettingsCreatePayload,
+          ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+            ? { botSpeechMedia: scopedBotSpeechMedia }
+            : {}),
+        };
+        try {
+          await params.prisma.$transaction(async (tx) => {
+            await tx.chat.upsert({
+              where: { id: chatId },
               create: {
-                ...createPayloadForChat,
+                id: chatId,
+                title: `Chat ${chatId}`,
+                entityType: ChatEntityType.CHAT,
+                catalogKind: ChatCatalogKind.MANAGED,
+                ...botAssignmentData,
               },
-            },
-          },
-          update: {
-            catalogKind: ChatCatalogKind.MANAGED,
-            settings: {
-              upsert: {
-                update: {
-                  ...updatePayloadForChat,
-                },
-                create: {
-                  ...createPayloadForChat,
+              update: { catalogKind: ChatCatalogKind.MANAGED },
+            });
+            const baselineUpdatedAt = writeBaselineByChatId.get(chatId);
+            if (baselineUpdatedAt) {
+              const changed = await tx.chatSettings.updateMany({
+                where: { chatId, updatedAt: baselineUpdatedAt },
+                data: updatePayloadForChat,
+              });
+              if (changed.count !== 1) {
+                throw settingsApplyRevisionConflict(chatId, []);
+              }
+            } else {
+              await tx.chatSettings.create({
+                data: { chatId, ...createPayloadForChat },
+              });
+            }
+            await tx.auditLog.create({
+              data: {
+                chatId,
+                actorUserId: params.actorUserId,
+                action: 'APPLY_SETTINGS_TO_ALL_CHATS',
+                payload: {
+                  sourceChatId: params.sourceChatId,
+                  targetChatId: chatId,
+                  source: params.source,
+                  targetMode: target.mode,
+                  ...(target.favoriteTypes.length > 0
+                    ? { favoriteTypes: target.favoriteTypes }
+                    : {}),
+                  ...(filteredSettingKeys.length > 0
+                    ? { settingKeys: filteredSettingKeys }
+                    : {}),
                 },
               },
-            },
-          },
-        }),
-        params.prisma.auditLog.create({
-          data: {
-            chatId,
-            actorUserId: params.actorUserId,
-            action: 'APPLY_SETTINGS_TO_ALL_CHATS',
-            payload: {
-              sourceChatId: params.sourceChatId,
-              targetChatId: chatId,
-              source: params.source,
-              targetMode: target.mode,
-              ...(target.favoriteTypes.length > 0 ? { favoriteTypes: target.favoriteTypes } : {}),
-              ...(filteredSettingKeys.length > 0 ? { settingKeys: filteredSettingKeys } : {}),
-            },
-          },
-        }),
-      ]);
-
-      await params.chatContextCache.invalidate(chatId);
+            });
+          });
+        } catch (error: unknown) {
+          if ((error as { code?: unknown })?.code === 'P2002') {
+            throw settingsApplyRevisionConflict(chatId, []);
+          }
+          throw error;
+        }
+        successfullyAppliedChatIds.add(chatId);
+        await params.chatContextCache.invalidate(chatId);
+      } catch (error: unknown) {
+        if (!firstWriteError) {
+          firstWriteError = error;
+          if (
+            error instanceof ConflictException &&
+            (error.getResponse() as { code?: unknown })?.code ===
+              'CHAT_SETTINGS_CONCURRENT_UPDATE'
+          ) {
+            conflictChatId = chatId;
+          }
+        }
+      }
     },
   );
 
+  if (firstWriteError) {
+    const partialAppliedChatIds = appliedChatIds.filter((chatId) =>
+      successfullyAppliedChatIds.has(chatId),
+    );
+    if (partialAppliedChatIds.length > 0) {
+      params.scheduleReadinessRefresh({
+        chatIds: partialAppliedChatIds,
+        ...(capabilityPreflightConfirmedChatIds.size > 0
+          ? {
+              skipManagedEntityBotRefreshChatIds: partialAppliedChatIds.filter((chatId) =>
+                capabilityPreflightConfirmedChatIds.has(chatId),
+              ),
+            }
+          : {}),
+        shouldRefreshRequiredSubscription:
+          shouldValidateRequiredSubscription &&
+          params.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
+        requiredSubscriptionChannelIds: normalizedSettings.requiredSubscriptionChannelIds,
+      });
+      await params.onPartialApplied(partialAppliedChatIds);
+    }
+    if (
+      firstWriteError instanceof ConflictException &&
+      (firstWriteError.getResponse() as { code?: unknown })?.code ===
+        'CHAT_SETTINGS_CONCURRENT_UPDATE'
+    ) {
+      params.recordConcurrentWriteConflict({
+        sourceChatId: params.sourceChatId,
+        conflictChatId,
+        appliedCount: partialAppliedChatIds.length,
+        appliedChatIds: partialAppliedChatIds.slice(0, 20),
+      });
+      throw settingsApplyRevisionConflict(conflictChatId ?? undefined, partialAppliedChatIds);
+    }
+    throw firstWriteError;
+  }
+
   params.scheduleReadinessRefresh({
     chatIds: appliedChatIds,
+    ...(capabilityPreflightConfirmedChatIds.size > 0
+      ? {
+          skipManagedEntityBotRefreshChatIds: appliedChatIds.filter((chatId) =>
+            capabilityPreflightConfirmedChatIds.has(chatId),
+          ),
+        }
+      : {}),
     shouldRefreshRequiredSubscription:
       shouldValidateRequiredSubscription &&
       params.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
@@ -281,6 +463,21 @@ export async function applySettingsToAllChats(params: {
     updatedChats: appliedChatIds.length,
     appliedChatIds,
   };
+}
+
+function settingsApplyRevisionConflict(
+  chatId: string | undefined,
+  appliedChatIds: readonly string[],
+): ConflictException {
+  const boundedAppliedChatIds = appliedChatIds.slice(0, 20);
+  return new ConflictException({
+    code: 'CHAT_SETTINGS_CONCURRENT_UPDATE',
+    message: 'Настройки чатов изменились параллельно. Обновите экран и повторите попытку.',
+    ...(chatId ? { chatId } : {}),
+    partialApplied: appliedChatIds.length > 0,
+    appliedCount: appliedChatIds.length,
+    appliedChatIds: boundedAppliedChatIds,
+  });
 }
 
 export async function applySettingsSectionToAllChats(params: {
