@@ -319,13 +319,13 @@ describe('NightModeTransitionDeliveryService', () => {
         const prepared = await request.prepareAttempt({ botId: 'bot-survivor', job });
         expect(prepared).toEqual(
           expect.objectContaining({
-            text: 'Майор Максимова: Новые сообщения временно не принимаются.',
+            text: '<strong>Майор Максимова</strong>: <em>Новые сообщения временно не принимаются.</em>',
           }),
         );
         expect(prepared).toEqual({
-          text: 'Майор Максимова: Новые сообщения временно не принимаются.',
+          text: '<strong>Майор Максимова</strong>: <em>Новые сообщения временно не принимаются.</em>',
           options: expect.objectContaining({
-            textFormat: 'markdown',
+            textFormat: 'html',
             imagePayload: { token: 'survivor-upload' },
           }),
         });
@@ -356,7 +356,7 @@ describe('NightModeTransitionDeliveryService', () => {
     await expect(
       service.sendClosedNotice(
         createSettings({
-          nightModeBotMessageText: '{bot_character_name}: {night_status}',
+          nightModeBotMessageText: '**{bot_character_name}**: _{night_status}_',
         }),
         {
           startMinutes: 23 * 60,
@@ -384,7 +384,7 @@ describe('NightModeTransitionDeliveryService', () => {
       }),
     );
     expect(botSpeechMediaService.withMediaOptions).toHaveBeenCalledWith(
-      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.objectContaining({ textFormat: 'html' }),
       expect.objectContaining({ fieldKey: 'nightModeBotMessageText' }),
       { botId: 'bot-survivor', sourceTag: 'night_mode_transition' },
     );
@@ -753,7 +753,7 @@ describe('NightModeTransitionDeliveryService', () => {
       'chat-1',
       '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
       expect.objectContaining({
-        textFormat: 'markdown',
+        textFormat: 'html',
         imagePayload: { token: 'image-token' },
       }),
       expect.objectContaining({
@@ -786,6 +786,46 @@ describe('NightModeTransitionDeliveryService', () => {
       startMinutes: 23 * 60,
       endMinutes: 8 * 60,
     });
+  });
+
+  it('falls back to bounded MAX markdown when rendered night-mode HTML expands past the limit', async () => {
+    const sourceText = '&'.repeat(1_000);
+    const maxClient = {
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 'msg-close-bounded-1' }),
+      deleteMessage: jest.fn(),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+    );
+
+    await expect(
+      service.sendClosedNotice(
+        createSettings({ nightModeBotMessageText: sourceText }),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-bounded-1',
+        },
+        createAdapters(),
+      ),
+    ).resolves.toEqual({
+      shouldEnqueueNext: true,
+      messageId: 'msg-close-bounded-1',
+      botId: 'bot-1',
+    });
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      sourceText,
+      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.any(Object),
+    );
   });
 
   it('keeps the accepted close notice id when event persistence fails after send', async () => {
@@ -868,7 +908,7 @@ describe('NightModeTransitionDeliveryService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Чат снова открыт. Можно отправлять сообщения.',
-      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.objectContaining({ textFormat: 'html' }),
       expect.objectContaining({
         trafficClass: 'background',
         actionHealthLane: 'background',

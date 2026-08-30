@@ -323,7 +323,10 @@ test('canonical statistics routes sync query preferences into route state before
     );
     assert.match(
       source,
-      new RegExp(`state: chatId[\\s\\S]*?${stateBuilder}\\(location\\.state, chatId, routeQuery\\)`, 'u'),
+      new RegExp(
+        `state: chatId[\\s\\S]*?${stateBuilder}\\(location\\.state, chatId, routeQuery\\)`,
+        'u',
+      ),
     );
   }
 
@@ -374,11 +377,11 @@ test('all managed detail screens provide authoritative identity to the shared he
 test('chat and channel settings register save and discard leave guards', () => {
   assert.match(
     chatSettingsSource,
-    /const isHeaderSaving =\s*isSavingSettings \|\|\s*isSavingRules \|\|\s*isSavingSpeechStyle \|\|\s*updateRulesAttachMutation\.isPending;/u,
+    /const isHeaderSaving =\s*isSavingSettings \|\|\s*isSavingRules \|\|\s*isPreparingRulesPublish \|\|\s*isSavingSpeechStyle \|\|\s*updateRulesAttachMutation\.isPending;/u,
   );
   assert.match(
     chatSettingsSource,
-    /useChatSettingsWorkspaceLeaveGuard\(\{[\s\S]*?settingsDirty: hasChanges,[\s\S]*?rulesDirty: hasRulesChanges,[\s\S]*?saving: isHeaderSaving \|\| isApplyingSectionToAll,[\s\S]*?saveRules: \(\) => saveRulesDraftNow\(\{ forceButtonErrors: true \}\)/u,
+    /useChatSettingsWorkspaceLeaveGuard\(\{[\s\S]*?settingsDirty: hasChanges,[\s\S]*?rulesDirty: hasRulesChanges,[\s\S]*?saving:\s*isHeaderSaving \|\|\s*isApplyingSectionToAll \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules,[\s\S]*?saveRules: \(\) => saveRulesDraftNow\(\{ forceButtonErrors: true \}\)/u,
   );
   assert.match(
     chatSettingsWorkspaceSource,

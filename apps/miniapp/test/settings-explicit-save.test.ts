@@ -76,7 +76,7 @@ test('rules reset uses the in-app confirmation sheet', () => {
 test('rules autosave keeps draft editors enabled so mobile keyboard focus survives', () => {
   assert.match(
     settingsPageSource,
-    /const isRulesDraftEditingDisabled =\s*isPublishingRules \|\|\s*isResettingPublishedRules \|\|\s*updateRulesAttachMutation\.isPending;/u,
+    /const isRulesDraftEditingDisabled =\s*isPreparingRulesPublish \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules \|\|\s*updateRulesAttachMutation\.isPending;/u,
   );
   assert.match(
     settingsPageSource,
@@ -99,6 +99,26 @@ test('rules autosave keeps draft editors enabled so mobile keyboard focus surviv
     settingsPageSource.indexOf('/>', rulesButtonsSheetStart),
   );
   assert.match(rulesButtonsSheetSource, /disabled=\{isRulesDraftEditingDisabled\}/u);
+});
+
+test('rules expose an explicit save action and commit successful saves to query cache', () => {
+  assert.match(settingsPageSource, /async function handleSaveRulesDraft\(\)/u);
+  assert.match(
+    settingsPageSource,
+    /queryClient\.setQueryData<ChatSettingsScreenResponse \| undefined>\(\s*\['settings-screen', chatId\],[\s\S]*?mergeSavedRulesIntoSettingsScreen\(current, saved\)/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /className="button button--ghost rules-publish-bar__save"[\s\S]*?handleSaveRulesDraft\(\)[\s\S]*?rulesSaveLabel/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /handleSaveRulesDraft\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\?\.isCurrent\) \{\s*return;\s*\}[\s\S]*?Черновик правил сохранён/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /handlePublishRules\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\.isCurrent\)[\s\S]*?Правила изменились[\s\S]*?return;[\s\S]*?publishRulesMutation\.mutate\(\)/u,
+  );
 });
 
 test('giveaway editors can intercept parent panel close requests', () => {

@@ -97,6 +97,7 @@ import {
   type ResolveRequiredSubscriptionChannelResponse,
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
+  MAX_CHAT_RULES_TEXT_LENGTH,
   inferAllowlistMatchType,
   normalizeMessageLimitsBlockedDomainCandidate,
   normalizeMessageLimitsBlockedWordCandidate,
@@ -185,7 +186,10 @@ import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import {
+  MAX_MESSAGE_TEXT_LENGTH,
+  prepareMarkdownForMaxDelivery,
+} from '../common/max-markdown.util';
 import {
   escapeHtml,
   escapeHtmlAttribute,
@@ -614,7 +618,7 @@ export class AdminChatRulesTextRuntime {
       return null;
     }
 
-    return normalized.slice(0, 2_000);
+    return normalized.length <= MAX_CHAT_RULES_TEXT_LENGTH ? normalized : null;
   }
 
   private async upsertChatRules(chatId: string): Promise<PersistedChatRules> {
@@ -671,15 +675,21 @@ export class AdminChatRulesTextRuntime {
       ? await this.resolveAdminContactFallbackDisplayName(chatId, options.adminContactButtonUrl)
       : null;
 
-    return {
-      text: appendAdminContactMarkdownLinkText(sourceText, {
-        enabled: options.adminContactButtonEnabled,
-        url: options.adminContactButtonUrl,
-        botTokens: this.maxBotTokenValidationSecrets,
-        fallbackDisplayName,
-      }),
-      textFormat: 'markdown',
-    };
+    const markdown = appendAdminContactMarkdownLinkText(sourceText, {
+      enabled: options.adminContactButtonEnabled,
+      url: options.adminContactButtonUrl,
+      botTokens: this.maxBotTokenValidationSecrets,
+      fallbackDisplayName,
+    });
+
+    const prepared = prepareMarkdownForMaxDelivery(markdown);
+    if (!prepared) {
+      throw new BadRequestException(
+        `Текст правил после форматирования слишком длинный. Максимум ${MAX_MESSAGE_TEXT_LENGTH} символов.`,
+      );
+    }
+
+    return prepared;
   }
 
   private async resolveAdminContactFallbackDisplayName(

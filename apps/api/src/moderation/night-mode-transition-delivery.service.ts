@@ -1,5 +1,9 @@
 import { Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
+  MAX_MESSAGE_TEXT_LENGTH,
+  prepareFormattedTextForMaxDelivery,
+} from '../common/max-markdown.util';
+import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxActionDispatchOptions,
@@ -345,7 +349,23 @@ export class NightModeTransitionDeliveryService {
     validateBeforeDispatch?: () => Promise<boolean>;
     onDispatchAttempt: (botId: string | null, startedAt: Date) => void;
   }): Promise<{ messageId: string | null; botId: string | null }> {
-    const baseOptions = this.withMarkdownMessageOptions(params.messageOptions ?? null);
+    const sourceTextFormat = params.messageOptions?.textFormat ?? 'markdown';
+    const prepareMessage = (text: string) => {
+      const prepared = prepareFormattedTextForMaxDelivery(text, sourceTextFormat);
+      if (!prepared) {
+        throw new Error(
+          `MAX night mode notice exceeds ${MAX_MESSAGE_TEXT_LENGTH} characters after formatting`,
+        );
+      }
+      return prepared;
+    };
+    const baseMessage = prepareMessage(params.messageText);
+    const buildMessageOptions = (
+      textFormat: MaxSendMessageOptions['textFormat'],
+    ): MaxSendMessageOptions => ({
+      ...(params.messageOptions ?? {}),
+      textFormat,
+    });
     const media = this.botSpeechMediaService.resolveMedia(
       params.mediaSettings,
       params.mediaFieldKey,
@@ -359,19 +379,26 @@ export class NightModeTransitionDeliveryService {
       return this.maxRoutedPublicationService.publish({
         entityId: params.chatId,
         logicalIdempotencyKey: params.logicalIdempotencyKey,
-        text: params.messageText,
-        options: baseOptions,
+        text: baseMessage.text,
+        options: buildMessageOptions(baseMessage.textFormat),
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
         ignoreFailureMetricStatuses: [403, 404],
-        prepareAttempt: async ({ botId }) => ({
-          text: params.resolveMessageText?.(botId) ?? params.messageText,
-          options: await this.botSpeechMediaService.withMediaOptions(baseOptions, media, {
-            botId,
-            sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
-          }),
-        }),
+        prepareAttempt: async ({ botId }) => {
+          const message = prepareMessage(params.resolveMessageText?.(botId) ?? params.messageText);
+          return {
+            text: message.text,
+            options: await this.botSpeechMediaService.withMediaOptions(
+              buildMessageOptions(message.textFormat),
+              media,
+              {
+                botId,
+                sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+              },
+            ),
+          };
+        },
         onDispatchAttempt: ({ botId }) => {
           params.onDispatchAttempt(botId, new Date());
         },
@@ -382,17 +409,17 @@ export class NightModeTransitionDeliveryService {
     }
 
     const botId = await params.adapters.resolveBotId(params.chatId);
+    const message = prepareMessage(params.resolveMessageText?.(botId) ?? params.messageText);
     const messageOptionsWithMedia = await this.botSpeechMediaService.withMediaOptions(
-      baseOptions,
+      buildMessageOptions(message.textFormat),
       media,
       { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
     );
-    const messageText = params.resolveMessageText?.(botId) ?? params.messageText;
     const dispatchAttemptStartedAt = new Date();
     params.onDispatchAttempt(botId, dispatchAttemptStartedAt);
     const sent = await this.maxClient.sendMessage(
       params.chatId,
-      messageText,
+      message.text,
       messageOptionsWithMedia,
       {
         ...this.buildRequestOptions(botId),
@@ -624,13 +651,6 @@ export class NightModeTransitionDeliveryService {
       sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
       ignoreFailureMetricStatuses: [403, 404],
       ...(botId ? { botId } : {}),
-    };
-  }
-
-  private withMarkdownMessageOptions(options: MaxSendMessageOptions | null): MaxSendMessageOptions {
-    return {
-      ...(options ?? {}),
-      textFormat: 'markdown',
     };
   }
 

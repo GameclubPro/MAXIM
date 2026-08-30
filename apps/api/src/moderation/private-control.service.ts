@@ -9,6 +9,8 @@ import type {
 import type { KaravanStorefrontHandoffResponse } from '@maxim/contracts/karavan-storefront';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entity-forwarded-recovery.util';
+import { raceWithTimeout } from '../common/promise-timeout.util';
+import { shouldPreferActiveContentInputForForward } from './private-control-forward-routing';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { AdminService } from '../admin/admin.service';
 import { AdminSettingsService } from '../admin/admin-settings.service';
@@ -22,7 +24,10 @@ import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.s
 import { PrismaService } from '../prisma/prisma.service';
 import { KaravanStorefrontAllowlistService } from '../integrations/karavan-storefront/karavan-storefront-allowlist.service';
 import { RedisCounterService } from './redis-counter.service';
+import type { PrivateSession } from './private-control.types';
 import { PrivateControlService as LegacyPrivateControlService } from './private-control.service.legacy';
+
+const FORWARDED_RECOVERY_SESSION_LOOKUP_TIMEOUT_MS = 250;
 
 @Injectable()
 export class PrivateControlService extends LegacyPrivateControlService {
@@ -61,13 +66,31 @@ export class PrivateControlService extends LegacyPrivateControlService {
   }
 
   override handleUpdate(update: MaxUpdate): Promise<void> {
-    if (isManagedEntityForwardedRecoveryMessage(update)) {
-      return this.managedEntityHandshakeService
-        ? this.managedEntityHandshakeService.handleWebhookUpdate(update).then(() => undefined)
-        : Promise.resolve();
-    }
+    return this.runWithUpdateSessionBot(update, async () => {
+      const forwardedRecovery = isManagedEntityForwardedRecoveryMessage(update);
+      const userId = update.message?.senderId?.trim();
+      let preferContentInput = false;
+      if (forwardedRecovery && userId) {
+        try {
+          const session = await raceWithTimeout<PrivateSession | null>({
+            operation: this.loadSession(userId),
+            timeoutMs: FORWARDED_RECOVERY_SESSION_LOOKUP_TIMEOUT_MS,
+            onTimeout: () => null,
+          });
+          preferContentInput = session ? shouldPreferActiveContentInputForForward(session) : false;
+        } catch {
+          // Managed-entity recovery must not depend on optional private-session storage.
+          preferContentInput = false;
+        }
+      }
+      if (forwardedRecovery && !preferContentInput) {
+        return this.managedEntityHandshakeService
+          ? this.managedEntityHandshakeService.handleWebhookUpdate(update).then(() => undefined)
+          : undefined;
+      }
 
-    return this.runWithUpdateSessionBot(update, () => super.handleUpdate(update));
+      return super.handleUpdate(update);
+    });
   }
 
   override handleBotStarted(update: MaxUpdate): Promise<void> {

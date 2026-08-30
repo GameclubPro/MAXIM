@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  MAX_CHAT_RULES_TEXT_LENGTH,
   chatRulesSchema,
   chatSettingsScreenResponseSchema,
   chatSettingsSchema,
@@ -9,6 +10,8 @@ import {
 } from '@maxim/contracts';
 import {
   buildRulesTextFromSettingsScreen,
+  mergeSavedRulesIntoSettingsScreen,
+  runRulesSaveAttempt,
   serializeRulesDraftPayload,
   shouldHydrateRulesDraftFromServer,
 } from '../src/pages/settings-rules-state';
@@ -96,6 +99,55 @@ test('shouldHydrateRulesDraftFromServer accepts fresh server state when draft wa
   );
 });
 
+test('mergeSavedRulesIntoSettingsScreen makes a successful save the new server snapshot', () => {
+  const current = createScreen({ rules: createRules({ text: 'Старый черновик' }) });
+  const saved = createRules({ text: 'Сохранённый черновик' });
+
+  const next = mergeSavedRulesIntoSettingsScreen(current, saved);
+
+  assert.equal(next?.rules.text, 'Сохранённый черновик');
+  assert.equal(next?.settings, current.settings);
+  assert.equal(mergeSavedRulesIntoSettingsScreen(undefined, saved), undefined);
+});
+
+test('runRulesSaveAttempt detects edits made while a save is in flight', async () => {
+  const submittedDraft = createRules({ text: 'Версия A' });
+  const savedDraft = createRules({ text: 'Версия A' });
+  let currentDraft = submittedDraft;
+  let resolveSave: (saved: ChatRules) => void = () => undefined;
+  const save = new Promise<ChatRules>((resolve) => {
+    resolveSave = resolve;
+  });
+
+  const attemptPromise = runRulesSaveAttempt({
+    submittedDraft,
+    save: () => save,
+    getCurrentDraft: () => currentDraft,
+  });
+  currentDraft = createRules({ text: 'Версия B' });
+  resolveSave(savedDraft);
+
+  await assert.doesNotReject(attemptPromise);
+  assert.equal((await attemptPromise)?.isCurrent, false);
+});
+
+test('runRulesSaveAttempt accepts the submitted or normalized saved draft', async () => {
+  const submittedDraft = {
+    ...createRules({ text: 'Версия A' }),
+    buttonText: ' Кнопка ',
+  };
+  const savedDraft = createRules({ text: 'Версия A', buttonText: 'Кнопка' });
+
+  for (const currentDraft of [submittedDraft, savedDraft]) {
+    const result = await runRulesSaveAttempt({
+      submittedDraft,
+      save: async () => savedDraft,
+      getCurrentDraft: () => currentDraft,
+    });
+    assert.equal(result?.isCurrent, true);
+  }
+});
+
 test('buildRulesTextFromSettingsScreen assembles a publishable draft from active settings', () => {
   const screen = createScreen({
     settings: chatSettingsSchema.parse({
@@ -143,6 +195,46 @@ test('buildRulesTextFromSettingsScreen assembles a publishable draft from active
   assert.match(text, /Пожалуйста, не флудите и не спамьте\./);
   assert.match(text, /Фото сюда отправлять нельзя\./);
   assert.match(text, /Ночью чат работает тише: ограничения действуют с 23:00 до 07:00\./);
+});
+
+test('buildRulesTextFromSettingsScreen uses the full shared rules limit', () => {
+  const channelIds = ['channel-1', 'channel-2', 'channel-3'];
+  const screen = createScreen({
+    settings: chatSettingsSchema.parse({
+      linkPolicy: 'ALERT_ONLY',
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: channelIds,
+      russianProfanityFilterEnabled: true,
+      commercialAdsFilterEnabled: true,
+      antiDuplicateEnabled: true,
+      antiSpamEnabled: true,
+      messageCountLimitEnabled: true,
+      maxMessageLengthEnabled: true,
+      photoMessageCooldownEnabled: true,
+      stickerMessageCooldownEnabled: true,
+      photoMessagesEnabled: false,
+      videoMessagesEnabled: false,
+      fileMessagesEnabled: false,
+      voiceMessagesEnabled: false,
+      phoneNumbersEnabled: false,
+      nightModeEnabled: true,
+      linkWarnEnabled: true,
+      textFiltersMuteEnabled: true,
+      duplicateBanEnabled: true,
+    }),
+    requiredSubscriptionChannels: channelIds.map((id, index) => ({
+      id,
+      title: String.fromCharCode(1040 + index).repeat(520),
+      entityType: 'channel' as const,
+      link: null,
+      participantsCount: null,
+    })),
+  });
+
+  const text = buildRulesTextFromSettingsScreen(screen);
+  assert.ok(text.length > 2_000);
+  assert.ok(text.length <= MAX_CHAT_RULES_TEXT_LENGTH);
+  assert.match(text, /За повторные нарушения бот может/);
 });
 
 test('buildRulesTextFromSettingsScreen describes the selected profanity sensitivity', () => {

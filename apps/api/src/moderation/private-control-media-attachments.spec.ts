@@ -142,6 +142,161 @@ describe('private control media attachments', () => {
     );
   });
 
+  it('extracts media from the linked message of a forwarded post', () => {
+    const update = createAttachmentUpdate([]);
+    const rawMessage = (update.raw as { message: Record<string, unknown> }).message;
+    rawMessage.link = {
+      type: 'forward',
+      message: {
+        text: 'Forwarded caption',
+        attachments: [
+          {
+            type: 'image',
+            payload: {
+              url: 'https://example.test/forwarded.jpg',
+              photo_id: 'forwarded-photo-1',
+            },
+          },
+          {
+            type: 'video',
+            payload: {
+              url: 'https://example.test/forwarded.mp4',
+              video_id: 'forwarded-video-1',
+              mime_type: 'video/mp4',
+            },
+          },
+        ],
+      },
+    };
+
+    expect(extractPrivateFirstImageSourceAttachment(update)).toEqual(
+      expect.objectContaining({
+        kind: 'image',
+        attachment: expect.objectContaining({
+          url: 'https://example.test/forwarded.jpg',
+          photoId: 'forwarded-photo-1',
+        }),
+      }),
+    );
+    expect(extractPrivateFirstVideoSourceAttachment(update)).toEqual(
+      expect.objectContaining({
+        url: 'https://example.test/forwarded.mp4',
+        fileId: 'forwarded-video-1',
+        mimeType: 'video/mp4',
+      }),
+    );
+  });
+
+  it('reads plural forwarded media while excluding reply previews', () => {
+    const update = createAttachmentUpdate([]);
+    const rawMessage = (update.raw as { message: { body: Record<string, unknown> } }).message;
+    rawMessage.body.forwarded_messages = [
+      {
+        type: 'reply',
+        attachments: [
+          {
+            type: 'image',
+            payload: { url: 'https://example.test/hidden-reply.jpg' },
+          },
+        ],
+      },
+      {
+        type: 'forward',
+        attachments: [
+          {
+            type: 'image',
+            payload: {
+              url: 'https://example.test/visible-forward.jpg',
+              photo_id: 'visible-forward-photo',
+            },
+          },
+        ],
+      },
+    ];
+
+    expect(extractPrivateImageSourceAttachments(update)).toEqual([
+      {
+        kind: 'image',
+        attachment: expect.objectContaining({
+          url: 'https://example.test/visible-forward.jpg',
+          photoId: 'visible-forward-photo',
+        }),
+      },
+    ]);
+  });
+
+  it('rejects forwarded attachment traversal beyond the bounded node limit', () => {
+    const update = createAttachmentUpdate([]);
+    const rawMessage = (update.raw as { message: { body: Record<string, unknown> } }).message;
+    rawMessage.body.forwarded_messages = Array.from({ length: 100 }, (_, index) => ({
+      type: 'forward',
+      attachments: [
+        {
+          type: 'image',
+          payload: {
+            url: `https://example.test/forward-${index}.jpg`,
+            photo_id: `forward-photo-${index}`,
+          },
+        },
+      ],
+    }));
+
+    expect(() => extractPrivateImageSourceAttachments(update)).toThrow(
+      'Пересланное сообщение слишком сложное',
+    );
+  });
+
+  it('accepts all media at the forwarded node boundary', () => {
+    const update = createAttachmentUpdate([]);
+    const rawMessage = (update.raw as { message: { body: Record<string, unknown> } }).message;
+    rawMessage.body.forwarded_messages = Array.from({ length: 32 }, (_, index) => ({
+      type: 'forward',
+      attachments: [
+        {
+          type: 'image',
+          payload: {
+            url: `https://example.test/boundary-${index}.jpg`,
+            photo_id: `boundary-photo-${index}`,
+          },
+        },
+      ],
+    }));
+
+    expect(extractPrivateImageSourceAttachments(update)).toHaveLength(32);
+  });
+
+  it('bounds null forward references and direct attachment entries', () => {
+    const nullForwardUpdate = createAttachmentUpdate([]);
+    const nullForwardMessage = (
+      nullForwardUpdate.raw as { message: { body: Record<string, unknown> } }
+    ).message;
+    nullForwardMessage.body.forwarded_messages = [
+      ...Array.from({ length: 64 }, () => null),
+      {
+        type: 'forward',
+        attachments: [
+          {
+            type: 'image',
+            payload: { url: 'https://example.test/after-null-limit.jpg' },
+          },
+        ],
+      },
+    ];
+    expect(() => extractPrivateImageSourceAttachments(nullForwardUpdate)).toThrow(
+      'Пересланное сообщение слишком сложное',
+    );
+
+    const attachmentUpdate = createAttachmentUpdate(
+      Array.from({ length: 257 }, (_, index) => ({
+        type: 'image',
+        payload: { url: `https://example.test/direct-${index}.jpg` },
+      })),
+    );
+    expect(() => extractPrivateImageSourceAttachments(attachmentUpdate)).toThrow(
+      'В сообщении слишком много вложений',
+    );
+  });
+
   it('extracts video attachments and detects video-like files', () => {
     const videoUpdate = createAttachmentUpdate([
       {

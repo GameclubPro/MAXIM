@@ -1,4 +1,9 @@
-import type { ChatRules, ChatSettings, ChatSettingsScreenResponse } from '@maxim/contracts';
+import {
+  MAX_CHAT_RULES_TEXT_LENGTH,
+  type ChatRules,
+  type ChatSettings,
+  type ChatSettingsScreenResponse,
+} from '@maxim/contracts/settings';
 import type { UpdateChatRulesPayload } from '../lib/api/shared-types';
 
 type RulesDraftSerializable = Pick<
@@ -74,6 +79,38 @@ export function shouldHydrateRulesDraftFromServer(params: {
   );
 }
 
+export function mergeSavedRulesIntoSettingsScreen(
+  current: ChatSettingsScreenResponse | undefined,
+  saved: ChatRules,
+): ChatSettingsScreenResponse | undefined {
+  return current ? { ...current, rules: saved } : current;
+}
+
+export async function runRulesSaveAttempt(params: {
+  submittedDraft: ChatRules;
+  save: () => Promise<ChatRules | null>;
+  getCurrentDraft: () => ChatRules | null;
+}): Promise<{ saved: ChatRules; isCurrent: boolean } | null> {
+  const submittedSnapshot = serializeRulesDraftPayload(params.submittedDraft);
+  const saved = await params.save();
+  if (!saved) {
+    return null;
+  }
+
+  const currentDraft = params.getCurrentDraft();
+  if (!currentDraft) {
+    return { saved, isCurrent: false };
+  }
+
+  const currentSnapshot = serializeRulesDraftPayload(currentDraft);
+  return {
+    saved,
+    isCurrent:
+      currentSnapshot === submittedSnapshot ||
+      currentSnapshot === serializeRulesDraftPayload(saved),
+  };
+}
+
 export function buildRulesTextFromSettingsScreen(screen: RulesTextScreenState): string {
   const items = buildRulesTextItems(screen);
   if (items.length === 0) {
@@ -86,7 +123,7 @@ export function buildRulesTextFromSettingsScreen(screen: RulesTextScreenState): 
   for (const [index, item] of items.entries()) {
     const numberedItem = `${index + 1}. ${item}`;
     const candidate = [...lines, ...numberedItems, numberedItem].join('\n');
-    if (candidate.length > 2_000) {
+    if (candidate.length > MAX_CHAT_RULES_TEXT_LENGTH) {
       break;
     }
     numberedItems.push(numberedItem);

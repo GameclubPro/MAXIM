@@ -5,6 +5,8 @@ import {
   broadcastHandoffRequestSchema,
   channelSettingsSchema,
   chatRulesSchema,
+  MAX_BOT_SPEECH_TEXT_LENGTH,
+  MAX_CHAT_RULES_TEXT_LENGTH,
   chatSettingsScreenResponseSchema,
   chatSettingsSchema,
   duplicatePhotoEffectivePolicySchema,
@@ -12,6 +14,7 @@ import {
   sendBroadcastRequestSchema,
   updateChatRulesRequestSchema,
 } from '@maxim/contracts';
+import { MAX_PUBLICATION_TEXT_LENGTH } from '@maxim/contracts/publication';
 
 describe('chatSettingsSchema duplicate flow validation', () => {
   it('normalizes strict HTTP button urls without accepting malformed nested paths', () => {
@@ -72,6 +75,19 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     }
 
     expect(chatSettingsSchema.safeParse({ profanitySensitivity: 'DISABLED' }).success).toBe(false);
+  });
+
+  it('enforces the exported bot-speech text limit', () => {
+    expect(
+      chatSettingsSchema.safeParse({
+        greetingBotMessageText: 'A'.repeat(MAX_BOT_SPEECH_TEXT_LENGTH),
+      }).success,
+    ).toBe(true);
+    expect(
+      chatSettingsSchema.safeParse({
+        greetingBotMessageText: 'A'.repeat(MAX_BOT_SPEECH_TEXT_LENGTH + 1),
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts supported photo duplicate settings and rejects unknown enum values', () => {
@@ -493,6 +509,20 @@ describe('chatSettingsSchema duplicate flow validation', () => {
 });
 
 describe('updateChatRulesRequestSchema button normalization', () => {
+  it('accepts rules up to the same text limit as Publik', () => {
+    expect(MAX_CHAT_RULES_TEXT_LENGTH).toBe(MAX_PUBLICATION_TEXT_LENGTH);
+    expect(
+      updateChatRulesRequestSchema.safeParse({
+        text: 'A'.repeat(MAX_CHAT_RULES_TEXT_LENGTH),
+      }).success,
+    ).toBe(true);
+    expect(
+      updateChatRulesRequestSchema.safeParse({
+        text: 'A'.repeat(MAX_CHAT_RULES_TEXT_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+  });
+
   it('normalizes multi-button rules payloads and keeps legacy fields in sync', () => {
     const result = updateChatRulesRequestSchema.parse({
       text: 'Правила чата',

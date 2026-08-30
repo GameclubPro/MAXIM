@@ -124,6 +124,15 @@ function userMention(name: string, userId = 'user-1'): string {
   return `[${escapeMaxMarkdown(name)}](max://user/${encodeURIComponent(userId)})`;
 }
 
+function userMentionHtml(name: string, userId = 'user-1'): string {
+  const escapedName = name
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+  return `<a href="max://user/${encodeURIComponent(userId)}">${escapedName}</a>`;
+}
+
 function majorExplanation(
   name: string,
   messageStatus: 'удалено' | 'не удалено',
@@ -131,11 +140,11 @@ function majorExplanation(
   subject = 'Сообщение',
 ): string {
   if (reason === 'эта ссылка запрещена настройками чата') {
-    return `${userMention(name)}, сообщение ${messageStatus}: ${reason}. Без самодеятельности.`;
+    return `${userMentionHtml(name)}, сообщение ${messageStatus}: ${reason}. Без самодеятельности.`;
   }
 
   if (subject === 'Объявление') {
-    return `${userMention(name)}, объявление ${messageStatus}. Основание: ${reason}. Исправьте по форме и отправьте снова.`;
+    return `${userMentionHtml(name)}, объявление ${messageStatus}. Основание: ${reason}. Исправьте по форме и отправьте снова.`;
   }
 
   if (
@@ -148,42 +157,42 @@ function majorExplanation(
     reason.includes('номера телефонов') ||
     reason.includes('лимит')
   ) {
-    return `${userMention(name)}, сообщение ${messageStatus}: ${reason}. При следующей отправке учтите ограничение.`;
+    return `${userMentionHtml(name)}, сообщение ${messageStatus}: ${reason}. При следующей отправке учтите ограничение.`;
   }
 
-  return `${userMention(name)}, сообщение ${messageStatus}: ${reason}. Дальше держимся правил.`;
+  return `${userMentionHtml(name)}, сообщение ${messageStatus}: ${reason}. Дальше держимся правил.`;
 }
 
 function duplicateExplanation(name: string, sanction: string): string {
-  return `${userMention(name)}, повтор зафиксирован. ${sanction}`;
+  return `${userMentionHtml(name)}, повтор зафиксирован. ${sanction}`;
 }
 
 function muteNotice(name: string, duration: string): string {
-  return `${userMention(name)}, мут включён на ${duration}. До конца срока новые сообщения будут удаляться.`;
+  return `${userMentionHtml(name)}, мут включён на ${duration}. До конца срока новые сообщения будут удаляться.`;
 }
 
 function permanentBanNotice(name: string, userId = 'user-1'): string {
-  return `${userMention(name, userId)}, бан включён до ручного снятия.`;
+  return `${userMentionHtml(name, userId)}, бан включён до ручного снятия.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
-  return `${userMention(name)}, предупреждение зафиксировано: ${reason}. Повторять не стоит.`;
+  return `${userMentionHtml(name)}, предупреждение зафиксировано: ${reason}. Повторять не стоит.`;
 }
 
 function linkWarnNotice(name: string): string {
-  return `${userMention(name)}, предупреждение зафиксировано: эта ссылка запрещена настройками чата. Дальше без запрещённых ссылок.`;
+  return `${userMentionHtml(name)}, предупреждение зафиксировано: эта ссылка запрещена настройками чата. Дальше без запрещённых ссылок.`;
 }
 
 function editedLinkWarnNotice(name: string): string {
-  return `${userMention(name)}, предупреждение зафиксировано: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.`;
+  return `${userMentionHtml(name)}, предупреждение зафиксировано: добавленная при редактировании ссылка запрещена настройками чата. Правка правила не отменяет.`;
 }
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
-  return `${userMention(name)}, предупреждение зафиксировано. Основание: ${reason}.`;
+  return `${userMentionHtml(name)}, предупреждение зафиксировано. Основание: ${reason}.`;
 }
 
 function messageLimitsBanNotice(name: string, reason: string): string {
-  return `${userMention(name)}, бан включён до ручного снятия. Основание: ${reason}.`;
+  return `${userMentionHtml(name)}, бан включён до ручного снятия. Основание: ${reason}.`;
 }
 
 function expectImmediateDeleteMessage(mockFn: jest.Mock, chatId: string, messageId: string) {

@@ -305,7 +305,7 @@ describe('ModerationService', () => {
         'chat-1',
         nightModeNotice('23:00-08:00', 'Москва'),
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
         }),
         expect.objectContaining({
           trafficClass: 'background',
@@ -677,7 +677,7 @@ describe('ModerationService', () => {
         'chat-1',
         nightModeNotice('23:00-08:00', 'Москва'),
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
         }),
         expect.objectContaining({
           trafficClass: 'background',
@@ -1092,7 +1092,7 @@ describe('ModerationService', () => {
         'chat-1',
         nightModeNotice('23:00-08:00', 'Москва'),
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
         }),
         expect.objectContaining({
           trafficClass: 'background',
@@ -1191,7 +1191,7 @@ describe('ModerationService', () => {
         'chat-1',
         nightModeOpenNotice(),
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
         }),
         expect.objectContaining({
           trafficClass: 'background',
@@ -1465,7 +1465,7 @@ describe('ModerationService', () => {
         'chat-1',
         nightModeOpenNotice(),
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
         }),
         expect.objectContaining({
           trafficClass: 'background',
@@ -2603,8 +2603,8 @@ describe('ModerationService', () => {
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Недостаточно прав: команду `супер бан` может запускать только разработчик бота.',
-      { textFormat: 'markdown' },
+      'Недостаточно прав: команду <code>супер бан</code> может запускать только разработчик бота.',
+      { textFormat: 'html' },
       expect.objectContaining({ immediate: true, botId: 'bot-4' }),
     );
   });
@@ -3789,7 +3789,9 @@ describe('ModerationService', () => {
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(
       sentTexts.some((text) =>
-        text.includes('Команда `бан` применяется без срока. Отправьте её без длительности: `бан`.'),
+        text.includes(
+          'Команда <code>бан</code> применяется без срока. Отправьте её без длительности: <code>бан</code>.',
+        ),
       ),
     ).toBe(true);
   });
@@ -3856,7 +3858,7 @@ describe('ModerationService', () => {
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(
       sentTexts.some((text) =>
-        text.includes('Команда `бан` применима только к участнику этого чата'),
+        text.includes('Команда <code>бан</code> применима только к участнику этого чата'),
       ),
     ).toBe(true);
   });
@@ -4862,7 +4864,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       muteNotice('Алексей', '6ч'),
-      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.objectContaining({ textFormat: 'html' }),
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -5219,7 +5221,7 @@ describe('ModerationService', () => {
           text: 'Правила',
           url: 'https://max.ru/help/bots',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -7251,7 +7253,7 @@ describe('ModerationService', () => {
           text: 'Правила',
           url: 'https://max.ru/channel/rules',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();

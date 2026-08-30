@@ -1,4 +1,8 @@
-import { chatSettingsSchema, managedEntityHeaderSchema } from '@maxim/contracts';
+import {
+  MAX_CHAT_RULES_TEXT_LENGTH,
+  chatSettingsSchema,
+  managedEntityHeaderSchema,
+} from '@maxim/contracts';
 import {
   buildRulesTextFromSettings,
   buildRulesTextItemsFromSettings,
@@ -83,6 +87,49 @@ describe('admin chat rules text format helpers', () => {
         '8. За повторные нарушения бот может предупредить, временно ограничить сообщения и заблокировать.',
       ].join('\n'),
     );
+  });
+
+  it('uses the full shared rules limit for autofilled text', () => {
+    const channelIds = ['channel-1', 'channel-2', 'channel-3'];
+    const settings = chatSettingsSchema.parse({
+      linkPolicy: 'ALERT_ONLY',
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: channelIds,
+      russianProfanityFilterEnabled: true,
+      commercialAdsFilterEnabled: true,
+      antiDuplicateEnabled: true,
+      antiSpamEnabled: true,
+      messageCountLimitEnabled: true,
+      maxMessageLengthEnabled: true,
+      photoMessageCooldownEnabled: true,
+      stickerMessageCooldownEnabled: true,
+      photoMessagesEnabled: false,
+      videoMessagesEnabled: false,
+      fileMessagesEnabled: false,
+      voiceMessagesEnabled: false,
+      phoneNumbersEnabled: false,
+      nightModeEnabled: true,
+      linkWarnEnabled: true,
+      textFiltersMuteEnabled: true,
+      duplicateBanEnabled: true,
+    });
+    const text = buildRulesTextFromSettings({
+      settings,
+      domains: [],
+      requiredSubscriptionChannels: channelIds.map((id, index) =>
+        managedEntityHeaderSchema.parse({
+          id,
+          title: String.fromCharCode(1040 + index).repeat(520),
+          entityType: 'channel',
+          link: null,
+          participantsCount: null,
+        }),
+      ),
+    });
+
+    expect(text.length).toBeGreaterThan(2_000);
+    expect(text.length).toBeLessThanOrEqual(MAX_CHAT_RULES_TEXT_LENGTH);
+    expect(text).toContain('За повторные нарушения бот может');
   });
 
   it.each([

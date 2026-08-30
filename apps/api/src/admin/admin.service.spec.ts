@@ -6968,9 +6968,7 @@ describe('AdminService.applyManualSystemBan', () => {
       prisma.manualModerationFanoutLedgerEntry.findMany({
         where: { operation: 'FANOUT_BAN_MEMBER' },
       }),
-    ).resolves.toEqual([
-      expect.objectContaining({ targetChatId: 'chat-3', status: 'SUCCEEDED' }),
-    ]);
+    ).resolves.toEqual([expect.objectContaining({ targetChatId: 'chat-3', status: 'SUCCEEDED' })]);
   });
 
   it('does not repeat a succeeded queued manual ban fanout target on replay', async () => {
@@ -30780,7 +30778,7 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Опубликуйте только по теме.',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
       expectChatRulesSendOptions(),
     );
@@ -30878,7 +30876,7 @@ describe('AdminService chat rules', () => {
       'chat-1',
       expect.stringContaining('Пожалуйста, без мата и грубой лексики.'),
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
       expectChatRulesSendOptions(),
     );
@@ -30979,7 +30977,7 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила без прямой ссылки.',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
       expectChatRulesSendOptions(),
     );
@@ -31036,9 +31034,9 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n~~Зачеркнутый~~\n\n  Второй абзац с  пробелами',
+      '🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>\n\n<s>Зачеркнутый</s>\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;пробелами',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
       expectChatRulesSendOptions(),
     );
@@ -31098,7 +31096,7 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила с кнопкой.',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
         buttons: [[{ text: 'Подробнее', type: 'link', url: 'https://max.ru/help/rules' }]],
       },
       expectChatRulesSendOptions({ botId: 'chat-bot-2' }),
@@ -31164,9 +31162,9 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      'Правила со связью.\n\nСвязь с админом: [Админ](max://user/admin-1)',
+      'Правила со связью.\n\nСвязь с админом: <a href="max://user/admin-1">Админ</a>',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
       expectChatRulesSendOptions(),
     );
@@ -31249,9 +31247,9 @@ describe('AdminService chat rules', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      'Правила со старой связью.\n\nСвязь с админом: [Админ](max://user/admin-1)',
+      'Правила со старой связью.\n\nСвязь с админом: <a href="max://user/admin-1">Админ</a>',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
       expectChatRulesSendOptions(),
     );
@@ -31317,7 +31315,7 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила с набором кнопок.',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
         buttons: [
           [
             { text: 'Канал', type: 'link', url: 'https://max.ru/channel/maxim' },

@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import {
   channelSettingsSchema,
   chatSettingsSchema,
+  MAX_BOT_SPEECH_TEXT_LENGTH,
+  MAX_CHAT_RULES_TEXT_LENGTH,
   type ChatRules,
   type ManagedGiveawayDetails,
   type ManagedGiveawayWinner,
@@ -235,6 +237,34 @@ function createPrivateFormattedTextUpdate(
       },
     },
   };
+}
+
+function createPrivatePureForwardUpdate(params: {
+  text: string;
+  markup?: Array<Record<string, unknown>>;
+  botId?: string;
+}): MaxUpdate {
+  return new WebhookParser().parse(
+    {
+      update_type: 'message_created',
+      timestamp: '2026-08-30T10:00:00.000Z',
+      message: {
+        sender: { user_id: 195714583, name: 'Тестовый пользователь' },
+        recipient: { chat_id: 152517912, chat_type: 'dialog' },
+        body: null,
+        link: {
+          type: 'forward',
+          chat_id: -70000000000001,
+          message: {
+            mid: `mid-pure-forward-${Date.now()}`,
+            text: params.text,
+            ...(params.markup ? { markup: params.markup } : {}),
+          },
+        },
+      },
+    },
+    { botId: params.botId ?? '777000_bot' },
+  );
 }
 
 function countMessageOffsetUnits(value: string): number {
@@ -700,6 +730,9 @@ function createHarness(
         buttonEnabled: payload.buttonEnabled ?? currentRules.buttonEnabled,
         buttonUrl: payload.buttonUrl ?? currentRules.buttonUrl,
         buttonText: payload.buttonText ?? currentRules.buttonText,
+        adminContactButtonEnabled:
+          payload.adminContactButtonEnabled ?? currentRules.adminContactButtonEnabled,
+        adminContactButtonUrl: payload.adminContactButtonUrl ?? currentRules.adminContactButtonUrl,
       });
       return currentRules;
     }),
@@ -1652,11 +1685,50 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
     expect(maxClient.answerCallback).not.toHaveBeenCalled();
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(redisCounter.getString).not.toHaveBeenCalled();
+    expect(redisCounter.getString).toHaveBeenCalled();
     expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
     expect(redisCounter.deleteKey).not.toHaveBeenCalled();
-    expect(redisCounter.acquireLock).not.toHaveBeenCalled();
-    expect(redisCounter.releaseLock).not.toHaveBeenCalled();
+    expect(redisCounter.acquireLock).toHaveBeenCalled();
+    expect(redisCounter.releaseLock).toHaveBeenCalled();
+  });
+
+  it('fails open to forwarded entity recovery when private session loading fails', async () => {
+    const managedEntityHandshakeService = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+    const { service, maxClient, redisCounter } = createHarness({
+      managedEntityHandshakeService,
+    });
+    redisCounter.getString.mockRejectedValue(new Error('redis unavailable'));
+    const update = createPrivatePureForwardUpdate({ text: 'Пост из исходного канала' });
+
+    await expect(service.handleUpdate(update)).resolves.toBeUndefined();
+
+    expect(managedEntityHandshakeService.handleWebhookUpdate).toHaveBeenCalledWith(update);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('bounds private session loading before forwarded entity recovery', async () => {
+    jest.useFakeTimers();
+    try {
+      const managedEntityHandshakeService = {
+        handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+      };
+      const { service, maxClient, redisCounter } = createHarness({
+        managedEntityHandshakeService,
+      });
+      redisCounter.getString.mockImplementation(() => new Promise(() => undefined));
+      const update = createPrivatePureForwardUpdate({ text: 'Пост из исходного канала' });
+
+      const handling = service.handleUpdate(update);
+      await jest.advanceTimersByTimeAsync(1_000);
+      await expect(handling).resolves.toBeUndefined();
+
+      expect(managedEntityHandshakeService.handleWebhookUpdate).toHaveBeenCalledWith(update);
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('bans a forwarded sender from private chat with the permanent ban command', async () => {
@@ -2035,6 +2107,8 @@ describe('PrivateControlService', () => {
         buttonEnabled: true,
         buttonUrl: 'https://max.ru/help',
         buttonText: 'Подробнее',
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: 'https://max.ru/admin',
       }),
       adminService: {
         getChatSettingsScreen: jest.fn().mockResolvedValue({
@@ -2048,6 +2122,8 @@ describe('PrivateControlService', () => {
             buttonEnabled: true,
             buttonUrl: 'https://max.ru/help',
             buttonText: 'Подробнее',
+            adminContactButtonEnabled: true,
+            adminContactButtonUrl: 'https://max.ru/admin',
           }),
           header: { id: '-70000000000001', title: 'Тестовый чат 1' },
           requiredSubscriptionChannels: [
@@ -2082,6 +2158,8 @@ describe('PrivateControlService', () => {
       buttonEnabled: true,
       buttonUrl: 'https://max.ru/help',
       buttonText: 'Подробнее',
+      adminContactButtonEnabled: true,
+      adminContactButtonUrl: 'https://max.ru/admin',
     });
     expect(String(updatePayload?.text ?? '')).toContain('Правила чата:');
     expect(String(updatePayload?.text ?? '')).toContain(
@@ -2196,6 +2274,195 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('uses a forwarded formatted post for an active rules editor before entity recovery', async () => {
+    const managedEntityHandshakeService = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+    const { service, adminSettingsService, chats } = createHarness({
+      managedEntityHandshakeService,
+      rules: createRules({
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: 'https://max.ru/admin',
+      }),
+    });
+    const actor = {
+      userId: '195714583',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: '152517912',
+      chatTitle: 'Личный чат',
+      launchBotId: '777000_bot',
+    };
+    await service.handoffRulesFromMiniapp(chats[0].id, actor);
+
+    const update = new WebhookParser().parse(
+      {
+        update_type: 'message_created',
+        timestamp: '2026-08-30T10:00:00.000Z',
+        message: {
+          sender: { user_id: 195714583, name: 'Тестовый пользователь' },
+          recipient: { chat_id: 152517912, chat_type: 'dialog' },
+          body: null,
+          link: {
+            type: 'forward',
+            chat_id: -70000000000001,
+            message: {
+              mid: 'mid-formatted-rules-source-1',
+              text: '🔥MAX Docs',
+              markup: [
+                { type: 'strong', from: 2, length: 8 },
+                {
+                  type: 'link',
+                  from: 2,
+                  length: 8,
+                  url: 'https://dev.max.ru/docs-api',
+                },
+              ],
+            },
+          },
+        },
+      },
+      { botId: '777000_bot' },
+    );
+
+    await service.handleUpdate(update);
+
+    expect(managedEntityHandshakeService.handleWebhookUpdate).not.toHaveBeenCalled();
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: '195714583' }),
+      expect.objectContaining({
+        text: '🔥[**MAX Docs**](https://dev.max.ru/docs-api)',
+        autoTextEnabled: false,
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: 'https://max.ru/admin',
+      }),
+      'private_bot',
+    );
+  });
+
+  it('imports forwarded MAX markup for an active bot-speech text setting', async () => {
+    const managedEntityHandshakeService = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+    const { service, adminService, redisCounter, chats } = createHarness({
+      managedEntityHandshakeService,
+    });
+    const session = createDefaultPrivateControlSession();
+    session.selectedChatId = chats[0].id;
+    session.selectedEntityType = 'chat';
+    session.screen = 'section';
+    session.section = 'greeting';
+    session.pendingInput = {
+      kind: 'set_field',
+      section: 'greeting',
+      key: 'greetingBotMessageText',
+      type: 'text',
+    };
+    await redisCounter.setStringWithTtl('private-ui:v2:195714583', JSON.stringify(session));
+    const update = createPrivatePureForwardUpdate({
+      text: '🔥MAX Docs',
+      markup: [
+        { type: 'strong', from: 2, length: 8 },
+        {
+          type: 'link',
+          from: 2,
+          length: 8,
+          url: 'https://dev.max.ru/docs-api',
+        },
+      ],
+    });
+
+    await service.handleUpdate(update);
+
+    expect(managedEntityHandshakeService.handleWebhookUpdate).not.toHaveBeenCalled();
+    expect(adminService.updateSettings).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: '195714583' }),
+      expect.objectContaining({
+        greetingBotMessageText: '🔥[**MAX Docs**](https://dev.max.ru/docs-api)',
+      }),
+      'private_bot',
+    );
+  });
+
+  it('falls back to visible bot-speech text when imported markup exceeds the contract limit', async () => {
+    const managedEntityHandshakeService = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+    const { service, adminService, redisCounter, chats } = createHarness({
+      managedEntityHandshakeService,
+    });
+    const session = createDefaultPrivateControlSession();
+    session.selectedChatId = chats[0].id;
+    session.selectedEntityType = 'chat';
+    session.screen = 'section';
+    session.section = 'greeting';
+    session.pendingInput = {
+      kind: 'set_field',
+      section: 'greeting',
+      key: 'greetingBotMessageText',
+      type: 'text',
+    };
+    await redisCounter.setStringWithTtl('private-ui:v2:195714583', JSON.stringify(session));
+    const sourceText = 'A'.repeat(MAX_BOT_SPEECH_TEXT_LENGTH);
+    const update = createPrivatePureForwardUpdate({
+      text: sourceText,
+      markup: [{ type: 'strong', from: 0, length: sourceText.length }],
+    });
+
+    await service.handleUpdate(update);
+
+    expect(managedEntityHandshakeService.handleWebhookUpdate).not.toHaveBeenCalled();
+    expect(adminService.updateSettings).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: '195714583' }),
+      expect.objectContaining({ greetingBotMessageText: sourceText }),
+      'private_bot',
+    );
+  });
+
+  it.each([
+    {
+      name: 'a non bot-speech text field',
+      screen: 'section' as const,
+      key: 'greetingBotButtonText' as const,
+    },
+    {
+      name: 'a stale bot-speech editor screen',
+      screen: 'home' as const,
+      key: 'greetingBotMessageText' as const,
+    },
+  ])('keeps forwarded recovery priority for $name', async ({ screen, key }) => {
+    const managedEntityHandshakeService = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+    const { service, adminService, redisCounter, chats } = createHarness({
+      managedEntityHandshakeService,
+    });
+    const session = createDefaultPrivateControlSession();
+    session.selectedChatId = chats[0].id;
+    session.selectedEntityType = 'chat';
+    session.screen = screen;
+    session.section = 'greeting';
+    session.pendingInput = {
+      kind: 'set_field',
+      section: 'greeting',
+      key,
+      type: 'text',
+    };
+    await redisCounter.setStringWithTtl('private-ui:v2:195714583', JSON.stringify(session));
+    const update = createPrivatePureForwardUpdate({
+      text: 'Форматированный текст',
+      markup: [{ type: 'strong', from: 0, length: 21 }],
+    });
+
+    await service.handleUpdate(update);
+
+    expect(managedEntityHandshakeService.handleWebhookUpdate).toHaveBeenCalledWith(update);
+    expect(adminService.updateSettings).not.toHaveBeenCalled();
+  });
+
   it('updates rules text only after choosing the text button', async () => {
     const { service, adminSettingsService, chats } = createHarness({
       rules: createRules({
@@ -2252,6 +2519,61 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
+  });
+
+  it('falls back to visible rules text when markup would exceed the rules limit', async () => {
+    const { service, adminSettingsService, chats } = createHarness();
+    const sourceText = 'A'.repeat(MAX_CHAT_RULES_TEXT_LENGTH);
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate(sourceText, [
+        {
+          type: 'strong',
+          from: 0,
+          length: sourceText.length,
+        },
+      ]),
+    );
+
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({ text: sourceText, autoTextEnabled: false }),
+      'private_bot',
+    );
+  });
+
+  it('stores max-length formatted rules while rendering a markup-safe private preview', async () => {
+    const { service, adminSettingsService, maxClient, chats } = createHarness();
+    const sourceText = 'A'.repeat(MAX_CHAT_RULES_TEXT_LENGTH - 4);
+    const storedText = `**${sourceText}**`;
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate(sourceText, [
+        {
+          type: 'strong',
+          from: 0,
+          length: sourceText.length,
+        },
+      ]),
+    );
+
+    const updatePayload = adminSettingsService.updateRules.mock.calls.at(-1)?.[2];
+    expect(updatePayload?.text).toBe(storedText);
+    expect(String(updatePayload?.text ?? '')).toHaveLength(MAX_CHAT_RULES_TEXT_LENGTH);
+
+    const preview = getLastUiText(maxClient);
+    expect(preview.length).toBeLessThanOrEqual(4_000);
+    expect(preview).toContain('Показан фрагмент. Полный текст сохранён.');
+    expect(preview).not.toContain(storedText);
+    expect(preview.match(/\*\*/gu)).toHaveLength(2);
+    expect(getLastSendOptions(maxClient)?.textFormat).toBe('markdown');
   });
 
   it('keeps raw auto-detected urls intact when saving rules text with emoji prefixes', async () => {
@@ -2382,6 +2704,8 @@ describe('PrivateControlService', () => {
       rules: createRules({
         text: 'Правила с фото.',
         autoTextEnabled: true,
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: 'https://max.ru/admin',
       }),
     });
     const { restore } = mockImageFetch(TINY_PNG, 'image/png');
@@ -2403,6 +2727,8 @@ describe('PrivateControlService', () => {
           imageMimeType: 'image/png',
           imageFileName: expect.stringContaining('private-rules-photo-1'),
           autoTextEnabled: true,
+          adminContactButtonEnabled: true,
+          adminContactButtonUrl: 'https://max.ru/admin',
         }),
         'private_bot',
       );
@@ -2415,6 +2741,8 @@ describe('PrivateControlService', () => {
           imageMimeType: 'image/png',
           imageFileName: 'photo-as-file.png',
           autoTextEnabled: true,
+          adminContactButtonEnabled: true,
+          adminContactButtonUrl: 'https://max.ru/admin',
         }),
         'private_bot',
       );
@@ -2450,6 +2778,8 @@ describe('PrivateControlService', () => {
         imageBase64: TINY_PNG.toString('base64'),
         imageMimeType: 'image/png',
         imageFileName: 'rules.png',
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: 'https://max.ru/admin',
       }),
       settings: {
         ...defaultSettings,
@@ -2473,6 +2803,8 @@ describe('PrivateControlService', () => {
         imageMimeType: '',
         imageFileName: '',
         autoTextEnabled: true,
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: 'https://max.ru/admin',
       }),
       'private_bot',
     );
@@ -3732,10 +4064,7 @@ describe('PrivateControlService', () => {
       sourceMessageId: 'source-message',
       previewMessageId: null,
     };
-    await redisCounter.setStringWithTtl(
-      'private-ui:v2:user-1',
-      JSON.stringify(session),
-    );
+    await redisCounter.setStringWithTtl('private-ui:v2:user-1', JSON.stringify(session));
     const imageMock = mockImageFetch();
 
     try {
@@ -3746,9 +4075,7 @@ describe('PrivateControlService', () => {
 
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
     expect(adminService.createChannelSuggestionFromBot).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain(
-      'Медиа этой предложки загружено другим ботом',
-    );
+    expect(getLastSentText(maxClient)).toContain('Медиа этой предложки загружено другим ботом');
   });
 
   it('rejects a migrated token draft before a cross-bot text edit can render its preview', async () => {

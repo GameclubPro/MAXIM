@@ -2,11 +2,30 @@ import {
   containsSupportedMarkdownSyntax,
   containsSupportedMarkdownUrl,
   extractSupportedMarkdownLinks,
+  prepareFormattedTextForMaxDelivery,
+  prepareMarkdownForMaxDelivery,
   renderSupportedMarkdownAsHtml,
   stripSupportedMarkdownToPlainText,
 } from './max-markdown.util';
 
 describe('renderSupportedMarkdownAsHtml', () => {
+  it('uses bounded HTML and falls back to bounded native MAX markdown', () => {
+    expect(prepareMarkdownForMaxDelivery('**MAX**', 32)).toEqual({
+      text: '<strong>MAX</strong>',
+      textFormat: 'html',
+    });
+    expect(prepareMarkdownForMaxDelivery('&&', 4)).toEqual({
+      text: '&&',
+      textFormat: 'markdown',
+    });
+    expect(prepareMarkdownForMaxDelivery('&&&&&', 4)).toBeNull();
+    expect(prepareFormattedTextForMaxDelivery('<b>x</b>', 'html', 8)).toEqual({
+      text: '<b>x</b>',
+      textFormat: 'html',
+    });
+    expect(prepareFormattedTextForMaxDelivery('<b>x</b>', 'html', 7)).toBeNull();
+  });
+
   it('renders supported formatting and links to html', () => {
     expect(
       renderSupportedMarkdownAsHtml(
@@ -290,7 +309,9 @@ describe('renderSupportedMarkdownAsHtml', () => {
     expect(renderSupportedMarkdownAsHtml(source)).toBe(
       '<h2>Раздел</h2><blockquote><strong>Важная</strong> цитата</blockquote><p><mark>Фокус <em>сейчас</em></mark></p>',
     );
-    expect(stripSupportedMarkdownToPlainText(source)).toBe('Раздел\n\nВажная цитата\n\nФокус сейчас');
+    expect(stripSupportedMarkdownToPlainText(source)).toBe(
+      'Раздел\n\nВажная цитата\n\nФокус сейчас',
+    );
     expect(containsSupportedMarkdownSyntax(source)).toBe(true);
   });
 
@@ -300,7 +321,9 @@ describe('renderSupportedMarkdownAsHtml', () => {
     expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
       '# заголовок\n&gt; цитата\n^^не выделять^^',
     );
-    expect(stripSupportedMarkdownToPlainText(source)).toBe('# заголовок\n> цитата\n^^не выделять^^');
+    expect(stripSupportedMarkdownToPlainText(source)).toBe(
+      '# заголовок\n> цитата\n^^не выделять^^',
+    );
   });
 
   it('renders escaped markdown punctuation as literal text', () => {

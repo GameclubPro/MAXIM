@@ -42,6 +42,10 @@ import {
 } from './moderation.service.spec-support';
 import { WebhookParser } from '../webhook/webhook.parser';
 
+function userMentionHtml(displayName: string, userId: string): string {
+  return `<a href="max://user/${userId}">${displayName}</a>`;
+}
+
 describe('ModerationService', () => {
   it('caps violation admin recheck wait to the remaining hot-path budget under pressure', () => {
     const service = new ModerationService(
@@ -3718,7 +3722,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${userMention('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMentionHtml('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -3929,13 +3933,13 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${userMention('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMentionHtml('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
       {
         button: {
           text: 'Правила',
           url: 'https://max.ru/chats/chat-1/message/999',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -3997,9 +4001,9 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining(userMention('Новый участник', 'user-black-2')),
+      expect.stringContaining(userMentionHtml('Новый участник', 'user-black-2')),
       expect.objectContaining({
-        textFormat: 'markdown',
+        textFormat: 'html',
       }),
       expect.objectContaining({
         autoDeleteDelayMs: 30_000,
@@ -4075,9 +4079,9 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      `Добро пожаловать, ${userMention('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMentionHtml('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
       expect.objectContaining({
-        textFormat: 'markdown',
+        textFormat: 'html',
       }),
       expect.objectContaining({
         autoDeleteDelayMs: 120_000,
@@ -4101,6 +4105,64 @@ describe('ModerationService', () => {
         }),
       }),
     });
+  });
+
+  it('renders moderation markdown as safe HTML while preserving plain and prepared HTML text', async () => {
+    const maxClient = {
+      sendMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    const send = (text: string, messageOptions?: { textFormat: 'html' }) =>
+      (service as any).sendBotMessageWithOptionalAutoDelete({
+        chatId: 'chat-1',
+        text,
+        messageOptions,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 2,
+      });
+
+    await send('🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n^^Фокус^^');
+    await send('2 < 3 & 5');
+    await send('<strong>Уже готово</strong>', { textFormat: 'html' });
+    await send('&'.repeat(1_000));
+    await expect(send('A'.repeat(4_001), { textFormat: 'html' })).rejects.toThrow(
+      'MAX moderation notice exceeds 4000 characters after formatting',
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      '🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>\n\n<mark>Фокус</mark>',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.any(Object),
+    );
+    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      '2 &lt; 3 &amp; 5',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.any(Object),
+    );
+    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
+      3,
+      'chat-1',
+      '<strong>Уже готово</strong>',
+      expect.objectContaining({ textFormat: 'html' }),
+      expect.any(Object),
+    );
+    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
+      4,
+      'chat-1',
+      '&'.repeat(1_000),
+      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.any(Object),
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(4);
   });
 
   it('skips non-immediate bot notices after the per-chat notice bucket is exhausted', async () => {
@@ -4158,7 +4220,7 @@ describe('ModerationService', () => {
       'chat-1',
       'notice 1',
       expect.objectContaining({
-        textFormat: 'markdown',
+        textFormat: 'html',
       }),
       expect.objectContaining({
         trafficClass: 'background',
@@ -4195,7 +4257,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Предупреждение',
-      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.objectContaining({ textFormat: 'html' }),
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -4247,7 +4309,7 @@ describe('ModerationService', () => {
       'notice with image',
       expect.objectContaining({
         imagePayload: { token: 'bot-speech-image-1' },
-        textFormat: 'markdown',
+        textFormat: 'html',
       }),
       expect.objectContaining({
         trafficClass: 'background',
@@ -4311,7 +4373,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${userMention('Новый участник из data', 'user-envelope-2')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMentionHtml('Новый участник из data', 'user-envelope-2')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -4377,7 +4439,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${userMention('Новый участник без sender', 'user-no-sender-2')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMentionHtml('Новый участник без sender', 'user-no-sender-2')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -4455,7 +4517,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${userMention('Новый участник user_added', 'user-added-1')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMentionHtml('Новый участник user_added', 'user-added-1')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -4741,7 +4803,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${userMention('Новый участник user_added', 'user-added-1')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMentionHtml('Новый участник user_added', 'user-added-1')}! добро пожаловать в чат.`,
     );
   });
 

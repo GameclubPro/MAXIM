@@ -3425,141 +3425,6 @@
     grid-row: 1;
   }
 
-  .settings-drilldown__panel--rules-screen .rules-publish-bar .broadcast-publish-bar__test {
-    min-width: 0;
-    min-height: 38px;
-    width: 100%;
-    padding-inline: 10px;
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar
-    .broadcast-publish-bar__test:not(.rules-publish-bar__reset) {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar
-    .broadcast-publish-bar__test:not(.rules-publish-bar__reset)
-    > span {
-    display: inline;
-    overflow: visible;
-    text-overflow: clip;
-  }
-
-  .settings-drilldown__panel--rules-screen .rules-publish-bar .rules-publish-bar__reset {
-    grid-column: 1;
-    grid-row: 2;
-    width: 38px;
-    min-width: 38px;
-    padding-inline: 0;
-  }
-
-  .settings-drilldown__panel--rules-screen .rules-publish-bar .broadcast-publish-bar__button {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    width: 100%;
-    min-width: 0;
-    padding-inline: 14px;
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar
-    .broadcast-publish-bar__button
-    > span {
-    overflow: visible;
-    text-overflow: clip;
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)) {
-    grid-template-columns: minmax(64px, 0.58fr) minmax(148px, 1fr);
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset))
-    .broadcast-publish-bar__button {
-    grid-column: 2;
-  }
-
-  .settings-drilldown__panel--rules-screen .rules-publish-bar:has(.rules-publish-bar__reset) {
-    grid-template-columns: 38px minmax(148px, 1fr);
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar:has(.rules-publish-bar__reset)
-    .broadcast-publish-bar__button {
-    grid-column: 2;
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-      .rules-publish-bar__reset
-    ) {
-    grid-template-columns: minmax(58px, 0.42fr) 38px minmax(146px, 1fr);
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-      .rules-publish-bar__reset
-    )
-    .broadcast-publish-bar__test:not(.rules-publish-bar__reset) {
-    grid-column: 1;
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-      .rules-publish-bar__reset
-    )
-    .rules-publish-bar__reset {
-    grid-column: 2;
-  }
-
-  .settings-drilldown__panel--rules-screen
-    .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-      .rules-publish-bar__reset
-    )
-    .broadcast-publish-bar__button {
-    grid-column: 3;
-  }
-
-  @media (max-width: 330px) {
-    .settings-drilldown__panel--rules-screen
-      .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-        .rules-publish-bar__reset
-      ) {
-      grid-template-columns: 38px minmax(0, 1fr);
-    }
-
-    .settings-drilldown__panel--rules-screen
-      .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-        .rules-publish-bar__reset
-      )
-      .broadcast-publish-bar__test:not(.rules-publish-bar__reset) {
-      grid-column: 1 / -1;
-      grid-row: 2;
-    }
-
-    .settings-drilldown__panel--rules-screen
-      .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-        .rules-publish-bar__reset
-      )
-      .rules-publish-bar__reset {
-      grid-column: 1;
-      grid-row: 3;
-    }
-
-    .settings-drilldown__panel--rules-screen
-      .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)):has(
-        .rules-publish-bar__reset
-      )
-      .broadcast-publish-bar__button {
-      grid-column: 2;
-      grid-row: 3;
-    }
-  }
-
   /* Keep publish blockers readable and tappable in the legacy footer on narrow phones. */
   @media (max-width: 430px) {
     .settings-drilldown__panel--broadcast-screen
@@ -3645,5 +3510,113 @@
     color: var(--text-muted);
     box-shadow: none;
     opacity: 1;
+  }
+
+  .settings-drilldown__panel--rules-screen .rules-publish-bar,
+  .settings-drilldown__panel--rules-screen .rules-publish-bar--with-reset,
+  .settings-drilldown__panel--rules-screen
+    .rules-publish-bar:has(.broadcast-publish-bar__test:not(.rules-publish-bar__reset)),
+  .settings-drilldown__panel--rules-screen .rules-publish-bar:has(.rules-publish-bar__reset) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-drilldown__panel--rules-screen .rules-publish-bar__commands {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .settings-drilldown__panel--rules-screen .rules-publish-bar__commands > .button {
+    grid-column: auto;
+    grid-row: auto;
+    min-width: 0;
+    min-height: 38px;
+  }
+
+  .settings-drilldown__panel--rules-screen .rules-publish-bar__open,
+  .settings-drilldown__panel--rules-screen .rules-publish-bar__save {
+    flex: 1 1 92px;
+    width: auto;
+  }
+
+  .settings-drilldown__panel--rules-screen .rules-publish-bar__open > span,
+  .settings-drilldown__panel--rules-screen .rules-publish-bar__save > span {
+    display: inline;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .settings-drilldown__panel--rules-screen .rules-publish-bar__commands .rules-publish-bar__reset {
+    flex: 0 0 38px;
+    width: 38px;
+  }
+
+  .settings-drilldown__panel--rules-screen
+    .rules-publish-bar__commands
+    .broadcast-publish-bar__button {
+    flex: 1.25 1 126px;
+    width: auto;
+  }
+
+  @media (max-width: 520px) {
+    .settings-drilldown__panel--rules-screen .rules-publish-bar__commands {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 38px minmax(0, 1fr);
+      grid-template-areas:
+        'save reset open'
+        'primary primary primary';
+    }
+
+    .settings-drilldown__panel--rules-screen .rules-publish-bar__save {
+      grid-area: save;
+    }
+
+    .settings-drilldown__panel--rules-screen .rules-publish-bar__open {
+      grid-area: open;
+    }
+
+    .settings-drilldown__panel--rules-screen
+      .rules-publish-bar__commands
+      .rules-publish-bar__reset {
+      grid-area: reset;
+    }
+
+    .settings-drilldown__panel--rules-screen
+      .rules-publish-bar__commands
+      .broadcast-publish-bar__button {
+      grid-area: primary;
+    }
+
+    .settings-drilldown__panel--rules-screen
+      .rules-publish-bar__commands:not(:has(.rules-publish-bar__reset)):has(
+        .rules-publish-bar__open
+      ) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-areas:
+        'save open'
+        'primary primary';
+    }
+
+    .settings-drilldown__panel--rules-screen
+      .rules-publish-bar__commands:has(.rules-publish-bar__reset):not(
+        :has(.rules-publish-bar__open)
+      ) {
+      grid-template-columns: minmax(0, 1fr) 38px;
+      grid-template-areas:
+        'save reset'
+        'primary primary';
+    }
+
+    .settings-drilldown__panel--rules-screen
+      .rules-publish-bar__commands:not(:has(.rules-publish-bar__reset)):not(
+        :has(.rules-publish-bar__open)
+      ) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-areas: 'save primary';
+    }
   }
 }

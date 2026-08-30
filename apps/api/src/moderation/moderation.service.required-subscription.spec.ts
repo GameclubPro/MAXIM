@@ -771,7 +771,7 @@ describe('ModerationService', () => {
           'chat-1',
           expect.any(String),
           expect.objectContaining({
-            textFormat: 'markdown',
+            textFormat: 'html',
           }),
           expect.objectContaining({
             botId: 'id613002203036_4_bot',

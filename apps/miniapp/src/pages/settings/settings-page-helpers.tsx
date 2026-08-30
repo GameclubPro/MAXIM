@@ -400,7 +400,6 @@ export const INVITATION_ACCESS_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'invitationAccessAdminContactButtonEnabled',
   urlKey: 'invitationAccessAdminContactButtonUrl',
 } as const satisfies AdminContactButtonGroup;
-export const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT = 9;
 export const DEFAULT_RULES_POST_BUTTON_TEXT = 'Открыть';
 export const ADMIN_CONTACT_BUTTON_TEXT = 'Связь с админом';

@@ -1,6 +1,7 @@
 import {
   MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
+  MAX_CHAT_RULES_TEXT_LENGTH,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   type ApplySettingsTarget,
   chatRulesSchema,
@@ -55,6 +56,7 @@ import {
   lazy,
   startTransition,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -237,6 +239,8 @@ import {
 } from './settings-page.constants';
 import {
   buildRulesTextFromSettingsScreen,
+  mergeSavedRulesIntoSettingsScreen,
+  runRulesSaveAttempt,
   serializeRulesDraftPayload,
   shouldHydrateRulesDraftFromServer,
 } from './settings-rules-state';
@@ -282,7 +286,6 @@ import {
   LINK_ADMIN_CONTACT_BUTTON_GROUP,
   PROFANITY_ADMIN_CONTACT_BUTTON_GROUP,
   REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
-  MAX_CHAT_RULES_TEXT_LENGTH,
   MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT,
   DEFAULT_RULES_POST_BUTTON_TEXT,
   ADMIN_CONTACT_BUTTON_TEXT,
@@ -555,6 +558,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastHistoryFilter>('future');
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
+  const [isPreparingRulesPublish, setIsPreparingRulesPublish] = useState(false);
   const rulesDraftRef = useRef<ChatRules | null>(null);
   const giveawayCardRef = useRef<ManagedGiveawayCardHandle | null>(null);
   const previousRulesServerSnapshotRef = useRef('');
@@ -652,6 +656,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesButtonsSheetOpen(false);
     setRulesButtonRevealSignal(0);
     setRulesFailedSnapshot('');
+    setIsPreparingRulesPublish(false);
     previousRulesServerSnapshotRef.current = '';
     setMailingTargetMode('current');
     setMailingTargetChatIds(chatId ? [chatId] : []);
@@ -959,7 +964,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     error: settingsScreenQuery.error,
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     rulesDraftRef.current = rulesDraft;
   }, [rulesDraft]);
 
@@ -1437,6 +1442,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: (payload: UpdateChatRulesPayload) => updateRules(api, chatId ?? '', payload),
     onSuccess: (saved, payload) => {
       const payloadSnapshot = serializeRulesDraftPayload(payload);
+      queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+        ['settings-screen', chatId],
+        (current) => mergeSavedRulesIntoSettingsScreen(current, saved),
+      );
       setRulesDraft((current) => {
         if (!current) {
           return saved;
@@ -1518,7 +1527,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
   const isHeaderSaving =
-    isSavingSettings || isSavingRules || isSavingSpeechStyle || updateRulesAttachMutation.isPending;
+    isSavingSettings ||
+    isSavingRules ||
+    isPreparingRulesPublish ||
+    isSavingSpeechStyle ||
+    updateRulesAttachMutation.isPending;
   const activeSpeechStyle = draft?.botSpeechStyle ?? null;
   const pendingSpeechStyleSamples = pendingSpeechStyle
     ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
@@ -2434,6 +2447,36 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return mutateRulesAsync(payload);
   }
 
+  async function handleSaveRulesDraft() {
+    if (!rulesDraft || !hasRulesChanges || isRulesBusy) {
+      return;
+    }
+
+    const preparedRulesDraft = prepareRulesDraftForSubmit(rulesDraft);
+    if (!preparedRulesDraft) {
+      return;
+    }
+
+    try {
+      const attempt = await runRulesSaveAttempt({
+        submittedDraft: preparedRulesDraft,
+        save: () =>
+          saveRulesDraftNow({
+            forceButtonErrors: true,
+            draft: preparedRulesDraft,
+          }),
+        getCurrentDraft: () => rulesDraftRef.current,
+      });
+      if (!attempt?.isCurrent) {
+        return;
+      }
+      pushToast({ tone: 'success', title: 'Черновик правил сохранён' });
+      maxNotify('success');
+    } catch {
+      // The mutation reports the actionable error and keeps the draft available for retry.
+    }
+  }
+
   function secondsToHours(value: number): number {
     return Math.max(1, Math.round(value / 3600));
   }
@@ -2786,7 +2829,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [rulesDraftSnapshot, rulesFailedSnapshot]);
 
   useEffect(() => {
-    if (!chatId || !rulesDraft || !hasRulesChanges || isSavingRules || isPublishingRules) {
+    if (
+      !chatId ||
+      !rulesDraft ||
+      !hasRulesChanges ||
+      isSavingRules ||
+      isPreparingRulesPublish ||
+      isPublishingRules
+    ) {
       return;
     }
 
@@ -2809,6 +2859,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [
     chatId,
     hasRulesChanges,
+    isPreparingRulesPublish,
     isPublishingRules,
     isSavingRules,
     mutateRules,
@@ -2909,7 +2960,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   async function handlePublishRules() {
-    if (!chatId || !rulesDraft) {
+    if (!chatId || !rulesDraft || isPreparingRulesPublish) {
       return;
     }
 
@@ -2939,17 +2990,38 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const saved = shouldSavePreparedRules
-      ? await saveRulesDraftNow({
-          forceButtonErrors: true,
-          draft: preparedRulesDraft,
-        })
-      : preparedRulesDraft;
-    if (!saved) {
-      return;
-    }
+    setIsPreparingRulesPublish(true);
+    try {
+      if (shouldSavePreparedRules) {
+        const attempt = await runRulesSaveAttempt({
+          submittedDraft: preparedRulesDraft,
+          save: () =>
+            saveRulesDraftNow({
+              forceButtonErrors: true,
+              draft: preparedRulesDraft,
+            }),
+          getCurrentDraft: () => rulesDraftRef.current,
+        });
+        if (!attempt) {
+          return;
+        }
+        if (!attempt.isCurrent) {
+          pushToast({
+            tone: 'info',
+            title: 'Правила изменились',
+            description: 'Сохраните актуальную версию и повторите публикацию.',
+          });
+          maxNotify('warning');
+          return;
+        }
+      }
 
-    publishRulesMutation.mutate();
+      publishRulesMutation.mutate();
+    } catch {
+      // The save mutation reports the actionable error and preserves the latest draft.
+    } finally {
+      setIsPreparingRulesPublish(false);
+    }
   }
 
   function handleManagedPostLinkClick(event: MouseEvent<HTMLElement>, url: string) {
@@ -4201,7 +4273,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       value: rulesDraft?.autoTextEnabled
         ? 'Авто'
         : normalizedRulesText
-          ? `${normalizedRulesText.length}/2000`
+          ? `${normalizedRulesText.length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
           : 'Пусто',
       tone: rulesHasPublishableContent ? 'ready' : 'pending',
       icon: 'content',
@@ -4232,8 +4304,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'Включено'
     : 'Выключено';
   const isRulesDraftEditingDisabled =
-    isPublishingRules || isResettingPublishedRules || updateRulesAttachMutation.isPending;
+    isPreparingRulesPublish ||
+    isPublishingRules ||
+    isResettingPublishedRules ||
+    updateRulesAttachMutation.isPending;
   const isRulesBusy = isSavingRules || isRulesDraftEditingDisabled;
+  const rulesSaveLabel = isSavingRules
+    ? 'Сохраняем...'
+    : hasRulesChanges
+      ? 'Сохранить'
+      : 'Сохранено';
   const rulesDrilldownFooter = rulesDraft ? (
     <div
       className={cn(
@@ -4254,45 +4334,56 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </div>
       ) : null}
 
-      {rulesPublishedUrl ? (
+      <div className="rules-publish-bar__commands">
+        {rulesPublishedUrl ? (
+          <button
+            type="button"
+            className="button button--ghost broadcast-publish-bar__test rules-publish-bar__open"
+            onClick={(event) => handleManagedPostLinkClick(event, rulesPublishedUrl)}
+          >
+            <span>Открыть</span>
+          </button>
+        ) : null}
+
+        {hasPublishedRules ? (
+          <button
+            type="button"
+            className="button button--ghost broadcast-publish-bar__test rules-publish-bar__reset"
+            onClick={handleResetPublishedRules}
+            disabled={isResettingPublishedRules}
+            aria-label="Сбросить публикацию"
+            title="Сбросить публикацию"
+          >
+            <ResetIcon />
+          </button>
+        ) : null}
+
         <button
           type="button"
-          className="button button--ghost broadcast-publish-bar__test"
-          onClick={(event) => handleManagedPostLinkClick(event, rulesPublishedUrl)}
+          className="button button--ghost rules-publish-bar__save"
+          onClick={() => void handleSaveRulesDraft()}
+          disabled={isRulesBusy || !hasRulesChanges}
         >
-          <span>Открыть</span>
+          <span>{rulesSaveLabel}</span>
         </button>
-      ) : null}
 
-      {hasPublishedRules ? (
         <button
           type="button"
-          className="button button--ghost broadcast-publish-bar__test rules-publish-bar__reset"
-          onClick={handleResetPublishedRules}
-          disabled={isResettingPublishedRules}
-          aria-label="Сбросить публикацию"
-          title="Сбросить публикацию"
+          className="button button--accent broadcast-publish-bar__button broadcast-publish-bar__primary"
+          onClick={() => void handlePublishRules()}
+          disabled={isRulesBusy || !rulesPublishReady}
         >
-          <ResetIcon />
-        </button>
-      ) : null}
-
-      <button
-        type="button"
-        className="button button--accent broadcast-publish-bar__button broadcast-publish-bar__primary"
-        onClick={() => void handlePublishRules()}
-        disabled={isRulesBusy || !rulesPublishReady}
-      >
-        <span>
-          {isPublishingRules
-            ? 'Публикуем...'
-            : isSavingRules
+          <span>
+            {isPreparingRulesPublish
               ? 'Сохраняем...'
-              : hasPublishedRules
-                ? 'Обновить'
-                : 'Опубликовать'}
-        </span>
-      </button>
+              : isPublishingRules
+                ? 'Публикуем...'
+                : hasPublishedRules
+                  ? 'Обновить'
+                  : 'Опубликовать'}
+          </span>
+        </button>
+      </div>
     </div>
   ) : null;
   const greetingHeaderSummary =
@@ -5132,7 +5223,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     serverRules: rulesQuery.data,
     settingsDirty: hasChanges,
     rulesDirty: hasRulesChanges,
-    saving: isHeaderSaving || isApplyingSectionToAll,
+    saving:
+      isHeaderSaving || isApplyingSectionToAll || isPublishingRules || isResettingPublishedRules,
     validateDraft,
     saveRules: () => saveRulesDraftNow({ forceButtonErrors: true }),
     setDraft,

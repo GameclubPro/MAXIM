@@ -26,6 +26,18 @@ const PRIVATE_MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
 const PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES = MAX_VIDEO_UPLOAD_MAX_BYTES;
 const PRIVATE_IMAGE_TRANSCODE_MAX_PIXELS = 16_000_000;
 const PRIVATE_IMAGE_TRANSCODE_MAX_CONCURRENCY = 2;
+const PRIVATE_FORWARD_MESSAGE_MAX_DEPTH = 8;
+const PRIVATE_FORWARD_MESSAGE_MAX_NODES = 32;
+const PRIVATE_FORWARD_REFERENCES_MAX = 64;
+const PRIVATE_ATTACHMENT_ENTRIES_MAX = 256;
+const PRIVATE_FORWARD_KEYS = [
+  'forward',
+  'forwarded',
+  'forwarded_message',
+  'forwarded_messages',
+  'forwardedMessage',
+  'forwardedMessages',
+] as const;
 const PRIVATE_IMAGE_TOO_LARGE_MESSAGE = 'Изображение слишком большое. Максимальный размер — 50 МБ.';
 const PRIVATE_IMAGE_TRANSCODE_TOO_LARGE_MESSAGE =
   'Изображение слишком большое для обработки. Отправьте фото размером до 16 мегапикселей.';
@@ -43,19 +55,29 @@ export function collectPrivateMessageAttachments(update: MaxUpdate): Record<stri
     return [];
   }
 
-  const messageCandidates = [
+  const rootMessageCandidates = [
     asRecord(raw.message),
     asRecord(asRecord(raw.data)?.message),
     asRecord(asRecord(raw.event)?.message),
   ].filter((candidate): candidate is Record<string, unknown> => Boolean(candidate));
-
+  const forwardedTraversal = collectPrivateForwardMessageNodes(rootMessageCandidates);
+  if (forwardedTraversal.truncated) {
+    throw new BadRequestException(
+      'Пересланное сообщение слишком сложное. Отправьте один пост без цепочки пересылок.',
+    );
+  }
+  const messageCandidates = forwardedTraversal.nodes;
   const attachments: Record<string, unknown>[] = [];
+  const seenAttachments = new Set<Record<string, unknown>>();
+  let attachmentEntriesScanned = 0;
 
   for (const message of messageCandidates) {
     const body = asRecord(message.body);
+    const content = asRecord(message.content);
     const candidates = [
       message.attachments,
       body?.attachments,
+      content?.attachments,
       asRecord(message.data)?.attachments,
       asRecord(message.payload)?.attachments,
     ];
@@ -66,16 +88,140 @@ export function collectPrivateMessageAttachments(update: MaxUpdate): Record<stri
       }
 
       for (const attachment of node) {
-        if (!attachment || typeof attachment !== 'object') {
+        attachmentEntriesScanned += 1;
+        if (attachmentEntriesScanned > PRIVATE_ATTACHMENT_ENTRIES_MAX) {
+          throw new BadRequestException(
+            'В сообщении слишком много вложений. Отправьте более короткий пост.',
+          );
+        }
+        const attachmentRecord = asRecord(attachment);
+        if (!attachmentRecord || seenAttachments.has(attachmentRecord)) {
           continue;
         }
 
-        attachments.push(attachment as Record<string, unknown>);
+        seenAttachments.add(attachmentRecord);
+        attachments.push(attachmentRecord);
       }
     }
   }
 
   return attachments;
+}
+
+function collectPrivateForwardMessageNodes(roots: Record<string, unknown>[]): {
+  nodes: Record<string, unknown>[];
+  truncated: boolean;
+} {
+  const nodes: Record<string, unknown>[] = [];
+  const visited = new Set<Record<string, unknown>>();
+  let forwardedNodesVisited = 0;
+  let referencesScanned = 0;
+  let truncated = false;
+
+  const visitContainer = (
+    container: Record<string, unknown>,
+    depth: number,
+    forwarded: boolean,
+  ): void => {
+    if (visited.has(container) || truncated) {
+      return;
+    }
+    if (forwarded && forwardedNodesVisited >= PRIVATE_FORWARD_MESSAGE_MAX_NODES) {
+      truncated = true;
+      return;
+    }
+    visited.add(container);
+    if (forwarded) {
+      forwardedNodesVisited += 1;
+    }
+    nodes.push(container);
+
+    for (const holder of [
+      container,
+      asRecord(container.body),
+      asRecord(container.content),
+      asRecord(container.payload),
+    ]) {
+      if (!holder) {
+        continue;
+      }
+
+      const link = asRecord(holder.link);
+      if (readLowerString(link?.type) === 'forward') {
+        visitForwardValue(link?.message, depth + 1);
+        visitForwardValue(link?.body, depth + 1);
+        visitForwardValue(link?.content, depth + 1);
+        visitForwardValue(link?.payload, depth + 1);
+      }
+
+      for (const key of PRIVATE_FORWARD_KEYS) {
+        visitForwardValue(holder[key], depth + 1);
+      }
+    }
+  };
+
+  const visitForwardNode = (node: Record<string, unknown>, depth: number): void => {
+    if (isPrivateReplyMessageNode(node) || visited.has(node) || truncated) {
+      return;
+    }
+    if (
+      depth > PRIVATE_FORWARD_MESSAGE_MAX_DEPTH ||
+      forwardedNodesVisited >= PRIVATE_FORWARD_MESSAGE_MAX_NODES
+    ) {
+      truncated = true;
+      return;
+    }
+
+    visitContainer(node, depth, true);
+
+    const nestedMessage = asRecord(node.message);
+    if (nestedMessage && !isPrivateReplyMessageNode(nestedMessage)) {
+      visitForwardValue(nestedMessage, depth);
+    }
+  };
+
+  const visitForwardValue = (value: unknown, depth: number): void => {
+    if (value === null || value === undefined || truncated) {
+      return;
+    }
+
+    for (const candidate of Array.isArray(value) ? value : [value]) {
+      referencesScanned += 1;
+      if (referencesScanned > PRIVATE_FORWARD_REFERENCES_MAX) {
+        truncated = true;
+        return;
+      }
+
+      const node = asRecord(candidate);
+      if (node) {
+        visitForwardNode(node, depth);
+      }
+    }
+  };
+
+  for (const root of roots) {
+    visitContainer(root, 0, false);
+  }
+
+  return { nodes, truncated };
+}
+
+function isPrivateReplyMessageNode(node: Record<string, unknown>): boolean {
+  const type = readLowerString(
+    node.type ??
+      node.kind ??
+      node.link_type ??
+      node.linkType ??
+      node.relation_type ??
+      node.relationType,
+  );
+  return (
+    type === 'reply' ||
+    type === 'reply_message' ||
+    type === 'replymessage' ||
+    type === 'quoted' ||
+    type === 'quoted_message'
+  );
 }
 
 export function extractPrivateImageSourceAttachments(

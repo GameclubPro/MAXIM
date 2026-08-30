@@ -92,7 +92,11 @@ import {
   appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
   resolveAdminContactMentionTarget,
 } from '../common/admin-contact-link.util';
-import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import {
+  MAX_MESSAGE_TEXT_LENGTH,
+  prepareFormattedTextForMaxDelivery,
+  renderSupportedMarkdownAsHtml,
+} from '../common/max-markdown.util';
 import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
   BOT_PRIVATE_MENU_APP_LINE,
@@ -17848,13 +17852,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
       ...(botId ? { botId } : {}),
     });
+    const sourceTextFormat = resolvedMessageOptions?.textFormat ?? 'markdown';
+    const preparedMessage = prepareFormattedTextForMaxDelivery(text, sourceTextFormat);
+    if (!preparedMessage) {
+      throw new UnrecoverableError(
+        `MAX moderation notice exceeds ${MAX_MESSAGE_TEXT_LENGTH} characters after formatting`,
+      );
+    }
     await beforeSend?.();
     await this.maxClient.sendMessage(
       chatId,
-      text,
+      preparedMessage.text,
       {
         ...(resolvedMessageOptions ?? {}),
-        textFormat: resolvedMessageOptions?.textFormat ?? 'markdown',
+        textFormat: preparedMessage.textFormat,
       },
       this.buildBotMessageDispatchOptions({
         deleteBotMessagesEnabled,

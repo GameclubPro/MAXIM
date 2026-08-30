@@ -1804,7 +1804,7 @@ describe('ModerationService', () => {
           text: 'Канал',
           url: 'https://max.ru/channel/news',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -1863,9 +1863,9 @@ describe('ModerationService', () => {
         'Алексей',
         'удалено',
         'эта ссылка запрещена настройками чата',
-      )}\n\n[Связь с админом](https://max.ru/admin)`,
+      )}\n\n<a href="https://max.ru/admin">Связь с админом</a>`,
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -2177,7 +2177,7 @@ describe('ModerationService', () => {
           text: 'Правила',
           url: 'https://max.ru/channel/rules',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -2253,7 +2253,7 @@ describe('ModerationService', () => {
             },
           ],
         ],
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -2314,7 +2314,7 @@ describe('ModerationService', () => {
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       linkWarnNotice('Алексей'),
-      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.objectContaining({ textFormat: 'html' }),
     );
   });
 
@@ -2381,7 +2381,7 @@ describe('ModerationService', () => {
           type: 'reply',
           mid: 'mid-rules-1',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
     expect(maxClient.resolveMessageLink).not.toHaveBeenCalled();
@@ -2453,7 +2453,7 @@ describe('ModerationService', () => {
           type: 'reply',
           mid: 'mid-rules-2',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -2924,7 +2924,7 @@ describe('ModerationService', () => {
             },
           ],
         ],
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -3086,7 +3086,7 @@ describe('ModerationService', () => {
             },
           ],
         ],
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   });
@@ -3538,7 +3538,7 @@ describe('ModerationService', () => {
       majorExplanation('Алексей', 'удалено', 'лимит 2 сообщений за 6 ч превышен'),
       expect.objectContaining({
         imagePayload: { token: 'bot-speech-image-1' },
-        textFormat: 'markdown',
+        textFormat: 'html',
       }),
       expect.objectContaining({
         sourceTag: 'moderation_notice',
@@ -4619,7 +4619,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      '[Алексей](max://user/user-1), сообщение удалено: номера телефонов в сообщениях запрещены. Дальше без номера в тексте.',
+      '<a href="max://user/user-1">Алексей</a>, сообщение удалено: номера телефонов в сообщениях запрещены. Дальше без номера в тексте.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
@@ -4774,7 +4774,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `${userMention('Алексей')}, предупреждение: такие сообщения запрещены в чате.`,
+      '<a href="max://user/user-1">Алексей</a>, предупреждение: такие сообщения запрещены в чате.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -5695,7 +5695,7 @@ describe('ModerationService', () => {
           text: 'Правила чата',
           url: 'https://max.ru/channel/rules',
         },
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();

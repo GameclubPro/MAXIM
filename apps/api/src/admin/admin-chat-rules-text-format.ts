@@ -1,8 +1,9 @@
-import type {
-  ChatSettings,
-  DomainAllowlistEntry,
-  DuplicatePhotoModerationMode,
-  ManagedEntityHeader,
+import {
+  MAX_CHAT_RULES_TEXT_LENGTH,
+  type ChatSettings,
+  type DomainAllowlistEntry,
+  type DuplicatePhotoModerationMode,
+  type ManagedEntityHeader,
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 
@@ -26,7 +27,7 @@ export function buildRulesTextFromSettings(input: {
   for (const [index, item] of items.entries()) {
     const numberedItem = `${index + 1}. ${item}`;
     const candidate = [...lines, ...numberedItems, numberedItem].join('\n');
-    if (candidate.length > 2_000) {
+    if (candidate.length > MAX_CHAT_RULES_TEXT_LENGTH) {
       break;
     }
     numberedItems.push(numberedItem);

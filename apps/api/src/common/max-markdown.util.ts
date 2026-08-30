@@ -9,6 +9,13 @@ type RenderMarkdownOptions = {
   blockMode?: 'paragraphs' | 'raw';
 };
 
+export const MAX_MESSAGE_TEXT_LENGTH = 4_000;
+
+export type PreparedMaxMarkdownText = {
+  text: string;
+  textFormat: 'html' | 'markdown';
+};
+
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const HEADING_LINE_PATTERN = /^(#{1,6})[ \t]+(.+)$/u;
 const QUOTE_LINE_PATTERN = /^>[ \t]+(.+)$/u;
@@ -29,17 +36,7 @@ const ESCAPABLE_MARKDOWN_CHARACTERS = new Set([
   '^',
   '>',
 ]);
-const MULTILINE_INLINE_MARKERS = [
-  '***',
-  '___',
-  '**',
-  '__',
-  '++',
-  '~~',
-  '^^',
-  '*',
-  '_',
-] as const;
+const MULTILINE_INLINE_MARKERS = ['***', '___', '**', '__', '++', '~~', '^^', '*', '_'] as const;
 
 type MultilineInlineMarker = (typeof MULTILINE_INLINE_MARKERS)[number];
 
@@ -163,6 +160,30 @@ export function renderSupportedMarkdownAsHtml(
   flushParagraph();
 
   return blocks.join('');
+}
+
+export function prepareMarkdownForMaxDelivery(
+  source: string,
+  maxLength = MAX_MESSAGE_TEXT_LENGTH,
+): PreparedMaxMarkdownText | null {
+  const html = renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' });
+  if (html.length <= maxLength) {
+    return { text: html, textFormat: 'html' };
+  }
+
+  return source.length <= maxLength ? { text: source, textFormat: 'markdown' } : null;
+}
+
+export function prepareFormattedTextForMaxDelivery(
+  source: string,
+  textFormat: PreparedMaxMarkdownText['textFormat'],
+  maxLength = MAX_MESSAGE_TEXT_LENGTH,
+): PreparedMaxMarkdownText | null {
+  if (textFormat === 'markdown') {
+    return prepareMarkdownForMaxDelivery(source, maxLength);
+  }
+
+  return source.length <= maxLength ? { text: source, textFormat } : null;
 }
 
 export function stripSupportedMarkdownToPlainText(source: string): string {

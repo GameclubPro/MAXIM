@@ -7,6 +7,7 @@ import {
   broadcastHandoffStateSchema,
   formatDeleteBotMessagesDelayLabel,
   managedGiveawayHandoffRequestSchema,
+  MAX_CHAT_RULES_TEXT_LENGTH,
   profileMentionHandoffRequestSchema,
   stepDeleteBotMessagesDelayMinutes,
   type BroadcastHandoffState,
@@ -189,6 +190,9 @@ import {
   normalizePrivateSuggestionDraft,
   resolvePrivateBroadcastDraftTargetState,
 } from './private-control-draft-normalizer';
+import { buildPrivateChatRulesDraft } from './private-control-rules-draft';
+import { buildPrivateRulesScreenTextPreview } from './private-control-rules-preview';
+import { resolvePrivateControlSetFieldInputText } from './private-control-forward-routing';
 import { PrivateControlSessionStore } from './private-control-session.store';
 import { PrivateControlSessionBotContext } from './private-control-session-bot-context';
 import {
@@ -3111,17 +3115,10 @@ export class PrivateControlService {
         await this.adminSettingsService.updateRules(
           session.selectedChatId!,
           context.actor,
-          {
+          buildPrivateChatRulesDraft(settingsScreen.rules, {
             text: generatedText,
-            imageBase64: settingsScreen.rules.imageBase64,
-            imageMimeType: settingsScreen.rules.imageMimeType,
-            imageFileName: settingsScreen.rules.imageFileName,
             autoTextEnabled: true,
-            buttons: settingsScreen.rules.buttons,
-            buttonEnabled: settingsScreen.rules.buttonEnabled,
-            buttonUrl: settingsScreen.rules.buttonUrl,
-            buttonText: settingsScreen.rules.buttonText,
-          },
+          }),
           'private_bot',
         );
         session.pendingInput = null;
@@ -3144,17 +3141,11 @@ export class PrivateControlService {
         await this.adminSettingsService.updateRules(
           session.selectedChatId!,
           context.actor,
-          {
-            text: rules.text,
+          buildPrivateChatRulesDraft(rules, {
             imageBase64: '',
             imageMimeType: '',
             imageFileName: '',
-            autoTextEnabled: rules.autoTextEnabled,
-            buttons: rules.buttons,
-            buttonEnabled: rules.buttonEnabled,
-            buttonUrl: rules.buttonUrl,
-            buttonText: rules.buttonText,
-          },
+          }),
           'private_bot',
         );
         session.screen = 'rules';
@@ -4194,11 +4185,16 @@ export class PrivateControlService {
       case 'set_field': {
         this.assertSelectedEntityType(session, 'chat');
 
+        const inputText = resolvePrivateControlSetFieldInputText(
+          pendingInput,
+          context.update,
+          rawText,
+        );
         const parsedValue = parsePrivateControlInputValue(
           pendingInput.type,
           pendingInput.min,
           pendingInput.max,
-          rawText,
+          inputText,
         );
         await this.updateSingleSetting(
           session.selectedChatId!,
@@ -4869,7 +4865,10 @@ export class PrivateControlService {
   ): Promise<string> {
     this.assertSelectedEntityType(session, 'chat');
 
-    const formattedText = extractIncomingFormattedText(context.update, rawText);
+    const textPayload = extractIncomingFormattedTextPayload(context.update, rawText);
+    const sourceText = extractIncomingSuggestionTextPayload(context.update, rawText).text;
+    const formattedText =
+      textPayload.text.length <= MAX_CHAT_RULES_TEXT_LENGTH ? textPayload.text : sourceText;
     const normalizedText = formattedText.trim();
     const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
     const fileAttachment = extractPrivateFirstFileAttachment(context.update);
@@ -4932,17 +4931,13 @@ export class PrivateControlService {
     await this.adminSettingsService.updateRules(
       session.selectedChatId!,
       context.actor,
-      {
+      buildPrivateChatRulesDraft(currentRules, {
         text: nextText,
         imageBase64,
         imageMimeType,
         imageFileName,
         autoTextEnabled: normalizedText ? false : currentRules.autoTextEnabled,
-        buttons: currentRules.buttons,
-        buttonEnabled: currentRules.buttonEnabled,
-        buttonUrl: currentRules.buttonUrl,
-        buttonText: currentRules.buttonText,
-      },
+      }),
       'private_bot',
     );
 
@@ -5879,7 +5874,7 @@ export class PrivateControlService {
       '',
       `Чат: ${escapePrivateMarkdown(chatTitle)}`,
       '',
-      hasText ? rules.text : '_Текст правила пока не задан._',
+      hasText ? buildPrivateRulesScreenTextPreview(rules.text) : '_Текст правила пока не задан._',
     ];
 
     if (waitingHint) {
@@ -5963,7 +5958,7 @@ export class PrivateControlService {
     for (const [index, item] of items.entries()) {
       const numberedItem = `${index + 1}. ${item}`;
       const candidate = [...lines, ...numberedItems, numberedItem].join('\n');
-      if (candidate.length > 2_000) {
+      if (candidate.length > MAX_CHAT_RULES_TEXT_LENGTH) {
         break;
       }
       numberedItems.push(numberedItem);
@@ -9838,7 +9833,7 @@ export class PrivateControlService {
     return trimmed.replace(/\/+$/, '');
   }
 
-  private async loadSession(userId: string): Promise<PrivateSession> {
+  protected async loadSession(userId: string): Promise<PrivateSession> {
     return this.sessionStore.loadSession(userId, this.sessionBotContext.currentBotId());
   }
 

@@ -151,7 +151,8 @@ const deleteBotMessagesDelayMinutesSchema = z
   .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES);
 const botButtonUrlSchema = z.string().trim().max(MAX_HTTP_BUTTON_URL_LENGTH).default('');
 const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
-const botMessageTextSchema = z.string().max(1_000).default('');
+export const MAX_BOT_SPEECH_TEXT_LENGTH = 1_000;
+const botMessageTextSchema = z.string().max(MAX_BOT_SPEECH_TEXT_LENGTH).default('');
 const adminCommandNameSchema = z
   .string()
   .trim()
@@ -509,7 +510,8 @@ const requiredSubscriptionChannelIdsSchema = z
   .array(z.string().trim().min(1).max(128))
   .max(REQUIRED_SUBSCRIPTION_MAX_CHANNELS)
   .default([]);
-const chatRulesTextSchema = z.string().max(2_000).default('');
+export const MAX_CHAT_RULES_TEXT_LENGTH = 4_000;
+const chatRulesTextSchema = z.string().max(MAX_CHAT_RULES_TEXT_LENGTH).default('');
 const chatRulesImageBase64Schema = z
   .string()
   .trim()
