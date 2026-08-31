@@ -9,7 +9,7 @@ const DEFAULT_WEBHOOK_SHARD_COUNT = 16;
 const POLL_INTERVAL_MS = 1_000;
 const WEBHOOK_ROLLOUT_OWNER_KEY = 'maxim:webhook-rollout:pause-owner:v1';
 const WEBHOOK_ROLLOUT_OWNER_TOKEN_PATTERN = /^rollout:[0-9a-f]{64}$/u;
-const WEBHOOK_QUEUE_ACTIONS = new Set(['pause', 'wait-drained', 'resume']);
+const WEBHOOK_QUEUE_ACTIONS = new Set(['pause', 'wait-drained', 'resume', 'status']);
 
 const COMPARE_AND_SET_OWNER_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
@@ -175,6 +175,16 @@ async function readOwnedSummary(queues, ownershipStore, ownerToken) {
   }
 }
 
+async function readStatusSummary(queues, ownershipStore) {
+  const ownerBefore = await ownershipStore.getOwner();
+  const summary = await readSummary(queues);
+  const ownerAfter = await ownershipStore.getOwner();
+  if (ownerBefore !== ownerAfter) {
+    throw new Error('Webhook rollout pause ownership changed during status inspection.');
+  }
+  return { ...summary, ownerPresent: ownerAfter !== null };
+}
+
 async function claimPauseOwnership(
   ownershipStore,
   ownerToken,
@@ -259,7 +269,7 @@ async function controlWebhookQueues(action, options) {
     if (!WEBHOOK_QUEUE_ACTIONS.has(action)) {
       throw new Error('Unknown webhook rollout queue action.');
     }
-    validateOwnerToken(options.ownerToken);
+    if (action !== 'status') validateOwnerToken(options.ownerToken);
     const queueNames = options.queueNames ?? WEBHOOK_QUEUE_NAMES;
     validateQueueNames(queueNames);
     if (typeof options.createQueue !== 'function') {
@@ -281,6 +291,10 @@ async function controlWebhookQueues(action, options) {
     ]);
     if (readiness.some(({ status }) => status === 'rejected')) {
       throw new Error('Webhook rollout queue control dependencies are unavailable.');
+    }
+
+    if (action === 'status') {
+      return await readStatusSummary(queues, options.ownershipStore);
     }
 
     if (action === 'pause') {
@@ -390,6 +404,7 @@ module.exports = {
   controlWebhookQueues,
   createRedisOwnershipStore,
   parsePositiveInteger,
+  readStatusSummary,
   readSummary,
   validateOwnerToken,
   validateQueueNames,

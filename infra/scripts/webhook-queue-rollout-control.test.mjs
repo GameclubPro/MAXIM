@@ -142,6 +142,56 @@ test('validates strong rollout owner tokens without exposing them', () => {
   assert.throws(() => validateOwnerToken(`other:${'a'.repeat(64)}`), /invalid format/u);
 });
 
+test('reports queue pause ownership without mutating queues or requiring an owner token', async () => {
+  const harness = makeQueues({ activeByName: { moderation: 2 } });
+  const ownership = makeOwnershipStore();
+  const summary = await controlWebhookQueues(
+    'status',
+    controlOptions(harness, ownership, { ownerToken: undefined }),
+  );
+
+  assert.deepEqual(summary, {
+    queueCount: 24,
+    pausedCount: 0,
+    activeCount: 2,
+    ownerPresent: false,
+  });
+  assert.equal(ownership.calls.acquire, 0);
+  assert.equal(ownership.calls.compareAndSet, 0);
+  assert.equal(ownership.calls.compareAndDelete, 0);
+  assert.equal(ownership.calls.getOwner, 2);
+  assert.ok(
+    [...harness.states.values()].every(({ closeCalls, paused }) => closeCalls === 1 && !paused),
+  );
+});
+
+test('status exposes an existing owner and fails closed if ownership changes during inspection', async () => {
+  const ownedHarness = makeQueues();
+  const owned = makeOwnershipStore(OTHER_OWNER_TOKEN);
+  const ownedSummary = await controlWebhookQueues(
+    'status',
+    controlOptions(ownedHarness, owned, { ownerToken: undefined }),
+  );
+  assert.equal(ownedSummary.ownerPresent, true);
+  assert.equal(owned.backend.owner, OTHER_OWNER_TOKEN);
+
+  const racingHarness = makeQueues();
+  const racing = makeOwnershipStore(null, {
+    beforeGetOwner: async (backend) => {
+      if (racing.calls.getOwner === 2) backend.owner = OTHER_OWNER_TOKEN;
+    },
+  });
+  await assert.rejects(
+    controlWebhookQueues(
+      'status',
+      controlOptions(racingHarness, racing, { ownerToken: undefined }),
+    ),
+    /ownership changed during status inspection/u,
+  );
+  assert.equal(racing.calls.acquire, 0);
+  assert.equal(racing.calls.compareAndDelete, 0);
+});
+
 test('acquires ownership with SET NX semantics before pausing every queue', async () => {
   const harness = makeQueues();
   const ownership = makeOwnershipStore();
@@ -297,10 +347,7 @@ test('wait-drained keeps queue and ownership resources open until reads settle',
   });
   const ownership = makeOwnershipStore(OWNER_TOKEN);
 
-  const operation = controlWebhookQueues(
-    'wait-drained',
-    controlOptions(harness, ownership),
-  );
+  const operation = controlWebhookQueues('wait-drained', controlOptions(harness, ownership));
   await readStartedPromise;
   const closedBeforeReadSettled =
     ownership.calls.close !== 0 ||

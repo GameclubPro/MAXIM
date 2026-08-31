@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import type { AdminAccessEpochMutationMetric } from '../chat-context/chat-context-cache.service';
 import {
   MAX_WEBHOOK_ROUTE_OUTCOMES,
   type MaxWebhookRouteOutcome,
@@ -27,6 +28,8 @@ export type WebhookIngressMetricsSnapshot = {
   underTargetRatio: number | null;
   bots: Record<string, WebhookIngressBotMetrics>;
   route: WebhookRouteMetrics;
+  membershipCache: WebhookMembershipCacheMetrics;
+  membershipTransition: WebhookMembershipTransitionMetrics;
 };
 
 export type WebhookRouteOutcomeCounts = Record<MaxWebhookRouteOutcome, number>;
@@ -48,6 +51,55 @@ export type WebhookReceiptPersistenceMetric = {
   latencyMs: number;
 };
 
+export type WebhookMembershipCacheTimingMetrics = {
+  sampled: number;
+  p95DurationMs: number | null;
+  p99DurationMs: number | null;
+  overflowSamples: number;
+};
+
+export type WebhookMembershipCacheMetrics = {
+  precheck: {
+    hit: number;
+    miss: number;
+    failOpen: number;
+    timing: WebhookMembershipCacheTimingMetrics;
+  };
+  lua: {
+    applied: number;
+    superseded: number;
+    conflict: number;
+    retry: number;
+    exhausted: number;
+    failed: number;
+    timing: WebhookMembershipCacheTimingMetrics;
+  };
+  budget: {
+    completed: number;
+    timeout: number;
+    timing: WebhookMembershipCacheTimingMetrics;
+  };
+};
+
+export type WebhookMembershipCacheBudgetMetric = {
+  outcome: 'completed' | 'timeout';
+  durationMs: number;
+};
+
+export type WebhookMembershipTransitionMetrics = {
+  edgeAdvance: {
+    calls: number;
+    affectedRows: number;
+    noOpCalls: number;
+    timing: WebhookMembershipCacheTimingMetrics;
+  };
+};
+
+export type WebhookMembershipAccessEdgeAdvanceMetric = {
+  durationMs: number;
+  affectedRows: number;
+};
+
 const METRICS_KEY_PREFIX = 'system:webhook-ingress:metrics:v1';
 const METRICS_BUCKET_SEC = 10;
 const DEFAULT_INGRESS_TARGET_MS = 2_000;
@@ -60,6 +112,11 @@ const MAX_RETENTION_SEC = 24 * 60 * 60;
 const METRICS_FAILURE_LOG_INTERVAL_MS = 30_000;
 const LATENCY_BUCKET_UPPER_BOUNDS_MS = [
   25, 50, 100, 200, 400, 750, 1_000, 1_500, 2_000, 3_000, 5_000, 10_000, 20_000, 30_000,
+] as const;
+const MEMBERSHIP_CACHE_TIMING_STAGES = ['precheck', 'lua', 'budget'] as const;
+type MembershipCacheTimingStage = (typeof MEMBERSHIP_CACHE_TIMING_STAGES)[number];
+const MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS = [
+  1, 2, 5, 10, 20, 35, 50, 75, 100, 150, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000,
 ] as const;
 
 const RECORD_RECEIPT_LUA = `
@@ -194,6 +251,61 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       this.incrementPendingRouteField(key, `route:bot:${encodedBotId}:attempted`);
       this.incrementPendingRouteField(key, `route:bot:${encodedBotId}:outcome:${metric.outcome}`);
     }
+    this.scheduleRouteOutcomeFlush();
+  }
+
+  recordMembershipCacheMutation(metric: AdminAccessEpochMutationMetric): void {
+    if (metric.phase === 'precheck') {
+      if (metric.outcome !== 'hit' && metric.outcome !== 'miss' && metric.outcome !== 'fail_open') {
+        return;
+      }
+      this.recordMembershipCacheMetric('precheck', metric.outcome, metric.durationMs);
+      return;
+    }
+
+    if (
+      metric.outcome !== 'applied' &&
+      metric.outcome !== 'superseded' &&
+      metric.outcome !== 'conflict' &&
+      metric.outcome !== 'retry' &&
+      metric.outcome !== 'exhausted' &&
+      metric.outcome !== 'failed'
+    ) {
+      return;
+    }
+    this.recordMembershipCacheMetric('lua', metric.outcome, metric.durationMs);
+  }
+
+  recordMembershipCacheBudget(metric: WebhookMembershipCacheBudgetMetric): void {
+    if (metric.outcome !== 'completed' && metric.outcome !== 'timeout') {
+      return;
+    }
+    this.recordMembershipCacheMetric('budget', metric.outcome, metric.durationMs);
+  }
+
+  recordMembershipAccessEdgeAdvance(metric: WebhookMembershipAccessEdgeAdvanceMetric): void {
+    if (this.destroying) {
+      return;
+    }
+    const affectedRows = Number.isFinite(metric.affectedRows)
+      ? Math.max(0, Math.trunc(metric.affectedRows))
+      : 0;
+    const durationMs = this.normalizeLatency(metric.durationMs);
+    const key = this.buildBucketKey(Date.now());
+    this.incrementPendingRouteField(key, 'membership_transition:edge_advance:calls');
+    this.incrementPendingRouteField(
+      key,
+      'membership_transition:edge_advance:affected_rows',
+      affectedRows,
+    );
+    if (affectedRows === 0) {
+      this.incrementPendingRouteField(key, 'membership_transition:edge_advance:no_op_calls');
+    }
+    const bucket = this.resolveBucketIndex(
+      durationMs,
+      MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS,
+    );
+    this.incrementPendingRouteField(key, `membership_transition:edge_advance:duration:${bucket}`);
     this.scheduleRouteOutcomeFlush();
   }
 
@@ -333,12 +445,132 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
         [...bots.entries()].sort(([left], [right]) => left.localeCompare(right)),
       ),
       route,
+      membershipCache: this.aggregateMembershipCacheMetrics(rows),
+      membershipTransition: this.aggregateMembershipTransitionMetrics(rows),
     };
   }
 
-  private incrementPendingRouteField(key: string, field: string): void {
+  private recordMembershipCacheMetric(
+    stage: MembershipCacheTimingStage,
+    outcome: string,
+    durationMs?: number,
+  ): void {
+    if (this.destroying) {
+      return;
+    }
+    const key = this.buildBucketKey(Date.now());
+    this.incrementPendingRouteField(key, `membership_cache:${stage}:${outcome}`);
+    if (durationMs !== undefined) {
+      const normalizedDurationMs = this.normalizeLatency(durationMs);
+      const bucket = this.resolveBucketIndex(
+        normalizedDurationMs,
+        MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS,
+      );
+      this.incrementPendingRouteField(key, `membership_cache:duration:${stage}:${bucket}`);
+    }
+    this.scheduleRouteOutcomeFlush();
+  }
+
+  private aggregateMembershipCacheMetrics(
+    rows: ReadonlyArray<Record<string, string>>,
+  ): WebhookMembershipCacheMetrics {
+    const metrics = this.emptyMembershipCacheMetrics();
+    const timingBuckets = Object.fromEntries(
+      MEMBERSHIP_CACHE_TIMING_STAGES.map((stage) => [
+        stage,
+        MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS.map(() => 0).concat(0),
+      ]),
+    ) as Record<MembershipCacheTimingStage, number[]>;
+
+    for (const row of rows) {
+      metrics.precheck.hit += this.readCounter(row['membership_cache:precheck:hit']);
+      metrics.precheck.miss += this.readCounter(row['membership_cache:precheck:miss']);
+      metrics.precheck.failOpen += this.readCounter(row['membership_cache:precheck:fail_open']);
+      metrics.lua.applied += this.readCounter(row['membership_cache:lua:applied']);
+      metrics.lua.superseded += this.readCounter(row['membership_cache:lua:superseded']);
+      metrics.lua.conflict += this.readCounter(row['membership_cache:lua:conflict']);
+      metrics.lua.retry += this.readCounter(row['membership_cache:lua:retry']);
+      metrics.lua.exhausted += this.readCounter(row['membership_cache:lua:exhausted']);
+      metrics.lua.failed += this.readCounter(row['membership_cache:lua:failed']);
+      metrics.budget.completed += this.readCounter(row['membership_cache:budget:completed']);
+      metrics.budget.timeout += this.readCounter(row['membership_cache:budget:timeout']);
+
+      for (const stage of MEMBERSHIP_CACHE_TIMING_STAGES) {
+        for (let index = 0; index < timingBuckets[stage].length; index += 1) {
+          timingBuckets[stage][index] =
+            (timingBuckets[stage][index] ?? 0) +
+            this.readCounter(row[`membership_cache:duration:${stage}:${index}`]);
+        }
+      }
+    }
+
+    metrics.precheck.timing = this.buildMembershipCacheTimingMetrics(timingBuckets.precheck);
+    metrics.lua.timing = this.buildMembershipCacheTimingMetrics(timingBuckets.lua);
+    metrics.budget.timing = this.buildMembershipCacheTimingMetrics(timingBuckets.budget);
+    return metrics;
+  }
+
+  private buildMembershipCacheTimingMetrics(
+    buckets: readonly number[],
+  ): WebhookMembershipCacheTimingMetrics {
+    const sampled = buckets.reduce((sum, count) => sum + count, 0);
+    const overflowSamples = buckets.at(-1) ?? 0;
+    const overflowBoundMs =
+      MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS[
+        MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS.length - 1
+      ] ?? 0;
+    return {
+      sampled,
+      p95DurationMs: this.percentile(
+        buckets,
+        sampled,
+        0.95,
+        overflowBoundMs,
+        MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS,
+      ),
+      p99DurationMs: this.percentile(
+        buckets,
+        sampled,
+        0.99,
+        overflowBoundMs,
+        MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS,
+      ),
+      overflowSamples,
+    };
+  }
+
+  private aggregateMembershipTransitionMetrics(
+    rows: ReadonlyArray<Record<string, string>>,
+  ): WebhookMembershipTransitionMetrics {
+    const metrics = this.emptyMembershipTransitionMetrics();
+    const timingBuckets = MEMBERSHIP_CACHE_DURATION_BUCKET_UPPER_BOUNDS_MS.map(() => 0).concat(0);
+    for (const row of rows) {
+      metrics.edgeAdvance.calls += this.readCounter(
+        row['membership_transition:edge_advance:calls'],
+      );
+      metrics.edgeAdvance.affectedRows += this.readCounter(
+        row['membership_transition:edge_advance:affected_rows'],
+      );
+      metrics.edgeAdvance.noOpCalls += this.readCounter(
+        row['membership_transition:edge_advance:no_op_calls'],
+      );
+      for (let index = 0; index < timingBuckets.length; index += 1) {
+        timingBuckets[index] =
+          (timingBuckets[index] ?? 0) +
+          this.readCounter(row[`membership_transition:edge_advance:duration:${index}`]);
+      }
+    }
+    metrics.edgeAdvance.timing = this.buildMembershipCacheTimingMetrics(timingBuckets);
+    return metrics;
+  }
+
+  private incrementPendingRouteField(key: string, field: string, amount = 1): void {
+    const normalizedAmount = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
+    if (normalizedAmount === 0) {
+      return;
+    }
     const fields = this.pendingRouteFieldsByKey.get(key) ?? new Map<string, number>();
-    fields.set(field, (fields.get(field) ?? 0) + 1);
+    fields.set(field, (fields.get(field) ?? 0) + normalizedAmount);
     this.pendingRouteFieldsByKey.set(key, fields);
   }
 
@@ -393,6 +625,7 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
     total: number,
     percentile: number,
     maxLatencyMs: number,
+    upperBoundsMs: readonly number[] = LATENCY_BUCKET_UPPER_BOUNDS_MS,
   ): number | null {
     if (total <= 0) {
       return null;
@@ -404,12 +637,9 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       if (cumulative < rank) {
         continue;
       }
-      return index < LATENCY_BUCKET_UPPER_BOUNDS_MS.length
-        ? (LATENCY_BUCKET_UPPER_BOUNDS_MS[index] ?? maxLatencyMs)
-        : Math.max(
-            maxLatencyMs,
-            LATENCY_BUCKET_UPPER_BOUNDS_MS[LATENCY_BUCKET_UPPER_BOUNDS_MS.length - 1] ?? 0,
-          );
+      return index < upperBoundsMs.length
+        ? (upperBoundsMs[index] ?? maxLatencyMs)
+        : Math.max(maxLatencyMs, upperBoundsMs[upperBoundsMs.length - 1] ?? 0);
     }
     return maxLatencyMs;
   }
@@ -431,8 +661,12 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
   }
 
   private resolveLatencyBucketIndex(latencyMs: number): number {
-    const index = LATENCY_BUCKET_UPPER_BOUNDS_MS.findIndex((upperBound) => latencyMs <= upperBound);
-    return index >= 0 ? index : LATENCY_BUCKET_UPPER_BOUNDS_MS.length;
+    return this.resolveBucketIndex(latencyMs, LATENCY_BUCKET_UPPER_BOUNDS_MS);
+  }
+
+  private resolveBucketIndex(value: number, upperBounds: readonly number[]): number {
+    const index = upperBounds.findIndex((upperBound) => value <= upperBound);
+    return index >= 0 ? index : upperBounds.length;
   }
 
   private normalizeLatency(value: number): number {
@@ -487,6 +721,51 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
     };
   }
 
+  private emptyMembershipCacheTimingMetrics(): WebhookMembershipCacheTimingMetrics {
+    return {
+      sampled: 0,
+      p95DurationMs: null,
+      p99DurationMs: null,
+      overflowSamples: 0,
+    };
+  }
+
+  private emptyMembershipCacheMetrics(): WebhookMembershipCacheMetrics {
+    return {
+      precheck: {
+        hit: 0,
+        miss: 0,
+        failOpen: 0,
+        timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+      lua: {
+        applied: 0,
+        superseded: 0,
+        conflict: 0,
+        retry: 0,
+        exhausted: 0,
+        failed: 0,
+        timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+      budget: {
+        completed: 0,
+        timeout: 0,
+        timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+    };
+  }
+
+  private emptyMembershipTransitionMetrics(): WebhookMembershipTransitionMetrics {
+    return {
+      edgeAdvance: {
+        calls: 0,
+        affectedRows: 0,
+        noOpCalls: 0,
+        timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+    };
+  }
+
   private isStringRecord(value: unknown): value is Record<string, string> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
@@ -505,6 +784,8 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       underTargetRatio: null,
       bots: {},
       route: this.emptyRouteMetrics(),
+      membershipCache: this.emptyMembershipCacheMetrics(),
+      membershipTransition: this.emptyMembershipTransitionMetrics(),
     };
   }
 

@@ -1736,6 +1736,7 @@ describe('ChatContextCacheService', () => {
     const store = (Redis as unknown as { __store: Map<string, string> }).__store;
     const redis = getRedisMutationMock(service);
     const eventAt = new Date('2026-08-20T10:00:00.000Z');
+    const recordMetric = jest.fn();
     const epochKey = ChatContextCacheService.adminAccessEpochKey(
       'chat-precheck-superseded',
       'user-1',
@@ -1750,13 +1751,18 @@ describe('ChatContextCacheService', () => {
           state: 'user_denied',
           eventAt,
         },
-        { precheckSupersededEpoch: true },
+        { precheckSupersededEpoch: true, recordMetric },
       ),
     ).resolves.toBe(false);
 
     expect(redis.get).toHaveBeenCalledWith(epochKey);
     expect(redis.mget).not.toHaveBeenCalled();
     expect(redis.eval).not.toHaveBeenCalled();
+    expect(recordMetric).toHaveBeenCalledWith({
+      phase: 'precheck',
+      outcome: 'hit',
+      durationMs: expect.any(Number),
+    });
   });
 
   it.each([
@@ -1820,6 +1826,7 @@ describe('ChatContextCacheService', () => {
     const chatId = `chat-precheck-${raw === null ? 'missing' : 'malformed'}`;
     const userId = 'user-1';
     const eventAt = new Date('2026-08-20T10:00:00.000Z');
+    const recordMetric = jest.fn();
     const epochKey = ChatContextCacheService.adminAccessEpochKey(chatId, userId);
     if (raw !== null) {
       store.set(epochKey, raw);
@@ -1828,7 +1835,7 @@ describe('ChatContextCacheService', () => {
     await expect(
       service.applyAdminAccessEpochMutation(
         { chatId, userId, state: 'user_denied', eventAt },
-        { precheckSupersededEpoch: true },
+        { precheckSupersededEpoch: true, recordMetric },
       ),
     ).resolves.toBe(true);
 
@@ -1836,6 +1843,7 @@ describe('ChatContextCacheService', () => {
     expect(redis.mget).toHaveBeenCalledTimes(1);
     expect(redis.eval).toHaveBeenCalledTimes(1);
     expect(store.get(epochKey)).toBe(`${eventAt.getTime()}:1`);
+    expect(recordMetric.mock.calls.map(([metric]) => metric.outcome)).toEqual(['miss', 'applied']);
   });
 
   it('falls through the precheck when its Redis GET fails', async () => {
@@ -1845,6 +1853,7 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
     const redis = getRedisMutationMock(service);
+    const recordMetric = jest.fn();
     redis.get.mockRejectedValueOnce(new Error('epoch precheck unavailable'));
 
     await expect(
@@ -1855,12 +1864,16 @@ describe('ChatContextCacheService', () => {
           state: 'user_denied',
           eventAt: new Date('2026-08-20T10:00:00.000Z'),
         },
-        { precheckSupersededEpoch: true },
+        { precheckSupersededEpoch: true, recordMetric },
       ),
     ).resolves.toBe(true);
 
     expect(redis.mget).toHaveBeenCalledTimes(1);
     expect(redis.eval).toHaveBeenCalledTimes(1);
+    expect(recordMetric.mock.calls.map(([metric]) => metric.outcome)).toEqual([
+      'fail_open',
+      'applied',
+    ]);
   });
 
   it('falls through the precheck when its Redis GET does not settle within the read budget', async () => {
@@ -1871,6 +1884,7 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
     const redis = getRedisMutationMock(service);
+    const recordMetric = jest.fn();
     redis.get.mockReturnValueOnce(new Promise<string | null>(() => undefined));
 
     try {
@@ -1881,7 +1895,7 @@ describe('ChatContextCacheService', () => {
           state: 'user_denied',
           eventAt: new Date('2026-08-20T10:00:00.000Z'),
         },
-        { precheckSupersededEpoch: true },
+        { precheckSupersededEpoch: true, recordMetric },
       );
       await Promise.resolve();
       expect(redis.mget).not.toHaveBeenCalled();
@@ -1890,6 +1904,10 @@ describe('ChatContextCacheService', () => {
       await expect(mutation).resolves.toBe(true);
       expect(redis.mget).toHaveBeenCalledTimes(1);
       expect(redis.eval).toHaveBeenCalledTimes(1);
+      expect(recordMetric.mock.calls.map(([metric]) => metric.outcome)).toEqual([
+        'fail_open',
+        'applied',
+      ]);
     } finally {
       jest.useRealTimers();
     }
@@ -1909,6 +1927,7 @@ describe('ChatContextCacheService', () => {
     const epochKey = ChatContextCacheService.adminAccessEpochKey(chatId, userId);
     const accessKey = ChatContextCacheService.adminAccessKey(chatId, userId);
     const newerEpoch = `${eventAt.getTime() + 1}:0`;
+    const recordMetric = jest.fn();
     redis.get.mockImplementationOnce(async () => {
       store.set(epochKey, newerEpoch);
       store.set(accessKey, 'granted');
@@ -1918,7 +1937,7 @@ describe('ChatContextCacheService', () => {
     await expect(
       service.applyAdminAccessEpochMutation(
         { chatId, userId, state: 'user_denied', eventAt },
-        { precheckSupersededEpoch: true },
+        { precheckSupersededEpoch: true, recordMetric },
       ),
     ).resolves.toBe(false);
 
@@ -1926,6 +1945,79 @@ describe('ChatContextCacheService', () => {
     expect(redis.eval).toHaveBeenCalledTimes(1);
     expect(store.get(epochKey)).toBe(newerEpoch);
     expect(store.get(accessKey)).toBe('granted');
+    expect(recordMetric.mock.calls.map(([metric]) => metric.outcome)).toEqual([
+      'miss',
+      'superseded',
+    ]);
+  });
+
+  it('records Lua conflicts, retries, exhaustion, and failures without identifiers', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const redis = getRedisMutationMock(service);
+    const retriedMetrics = jest.fn();
+    redis.eval.mockResolvedValueOnce(-1).mockResolvedValueOnce(1);
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        {
+          chatId: 'chat-lua-retry',
+          userId: 'user-lua-retry',
+          state: 'user_denied',
+          eventAt: new Date('2026-08-20T10:00:00.000Z'),
+        },
+        { recordMetric: retriedMetrics },
+      ),
+    ).resolves.toBe(true);
+    expect(retriedMetrics.mock.calls.map(([metric]) => metric.outcome)).toEqual([
+      'conflict',
+      'retry',
+      'applied',
+    ]);
+
+    const exhaustedMetrics = jest.fn();
+    redis.eval.mockResolvedValue(-1);
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        {
+          chatId: 'chat-lua-exhausted',
+          userId: 'user-lua-exhausted',
+          state: 'user_denied',
+          eventAt: new Date('2026-08-20T10:00:00.000Z'),
+        },
+        { recordMetric: exhaustedMetrics },
+      ),
+    ).rejects.toThrow('conflicted repeatedly');
+    expect(
+      exhaustedMetrics.mock.calls.filter(([metric]) => metric.outcome === 'conflict'),
+    ).toHaveLength(16);
+    expect(
+      exhaustedMetrics.mock.calls.filter(([metric]) => metric.outcome === 'retry'),
+    ).toHaveLength(15);
+    expect(exhaustedMetrics).toHaveBeenLastCalledWith({ phase: 'lua', outcome: 'exhausted' });
+
+    const failedMetrics = jest.fn();
+    redis.eval.mockRejectedValueOnce(new Error('redis unavailable'));
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        {
+          chatId: 'chat-lua-failed',
+          userId: 'user-lua-failed',
+          state: 'user_denied',
+          eventAt: new Date('2026-08-20T10:00:00.000Z'),
+        },
+        { recordMetric: failedMetrics },
+      ),
+    ).rejects.toThrow('redis unavailable');
+    expect(failedMetrics).toHaveBeenCalledWith({
+      phase: 'lua',
+      outcome: 'failed',
+      durationMs: expect.any(Number),
+    });
+    expect(JSON.stringify(failedMetrics.mock.calls)).not.toMatch(/chat-lua|user-lua/u);
   });
 
   it('accepts a newer grant after an older removal epoch', async () => {

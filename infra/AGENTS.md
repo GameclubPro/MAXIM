@@ -46,6 +46,10 @@
 - Local submit: stage the intended paths, then run `./infra/scripts/local-commit-push.sh "<message>" main`. The helper is staged-only by default, runs `agent:verify --staged`, commits, and pushes the exact resulting `HEAD`; `--all` is an explicit broad-staging opt-in.
 - `--all` excludes every `AGENTS.md` unless `--include-agents` is present, and already-staged agent notes are rejected without that flag.
 - Local deploy: `./infra/scripts/vps-connect.sh deploy main [services|--plan|--auto|--full]`.
+- Exact-runtime manifest recovery: `./infra/scripts/vps-connect.sh finalize-release-recovery main`. Use
+  it only after an interrupted transition already left all 13 API roles and both active static
+  services running the green exact target SHA with the webhook queue fence fully released. It
+  performs no build, migration, or container recreation.
 - Exact-SHA off-host preload: after green main CI, run `./infra/scripts/vps-connect.sh preload-ci-image <api|miniapp|admin> <sha>` for each selected component, then use the normal deploy wrapper. The helper verifies the CI run, checksum, image labels, and free capacity for the uncompressed archive plus a 4 GiB reserve; the remote load holds the shared deploy lock and never mutates containers or non-MAXIM images.
 - Direct backend recovery command: `MAXIM_EXPECTED_DEPLOY_SHA=<full-reviewed-sha> ./infra/scripts/vps-pull-build-up.sh main [services...]`.
 - The direct backend script does not query GitHub CI on its own. Routine operators must use the guarded local wrapper or operator-fallback workflow; treat direct invocation as a reviewed recovery path and pass the intended `MAXIM_EXPECTED_DEPLOY_SHA` explicitly.
@@ -57,6 +61,13 @@
 - Active deploy images use immutable full-SHA refs: `maxim-api:<sha>`, `maxim-miniapp-major:<sha>`, and `maxim-admin:<sha>`. The shared API image is built once with `docker buildx build --load --provenance=false` and used by every API role; do not restore multi-service Compose/bake API builds.
 - Before any local shared API build, the deploy tooling requires every Docker input to match `HEAD`, including root lock/manifests, workspace manifests, `.dockerignore`, API/contracts/scripts, and trusted certificates. Commit or remove input drift before deploying or running ref-based rollback; a new intentional Docker exclusion must update the guard allowlist in the same review.
 - Component manifests live under `/var/lib/maxim-deploy`, retain at least five releases, and track each active component's source SHA, image ref, and image ID. Before the first migration or runtime mutation, deploy and both rollback paths atomically rename `current.json` to one typed `current.invalid-*` attempt journal; a new `current.json` is published only after image-ID verification and strict component smokes. Recovery requires explicit adoption and exactly one validated journal. Normal deploy reconciles every active component; partial rollback verifies every inherited component before mutation and commit, and an API rollback journal cannot be recovered without the API queue fence.
+- The recovery finalizer is the only no-recreate path for an already-converged exact-SHA runtime. It
+  requires green exact-SHA CI, a synchronized clean VPS checkout, the shared deploy lock, exactly
+  one complete typed transition journal, exact refs and image IDs for every active component, two
+  stable runtime/queue-fence observations, a bounded read-only snapshot of successful Prisma
+  migrations, and strict API/static/OCR smokes before committing `current.json` and archiving the
+  journal. A paused queue, owner key, failed smoke, runtime restart, current manifest, or ambiguous
+  journal aborts without recording recovery.
 - Production deploys run Prisma migrations only when the shared API component is selected. Static-only mini app or Safety Desk deploys build/recreate/smoke their component without running migrations.
 - Migration one-offs use `infra/docker-compose.runtime-no-build.yml` with an explicit prebuilt image and `--pull never`; `docker compose run` does not accept `--no-build` on every supported production Compose version. Runtime recreation still requires `docker compose up --no-build`.
 - `rollback-release` reuses locally retained immutable images, checks recorded image IDs, force-recreates only selected component services, runs strict smokes, and records a new rollback manifest. API selection additionally requires Postgres/Redis readiness and Prisma compatibility; static-only rollback is image-only and does not require Git or database access. It does not switch Git refs, build images, or run migrations; an incomplete attempt leaves its typed transition journal in place instead of publishing false current inventory.

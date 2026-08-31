@@ -1079,6 +1079,237 @@ function createEmptyWebhookRouteMetrics(): SystemDashboardWebhookRouteMetrics {
   };
 }
 
+export const systemDashboardWebhookMembershipCacheTimingSchema = z
+  .object({
+    sampled: z.number().int().min(0),
+    p95DurationMs: z.number().min(0).nullable(),
+    p99DurationMs: z.number().min(0).nullable(),
+    overflowSamples: z.number().int().min(0),
+  })
+  .superRefine((value, context) => {
+    const percentilesMissing = value.p95DurationMs === null || value.p99DurationMs === null;
+    if (value.overflowSamples > value.sampled) {
+      context.addIssue({
+        code: 'custom',
+        path: ['overflowSamples'],
+        message: 'Overflow samples cannot exceed the timing sample count.',
+      });
+    }
+    if (value.sampled === 0 && (!percentilesMissing || value.overflowSamples !== 0)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['sampled'],
+        message: 'Empty timing samples require null percentiles and zero overflow.',
+      });
+    }
+    if (value.sampled > 0 && percentilesMissing) {
+      context.addIssue({
+        code: 'custom',
+        path: ['p95DurationMs'],
+        message: 'Non-empty timing samples require both percentiles.',
+      });
+    }
+    if (
+      value.p95DurationMs !== null &&
+      value.p99DurationMs !== null &&
+      value.p95DurationMs > value.p99DurationMs
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['p99DurationMs'],
+        message: 'The p99 duration cannot be below p95.',
+      });
+    }
+  });
+export type SystemDashboardWebhookMembershipCacheTiming = z.infer<
+  typeof systemDashboardWebhookMembershipCacheTimingSchema
+>;
+
+export const systemDashboardWebhookMembershipCacheMetricsSchema = z
+  .object({
+    precheck: z.object({
+      hit: z.number().int().min(0),
+      miss: z.number().int().min(0),
+      failOpen: z.number().int().min(0),
+      timing: systemDashboardWebhookMembershipCacheTimingSchema,
+    }),
+    lua: z.object({
+      applied: z.number().int().min(0),
+      superseded: z.number().int().min(0),
+      conflict: z.number().int().min(0),
+      retry: z.number().int().min(0),
+      exhausted: z.number().int().min(0),
+      failed: z.number().int().min(0),
+      timing: systemDashboardWebhookMembershipCacheTimingSchema,
+    }),
+    budget: z.object({
+      completed: z.number().int().min(0),
+      timeout: z.number().int().min(0),
+      timing: systemDashboardWebhookMembershipCacheTimingSchema,
+    }),
+  })
+  .superRefine((value, context) => {
+    const precheckSamples = value.precheck.hit + value.precheck.miss + value.precheck.failOpen;
+    const luaSamples =
+      value.lua.applied + value.lua.superseded + value.lua.conflict + value.lua.failed;
+    const budgetSamples = value.budget.completed + value.budget.timeout;
+    for (const [path, actual, expected] of [
+      ['precheck', value.precheck.timing.sampled, precheckSamples],
+      ['lua', value.lua.timing.sampled, luaSamples],
+      ['budget', value.budget.timing.sampled, budgetSamples],
+    ] as const) {
+      if (actual !== expected) {
+        context.addIssue({
+          code: 'custom',
+          path: [path, 'timing', 'sampled'],
+          message: 'Timing samples must match the outcomes that record durations.',
+        });
+      }
+    }
+  });
+export type SystemDashboardWebhookMembershipCacheMetrics = z.infer<
+  typeof systemDashboardWebhookMembershipCacheMetricsSchema
+>;
+
+export const systemDashboardWebhookMembershipTransitionMetricsSchema = z
+  .object({
+    edgeAdvance: z.object({
+      calls: z.number().int().min(0),
+      affectedRows: z.number().int().min(0),
+      noOpCalls: z.number().int().min(0),
+      timing: systemDashboardWebhookMembershipCacheTimingSchema,
+    }),
+  })
+  .superRefine((value, context) => {
+    if (value.edgeAdvance.noOpCalls > value.edgeAdvance.calls) {
+      context.addIssue({
+        code: 'custom',
+        path: ['edgeAdvance', 'noOpCalls'],
+        message: 'No-op edge advances cannot exceed total calls.',
+      });
+    }
+    if (value.edgeAdvance.timing.sampled !== value.edgeAdvance.calls) {
+      context.addIssue({
+        code: 'custom',
+        path: ['edgeAdvance', 'timing', 'sampled'],
+        message: 'Every edge-advance call must have one timing sample.',
+      });
+    }
+  });
+export type SystemDashboardWebhookMembershipTransitionMetrics = z.infer<
+  typeof systemDashboardWebhookMembershipTransitionMetricsSchema
+>;
+
+export const systemDashboardWebhookMembershipCacheAlertSignalSchema = z
+  .object({
+    sampled: z.number().int().min(0),
+    affected: z.number().int().min(0),
+    ratio: z.number().min(0).max(1).nullable(),
+  })
+  .superRefine((value, context) => {
+    if (value.affected > value.sampled) {
+      context.addIssue({
+        code: 'custom',
+        path: ['affected'],
+        message: 'Affected samples cannot exceed total samples.',
+      });
+    }
+    if (value.sampled === 0 && value.ratio !== null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ratio'],
+        message: 'An empty signal must have a null ratio.',
+      });
+    }
+    if (value.sampled > 0) {
+      const expectedRatio = value.affected / value.sampled;
+      if (value.ratio === null || Math.abs(value.ratio - expectedRatio) > 1e-12) {
+        context.addIssue({
+          code: 'custom',
+          path: ['ratio'],
+          message: 'Signal ratio must match affected divided by sampled.',
+        });
+      }
+    }
+  });
+export type SystemDashboardWebhookMembershipCacheAlertSignal = z.infer<
+  typeof systemDashboardWebhookMembershipCacheAlertSignalSchema
+>;
+
+export const systemDashboardWebhookMembershipCacheAlertThresholdSchema = z.object({
+  minimumSamples: z.number().int().positive(),
+  minimumAffected: z.number().int().positive(),
+  ratio: z.number().positive().max(1),
+});
+export type SystemDashboardWebhookMembershipCacheAlertThreshold = z.infer<
+  typeof systemDashboardWebhookMembershipCacheAlertThresholdSchema
+>;
+
+export const systemDashboardWebhookMembershipCacheSloSchema = z
+  .object({
+    status: systemDashboardWebhookSloStatusSchema,
+    precheckFailOpen: systemDashboardWebhookMembershipCacheAlertSignalSchema,
+    luaConflict: systemDashboardWebhookMembershipCacheAlertSignalSchema,
+    luaTerminalFailure: systemDashboardWebhookMembershipCacheAlertSignalSchema,
+    budgetTimeout: systemDashboardWebhookMembershipCacheAlertSignalSchema,
+    thresholds: z.object({
+      warning: systemDashboardWebhookMembershipCacheAlertThresholdSchema,
+      critical: systemDashboardWebhookMembershipCacheAlertThresholdSchema,
+    }),
+  })
+  .superRefine((value, context) => {
+    const { warning, critical } = value.thresholds;
+    if (
+      critical.minimumSamples < warning.minimumSamples ||
+      critical.minimumAffected < warning.minimumAffected ||
+      critical.ratio < warning.ratio
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['thresholds', 'critical'],
+        message: 'Critical thresholds cannot be weaker than warning thresholds.',
+      });
+    }
+    for (const [name, threshold] of Object.entries(value.thresholds)) {
+      if (threshold.minimumAffected > threshold.minimumSamples) {
+        context.addIssue({
+          code: 'custom',
+          path: ['thresholds', name, 'minimumAffected'],
+          message: 'Minimum affected samples cannot exceed minimum total samples.',
+        });
+      }
+    }
+    const signals = [
+      value.precheckFailOpen,
+      value.luaConflict,
+      value.luaTerminalFailure,
+      value.budgetTimeout,
+    ];
+    const exceeds = (
+      signal: SystemDashboardWebhookMembershipCacheAlertSignal,
+      threshold: SystemDashboardWebhookMembershipCacheAlertThreshold,
+    ) =>
+      signal.sampled >= threshold.minimumSamples &&
+      signal.affected >= threshold.minimumAffected &&
+      signal.ratio !== null &&
+      signal.ratio >= threshold.ratio;
+    const expectedStatus = signals.some((signal) => exceeds(signal, critical))
+      ? 'critical'
+      : signals.some((signal) => exceeds(signal, warning))
+        ? 'warning'
+        : 'healthy';
+    if (value.status !== expectedStatus) {
+      context.addIssue({
+        code: 'custom',
+        path: ['status'],
+        message: 'Membership-cache status must match its alert signals and thresholds.',
+      });
+    }
+  });
+export type SystemDashboardWebhookMembershipCacheSlo = z.infer<
+  typeof systemDashboardWebhookMembershipCacheSloSchema
+>;
+
 export const systemDashboardWebhookIngressSloSchema = z.object({
   available: z.boolean(),
   targetMs: z.number().int().positive(),
@@ -1092,6 +1323,8 @@ export const systemDashboardWebhookIngressSloSchema = z.object({
   underTargetRatio: z.number().min(0).max(1).nullable(),
   bots: z.record(z.string(), systemDashboardWebhookIngressBotMetricsSchema),
   route: systemDashboardWebhookRouteMetricsSchema.default(createEmptyWebhookRouteMetrics),
+  membershipCache: systemDashboardWebhookMembershipCacheMetricsSchema.optional(),
+  membershipTransition: systemDashboardWebhookMembershipTransitionMetricsSchema.optional(),
 });
 export type SystemDashboardWebhookIngressSlo = z.infer<
   typeof systemDashboardWebhookIngressSloSchema
@@ -1166,6 +1399,7 @@ export const systemDashboardWebhookSloSchema = z
     oldestUnprocessedEventId: z.string().nullable(),
     lastProcessedAt: z.string().datetime().nullable(),
     ingress: systemDashboardWebhookIngressSloSchema.optional(),
+    membershipCache: systemDashboardWebhookMembershipCacheSloSchema.optional(),
     enqueue: systemDashboardWebhookEnqueueSloSchema.optional(),
     canonicalExecution: systemDashboardWebhookCanonicalExecutionSloSchema.optional(),
     generatedAt: z.string().datetime(),

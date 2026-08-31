@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   WebhookIngressMetricsService,
   type WebhookIngressMetricsSnapshot,
+  type WebhookMembershipCacheMetrics,
 } from './webhook-ingress-metrics.service';
 
 export type WebhookSloSnapshot = {
@@ -25,9 +26,34 @@ export type WebhookSloSnapshot = {
   oldestUnprocessedEventId: string | null;
   lastProcessedAt: string | null;
   ingress: WebhookIngressMetricsSnapshot;
+  membershipCache: WebhookMembershipCacheSloSnapshot;
   enqueue: WebhookEnqueueSloSnapshot;
   canonicalExecution: WebhookCanonicalExecutionSloSnapshot;
   generatedAt: string;
+};
+
+export type WebhookMembershipCacheAlertSignal = {
+  sampled: number;
+  affected: number;
+  ratio: number | null;
+};
+
+export type WebhookMembershipCacheSloSnapshot = {
+  status: 'healthy' | 'warning' | 'critical';
+  precheckFailOpen: WebhookMembershipCacheAlertSignal;
+  luaConflict: WebhookMembershipCacheAlertSignal;
+  luaTerminalFailure: WebhookMembershipCacheAlertSignal;
+  budgetTimeout: WebhookMembershipCacheAlertSignal;
+  thresholds: {
+    warning: WebhookMembershipCacheAlertThreshold;
+    critical: WebhookMembershipCacheAlertThreshold;
+  };
+};
+
+export type WebhookMembershipCacheAlertThreshold = {
+  minimumSamples: number;
+  minimumAffected: number;
+  ratio: number;
 };
 
 export type WebhookCanonicalExecutionSloSnapshot = {
@@ -60,6 +86,18 @@ const WARNING_UNPROCESSED_LAG_SEC = 5;
 const CRITICAL_UNPROCESSED_LAG_SEC = 15;
 const WARNING_INGRESS_UNDER_TARGET_RATIO = 0.99;
 const CRITICAL_INGRESS_FAILURE_COUNT = 5;
+const MEMBERSHIP_CACHE_ALERT_THRESHOLDS = {
+  warning: {
+    minimumSamples: 20,
+    minimumAffected: 3,
+    ratio: 0.1,
+  },
+  critical: {
+    minimumSamples: 50,
+    minimumAffected: 10,
+    ratio: 0.3,
+  },
+} as const satisfies WebhookMembershipCacheSloSnapshot['thresholds'];
 const SERVICE_ROUTE_FAILURE_OUTCOMES = [
   'admission_rejected',
   'invalid_json',
@@ -286,6 +324,7 @@ export class WebhookSloService {
     const oldestPendingEnqueueLagSec = oldestPendingEnqueue
       ? Number(Math.max(0, (nowMs - oldestPendingEnqueue.createdAt.getTime()) / 1_000).toFixed(3))
       : 0;
+    const membershipCache = this.buildMembershipCacheSloSnapshot(ingress);
     const status = this.resolveStatus({
       failedEvents,
       underTargetRatio,
@@ -293,6 +332,7 @@ export class WebhookSloService {
       p95ProcessingMs,
       p99ProcessingMs,
       ingress,
+      membershipCache,
     });
 
     return {
@@ -316,6 +356,7 @@ export class WebhookSloService {
       oldestUnprocessedEventId: oldestUnprocessed?.id ?? null,
       lastProcessedAt: lastProcessed?.processedAt?.toISOString() ?? null,
       ingress,
+      membershipCache,
       enqueue: {
         targetMs: this.targetEnqueueMs,
         sampledEvents: enqueueDurations.length,
@@ -345,15 +386,19 @@ export class WebhookSloService {
     p95ProcessingMs: number | null;
     p99ProcessingMs: number | null;
     ingress: WebhookIngressMetricsSnapshot;
+    membershipCache?: WebhookMembershipCacheSloSnapshot;
   }): WebhookSloSnapshot['status'] {
     const receiptFailureCount = params.ingress.failedReceipts + params.ingress.rejectedReceipts;
     const routeFailureCount = this.countServiceRouteFailures(params.ingress);
+    const membershipCache =
+      params.membershipCache ?? this.buildMembershipCacheSloSnapshot(params.ingress);
     if (
       params.oldestUnprocessedLagSec >= CRITICAL_UNPROCESSED_LAG_SEC ||
       (params.underTargetRatio !== null && params.underTargetRatio < CRITICAL_UNDER_TARGET_RATIO) ||
       (params.p99ProcessingMs !== null && params.p99ProcessingMs > 1_000) ||
       receiptFailureCount >= CRITICAL_INGRESS_FAILURE_COUNT ||
       routeFailureCount >= CRITICAL_INGRESS_FAILURE_COUNT ||
+      membershipCache.status === 'critical' ||
       (params.ingress.p99LatencyMs !== null &&
         params.ingress.p99LatencyMs > params.ingress.targetMs)
     ) {
@@ -369,6 +414,7 @@ export class WebhookSloService {
       params.ingress.failedReceipts > 0 ||
       params.ingress.rejectedReceipts > 0 ||
       routeFailureCount > 0 ||
+      membershipCache.status === 'warning' ||
       (params.ingress.underTargetRatio !== null &&
         params.ingress.underTargetRatio < WARNING_INGRESS_UNDER_TARGET_RATIO) ||
       (params.ingress.p95LatencyMs !== null &&
@@ -378,6 +424,71 @@ export class WebhookSloService {
     }
 
     return 'healthy';
+  }
+
+  private buildMembershipCacheSloSnapshot(
+    ingress: WebhookIngressMetricsSnapshot,
+  ): WebhookMembershipCacheSloSnapshot {
+    const metrics = ingress.membershipCache ?? this.emptyMembershipCacheMetrics();
+    const precheckFailOpen = this.buildMembershipCacheAlertSignal(
+      metrics.precheck.hit + metrics.precheck.miss + metrics.precheck.failOpen,
+      metrics.precheck.failOpen,
+    );
+    const luaConflict = this.buildMembershipCacheAlertSignal(
+      metrics.lua.applied + metrics.lua.superseded + metrics.lua.conflict + metrics.lua.failed,
+      metrics.lua.conflict,
+    );
+    const luaTerminalFailure = this.buildMembershipCacheAlertSignal(
+      metrics.lua.applied + metrics.lua.superseded + metrics.lua.exhausted + metrics.lua.failed,
+      metrics.lua.exhausted + metrics.lua.failed,
+    );
+    const budgetTimeout = this.buildMembershipCacheAlertSignal(
+      metrics.budget.completed + metrics.budget.timeout,
+      metrics.budget.timeout,
+    );
+    const signals = [precheckFailOpen, luaConflict, luaTerminalFailure, budgetTimeout];
+    const status = signals.some((signal) =>
+      this.membershipCacheSignalExceeds(signal, MEMBERSHIP_CACHE_ALERT_THRESHOLDS.critical),
+    )
+      ? 'critical'
+      : signals.some((signal) =>
+            this.membershipCacheSignalExceeds(signal, MEMBERSHIP_CACHE_ALERT_THRESHOLDS.warning),
+          )
+        ? 'warning'
+        : 'healthy';
+
+    return {
+      status,
+      precheckFailOpen,
+      luaConflict,
+      luaTerminalFailure,
+      budgetTimeout,
+      thresholds: MEMBERSHIP_CACHE_ALERT_THRESHOLDS,
+    };
+  }
+
+  private buildMembershipCacheAlertSignal(
+    sampled: number,
+    affected: number,
+  ): WebhookMembershipCacheAlertSignal {
+    const boundedAffected = Math.min(sampled, affected);
+    return {
+      sampled,
+      affected,
+      ratio: sampled > 0 ? boundedAffected / sampled : null,
+    };
+  }
+
+  private membershipCacheSignalExceeds(
+    signal: WebhookMembershipCacheAlertSignal,
+    threshold: WebhookMembershipCacheAlertThreshold,
+  ): boolean {
+    return (
+      signal.sampled >= threshold.minimumSamples &&
+      signal.affected >= threshold.minimumAffected &&
+      signal.sampled > 0 &&
+      Math.min(signal.sampled, signal.affected) / signal.sampled >= threshold.ratio
+    );
   }
 
   private countServiceRouteFailures(ingress: WebhookIngressMetricsSnapshot): number {
@@ -447,6 +558,49 @@ export class WebhookSloService {
           failed: 0,
         },
         bots: {},
+      },
+      membershipCache: this.emptyMembershipCacheMetrics(),
+      membershipTransition: {
+        edgeAdvance: {
+          calls: 0,
+          affectedRows: 0,
+          noOpCalls: 0,
+          timing: this.emptyMembershipCacheTimingMetrics(),
+        },
+      },
+    };
+  }
+
+  private emptyMembershipCacheTimingMetrics() {
+    return {
+      sampled: 0,
+      p95DurationMs: null,
+      p99DurationMs: null,
+      overflowSamples: 0,
+    };
+  }
+
+  private emptyMembershipCacheMetrics(): WebhookMembershipCacheMetrics {
+    return {
+      precheck: {
+        hit: 0,
+        miss: 0,
+        failOpen: 0,
+        timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+      lua: {
+        applied: 0,
+        superseded: 0,
+        conflict: 0,
+        retry: 0,
+        exhausted: 0,
+        failed: 0,
+        timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+      budget: {
+        completed: 0,
+        timeout: 0,
+        timing: this.emptyMembershipCacheTimingMetrics(),
       },
     };
   }

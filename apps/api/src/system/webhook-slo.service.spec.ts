@@ -51,6 +51,36 @@ function createHealthyIngress(
     underTargetRatio: null,
     bots: {},
     route: createRouteMetrics(),
+    membershipCache: {
+      precheck: {
+        hit: 0,
+        miss: 0,
+        failOpen: 0,
+        timing: { sampled: 0, p95DurationMs: null, p99DurationMs: null, overflowSamples: 0 },
+      },
+      lua: {
+        applied: 0,
+        superseded: 0,
+        conflict: 0,
+        retry: 0,
+        exhausted: 0,
+        failed: 0,
+        timing: { sampled: 0, p95DurationMs: null, p99DurationMs: null, overflowSamples: 0 },
+      },
+      budget: {
+        completed: 0,
+        timeout: 0,
+        timing: { sampled: 0, p95DurationMs: null, p99DurationMs: null, overflowSamples: 0 },
+      },
+    },
+    membershipTransition: {
+      edgeAdvance: {
+        calls: 0,
+        affectedRows: 0,
+        noOpCalls: 0,
+        timing: { sampled: 0, p95DurationMs: null, p99DurationMs: null, overflowSamples: 0 },
+      },
+    },
     ...overrides,
   };
 }
@@ -627,5 +657,64 @@ describe('WebhookSloService', () => {
         }),
       }),
     ).toBe('healthy');
+  });
+
+  it('alerts only on sustained membership-cache degradation with explicit sample gates', () => {
+    const service = new WebhookSloService({} as never, createConfig() as never);
+    const subject = service as unknown as {
+      resolveStatus: (params: {
+        failedEvents: number;
+        underTargetRatio: number | null;
+        oldestUnprocessedLagSec: number;
+        p95ProcessingMs: number | null;
+        p99ProcessingMs: number | null;
+        ingress: WebhookIngressMetricsSnapshot;
+      }) => string;
+      buildMembershipCacheSloSnapshot: (ingress: WebhookIngressMetricsSnapshot) => {
+        status: string;
+        budgetTimeout: { sampled: number; affected: number; ratio: number | null };
+        thresholds: {
+          warning: { minimumSamples: number; minimumAffected: number; ratio: number };
+          critical: { minimumSamples: number; minimumAffected: number; ratio: number };
+        };
+      };
+    };
+    const withBudgetOutcomes = (completed: number, timeout: number) => {
+      const ingress = createHealthyIngress();
+      return {
+        ...ingress,
+        membershipCache: {
+          ...ingress.membershipCache,
+          budget: {
+            ...ingress.membershipCache.budget,
+            completed,
+            timeout,
+          },
+        },
+      };
+    };
+    const resolveStatus = (ingress: WebhookIngressMetricsSnapshot) =>
+      subject.resolveStatus({
+        failedEvents: 0,
+        underTargetRatio: null,
+        oldestUnprocessedLagSec: 0,
+        p95ProcessingMs: null,
+        p99ProcessingMs: null,
+        ingress,
+      });
+
+    expect(resolveStatus(withBudgetOutcomes(0, 1))).toBe('healthy');
+    expect(resolveStatus(withBudgetOutcomes(9_004, 996))).toBe('healthy');
+    expect(resolveStatus(withBudgetOutcomes(17, 3))).toBe('warning');
+    expect(resolveStatus(withBudgetOutcomes(7_004, 2_996))).toBe('warning');
+    expect(resolveStatus(withBudgetOutcomes(35, 15))).toBe('critical');
+    expect(subject.buildMembershipCacheSloSnapshot(withBudgetOutcomes(35, 15))).toMatchObject({
+      status: 'critical',
+      budgetTimeout: { sampled: 50, affected: 15, ratio: 0.3 },
+      thresholds: {
+        warning: { minimumSamples: 20, minimumAffected: 3, ratio: 0.1 },
+        critical: { minimumSamples: 50, minimumAffected: 10, ratio: 0.3 },
+      },
+    });
   });
 });

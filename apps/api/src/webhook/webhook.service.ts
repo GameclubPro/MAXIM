@@ -9,7 +9,10 @@ import {
   WebhookExecutionClaimStatus,
   WebhookStatus,
 } from '../prisma/prisma-client';
-import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import {
+  ChatContextCacheService,
+  type AdminAccessEpochMutationMetric,
+} from '../chat-context/chat-context-cache.service';
 import {
   buildChatUserDisplayNameInsertIfAbsent,
   buildChatUserDisplayNameUpsert,
@@ -34,6 +37,7 @@ import {
   MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
 } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookIngressMetricsService } from '../system/webhook-ingress-metrics.service';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { PublisherEntityBindingLifecycleService } from '../publisher/publisher-entity-binding-lifecycle.service';
 import { PublisherChatCommentProducerService } from '../publisher/publisher-chat-comment-producer.service';
@@ -43,6 +47,7 @@ import {
   buildWebhookSemanticEventKey,
   readWebhookEventTimestamp,
 } from './webhook-semantic-event-key';
+import { buildMembershipDenialEdgeAdvanceWhere } from './webhook-membership-transition.util';
 import {
   normalizeWebhookCanonicalCanaryPercent,
   normalizeWebhookCanonicalExecutionMode,
@@ -237,6 +242,7 @@ export class WebhookService {
     private readonly publisherPrivateDialogFlows?: PublisherPrivateDialogFlowRouterService,
     @Optional()
     private readonly publisherAutoReplyProducer?: PublisherAutoReplyProducerService,
+    @Optional() private readonly webhookIngressMetricsService?: WebhookIngressMetricsService,
   ) {
     const configuredPublisherBotId = configService.get<unknown>('MAX_PUBLISHER_BOT_ID');
     this.publisherBotId = buildPublisherBotDescriptor({
@@ -1999,21 +2005,28 @@ export class WebhookService {
       return [];
     }
 
-    await tx.managedEntityAccessEdge.updateMany({
-      where: {
+    const denialSource = `webhook_${membershipEventType}`;
+    const edgeAdvanceStartedAtMs = Date.now();
+    const edgeAdvance = await tx.managedEntityAccessEdge.updateMany({
+      where: buildMembershipDenialEdgeAdvanceWhere({
         chatId,
-        userId: { in: normalizedUserIds },
-        checkedAt: { lte: transitionEventAt },
-      },
+        userIds: normalizedUserIds,
+        eventAt: transitionEventAt,
+        source: denialSource,
+      }),
       data: {
         state: ManagedEntityAccessState.USER_DENIED,
         userRole: 'MEMBER',
         botRole: 'UNKNOWN',
         checkedAt: transitionEventAt,
         expiresAt: null,
-        deniedReason: `webhook_${membershipEventType}`,
-        source: `webhook_${membershipEventType}`,
+        deniedReason: denialSource,
+        source: denialSource,
       },
+    });
+    this.recordMembershipAccessEdgeAdvanceMetric({
+      durationMs: Date.now() - edgeAdvanceStartedAtMs,
+      affectedRows: edgeAdvance.count,
     });
     await tx.managedEntityAdminMember.deleteMany({
       where: {
@@ -2088,13 +2101,18 @@ export class WebhookService {
 
   private async applyCommittedMembershipDenials(
     transition: MembershipTransitionResult,
-    update: Pick<MaxUpdate, 'updateId' | 'type'>,
+    update: Pick<MaxUpdate, 'type'>,
   ): Promise<void> {
     const epochCache = this.chatContextCache;
     if (!epochCache || transition.deniedUserIds.length === 0) {
       return;
     }
 
+    const recordMutationMetric = this.webhookIngressMetricsService
+      ? (metric: AdminAccessEpochMutationMetric) =>
+          this.webhookIngressMetricsService?.recordMembershipCacheMutation(metric)
+      : undefined;
+    const budgetStartedAtMs = Date.now();
     const completed = Promise.all(
       transition.deniedUserIds.map(async (userId) => {
         try {
@@ -2105,7 +2123,10 @@ export class WebhookService {
               state: 'user_denied',
               eventAt: transition.eventAt,
             },
-            { precheckSupersededEpoch: true },
+            {
+              precheckSupersededEpoch: true,
+              ...(recordMutationMetric ? { recordMetric: recordMutationMetric } : {}),
+            },
           );
           return null;
         } catch (error: unknown) {
@@ -2126,46 +2147,64 @@ export class WebhookService {
     if (budgetTimer) {
       clearTimeout(budgetTimer);
     }
+    this.recordMembershipCacheBudgetMetric({
+      outcome: outcome.kind,
+      durationMs: Date.now() - budgetStartedAtMs,
+    });
 
     if (outcome.kind === 'timeout') {
       this.logger.warn(
         {
-          updateId: update.updateId,
           type: update.type,
-          chatId: transition.chatId,
-          userIds: transition.deniedUserIds,
+          deniedUserCount: transition.deniedUserIds.length,
           waitBudgetMs: MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS,
         },
         'Committed membership denial cache publication exceeded its wait budget',
       );
-      void completed.then((failures) =>
-        this.logMembershipDenialCacheFailures(failures, transition, update),
-      );
+      void completed.then((failures) => this.logMembershipDenialCacheFailures(failures, update));
       return;
     }
 
-    this.logMembershipDenialCacheFailures(outcome.failures, transition, update);
+    this.logMembershipDenialCacheFailures(outcome.failures, update);
   }
 
   private logMembershipDenialCacheFailures(
     failures: Array<{ userId: string; error: unknown } | null>,
-    transition: MembershipTransitionResult,
-    update: Pick<MaxUpdate, 'updateId' | 'type'>,
+    update: Pick<MaxUpdate, 'type'>,
   ): void {
-    for (const failure of failures) {
-      if (!failure) {
-        continue;
-      }
-      this.logger.warn(
-        {
-          updateId: update.updateId,
-          type: update.type,
-          chatId: transition.chatId,
-          userId: failure.userId,
-          err: failure.error instanceof Error ? failure.error.message : String(failure.error),
-        },
-        'Failed to publish committed membership denial to cache',
-      );
+    const failureCount = failures.filter((failure) => failure !== null).length;
+    if (failureCount === 0) {
+      return;
+    }
+    this.logger.warn(
+      {
+        type: update.type,
+        attemptedMutationCount: failures.length,
+        failedMutationCount: failureCount,
+      },
+      'Failed to publish committed membership denial to cache',
+    );
+  }
+
+  private recordMembershipCacheBudgetMetric(metric: {
+    outcome: 'completed' | 'timeout';
+    durationMs: number;
+  }): void {
+    try {
+      this.webhookIngressMetricsService?.recordMembershipCacheBudget(metric);
+    } catch {
+      // Metrics must never affect committed membership transitions.
+    }
+  }
+
+  private recordMembershipAccessEdgeAdvanceMetric(metric: {
+    durationMs: number;
+    affectedRows: number;
+  }): void {
+    try {
+      this.webhookIngressMetricsService?.recordMembershipAccessEdgeAdvance(metric);
+    } catch {
+      // Metrics must never affect membership transition transactions.
     }
   }
 

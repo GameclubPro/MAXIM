@@ -953,6 +953,20 @@ export class SystemDashboardService {
       ` admission rejected ${routeOutcomes?.admission_rejected ?? 0}, invalid JSON ${routeOutcomes?.invalid_json ?? 0},` +
       ` invalid payload ${routeOutcomes?.invalid_payload ?? 0}, oversized ${routeOutcomes?.payload_too_large ?? 0},` +
       ` timed out ${routeOutcomes?.timed_out ?? 0}, failed ${routeOutcomes?.failed ?? 0}]`;
+    const membershipCache = snapshot.membershipCache;
+    const cacheMetrics = snapshot.ingress.membershipCache;
+    const edgeAdvance = snapshot.ingress.membershipTransition?.edgeAdvance;
+    const formatRatio = (value: number | null | undefined) =>
+      value === null || value === undefined ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+    const membershipCacheDetail =
+      `membership cache ${membershipCache?.status ?? 'n/a'}` +
+      ` [precheck fail-open ${formatRatio(membershipCache?.precheckFailOpen.ratio)},` +
+      ` Lua conflicts ${formatRatio(membershipCache?.luaConflict.ratio)},` +
+      ` Lua terminal failures ${formatRatio(membershipCache?.luaTerminalFailure.ratio)},` +
+      ` budget timeouts ${formatRatio(membershipCache?.budgetTimeout.ratio)},` +
+      ` Lua p95 ${cacheMetrics?.lua.timing.p95DurationMs ?? 0} ms,` +
+      ` budget p95 ${cacheMetrics?.budget.timing.p95DurationMs ?? 0} ms,` +
+      ` edge no-op ${edgeAdvance?.noOpCalls ?? 0}/${edgeAdvance?.calls ?? 0}]`;
     return {
       code: 'webhook-slo',
       level: snapshot.status === 'critical' ? 'critical' : 'warning',
@@ -960,9 +974,9 @@ export class SystemDashboardService {
         snapshot.status === 'critical'
           ? 'Webhook SLO просел критично'
           : 'Webhook SLO требует внимания',
-      detail: `ingress ${snapshot.ingress.available ? 'available' : 'unavailable'}, p95 ${snapshot.ingress.p95LatencyMs ?? 0} мс, p99 ${snapshot.ingress.p99LatencyMs ?? 0} мс, under target ${ingressUnderTarget}, persistence failures ${snapshot.ingress.failedReceipts}, receipt capacity rejects ${snapshot.ingress.rejectedReceipts}; ${routeOutcomeDetail}; processing p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек; enqueue p95 ${snapshot.enqueue?.p95LatencyMs ?? 0} мс, enqueue under target ${enqueueUnderTarget}, oldest pending enqueue ${snapshot.enqueue?.oldestPendingLagSec.toFixed(1) ?? '0.0'} сек; receipts/EXECUTION claims ${snapshot.canonicalExecution.receipts}/${snapshot.canonicalExecution.executionClaims}, claims per receipt ${claimsPerReceipt}.`,
+      detail: `ingress ${snapshot.ingress.available ? 'available' : 'unavailable'}, p95 ${snapshot.ingress.p95LatencyMs ?? 0} мс, p99 ${snapshot.ingress.p99LatencyMs ?? 0} мс, under target ${ingressUnderTarget}, persistence failures ${snapshot.ingress.failedReceipts}, receipt capacity rejects ${snapshot.ingress.rejectedReceipts}; ${routeOutcomeDetail}; ${membershipCacheDetail}; processing p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек; enqueue p95 ${snapshot.enqueue?.p95LatencyMs ?? 0} мс, enqueue under target ${enqueueUnderTarget}, oldest pending enqueue ${snapshot.enqueue?.oldestPendingLagSec.toFixed(1) ?? '0.0'} сек; receipts/EXECUTION claims ${snapshot.canonicalExecution.receipts}/${snapshot.canonicalExecution.executionClaims}, claims per receipt ${claimsPerReceipt}.`,
       recommendedAction:
-        'Сверьте route outcomes с body/schema limits и Redis admission, затем проверьте PostgreSQL receipt latency/failures, canonical claim preparation, backlog и MAX API rate limit.',
+        'Сверьте route outcomes и membership-cache ratios/timings, затем проверьте Redis, PostgreSQL receipt/edge-update latency, canonical claim preparation, backlog и MAX API rate limit.',
     };
   }
 

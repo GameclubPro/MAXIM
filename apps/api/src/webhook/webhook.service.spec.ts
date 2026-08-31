@@ -1384,6 +1384,11 @@ describe('WebhookService', () => {
         return true;
       }),
     };
+    const webhookIngressMetricsService = {
+      recordMembershipCacheMutation: jest.fn(),
+      recordMembershipCacheBudget: jest.fn(),
+      recordMembershipAccessEdgeAdvance: jest.fn(),
+    };
     const service = new WebhookService(
       fixture.prisma as never,
       { get: jest.fn().mockReturnValue(1) } as never,
@@ -1392,6 +1397,13 @@ describe('WebhookService', () => {
       undefined,
       undefined,
       chatContextCache as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      webhookIngressMetricsService as never,
     );
 
     await expect(
@@ -1423,7 +1435,21 @@ describe('WebhookService', () => {
       where: {
         chatId: '-100-membership',
         userId: { in: ['user-1', 'iduser-1'] },
-        checkedAt: { lte: eventAt },
+        OR: [
+          { checkedAt: { lt: eventAt } },
+          {
+            checkedAt: eventAt,
+            OR: [
+              { state: { not: 'USER_DENIED' } },
+              { userRole: { not: 'MEMBER' } },
+              { botRole: { not: 'UNKNOWN' } },
+              { expiresAt: { not: null } },
+              { deniedReason: null },
+              { deniedReason: { not: 'webhook_user_removed' } },
+              { source: { not: 'webhook_user_removed' } },
+            ],
+          },
+        ],
       },
       data: expect.objectContaining({
         state: 'USER_DENIED',
@@ -1452,7 +1478,10 @@ describe('WebhookService', () => {
         state: 'user_denied',
         eventAt,
       },
-      { precheckSupersededEpoch: true },
+      {
+        precheckSupersededEpoch: true,
+        recordMetric: expect.any(Function),
+      },
     );
     expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenNthCalledWith(
       2,
@@ -1462,8 +1491,22 @@ describe('WebhookService', () => {
         state: 'user_denied',
         eventAt,
       },
-      { precheckSupersededEpoch: true },
+      {
+        precheckSupersededEpoch: true,
+        recordMetric: expect.any(Function),
+      },
     );
+    expect(webhookIngressMetricsService.recordMembershipAccessEdgeAdvance).toHaveBeenCalledWith({
+      affectedRows: 1,
+      durationMs: expect.any(Number),
+    });
+    expect(webhookIngressMetricsService.recordMembershipCacheBudget).toHaveBeenCalledWith({
+      outcome: 'completed',
+      durationMs: expect.any(Number),
+    });
+    expect(
+      JSON.stringify(webhookIngressMetricsService.recordMembershipCacheBudget.mock.calls),
+    ).not.toMatch(/u-atomic-remove|-100-membership|user-1/u);
   });
 
   it('preserves allowlist and cache state for every alias family with newer granted evidence', async () => {
@@ -1564,6 +1607,11 @@ describe('WebhookService', () => {
     const chatContextCache = {
       applyAdminAccessEpochMutation: jest.fn().mockReturnValue(neverSettles),
     };
+    const webhookIngressMetricsService = {
+      recordMembershipCacheMutation: jest.fn(),
+      recordMembershipCacheBudget: jest.fn(),
+      recordMembershipAccessEdgeAdvance: jest.fn(),
+    };
     const service = new WebhookService(
       fixture.prisma as never,
       { get: jest.fn().mockReturnValue(1) } as never,
@@ -1572,6 +1620,13 @@ describe('WebhookService', () => {
       undefined,
       undefined,
       chatContextCache as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      webhookIngressMetricsService as never,
     );
 
     let guardTimer: NodeJS.Timeout | null = null;
@@ -1600,6 +1655,10 @@ describe('WebhookService', () => {
     });
     expect(fixture.operations).toContain('transaction:commit');
     expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(webhookIngressMetricsService.recordMembershipCacheBudget).toHaveBeenCalledWith({
+      outcome: 'timeout',
+      durationMs: expect.any(Number),
+    });
   });
 
   it('resets prior admin evidence when user_added starts a new membership session', async () => {

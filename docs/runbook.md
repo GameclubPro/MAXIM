@@ -554,6 +554,34 @@ Inspect the current manifest and retained IDs from the operator machine:
 ./infra/scripts/vps-connect.sh exec 'ls -1 /var/lib/maxim-deploy/releases'
 ```
 
+## Interrupted Release Finalization
+
+When a guarded deploy completed every runtime recreation and released the webhook queue fence but
+timed out before recording `current.json`, do not repeat the build, migrations, or container waves.
+After readiness has recovered, finalize the already-running exact release through the guarded local
+wrapper:
+
+```bash
+./infra/scripts/vps-connect.sh finalize-release-recovery main
+```
+
+The wrapper requires green `Required` and `Analyze JavaScript and TypeScript` checks for the exact
+local SHA, then runs the existing host finalizer without pulling or synchronizing the VPS checkout.
+The finalizer fails closed unless the clean VPS `HEAD` and `origin/main` already equal that exact SHA,
+exactly one complete typed recovery journal exists, and the current manifest is absent. It verifies
+the target refs and image IDs for all 13 API roles, `miniapp-major-static`, and `admin-static`; rejects
+duplicate or ambiguous API containers; proves all 24 webhook queues are unpaused with no rollout
+owner; runs strict local/public live and ready, Major/Safety Desk static, and Commercial OCR
+shadow/language/raster/internal-readiness smokes; and rechecks runtime identity, restart stability,
+images, queues, and the journal before commit/archive. The committed manifest records a bounded,
+read-only snapshot of the currently successful Prisma migrations rather than inheriting the stale
+journal list.
+
+This command never builds, migrates, starts, stops, or recreates a container. If queues remain paused
+or owned, any runtime component is not already on the exact target, or readiness is still red, stop
+and use the normal reviewed deploy/rollback recovery path. Do not hand-write `current.json` or archive
+the journal manually.
+
 ## Immutable Release Rollback
 
 Prefer a retained immutable release over rebuilding an old ref. Omit component names to restore all

@@ -32,6 +32,8 @@ Commands:
   exec <command...>           Run a command in the remote repo
   deploy [branch] [services|--plan|--auto|--full]
                               Run or plan a manifest-aware production deploy
+  finalize-release-recovery [branch]
+                              Prove an exact runtime and finalize its interrupted manifest
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
@@ -622,6 +624,34 @@ deploy_main() {
   remote_exec "$remote_command"
 }
 
+finalize_release_recovery() {
+  local branch="${1:-main}"
+  local expected_sha
+  local remote_command
+
+  if [[ "$#" -gt 1 ]]; then
+    echo "Usage: $0 finalize-release-recovery [branch]" >&2
+    exit 2
+  fi
+  if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
+    echo "Cannot resolve local recovery branch to an exact commit: $branch" >&2
+    exit 2
+  fi
+  if [[ ! "$expected_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Recovery finalization requires a full lowercase Git SHA." >&2
+    exit 2
+  fi
+
+  node scripts/ci/assert-green.mjs "$expected_sha"
+
+  remote_command="$(shell_quote_args ./infra/scripts/vps-finalize-release-recovery.sh "$branch")"
+  remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
+  if [[ "$branch" != "main" && "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}" == "1" ]]; then
+    remote_command="MAXIM_ALLOW_NON_MAIN_DEPLOY=1 $remote_command"
+  fi
+  remote_exec "$remote_command"
+}
+
 preload_ci_image() (
   local component="${1:-}"
   local ref="${2:-HEAD}"
@@ -1073,6 +1103,9 @@ case "$command" in
     ;;
   deploy-scale)
     deploy_scale "$@"
+    ;;
+  finalize-release-recovery)
+    finalize_release_recovery "$@"
     ;;
   rollback-runtime)
     rollback_runtime "$@"

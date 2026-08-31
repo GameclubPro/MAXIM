@@ -205,11 +205,126 @@ describe('WebhookIngressMetricsService', () => {
           },
         },
       },
+      membershipCache: {
+        precheck: {
+          hit: 0,
+          miss: 0,
+          failOpen: 0,
+          timing: {
+            sampled: 0,
+            p95DurationMs: null,
+            p99DurationMs: null,
+            overflowSamples: 0,
+          },
+        },
+        lua: {
+          applied: 0,
+          superseded: 0,
+          conflict: 0,
+          retry: 0,
+          exhausted: 0,
+          failed: 0,
+          timing: {
+            sampled: 0,
+            p95DurationMs: null,
+            p99DurationMs: null,
+            overflowSamples: 0,
+          },
+        },
+        budget: {
+          completed: 0,
+          timeout: 0,
+          timing: {
+            sampled: 0,
+            p95DurationMs: null,
+            p99DurationMs: null,
+            overflowSamples: 0,
+          },
+        },
+      },
+      membershipTransition: {
+        edgeAdvance: {
+          calls: 0,
+          affectedRows: 0,
+          noOpCalls: 0,
+          timing: {
+            sampled: 0,
+            p95DurationMs: null,
+            p99DurationMs: null,
+            overflowSamples: 0,
+          },
+        },
+      },
     });
 
     const metricKey = redisInstances[0]?.eval.mock.calls[0]?.[2] as string;
     expect(metricKey).toMatch(/^system:webhook-ingress:metrics:v1:2000:\d+$/u);
     expect(metricKey).not.toContain('bot-1');
+    await service.onModuleDestroy();
+  });
+
+  it('aggregates privacy-safe membership cache and transition metrics', async () => {
+    const service = createService();
+
+    service.recordMembershipCacheMutation({ phase: 'precheck', outcome: 'hit', durationMs: 1 });
+    service.recordMembershipCacheMutation({ phase: 'precheck', outcome: 'miss', durationMs: 2 });
+    service.recordMembershipCacheMutation({
+      phase: 'precheck',
+      outcome: 'fail_open',
+      durationMs: 100,
+    });
+    service.recordMembershipCacheMutation({ phase: 'lua', outcome: 'applied', durationMs: 5 });
+    service.recordMembershipCacheMutation({
+      phase: 'lua',
+      outcome: 'superseded',
+      durationMs: 10,
+    });
+    service.recordMembershipCacheMutation({ phase: 'lua', outcome: 'conflict', durationMs: 20 });
+    service.recordMembershipCacheMutation({ phase: 'lua', outcome: 'retry' });
+    service.recordMembershipCacheMutation({ phase: 'lua', outcome: 'exhausted' });
+    service.recordMembershipCacheMutation({ phase: 'lua', outcome: 'failed', durationMs: 35 });
+    service.recordMembershipCacheBudget({ outcome: 'completed', durationMs: 75 });
+    service.recordMembershipCacheBudget({ outcome: 'timeout', durationMs: 100 });
+    service.recordMembershipAccessEdgeAdvance({ durationMs: 5, affectedRows: 3 });
+    service.recordMembershipAccessEdgeAdvance({ durationMs: 150, affectedRows: 0 });
+
+    await expect(service.getSnapshot({ windowSec: 900 })).resolves.toMatchObject({
+      membershipCache: {
+        precheck: {
+          hit: 1,
+          miss: 1,
+          failOpen: 1,
+          timing: { sampled: 3, p95DurationMs: 100, p99DurationMs: 100 },
+        },
+        lua: {
+          applied: 1,
+          superseded: 1,
+          conflict: 1,
+          retry: 1,
+          exhausted: 1,
+          failed: 1,
+          timing: { sampled: 4, p95DurationMs: 35, p99DurationMs: 35 },
+        },
+        budget: {
+          completed: 1,
+          timeout: 1,
+          timing: { sampled: 2, p95DurationMs: 100, p99DurationMs: 100 },
+        },
+      },
+      membershipTransition: {
+        edgeAdvance: {
+          calls: 2,
+          affectedRows: 3,
+          noOpCalls: 1,
+          timing: { sampled: 2, p95DurationMs: 150, p99DurationMs: 150 },
+        },
+      },
+    });
+
+    const bufferedMetricCall = redisInstances[0]?.eval.mock.calls.find((call) =>
+      String(call[0]).includes('MAXIM_WEBHOOK_ROUTE_OUTCOMES_V1'),
+    );
+    expect(JSON.stringify(bufferedMetricCall)).not.toMatch(/chat-|user-|update-|payload/iu);
     await service.onModuleDestroy();
   });
 

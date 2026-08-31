@@ -78,6 +78,18 @@ filtered role logs without reconciling webhooks or sending bot messages.
 
 - Check disk preflight/build contention and the first failing role before retrying deploy.
 - Do not recreate Redis/Postgres as an application recovery step.
+- If every API/static component already runs the green exact target, all roles are stable, readiness
+  recovered, the webhook queues are unpaused and unowned, and only the typed release journal remains,
+  finalize without another runtime wave:
+
+  ```bash
+  ./infra/scripts/vps-connect.sh finalize-release-recovery main
+  ```
+
+  This command fails closed unless the exact runtime, strict API/static/OCR smokes, released queue
+  fence, single recovery journal, synchronized HEAD, and green exact-SHA CI are all proven. It does
+  not build, migrate, or recreate containers.
+
 - If rollback is required, prefer a retained immutable API component release:
 
   ```bash

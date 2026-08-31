@@ -54,8 +54,20 @@ export type AdminAccessEpochMutation = {
   recentBootstrapSummary?: ChatSummary;
   recentBootstrapTtlSec?: number;
 };
+export type AdminAccessEpochMutationMetric =
+  | {
+      phase: 'precheck';
+      outcome: 'hit' | 'miss' | 'fail_open';
+      durationMs: number;
+    }
+  | {
+      phase: 'lua';
+      outcome: 'applied' | 'superseded' | 'conflict' | 'retry' | 'exhausted' | 'failed';
+      durationMs?: number;
+    };
 export type AdminAccessEpochMutationOptions = {
   precheckSupersededEpoch?: boolean;
+  recordMetric?: (metric: AdminAccessEpochMutationMetric) => void;
 };
 export type ManagedEntitiesPublishedDiff = {
   baseVersion: string;
@@ -589,11 +601,20 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     const epochKey = ChatContextCacheService.adminAccessEpochKey(chatId, userId);
     if (options.precheckSupersededEpoch) {
       // FLAG: Missing, failed, timed-out, and equal reads must reach the authoritative opaque CAS.
-      const currentEpochRaw = await this.readRedisStringWithin(
+      const precheckStartedAtMs = Date.now();
+      const precheck = await this.readAdminAccessEpochPrecheckWithin(
         epochKey,
         ChatContextCacheService.ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS,
       );
-      if (this.isAdminAccessEpochStrictlyNewer(currentEpochRaw, eventAtMs, priority)) {
+      const isSuperseded =
+        precheck.kind === 'value' &&
+        this.isAdminAccessEpochStrictlyNewer(precheck.value, eventAtMs, priority);
+      this.recordAdminAccessEpochMutationMetric(options, {
+        phase: 'precheck',
+        outcome: isSuperseded ? 'hit' : precheck.kind === 'fail_open' ? 'fail_open' : 'miss',
+        durationMs: Date.now() - precheckStartedAtMs,
+      });
+      if (isSuperseded) {
         return false;
       }
     }
@@ -691,48 +712,84 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       const recentMode =
         params.state !== 'granted' ? 'deny' : params.recentBootstrapSummary ? 'grant' : 'keep';
       const recentEntityType = params.recentBootstrapSummary?.entityType ?? 'none';
-      const result = Number(
-        await this.redis.eval(
-          APPLY_ADMIN_ACCESS_EPOCH_MUTATION_SCRIPT,
-          14,
-          epochKey,
-          ChatContextCacheService.adminAccessKey(chatId, userId),
-          contextKey,
-          ChatContextCacheService.chatContextRevisionKey(chatId),
-          publishedChatKey,
-          publishedChannelKey,
-          recentGlobalChatKey,
-          recentUserChatKey,
-          recentGlobalChannelKey,
-          recentUserChannelKey,
-          ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(chatId, 'chat'),
-          ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(chatId, 'channel'),
-          ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'chat'),
-          ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'channel'),
-          String(eventAtMs),
-          String(priority),
-          `${eventAtMs}:${priority}`,
-          params.state,
-          String(this.resolveAdminAccessTtlSec(params.state)),
-          userId,
-          CHAT_CONTEXT_INVALIDATION_CHANNEL,
-          JSON.stringify({ chatId }),
-          ...opaqueMutations.flatMap((mutation) => this.serializeOpaqueRedisMutation(mutation)),
-          recentMode,
-          String(recentBootstrapTtlSec),
-          recentEntityType,
-          String(ChatContextCacheService.ACCESS_EPOCH_TTL_SEC),
-        ),
-      );
+      const luaStartedAtMs = Date.now();
+      let result: number;
+      try {
+        result = Number(
+          await this.redis.eval(
+            APPLY_ADMIN_ACCESS_EPOCH_MUTATION_SCRIPT,
+            14,
+            epochKey,
+            ChatContextCacheService.adminAccessKey(chatId, userId),
+            contextKey,
+            ChatContextCacheService.chatContextRevisionKey(chatId),
+            publishedChatKey,
+            publishedChannelKey,
+            recentGlobalChatKey,
+            recentUserChatKey,
+            recentGlobalChannelKey,
+            recentUserChannelKey,
+            ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(chatId, 'chat'),
+            ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(chatId, 'channel'),
+            ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'chat'),
+            ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'channel'),
+            String(eventAtMs),
+            String(priority),
+            `${eventAtMs}:${priority}`,
+            params.state,
+            String(this.resolveAdminAccessTtlSec(params.state)),
+            userId,
+            CHAT_CONTEXT_INVALIDATION_CHANNEL,
+            JSON.stringify({ chatId }),
+            ...opaqueMutations.flatMap((mutation) => this.serializeOpaqueRedisMutation(mutation)),
+            recentMode,
+            String(recentBootstrapTtlSec),
+            recentEntityType,
+            String(ChatContextCacheService.ACCESS_EPOCH_TTL_SEC),
+          ),
+        );
+      } catch (error: unknown) {
+        this.recordAdminAccessEpochMutationMetric(options, {
+          phase: 'lua',
+          outcome: 'failed',
+          durationMs: Date.now() - luaStartedAtMs,
+        });
+        throw error;
+      }
       if (result === 1) {
+        this.recordAdminAccessEpochMutationMetric(options, {
+          phase: 'lua',
+          outcome: 'applied',
+          durationMs: Date.now() - luaStartedAtMs,
+        });
         this.applyLocalInvalidation(chatId);
         return true;
       }
       if (result === 0) {
+        this.recordAdminAccessEpochMutationMetric(options, {
+          phase: 'lua',
+          outcome: 'superseded',
+          durationMs: Date.now() - luaStartedAtMs,
+        });
         return false;
+      }
+      this.recordAdminAccessEpochMutationMetric(options, {
+        phase: 'lua',
+        outcome: 'conflict',
+        durationMs: Date.now() - luaStartedAtMs,
+      });
+      if (attempt + 1 < ChatContextCacheService.ACCESS_EPOCH_CAS_MAX_ATTEMPTS) {
+        this.recordAdminAccessEpochMutationMetric(options, {
+          phase: 'lua',
+          outcome: 'retry',
+        });
       }
     }
 
+    this.recordAdminAccessEpochMutationMetric(options, {
+      phase: 'lua',
+      outcome: 'exhausted',
+    });
     throw new Error(`Admin access epoch mutation conflicted repeatedly for chat ${chatId}`);
   }
 
@@ -2699,6 +2756,43 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private async readRedisStringWithin(key: string, maxWaitMs: number): Promise<string | null> {
     const readPromise = this.redis.get(key).catch(() => null);
     return this.runRedisReadWithin(readPromise, maxWaitMs);
+  }
+
+  private async readAdminAccessEpochPrecheckWithin(
+    key: string,
+    maxWaitMs: number,
+  ): Promise<{ kind: 'value'; value: string | null } | { kind: 'fail_open' }> {
+    let timeout: NodeJS.Timeout | null = null;
+    const read = this.redis.get(key).then(
+      (value) => ({ kind: 'value' as const, value }),
+      () => ({ kind: 'fail_open' as const }),
+    );
+    const timeoutPromise = new Promise<{ kind: 'fail_open' }>((resolve) => {
+      timeout = setTimeout(
+        () => resolve({ kind: 'fail_open' }),
+        Math.max(1, Math.trunc(maxWaitMs)),
+      );
+      timeout.unref();
+    });
+
+    try {
+      return await Promise.race([read, timeoutPromise]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private recordAdminAccessEpochMutationMetric(
+    options: AdminAccessEpochMutationOptions,
+    metric: AdminAccessEpochMutationMetric,
+  ): void {
+    try {
+      options.recordMetric?.(metric);
+    } catch {
+      // Metrics must never affect the authoritative cache mutation.
+    }
   }
 
   private async readRedisStringsWithin(
