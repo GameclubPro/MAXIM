@@ -536,6 +536,22 @@ function createConfigMock() {
   };
 }
 
+function getRedisMutationMock(service: ChatContextCacheService): {
+  get: jest.Mock;
+  mget: jest.Mock;
+  eval: jest.Mock;
+} {
+  return (
+    service as unknown as {
+      redis: {
+        get: jest.Mock;
+        mget: jest.Mock;
+        eval: jest.Mock;
+      };
+    }
+  ).redis;
+}
+
 describe('ChatContextCacheService', () => {
   const maxBotLinkService = {
     resolveBotRoute: jest.fn().mockResolvedValue({
@@ -1709,6 +1725,207 @@ describe('ChatContextCacheService', () => {
     expect(
       store.has(ChatContextCacheService.managedEntitiesPublishedSnapshotKey('user-1', 'chat')),
     ).toBe(false);
+  });
+
+  it('fast-rejects a strictly superseded epoch before reading opaque values', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const redis = getRedisMutationMock(service);
+    const eventAt = new Date('2026-08-20T10:00:00.000Z');
+    const epochKey = ChatContextCacheService.adminAccessEpochKey(
+      'chat-precheck-superseded',
+      'user-1',
+    );
+    store.set(epochKey, `${eventAt.getTime() + 1}:1`);
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        {
+          chatId: 'chat-precheck-superseded',
+          userId: 'user-1',
+          state: 'user_denied',
+          eventAt,
+        },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(false);
+
+    expect(redis.get).toHaveBeenCalledWith(epochKey);
+    expect(redis.mget).not.toHaveBeenCalled();
+    expect(redis.eval).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { currentPriority: 0, label: 'equal-time grant' },
+    { currentPriority: 1, label: 'equal denial repair' },
+  ])('does not fast-reject an $label', async ({ currentPriority }) => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const redis = getRedisMutationMock(service);
+    const chatId = `chat-precheck-equal-${currentPriority}`;
+    const userId = 'user-1';
+    const eventAt = new Date('2026-08-20T10:00:00.123Z');
+    store.set(
+      ChatContextCacheService.adminAccessEpochKey(chatId, userId),
+      `${eventAt.getTime()}:${currentPriority}`,
+    );
+    store.set(ChatContextCacheService.adminAccessKey(chatId, userId), 'granted');
+    store.set(
+      ChatContextCacheService.cacheKey(chatId),
+      JSON.stringify({
+        chatId,
+        title: 'Equal epoch repair',
+        settings: buildSettings(chatId),
+        domainAllowlist: [],
+        adminUserIds: [userId],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+    );
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        { chatId, userId, state: 'user_denied', eventAt },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(redis.mget).toHaveBeenCalledTimes(1);
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+    expect(store.get(ChatContextCacheService.adminAccessKey(chatId, userId))).toBe('user_denied');
+    expect(JSON.parse(store.get(ChatContextCacheService.cacheKey(chatId)) ?? 'null')).toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+  });
+
+  it.each([
+    { label: 'missing', raw: null },
+    { label: 'malformed', raw: 'not-an-epoch' },
+  ])('falls through the precheck for a $label epoch', async ({ raw }) => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const redis = getRedisMutationMock(service);
+    const chatId = `chat-precheck-${raw === null ? 'missing' : 'malformed'}`;
+    const userId = 'user-1';
+    const eventAt = new Date('2026-08-20T10:00:00.000Z');
+    const epochKey = ChatContextCacheService.adminAccessEpochKey(chatId, userId);
+    if (raw !== null) {
+      store.set(epochKey, raw);
+    }
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        { chatId, userId, state: 'user_denied', eventAt },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(redis.get).toHaveBeenCalledWith(epochKey);
+    expect(redis.mget).toHaveBeenCalledTimes(1);
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+    expect(store.get(epochKey)).toBe(`${eventAt.getTime()}:1`);
+  });
+
+  it('falls through the precheck when its Redis GET fails', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const redis = getRedisMutationMock(service);
+    redis.get.mockRejectedValueOnce(new Error('epoch precheck unavailable'));
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        {
+          chatId: 'chat-precheck-error',
+          userId: 'user-1',
+          state: 'user_denied',
+          eventAt: new Date('2026-08-20T10:00:00.000Z'),
+        },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(redis.mget).toHaveBeenCalledTimes(1);
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through the precheck when its Redis GET does not settle within the read budget', async () => {
+    jest.useFakeTimers();
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const redis = getRedisMutationMock(service);
+    redis.get.mockReturnValueOnce(new Promise<string | null>(() => undefined));
+
+    try {
+      const mutation = service.applyAdminAccessEpochMutation(
+        {
+          chatId: 'chat-precheck-timeout',
+          userId: 'user-1',
+          state: 'user_denied',
+          eventAt: new Date('2026-08-20T10:00:00.000Z'),
+        },
+        { precheckSupersededEpoch: true },
+      );
+      await Promise.resolve();
+      expect(redis.mget).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(mutation).resolves.toBe(true);
+      expect(redis.mget).toHaveBeenCalledTimes(1);
+      expect(redis.eval).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('retains the Lua race fence when a newer epoch appears after the precheck', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const redis = getRedisMutationMock(service);
+    const chatId = 'chat-precheck-race';
+    const userId = 'user-1';
+    const eventAt = new Date('2026-08-20T10:00:00.000Z');
+    const epochKey = ChatContextCacheService.adminAccessEpochKey(chatId, userId);
+    const accessKey = ChatContextCacheService.adminAccessKey(chatId, userId);
+    const newerEpoch = `${eventAt.getTime() + 1}:0`;
+    redis.get.mockImplementationOnce(async () => {
+      store.set(epochKey, newerEpoch);
+      store.set(accessKey, 'granted');
+      return null;
+    });
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        { chatId, userId, state: 'user_denied', eventAt },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(false);
+
+    expect(redis.mget).toHaveBeenCalledTimes(1);
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+    expect(store.get(epochKey)).toBe(newerEpoch);
+    expect(store.get(accessKey)).toBe('granted');
   });
 
   it('accepts a newer grant after an older removal epoch', async () => {

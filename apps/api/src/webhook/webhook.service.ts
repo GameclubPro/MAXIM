@@ -2098,12 +2098,15 @@ export class WebhookService {
     const completed = Promise.all(
       transition.deniedUserIds.map(async (userId) => {
         try {
-          await epochCache.applyAdminAccessEpochMutation({
-            chatId: transition.chatId,
-            userId,
-            state: 'user_denied',
-            eventAt: transition.eventAt,
-          });
+          await epochCache.applyAdminAccessEpochMutation(
+            {
+              chatId: transition.chatId,
+              userId,
+              state: 'user_denied',
+              eventAt: transition.eventAt,
+            },
+            { precheckSupersededEpoch: true },
+          );
           return null;
         } catch (error: unknown) {
           return { userId, error };

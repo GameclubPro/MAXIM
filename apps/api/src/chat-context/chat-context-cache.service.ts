@@ -54,6 +54,9 @@ export type AdminAccessEpochMutation = {
   recentBootstrapSummary?: ChatSummary;
   recentBootstrapTtlSec?: number;
 };
+export type AdminAccessEpochMutationOptions = {
+  precheckSupersededEpoch?: boolean;
+};
 export type ManagedEntitiesPublishedDiff = {
   baseVersion: string;
   nextVersion: string;
@@ -571,7 +574,10 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async applyAdminAccessEpochMutation(params: AdminAccessEpochMutation): Promise<boolean> {
+  async applyAdminAccessEpochMutation(
+    params: AdminAccessEpochMutation,
+    options: AdminAccessEpochMutationOptions = {},
+  ): Promise<boolean> {
     const chatId = params.chatId.trim();
     const userId = params.userId.trim();
     const eventAtMs = params.eventAt.getTime();
@@ -580,6 +586,17 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     }
 
     const priority = params.state === 'granted' ? 0 : 1;
+    const epochKey = ChatContextCacheService.adminAccessEpochKey(chatId, userId);
+    if (options.precheckSupersededEpoch) {
+      // FLAG: Missing, failed, timed-out, and equal reads must reach the authoritative opaque CAS.
+      const currentEpochRaw = await this.readRedisStringWithin(
+        epochKey,
+        ChatContextCacheService.ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS,
+      );
+      if (this.isAdminAccessEpochStrictlyNewer(currentEpochRaw, eventAtMs, priority)) {
+        return false;
+      }
+    }
     const publishedSnapshotTtlSec = this.readPositiveInt(
       params.publishedSnapshotTtlSec,
       ChatContextCacheService.DEFAULT_PUBLISHED_SNAPSHOT_TTL_SEC,
@@ -678,7 +695,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         await this.redis.eval(
           APPLY_ADMIN_ACCESS_EPOCH_MUTATION_SCRIPT,
           14,
-          ChatContextCacheService.adminAccessEpochKey(chatId, userId),
+          epochKey,
           ChatContextCacheService.adminAccessKey(chatId, userId),
           contextKey,
           ChatContextCacheService.chatContextRevisionKey(chatId),
@@ -820,6 +837,34 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     return state === 'granted'
       ? ChatContextCacheService.ADMIN_ACCESS_GRANTED_TTL_SEC
       : ChatContextCacheService.ADMIN_ACCESS_DENIED_TTL_SEC;
+  }
+
+  private isAdminAccessEpochStrictlyNewer(
+    raw: string | null,
+    incomingTimestamp: number,
+    incomingPriority: number,
+  ): boolean {
+    if (!raw) {
+      return false;
+    }
+    const separator = raw.indexOf(':');
+    if (separator <= 0 || separator >= raw.length - 1) {
+      return false;
+    }
+    const currentTimestamp = Number(raw.slice(0, separator));
+    const currentPriority = Number(raw.slice(separator + 1));
+    if (
+      !Number.isSafeInteger(currentTimestamp) ||
+      currentTimestamp < 0 ||
+      !Number.isSafeInteger(currentPriority) ||
+      currentPriority < 0
+    ) {
+      return false;
+    }
+    return (
+      currentTimestamp > incomingTimestamp ||
+      (currentTimestamp === incomingTimestamp && currentPriority > incomingPriority)
+    );
   }
 
   async getManagedEntityHeader(

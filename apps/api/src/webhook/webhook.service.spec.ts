@@ -1444,21 +1444,25 @@ describe('WebhookService', () => {
         userId: { in: ['user-1', 'iduser-1'] },
       },
     });
-    expect(chatContextCache.applyAdminAccessEpochMutation.mock.calls.map(([args]) => args)).toEqual(
-      [
-        {
-          chatId: '-100-membership',
-          userId: 'user-1',
-          state: 'user_denied',
-          eventAt,
-        },
-        {
-          chatId: '-100-membership',
-          userId: 'iduser-1',
-          state: 'user_denied',
-          eventAt,
-        },
-      ],
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenNthCalledWith(
+      1,
+      {
+        chatId: '-100-membership',
+        userId: 'user-1',
+        state: 'user_denied',
+        eventAt,
+      },
+      { precheckSupersededEpoch: true },
+    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenNthCalledWith(
+      2,
+      {
+        chatId: '-100-membership',
+        userId: 'iduser-1',
+        state: 'user_denied',
+        eventAt,
+      },
+      { precheckSupersededEpoch: true },
     );
   });
 
