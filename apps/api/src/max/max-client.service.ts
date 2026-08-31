@@ -453,6 +453,22 @@ export type MaxActionLedgerContext = {
   [key: string]: MaxActionLedgerContextValue;
 };
 
+export const MAX_SEND_AUTO_DELETE_MARKER_VERSION = 1 as const;
+export const MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE =
+  'send_auto_delete_exact_verification_present';
+export const MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE =
+  'send_auto_delete_exact_verification_unknown';
+
+export type MaxSendAutoDeleteMarker = {
+  version: typeof MAX_SEND_AUTO_DELETE_MARKER_VERSION;
+  sourceSendJobId: string;
+  sourceSendCompletedAt: string | null;
+  requestedDelayMs: number;
+  originBotId: string;
+  exactAbsenceVerifiedAt?: string;
+  exactAbsenceVerificationPhase?: 'preflight' | 'post_delete';
+};
+
 export type MaxActionJob = QueueJobEnvelope<
   {
     actionType: MaxActionType;
@@ -471,6 +487,7 @@ export type MaxActionJob = QueueJobEnvelope<
     options?: MaxSendMessageOptions;
     ledgerContext?: MaxActionLedgerContext;
     autoDeleteDelayMs?: number;
+    sendAutoDelete?: MaxSendAutoDeleteMarker;
     ignoreFailureMetricStatuses?: number[];
     attempt: number;
     idempotencyKey: string;
@@ -2643,6 +2660,13 @@ export class MaxClientService implements OnModuleDestroy {
           actionType: 'DELETE_MESSAGE',
           chatId: action.chatId,
           messageId: completedSend.remoteMessageId,
+          sendAutoDelete: {
+            version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+            sourceSendJobId: action.idempotencyKey,
+            sourceSendCompletedAt: completedSend.completedAt?.toISOString() ?? null,
+            requestedDelayMs: autoDeleteDelayMs,
+            originBotId: dispatchBotId,
+          },
         },
         this.buildAutoDeleteDispatchOptions(action, dispatchBotId, remainingDelayMs),
       );
@@ -2703,9 +2727,23 @@ export class MaxClientService implements OnModuleDestroy {
 
     return this.botContext.runWithBot(bot.id, async () => {
       switch (action.actionType) {
-        case 'DELETE_MESSAGE':
+        case 'DELETE_MESSAGE': {
           if (!action.messageId) {
             throw new Error('messageId is required for DELETE_MESSAGE');
+          }
+          const deleteMessageId = action.messageId;
+          const sendAutoDeleteMarker = this.readSendAutoDeleteMarker(action, bot.id);
+          if (
+            sendAutoDeleteMarker &&
+            (await this.readSendAutoDeleteExactPresence(
+              action,
+              deleteMessageId,
+              bot.id,
+              mutationOptions,
+            )) === 'absent'
+          ) {
+            this.markSendAutoDeleteExactAbsenceVerified(sendAutoDeleteMarker, 'preflight');
+            return;
           }
           await this.executeMessageMutation(
             'delete',
@@ -2717,7 +2755,7 @@ export class MaxClientService implements OnModuleDestroy {
               );
               const response = await this.request<Record<string, unknown>>('delete', '/messages', {
                 params: {
-                  message_id: action.messageId,
+                  message_id: deleteMessageId,
                 },
                 ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
               });
@@ -2725,7 +2763,17 @@ export class MaxClientService implements OnModuleDestroy {
             },
             mutationOptions,
           );
+          if (sendAutoDeleteMarker) {
+            await this.verifySendAutoDeleteExactAbsence(
+              action,
+              deleteMessageId,
+              sendAutoDeleteMarker,
+              bot.id,
+              mutationOptions,
+            );
+          }
           return;
+        }
 
         case 'SEND_MESSAGE': {
           if (typeof action.text !== 'string') {
@@ -6425,6 +6473,91 @@ export class MaxClientService implements OnModuleDestroy {
       ...(timeoutMs ? { timeoutMs } : {}),
       ...(ignoreFailureMetricStatuses ? { ignoreFailureMetricStatuses } : {}),
     };
+  }
+
+  private readSendAutoDeleteMarker(
+    action: MaxActionJob,
+    boundBotId: string,
+  ): MaxSendAutoDeleteMarker | null {
+    const marker = action.sendAutoDelete;
+    if (marker === undefined) {
+      return null;
+    }
+    if (
+      action.actionType !== 'DELETE_MESSAGE' ||
+      !action.messageId?.trim() ||
+      marker.version !== MAX_SEND_AUTO_DELETE_MARKER_VERSION ||
+      !marker.sourceSendJobId?.trim() ||
+      (marker.sourceSendCompletedAt !== null &&
+        !Number.isFinite(Date.parse(marker.sourceSendCompletedAt))) ||
+      !Number.isFinite(marker.requestedDelayMs) ||
+      marker.requestedDelayMs <= 0 ||
+      !marker.originBotId?.trim() ||
+      marker.originBotId !== boundBotId
+    ) {
+      throw new UnrecoverableError(
+        `Invalid send-side auto-delete verification marker for ${action.idempotencyKey}`,
+      );
+    }
+    delete marker.exactAbsenceVerifiedAt;
+    delete marker.exactAbsenceVerificationPhase;
+    return marker;
+  }
+
+  private async readSendAutoDeleteExactPresence(
+    action: MaxActionJob,
+    messageId: string,
+    boundBotId: string,
+    requestOptions: MaxApiRequestOptions,
+  ): Promise<MaxExactMessagePresence> {
+    try {
+      return await this.getExactMessagePresence(action.chatId, messageId, {
+        ...requestOptions,
+        botId: boundBotId,
+        bypassCache: true,
+      });
+    } catch (cause: unknown) {
+      const error = new Error(`Could not verify sent bot message ${messageId} for auto-delete`, {
+        cause,
+      }) as Error & { code: string };
+      error.name = 'MaxSendAutoDeleteVerificationError';
+      error.code = MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE;
+      throw error;
+    }
+  }
+
+  private async verifySendAutoDeleteExactAbsence(
+    action: MaxActionJob,
+    messageId: string,
+    marker: MaxSendAutoDeleteMarker,
+    boundBotId: string,
+    requestOptions: MaxApiRequestOptions,
+  ): Promise<void> {
+    const presence = await this.readSendAutoDeleteExactPresence(
+      action,
+      messageId,
+      boundBotId,
+      requestOptions,
+    );
+    if (presence === 'absent') {
+      this.markSendAutoDeleteExactAbsenceVerified(marker, 'post_delete');
+      return;
+    }
+
+    const error = new Error(
+      `MAX still returns sent bot message ${messageId} after DELETE success`,
+    ) as Error & { code: string };
+    error.name = 'MaxSendAutoDeleteVerificationError';
+    error.code = MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE;
+    throw error;
+  }
+
+  private markSendAutoDeleteExactAbsenceVerified(
+    marker: MaxSendAutoDeleteMarker,
+    phase: 'preflight' | 'post_delete',
+  ): void {
+    marker.exactAbsenceVerifiedAt = new Date().toISOString();
+    marker.exactAbsenceVerificationPhase = phase;
   }
 
   private async executeQueuedSendMessage(

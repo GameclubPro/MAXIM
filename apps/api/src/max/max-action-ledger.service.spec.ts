@@ -36,6 +36,7 @@ function createService(row: unknown = null) {
   const prisma = {
     maxActionLedgerEntry: {
       findFirst: jest.fn().mockResolvedValue(row),
+      findMany: jest.fn().mockResolvedValue(Array.isArray(row) ? row : row ? [row] : []),
       findUnique: jest.fn().mockResolvedValue(row),
       createMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -267,7 +268,7 @@ describe('MaxActionLedgerService', () => {
 
     await expect(service.hasSucceededDelete(' chat-1 ', ' message-1 ')).resolves.toBe(true);
 
-    expect(prisma.maxActionLedgerEntry.findFirst).toHaveBeenCalledWith({
+    expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',
         actionType: 'DELETE_MESSAGE',
@@ -279,10 +280,13 @@ describe('MaxActionLedgerService', () => {
       },
       select: {
         id: true,
+        metadata: true,
+        sourceTag: true,
       },
       orderBy: {
         updatedAt: 'desc',
       },
+      take: 20,
     });
   });
 
@@ -290,6 +294,138 @@ describe('MaxActionLedgerService', () => {
     const { service } = createService(null);
 
     await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
+  });
+
+  it('does not trust an unmarked legacy moderation-notice delete success', async () => {
+    const { service } = createService({
+      id: 'legacy-auto-delete-job-1',
+      sourceTag: 'moderation_notice',
+      metadata: {},
+    });
+
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
+  });
+
+  it('preserves succeeded-delete ownership for other unmarked delete sources', async () => {
+    const { service } = createService({
+      id: 'ordinary-delete-job-1',
+      sourceTag: 'moderation_delete',
+      metadata: {},
+    });
+
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(true);
+  });
+
+  it('does not trust a marked auto-delete success without an exact-absence receipt', async () => {
+    const { service } = createService({
+      id: 'delete-job-1',
+      metadata: {
+        sendAutoDelete: {
+          version: 1,
+          sourceSendJobId: 'send-job-1',
+          sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+          requestedDelayMs: 60_000,
+          originBotId: 'bot-1',
+        },
+      },
+    });
+
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
+  });
+
+  it('trusts a marked auto-delete success only with its exact-absence receipt', async () => {
+    const { service } = createService({
+      id: 'delete-job-1',
+      metadata: {
+        sendAutoDelete: {
+          version: 1,
+          sourceSendJobId: 'send-job-1',
+          sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+          requestedDelayMs: 60_000,
+          originBotId: 'bot-1',
+          exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
+          exactAbsenceVerificationPhase: 'post_delete',
+        },
+      },
+    });
+
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(true);
+  });
+
+  it('finds an older verified receipt behind a newer unverified legacy row', async () => {
+    const { service } = createService([
+      {
+        id: 'legacy-auto-delete-newer',
+        sourceTag: 'moderation_notice',
+        metadata: {},
+      },
+      {
+        id: 'verified-auto-delete-older',
+        sourceTag: 'moderation_notice',
+        metadata: {
+          sendAutoDelete: {
+            version: 1,
+            sourceSendJobId: 'send-job-1',
+            sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+            requestedDelayMs: 60_000,
+            originBotId: 'bot-1',
+            exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
+            exactAbsenceVerificationPhase: 'post_delete',
+          },
+        },
+      },
+    ]);
+
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(true);
+  });
+
+  it('reconciles only the exact persisted verified auto-delete success', async () => {
+    const sendAutoDelete = {
+      version: 1 as const,
+      sourceSendJobId: 'send-job-1',
+      sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+      requestedDelayMs: 60_000,
+      originBotId: 'bot-1',
+      exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
+      exactAbsenceVerificationPhase: 'post_delete' as const,
+    };
+    const { service, prisma } = createService({
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      metadata: { sendAutoDelete },
+    });
+    const job = createJob({
+      actionType: 'DELETE_MESSAGE',
+      messageId: 'message-1',
+      text: undefined,
+      idempotencyKey: 'delete-job-1',
+      sendAutoDelete,
+    });
+
+    await expect(service.hasRecordedVerifiedSendAutoDeleteSuccess(job)).resolves.toBe(true);
+    expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith({
+      where: { jobId: 'delete-job-1' },
+      select: {
+        actionType: true,
+        chatId: true,
+        messageId: true,
+        status: true,
+        ambiguous: true,
+        terminal: true,
+        metadata: true,
+      },
+    });
+
+    await expect(
+      service.hasRecordedVerifiedSendAutoDeleteSuccess({
+        ...job,
+        sendAutoDelete: { ...sendAutoDelete, sourceSendJobId: 'other-send' },
+      }),
+    ).resolves.toBe(false);
   });
 
   it('clears only terminal ban state after a confirmed unban', async () => {
@@ -752,6 +888,93 @@ describe('MaxActionLedgerService', () => {
       }),
     );
     expect(JSON.stringify(create.metadata)).not.toContain('hello');
+  });
+
+  it('persists send-side auto-delete provenance in ledger metadata', async () => {
+    const { service, prisma } = createService();
+    const sendAutoDelete = {
+      version: 1 as const,
+      sourceSendJobId: 'source-send-1',
+      sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+      requestedDelayMs: 60_000,
+      originBotId: 'bot-1',
+    };
+
+    await service.recordEnqueuedIfAbsent(
+      createJob({
+        actionType: 'DELETE_MESSAGE',
+        text: undefined,
+        messageId: 'mid-auto-delete-1',
+        sendAutoDelete,
+      }),
+    );
+
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          actionType: 'DELETE_MESSAGE',
+          messageId: 'mid-auto-delete-1',
+          metadata: expect.objectContaining({ sendAutoDelete }),
+        }),
+      ],
+      skipDuplicates: true,
+    });
+  });
+
+  it('refuses to mark a send-side auto-delete succeeded without an exact-absence receipt', async () => {
+    const { service, prisma } = createService();
+    const job = createJob({
+      actionType: 'DELETE_MESSAGE',
+      text: undefined,
+      messageId: 'mid-auto-delete-unverified-1',
+      sendAutoDelete: {
+        version: 1,
+        sourceSendJobId: 'source-send-1',
+        sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+        requestedDelayMs: 60_000,
+        originBotId: 'bot-1',
+      },
+    });
+
+    await expect(service.recordSucceeded(job)).rejects.toThrow(
+      'Refusing to mark unverified send-side auto-delete',
+    );
+    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+  });
+
+  it('persists the exact-absence receipt when a marked auto-delete succeeds', async () => {
+    const { service, prisma } = createService();
+    const sendAutoDelete = {
+      version: 1 as const,
+      sourceSendJobId: 'source-send-1',
+      sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+      requestedDelayMs: 60_000,
+      originBotId: 'bot-1',
+      exactAbsenceVerifiedAt: '2026-08-31T12:01:01.000Z',
+      exactAbsenceVerificationPhase: 'post_delete' as const,
+    };
+
+    await service.recordSucceeded(
+      createJob({
+        actionType: 'DELETE_MESSAGE',
+        text: undefined,
+        messageId: 'mid-auto-delete-verified-1',
+        sendAutoDelete,
+      }),
+    );
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: MaxActionLedgerStatus.SUCCEEDED,
+          metadata: expect.objectContaining({ sendAutoDelete }),
+        }),
+        update: expect.objectContaining({
+          status: MaxActionLedgerStatus.SUCCEEDED,
+          metadata: expect.objectContaining({ sendAutoDelete }),
+        }),
+      }),
+    );
   });
 
   it('treats a concurrent ledger insert as an idempotent enqueue success', async () => {

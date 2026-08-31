@@ -460,6 +460,8 @@ describe('ModerationDeleteIntentService', () => {
         auditPayload: {
           claimId: 'claim-1',
           exactPresence: 'present',
+          repairVersion: 99,
+          evidenceVersion: 2,
           intentId: 'caller-cannot-override',
         },
       }),
@@ -484,6 +486,7 @@ describe('ModerationDeleteIntentService', () => {
           claimId: 'claim-1',
           exactPresence: 'present',
           repairVersion: 1,
+          evidenceVersion: 2,
           repairKind: 'legacy_missing_intent',
           intentId: 'repair-intent-1',
           messageId: 'message-1',

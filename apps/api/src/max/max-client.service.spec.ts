@@ -1,5 +1,8 @@
 import {
   MAX_API_SOURCE_TAGS,
+  MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+  MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE,
+  MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE,
   MaxApiCircuitOpenError,
   MaxApiRequestRejectedError,
   MaxClientService,
@@ -722,6 +725,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ),
     };
     const service = createService(httpService);
+    const presence = jest.spyOn(service, 'getExactMessagePresence');
 
     await service.executeActionJob({
       actionType: 'DELETE_MESSAGE',
@@ -743,7 +747,160 @@ describe('MaxClientService inline keyboard guardrails', () => {
         Authorization: 'test-token',
       },
     });
+    expect(presence).not.toHaveBeenCalled();
 
+    await service.onModuleDestroy();
+  });
+
+  it('skips DELETE when marked send-side auto-delete preflight confirms absence', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    const presence = jest.spyOn(service, 'getExactMessagePresence').mockResolvedValue('absent');
+    const job = {
+      actionType: 'DELETE_MESSAGE' as const,
+      chatId: 'chat-1',
+      botId: '777000_bot',
+      messageId: 'mid-auto-delete-verified-1',
+      sendAutoDelete: {
+        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+        sourceSendJobId: 'send-job-1',
+        sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+        requestedDelayMs: 60_000,
+        originBotId: '777000_bot',
+      },
+      attempt: 1,
+      idempotencyKey: 'delete-auto-delete-verified-1',
+      createdAt: '2026-08-31T12:01:00.000Z',
+    };
+
+    await expect(service.executeActionJob(job)).resolves.toBeUndefined();
+
+    expect(presence).toHaveBeenCalledWith('chat-1', 'mid-auto-delete-verified-1', {
+      botId: '777000_bot',
+      trafficClass: undefined,
+      actionHealthLane: undefined,
+      sourceTag: undefined,
+      timeoutMs: undefined,
+      ignoreFailureMetricStatuses: undefined,
+      bypassCache: true,
+    });
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(job.sendAutoDelete).toMatchObject({
+      exactAbsenceVerifiedAt: expect.any(String),
+      exactAbsenceVerificationPhase: 'preflight',
+    });
+    await service.onModuleDestroy();
+  });
+
+  it('requires exact post-delete absence when marked auto-delete preflight is present', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    const presence = jest
+      .spyOn(service, 'getExactMessagePresence')
+      .mockResolvedValueOnce('present')
+      .mockResolvedValueOnce('absent');
+    const job = {
+      actionType: 'DELETE_MESSAGE' as const,
+      chatId: 'chat-1',
+      botId: '777000_bot',
+      messageId: 'mid-auto-delete-post-verified-1',
+      sendAutoDelete: {
+        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+        sourceSendJobId: 'send-job-1',
+        sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+        requestedDelayMs: 60_000,
+        originBotId: '777000_bot',
+      },
+      attempt: 1,
+      idempotencyKey: 'delete-auto-delete-post-verified-1',
+      createdAt: '2026-08-31T12:01:00.000Z',
+    };
+
+    await expect(service.executeActionJob(job)).resolves.toBeUndefined();
+
+    expect(presence).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'delete',
+        params: { message_id: 'mid-auto-delete-post-verified-1' },
+      }),
+    );
+    expect(job.sendAutoDelete).toMatchObject({
+      exactAbsenceVerifiedAt: expect.any(String),
+      exactAbsenceVerificationPhase: 'post_delete',
+    });
+    await service.onModuleDestroy();
+  });
+
+  it('keeps a marked send-side auto-delete retryable while the exact message is present', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    jest
+      .spyOn(service, 'getExactMessagePresence')
+      .mockResolvedValueOnce('present')
+      .mockResolvedValueOnce('present');
+    const deletion = service.executeActionJob({
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-1',
+      botId: '777000_bot',
+      messageId: 'mid-auto-delete-present-1',
+      sendAutoDelete: {
+        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+        sourceSendJobId: 'send-job-1',
+        sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+        requestedDelayMs: 60_000,
+        originBotId: '777000_bot',
+      },
+      attempt: 1,
+      idempotencyKey: 'delete-auto-delete-present-1',
+      createdAt: '2026-08-31T12:01:00.000Z',
+    });
+
+    await expect(deletion).rejects.toMatchObject({
+      name: 'MaxSendAutoDeleteVerificationError',
+      code: MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE,
+    });
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    await service.onModuleDestroy();
+  });
+
+  it('wraps unknown marked auto-delete preflight without issuing DELETE', async () => {
+    const lookupError = new Error('MAX exact lookup timed out');
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    jest.spyOn(service, 'getExactMessagePresence').mockRejectedValue(lookupError);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'DELETE_MESSAGE',
+        chatId: 'chat-1',
+        botId: '777000_bot',
+        messageId: 'mid-auto-delete-unknown-1',
+        sendAutoDelete: {
+          version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+          sourceSendJobId: 'send-job-1',
+          sourceSendCompletedAt: null,
+          requestedDelayMs: 60_000,
+          originBotId: '777000_bot',
+        },
+        attempt: 1,
+        idempotencyKey: 'delete-auto-delete-unknown-1',
+        createdAt: '2026-08-31T12:01:00.000Z',
+      }),
+    ).rejects.toMatchObject({
+      name: 'MaxSendAutoDeleteVerificationError',
+      code: MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE,
+      cause: lookupError,
+    });
+    expect(httpService.request).not.toHaveBeenCalled();
     await service.onModuleDestroy();
   });
 
@@ -962,6 +1119,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
         chatId: 'chat-1',
         messageId: 'mid-immediate-recovered-1',
         botId: '777000_bot',
+        sendAutoDelete: expect.objectContaining({
+          version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+          sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+          requestedDelayMs: 60_000,
+          originBotId: '777000_bot',
+        }),
       }),
       expect.objectContaining({ delay: 30_000 }),
     );
@@ -1584,6 +1747,13 @@ describe('MaxClientService inline keyboard guardrails', () => {
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
         timeoutMs: 1_234,
         ignoreFailureMetricStatuses: [404],
+        sendAutoDelete: {
+          version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+          sourceSendJobId: 'send-auto-delete-context',
+          sourceSendCompletedAt: null,
+          requestedDelayMs: 60_000,
+          originBotId: '777000_bot',
+        },
       }),
       expect.objectContaining({
         delay: 60_000,

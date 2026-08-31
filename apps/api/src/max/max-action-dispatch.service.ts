@@ -967,8 +967,20 @@ export class MaxActionDispatchService {
 
   private async recordLedgerSucceeded(job: MaxActionJob): Promise<void> {
     try {
+      if (job.sendAutoDelete && !this.actionLedgerService) {
+        throw new Error('Send-side auto-delete success requires the MAX action ledger');
+      }
       await this.actionLedgerService?.recordSucceeded(job);
     } catch (error: unknown) {
+      if (job.sendAutoDelete && this.actionLedgerService) {
+        try {
+          if (await this.actionLedgerService.hasRecordedVerifiedSendAutoDeleteSuccess(job)) {
+            return;
+          }
+        } catch {
+          // Preserve the original write failure for the worker retry path.
+        }
+      }
       this.logger.warn(
         {
           actionType: job.actionType,
@@ -978,6 +990,9 @@ export class MaxActionDispatchService {
         },
         'Failed to record successful MAX action ledger outcome',
       );
+      if (job.sendAutoDelete) {
+        throw error;
+      }
     }
   }
 

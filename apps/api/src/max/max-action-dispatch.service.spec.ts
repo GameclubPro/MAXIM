@@ -307,6 +307,89 @@ describe('MaxActionDispatchService', () => {
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
   });
 
+  it('retries a verified send-side auto-delete when its durable receipt cannot be recorded', async () => {
+    const ledgerError = new Error('ledger write failed');
+    const maxClient = {
+      executeActionJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockRejectedValue(ledgerError),
+      hasRecordedVerifiedSendAutoDeleteSuccess: jest.fn().mockResolvedValue(false),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      messageId: 'message-1',
+      sendAutoDelete: {
+        version: 1,
+        sourceSendJobId: 'send-job-1',
+        sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+        requestedDelayMs: 60_000,
+        originBotId: 'bot-1',
+        exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
+        exactAbsenceVerificationPhase: 'post_delete',
+      },
+      attempt: 1,
+      idempotencyKey: 'job-auto-delete-ledger-fail',
+      createdAt: '2026-08-31T12:01:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job)).rejects.toBe(ledgerError);
+
+    expect(actionLedgerService.hasRecordedVerifiedSendAutoDeleteSuccess).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, ledgerError, {
+      exhausted: false,
+    });
+  });
+
+  it('accepts an ambiguously acknowledged receipt write only after exact ledger reconciliation', async () => {
+    const maxClient = {
+      executeActionJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockRejectedValue(new Error('ambiguous ledger response')),
+      hasRecordedVerifiedSendAutoDeleteSuccess: jest.fn().mockResolvedValue(true),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      messageId: 'message-1',
+      sendAutoDelete: {
+        version: 1,
+        sourceSendJobId: 'send-job-1',
+        sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+        requestedDelayMs: 60_000,
+        originBotId: 'bot-1',
+        exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
+        exactAbsenceVerificationPhase: 'preflight',
+      },
+      attempt: 1,
+      idempotencyKey: 'job-auto-delete-ledger-reconciled',
+      createdAt: '2026-08-31T12:01:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job)).resolves.toBeUndefined();
+
+    expect(actionLedgerService.hasRecordedVerifiedSendAutoDeleteSuccess).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+  });
+
   it('recovers a completed SEND_MESSAGE before route resolution or bot execution', async () => {
     const maxClient = {
       executeActionJob: jest.fn(),

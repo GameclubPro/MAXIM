@@ -27,6 +27,7 @@ const EXECUTABLE_LEDGER_STATUSES: ReadonlySet<MaxActionLedgerStatus> = new Set([
   MaxActionLedgerStatus.IN_PROGRESS,
   MaxActionLedgerStatus.FAILED_RETRYABLE,
 ]);
+const SUCCEEDED_DELETE_OWNERSHIP_LOOKUP_LIMIT = 20;
 const CRASH_FENCED_MEMBER_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
   'KICK_MEMBER',
   'BAN_MEMBER',
@@ -296,7 +297,7 @@ export class MaxActionLedgerService {
       return false;
     }
 
-    const row = await this.prisma.maxActionLedgerEntry.findFirst({
+    const rows = await this.prisma.maxActionLedgerEntry.findMany({
       where: {
         chatId: normalizedChatId,
         actionType: 'DELETE_MESSAGE',
@@ -308,12 +309,64 @@ export class MaxActionLedgerService {
       },
       select: {
         id: true,
+        metadata: true,
+        sourceTag: true,
       },
       orderBy: {
         updatedAt: 'desc',
       },
+      take: SUCCEEDED_DELETE_OWNERSHIP_LOOKUP_LIMIT,
     });
-    return Boolean(row);
+    return rows.some((row) => this.hasVerifiedSendAutoDeleteMetadata(row.metadata, row.sourceTag));
+  }
+
+  async hasRecordedVerifiedSendAutoDeleteSuccess(job: MaxActionJob): Promise<boolean> {
+    const expected = job.sendAutoDelete;
+    const messageId = this.nullableString(job.messageId);
+    if (
+      job.actionType !== 'DELETE_MESSAGE' ||
+      !messageId ||
+      !expected ||
+      !this.isVerifiedSendAutoDeleteMarker(expected)
+    ) {
+      return false;
+    }
+
+    const row = await this.prisma.maxActionLedgerEntry.findUnique({
+      where: { jobId: job.idempotencyKey },
+      select: {
+        actionType: true,
+        chatId: true,
+        messageId: true,
+        status: true,
+        ambiguous: true,
+        terminal: true,
+        metadata: true,
+      },
+    });
+    if (
+      !row ||
+      row.actionType !== 'DELETE_MESSAGE' ||
+      row.chatId !== job.chatId ||
+      row.messageId !== messageId ||
+      row.status !== MaxActionLedgerStatus.SUCCEEDED ||
+      row.ambiguous ||
+      !row.terminal
+    ) {
+      return false;
+    }
+
+    const stored = this.readVerifiedSendAutoDeleteMarker(row.metadata);
+    return Boolean(
+      stored &&
+      stored.version === expected.version &&
+      stored.sourceSendJobId === expected.sourceSendJobId &&
+      stored.sourceSendCompletedAt === expected.sourceSendCompletedAt &&
+      stored.requestedDelayMs === expected.requestedDelayMs &&
+      stored.originBotId === expected.originBotId &&
+      stored.exactAbsenceVerifiedAt === expected.exactAbsenceVerifiedAt &&
+      stored.exactAbsenceVerificationPhase === expected.exactAbsenceVerificationPhase,
+    );
   }
 
   async clearTerminalBanStateAfterUnban(chatId: string, userId: string): Promise<void> {
@@ -618,6 +671,15 @@ export class MaxActionLedgerService {
   }
 
   async recordSucceeded(job: MaxActionJob): Promise<void> {
+    if (
+      job.sendAutoDelete &&
+      (job.actionType !== 'DELETE_MESSAGE' ||
+        !this.isVerifiedSendAutoDeleteMarker(job.sendAutoDelete))
+    ) {
+      throw new Error(
+        `Refusing to mark unverified send-side auto-delete ${job.idempotencyKey} as succeeded`,
+      );
+    }
     const mutation: MaxActionLedgerMutation = {
       status: MaxActionLedgerStatus.SUCCEEDED,
       ambiguous: false,
@@ -1366,6 +1428,7 @@ export class MaxActionLedgerService {
         typeof job.autoDeleteDelayMs === 'number' && Number.isFinite(job.autoDeleteDelayMs)
           ? Math.trunc(job.autoDeleteDelayMs)
           : null,
+      sendAutoDelete: job.sendAutoDelete ?? null,
       ignoreFailureMetricStatuses: Array.isArray(job.ignoreFailureMetricStatuses)
         ? job.ignoreFailureMetricStatuses
         : [],
@@ -1384,6 +1447,50 @@ export class MaxActionLedgerService {
         : null,
       ledgerContext: job.ledgerContext ?? null,
     };
+  }
+
+  private hasVerifiedSendAutoDeleteMetadata(metadata: unknown, sourceTag: string | null): boolean {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return sourceTag !== 'moderation_notice';
+    }
+    const row = metadata as Record<string, unknown>;
+    if (!Object.hasOwn(row, 'sendAutoDelete') || row.sendAutoDelete === null) {
+      return sourceTag !== 'moderation_notice';
+    }
+    return this.readVerifiedSendAutoDeleteMarker(metadata) !== null;
+  }
+
+  private readVerifiedSendAutoDeleteMarker(metadata: unknown): Record<string, unknown> | null {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return null;
+    }
+    const marker = (metadata as Record<string, unknown>).sendAutoDelete;
+    return this.isVerifiedSendAutoDeleteMarker(marker) ? (marker as Record<string, unknown>) : null;
+  }
+
+  private isVerifiedSendAutoDeleteMarker(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+    const marker = value as Record<string, unknown>;
+    const sourceSendCompletedAt = marker.sourceSendCompletedAt;
+    return (
+      marker.version === 1 &&
+      typeof marker.sourceSendJobId === 'string' &&
+      marker.sourceSendJobId.trim().length > 0 &&
+      (sourceSendCompletedAt === null ||
+        (typeof sourceSendCompletedAt === 'string' &&
+          Number.isFinite(Date.parse(sourceSendCompletedAt)))) &&
+      typeof marker.requestedDelayMs === 'number' &&
+      Number.isFinite(marker.requestedDelayMs) &&
+      marker.requestedDelayMs > 0 &&
+      typeof marker.originBotId === 'string' &&
+      marker.originBotId.trim().length > 0 &&
+      typeof marker.exactAbsenceVerifiedAt === 'string' &&
+      Number.isFinite(Date.parse(marker.exactAbsenceVerifiedAt)) &&
+      (marker.exactAbsenceVerificationPhase === 'preflight' ||
+        marker.exactAbsenceVerificationPhase === 'post_delete')
+    );
   }
 
   private async updateStartedRowPreservingFirstAttempt(
