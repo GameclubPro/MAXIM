@@ -1,5 +1,9 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { ChatEntityType } from '../prisma/prisma-client';
+import {
+  ChatEntityType,
+  WebhookExecutionClaimStatus,
+  WebhookStatus,
+} from '../prisma/prisma-client';
 import { WebhookParser } from './webhook.parser';
 import { WebhookService } from './webhook.service';
 
@@ -420,6 +424,104 @@ describe('WebhookService', () => {
       observedAt: expect.any(Date),
     });
   });
+
+  it.each<[mode: 'on' | 'shadow' | 'off', enforced: boolean, eventStatus: WebhookStatus]>([
+    ['on', true, WebhookStatus.QUEUED],
+    ['on', true, WebhookStatus.FAILED],
+    ['shadow', false, WebhookStatus.QUEUED],
+    ['shadow', false, WebhookStatus.FAILED],
+    ['off', true, WebhookStatus.QUEUED],
+    ['off', false, WebhookStatus.FAILED],
+  ])(
+    'converges a completed owning claim without replaying webhook preparation (mode=%s, enforced=%s, status=%s)',
+    async (mode, enforced, eventStatus) => {
+      const completedAt = new Date('2026-08-31T09:40:00.000Z');
+      const update = {
+        updateId: 'synthetic:user_added:completed-owner',
+        type: 'user_added',
+        botId: 'bot-1',
+        message: {
+          chatId: '-100-completed-owner',
+          messageId: 'user_added:completed-owner',
+          senderId: 'user-1',
+          text: '',
+          createdAt: '2026-08-31T09:39:59.000Z',
+        },
+        membership: {
+          action: 'added',
+          memberUserIds: ['user-1'],
+        },
+      };
+      const prisma = {
+        webhookEvent: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'evt-completed-owner',
+            dedupKey: 'bot-1:synthetic:user_added:completed-owner',
+            botId: 'bot-1',
+            status: eventStatus,
+            queueName: 'moderation-default-3',
+            normalizedPayload: update,
+          }),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+        webhookExecutionClaim: {
+          createMany: jest.fn().mockResolvedValue({ count: 0 }),
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'claim-completed-owner',
+            kind: 'EXECUTION',
+            semanticKey: 'membership:user_added:-100-completed-owner:user-1',
+            webhookEventId: 'evt-completed-owner',
+            executionBotId: 'bot-1',
+            enforced,
+            status: WebhookExecutionClaimStatus.COMPLETED,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            preparedAt: new Date('2026-08-31T09:39:58.000Z'),
+            completedAt,
+          }),
+          updateMany: jest.fn(),
+        },
+      };
+      const service = new WebhookService(
+        prisma as never,
+        {
+          get: jest.fn((key: string, fallback?: unknown) =>
+            key === 'WEBHOOK_CANONICAL_EXECUTION_MODE' ? mode : (fallback ?? 1),
+          ),
+        } as never,
+        maxBotLinkService as never,
+        undefined,
+        undefined,
+        maxChatAdminRosterSyncService as never,
+      );
+
+      await expect(service.preparePersistedWebhookEvent('evt-completed-owner')).resolves.toEqual({
+        canonical: false,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: 'bot-1',
+        enforced,
+      });
+      expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'evt-completed-owner',
+          status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+        },
+        data: {
+          status: WebhookStatus.PROCESSED,
+          processedAt: completedAt,
+          queueName: null,
+          errorMessage: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+      });
+      expect(prisma.webhookExecutionClaim.createMany).toHaveBeenCalledTimes(mode === 'off' ? 0 : 1);
+      expect(prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
+      expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
+      expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not publish READY after losing the webhook preparation lease', async () => {
     const update = {

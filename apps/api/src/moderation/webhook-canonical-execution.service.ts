@@ -191,10 +191,11 @@ export class WebhookCanonicalExecutionService {
       throw new Error(`Canonical webhook claim is not ready for ${webhookEvent.id}`);
     }
     if (
-      executionClaim?.enforced === true &&
-      executionClaim.webhookEventId === webhookEvent.id &&
+      executionClaim?.webhookEventId === webhookEvent.id &&
       executionClaim.status === 'COMPLETED'
     ) {
+      // FLAG: Completion is authoritative in both enforced and shadow modes; a retry may repair
+      // the receipt, but it must never reacquire a business lease or repeat side effects.
       await this.prisma.webhookEvent.updateMany({
         where: {
           id: webhookEvent.id,
@@ -203,6 +204,7 @@ export class WebhookCanonicalExecutionService {
         data: {
           status: WebhookStatus.PROCESSED,
           processedAt: executionClaim.completedAt ?? new Date(),
+          queueName: null,
           errorMessage: null,
           nextEnqueueAt: null,
           timeoutQuarantineExpiresAt: null,

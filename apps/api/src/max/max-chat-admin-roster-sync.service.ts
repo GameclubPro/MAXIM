@@ -36,7 +36,8 @@ const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_ATTEMPTS = 6;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_BACKOFF_DELAY_MS = 3_000;
 const CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY = 10;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY = 1;
-const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY = 2;
+const CHAT_ADMIN_ROSTER_SYNC_ACCESS_CRITICAL_PRIORITY = 2;
+const CHAT_ADMIN_ROSTER_SYNC_MEMBERSHIP_PREWARM_MAX_PENDING = 64;
 const CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS = 10_000;
 const CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_JITTER_MS = 5_000;
 const CHAT_ADMIN_ROSTER_SYNC_TERMINAL_BOT_BACKOFF_MS = 5 * 60 * 1_000;
@@ -137,6 +138,7 @@ export class MaxChatAdminRosterSyncService {
     }
 
     const jobId = this.buildJobId(desiredJobData.chatId);
+    const membershipPrewarm = desiredJobData.source === 'webhook_membership_churn';
 
     try {
       const existing = await this.queue.getJob(jobId);
@@ -144,6 +146,11 @@ export class MaxChatAdminRosterSyncService {
         const state = await existing.getState();
         const existingData = this.normalizeJobData(existing.data);
         if (state !== 'failed' && state !== 'completed') {
+          // FLAG: Membership churn is only a best-effort prewarm. Any live exact-chat job is
+          // stronger evidence and must never be replaced by this lower-priority refresh.
+          if (membershipPrewarm) {
+            return true;
+          }
           if (existingData && this.areJobDataEqual(existingData, desiredJobData)) {
             return true;
           }
@@ -155,6 +162,10 @@ export class MaxChatAdminRosterSyncService {
         } else {
           await existing.remove();
         }
+      }
+
+      if (membershipPrewarm && !(await this.canAdmitMembershipChurnPrewarm())) {
+        return false;
       }
 
       await this.queue.add('sync-chat-admin-roster', desiredJobData, {
@@ -1692,15 +1703,37 @@ export class MaxChatAdminRosterSyncService {
     }
 
     if (
-      job.source === 'webhook_membership_churn' ||
       job.source === 'handshake_start' ||
       job.source === 'moderation_destructive_path' ||
       job.source === 'admin_access_validation'
     ) {
-      return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY;
+      return CHAT_ADMIN_ROSTER_SYNC_ACCESS_CRITICAL_PRIORITY;
     }
 
     return CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY;
+  }
+
+  private async canAdmitMembershipChurnPrewarm(): Promise<boolean> {
+    if (!this.queue) {
+      return false;
+    }
+
+    try {
+      const counts = await this.queue.getJobCounts('waiting', 'prioritized', 'delayed', 'active');
+      const pending = ['waiting', 'prioritized', 'delayed', 'active'].reduce(
+        (total, state) => total + (counts[state] ?? 0),
+        0,
+      );
+      return pending < CHAT_ADMIN_ROSTER_SYNC_MEMBERSHIP_PREWARM_MAX_PENDING;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Unable to inspect chat admin roster prewarm queue depth; dropping optional prewarm',
+      );
+      return false;
+    }
   }
 
   private resolveJobInitialDelayMs(job: MaxChatAdminRosterSyncJob): number {

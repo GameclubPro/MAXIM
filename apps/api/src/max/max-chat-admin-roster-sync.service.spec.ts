@@ -154,6 +154,12 @@ describe('MaxChatAdminRosterSyncService', () => {
     };
     const queue = {
       getJob: jest.fn().mockResolvedValue(null),
+      getJobCounts: jest.fn().mockResolvedValue({
+        waiting: 0,
+        prioritized: 0,
+        delayed: 0,
+        active: 0,
+      }),
       add: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
@@ -250,7 +256,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
-  it('prioritizes webhook membership churn roster sync jobs ahead of discovery sync', async () => {
+  it('keeps webhook membership churn roster prewarms behind access-critical work', async () => {
     const { service, queue } = createService();
 
     await expect(
@@ -271,13 +277,78 @@ describe('MaxChatAdminRosterSyncService', () => {
       }),
       expect.objectContaining({
         attempts: 6,
-        priority: 2,
+        priority: 10,
         backoff: {
           type: 'fixed',
           delay: 3_000,
         },
       }),
     );
+  });
+
+  it('drops webhook membership churn prewarms when the roster queue is full', async () => {
+    const { service, queue } = createService();
+    queue.getJobCounts = jest.fn().mockResolvedValue({
+      waiting: 0,
+      prioritized: 64,
+      delayed: 0,
+      active: 0,
+    });
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100123',
+        botIds: ['bot-1'],
+        entityType: 'chat',
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(false);
+
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('never lets a membership prewarm replace stronger live work for the same chat', async () => {
+    const { service, queue } = createService();
+    const existing = {
+      data: {
+        chatId: '-100123',
+        botIds: ['bot-1'],
+        entityType: 'chat',
+        source: 'admin_access_validation',
+      },
+      getState: jest.fn().mockResolvedValue('prioritized'),
+      remove: jest.fn(),
+    };
+    queue.getJob.mockResolvedValue(existing);
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100123',
+        botIds: ['bot-1'],
+        entityType: 'chat',
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(true);
+
+    expect(existing.remove).not.toHaveBeenCalled();
+    expect(queue.getJobCounts).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when optional prewarm depth cannot be read', async () => {
+    const { service, queue } = createService();
+    queue.getJobCounts.mockRejectedValue(new Error('redis unavailable'));
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100123',
+        botIds: ['bot-1'],
+        entityType: 'chat',
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(false);
+
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('backfills managed entity roster jobs from local memberships by default', async () => {

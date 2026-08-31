@@ -78,6 +78,7 @@ type WebhookExecutionClaimRow = {
   leaseToken: string | null;
   leaseExpiresAt: Date | null;
   preparedAt: Date | null;
+  completedAt: Date | null;
 };
 
 type MembershipActivityProjection = {
@@ -232,7 +233,8 @@ export class WebhookService {
     private readonly publisherBindingLifecycle?: PublisherEntityBindingLifecycleService,
     @Optional()
     private readonly publisherChatCommentProducer?: PublisherChatCommentProducerService,
-    @Optional() private readonly publisherPrivateDialogFlows?: PublisherPrivateDialogFlowRouterService,
+    @Optional()
+    private readonly publisherPrivateDialogFlows?: PublisherPrivateDialogFlowRouterService,
     @Optional()
     private readonly publisherAutoReplyProducer?: PublisherAutoReplyProducerService,
   ) {
@@ -386,7 +388,33 @@ export class WebhookService {
       semanticKey,
     });
     const claimModel = this.getWebhookExecutionClaimModel();
-    if (!claimModel || this.canonicalExecutionMode === 'off') {
+    if (!claimModel) {
+      const prepared = await this.prepareWebhookEventCore(webhookEventId, update);
+      return {
+        canonical: true,
+        prepared: true,
+        normalizedPayload: prepared.update,
+        executionBotId: prepared.executionBotId,
+        enforced: false,
+      };
+    }
+
+    if (this.canonicalExecutionMode === 'off') {
+      const existingClaim = await claimModel.findUnique({
+        where: {
+          kind_semanticKey: {
+            kind: EXECUTION_CLAIM_KIND,
+            semanticKey,
+          },
+        },
+      });
+      if (
+        existingClaim?.webhookEventId === webhookEventId &&
+        existingClaim.status === WebhookExecutionClaimStatus.COMPLETED
+      ) {
+        return this.convergeCompletedWebhookEvent(webhookEventId, update, existingClaim);
+      }
+
       const prepared = await this.prepareWebhookEventCore(webhookEventId, update);
       return {
         canonical: true,
@@ -450,6 +478,10 @@ export class WebhookService {
         executionBotId: claim.executionBotId,
         enforced: true,
       };
+    }
+
+    if (claim.status === WebhookExecutionClaimStatus.COMPLETED) {
+      return this.convergeCompletedWebhookEvent(webhookEventId, update, claim);
     }
 
     if (claim.preparedAt) {
@@ -533,6 +565,36 @@ export class WebhookService {
       });
       throw error;
     }
+  }
+
+  private async convergeCompletedWebhookEvent(
+    webhookEventId: string,
+    update: MaxUpdate,
+    claim: WebhookExecutionClaimRow,
+  ): Promise<PreparedWebhookExecution> {
+    // FLAG: An exact owning COMPLETED claim is durable execution authority. Converge the receipt
+    // without repeating preparation side effects, including binding and roster scheduling.
+    await this.prisma.webhookEvent.updateMany({
+      where: {
+        id: webhookEventId,
+        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+      },
+      data: {
+        status: WebhookStatus.PROCESSED,
+        processedAt: claim.completedAt ?? new Date(),
+        queueName: null,
+        errorMessage: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+    return {
+      canonical: false,
+      prepared: true,
+      normalizedPayload: update,
+      executionBotId: claim.executionBotId,
+      enforced: claim.enforced,
+    };
   }
 
   private async invalidateMembershipCacheFromWebhook(update: MaxUpdate): Promise<void> {
@@ -875,9 +937,13 @@ export class WebhookService {
     webhookEventId: string | null,
     duplicate: boolean,
   ): Promise<void> {
-    const consumed = await this.publisherPrivateDialogFlows?.observeWebhook(update, webhookEventId, {
-      duplicate,
-    });
+    const consumed = await this.publisherPrivateDialogFlows?.observeWebhook(
+      update,
+      webhookEventId,
+      {
+        duplicate,
+      },
+    );
     if (consumed) {
       return;
     }

@@ -44,7 +44,9 @@ const PUBLISHER_ACCESS_SNAPSHOT_TTL_MS = 15 * 60_000;
 const PUBLISHER_REFRESH_SCAN_INTERVAL_MS = 60_000;
 const PUBLISHER_READY_REFRESH_BATCH_SIZE = 200;
 const PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE = 25;
-const PUBLISHER_ACCESS_REFRESH_AHEAD_MS = 2 * 60_000;
+const PUBLISHER_BINDING_ACCESS_REFRESH_AHEAD_MS = 5 * 60_000;
+// At 25 actor edges per minute, the scheduler can nominate 18k unique edges in this window.
+const PUBLISHER_USER_ACCESS_REFRESH_AHEAD_MS = 12 * 60 * 60_000;
 const PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS = 5 * 60_000;
 const PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS = 15 * 60_000;
 const PUBLISHER_LOST_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
@@ -52,6 +54,8 @@ const PUBLISHER_USER_ACCESS_GRANTED_TTL_MS = 3 * 24 * 60 * 60_000;
 const PUBLISHER_USER_ACCESS_DENIED_TTL_MS = 15 * 60_000;
 const PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE = 25;
 const PUBLISHER_PENDING_CANDIDATE_RETRY_MS = 60_000;
+const PUBLISHER_DENIED_USER_ACCESS_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
+const PUBLISHER_ACTOR_EVIDENCE_LOOKBACK_MS = 30 * 24 * 60 * 60_000;
 const PUBLISHER_HANDSHAKE_REPLY_TIMEOUT_MS = 1_500;
 const PUBLISHER_FORWARDED_CANDIDATE_SOURCE = `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_forwarded`;
 const PUBLISHER_HOME_START_PARAM = `mr-${Buffer.from(
@@ -74,6 +78,7 @@ type PublisherUserAccessRefreshCandidate = {
   userId: string;
   sourceVersion: string | null;
 };
+type PublisherUserAccessRefreshCursor = { chatId: string; userId: string };
 
 @Injectable()
 export class PublisherBindingRefreshService {
@@ -152,10 +157,15 @@ export class PublisherBindingRefreshService {
                 botId: this.publisherBotId,
               },
             },
-            select: { deniedReason: true, source: true, sourceVersion: true },
+            select: { checkedAt: true, deniedReason: true, source: true, sourceVersion: true },
           })
         : Promise.resolve(null),
     ]);
+    if (
+      this.isScheduledRefreshSuperseded(job, candidate?.publisherBinding ?? null, candidateEdge)
+    ) {
+      return;
+    }
     const bindingHasRefreshEvidence = hasPublisherRefreshEvidence(
       candidate?.publisherBinding ?? null,
       this.publisherBotId,
@@ -597,6 +607,23 @@ export class PublisherBindingRefreshService {
       throw new PublisherCandidateRefreshSupersededError();
     }
     await this.replyForwardedCandidate(params.job, 'granted');
+  }
+
+  private isScheduledRefreshSuperseded(
+    job: PublisherBindingRefreshJob,
+    binding: { botAccessCheckedAt: Date | null } | null,
+    edge: { checkedAt: Date } | null,
+  ): boolean {
+    if (job.reason !== 'stale_access' && job.reason !== 'stale_user_access') {
+      return false;
+    }
+    const requestedAtMs = Date.parse(job.requestedAt);
+    if (!Number.isFinite(requestedAtMs)) {
+      return false;
+    }
+    const checkedAt =
+      job.reason === 'stale_user_access' ? edge?.checkedAt : binding?.botAccessCheckedAt;
+    return checkedAt instanceof Date && checkedAt.getTime() > requestedAtMs;
   }
 
   private async refreshPublisherCatalog(
@@ -1174,7 +1201,9 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
   private readonly publisherBotId: string;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
+  private readyBindingCursor: string | null = null;
   private discoveryCursor: string | null = null;
+  private userAccessCursor: PublisherUserAccessRefreshCursor | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1191,7 +1220,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
     credentials.getRequiredActionToken(this.publisherBotId);
   }
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
     if (!this.runtimeBoundary.dispatchEnabled) {
       return;
     }
@@ -1199,7 +1228,21 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
       void this.scan('scheduled');
     }, PUBLISHER_REFRESH_SCAN_INTERVAL_MS);
     this.timer.unref();
-    void this.scan('startup');
+    this.inFlight = true;
+    try {
+      const compacted = await this.refreshQueue.compactScheduledBacklog();
+      if (compacted.scheduledCount > 0 || compacted.truncated) {
+        this.logger.log({ ...compacted }, 'Compacted Publisher scheduled refresh backlog');
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Publisher scheduled refresh backlog compaction failed',
+      );
+    } finally {
+      this.inFlight = false;
+    }
+    await this.scan('startup');
   }
 
   onModuleDestroy(): void {
@@ -1227,9 +1270,12 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         const discoveryBindings = await this.readDiscoveryRefreshCandidates(now);
         const userAccessBindings = await this.readUserAccessRefreshCandidates(now);
 
-        for (const binding of [...readyBindings, ...discoveryBindings]) {
+        const bindingIds = new Set(
+          [...readyBindings, ...discoveryBindings].map((binding) => binding.chatId),
+        );
+        for (const chatId of bindingIds) {
           await this.refreshQueue.enqueue({
-            chatId: binding.chatId,
+            chatId,
             publisherBotId: this.publisherBotId,
             reason: 'stale_access',
             requestedAt: now,
@@ -1259,12 +1305,13 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
     }
   }
 
-  private readReadyRefreshCandidates(now: Date): Promise<PublisherBindingRefreshCandidate[]> {
-    const refreshBefore = new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS);
-    return this.prisma.publisherEntityBinding.findMany({
+  private async readReadyRefreshCandidates(now: Date): Promise<PublisherBindingRefreshCandidate[]> {
+    const refreshBefore = new Date(now.getTime() + PUBLISHER_BINDING_ACCESS_REFRESH_AHEAD_MS);
+    const rows = await this.prisma.publisherEntityBinding.findMany({
       where: {
         publisherBotId: this.publisherBotId,
         status: ChatBotMembershipStatus.ACTIVE,
+        ...(this.readyBindingCursor ? { chatId: { gt: this.readyBindingCursor } } : {}),
         botAccessState: {
           in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
         },
@@ -1272,9 +1319,12 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         OR: [{ botAccessExpiresAt: null }, { botAccessExpiresAt: { lte: refreshBefore } }],
       },
       select: { chatId: true },
-      orderBy: [{ botAccessExpiresAt: { sort: 'asc', nulls: 'first' } }, { chatId: 'asc' }],
+      orderBy: { chatId: 'asc' },
       take: PUBLISHER_READY_REFRESH_BATCH_SIZE,
     });
+    this.readyBindingCursor =
+      rows.length < PUBLISHER_READY_REFRESH_BATCH_SIZE ? null : (rows.at(-1)?.chatId ?? null);
+    return rows;
   }
 
   private async readDiscoveryRefreshCandidates(
@@ -1283,7 +1333,7 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
     const unknownRetryBefore = new Date(now.getTime() - PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS);
     const nonAdminRetryBefore = new Date(now.getTime() - PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS);
     const lostRetryBefore = new Date(now.getTime() - PUBLISHER_LOST_REPROBE_COOLDOWN_MS);
-    const refreshBefore = new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS);
+    const refreshBefore = new Date(now.getTime() + PUBLISHER_BINDING_ACCESS_REFRESH_AHEAD_MS);
     const catalogRows = await this.prisma.managedBotChatCatalog.findMany({
       where: {
         botId: this.publisherBotId,
@@ -1356,12 +1406,16 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
     });
   }
 
-  private readUserAccessRefreshCandidates(
+  private async readUserAccessRefreshCandidates(
     now: Date,
   ): Promise<PublisherUserAccessRefreshCandidate[]> {
-    const refreshBefore = new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS);
+    const refreshBefore = new Date(now.getTime() + PUBLISHER_USER_ACCESS_REFRESH_AHEAD_MS);
     const pendingRetryBefore = new Date(now.getTime() - PUBLISHER_PENDING_CANDIDATE_RETRY_MS);
-    return this.prisma.managedEntityAccessEdge.findMany({
+    const deniedRetryBefore = new Date(
+      now.getTime() - PUBLISHER_DENIED_USER_ACCESS_REPROBE_COOLDOWN_MS,
+    );
+    const actorEvidenceAfter = new Date(now.getTime() - PUBLISHER_ACTOR_EVIDENCE_LOOKBACK_MS);
+    const rows = await this.prisma.managedEntityAccessEdge.findMany({
       where: {
         botId: this.publisherBotId,
         OR: [
@@ -1382,9 +1436,18 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
             state: {
               in: [ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED],
             },
-            deniedReason: PUBLISHER_ACCESS_CANDIDATE_PENDING_REASON,
-            checkedAt: { lte: pendingRetryBefore },
-            expiresAt: { gt: now },
+            OR: [
+              {
+                deniedReason: PUBLISHER_ACCESS_CANDIDATE_PENDING_REASON,
+                checkedAt: { lte: pendingRetryBefore },
+                expiresAt: { gt: now },
+              },
+              {
+                createdAt: { gt: actorEvidenceAfter },
+                checkedAt: { lte: deniedRetryBefore },
+                OR: [{ expiresAt: null }, { expiresAt: { lte: now } }],
+              },
+            ],
           },
         ],
         AND: [
@@ -1411,12 +1474,32 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
               },
             ],
           },
+          ...(this.userAccessCursor
+            ? [
+                {
+                  OR: [
+                    { chatId: { gt: this.userAccessCursor.chatId } },
+                    {
+                      chatId: this.userAccessCursor.chatId,
+                      userId: { gt: this.userAccessCursor.userId },
+                    },
+                  ],
+                },
+              ]
+            : []),
         ],
       },
       select: { chatId: true, userId: true, sourceVersion: true },
-      orderBy: [{ expiresAt: { sort: 'asc', nulls: 'first' } }, { chatId: 'asc' }],
+      orderBy: [{ chatId: 'asc' }, { userId: 'asc' }],
       take: PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE,
     });
+    this.userAccessCursor =
+      rows.length < PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE
+        ? null
+        : rows.at(-1)
+          ? { chatId: rows.at(-1)!.chatId, userId: rows.at(-1)!.userId }
+          : null;
+    return rows;
   }
 
   private managedChatFilter() {

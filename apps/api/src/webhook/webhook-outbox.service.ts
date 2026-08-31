@@ -11,6 +11,7 @@ import type { Job, Queue } from 'bullmq';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
+import { SystemModeService } from '../system/system-mode.service';
 import {
   ALL_WEBHOOK_QUEUE_NAMES,
   DEFAULT_WEBHOOK_QUEUE_NAMES,
@@ -40,6 +41,11 @@ const BACKGROUND_STALE_QUEUED_REPAIR_MS = 120_000;
 const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
 const WEBHOOK_WORK_UNIT_OVERSCAN_SIZE = 5_000;
+const DEGRADED_WEBHOOK_WORK_UNIT_OVERSCAN_SIZE = 1_000;
+const DEGRADED_ENQUEUE_BATCH_SIZE = 100;
+const DEGRADED_ENQUEUE_CONCURRENCY = 4;
+const DEGRADED_QUEUED_REPAIR_INTERVAL_MS = 5_000;
+const ENQUEUE_ADMISSION_MODE_CACHE_MS = 5_000;
 const RECEIVED_BATCH_SHARE = 0.75;
 const RECENT_RECEIPT_BATCH_SHARE = 0.25;
 const MEMBERSHIP_LEAVE_WEBHOOK_TYPES = new Set([
@@ -246,6 +252,14 @@ type WebhookEnqueueWorkUnit = {
   candidates: PrioritizedWebhookEnqueueCandidate[];
 };
 
+type WebhookEnqueueAdmission = {
+  degraded: boolean;
+  batchSize: number;
+  enqueueConcurrency: number;
+  includeQueuedRepair: boolean;
+  expandSelectedChats: boolean;
+};
+
 type CandidatePreparationOutcome = 'ready' | 'advance' | 'block';
 type CandidateEnqueueOutcome = 'terminal' | 'outstanding' | 'block';
 
@@ -377,6 +391,14 @@ function buildBoundedEnqueueWorkUnitsSql(params: {
   `;
 }
 
+function buildEmptyEnqueueCandidatesSql(): Prisma.Sql {
+  return Prisma.sql`
+    SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+    FROM "webhook_events"
+    WHERE FALSE
+  `;
+}
+
 @Injectable()
 export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WebhookOutboxService.name);
@@ -398,6 +420,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private retentionMaintenanceDue = false;
   private draining = false;
   private cleaning = false;
+  private enqueueAdmissionModeCheckedAtMs = 0;
+  private enqueueAdmissionModeKnown = false;
+  private enqueueAdmissionDegraded = false;
+  private nextDegradedQueuedRepairAtMs = 0;
   private readonly queuesByName: Record<AnyWebhookQueueName, Queue<ProcessWebhookJob>>;
   private readonly joinShardQueuesByName: Record<JoinWebhookQueueName, Queue<ProcessWebhookJob>>;
   private readonly defaultShardQueuesByName: Record<
@@ -418,6 +444,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     private readonly backgroundQueue: Queue<ProcessWebhookJob>,
     @InjectQueue(LEGACY_WEBHOOK_QUEUE)
     private readonly legacyQueue: Queue<ProcessWebhookJob>,
+    private readonly systemModeService: SystemModeService,
   ) {
     this.enabled = roleRunsEnqueue(getAppRole());
     this.pollIntervalMs = this.configService.get<number>('ENQUEUE_POLL_INTERVAL_MS', 200);
@@ -530,37 +557,111 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private async enqueueBatch() {
     const now = new Date();
-    const candidates = await this.selectEnqueueCandidates(now);
+    const admission = await this.resolveEnqueueAdmission(now);
+    const candidates = await this.selectEnqueueCandidates(now, admission);
 
-    const prioritizedCandidates = await this.prioritizeCandidates(candidates, now);
+    const prioritizedCandidates = await this.prioritizeCandidates(
+      candidates,
+      now,
+      admission.batchSize,
+    );
     let expandedCandidates = prioritizedCandidates;
-    try {
-      expandedCandidates = await this.expandSelectedChatCandidates(prioritizedCandidates, now);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          err: error instanceof Error ? error.message : String(error),
-          selectedCandidateCount: prioritizedCandidates.length,
-          selectedChatCount: new Set(
-            prioritizedCandidates.flatMap((candidate) => {
-              const chatId = this.extractPriorityChatId(candidate.normalizedPayload);
-              return chatId ? [chatId] : [];
-            }),
-          ).size,
-        },
-        'Failed to expand selected webhook chats; enqueueing the selected heads only',
-      );
+    if (admission.expandSelectedChats) {
+      try {
+        expandedCandidates = await this.expandSelectedChatCandidates(prioritizedCandidates, now);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            err: error instanceof Error ? error.message : String(error),
+            selectedCandidateCount: prioritizedCandidates.length,
+            selectedChatCount: new Set(
+              prioritizedCandidates.flatMap((candidate) => {
+                const chatId = this.extractPriorityChatId(candidate.normalizedPayload);
+                return chatId ? [chatId] : [];
+              }),
+            ).size,
+          },
+          'Failed to expand selected webhook chats; enqueueing the selected heads only',
+        );
+      }
     }
 
-    await this.enqueueCandidates(expandedCandidates);
+    await this.enqueueCandidates(expandedCandidates, admission.enqueueConcurrency);
   }
 
-  private async selectEnqueueCandidates(now: Date): Promise<WebhookEnqueueCandidate[]> {
-    const selectionWindowSize = this.resolvePrioritySelectionWindowSize();
+  private defaultEnqueueAdmission(): WebhookEnqueueAdmission {
+    return {
+      degraded: false,
+      batchSize: this.batchSize,
+      enqueueConcurrency: this.enqueueConcurrency,
+      includeQueuedRepair: true,
+      expandSelectedChats: true,
+    };
+  }
+
+  private async resolveEnqueueAdmission(now: Date): Promise<WebhookEnqueueAdmission> {
+    const nowMs = now.getTime();
+    if (nowMs - this.enqueueAdmissionModeCheckedAtMs >= ENQUEUE_ADMISSION_MODE_CACHE_MS) {
+      this.enqueueAdmissionModeCheckedAtMs = nowMs;
+      try {
+        await this.systemModeService.getEffectiveSnapshot();
+        const sharedSnapshot = this.systemModeService.peekCachedSnapshot(
+          ENQUEUE_ADMISSION_MODE_CACHE_MS,
+        );
+        if (!sharedSnapshot) {
+          throw new Error('System mode shared snapshot was unavailable');
+        }
+        this.enqueueAdmissionDegraded = sharedSnapshot.mode === 'degrade';
+        this.enqueueAdmissionModeKnown = true;
+      } catch (error: unknown) {
+        // FLAG: Keep ingesting if no shared mode has ever been observed, but never lift a known
+        // degraded admission state because a later shared snapshot read failed.
+        if (!this.enqueueAdmissionModeKnown) {
+          this.enqueueAdmissionDegraded = false;
+        }
+        this.logger.warn(
+          {
+            err: error instanceof Error ? error.message : String(error),
+            keptDegradedAdmission: this.enqueueAdmissionDegraded,
+          },
+          'Failed to read system mode for webhook enqueue admission',
+        );
+      }
+    }
+
+    if (!this.enqueueAdmissionDegraded) {
+      return this.defaultEnqueueAdmission();
+    }
+
+    const includeQueuedRepair = nowMs >= this.nextDegradedQueuedRepairAtMs;
+    if (includeQueuedRepair) {
+      this.nextDegradedQueuedRepairAtMs = nowMs + DEGRADED_QUEUED_REPAIR_INTERVAL_MS;
+    }
+
+    return {
+      degraded: true,
+      batchSize: Math.min(this.batchSize, DEGRADED_ENQUEUE_BATCH_SIZE),
+      enqueueConcurrency: Math.min(this.enqueueConcurrency, DEGRADED_ENQUEUE_CONCURRENCY),
+      includeQueuedRepair,
+      // Queue repairs and exact-head fences keep order; the optional expansion is throughput work.
+      expandSelectedChats: false,
+    };
+  }
+
+  private async selectEnqueueCandidates(
+    now: Date,
+    admission: WebhookEnqueueAdmission = this.defaultEnqueueAdmission(),
+  ): Promise<WebhookEnqueueCandidate[]> {
+    const selectionWindowSize = this.resolvePrioritySelectionWindowSize(admission.batchSize);
     const recentReceiptTake = this.resolveRecentReceiptTake(selectionWindowSize);
     const backlogReceiptTake = selectionWindowSize - recentReceiptTake;
     const eligibility = buildEnqueueEligibilitySql(now);
-    const overscanTake = Math.max(selectionWindowSize, WEBHOOK_WORK_UNIT_OVERSCAN_SIZE);
+    const overscanTake = Math.max(
+      selectionWindowSize,
+      admission.degraded
+        ? DEGRADED_WEBHOOK_WORK_UNIT_OVERSCAN_SIZE
+        : WEBHOOK_WORK_UNIT_OVERSCAN_SIZE,
+    );
     const backlogReceiptCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
       eligibility: eligibility.received,
       scanDirection: 'ASC',
@@ -582,20 +683,24 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       overscanTake,
       candidateTake: selectionWindowSize,
     });
-    const staleUserFacingQueuedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
-      eligibility: eligibility.staleUserFacingQueued,
-      scanDirection: 'ASC',
-      resultDirection: 'ASC',
-      overscanTake,
-      candidateTake: selectionWindowSize,
-    });
-    const staleBackgroundQueuedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
-      eligibility: eligibility.staleBackgroundQueued,
-      scanDirection: 'ASC',
-      resultDirection: 'ASC',
-      overscanTake,
-      candidateTake: selectionWindowSize,
-    });
+    const staleUserFacingQueuedCandidatesSql = admission.includeQueuedRepair
+      ? buildBoundedEnqueueWorkUnitsSql({
+          eligibility: eligibility.staleUserFacingQueued,
+          scanDirection: 'ASC',
+          resultDirection: 'ASC',
+          overscanTake,
+          candidateTake: selectionWindowSize,
+        })
+      : buildEmptyEnqueueCandidatesSql();
+    const staleBackgroundQueuedCandidatesSql = admission.includeQueuedRepair
+      ? buildBoundedEnqueueWorkUnitsSql({
+          eligibility: eligibility.staleBackgroundQueued,
+          scanDirection: 'ASC',
+          resultDirection: 'ASC',
+          overscanTake,
+          candidateTake: selectionWindowSize,
+        })
+      : buildEmptyEnqueueCandidatesSql();
 
     // Collapse a bounded raw pool into chat/event work units; exact ordered heads are fenced before CAS.
     const candidates = await this.prisma.$queryRaw<WebhookEnqueueCandidate[]>(Prisma.sql`
@@ -688,19 +793,17 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       .slice(0, take);
   }
 
-  private resolvePrioritySelectionWindowSize(): number {
+  private resolvePrioritySelectionWindowSize(batchSize = this.batchSize): number {
     return Math.max(
-      this.batchSize,
-      Math.min(
-        this.batchSize * PRIORITY_SELECTION_WINDOW_MULTIPLIER,
-        MAX_PRIORITY_SELECTION_WINDOW,
-      ),
+      batchSize,
+      Math.min(batchSize * PRIORITY_SELECTION_WINDOW_MULTIPLIER, MAX_PRIORITY_SELECTION_WINDOW),
     );
   }
 
   private async prioritizeCandidates(
     candidates: WebhookEnqueueCandidate[],
     now: Date,
+    take = this.batchSize,
   ): Promise<PrioritizedWebhookEnqueueCandidate[]> {
     const enqueueableCandidates = candidates.filter((candidate) =>
       this.shouldEnqueueCandidate(candidate, now),
@@ -720,15 +823,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         priority: this.resolveCandidatePriority(candidate, manualCloseChatIds),
       }))
       .sort((left, right) => this.comparePrioritizedCandidates(left, right));
-    const selectedCandidates = this.selectCandidatesWithReceiptReserve(
-      prioritizedCandidates,
-      this.batchSize,
+    const selectedCandidates = this.selectCandidatesWithReceiptReserve(prioritizedCandidates, take);
+    return this.ensureMembershipLeaveReserve(prioritizedCandidates, selectedCandidates, take).sort(
+      (left, right) => this.comparePrioritizedCandidates(left, right),
     );
-    return this.ensureMembershipLeaveReserve(
-      prioritizedCandidates,
-      selectedCandidates,
-      this.batchSize,
-    ).sort((left, right) => this.comparePrioritizedCandidates(left, right));
   }
 
   private ensureMembershipLeaveReserve<T extends WebhookEnqueueCandidate>(
@@ -1046,7 +1144,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     return USER_FACING_STALE_QUEUED_REPAIR_MS;
   }
 
-  private async enqueueCandidates(candidates: PrioritizedWebhookEnqueueCandidate[]) {
+  private async enqueueCandidates(
+    candidates: PrioritizedWebhookEnqueueCandidate[],
+    enqueueConcurrency = this.enqueueConcurrency,
+  ) {
     if (candidates.length === 0) {
       return;
     }
@@ -1055,7 +1156,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(
       workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : [])),
     );
-    const workerCount = Math.max(1, Math.min(this.enqueueConcurrency, workUnits.length));
+    const workerCount = Math.max(1, Math.min(enqueueConcurrency, workUnits.length));
     let nextIndex = 0;
 
     const runWorker = async () => {

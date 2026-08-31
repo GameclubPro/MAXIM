@@ -71,6 +71,27 @@ test('publisher searches hide stale rows and next-page retries preserve loaded p
   assert.doesNotMatch(pageSource, /setQueriesData/u);
 });
 
+test('publisher entity pagination is reachable by list scroll and clears the bottom navigation', () => {
+  const scrollHandlerStart = pageSource.indexOf('function handleEntityListScroll');
+  const scrollHandlerEnd = pageSource.indexOf('function renderEntity', scrollHandlerStart);
+  const scrollHandlerSource = pageSource.slice(scrollHandlerStart, scrollHandlerEnd);
+
+  assert.ok(scrollHandlerStart >= 0 && scrollHandlerEnd > scrollHandlerStart);
+  assert.match(pageSource, /PUBLISHER_ENTITY_AUTO_LOAD_THRESHOLD/u);
+  assert.match(pageSource, /shouldLoadPublisherEntitiesNextPage\(\{/u);
+  assert.match(pageSource, /onScroll=\{handleEntityListScroll\}/u);
+  assert.match(pageSource, /nextPageRequestRef\.current/u);
+  assert.match(scrollHandlerSource, /autoLoadArmedRef\.current = true/u);
+  assert.match(scrollHandlerSource, /autoLoadArmedRef\.current = false/u);
+  assert.match(scrollHandlerSource, /setListScrollTop\(list\.scrollTop\)/u);
+  assert.match(scrollHandlerSource, /setListViewportHeight\(list\.clientHeight\)/u);
+  assert.doesNotMatch(scrollHandlerSource, /if \(shouldVirtualize\)/u);
+  assert.match(
+    pageCss,
+    /\.publisher-entities-page__pagination \{[\s\S]*?padding-bottom: calc\([\s\S]*?var\(--bottom-nav-height\)[\s\S]*?var\(--bottom-nav-offset\)/u,
+  );
+});
+
 test('expanded target picker removes the fixed publish dock from mobile hit testing', () => {
   assert.match(
     pickerCss,

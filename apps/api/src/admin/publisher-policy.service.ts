@@ -57,6 +57,7 @@ import {
 
 const PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE = 200;
 const PUBLISHER_BULK_REFRESH_QUERY_TAKE = 200;
+const PUBLISHER_BULK_REFRESH_MAX_QUERY_PAGES = 10;
 const MAX_PRESENTATION_URL_LENGTH = 2_048;
 
 type PublisherCatalogPresentation = {
@@ -64,6 +65,18 @@ type PublisherCatalogPresentation = {
   entityType: ChatEntityType;
   avatarUrl: string | null;
   entityUrl: string | null;
+};
+
+type PublisherRefreshCandidateRow = {
+  chatId: string;
+  publisherBotId: string;
+  status: ChatBotMembershipStatus;
+  botAccessState: ChatBotAccessState;
+  lastSeenAt: Date | null;
+  lastWebhookAt: Date | null;
+  chat: {
+    accessEdges: readonly { botId: string; entityType: ChatEntityType }[];
+  };
 };
 
 @Injectable()
@@ -231,25 +244,20 @@ export class PublisherPolicyService {
       : MAX_PUBLISHER_BULK_REFRESH_TARGETS;
     const boundedLimit = Math.min(MAX_PUBLISHER_BULK_REFRESH_TARGETS, requestedLimit);
     const now = new Date();
-    const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
     const actorEvidenceLookback = new Date(now.getTime() - 30 * 24 * 60 * 60_000);
     const accessWhere = {
       userId: user.userId,
       botId: publisherBotId,
-      checkedAt: { gt: actorEvidenceLookback },
       OR: [
         {
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-          OR: [
-            { expiresAt: { gt: now } },
-            { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
-          ],
         },
         {
           state: {
             in: [ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED],
           },
+          checkedAt: { gt: actorEvidenceLookback },
         },
       ],
     } satisfies Prisma.ManagedEntityAccessEdgeWhereInput;
@@ -270,29 +278,7 @@ export class PublisherPolicyService {
         ],
       },
     } satisfies Prisma.PublisherEntityBindingWhereInput;
-    const selection = {
-      chatId: true,
-      publisherBotId: true,
-      status: true,
-      botAccessState: true,
-      lastSeenAt: true,
-      lastWebhookAt: true,
-      chat: {
-        select: {
-          accessEdges: {
-            where: accessWhere,
-            select: { botId: true, entityType: true },
-          },
-        },
-      },
-    } satisfies Prisma.PublisherEntityBindingSelect;
-    const orderBy = [
-      { botAccessCheckedAt: { sort: 'asc' as const, nulls: 'first' as const } },
-      { updatedAt: 'asc' as const },
-      { chatId: 'asc' as const },
-    ];
-
-    const problemRows = await this.prisma.publisherEntityBinding.findMany({
+    const selectedProblemIds = await this.selectRefreshCandidateIds({
       where: {
         ...commonWhere,
         ...(normalizedExclusions.length > 0 ? { chatId: { notIn: normalizedExclusions } } : {}),
@@ -317,22 +303,17 @@ export class PublisherPolicyService {
           },
         ],
       },
-      select: selection,
-      orderBy,
-      take: PUBLISHER_BULK_REFRESH_QUERY_TAKE,
-    });
-    const selectedProblemIds = await this.filterRefreshCandidateRows(
-      problemRows,
+      accessWhere,
       publisherBotId,
-      boundedLimit,
-    );
+      limit: boundedLimit,
+    });
     const remaining = boundedLimit - selectedProblemIds.length;
     if (remaining === 0) {
       return selectedProblemIds;
     }
 
     const readyExclusions = [...new Set([...normalizedExclusions, ...selectedProblemIds])];
-    const readyRows = await this.prisma.publisherEntityBinding.findMany({
+    const selectedReadyIds = await this.selectRefreshCandidateIds({
       where: {
         ...commonWhere,
         ...(readyExclusions.length > 0 ? { chatId: { notIn: readyExclusions } } : {}),
@@ -346,28 +327,76 @@ export class PublisherPolicyService {
           },
         ],
       },
-      select: selection,
-      orderBy,
-      take: PUBLISHER_BULK_REFRESH_QUERY_TAKE,
+      accessWhere,
+      publisherBotId,
+      limit: remaining,
     });
-    return [
-      ...selectedProblemIds,
-      ...(await this.filterRefreshCandidateRows(readyRows, publisherBotId, remaining)),
-    ];
+    return [...new Set([...selectedProblemIds, ...selectedReadyIds])].slice(0, boundedLimit);
+  }
+
+  private async selectRefreshCandidateIds(params: {
+    where: Prisma.PublisherEntityBindingWhereInput;
+    accessWhere: Prisma.ManagedEntityAccessEdgeWhereInput;
+    publisherBotId: string;
+    limit: number;
+  }): Promise<string[]> {
+    const selected: string[] = [];
+    let cursorChatId: string | null = null;
+
+    for (
+      let page = 0;
+      page < PUBLISHER_BULK_REFRESH_MAX_QUERY_PAGES && selected.length < params.limit;
+      page += 1
+    ) {
+      const rows: PublisherRefreshCandidateRow[] =
+        await this.prisma.publisherEntityBinding.findMany({
+          where: params.where,
+          select: {
+            chatId: true,
+            publisherBotId: true,
+            status: true,
+            botAccessState: true,
+            lastSeenAt: true,
+            lastWebhookAt: true,
+            chat: {
+              select: {
+                accessEdges: {
+                  where: params.accessWhere,
+                  select: { botId: true, entityType: true },
+                },
+              },
+            },
+          },
+          orderBy: [
+            { botAccessCheckedAt: { sort: 'asc', nulls: 'first' } },
+            { updatedAt: 'asc' },
+            { chatId: 'asc' },
+          ],
+          take: PUBLISHER_BULK_REFRESH_QUERY_TAKE,
+          ...(cursorChatId ? { cursor: { chatId: cursorChatId }, skip: 1 } : {}),
+        });
+      if (rows.length === 0) {
+        break;
+      }
+
+      selected.push(
+        ...(await this.filterRefreshCandidateRows(
+          rows,
+          params.publisherBotId,
+          params.limit - selected.length,
+        )),
+      );
+      cursorChatId = rows.at(-1)?.chatId ?? null;
+      if (rows.length < PUBLISHER_BULK_REFRESH_QUERY_TAKE || !cursorChatId) {
+        break;
+      }
+    }
+
+    return [...new Set(selected)].slice(0, params.limit);
   }
 
   private async filterRefreshCandidateRows(
-    rows: readonly {
-      chatId: string;
-      publisherBotId: string;
-      status: ChatBotMembershipStatus;
-      botAccessState: ChatBotAccessState;
-      lastSeenAt: Date | null;
-      lastWebhookAt: Date | null;
-      chat: {
-        accessEdges: readonly { botId: string; entityType: ChatEntityType }[];
-      };
-    }[],
+    rows: readonly PublisherRefreshCandidateRow[],
     publisherBotId: string,
     limit: number,
   ): Promise<string[]> {

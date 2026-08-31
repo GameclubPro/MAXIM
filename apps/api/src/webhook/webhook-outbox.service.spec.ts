@@ -61,6 +61,14 @@ type RetentionInternals = {
   cleaning: boolean;
 };
 
+type EnqueueAdmissionInternals = {
+  resolveEnqueueAdmission: (now: Date) => Promise<{
+    batchSize: number;
+    enqueueConcurrency: number;
+    includeQueuedRepair: boolean;
+  }>;
+};
+
 function extractSql(query: unknown): string {
   return ((query as SqlQuery | undefined)?.strings ?? []).join('?').replace(/\s+/g, ' ').trim();
 }
@@ -386,6 +394,7 @@ function selectFairEnqueueCandidatesForTest(
   query: SqlQuery,
   timeoutExecutionClaimCompleted: boolean,
 ): Array<MockWebhookEventRow & { isRecentReceipt: boolean }> {
+  const selectionSql = extractSql(query);
   const values = query.values ?? [];
   const now = values
     .filter((value): value is Date => value instanceof Date)
@@ -451,12 +460,30 @@ function selectFairEnqueueCandidatesForTest(
       .map((row) => ({ ...row, isRecentReceipt }));
   };
 
+  const queuedRepairDisabled = (cteName: string) => {
+    const cteStart = selectionSql.indexOf(`${cteName} AS (`);
+    if (cteStart < 0) {
+      return false;
+    }
+    const nextCteName =
+      cteName === 'stale_user_facing_queued_candidates'
+        ? 'stale_background_queued_candidates AS ('
+        : 'SELECT "id", "status", "bot_id" AS "botId"';
+    const nextCteStart = selectionSql.indexOf(nextCteName, cteStart + cteName.length);
+    const cteSql = selectionSql.slice(cteStart, nextCteStart < 0 ? undefined : nextCteStart);
+    return cteSql.includes('WHERE FALSE');
+  };
+
   return [
     ...select(isReceived, backlogReceiptTake),
     ...select(isReceived, recentReceiptTake, 'desc', 'desc', true),
     ...select(isFailed, selectionWindowSize),
-    ...select((row) => isStaleQueued(row, 'user-facing'), selectionWindowSize),
-    ...select((row) => isStaleQueued(row, 'background'), selectionWindowSize),
+    ...(queuedRepairDisabled('stale_user_facing_queued_candidates')
+      ? []
+      : select((row) => isStaleQueued(row, 'user-facing'), selectionWindowSize)),
+    ...(queuedRepairDisabled('stale_background_queued_candidates')
+      ? []
+      : select((row) => isStaleQueued(row, 'background'), selectionWindowSize)),
   ];
 }
 
@@ -490,6 +517,7 @@ function createService(params?: {
     completedAt?: Date | null;
   } | null;
   selectedChatQueryError?: Error;
+  systemMode?: 'normal' | 'degrade';
   prepareResult?: {
     canonical: boolean;
     prepared: boolean;
@@ -789,6 +817,12 @@ function createService(params?: {
       };
     }),
   };
+  const systemModeService = {
+    getEffectiveSnapshot: jest.fn().mockResolvedValue({ mode: params?.systemMode ?? 'normal' }),
+    peekCachedSnapshot: jest
+      .fn()
+      .mockImplementation(() => ({ mode: params?.systemMode ?? 'normal' })),
+  };
 
   const service = new WebhookOutboxService(
     prisma as never,
@@ -799,6 +833,7 @@ function createService(params?: {
     criticalQueue as never,
     backgroundQueue as never,
     legacyQueue as never,
+    systemModeService as never,
   );
   return {
     service,
@@ -806,6 +841,7 @@ function createService(params?: {
     queues,
     webhookRoutingService,
     webhookService,
+    systemModeService,
     webhookRows,
   };
 }
@@ -1303,6 +1339,96 @@ describe('WebhookOutboxService', () => {
 
     expect(queues.backgroundQueue.add).not.toHaveBeenCalled();
     expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('uses bounded fresh-receipt admission and throttles queued repair while system mode degrades', async () => {
+    const receivedRows = Array.from({ length: 120 }, (_, index) => ({
+      id: `evt-degraded-received-${index}`,
+      enqueueAttempts: 0,
+      createdAt: new Date(Date.now() - (120 - index) * 1_000),
+      normalizedPayload: {
+        updateId: `degraded-received-${index}`,
+        type: 'message_created',
+        message: { chatId: `degraded-chat-${index}`, messageId: `degraded-message-${index}` },
+      },
+    }));
+    const { service, queues, prisma, systemModeService } = createService({
+      systemMode: 'degrade',
+      configOverrides: { ENQUEUE_BATCH_SIZE: 200, ENQUEUE_CONCURRENCY: 25 },
+      findManyResult: [
+        ...receivedRows,
+        {
+          id: 'evt-degraded-stale-queued',
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-default-0',
+          enqueueAttempts: 1,
+          queuedAt: new Date(Date.now() - 30_000),
+          createdAt: new Date(Date.now() - 30_000),
+          normalizedPayload: {
+            updateId: 'degraded-stale-queued',
+            type: 'message_created',
+            message: { chatId: 'degraded-stale-chat', messageId: 'degraded-stale-message' },
+          },
+        },
+      ],
+    });
+
+    const firstAdmission = await (
+      service as unknown as EnqueueAdmissionInternals
+    ).resolveEnqueueAdmission(new Date());
+    expect(firstAdmission.includeQueuedRepair).toBe(true);
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const enqueuedIds = Object.values(queues).flatMap((queue) =>
+      queue.add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    expect(enqueuedIds).toHaveLength(100);
+    expect(enqueuedIds).not.toContain('evt-degraded-stale-queued');
+    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalledTimes(1);
+    const selectionQuery = prisma.$queryRaw.mock.calls
+      .map(([query]) => query as SqlQuery)
+      .find((query) => extractSql(query).includes('fair_enqueue_candidates'));
+    if (!selectionQuery) {
+      throw new Error('Expected a webhook enqueue selection query');
+    }
+    const selectionSql = extractSql(selectionQuery);
+    expect(selectionSql).toContain('stale_user_facing_queued_candidates AS ( SELECT');
+    expect(selectionSql).toContain('stale_background_queued_candidates AS ( SELECT');
+    expect(selectionSql).toContain('WHERE FALSE');
+    expect((prisma.$queryRaw.mock.calls[0]![0] as SqlQuery).values).toContain(1_000);
+    expect((prisma.$queryRaw.mock.calls[0]![0] as SqlQuery).values).not.toContain(5_000);
+    expect(
+      prisma.$queryRaw.mock.calls.some(([query]) =>
+        extractSql(query as SqlQuery).includes('selected_chat_candidates'),
+      ),
+    ).toBe(false);
+  });
+
+  it('caches degraded admission, preserves it across a mode read failure, and spaces queued repair', async () => {
+    const { service, systemModeService } = createService({ systemMode: 'degrade' });
+    const internals = service as unknown as EnqueueAdmissionInternals;
+    const startedAt = new Date('2026-03-24T00:00:10.000Z');
+
+    const initial = await internals.resolveEnqueueAdmission(startedAt);
+    const cached = await internals.resolveEnqueueAdmission(new Date(startedAt.getTime() + 1_000));
+    systemModeService.getEffectiveSnapshot.mockResolvedValueOnce({ mode: 'normal' });
+    systemModeService.peekCachedSnapshot.mockReturnValueOnce(null);
+    const afterReadFailure = await internals.resolveEnqueueAdmission(
+      new Date(startedAt.getTime() + 6_000),
+    );
+
+    expect(initial).toMatchObject({
+      batchSize: 100,
+      enqueueConcurrency: 4,
+      includeQueuedRepair: true,
+    });
+    expect(cached).toMatchObject({ includeQueuedRepair: false });
+    expect(afterReadFailure).toMatchObject({
+      batchSize: 100,
+      enqueueConcurrency: 4,
+      includeQueuedRepair: true,
+    });
+    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('skips BullMQ lookups before activating a pristine received event', async () => {

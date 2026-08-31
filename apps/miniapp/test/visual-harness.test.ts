@@ -391,7 +391,7 @@ test('publisher auto replies cover cold list, create sheet, editor bottom, and k
   assert.match(captureSource, /fill\('Открыть каталог'\)/u);
 });
 
-test('large publisher catalog scenario activates pagination without pointer interception', () => {
+test('large publisher catalog scenario covers pointer and scroll pagination without interception', () => {
   const captureSource = readFileSync(
     new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
     'utf8',
@@ -401,8 +401,14 @@ test('large publisher catalog scenario activates pagination without pointer inte
   const scenarioSource = captureSource.slice(scenarioStart, scenarioEnd);
 
   assert.ok(scenarioStart >= 0 && scenarioEnd > scenarioStart);
-  assert.equal(scenarioSource.match(/loadMore\.press\('Enter'\)/gu)?.length, 2);
-  assert.doesNotMatch(scenarioSource, /loadMore\.click\(/u);
+  assert.equal(scenarioSource.match(/loadMore\.click\(\)/gu)?.length, 1);
+  assert.doesNotMatch(scenarioSource, /loadMore\.press\(/u);
+  assert.match(scenarioSource, /element\.scrollTop = element\.scrollHeight/u);
+  assert.match(scenarioSource, /document\.elementFromPoint/u);
+  assert.match(scenarioSource, /position > 30/u);
+  assert.match(scenarioSource, /'30 из 200'/u);
+  assert.match(scenarioSource, /'60 из 200'/u);
+  assert.match(scenarioSource, /'90 из 200'/u);
 });
 
 test('Publik entry route and publisher source files select workspace visual scenarios', () => {

@@ -42,6 +42,7 @@ describe('PublisherBindingRefreshService', () => {
       botAccessState: ChatBotAccessState.CONFIRMED_ADMIN as ChatBotAccessState,
     };
     const edgeState = {
+      checkedAt: null as Date | null,
       deniedReason: 'publisher_actor_verification_pending' as string | null,
       source: 'publisher_actor_candidate_webhook',
       sourceVersion: null as string | null,
@@ -63,7 +64,7 @@ describe('PublisherBindingRefreshService', () => {
               status: ChatBotMembershipStatus.ACTIVE,
               botAccessState: ChatBotAccessState.CONFIRMED_ADMIN as ChatBotAccessState,
               botAccessSource: null as string | null,
-              botAccessCheckedAt: null,
+              botAccessCheckedAt: bindingState.botAccessCheckedAt,
               lifecycleEventAt: null,
               lastSeenAt: new Date('2026-08-26T11:55:00.000Z') as Date | null,
               lastWebhookAt: null as Date | null,
@@ -101,6 +102,7 @@ describe('PublisherBindingRefreshService', () => {
           return { count: 1 };
         }),
         findUnique: jest.fn().mockImplementation(async () => ({
+          checkedAt: edgeState.checkedAt,
           deniedReason: edgeState.deniedReason,
           source:
             edgeState.source === 'publisher_actor_candidate_webhook' &&
@@ -273,6 +275,43 @@ describe('PublisherBindingRefreshService', () => {
       }),
     );
     expect(dispatchHealth.recordAuthenticatedSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('drains legacy scheduled binding duplicates without another MAX probe after a newer check', async () => {
+    const { service, bindingState, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    bindingState.botAccessCheckedAt = new Date('2026-08-26T12:01:00.000Z');
+
+    await service.refresh({ ...job, reason: 'stale_access' });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('drains legacy actor duplicates without another MAX probe after a newer edge check', async () => {
+    const { service, edgeState, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    edgeState.checkedAt = new Date('2026-08-26T12:01:00.000Z');
+    edgeState.sourceVersion = 'edge-v1';
+
+    await service.refresh({
+      ...job,
+      candidateUserId: 'admin-1',
+      candidateVersion: 'edge-v1',
+      reason: 'stale_user_access',
+    });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
   });
 
   it('uses the publisher interactive lane for an explicit user recheck', async () => {
@@ -1414,7 +1453,18 @@ describe('PublisherBindingRefreshService', () => {
         findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-user', userId: 'admin-1' }]),
       },
     };
-    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const compactScheduledBacklog = jest.fn().mockResolvedValue({
+      scannedCount: 0,
+      scheduledCount: 0,
+      duplicateCount: 0,
+      removedCount: 0,
+      racedCount: 0,
+      truncated: false,
+    });
+    const refreshQueue = {
+      enqueue: jest.fn().mockResolvedValue(undefined),
+      compactScheduledBacklog,
+    };
     const dispatchHealth = { isGloballyPaused: jest.fn().mockResolvedValue(false) };
     const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
     const scheduler = new PublisherBindingRefreshSchedulerService(
@@ -1429,9 +1479,10 @@ describe('PublisherBindingRefreshService', () => {
     );
 
     const scan = jest.spyOn(scheduler, 'scan');
-    scheduler.onModuleInit();
-    await scan.mock.results[0]?.value;
+    await scheduler.onModuleInit();
 
+    expect(compactScheduledBacklog).toHaveBeenCalledTimes(1);
+    expect(scan).toHaveBeenCalledWith('startup');
     expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(prisma.publisherEntityBinding.findMany).toHaveBeenNthCalledWith(
@@ -1607,9 +1658,18 @@ describe('PublisherBindingRefreshService', () => {
               state: {
                 in: [ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED],
               },
-              deniedReason: 'publisher_actor_verification_pending',
-              checkedAt: { lte: expect.any(Date) },
-              expiresAt: { gt: expect.any(Date) },
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  deniedReason: 'publisher_actor_verification_pending',
+                  checkedAt: { lte: expect.any(Date) },
+                  expiresAt: { gt: expect.any(Date) },
+                }),
+                expect.objectContaining({
+                  createdAt: { gt: expect.any(Date) },
+                  checkedAt: { lte: expect.any(Date) },
+                  OR: [{ expiresAt: null }, { expiresAt: { lte: expect.any(Date) } }],
+                }),
+              ]),
             }),
           ]),
           AND: expect.arrayContaining([
@@ -1633,6 +1693,143 @@ describe('PublisherBindingRefreshService', () => {
         select: { chatId: true, userId: true, sourceVersion: true },
         take: 25,
       }),
+    );
+  });
+
+  it('starts refresh early and bounds denied recovery by immutable actor evidence', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    try {
+      const bindingFindMany = jest.fn().mockResolvedValue([]);
+      const userEdgeFindMany = jest.fn().mockResolvedValue([]);
+      const scheduler = new PublisherBindingRefreshSchedulerService(
+        {
+          managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
+          publisherEntityBinding: { findMany: bindingFindMany },
+          managedEntityAccessEdge: { findMany: userEdgeFindMany },
+        } as never,
+        { enqueue: jest.fn() } as never,
+        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+        { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
+        { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+        { dispatchEnabled: true } as never,
+        createBackgroundWork() as never,
+        createHistoricalRecovery() as never,
+      );
+
+      await scheduler.scan('scheduled');
+
+      const readyQuery = bindingFindMany.mock.calls[0]?.[0];
+      expect(readyQuery.where.OR).toContainEqual({
+        botAccessExpiresAt: { lte: new Date('2026-08-26T12:05:00.000Z') },
+      });
+      const edgeQuery = userEdgeFindMany.mock.calls[0]?.[0];
+      const grantedBranch = edgeQuery.where.OR.find(
+        (branch: { state?: ManagedEntityAccessState }) =>
+          branch.state === ManagedEntityAccessState.GRANTED,
+      );
+      expect(grantedBranch.OR).toContainEqual({
+        expiresAt: { lte: new Date('2026-08-27T00:00:00.000Z') },
+      });
+      const deniedBranch = edgeQuery.where.OR.find(
+        (branch: { state?: { in?: ManagedEntityAccessState[] } }) =>
+          branch.state?.in?.includes(ManagedEntityAccessState.USER_DENIED),
+      );
+      expect(deniedBranch.OR).toContainEqual(
+        expect.objectContaining({
+          createdAt: { gt: new Date('2026-07-27T12:00:00.000Z') },
+          checkedAt: { lte: new Date('2026-08-26T06:00:00.000Z') },
+        }),
+      );
+      expect(deniedBranch.OR).not.toContainEqual(
+        expect.objectContaining({
+          checkedAt: expect.objectContaining({ gt: expect.any(Date) }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('advances ready-binding and actor cursors across full pages under backlog', async () => {
+    const readyPages = [
+      Array.from({ length: 200 }, (_, index) => ({
+        chatId: `ready-${String(index).padStart(3, '0')}`,
+      })),
+      Array.from({ length: 200 }, (_, index) => ({
+        chatId: `ready-${String(index + 200).padStart(3, '0')}`,
+      })),
+      Array.from({ length: 5 }, (_, index) => ({
+        chatId: `ready-${String(index + 400).padStart(3, '0')}`,
+      })),
+    ];
+    const actorPages = [
+      Array.from({ length: 25 }, (_, index) => ({
+        chatId: `actor-${String(index).padStart(3, '0')}`,
+        userId: 'admin-1',
+        sourceVersion: 'edge-v1',
+      })),
+      Array.from({ length: 25 }, (_, index) => ({
+        chatId: `actor-${String(index + 25).padStart(3, '0')}`,
+        userId: 'admin-1',
+        sourceVersion: 'edge-v1',
+      })),
+      Array.from({ length: 5 }, (_, index) => ({
+        chatId: `actor-${String(index + 50).padStart(3, '0')}`,
+        userId: 'admin-1',
+        sourceVersion: 'edge-v1',
+      })),
+    ];
+    const bindingFindMany = jest
+      .fn()
+      .mockResolvedValueOnce(readyPages[0])
+      .mockResolvedValueOnce(readyPages[1])
+      .mockResolvedValueOnce(readyPages[2]);
+    const userEdgeFindMany = jest
+      .fn()
+      .mockResolvedValueOnce(actorPages[0])
+      .mockResolvedValueOnce(actorPages[1])
+      .mockResolvedValueOnce(actorPages[2]);
+    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new PublisherBindingRefreshSchedulerService(
+      {
+        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
+        publisherEntityBinding: { findMany: bindingFindMany },
+        managedEntityAccessEdge: { findMany: userEdgeFindMany },
+      } as never,
+      refreshQueue as never,
+      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      { dispatchEnabled: true } as never,
+      createBackgroundWork() as never,
+      createHistoricalRecovery() as never,
+    );
+
+    await scheduler.scan('scheduled');
+    await scheduler.scan('scheduled');
+    await scheduler.scan('scheduled');
+
+    expect(bindingFindMany.mock.calls.map(([query]) => query.where.chatId ?? null)).toEqual([
+      null,
+      { gt: 'ready-199' },
+      { gt: 'ready-399' },
+    ]);
+    const actorCursorGroups = userEdgeFindMany.mock.calls.map(([query]) => query.where.AND[1]);
+    expect(actorCursorGroups).toEqual([
+      undefined,
+      {
+        OR: [{ chatId: { gt: 'actor-024' } }, { chatId: 'actor-024', userId: { gt: 'admin-1' } }],
+      },
+      {
+        OR: [{ chatId: { gt: 'actor-049' } }, { chatId: 'actor-049', userId: { gt: 'admin-1' } }],
+      },
+    ]);
+    expect(new Set(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId))).toEqual(
+      new Set([
+        ...readyPages.flat().map((row) => row.chatId),
+        ...actorPages.flat().map((row) => row.chatId),
+      ]),
     );
   });
 
@@ -1806,7 +2003,17 @@ describe('PublisherBindingRefreshService', () => {
         publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
         managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
       };
-      const refreshQueue = { enqueue: jest.fn() };
+      const refreshQueue = {
+        enqueue: jest.fn(),
+        compactScheduledBacklog: jest.fn().mockResolvedValue({
+          scannedCount: 0,
+          scheduledCount: 0,
+          duplicateCount: 0,
+          removedCount: 0,
+          racedCount: 0,
+          truncated: false,
+        }),
+      };
       let globallyPaused = true;
       const dispatchHealth = {
         isGloballyPaused: jest.fn(async () => globallyPaused),

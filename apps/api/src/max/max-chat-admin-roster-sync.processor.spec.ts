@@ -66,6 +66,26 @@ describe('MaxChatAdminRosterSyncProcessor', () => {
     expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 
+  it('drops stale membership churn prewarms before they call MAX', async () => {
+    const service = {
+      processJob: jest.fn(),
+    };
+    const processor = new MaxChatAdminRosterSyncProcessor(service as never, {} as never);
+    const job = {
+      timestamp: new Date('2026-07-07T12:27:59.999Z').getTime(),
+      data: {
+        chatId: '-1002',
+        botIds: ['bot-1'],
+        entityType: 'chat',
+        source: 'webhook_membership_churn',
+      },
+      moveToDelayed: jest.fn(),
+    };
+
+    await expect(processor.process(job as never, 'lock-token')).resolves.toBeUndefined();
+    expect(service.processJob).not.toHaveBeenCalled();
+  });
+
   it('dispatches discriminated deferred access-loss cleanup jobs', async () => {
     const rosterSyncService = {
       processJob: jest.fn(),

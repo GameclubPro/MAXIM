@@ -679,15 +679,57 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       const loadMore = page.locator('.publisher-entities-page__load-more');
       await loadMore.waitFor({ state: 'visible' });
-      await loadMore.press('Enter');
-      await loadMore.getByText('Показать ещё', { exact: true }).waitFor({ state: 'visible' });
-      await loadMore.press('Enter');
-      const list = page.locator('.publisher-entities-page__list.is-virtual');
-      await list.waitFor({ state: 'visible' });
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.publisher-entities-page__filter-row > span')?.textContent ===
+          '30 из 200',
+      );
+      await loadMore.scrollIntoViewIfNeeded();
+      await page.waitForFunction(() => {
+        const button = document.querySelector('.publisher-entities-page__load-more');
+        if (!(button instanceof HTMLButtonElement)) {
+          return false;
+        }
+        const rect = button.getBoundingClientRect();
+        const hitTarget = document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        return hitTarget === button || (hitTarget !== null && button.contains(hitTarget));
+      });
+      await loadMore.click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.publisher-entities-page__filter-row > span')?.textContent ===
+          '60 из 200',
+      );
+      const list = page.locator('.publisher-entities-page__list');
       await list.evaluate((element) => {
         element.scrollTop = element.scrollHeight;
         element.dispatchEvent(new Event('scroll'));
       });
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.publisher-entities-page__filter-row > span')?.textContent ===
+          '90 из 200',
+      );
+      await page.locator('.publisher-entities-page__list.is-virtual').waitFor({ state: 'visible' });
+      await page.waitForFunction(() => {
+        const list = document.querySelector('.publisher-entities-page__list.is-virtual');
+        if (!(list instanceof HTMLElement) || list.scrollTop <= 0) {
+          return false;
+        }
+        const listRect = list.getBoundingClientRect();
+        return Array.from(list.querySelectorAll('.publisher-entity-row')).some((row) => {
+          if (!(row instanceof HTMLElement)) {
+            return false;
+          }
+          const position = Number(row.getAttribute('aria-posinset'));
+          const rect = row.getBoundingClientRect();
+          return position > 30 && rect.bottom > listRect.top && rect.top < listRect.bottom;
+        });
+      });
+      await loadMore.scrollIntoViewIfNeeded();
       await page.waitForTimeout(120);
     },
   },

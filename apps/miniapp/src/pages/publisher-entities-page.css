@@ -462,10 +462,18 @@
     height: 17px;
   }
 
+  .publisher-entities-page__pagination {
+    min-width: 0;
+    display: grid;
+    justify-items: center;
+    padding-bottom: calc(
+      var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
+    );
+  }
+
   .publisher-entities-page__load-more {
     width: min(100%, 220px);
     min-height: 44px;
-    justify-self: center;
     padding: 0 16px;
     border: 1px solid var(--color-border);
     border-radius: 8px;

@@ -634,20 +634,12 @@ describe('PublisherPolicyService', () => {
                   some: expect.objectContaining({
                     userId: user.userId,
                     botId: 'publik-bot',
-                    checkedAt: { gt: expect.any(Date) },
                     OR: expect.arrayContaining([
                       {
                         state: ManagedEntityAccessState.GRANTED,
                         userRole: {
                           in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN],
                         },
-                        OR: expect.arrayContaining([
-                          { expiresAt: { gt: expect.any(Date) } },
-                          {
-                            expiresAt: null,
-                            checkedAt: { gt: expect.any(Date) },
-                          },
-                        ]),
                       },
                       {
                         state: {
@@ -656,6 +648,7 @@ describe('PublisherPolicyService', () => {
                             ManagedEntityAccessState.BOT_DENIED,
                           ],
                         },
+                        checkedAt: { gt: expect.any(Date) },
                       },
                     ]),
                   }),
@@ -682,6 +675,140 @@ describe('PublisherPolicyService', () => {
         }),
       }),
     );
+  });
+
+  it('keeps expired grants and recent terminal denials eligible for manual recovery', async () => {
+    const refreshRow = (id: string, entityType: ChatEntityType) => ({
+      chatId: id,
+      publisherBotId: 'publik-bot',
+      status: ChatBotMembershipStatus.ACTIVE,
+      botAccessState: ChatBotAccessState.STALE,
+      lastSeenAt: null,
+      lastWebhookAt: new Date('2026-08-30T10:00:00.000Z'),
+      chat: {
+        accessEdges: [{ botId: 'publik-bot', entityType }],
+      },
+    });
+    const rows = [
+      refreshRow('expired-granted-chat', ChatEntityType.CHAT),
+      refreshRow('terminal-user-denied-channel', ChatEntityType.CHANNEL),
+      refreshRow('terminal-bot-denied-chat', ChatEntityType.CHAT),
+    ];
+    const findMany = jest.fn().mockResolvedValueOnce(rows);
+    const catalogFindMany = jest.fn().mockResolvedValue(
+      rows.map((row) => ({
+        chatId: row.chatId,
+        entityType: row.chat.accessEdges[0]!.entityType,
+      })),
+    );
+    const service = new PublisherPolicyService(
+      {
+        publisherEntityBinding: { findMany },
+        managedBotChatCatalog: { findMany: catalogFindMany },
+      } as never,
+      createBotRegistry() as never,
+      createReadiness() as never,
+      {} as never,
+    );
+
+    await expect(service.listRefreshableEntityIds(user, 3)).resolves.toEqual(
+      rows.map((row) => row.chatId),
+    );
+
+    const accessFilter = findMany.mock.calls[0]?.[0].where.chat.AND[0].accessEdges.some;
+    expect(accessFilter).toEqual(
+      expect.objectContaining({
+        userId: user.userId,
+        botId: 'publik-bot',
+        OR: [
+          {
+            state: ManagedEntityAccessState.GRANTED,
+            userRole: {
+              in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN],
+            },
+          },
+          {
+            state: {
+              in: [ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED],
+            },
+            checkedAt: { gt: expect.any(Date) },
+          },
+        ],
+      }),
+    );
+    expect(accessFilter).not.toHaveProperty('checkedAt');
+    expect(accessFilter.OR[0]).not.toHaveProperty('expiresAt');
+    expect(accessFilter.OR[0]).not.toHaveProperty('OR');
+  });
+
+  it('keyset-scans beyond 200 invalid catalog rows for valid chats and channels', async () => {
+    const refreshRow = (id: string, entityType: ChatEntityType) => ({
+      chatId: id,
+      publisherBotId: 'publik-bot',
+      status: ChatBotMembershipStatus.ACTIVE,
+      botAccessState: ChatBotAccessState.STALE,
+      lastSeenAt: null,
+      lastWebhookAt: new Date('2026-08-30T10:00:00.000Z'),
+      chat: {
+        accessEdges: [{ botId: 'publik-bot', entityType }],
+      },
+    });
+    const firstPage = [
+      ...Array.from({ length: 100 }, (_, index) =>
+        refreshRow(`missing-${String(index).padStart(3, '0')}`, ChatEntityType.CHAT),
+      ),
+      ...Array.from({ length: 100 }, (_, index) =>
+        refreshRow(`mismatch-${String(index).padStart(3, '0')}`, ChatEntityType.CHAT),
+      ),
+    ];
+    const secondPage = [
+      refreshRow('mismatch-200', ChatEntityType.CHAT),
+      refreshRow('valid-chat', ChatEntityType.CHAT),
+      refreshRow('valid-channel', ChatEntityType.CHANNEL),
+    ];
+    const findMany = jest.fn().mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage);
+    const catalogFindMany = jest.fn(({ where }: { where: { chatId: { in: string[] } } }) =>
+      Promise.resolve(
+        where.chatId.in.flatMap((chatId) => {
+          if (chatId.startsWith('missing-')) {
+            return [];
+          }
+          if (chatId.startsWith('mismatch-')) {
+            return [{ chatId, entityType: ChatEntityType.CHANNEL }];
+          }
+          return [
+            {
+              chatId,
+              entityType: chatId === 'valid-channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
+            },
+          ];
+        }),
+      ),
+    );
+    const service = new PublisherPolicyService(
+      {
+        publisherEntityBinding: { findMany },
+        managedBotChatCatalog: { findMany: catalogFindMany },
+      } as never,
+      createBotRegistry() as never,
+      createReadiness() as never,
+      {} as never,
+    );
+
+    await expect(service.listRefreshableEntityIds(user, 2)).resolves.toEqual([
+      'valid-chat',
+      'valid-channel',
+    ]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        cursor: { chatId: firstPage.at(-1)?.chatId },
+        skip: 1,
+        take: 200,
+      }),
+    );
+    expect(catalogFindMany).toHaveBeenCalledTimes(2);
   });
 
   it('uses only exact scoped catalog rows and builds settings handoffs through the entry bot', async () => {

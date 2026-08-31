@@ -14,6 +14,7 @@ import {
   pollPublisherEntityRefresh,
   resolvePublisherHomeView,
   retryPublisherEntitiesNextPage,
+  shouldLoadPublisherEntitiesNextPage,
   shouldOfferPublisherRecheck,
 } from '../src/pages/publisher-entities-page-model';
 import { createApiRequestError } from '../src/lib/api-request-error';
@@ -191,6 +192,36 @@ test('publisher cabinet resets pagination only after an explicit invalid cursor 
 
   assert.equal(result, 'reset');
   assert.equal(resetCount, 1);
+});
+
+test('publisher cabinet auto-loads only when the entity list reaches its lower threshold', () => {
+  assert.equal(
+    shouldLoadPublisherEntitiesNextPage({
+      scrollTop: 1_559,
+      scrollHeight: 2_400,
+      clientHeight: 600,
+      threshold: 240,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldLoadPublisherEntitiesNextPage({
+      scrollTop: 1_560,
+      scrollHeight: 2_400,
+      clientHeight: 600,
+      threshold: 240,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldLoadPublisherEntitiesNextPage({
+      scrollTop: 1_900,
+      scrollHeight: 2_400,
+      clientHeight: 600,
+      threshold: 240,
+    }),
+    true,
+  );
 });
 
 test('publisher refresh polling uses targeted backoff until a newer access check is observed', async () => {

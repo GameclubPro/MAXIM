@@ -179,6 +179,75 @@ describe('ModerationService', () => {
     expect(prisma.webhookEvent.update).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [true, 'QUEUED'],
+    [true, 'FAILED'],
+    [false, 'QUEUED'],
+    [false, 'FAILED'],
+  ])(
+    'does not re-run a completed owning webhook claim (enforced=%s, status=%s)',
+    async (enforced, eventStatus) => {
+      const update = createUpdate();
+      const completedAt = new Date('2026-08-31T09:40:00.000Z');
+      const prisma = {
+        $queryRaw: jest.fn(),
+        webhookEvent: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'event-completed-owner-1',
+            status: eventStatus,
+            queueName: 'moderation-default-3',
+            botId: 'bot-1',
+            normalizedPayload: update,
+          }),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          update: jest.fn(),
+        },
+        webhookExecutionClaim: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'claim-completed-owner-1',
+            webhookEventId: 'event-completed-owner-1',
+            executionBotId: 'bot-1',
+            enforced,
+            status: 'COMPLETED',
+            preparedAt: new Date('2026-08-31T09:39:00.000Z'),
+            completedAt,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          }),
+          updateMany: jest.fn(),
+        },
+      };
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+      );
+      const handleUpdate = jest.spyOn(service, 'handleUpdate');
+
+      await expect(service.processWebhookEvent('event-completed-owner-1')).resolves.toBeUndefined();
+
+      expect(handleUpdate).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
+      expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'event-completed-owner-1',
+          status: { not: 'PROCESSED' },
+        },
+        data: {
+          status: 'PROCESSED',
+          processedAt: completedAt,
+          queueName: null,
+          errorMessage: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+      });
+      expect(prisma.webhookEvent.update).not.toHaveBeenCalled();
+    },
+  );
+
   it('allows only one overlapping worker to hold an enforced canonical business lease', async () => {
     let leaseHeld = false;
     let releaseHandleUpdate!: () => void;
@@ -1860,6 +1929,7 @@ describe('ModerationService', () => {
       data: {
         status: 'PROCESSED',
         processedAt: completedAt,
+        queueName: null,
         errorMessage: null,
         nextEnqueueAt: null,
         timeoutQuarantineExpiresAt: null,

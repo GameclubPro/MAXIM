@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { PublisherEntitiesSummary, PublisherEntity } from '@maxim/contracts/publisher';
 import { CheckCircle, NavArrowRight, Refresh, Search, WarningCircle, Xmark } from 'iconoir-react';
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
@@ -26,6 +26,7 @@ import {
   PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS,
   resolvePublisherHomeView,
   retryPublisherEntitiesNextPage,
+  shouldLoadPublisherEntitiesNextPage,
   shouldOfferPublisherRecheck,
   waitForPublisherRefresh,
   type PublisherEntityReadinessFilter,
@@ -39,6 +40,7 @@ const PUBLISHER_ENTITY_ROW_HEIGHT = 120;
 const PUBLISHER_ENTITY_LIST_INITIAL_HEIGHT = 680;
 const PUBLISHER_ENTITY_VIRTUALIZATION_THRESHOLD = 60;
 const PUBLISHER_ENTITY_LIST_OVERSCAN = 4;
+const PUBLISHER_ENTITY_AUTO_LOAD_THRESHOLD = PUBLISHER_ENTITY_ROW_HEIGHT * 2;
 const PUBLISHER_ENTITY_SEARCH_DEBOUNCE_MS = 250;
 const PUBLISHER_BULK_REFRESH_POLL_DELAYS_MS = [1_200, 2_400, 4_200, 7_200] as const;
 
@@ -113,6 +115,8 @@ export function PublisherEntitiesPage({
   const [bulkRefresh, setBulkRefresh] = useState<PublisherBulkRefreshState | null>(null);
   const [openingBotDialog, setOpeningBotDialog] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const autoLoadArmedRef = useRef(true);
+  const nextPageRequestRef = useRef(false);
   const mountedRef = useRef(true);
   const refreshAbortRef = useRef<AbortController | null>(null);
   const bulkRefreshAbortRef = useRef<AbortController | null>(null);
@@ -195,6 +199,7 @@ export function PublisherEntitiesPage({
   }, [query]);
 
   useEffect(() => {
+    autoLoadArmedRef.current = true;
     setListScrollTop(0);
     listRef.current?.scrollTo({ top: 0 });
   }, [debouncedQuery, readinessFilter, view]);
@@ -423,6 +428,49 @@ export function PublisherEntitiesPage({
       if (mountedRef.current) {
         setEntityRefresh((current) => (current?.entityKey === entityKey ? null : current));
       }
+    }
+  }
+
+  async function handleLoadMoreEntities(): Promise<void> {
+    if (
+      nextPageRequestRef.current ||
+      searchSettling ||
+      !entitiesQuery.hasNextPage ||
+      entitiesQuery.isFetchingNextPage
+    ) {
+      return;
+    }
+
+    nextPageRequestRef.current = true;
+    try {
+      await retryPublisherEntitiesNextPage({
+        fetchNextPage: () => entitiesQuery.fetchNextPage(),
+        resetInvalidCursor: () =>
+          queryClient.resetQueries({ queryKey: entitiesQueryKey, exact: true }),
+      });
+    } finally {
+      nextPageRequestRef.current = false;
+    }
+  }
+
+  function handleEntityListScroll(event: UIEvent<HTMLDivElement>): void {
+    const list = event.currentTarget;
+    setListScrollTop(list.scrollTop);
+    setListViewportHeight(list.clientHeight);
+
+    const nearEnd = shouldLoadPublisherEntitiesNextPage({
+      scrollTop: list.scrollTop,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      threshold: PUBLISHER_ENTITY_AUTO_LOAD_THRESHOLD,
+    });
+    if (!nearEnd) {
+      autoLoadArmedRef.current = true;
+      return;
+    }
+    if (autoLoadArmedRef.current) {
+      autoLoadArmedRef.current = false;
+      void handleLoadMoreEntities();
     }
   }
 
@@ -693,14 +741,7 @@ export function PublisherEntitiesPage({
           className={cn('publisher-entities-page__list', shouldVirtualize && 'is-virtual')}
           role="list"
           aria-label={view === 'channel' ? 'Каналы Публика' : 'Чаты Публика'}
-          onScroll={
-            shouldVirtualize
-              ? (event) => {
-                  setListScrollTop(event.currentTarget.scrollTop);
-                  setListViewportHeight(event.currentTarget.clientHeight);
-                }
-              : undefined
-          }
+          onScroll={handleEntityListScroll}
         >
           {shouldVirtualize ? (
             <div
@@ -720,24 +761,20 @@ export function PublisherEntitiesPage({
         </div>
       )}
       {!searchSettling && entities.length > 0 && entitiesQuery.hasNextPage ? (
-        <button
-          type="button"
-          className="publisher-entities-page__load-more"
-          onClick={() =>
-            void retryPublisherEntitiesNextPage({
-              fetchNextPage: () => entitiesQuery.fetchNextPage(),
-              resetInvalidCursor: () =>
-                queryClient.resetQueries({ queryKey: entitiesQueryKey, exact: true }),
-            })
-          }
-          disabled={entitiesQuery.isFetchingNextPage}
-        >
-          {entitiesQuery.isFetchingNextPage
-            ? 'Загрузка...'
-            : entitiesQuery.isFetchNextPageError
-              ? 'Повторить'
-              : 'Показать ещё'}
-        </button>
+        <div className="publisher-entities-page__pagination">
+          <button
+            type="button"
+            className="publisher-entities-page__load-more"
+            onClick={() => void handleLoadMoreEntities()}
+            disabled={entitiesQuery.isFetchingNextPage}
+          >
+            {entitiesQuery.isFetchingNextPage
+              ? 'Загрузка...'
+              : entitiesQuery.isFetchNextPageError
+                ? 'Повторить'
+                : 'Показать ещё'}
+          </button>
+        </div>
       ) : null}
     </section>
   );

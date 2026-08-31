@@ -36,6 +36,15 @@ export async function retryPublisherEntitiesNextPage(options: {
   return 'reset';
 }
 
+export function shouldLoadPublisherEntitiesNextPage(options: {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  threshold: number;
+}): boolean {
+  return options.scrollHeight - options.scrollTop - options.clientHeight <= options.threshold;
+}
+
 const RECHECK_BY_BLOCKER: Record<PublisherReadinessBlockerCode, boolean> = {
   policy_disabled: false,
   bot_not_connected: true,

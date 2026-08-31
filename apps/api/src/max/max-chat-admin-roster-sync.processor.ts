@@ -12,6 +12,8 @@ import {
   MaxChatAdminRosterSyncSourceBackoffError,
 } from './max-chat-admin-roster-sync.service';
 
+const MEMBERSHIP_CHURN_PREWARM_MAX_AGE_MS = 2 * 60 * 1_000;
+
 @Processor(MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE, {
   concurrency: 1,
 })
@@ -30,6 +32,14 @@ export class MaxChatAdminRosterSyncProcessor extends WorkerHost {
 
     if (isManagedEntityAccessLossCleanupJob(job.data)) {
       return this.managedEntityAccessLossService.processDeferredRuntimeCleanup(job.data);
+    }
+
+    if (
+      job.data.source === 'webhook_membership_churn' &&
+      typeof job.timestamp === 'number' &&
+      job.timestamp + MEMBERSHIP_CHURN_PREWARM_MAX_AGE_MS < Date.now()
+    ) {
+      return;
     }
 
     try {

@@ -45,6 +45,238 @@ describe('PublisherBindingRefreshQueueService', () => {
     expect(queue.add.mock.calls[0]?.[2]).not.toHaveProperty('deduplication');
   });
 
+  it('deduplicates scheduled binding and actor refreshes for their full job lifecycle', async () => {
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+
+    for (const [index, requestedAt] of [
+      new Date('2026-08-26T12:00:00.000Z'),
+      new Date('2026-08-26T12:01:00.000Z'),
+    ].entries()) {
+      await service.enqueue({
+        chatId: 'chat-1',
+        publisherBotId: 'publik-bot',
+        reason: 'stale_access',
+        requestedAt,
+      });
+      await service.enqueue({
+        chatId: 'chat-1',
+        publisherBotId: 'publik-bot',
+        candidateUserId: 'admin-1',
+        candidateVersion: `edge-v${index + 1}`,
+        reason: 'stale_user_access',
+        requestedAt,
+      });
+    }
+
+    const bindingOptions = [queue.add.mock.calls[0]?.[2], queue.add.mock.calls[2]?.[2]];
+    const actorOptions = [queue.add.mock.calls[1]?.[2], queue.add.mock.calls[3]?.[2]];
+    expect(new Set(bindingOptions.map((options) => options.jobId)).size).toBe(2);
+    expect(new Set(actorOptions.map((options) => options.jobId)).size).toBe(2);
+    expect(new Set(bindingOptions.map((options) => options.deduplication?.id)).size).toBe(1);
+    expect(new Set(actorOptions.map((options) => options.deduplication?.id)).size).toBe(1);
+    expect(bindingOptions[0]?.deduplication).toEqual({
+      id: expect.stringMatching(/^publisher-binding-refresh-scheduled-[a-f0-9]{40}$/u),
+    });
+    expect(actorOptions[0]?.deduplication).toEqual({
+      id: expect.stringMatching(/^publisher-binding-refresh-scheduled-[a-f0-9]{40}$/u),
+    });
+    expect(actorOptions[0]?.deduplication?.id).not.toBe(bindingOptions[0]?.deduplication?.id);
+  });
+
+  it('compacts only non-active scheduled duplicates and preserves exact actor versions', async () => {
+    const removableBinding = { remove: jest.fn().mockResolvedValue(undefined) };
+    const removableActor = { remove: jest.fn().mockResolvedValue(undefined) };
+    const keptBinding = { remove: jest.fn() };
+    const keptActor = { remove: jest.fn() };
+    const keptNewActorVersion = { remove: jest.fn() };
+    const manual = { remove: jest.fn() };
+    const jobs = [
+      {
+        id: 'binding-old',
+        timestamp: 1,
+        data: {
+          version: 1,
+          chatId: 'chat-1',
+          publisherBotId: 'publik-bot',
+          reason: 'stale_access',
+          requestedAt: '2026-08-26T12:00:00.000Z',
+        },
+        ...keptBinding,
+      },
+      {
+        id: 'binding-new',
+        timestamp: 2,
+        data: {
+          version: 1,
+          chatId: 'chat-1',
+          publisherBotId: 'publik-bot',
+          reason: 'stale_access',
+          requestedAt: '2026-08-26T12:01:00.000Z',
+        },
+        ...removableBinding,
+      },
+      {
+        id: 'actor-old',
+        timestamp: 3,
+        data: {
+          version: 1,
+          chatId: 'chat-1',
+          publisherBotId: 'publik-bot',
+          candidateUserId: 'admin-1',
+          candidateVersion: 'edge-v1',
+          reason: 'stale_user_access',
+          requestedAt: '2026-08-26T12:00:00.000Z',
+        },
+        ...keptActor,
+      },
+      {
+        id: 'actor-new',
+        timestamp: 4,
+        data: {
+          version: 1,
+          chatId: 'chat-1',
+          publisherBotId: 'publik-bot',
+          candidateUserId: 'admin-1',
+          candidateVersion: 'edge-v1',
+          reason: 'stale_user_access',
+          requestedAt: '2026-08-26T12:01:00.000Z',
+        },
+        ...removableActor,
+      },
+      {
+        id: 'actor-new-version',
+        timestamp: 5,
+        data: {
+          version: 1,
+          chatId: 'chat-1',
+          publisherBotId: 'publik-bot',
+          candidateUserId: 'admin-1',
+          candidateVersion: 'edge-v2',
+          reason: 'stale_user_access',
+          requestedAt: '2026-08-26T12:02:00.000Z',
+        },
+        ...keptNewActorVersion,
+      },
+      {
+        id: 'manual',
+        timestamp: 6,
+        data: {
+          version: 1,
+          chatId: 'chat-1',
+          publisherBotId: 'publik-bot',
+          candidateUserId: 'admin-1',
+          reason: 'manual_recheck',
+          requestedAt: '2026-08-26T12:03:00.000Z',
+        },
+        ...manual,
+      },
+    ];
+    const queue = {
+      getJobs: jest.fn().mockImplementation(async ([state]: string[]) =>
+        state === 'prioritized' ? jobs : [],
+      ),
+    };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+
+    await expect(service.compactScheduledBacklog()).resolves.toEqual({
+      scannedCount: 6,
+      scheduledCount: 5,
+      duplicateCount: 2,
+      removedCount: 2,
+      racedCount: 0,
+      truncated: false,
+    });
+    expect(queue.getJobs).toHaveBeenNthCalledWith(1, ['prioritized'], 0, 249, true);
+    expect(queue.getJobs).toHaveBeenNthCalledWith(2, ['waiting'], 0, 249, true);
+    expect(queue.getJobs).toHaveBeenNthCalledWith(3, ['delayed'], 0, 249, true);
+    expect(queue.getJobs).toHaveBeenNthCalledWith(4, ['paused'], 0, 249, true);
+    expect(removableBinding.remove).toHaveBeenCalledTimes(1);
+    expect(removableActor.remove).toHaveBeenCalledTimes(1);
+    expect(keptBinding.remove).not.toHaveBeenCalled();
+    expect(keptActor.remove).not.toHaveBeenCalled();
+    expect(keptNewActorVersion.remove).not.toHaveBeenCalled();
+    expect(manual.remove).not.toHaveBeenCalled();
+  });
+
+  it('bounds compaction removal concurrency and tolerates activation races', async () => {
+    let activeRemovals = 0;
+    let maxActiveRemovals = 0;
+    const jobs = Array.from({ length: 18 }, (_, index) => ({
+      id: `scheduled-${index}`,
+      timestamp: index,
+      data: {
+        version: 1,
+        chatId: 'chat-1',
+        publisherBotId: 'publik-bot',
+        reason: 'stale_access',
+        requestedAt: new Date(1_000 + index).toISOString(),
+      },
+      remove: jest.fn(async () => {
+        activeRemovals += 1;
+        maxActiveRemovals = Math.max(maxActiveRemovals, activeRemovals);
+        await Promise.resolve();
+        activeRemovals -= 1;
+        if (index === 9) {
+          throw new Error('job became active');
+        }
+      }),
+    }));
+    const queue = {
+      getJobs: jest.fn().mockImplementation(async ([state]: string[]) =>
+        state === 'prioritized' ? jobs : [],
+      ),
+    };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+
+    await expect(service.compactScheduledBacklog()).resolves.toMatchObject({
+      scannedCount: 18,
+      scheduledCount: 18,
+      duplicateCount: 17,
+      removedCount: 16,
+      racedCount: 1,
+      truncated: false,
+    });
+    expect(maxActiveRemovals).toBe(8);
+    expect(jobs[0]?.remove).not.toHaveBeenCalled();
+  });
+
+  it('applies one shared scan budget across BullMQ job states', async () => {
+    let nextJob = 0;
+    const queue = {
+      getJobs: jest.fn().mockImplementation(async (_states: string[], start: number, end: number) =>
+        Array.from({ length: end - start + 1 }, () => {
+          const index = nextJob++;
+          return {
+            id: `manual-${index}`,
+            timestamp: index,
+            data: {
+              version: 1,
+              chatId: `chat-${index}`,
+              publisherBotId: 'publik-bot',
+              reason: 'manual_recheck',
+              requestedAt: '2026-08-26T12:00:00.000Z',
+            },
+            remove: jest.fn(),
+          };
+        }),
+      ),
+    };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+
+    await expect(service.compactScheduledBacklog()).resolves.toMatchObject({
+      scannedCount: 5_000,
+      scheduledCount: 0,
+      duplicateCount: 0,
+      removedCount: 0,
+      racedCount: 0,
+      truncated: true,
+    });
+    expect(queue.getJobs).toHaveBeenCalledTimes(20);
+    expect(queue.getJobs.mock.calls.every(([states]) => states.length === 1)).toBe(true);
+    expect(nextJob).toBe(5_000);
+  });
+
   it('scopes actor refresh deduplication to the normalized Publisher user', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
     const service = new PublisherBindingRefreshQueueService(queue as never);
