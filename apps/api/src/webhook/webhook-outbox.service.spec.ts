@@ -1419,13 +1419,13 @@ describe('WebhookOutboxService', () => {
 
     expect(initial).toMatchObject({
       batchSize: 100,
-      enqueueConcurrency: 6,
+      enqueueConcurrency: 4,
       includeQueuedRepair: true,
     });
     expect(cached).toMatchObject({ includeQueuedRepair: false });
     expect(afterReadFailure).toMatchObject({
       batchSize: 100,
-      enqueueConcurrency: 6,
+      enqueueConcurrency: 4,
       includeQueuedRepair: true,
     });
     expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalledTimes(2);
