@@ -114,7 +114,9 @@ const LEGACY_OUTBOUND_SEND_SELECT = {
   dispatchBotId: true,
   remoteMessageId: true,
   metadata: true,
+  enqueuedAt: true,
   completedAt: true,
+  createdAt: true,
   updatedAt: true,
 } satisfies Prisma.MaxActionLedgerEntrySelect;
 
@@ -145,6 +147,15 @@ const LEGACY_OUTBOUND_DELETE_SELECT = {
   updatedAt: true,
 } satisfies Prisma.MaxActionLedgerEntrySelect;
 
+const LEGACY_CHAT_SETTINGS_SELECT = {
+  id: true,
+  chatId: true,
+  deleteBotMessagesEnabled: true,
+  deleteBotMessagesDelayMinutes: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.ChatSettingsSelect;
+
 export type BotAutoDeletePresenceRepairIntent = Prisma.ModerationDeleteIntentGetPayload<{
   select: typeof INTENT_SELECT;
 }>;
@@ -162,6 +173,10 @@ export type BotAutoDeletePresenceRepairLegacyOutboundDelete =
   Prisma.MaxActionLedgerEntryGetPayload<{
     select: typeof LEGACY_OUTBOUND_DELETE_SELECT;
   }>;
+
+export type BotAutoDeletePresenceRepairLegacyChatSettings = Prisma.ChatSettingsGetPayload<{
+  select: typeof LEGACY_CHAT_SETTINGS_SELECT;
+}>;
 
 type BotAutoDeletePresenceRepairLegacyMembership = Prisma.ChatBotMembershipGetPayload<{
   select: typeof LEGACY_MEMBERSHIP_SELECT;
@@ -195,11 +210,17 @@ type IneligibleReason =
   | 'legacy_outbound_send_missing'
   | 'legacy_outbound_send_ambiguous'
   | 'legacy_outbound_send_identity_mismatch'
+  | 'legacy_outbound_send_auto_delete_conflict'
+  | 'legacy_outbound_send_job_metadata_invalid'
   | 'legacy_outbound_send_origin_bot_missing'
-  | 'legacy_outbound_delete_missing'
   | 'legacy_outbound_delete_ambiguous'
   | 'legacy_outbound_delete_identity_mismatch'
   | 'legacy_outbound_delete_schedule_missing'
+  | 'legacy_outbound_chat_policy_missing'
+  | 'legacy_outbound_chat_policy_disabled'
+  | 'legacy_outbound_chat_policy_newer_than_send'
+  | 'legacy_outbound_chat_policy_delay_invalid'
+  | 'legacy_outbound_chat_policy_conflicts_with_send'
   | 'legacy_origin_bot_not_executable'
   | 'legacy_active_membership_missing'
   | 'legacy_chat_not_chat'
@@ -266,6 +287,21 @@ type MissingIntentEvidence = {
   expectedMessageAt: Date;
   auditPayload: Prisma.InputJsonObject;
 };
+
+const MISSING_INTENT_EVIDENCE_DETAILS = {
+  legacy_claim: {
+    version: 1,
+    repairSource: 'exact_legacy_message_action_claim',
+  },
+  outbound_send_ledger: {
+    version: 2,
+    repairSource: 'exact_outbound_send_auto_delete_ledger',
+  },
+  outbound_delete_ledger: {
+    version: 3,
+    repairSource: 'exact_outbound_scheduled_delete_ledger',
+  },
+} as const;
 
 export const BOT_AUTO_DELETE_PRESENCE_REPAIR_USAGE = [
   'Usage:',
@@ -494,6 +530,7 @@ async function repairMissingIntentFromEvidence(
   evidence: MissingIntentEvidence,
 ): Promise<BotAutoDeletePresenceRepairOutcome> {
   const { originBotId } = evidence;
+  const evidenceDetails = MISSING_INTENT_EVIDENCE_DETAILS[evidence.source];
   const originBot = dependencies.botRegistry.getBotById(originBotId);
   if (!originBot || !canExecuteActionsForBotState(originBot.state)) {
     return legacyIneligibleOutcome(target, 'legacy_origin_bot_not_executable', originBotId);
@@ -621,12 +658,7 @@ async function repairMissingIntentFromEvidence(
           score: 0.5,
           metadata: {
             reason: SCHEDULED_BOT_DELETE_REASON,
-            repairSource:
-              evidence.source === 'legacy_claim'
-                ? 'exact_legacy_message_action_claim'
-                : evidence.source === 'outbound_send_ledger'
-                  ? 'exact_outbound_send_auto_delete_ledger'
-                  : 'exact_outbound_scheduled_delete_ledger',
+            repairSource: evidenceDetails.repairSource,
           },
         },
       },
@@ -634,12 +666,7 @@ async function repairMissingIntentFromEvidence(
         actorUserId: options.actorUserId!,
         auditPayload: {
           repairVersion: 1,
-          evidenceVersion:
-            evidence.source === 'legacy_claim'
-              ? 1
-              : evidence.source === 'outbound_send_ledger'
-                ? 2
-                : 3,
+          evidenceVersion: evidenceDetails.version,
           evidenceSource: evidence.source,
           ...evidence.auditPayload,
           liveMessageId: liveMessage.messageId,
@@ -686,6 +713,68 @@ async function repairMissingIntentFromEvidence(
   };
 }
 
+async function repairMissingOutboundChatPolicyIntent(
+  dependencies: RepairDependencies,
+  target: BotAutoDeletePresenceRepairTarget,
+  send: BotAutoDeletePresenceRepairLegacyOutboundSend,
+  sendCompletedAt: Date,
+  originBotId: string,
+): Promise<BotAutoDeletePresenceRepairOutcome> {
+  const sendMetadata = asJsonRecord(send.metadata);
+  const sendJobCreatedAt = readCanonicalIsoDate(sendMetadata?.createdAt);
+  const sendEnqueuedAt = send.enqueuedAt;
+  if (
+    sendMetadata?.autoDeleteDelayMs !== null ||
+    !sendJobCreatedAt ||
+    !(sendEnqueuedAt instanceof Date) ||
+    !Number.isFinite(sendEnqueuedAt.getTime()) ||
+    Math.abs(sendJobCreatedAt.getTime() - send.createdAt.getTime()) > 60_000 ||
+    sendEnqueuedAt.getTime() + 60_000 < sendJobCreatedAt.getTime() ||
+    sendEnqueuedAt > sendCompletedAt
+  ) {
+    return legacyIneligibleOutcome(
+      target,
+      'legacy_outbound_send_job_metadata_invalid',
+      originBotId,
+    );
+  }
+
+  const settings: BotAutoDeletePresenceRepairLegacyChatSettings | null =
+    await dependencies.prisma.chatSettings.findUnique({
+      where: { chatId: target.chatId },
+      select: LEGACY_CHAT_SETTINGS_SELECT,
+    });
+  if (!settings || settings.chatId !== target.chatId) {
+    return legacyIneligibleOutcome(target, 'legacy_outbound_chat_policy_missing', originBotId);
+  }
+  if (!settings.deleteBotMessagesEnabled) {
+    return legacyIneligibleOutcome(target, 'legacy_outbound_chat_policy_disabled', originBotId);
+  }
+  if (
+    settings.createdAt > settings.updatedAt ||
+    settings.createdAt > sendJobCreatedAt ||
+    settings.updatedAt > sendJobCreatedAt
+  ) {
+    return legacyIneligibleOutcome(
+      target,
+      'legacy_outbound_chat_policy_newer_than_send',
+      originBotId,
+    );
+  }
+  if (!isValidDeleteBotMessagesDelayMinutes(settings.deleteBotMessagesDelayMinutes)) {
+    return legacyIneligibleOutcome(
+      target,
+      'legacy_outbound_chat_policy_delay_invalid',
+      originBotId,
+    );
+  }
+  return legacyIneligibleOutcome(
+    target,
+    'legacy_outbound_chat_policy_conflicts_with_send',
+    originBotId,
+  );
+}
+
 async function repairMissingOutboundDeleteIntent(
   dependencies: RepairDependencies,
   options: BotAutoDeletePresenceRepairOptions,
@@ -714,7 +803,13 @@ async function repairMissingOutboundDeleteIntent(
       take: 2,
     });
   if (rows.length === 0) {
-    return legacyIneligibleOutcome(target, 'legacy_outbound_delete_missing', originBotId);
+    return repairMissingOutboundChatPolicyIntent(
+      dependencies,
+      target,
+      send,
+      sendCompletedAt,
+      originBotId,
+    );
   }
   if (rows.length !== 1) {
     return legacyIneligibleOutcome(target, 'legacy_outbound_delete_ambiguous', originBotId);
@@ -865,12 +960,20 @@ async function repairMissingOutboundSendIntent(
   }
 
   const autoDeleteDelayMs = readOutboundAutoDeleteDelayMs(send.metadata);
+  const rawAutoDeleteDelayMs = asJsonRecord(send.metadata)?.autoDeleteDelayMs;
   const originBotId = send.dispatchBotId?.trim() ?? '';
   if (!originBotId) {
     return legacyIneligibleOutcome(target, 'legacy_outbound_send_origin_bot_missing');
   }
 
   if (autoDeleteDelayMs === null) {
+    if (rawAutoDeleteDelayMs !== null) {
+      return legacyIneligibleOutcome(
+        target,
+        'legacy_outbound_send_auto_delete_conflict',
+        originBotId,
+      );
+    }
     return repairMissingOutboundDeleteIntent(
       dependencies,
       options,

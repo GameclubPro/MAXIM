@@ -13,6 +13,7 @@ import {
   readBotAutoDeletePresenceRepairOptions,
   runBotAutoDeletePresenceRepair,
   type BotAutoDeletePresenceRepairIntent,
+  type BotAutoDeletePresenceRepairLegacyChatSettings,
   type BotAutoDeletePresenceRepairLegacyClaim,
   type BotAutoDeletePresenceRepairLegacyOutboundDelete,
   type BotAutoDeletePresenceRepairLegacyOutboundSend,
@@ -39,8 +40,13 @@ function legacyOutboundSend(
     terminal: true,
     dispatchBotId: 'bot-1',
     remoteMessageId: 'message-1',
-    metadata: { autoDeleteDelayMs: 120_000 },
+    metadata: {
+      createdAt: '2026-08-31T15:03:57.000Z',
+      autoDeleteDelayMs: 120_000,
+    },
+    enqueuedAt: new Date('2026-08-31T15:03:57.200Z'),
     completedAt: LEGACY_MESSAGE_AT,
+    createdAt: new Date('2026-08-31T15:03:57.100Z'),
     updatedAt: new Date('2026-08-31T15:04:01.000Z'),
     ...overrides,
   };
@@ -86,6 +92,20 @@ function legacyOutboundDelete(
     lastAttemptAt: new Date('2026-08-31T15:06:00.500Z'),
     completedAt: new Date('2026-08-31T15:06:01.000Z'),
     updatedAt: new Date('2026-08-31T15:06:01.000Z'),
+    ...overrides,
+  };
+}
+
+function legacyChatSettings(
+  overrides: Partial<BotAutoDeletePresenceRepairLegacyChatSettings> = {},
+): BotAutoDeletePresenceRepairLegacyChatSettings {
+  return {
+    id: 'settings-1',
+    chatId: 'chat-1',
+    deleteBotMessagesEnabled: true,
+    deleteBotMessagesDelayMinutes: 2,
+    createdAt: new Date('2026-08-31T14:00:00.000Z'),
+    updatedAt: new Date('2026-08-31T15:00:00.000Z'),
     ...overrides,
   };
 }
@@ -176,6 +196,7 @@ function fixture(
     claim?: BotAutoDeletePresenceRepairLegacyClaim | null;
     outboundSends?: BotAutoDeletePresenceRepairLegacyOutboundSend[];
     outboundDeletes?: BotAutoDeletePresenceRepairLegacyOutboundDelete[];
+    chatSettings?: BotAutoDeletePresenceRepairLegacyChatSettings | null;
     membership?: {
       id: string;
       chatId: string;
@@ -212,6 +233,9 @@ function fixture(
             : (params.outboundSends ?? []),
         ),
       ),
+    },
+    chatSettings: {
+      findUnique: jest.fn().mockResolvedValue(params.chatSettings ?? null),
     },
     chatBotMembership: {
       findUnique: jest.fn().mockResolvedValue(
@@ -703,13 +727,22 @@ describe('bot auto-delete exact-presence repair', () => {
     ],
     [
       'missing auto-delete metadata',
-      [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
-      'legacy_outbound_delete_missing',
+      [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      'legacy_outbound_chat_policy_missing',
     ],
     [
       'unsupported auto-delete delay',
       [legacyOutboundSend({ metadata: { autoDeleteDelayMs: 45_000 } })],
-      'legacy_outbound_delete_missing',
+      'legacy_outbound_send_auto_delete_conflict',
+    ],
+    [
+      'missing send job timestamp',
+      [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
+      'legacy_outbound_send_job_metadata_invalid',
     ],
     [
       'missing dispatch bot',
@@ -767,7 +800,11 @@ describe('bot auto-delete exact-presence repair', () => {
     const { dependencies, maxClient, intentService } = fixture({
       storedIntent: null,
       claim: null,
-      outboundSends: [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
       outboundDeletes,
     });
 
@@ -786,7 +823,11 @@ describe('bot auto-delete exact-presence repair', () => {
     const { dependencies, prisma, intentService } = fixture({
       storedIntent: null,
       claim: null,
-      outboundSends: [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
       outboundDeletes: [legacyOutboundDelete()],
     });
 
@@ -881,7 +922,11 @@ describe('bot auto-delete exact-presence repair', () => {
     const { dependencies, intentService } = fixture({
       storedIntent: null,
       claim: null,
-      outboundSends: [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
       outboundDeletes: [recoveredDelete],
     });
 
@@ -895,6 +940,81 @@ describe('bot auto-delete exact-presence repair', () => {
     });
 
     expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'disabled policy',
+      legacyChatSettings({ deleteBotMessagesEnabled: false }),
+      'legacy_outbound_chat_policy_disabled',
+    ],
+    [
+      'policy changed after job creation but before send completion',
+      legacyChatSettings({ updatedAt: new Date('2026-08-31T15:03:57.500Z') }),
+      'legacy_outbound_chat_policy_newer_than_send',
+    ],
+    [
+      'invalid policy delay',
+      legacyChatSettings({ deleteBotMessagesDelayMinutes: 0.75 }),
+      'legacy_outbound_chat_policy_delay_invalid',
+    ],
+  ])('rejects outbound historical chat evidence with %s', async (_label, chatSettings, reason) => {
+    const { dependencies, maxClient, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      chatSettings,
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      ineligible: 1,
+      outcomes: [expect.objectContaining({ result: 'ineligible', reason })],
+    });
+
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+  });
+
+  it('reports stable enabled chat policy as conflicting diagnostic evidence only', async () => {
+    const { dependencies, prisma, maxClient, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      chatSettings: legacyChatSettings(),
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      created: 0,
+      ineligible: 1,
+      errors: 0,
+      outcomes: [
+        expect.objectContaining({
+          result: 'ineligible',
+          reason: 'legacy_outbound_chat_policy_conflicts_with_send',
+          presenceBotId: 'bot-1',
+        }),
+      ],
+    });
+
+    expect(prisma.chatSettings.findUnique).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      select: expect.any(Object),
+    });
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+    expect(intentService.enqueueCurrentIntentWakeupStrict).not.toHaveBeenCalled();
   });
 
   it('accepts exact outbound SEND auto-delete evidence without inventing a claim', async () => {
