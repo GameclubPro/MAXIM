@@ -2547,6 +2547,10 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
+  async clearTerminalBanStateAfterConfirmedUnban(chatId: string, userId: string): Promise<void> {
+    await this.actionLedgerService?.clearTerminalBanStateAfterUnban(chatId, userId);
+  }
+
   async leaveCurrentChat(chatId: string, options: MaxApiRequestOptions = {}): Promise<void> {
     try {
       await this.executeMutation(
@@ -2771,10 +2775,7 @@ export class MaxClientService implements OnModuleDestroy {
             }
           }
           try {
-            await this.actionLedgerService?.clearTerminalBanStateAfterUnban(
-              action.chatId,
-              action.userId,
-            );
+            await this.clearTerminalBanStateAfterConfirmedUnban(action.chatId, action.userId);
           } catch (error: unknown) {
             throw memberMutationAttempted ? markMaxMemberMutationConfirmed(error) : error;
           }

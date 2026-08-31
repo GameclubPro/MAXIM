@@ -7,7 +7,7 @@ import {
 } from './admin-service-test-support';
 
 describe('AdminService global mute group command', () => {
-  it('fans out only after the source mute and source-chat notice', async () => {
+  it('durably queues fanout after the source mute and before the terminal notice', async () => {
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -101,8 +101,8 @@ describe('AdminService global mute group command', () => {
     expect(sourceMute.mock.invocationCallOrder[0]).toBeLessThan(
       maxClient.sendMessage.mock.invocationCallOrder[0],
     );
-    expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
-      adminManualFanoutQueue.add.mock.invocationCallOrder[0],
+    expect(adminManualFanoutQueue.add.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.sendMessage.mock.invocationCallOrder[0],
     );
   });
 });

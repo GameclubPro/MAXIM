@@ -15,7 +15,12 @@ export function extractPrivateControlUserErrorDetails(error: unknown): string | 
 
 function normalizePrivateControlErrorMessage(message: string | null): string | null {
   const normalized = message?.trim() ?? '';
-  return !normalized || isTechnicalPrivateControlErrorMessage(normalized) ? null : normalized;
+  return !normalized ||
+    normalized.length > 1_000 ||
+    !/[А-Яа-яЁё]/u.test(normalized) ||
+    isTechnicalPrivateControlErrorMessage(normalized)
+    ? null
+    : normalized;
 }
 
 function isTechnicalPrivateControlErrorMessage(message: string): boolean {

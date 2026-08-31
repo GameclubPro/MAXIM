@@ -9,11 +9,17 @@ import {
   Post,
   Put,
   Query,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
-import { ModerationSanctionStateLockBusyError } from '../moderation/moderation-sanction-state-lock.service';
+import {
+  ModerationSanctionStateChangedError,
+  ModerationSanctionStateLockBusyError,
+  ModerationSanctionStateLockLeaseLostError,
+  ModerationSanctionStateLockUnavailableError,
+} from '../moderation/moderation-sanction-state-lock.service';
 import { ManualModerationService } from './manual-moderation.service';
 
 @Controller('v1')
@@ -191,6 +197,21 @@ export class AdminManualModerationController {
         throw new ConflictException({
           code: 'MODERATION_ACTION_IN_PROGRESS',
           message: 'Действие для этого участника уже выполняется. Дождитесь результата.',
+        });
+      }
+      if (error instanceof ModerationSanctionStateChangedError) {
+        throw new ConflictException({
+          code: 'MODERATION_ACTION_STATE_CHANGED',
+          message: 'Состояние участника уже изменилось. Обновите список участников.',
+        });
+      }
+      if (
+        error instanceof ModerationSanctionStateLockUnavailableError ||
+        error instanceof ModerationSanctionStateLockLeaseLostError
+      ) {
+        throw new ServiceUnavailableException({
+          code: 'MODERATION_ACTION_STATUS_UNCERTAIN',
+          message: 'Статус действия временно недоступен. Обновите список участников.',
         });
       }
       throw error;

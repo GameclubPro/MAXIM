@@ -32,6 +32,7 @@ import {
   type MaxUpdate,
 } from './moderation.service.spec-support';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { buildNightModeTransitionScheduleFingerprint } from './night-mode-transition-generation.util';
 
 const NIGHT_MODE_V4_JOB_METADATA = {
@@ -130,6 +131,28 @@ function createAdminAccessEpochCache(
 }
 
 describe('ModerationService', () => {
+  it('exposes only expected group-admin command errors', () => {
+    const service = createModerationServiceWithManualBridge({
+      prisma: {},
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient: {},
+      manualBridge: {},
+    });
+    const extractMessage = (error: unknown) =>
+      (service as any).extractGroupAdminCommandErrorMessage(error);
+
+    expect(extractMessage(new BadRequestException('Исправьте параметры команды.'))).toBe(
+      'Исправьте параметры команды.',
+    );
+    expect(extractMessage(new ForbiddenException('Команда недоступна этому администратору.'))).toBe(
+      'Команда недоступна этому администратору.',
+    );
+    expect(extractMessage(new Error('internal database connection details'))).toBe(
+      'Попробуйте ещё раз через несколько секунд.',
+    );
+  });
+
   it('deletes night mode messages silently even when bot notice is enabled', async () => {
     const nowParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Moscow',
@@ -2321,6 +2344,60 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('does not execute a state-changing admin command from message_edited', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = { detect: jest.fn() };
+    const sanctionService = { resolveAction: jest.fn() };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const manualBridge = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge,
+    });
+    const update = createAdminReplyModerationUpdate('бан');
+    update.type = 'message_edited';
+
+    await service.handleUpdate(update);
+
+    expect(manualBridge.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
+    expect(manualBridge.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('uses per-chat custom ban command name for group commands', async () => {
     const prisma = {
       chat: {
@@ -2609,7 +2686,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('keeps reply moderation command enqueue failures silent in chat', async () => {
+  it('reports reply moderation command enqueue failures without technical details', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -2664,7 +2741,12 @@ describe('ModerationService', () => {
 
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Команда не запущена. Повторите через несколько секунд.',
+      { textFormat: 'html' },
+      expect.objectContaining({ immediate: true }),
+    );
   });
 
   it('uses the current chat for MAX reply moderation commands without recipient in the reply link', async () => {

@@ -77,7 +77,6 @@ import {
   updateChannelDialogNotificationsResponseSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
-  normalizeDeleteBotMessagesDelayMinutes,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
@@ -120,10 +119,8 @@ import {
   MaxClientService,
   markMaxMemberMutationAttempted,
   markMaxMemberMutationConfirmed,
-  wasMaxMessageSendAttempted,
   wasMaxMemberMutationConfirmed,
   wasMaxMemberMutationAttempted,
-  type MaxActionDispatchOptions,
   type MaxAttachmentPayload,
   type MaxBotChat,
   type MaxChatAdminMember,
@@ -173,10 +170,6 @@ import {
   type CachedActiveMuteState,
 } from '../moderation/moderation-state.util';
 import {
-  withModerationReleaseButton,
-  type ModerationReleaseAction,
-} from '../moderation/moderation-release-callback.util';
-import {
   ModerationSanctionStateChangedError,
   ModerationSanctionStateLockBusyError,
   ModerationSanctionStateLockLeaseLostError,
@@ -210,14 +203,7 @@ import {
   resolveAdminManagedEntitiesRefreshJitterMs,
   type AdminManagedEntitiesRefreshJob,
 } from './admin-managed-entities-refresh.queue';
-import {
-  ADMIN_MANUAL_FANOUT_QUEUE,
-  type AdminManualFanoutJob,
-  type AdminManualBanFanoutJob,
-  type AdminManualBanSourceCleanupJob,
-  type AdminManualGroupModerationCommandJob,
-  type AdminManualMuteFanoutJob,
-} from './admin-manual-fanout.queue';
+import { ADMIN_MANUAL_FANOUT_QUEUE, type AdminManualFanoutJob } from './admin-manual-fanout.queue';
 import { AdminManualMessageCleanupService } from './admin-manual-message-cleanup.service';
 import { ADMIN_SUPER_BAN_QUEUE, type AdminSuperBanJob } from './admin-super-ban.queue';
 import {
@@ -287,7 +273,10 @@ import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { createAdminDomainAllowlistRuntimeContext } from './admin-domain-allowlist-runtime-context';
 import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
 import { createAdminLogsDashboardRuntimeContext } from './admin-logs-dashboard-runtime-context';
-import { AdminManualModerationRuntime } from './admin-manual-moderation-runtime';
+import {
+  AdminManualModerationRuntime,
+  ManualModerationOutcomeUncertainError,
+} from './admin-manual-moderation-runtime';
 import { createAdminManualModerationRuntimeContext } from './admin-manual-moderation-runtime-context';
 import {
   AdminManagedEntityAccessRuntime,
@@ -465,8 +454,6 @@ import {
   MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY,
   ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
   ADMIN_ACTION_HEALTH_LANE,
-  ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY,
-  ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY,
   DEFAULT_SUPER_BAN_DEVELOPER_USER_IDS,
   APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY,
   APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS,
@@ -573,6 +560,7 @@ type ManualModerationFanoutLedgerOperation =
   | 'FANOUT_MUTE_RECORD'
   | 'COMMAND_SOURCE_BAN'
   | 'COMMAND_SOURCE_MUTE'
+  | 'COMMAND_NOTICE_OUTCOME'
   | 'COMMAND_NOTICE_SUCCESS'
   | 'COMMAND_NOTICE_FAILURE';
 
@@ -650,10 +638,6 @@ type ManualModerationFanoutLedgerClaim =
       row: ManualModerationFanoutLedgerRow | null;
       reason: 'terminal' | 'fresh-lock' | 'ambiguous';
     };
-
-type ManualModerationFanoutResultWithRetryableFailures = {
-  retryableFailedChatIds?: string[];
-};
 
 type DialogNotificationPreferenceRow = {
   userId: string;
@@ -8941,6 +8925,40 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
     const actionRequest = parsed.data;
+    const sourceLedgerRootKey = this.readTrimmedString(options.fanoutLedgerJobId);
+    if (
+      sourceLedgerRootKey &&
+      (actionRequest.action === 'MUTE' || actionRequest.action === 'BAN')
+    ) {
+      const operation =
+        actionRequest.action === 'MUTE' ? 'COMMAND_SOURCE_MUTE' : 'COMMAND_SOURCE_BAN';
+      const sourceLedger = await this.readManualModerationFanoutIntentRow({
+        rootIntentKey: sourceLedgerRootKey,
+        operation,
+        sourceChatId: chatId,
+        targetChatId: chatId,
+        targetUserId,
+      });
+      if (sourceLedger?.status === PrismaManualModerationFanoutLedgerStatus.SUCCEEDED) {
+        if (sourceLedger.moderationEventId) {
+          options.onModerationEventRecorded?.(sourceLedger.moderationEventId);
+        }
+        if (actionRequest.action === 'MUTE') {
+          const mutePermanent = actionRequest.mutePermanent === true;
+          const muteDurationHours = actionRequest.muteDurationHours ?? null;
+          return this.resolveManualMuteResultFromLedger(sourceLedger, {
+            userId: targetUserId,
+            muteDurationHours,
+            muteExpiresAt:
+              !mutePermanent && muteDurationHours
+                ? new Date(Date.now() + muteDurationHours * ONE_HOUR_MS)
+                : null,
+            mutePermanent,
+          });
+        }
+        return this.resolveManualBanResultFromLedger(sourceLedger, targetUserId);
+      }
+    }
     const resolvedBotId =
       actionRequest.action === 'UNMUTE'
         ? undefined
@@ -9028,13 +9046,6 @@ export class AdminService implements OnModuleDestroy {
       if (!mutePermanent && !muteDurationHours) {
         throw new BadRequestException('Укажите длительность мута в часах.');
       }
-
-      await this.assertManualMemberModerationPreconditions(
-        chatId,
-        targetUserId,
-        'MUTE',
-        resolvedBotId,
-      );
       const muteExpiresAt = mutePermanent
         ? null
         : new Date(Date.now() + muteDurationHours! * ONE_HOUR_MS);
@@ -9046,19 +9057,54 @@ export class AdminService implements OnModuleDestroy {
         muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
         mutePermanent,
       } satisfies Prisma.InputJsonObject;
-      if (sourceLedgerRootKey) {
-        sourceMuteLedgerOperationKey = this.buildManualModerationFanoutOperationKey({
-          operation: 'COMMAND_SOURCE_MUTE',
-          sourceChatId: chatId,
-          targetChatId: chatId,
-          targetUserId,
-          rootIntentKey: sourceLedgerRootKey,
-          extra: [
-            mutePermanent ? 'permanent' : 'timed',
-            mutePermanent ? '' : muteDurationHours,
-            muteExpiresAt ? muteExpiresAt.toISOString() : '',
-          ],
+      const existingSourceMuteLedger = sourceLedgerRootKey
+        ? await this.readManualModerationFanoutIntentRow({
+            rootIntentKey: sourceLedgerRootKey,
+            operation: 'COMMAND_SOURCE_MUTE',
+            sourceChatId: chatId,
+            targetChatId: chatId,
+            targetUserId,
+          })
+        : null;
+      if (
+        existingSourceMuteLedger &&
+        existingSourceMuteLedger.status !==
+          PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE &&
+        existingSourceMuteLedger.status !== PrismaManualModerationFanoutLedgerStatus.IN_PROGRESS
+      ) {
+        const existingClaim =
+          this.buildExistingManualModerationFanoutLedgerClaim(existingSourceMuteLedger);
+        if (!this.isSucceededManualModerationFanoutLedgerClaim(existingClaim)) {
+          this.throwManualModerationFanoutLedgerClaimBlocked(existingClaim, 'мут');
+        }
+        if (existingSourceMuteLedger.moderationEventId) {
+          options.onModerationEventRecorded?.(existingSourceMuteLedger.moderationEventId);
+        }
+        return this.resolveManualMuteResultFromLedger(existingSourceMuteLedger, {
+          userId: targetUserId,
+          muteDurationHours,
+          muteExpiresAt,
+          mutePermanent,
         });
+      }
+
+      await this.assertManualMemberModerationPreconditions(
+        chatId,
+        targetUserId,
+        'MUTE',
+        resolvedBotId,
+      );
+      if (sourceLedgerRootKey) {
+        sourceMuteLedgerOperationKey =
+          existingSourceMuteLedger?.operationKey ??
+          this.buildManualModerationFanoutOperationKey({
+            operation: 'COMMAND_SOURCE_MUTE',
+            sourceChatId: chatId,
+            targetChatId: chatId,
+            targetUserId,
+            rootIntentKey: sourceLedgerRootKey,
+            extra: [mutePermanent ? 'permanent' : 'timed', mutePermanent ? '' : muteDurationHours],
+          });
         const claim = await this.claimManualModerationFanoutLedgerEntry({
           operationKey: sourceMuteLedgerOperationKey,
           rootIntentKey: sourceLedgerRootKey,
@@ -9079,128 +9125,173 @@ export class AdminService implements OnModuleDestroy {
           if (claim.row?.moderationEventId) {
             options.onModerationEventRecorded?.(claim.row.moderationEventId);
           }
-          return manualModerationActionResultSchema.parse({
-            ok: true,
-            action: 'MUTE',
+          return this.resolveManualMuteResultFromLedger(claim.row!, {
             userId: targetUserId,
             muteDurationHours,
-            muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
-            message: mutePermanent
-              ? 'Мут включён без срока.'
-              : `Мут включён на ${muteDurationHours} ч.`,
+            muteExpiresAt,
+            mutePermanent,
           });
         }
         sourceMuteLedgerLockToken = claim.lockToken;
       }
-      const { sourceMessageCleanup, crossChatMuteFanout } =
-        shouldFanoutCommandMute || shouldFanoutMiniappMute
-          ? await this.resolveManualMuteCommandFollowUpSummaries({
-              sourceChatId: chatId,
-              targetUserId,
-              actor: user,
-              rootIntentKey: options.fanoutLedgerJobId ?? null,
-              botId: resolvedBotId ?? null,
-              muteDurationHours,
-              muteExpiresAt,
-              mutePermanent,
-              source: source as ManualModerationFanoutSource,
-              leaseGuard,
-            })
-          : {
-              sourceMessageCleanup: this.summarizeManualModerationCleanup({
-                candidateMessageIds: [],
-                deletedMessageIds: [],
-                pendingMessageIds: [],
-                failedMessageIds: [],
-              }),
-              crossChatMuteFanout: this.summarizeManualMuteFanout({
-                mutedChatIds: [],
-                skippedChatIds: [],
-                failedChatIds: [],
-              }),
-            };
-
-      const sanctionFence = await this.prepareManualSanctionStateFence({
-        chatId,
-        targetUserId,
-        intendedAction: 'MUTE',
-        source,
-        leaseGuard,
-      });
-      let moderationEventId: string;
       try {
-        await leaseGuard.assertOwned();
-        moderationEventId = await this.recordManualModerationAction({
+        const { sourceMessageCleanup, crossChatMuteFanout } =
+          shouldFanoutCommandMute || shouldFanoutMiniappMute
+            ? await this.resolveManualMuteCommandFollowUpSummaries({
+                sourceChatId: chatId,
+                targetUserId,
+                actor: user,
+                rootIntentKey: options.fanoutLedgerJobId ?? null,
+                botId: resolvedBotId ?? null,
+                muteDurationHours,
+                muteExpiresAt,
+                mutePermanent,
+                source: source as ManualModerationFanoutSource,
+                leaseGuard,
+              })
+            : {
+                sourceMessageCleanup: this.summarizeManualModerationCleanup({
+                  candidateMessageIds: [],
+                  deletedMessageIds: [],
+                  pendingMessageIds: [],
+                  failedMessageIds: [],
+                }),
+                crossChatMuteFanout: this.summarizeManualMuteFanout({
+                  mutedChatIds: [],
+                  skippedChatIds: [],
+                  failedChatIds: [],
+                }),
+              };
+
+        const sanctionFence = await this.prepareManualSanctionStateFence({
           chatId,
           targetUserId,
-          targetDisplayName,
-          actorUserId: user.userId,
-          ruleCode: 'MANUAL_MUTE',
-          sanctionAction: SanctionAction.MUTE,
-          auditAction: 'MANUAL_MUTE_MEMBER',
-          metadata: {
-            ...metadataBase,
-            scope: requestedScope,
-            reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
-            ...this.buildManualMuteMetadataFields({
-              muteDurationHours,
-              muteExpiresAt,
-              mutePermanent,
-            }),
-            ...(shouldFanoutCommandMute || shouldFanoutMiniappMute
+          intendedAction: 'MUTE',
+          source,
+          leaseGuard,
+        });
+        let moderationEventId: string;
+        try {
+          await leaseGuard.assertOwned();
+          moderationEventId = await this.recordManualModerationAction({
+            chatId,
+            targetUserId,
+            targetDisplayName,
+            actorUserId: user.userId,
+            ruleCode: 'MANUAL_MUTE',
+            sanctionAction: SanctionAction.MUTE,
+            auditAction: 'MANUAL_MUTE_MEMBER',
+            metadata: {
+              ...metadataBase,
+              scope: requestedScope,
+              reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
+              ...this.buildManualMuteMetadataFields({
+                muteDurationHours,
+                muteExpiresAt,
+                mutePermanent,
+              }),
+              ...(shouldFanoutCommandMute || shouldFanoutMiniappMute
+                ? {
+                    sourceMessageCleanup,
+                    crossChatMuteFanout,
+                  }
+                : {}),
+            },
+            auditPayload: {
+              userId: targetUserId,
+              source,
+              scope: requestedScope,
+              ...this.buildManualMuteMetadataFields({
+                muteDurationHours,
+                muteExpiresAt,
+                mutePermanent,
+              }),
+              ...(shouldFanoutCommandMute || shouldFanoutMiniappMute
+                ? {
+                    sourceMessageCleanup,
+                    crossChatMuteFanout,
+                  }
+                : {}),
+            },
+            ...(sourceMuteLedgerOperationKey && sourceMuteLedgerLockToken
               ? {
-                  sourceMessageCleanup,
-                  crossChatMuteFanout,
+                  fanoutLedger: {
+                    operationKey: sourceMuteLedgerOperationKey,
+                    lockToken: sourceMuteLedgerLockToken,
+                    botId: resolvedBotId ?? null,
+                    metadata: sourceMuteLedgerMetadata,
+                  },
                 }
               : {}),
-          },
-          auditPayload: {
-            userId: targetUserId,
-            source,
-            scope: requestedScope,
-            ...this.buildManualMuteMetadataFields({
-              muteDurationHours,
-              muteExpiresAt,
-              mutePermanent,
-            }),
-            ...(shouldFanoutCommandMute || shouldFanoutMiniappMute
-              ? {
-                  sourceMessageCleanup,
-                  crossChatMuteFanout,
-                }
-              : {}),
-          },
-          ...(sourceMuteLedgerOperationKey && sourceMuteLedgerLockToken
-            ? {
-                fanoutLedger: {
-                  operationKey: sourceMuteLedgerOperationKey,
-                  lockToken: sourceMuteLedgerLockToken,
-                  botId: resolvedBotId ?? null,
-                  metadata: sourceMuteLedgerMetadata,
-                },
-              }
-            : {}),
+          });
+        } catch (error: unknown) {
+          await this.abortManualSanctionStateFence(sanctionFence);
+          throw error;
+        }
+        await this.commitManualSanctionStateFence(sanctionFence, moderationEventId);
+        options.onModerationEventRecorded?.(moderationEventId);
+
+        return manualModerationActionResultSchema.parse({
+          ok: true,
+          action: 'MUTE',
+          userId: targetUserId,
+          muteDurationHours,
+          muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
+          message: mutePermanent
+            ? 'Мут включён без срока.'
+            : `Мут включён на ${muteDurationHours} ч.`,
         });
       } catch (error: unknown) {
-        await this.abortManualSanctionStateFence(sanctionFence);
+        if (sourceMuteLedgerOperationKey && sourceMuteLedgerLockToken) {
+          await this.markManualModerationFanoutLedgerFailed({
+            operationKey: sourceMuteLedgerOperationKey,
+            lockToken: sourceMuteLedgerLockToken,
+            status: PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+            error,
+            botId: resolvedBotId ?? null,
+            metadata: sourceMuteLedgerMetadata,
+          });
+        }
         throw error;
       }
-      await this.commitManualSanctionStateFence(sanctionFence, moderationEventId);
-      options.onModerationEventRecorded?.(moderationEventId);
-
-      return manualModerationActionResultSchema.parse({
-        ok: true,
-        action: 'MUTE',
-        userId: targetUserId,
-        muteDurationHours,
-        muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
-        message: mutePermanent
-          ? 'Мут включён без срока.'
-          : `Мут включён на ${muteDurationHours} ч.`,
-      });
     }
 
     if (actionRequest.action === 'BAN') {
+      const existingSourceBanLedger = sourceLedgerRootKey
+        ? await this.readManualModerationFanoutIntentRow({
+            rootIntentKey: sourceLedgerRootKey,
+            operation: 'COMMAND_SOURCE_BAN',
+            sourceChatId: chatId,
+            targetChatId: chatId,
+            targetUserId,
+          })
+        : null;
+      if (
+        existingSourceBanLedger &&
+        existingSourceBanLedger.status !==
+          PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE &&
+        existingSourceBanLedger.status !== PrismaManualModerationFanoutLedgerStatus.IN_PROGRESS
+      ) {
+        const existingClaim =
+          this.buildExistingManualModerationFanoutLedgerClaim(existingSourceBanLedger);
+        if (!this.isSucceededManualModerationFanoutLedgerClaim(existingClaim)) {
+          this.throwManualModerationFanoutLedgerClaimBlocked(existingClaim, 'бан');
+        }
+        if (existingSourceBanLedger.moderationEventId) {
+          options.onModerationEventRecorded?.(existingSourceBanLedger.moderationEventId);
+        }
+        const replayExecutionMode =
+          this.resolveManualBanExecutionModeFromLedger(existingSourceBanLedger);
+        return manualModerationActionResultSchema.parse({
+          ok: true,
+          action: 'BAN',
+          userId: targetUserId,
+          muteDurationHours: null,
+          muteExpiresAt: null,
+          message:
+            replayExecutionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
+        });
+      }
       let executionMode: ManualBanExecutionMode;
       try {
         await this.assertManualMemberModerationPreconditions(
@@ -9221,14 +9312,15 @@ export class AdminService implements OnModuleDestroy {
         executionMode,
       } satisfies Prisma.InputJsonObject;
       if (sourceLedgerRootKey) {
-        sourceBanLedgerOperationKey = this.buildManualModerationFanoutOperationKey({
-          operation: 'COMMAND_SOURCE_BAN',
-          sourceChatId: chatId,
-          targetChatId: chatId,
-          targetUserId,
-          rootIntentKey: sourceLedgerRootKey,
-          extra: [executionMode],
-        });
+        sourceBanLedgerOperationKey =
+          existingSourceBanLedger?.operationKey ??
+          this.buildManualModerationFanoutOperationKey({
+            operation: 'COMMAND_SOURCE_BAN',
+            sourceChatId: chatId,
+            targetChatId: chatId,
+            targetUserId,
+            rootIntentKey: sourceLedgerRootKey,
+          });
         const claim = await this.claimManualModerationFanoutLedgerEntry({
           operationKey: sourceBanLedgerOperationKey,
           rootIntentKey: sourceLedgerRootKey,
@@ -9250,6 +9342,10 @@ export class AdminService implements OnModuleDestroy {
           if (claim.row?.moderationEventId) {
             options.onModerationEventRecorded?.(claim.row.moderationEventId);
           }
+          const replayExecutionMode = this.resolveManualBanExecutionModeFromLedger(
+            claim.row!,
+            executionMode,
+          );
           return manualModerationActionResultSchema.parse({
             ok: true,
             action: 'BAN',
@@ -9257,19 +9353,37 @@ export class AdminService implements OnModuleDestroy {
             muteDurationHours: null,
             muteExpiresAt: null,
             message:
-              executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
+              replayExecutionMode === 'MAX_REMOVE_ONLY'
+                ? 'Участник удалён из чата.'
+                : 'Бан включён.',
           });
         }
         sourceBanLedgerLockToken = claim.lockToken;
       }
 
-      const sanctionFence = await this.prepareManualSanctionStateFence({
-        chatId,
-        targetUserId,
-        intendedAction: 'BAN',
-        source,
-        leaseGuard,
-      });
+      let sanctionFence: ModerationSanctionStateFence;
+      try {
+        sanctionFence = await this.prepareManualSanctionStateFence({
+          chatId,
+          targetUserId,
+          intendedAction: 'BAN',
+          source,
+          leaseGuard,
+        });
+      } catch (error: unknown) {
+        if (sourceBanLedgerOperationKey && sourceBanLedgerLockToken) {
+          await this.markManualModerationFanoutLedgerFailed({
+            operationKey: sourceBanLedgerOperationKey,
+            lockToken: sourceBanLedgerLockToken,
+            status: PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+            error,
+            botId: resolvedBotId ?? null,
+            executionMode,
+            metadata: sourceBanLedgerMetadata,
+          });
+        }
+        throw error;
+      }
       let remoteActionConfirmed = false;
       try {
         await leaseGuard.assertOwned();
@@ -9346,6 +9460,9 @@ export class AdminService implements OnModuleDestroy {
             executionMode,
             metadata: sourceBanLedgerMetadata,
           });
+        }
+        if (this.isManualModerationOrderingFailure(error)) {
+          throw error;
         }
         this.throwManualModerationTransientMaxError(error);
         const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
@@ -9568,6 +9685,12 @@ export class AdminService implements OnModuleDestroy {
       unbanMode = await this.resolveManualUnbanExecutionMode(chatId, targetUserId, resolvedBotId);
       if (unbanMode === 'ALREADY_PRESENT') {
         releaseStateConfirmed = true;
+        try {
+          await leaseGuard.assertOwned();
+          await this.clearTerminalBanStateAfterConfirmedUnban(chatId, targetUserId);
+        } catch (error: unknown) {
+          throw markMaxMemberMutationConfirmed(error);
+        }
       } else {
         try {
           await this.assertBotCanManageMembers(chatId, 'UNBAN', resolvedBotId);
@@ -9739,6 +9862,50 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private async resolveActiveBanSanctionEvent(
+    chatId: string,
+    targetUserId: string,
+  ): Promise<{
+    id: string;
+    executionMode: ManualBanExecutionMode;
+  } | null> {
+    const latestEvent = await this.prisma.moderationEvent.findFirst({
+      where: {
+        chatId,
+        userId: targetUserId,
+        OR: [
+          { action: { in: [SanctionAction.BAN, SanctionAction.MUTE] } },
+          { ruleCode: { in: ['MANUAL_UNBAN', 'MANUAL_UNMUTE'] } },
+        ],
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: {
+        id: true,
+        action: true,
+        metadata: true,
+        createdAt: true,
+      },
+    });
+    if (!latestEvent || latestEvent.action !== SanctionAction.BAN) {
+      return null;
+    }
+    if (
+      await this.moderationSanctionStateFence.isSanctionEventInvalidated({
+        chatId,
+        userId: targetUserId,
+        sanctionEventId: latestEvent.id,
+        eventCreatedAt: latestEvent.createdAt,
+      })
+    ) {
+      return null;
+    }
+    const metadata = this.readObjectPayloadOrNull(latestEvent.metadata);
+    return {
+      id: latestEvent.id,
+      executionMode: metadata?.mode === 'MAX_REMOVE_ONLY' ? 'MAX_REMOVE_ONLY' : 'MAX_BLOCK',
+    };
+  }
+
   private async prepareManualSanctionStateFence(params: {
     chatId: string;
     targetUserId: string;
@@ -9818,11 +9985,26 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
+  private isRetryableManualModerationOrderingFailure(error: unknown): boolean {
+    if (error instanceof ModerationSanctionStateLockBusyError) {
+      return true;
+    }
+    return (
+      (error instanceof ModerationSanctionStateLockUnavailableError ||
+        error instanceof ModerationSanctionStateLockLeaseLostError) &&
+      !wasMaxMemberMutationAttempted(error) &&
+      !wasMaxMemberMutationConfirmed(error)
+    );
+  }
+
   private resolveManualModerationOrderingFailureLedgerStatus(
     error: unknown,
   ): PrismaManualModerationFanoutLedgerStatus {
     if (wasMaxMemberMutationConfirmed(error) || this.isAmbiguousAttemptedMaxMemberMutation(error)) {
       return PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS;
+    }
+    if (this.isRetryableManualModerationOrderingFailure(error)) {
+      return PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE;
     }
     return this.isManualModerationOrderingFailure(error)
       ? PrismaManualModerationFanoutLedgerStatus.FAILED_TERMINAL
@@ -9877,6 +10059,29 @@ export class AdminService implements OnModuleDestroy {
     const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user, {
       skipActorAdminCheck: options.actorAlreadyVerified === true,
     });
+    const sourceLedgerRootKey = this.readTrimmedString(options.fanoutLedgerJobId);
+    if (sourceLedgerRootKey) {
+      const sourceLedger = await this.readManualModerationFanoutIntentRow({
+        rootIntentKey: sourceLedgerRootKey,
+        operation: 'COMMAND_SOURCE_BAN',
+        sourceChatId: chatId,
+        targetChatId: chatId,
+        targetUserId,
+      });
+      if (sourceLedger?.status === PrismaManualModerationFanoutLedgerStatus.SUCCEEDED) {
+        if (sourceLedger.moderationEventId) {
+          options.onModerationEventRecorded?.(sourceLedger.moderationEventId);
+        }
+        if (
+          this.readObjectPayloadOrNull(sourceLedger.metadata)?.alreadyActive === true &&
+          options.fanoutAllChats !== true &&
+          source !== 'private_command'
+        ) {
+          options.onAlreadyApplied?.();
+        }
+        return this.resolveManualBanResultFromLedger(sourceLedger, targetUserId);
+      }
+    }
     const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
       chatId,
       'moderate_member',
@@ -9925,6 +10130,177 @@ export class AdminService implements OnModuleDestroy {
     leaseGuard: ModerationSanctionStateLeaseGuard,
     onMemberMutationConfirmed: () => void,
   ): Promise<ManualModerationActionResult> {
+    const sourceLedgerRootKey = this.readTrimmedString(options.fanoutLedgerJobId);
+    const existingSourceBanLedger = sourceLedgerRootKey
+      ? await this.readManualModerationFanoutIntentRow({
+          rootIntentKey: sourceLedgerRootKey,
+          operation: 'COMMAND_SOURCE_BAN',
+          sourceChatId: chatId,
+          targetChatId: chatId,
+          targetUserId,
+        })
+      : null;
+    if (
+      existingSourceBanLedger &&
+      existingSourceBanLedger.status !==
+        PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE &&
+      existingSourceBanLedger.status !== PrismaManualModerationFanoutLedgerStatus.IN_PROGRESS
+    ) {
+      const existingClaim =
+        this.buildExistingManualModerationFanoutLedgerClaim(existingSourceBanLedger);
+      if (!this.isSucceededManualModerationFanoutLedgerClaim(existingClaim)) {
+        this.throwManualModerationFanoutLedgerClaimBlocked(existingClaim, 'бан');
+      }
+      if (existingSourceBanLedger.moderationEventId) {
+        options.onModerationEventRecorded?.(existingSourceBanLedger.moderationEventId);
+      }
+      if (
+        this.readObjectPayloadOrNull(existingSourceBanLedger.metadata)?.alreadyActive === true &&
+        options.fanoutAllChats !== true &&
+        source !== 'private_command'
+      ) {
+        options.onAlreadyApplied?.();
+      }
+      const replayExecutionMode =
+        this.resolveManualBanExecutionModeFromLedger(existingSourceBanLedger);
+      return manualModerationActionResultSchema.parse({
+        ok: true,
+        action: 'BAN',
+        userId: targetUserId,
+        muteDurationHours: null,
+        muteExpiresAt: null,
+        message:
+          replayExecutionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
+      });
+    }
+    await leaseGuard.assertOwned();
+    let activeBan = await this.resolveActiveBanSanctionEvent(chatId, targetUserId);
+    if (activeBan) {
+      const targetState = await this.resolveConfirmedManualFanoutTargetState(chatId, targetUserId, {
+        trafficClass: 'critical',
+        bypassCache: true,
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+      });
+      if (!targetState) {
+        throw new ModerationSanctionStateLockUnavailableError({
+          chatId,
+          userId: targetUserId,
+        });
+      }
+      if (targetState !== 'absent') {
+        if (activeBan.executionMode === 'MAX_BLOCK') {
+          await leaseGuard.assertOwned();
+          await this.clearTerminalBanStateAfterConfirmedUnban(chatId, targetUserId);
+        }
+        activeBan = null;
+      }
+    }
+    if (activeBan) {
+      let activeIntentOperationKey: string | null = null;
+      let activeIntentLockToken: string | null = null;
+      let shouldRunActiveFollowUp = true;
+      if (sourceLedgerRootKey) {
+        const operationKey =
+          existingSourceBanLedger?.operationKey ??
+          this.buildManualModerationFanoutOperationKey({
+            operation: 'COMMAND_SOURCE_BAN',
+            sourceChatId: chatId,
+            targetChatId: chatId,
+            targetUserId,
+            rootIntentKey: sourceLedgerRootKey,
+          });
+        const claim = await this.claimManualModerationFanoutLedgerEntry({
+          operationKey,
+          rootIntentKey: sourceLedgerRootKey,
+          sourceKind: source,
+          operation: 'COMMAND_SOURCE_BAN',
+          sourceChatId: chatId,
+          targetChatId: chatId,
+          targetUserId,
+          actorUserId: user.userId,
+          logicalAction: 'BAN',
+          botId: resolvedBotId ?? null,
+          executionMode: activeBan.executionMode,
+          metadata: {
+            source,
+            executionMode: activeBan.executionMode,
+            alreadyActive: true,
+          },
+        });
+        if (!claim.claimed) {
+          if (!this.isSucceededManualModerationFanoutLedgerClaim(claim)) {
+            this.throwManualModerationFanoutLedgerClaimBlocked(claim, 'бан');
+          }
+          shouldRunActiveFollowUp = false;
+        } else {
+          activeIntentOperationKey = operationKey;
+          activeIntentLockToken = claim.lockToken;
+        }
+      }
+      try {
+        if (
+          shouldRunActiveFollowUp &&
+          (options.fanoutAllChats === true || source === 'private_command')
+        ) {
+          await leaseGuard.assertOwned();
+          await this.resolveManualBanFollowUpSummaries({
+            sourceChatId: chatId,
+            targetUserId,
+            actor: user,
+            source,
+            rootIntentKey: options.fanoutLedgerJobId ?? null,
+            leaseGuard,
+          });
+        }
+        if (activeIntentOperationKey && activeIntentLockToken) {
+          await leaseGuard.assertOwned();
+          await this.completeManualModerationFanoutLedgerEntry({
+            operationKey: activeIntentOperationKey,
+            lockToken: activeIntentLockToken,
+            botId: resolvedBotId ?? null,
+            executionMode: activeBan.executionMode,
+            moderationEventId: activeBan.id,
+            metadata: {
+              source,
+              executionMode: activeBan.executionMode,
+              alreadyActive: true,
+            },
+          });
+        }
+      } catch (error: unknown) {
+        if (activeIntentOperationKey && activeIntentLockToken) {
+          await this.markManualModerationFanoutLedgerFailed({
+            operationKey: activeIntentOperationKey,
+            lockToken: activeIntentLockToken,
+            status: PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+            error,
+            botId: resolvedBotId ?? null,
+            executionMode: activeBan.executionMode,
+            metadata: {
+              source,
+              executionMode: activeBan.executionMode,
+              alreadyActive: true,
+            },
+          });
+        }
+        throw error;
+      }
+      options.onModerationEventRecorded?.(activeBan.id);
+      if (options.fanoutAllChats !== true && source !== 'private_command') {
+        options.onAlreadyApplied?.();
+      }
+      return manualModerationActionResultSchema.parse({
+        ok: true,
+        action: 'BAN',
+        userId: targetUserId,
+        muteDurationHours: null,
+        muteExpiresAt: null,
+        message:
+          activeBan.executionMode === 'MAX_REMOVE_ONLY'
+            ? 'Участник уже удалён из чата.'
+            : 'Бан уже включён.',
+      });
+    }
     let executionMode: ManualBanExecutionMode = 'MAX_BLOCK';
     try {
       await this.assertManualMemberModerationPreconditions(
@@ -9938,7 +10314,6 @@ export class AdminService implements OnModuleDestroy {
       this.throwManualModerationTransientMaxError(error);
       throw error;
     }
-    const sourceLedgerRootKey = this.readTrimmedString(options.fanoutLedgerJobId);
     let sourceBanLedgerOperationKey: string | null = null;
     let sourceBanLedgerLockToken: string | null = null;
     const sourceBanLedgerMetadata = {
@@ -9946,14 +10321,15 @@ export class AdminService implements OnModuleDestroy {
       executionMode,
     } satisfies Prisma.InputJsonObject;
     if (sourceLedgerRootKey) {
-      sourceBanLedgerOperationKey = this.buildManualModerationFanoutOperationKey({
-        operation: 'COMMAND_SOURCE_BAN',
-        sourceChatId: chatId,
-        targetChatId: chatId,
-        targetUserId,
-        rootIntentKey: sourceLedgerRootKey,
-        extra: [executionMode],
-      });
+      sourceBanLedgerOperationKey =
+        existingSourceBanLedger?.operationKey ??
+        this.buildManualModerationFanoutOperationKey({
+          operation: 'COMMAND_SOURCE_BAN',
+          sourceChatId: chatId,
+          targetChatId: chatId,
+          targetUserId,
+          rootIntentKey: sourceLedgerRootKey,
+        });
       const claim = await this.claimManualModerationFanoutLedgerEntry({
         operationKey: sourceBanLedgerOperationKey,
         rootIntentKey: sourceLedgerRootKey,
@@ -9975,6 +10351,10 @@ export class AdminService implements OnModuleDestroy {
         if (claim.row?.moderationEventId) {
           options.onModerationEventRecorded?.(claim.row.moderationEventId);
         }
+        const replayExecutionMode = this.resolveManualBanExecutionModeFromLedger(
+          claim.row!,
+          executionMode,
+        );
         return manualModerationActionResultSchema.parse({
           ok: true,
           action: 'BAN',
@@ -9982,19 +10362,35 @@ export class AdminService implements OnModuleDestroy {
           muteDurationHours: null,
           muteExpiresAt: null,
           message:
-            executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
+            replayExecutionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
         });
       }
       sourceBanLedgerLockToken = claim.lockToken;
     }
 
-    const sanctionFence = await this.prepareManualSanctionStateFence({
-      chatId,
-      targetUserId,
-      intendedAction: 'BAN',
-      source,
-      leaseGuard,
-    });
+    let sanctionFence: ModerationSanctionStateFence;
+    try {
+      sanctionFence = await this.prepareManualSanctionStateFence({
+        chatId,
+        targetUserId,
+        intendedAction: 'BAN',
+        source,
+        leaseGuard,
+      });
+    } catch (error: unknown) {
+      if (sourceBanLedgerOperationKey && sourceBanLedgerLockToken) {
+        await this.markManualModerationFanoutLedgerFailed({
+          operationKey: sourceBanLedgerOperationKey,
+          lockToken: sourceBanLedgerLockToken,
+          status: PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+          error,
+          botId: resolvedBotId ?? null,
+          executionMode,
+          metadata: sourceBanLedgerMetadata,
+        });
+      }
+      throw error;
+    }
 
     let remoteActionConfirmed = false;
     try {
@@ -10072,6 +10468,9 @@ export class AdminService implements OnModuleDestroy {
           executionMode,
           metadata: sourceBanLedgerMetadata,
         });
+      }
+      if (this.isManualModerationOrderingFailure(error)) {
+        throw error;
       }
       this.throwManualModerationTransientMaxError(error);
       const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
@@ -10890,263 +11289,13 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async processManualModerationFanoutJob(job: AdminManualFanoutJob): Promise<void> {
-    if (this.isKnownRuntimeBotUserId(job.targetUserId)) {
-      this.logger.warn(
-        {
-          jobId: job.jobId,
-          kind: job.kind,
-          sourceChatId: job.sourceChatId,
-          targetUserId: job.targetUserId,
-        },
-        'Skipped queued manual moderation job for configured MAX bot user',
-      );
-      return;
-    }
-
-    if (job.kind === 'manual_group_moderation_command') {
-      await this.processManualGroupModerationCommandJob(job);
-      return;
-    }
-
-    if (job.kind === 'manual_mute_fanout') {
-      const targetChats = await this.resolveManualCommandFanoutChats(
-        this.buildManualFanoutActor(job.actor),
-        job.sourceChatId,
-      );
-      if (job.cleanupSourceChatMessages) {
-        await this.runManualSourceCleanupWithLedger({
-          jobId: job.jobId,
-          rootIntentKey: job.rootIntentKey ?? null,
-          sourceKind: job.kind,
-          sourceChatId: job.sourceChatId,
-          targetUserId: job.targetUserId,
-          actorUserId: job.actor.userId,
-          logMessage: 'Failed to run deferred recent message cleanup after manual mute',
-          botId: job.botId ?? undefined,
-        });
-      }
-      const result = await this.applyManualMuteFanout({
-        jobId: job.jobId,
-        rootIntentKey: job.rootIntentKey ?? null,
-        sourceChatId: job.sourceChatId,
-        targetUserId: job.targetUserId,
-        actor: {
-          userId: job.actor.userId,
-          username: job.actor.username,
-          displayName: job.actor.displayName,
-          chatId: job.actor.chatId ?? undefined,
-          chatTitle: job.actor.chatTitle ?? undefined,
-        },
-        muteDurationHours: job.muteDurationHours,
-        muteExpiresAt: job.muteExpiresAt ? new Date(job.muteExpiresAt) : null,
-        mutePermanent: job.mutePermanent === true,
-        source: job.source,
-        targetChats,
-      });
-      this.throwManualFanoutRetryableFailureIfNeeded(result);
-      return;
-    }
-
-    if (job.kind === 'manual_ban_source_cleanup') {
-      await this.runManualSourceCleanupWithLedger({
-        jobId: job.jobId,
-        rootIntentKey: job.rootIntentKey ?? null,
-        sourceKind: job.kind,
-        sourceChatId: job.sourceChatId,
-        targetUserId: job.targetUserId,
-        actorUserId: job.actor.userId,
-        logMessage: 'Failed to run deferred recent message cleanup after manual system ban',
-        botId: job.botId ?? undefined,
-      });
-      return;
-    }
-
-    const targetChats = await this.resolveManualCommandFanoutChats(
-      this.buildManualFanoutActor(job.actor),
-      job.sourceChatId,
-    );
-    await this.runManualSourceCleanupWithLedger({
-      jobId: job.jobId,
-      rootIntentKey: job.rootIntentKey ?? null,
-      sourceKind: job.kind,
-      sourceChatId: job.sourceChatId,
-      targetUserId: job.targetUserId,
-      actorUserId: job.actor.userId,
-      logMessage: 'Failed to run deferred recent message cleanup after manual system ban',
-    });
-
-    const result = await this.applyManualSystemBanFanout({
-      jobId: job.jobId,
-      rootIntentKey: job.rootIntentKey ?? null,
-      source: job.source,
-      sourceChatId: job.sourceChatId,
-      targetUserId: job.targetUserId,
-      actor: {
-        userId: job.actor.userId,
-        username: job.actor.username,
-        displayName: job.actor.displayName,
-        chatId: job.actor.chatId ?? undefined,
-        chatTitle: job.actor.chatTitle ?? undefined,
-      },
-      targetChats,
-    });
-    this.throwManualFanoutRetryableFailureIfNeeded(result);
-  }
-
-  private throwManualFanoutRetryableFailureIfNeeded(
-    result: ManualModerationFanoutResultWithRetryableFailures,
-  ): void {
-    const retryableFailedChatIds = result.retryableFailedChatIds ?? [];
-    if (retryableFailedChatIds.length === 0) {
-      return;
-    }
-
-    throw new ServiceUnavailableException(
-      `Не удалось применить часть fanout-операций (${retryableFailedChatIds.length}). Повторите попытку.`,
-    );
+    return this.manualModerationRuntime.processManualModerationFanoutJob(job);
   }
 
   private isRetryableManualFanoutPreparationError(error: unknown): boolean {
     return !(error instanceof BadRequestException || error instanceof ForbiddenException);
   }
 
-  private async processManualGroupModerationCommandJob(
-    job: AdminManualGroupModerationCommandJob,
-  ): Promise<void> {
-    const actor = this.buildManualFanoutActor(job.actor);
-    const queuedDisplayName = normalizeMaxUserDisplayName(job.targetSenderName, job.targetUserId);
-    const targetDisplayName =
-      queuedDisplayName ??
-      (await this.resolveManualModerationTargetDisplayName(job.sourceChatId, job.targetUserId, {
-        botId: job.commandBotId ?? undefined,
-        allowRemoteLookup: true,
-      }));
-    const commandOptions: ManualModerationExecutionOptions = {
-      actorAlreadyVerified: true,
-      preferredBotId: job.commandBotId ?? null,
-      targetDisplayNameHint: targetDisplayName,
-      allowTargetDisplayNameRemoteLookup: false,
-      fanoutAllChats: job.action === 'BAN' && job.fanoutAllChats === true,
-      fanoutLedgerJobId: job.jobId,
-    };
-    let sanctionEventId: string | null = null;
-    commandOptions.onModerationEventRecorded = (eventId) => {
-      sanctionEventId = eventId;
-    };
-    let result: ManualModerationActionResult;
-    try {
-      result =
-        job.action === 'BAN'
-          ? await this.applyManualSystemBan(
-              job.sourceChatId,
-              job.targetUserId,
-              actor,
-              'group_command',
-              commandOptions,
-            )
-          : await this.applyManualModerationAction(
-              job.sourceChatId,
-              job.targetUserId,
-              actor,
-              {
-                action: 'MUTE',
-                scope: 'current_chat',
-                ...(job.mutePermanent === true
-                  ? { mutePermanent: true }
-                  : {
-                      muteDurationHours:
-                        job.muteDurationHours ?? DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
-                    }),
-              },
-              'group_command',
-              commandOptions,
-            );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          jobId: job.jobId,
-          chatId: job.sourceChatId,
-          actorUserId: job.actor.userId,
-          targetUserId: job.targetUserId,
-          err: this.extractManualGroupCommandErrorMessage(error),
-        },
-        'Failed to apply queued group admin moderation command',
-      );
-
-      if (this.shouldRetryManualGroupCommandSilently(error)) {
-        throw error;
-      }
-
-      const failedActionLabel =
-        job.action === 'BAN' ? (job.fanoutAllChats === true ? 'Бан!' : 'бан') : 'мут';
-      const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
-        job.sourceChatId,
-        job.commandBotId,
-      );
-      await this.sendManualGroupCommandNotice({
-        chatId: job.sourceChatId,
-        botId: noticeBotId,
-        ledger: {
-          jobId: job.jobId,
-          operation: 'COMMAND_NOTICE_FAILURE',
-          actorUserId: job.actor.userId,
-          targetUserId: job.targetUserId,
-          commandMessageId: job.commandMessageId,
-          action: job.action,
-        },
-        text: `Команда «${failedActionLabel}» не выполнена: ${this.escapeMarkdownPlainText(
-          this.extractManualGroupCommandErrorMessage(error),
-        )}`,
-        deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
-      });
-      return;
-    }
-
-    const cleanupBotId = await this.resolveManualGroupCommandCleanupBotId(
-      job.sourceChatId,
-      job.commandBotId,
-    );
-    await this.deleteManualGroupCommandTargetMessage(job, { botId: cleanupBotId });
-    await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
-      botId: cleanupBotId,
-      originBotId: job.commandBotId,
-      actorUserId: job.actor.userId,
-    });
-
-    const targetLabel = formatManualModerationUserLabel(targetDisplayName, job.targetUserId);
-    const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
-      job.sourceChatId,
-      job.commandBotId,
-    );
-    await this.sendManualGroupCommandNotice({
-      chatId: job.sourceChatId,
-      botId: noticeBotId,
-      ledger: {
-        jobId: job.jobId,
-        operation: 'COMMAND_NOTICE_SUCCESS',
-        actorUserId: job.actor.userId,
-        targetUserId: job.targetUserId,
-        commandMessageId: job.commandMessageId,
-        action: job.action,
-      },
-      text:
-        job.action === 'BAN'
-          ? result.message.toLowerCase().includes('удал')
-            ? `Участник ${targetLabel} удалён из чата.`
-            : `Для участника ${targetLabel} включён бан.`
-          : `${result.message}\nУчастник: ${targetLabel}`,
-      release: sanctionEventId
-        ? {
-            action: job.action === 'BAN' ? 'UNBAN' : 'UNMUTE',
-            sanctionEventId,
-          }
-        : undefined,
-      deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
-    });
-    await this.manualModerationRuntime.fanoutGroupMuteAfterNotice(job, actor, result);
-  }
   private buildManualFanoutActor(actor: {
     userId: string;
     username: string | null;
@@ -11154,13 +11303,7 @@ export class AdminService implements OnModuleDestroy {
     chatId?: string | null;
     chatTitle?: string | null;
   }): AuthUser {
-    return {
-      userId: actor.userId,
-      username: actor.username,
-      displayName: actor.displayName,
-      chatId: actor.chatId ?? undefined,
-      chatTitle: actor.chatTitle ?? undefined,
-    };
+    return this.manualModerationRuntime.buildManualFanoutActor(actor);
   }
 
   private async deleteManualGroupCommandMessage(
@@ -11191,236 +11334,41 @@ export class AdminService implements OnModuleDestroy {
     await this.getManualMessageCleanupService().deleteGroupCommandTargetMessage(job, options);
   }
 
-  private async resolveManualGroupCommandCleanupBotId(
+  private resolveManualGroupCommandCleanupBotId(
     chatId: string,
     preferredBotId?: string | null,
   ): Promise<string | undefined> {
-    const normalizedPreferredBotId = this.normalizeManualModerationBotId(preferredBotId);
-    if (
-      normalizedPreferredBotId &&
-      typeof (this.maxClient as Partial<MaxClientService>).getCurrentChatMemberAccess !== 'function'
-    ) {
-      return normalizedPreferredBotId;
-    }
-
-    try {
-      return await this.resolveManualModerationActionBotAssignment(chatId, 'delete_message', {
-        preferredBotId: preferredBotId ?? null,
-      });
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          preferredBotId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve queued group command cleanup bot',
-      );
-      return normalizedPreferredBotId ?? undefined;
-    }
+    return this.manualModerationRuntime.resolveManualGroupCommandCleanupBotId(
+      chatId,
+      preferredBotId,
+    );
   }
 
-  private async resolveManualGroupCommandNoticeBotId(
+  private resolveManualGroupCommandNoticeBotId(
     chatId: string,
     preferredBotId?: string | null,
   ): Promise<string | undefined> {
-    try {
-      return (
-        (await this.resolveDeliveryBotAssignment(chatId)) ??
-        this.normalizeManualModerationBotId(preferredBotId) ??
-        undefined
-      );
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          preferredBotId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve queued group command notice bot',
-      );
-      return this.normalizeManualModerationBotId(preferredBotId) ?? undefined;
-    }
+    return this.manualModerationRuntime.resolveManualGroupCommandNoticeBotId(
+      chatId,
+      preferredBotId,
+    );
   }
 
-  private async sendManualGroupCommandNotice(params: {
-    chatId: string;
-    botId?: string;
-    ledger?: {
-      jobId: string;
-      rootIntentKey?: string | null;
-      operation: Extract<
-        ManualModerationFanoutLedgerOperation,
-        'COMMAND_NOTICE_SUCCESS' | 'COMMAND_NOTICE_FAILURE'
-      >;
-      actorUserId: string;
-      targetUserId: string;
-      commandMessageId: string;
-      action: 'BAN' | 'MUTE';
-    };
-    text: string;
-    release?: {
-      action: ModerationReleaseAction;
-      sanctionEventId: string;
-    };
-    deleteBotMessagesEnabled: boolean;
-    deleteBotMessagesDelayMinutes: number;
-  }): Promise<void> {
-    let operationKey: string | null = null;
-    let ledgerLockToken: string | null = null;
-    if (params.ledger) {
-      operationKey = this.buildManualModerationFanoutOperationKey({
-        operation: params.ledger.operation,
-        sourceChatId: params.chatId,
-        targetChatId: params.chatId,
-        targetUserId: params.ledger.targetUserId,
-        jobId: params.ledger.jobId,
-        rootIntentKey: params.ledger.rootIntentKey,
-        extra: [params.ledger.commandMessageId, params.ledger.action],
-      });
-      const claim = await this.claimManualModerationFanoutLedgerEntry({
-        operationKey,
-        jobId: params.ledger.jobId,
-        rootIntentKey: params.ledger.rootIntentKey,
-        sourceKind: 'manual_group_moderation_command',
-        operation: params.ledger.operation,
-        sourceChatId: params.chatId,
-        targetChatId: params.chatId,
-        targetUserId: params.ledger.targetUserId,
-        actorUserId: params.ledger.actorUserId,
-        logicalAction: 'NOTICE',
-        botId: params.botId ?? null,
-        metadata: {
-          action: params.ledger.action,
-          commandMessageId: params.ledger.commandMessageId,
-          textHash: createHash('sha256').update(params.text).digest('hex').slice(0, 32),
-        },
-      });
-      if (!claim.claimed) {
-        return;
-      }
-      ledgerLockToken = claim.lockToken;
-    }
-
-    const dispatchOptions = this.buildManualGroupCommandNoticeDispatchOptions({
-      deleteBotMessagesEnabled: params.deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes: params.deleteBotMessagesDelayMinutes,
-      botId: params.botId,
-    });
-
-    let noticeSendConfirmed = false;
-    try {
-      if (operationKey && ledgerLockToken) {
-        await this.markManualModerationFanoutLedgerFailed({
-          operationKey,
-          lockToken: ledgerLockToken,
-          status: PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS,
-          error: new Error(
-            'manual group command notice send started; outcome unknown until confirmed',
-          ),
-          botId: params.botId ?? null,
-          retainClaim: true,
-          requireClaim: true,
-        });
-      }
-      await this.maxClient.sendMessage(
-        params.chatId,
-        params.text,
-        params.release
-          ? withModerationReleaseButton({ textFormat: 'markdown' }, params.release)
-          : { textFormat: 'markdown' },
-        dispatchOptions,
-      );
-      noticeSendConfirmed = true;
-      if (operationKey && ledgerLockToken) {
-        await this.completeManualModerationFanoutLedgerEntry({
-          operationKey,
-          lockToken: ledgerLockToken,
-          botId: params.botId ?? null,
-        });
-      }
-    } catch (error: unknown) {
-      if (operationKey && ledgerLockToken) {
-        await this.markManualModerationFanoutLedgerFailed({
-          operationKey,
-          lockToken: ledgerLockToken,
-          status:
-            noticeSendConfirmed ||
-            (wasMaxMessageSendAttempted(error) && isMaxApiTimeoutError(error))
-              ? PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS
-              : PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
-          error,
-          botId: params.botId ?? null,
-        });
-      }
-      this.logger.debug(
-        {
-          chatId: params.chatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to send manual group command notice',
-      );
-    }
-  }
-
-  private buildManualGroupCommandNoticeDispatchOptions(params: {
-    deleteBotMessagesEnabled: boolean;
-    deleteBotMessagesDelayMinutes: number;
-    botId?: string;
-  }): MaxActionDispatchOptions {
-    const options: MaxActionDispatchOptions = {
-      immediate: true,
-      trafficClass: 'interactive',
-      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
-    };
-    if (params.botId) {
-      options.botId = params.botId;
-    }
-    if (params.deleteBotMessagesEnabled) {
-      options.autoDeleteDelayMs =
-        normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) * 60 * 1_000;
-    }
-    return options;
+  private sendManualGroupCommandNotice(
+    params: Parameters<AdminManualModerationRuntime['sendManualGroupCommandNotice']>[0],
+  ): Promise<void> {
+    return this.manualModerationRuntime.sendManualGroupCommandNotice(params);
   }
 
   private extractManualGroupCommandErrorMessage(error: unknown): string {
-    if (error instanceof BadRequestException) {
-      const response = error.getResponse();
-      if (typeof response === 'string' && response.trim()) {
-        return response.trim();
-      }
-      if (response && typeof response === 'object') {
-        const message = (response as { message?: unknown }).message;
-        if (typeof message === 'string' && message.trim()) {
-          return message.trim();
-        }
-      }
-    }
-
-    return (
-      this.extractMaxApiErrorMessage(error) ||
-      this.extractHttpErrorMessage(error) ||
-      (error instanceof Error ? error.message : 'Unknown error')
-    );
+    return this.manualModerationRuntime.extractManualGroupCommandErrorMessage(error);
   }
 
-  private shouldRetryManualGroupCommandSilently(error: unknown): boolean {
-    if (this.isManualModerationTransientMaxError(error)) {
-      return true;
-    }
-
-    const message = this.extractManualGroupCommandErrorMessage(error).toLowerCase();
-    return (
-      message.includes('rate limit exceeded') ||
-      message.includes('circuit breaker') ||
-      message.includes('timeout') ||
-      message.includes('временно огранич') ||
-      message.includes('повторите попытку')
-    );
+  private extractExpectedManualGroupCommandErrorMessage(error: unknown): string | null {
+    return this.manualModerationRuntime.extractExpectedManualGroupCommandErrorMessage(error);
   }
 
-  private async resolveManualMuteCommandFollowUpSummaries(params: {
+  private resolveManualMuteCommandFollowUpSummaries(params: {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
@@ -11435,78 +11383,10 @@ export class AdminService implements OnModuleDestroy {
     sourceMessageCleanup: ReturnType<AdminService['summarizeManualModerationCleanup']>;
     crossChatMuteFanout: ReturnType<AdminService['summarizeManualMuteFanout']>;
   }> {
-    const queuedJob = this.buildManualMuteFanoutJob({
-      ...params,
-      cleanupSourceChatMessages: true,
-    });
-    if (await this.enqueueManualModerationFanout(queuedJob)) {
-      return {
-        sourceMessageCleanup: this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId),
-        crossChatMuteFanout: this.buildQueuedManualMuteFanoutSummary(queuedJob.jobId),
-      };
-    }
-
-    let sourceCleanup = {
-      candidateMessageIds: [] as string[],
-      deletedMessageIds: [] as string[],
-      pendingMessageIds: [] as string[],
-      failedMessageIds: [] as string[],
-    };
-    try {
-      sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(
-        params.sourceChatId,
-        params.targetUserId,
-        {
-          botId: await this.resolveManualModerationActionBotAssignment(
-            params.sourceChatId,
-            'delete_message',
-          ),
-          leaseGuard: params.leaseGuard,
-        },
-      );
-    } catch (error: unknown) {
-      if (this.isManualModerationOrderingFailure(error)) {
-        throw error;
-      }
-      this.logger.warn(
-        {
-          chatId: params.sourceChatId,
-          targetUserId: params.targetUserId,
-          actorUserId: params.actor.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to run recent message cleanup after manual mute',
-      );
-    }
-
-    try {
-      const fanout = await this.applyManualMuteFanout(params);
-      return {
-        sourceMessageCleanup: this.summarizeManualModerationCleanup(sourceCleanup),
-        crossChatMuteFanout: this.summarizeManualMuteFanout(fanout),
-      };
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: params.sourceChatId,
-          targetUserId: params.targetUserId,
-          actorUserId: params.actor.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to run manual mute fanout after source chat mute',
-      );
-      return {
-        sourceMessageCleanup: this.summarizeManualModerationCleanup(sourceCleanup),
-        crossChatMuteFanout: this.summarizeManualMuteFanout({
-          mutedChatIds: [],
-          skippedChatIds: [],
-          failedChatIds: [],
-        }),
-      };
-    }
+    return this.manualModerationRuntime.resolveManualMuteCommandFollowUpSummaries(params);
   }
 
-  private async resolveManualBanFollowUpSummaries(params: {
+  private resolveManualBanFollowUpSummaries(params: {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
@@ -11517,34 +11397,10 @@ export class AdminService implements OnModuleDestroy {
     sourceMessageCleanup: ReturnType<AdminService['summarizeManualModerationCleanup']>;
     crossChatFanout: ReturnType<AdminService['summarizeManualBanFanout']>;
   }> {
-    const queuedJob = this.buildManualBanFanoutJob({
-      sourceChatId: params.sourceChatId,
-      targetUserId: params.targetUserId,
-      actor: params.actor,
-      source: params.source,
-      rootIntentKey: params.rootIntentKey ?? null,
-    });
-    if (await this.enqueueManualModerationFanout(queuedJob)) {
-      return {
-        sourceMessageCleanup: this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId),
-        crossChatFanout: this.buildQueuedManualBanFanoutSummary(queuedJob.jobId),
-      };
-    }
-
-    const sourceCleanup = await this.runManualBanSourceCleanup(
-      params.sourceChatId,
-      params.targetUserId,
-      params.actor.userId,
-      { leaseGuard: params.leaseGuard },
-    );
-
-    return {
-      sourceMessageCleanup: this.summarizeManualModerationCleanup(sourceCleanup),
-      crossChatFanout: await this.runManualBanFanoutInlineSummary(params),
-    };
+    return this.manualModerationRuntime.resolveManualBanFollowUpSummaries(params);
   }
 
-  private async resolveManualBanSourceCleanupSummary(params: {
+  private resolveManualBanSourceCleanupSummary(params: {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
@@ -11553,96 +11409,17 @@ export class AdminService implements OnModuleDestroy {
     botId?: string | null;
     leaseGuard: ModerationSanctionStateLeaseGuard;
   }) {
-    const queuedJob = this.buildManualBanSourceCleanupJob(params);
-    if (await this.enqueueManualModerationFanout(queuedJob)) {
-      return this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId);
-    }
-
-    return this.summarizeManualModerationCleanup(
-      await this.runManualBanSourceCleanup(
-        params.sourceChatId,
-        params.targetUserId,
-        params.actor.userId,
-        {
-          botId: params.botId ?? undefined,
-          leaseGuard: params.leaseGuard,
-        },
-      ),
-    );
+    return this.manualModerationRuntime.resolveManualBanSourceCleanupSummary(params);
   }
 
-  private async resolveManualBanFanoutSummary(params: {
+  private resolveManualBanFanoutSummary(params: {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
     source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
     rootIntentKey?: string | null;
   }) {
-    const queuedJob = this.buildManualBanFanoutJob(params);
-    if (await this.enqueueManualModerationFanout(queuedJob)) {
-      return this.buildQueuedManualBanFanoutSummary(queuedJob.jobId);
-    }
-
-    try {
-      const fanout = await this.applyManualSystemBanFanout(params);
-      return this.summarizeManualBanFanout(fanout);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: params.sourceChatId,
-          targetUserId: params.targetUserId,
-          actorUserId: params.actor.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to run manual system ban fanout after source chat ban',
-      );
-      return this.summarizeManualBanFanout({
-        removedChatIds: [],
-        skippedChatIds: [],
-        failedChatIds: [],
-        deletedMessageCount: 0,
-        failedMessageDeleteCount: 0,
-      });
-    }
-  }
-
-  private buildManualMuteFanoutJob(params: {
-    sourceChatId: string;
-    targetUserId: string;
-    rootIntentKey?: string | null;
-    cleanupSourceChatMessages?: boolean;
-    actor: AuthUser;
-    muteDurationHours: number | null;
-    muteExpiresAt: Date | null;
-    mutePermanent: boolean;
-    source: ManualModerationFanoutSource;
-    botId?: string | null;
-  }): AdminManualMuteFanoutJob {
-    return {
-      kind: 'manual_mute_fanout',
-      jobId: this.buildManualModerationFanoutJobId(
-        'manual_mute_fanout',
-        params.sourceChatId,
-        params.targetUserId,
-        params.source,
-      ),
-      rootIntentKey: params.rootIntentKey ?? null,
-      sourceChatId: params.sourceChatId,
-      targetUserId: params.targetUserId,
-      cleanupSourceChatMessages: params.cleanupSourceChatMessages,
-      botId: params.botId ?? null,
-      actor: {
-        userId: params.actor.userId,
-        username: params.actor.username ?? null,
-        displayName: params.actor.displayName ?? null,
-        chatId: params.actor.chatId ?? null,
-        chatTitle: params.actor.chatTitle ?? null,
-      },
-      muteDurationHours: params.muteDurationHours,
-      muteExpiresAt: params.muteExpiresAt ? params.muteExpiresAt.toISOString() : null,
-      mutePermanent: params.mutePermanent,
-      source: params.source,
-    };
+    return this.manualModerationRuntime.resolveManualBanFanoutSummary(params);
   }
 
   private normalizeManualChatSilenceDurationHours(value: number | null | undefined): number {
@@ -11658,153 +11435,9 @@ export class AdminService implements OnModuleDestroy {
     return durationHours;
   }
 
-  private buildQueuedManualModerationCleanupSummary(jobId: string) {
-    return {
-      mode: 'queued',
-      jobId,
-      candidateCount: 0,
-      deletedCount: 0,
-      pendingCount: 0,
-      failedCount: 0,
-    };
+  private enqueueManualModerationFanout(job: AdminManualFanoutJob): Promise<boolean> {
+    return this.manualModerationRuntime.enqueueManualModerationFanout(job);
   }
-
-  private buildManualBanFanoutJob(params: {
-    sourceChatId: string;
-    targetUserId: string;
-    rootIntentKey?: string | null;
-    actor: AuthUser;
-    source: ManualBanFollowUpSource;
-  }): AdminManualBanFanoutJob {
-    return {
-      kind: 'manual_ban_fanout',
-      jobId: this.buildManualModerationFanoutJobId(
-        'manual_ban_fanout',
-        params.sourceChatId,
-        params.targetUserId,
-        params.source,
-      ),
-      rootIntentKey: params.rootIntentKey ?? null,
-      sourceChatId: params.sourceChatId,
-      targetUserId: params.targetUserId,
-      actor: {
-        userId: params.actor.userId,
-        username: params.actor.username ?? null,
-        displayName: params.actor.displayName ?? null,
-        chatId: params.actor.chatId ?? null,
-        chatTitle: params.actor.chatTitle ?? null,
-      },
-      source: params.source,
-    };
-  }
-
-  private buildManualBanSourceCleanupJob(params: {
-    sourceChatId: string;
-    targetUserId: string;
-    rootIntentKey?: string | null;
-    actor: AuthUser;
-    source: ManualBanFollowUpSource;
-    botId?: string | null;
-  }): AdminManualBanSourceCleanupJob {
-    return {
-      kind: 'manual_ban_source_cleanup',
-      jobId: this.buildManualModerationFanoutJobId(
-        'manual_ban_source_cleanup',
-        params.sourceChatId,
-        params.targetUserId,
-        params.source,
-      ),
-      rootIntentKey: params.rootIntentKey ?? null,
-      sourceChatId: params.sourceChatId,
-      targetUserId: params.targetUserId,
-      actor: {
-        userId: params.actor.userId,
-        username: params.actor.username ?? null,
-        displayName: params.actor.displayName ?? null,
-        chatId: params.actor.chatId ?? null,
-        chatTitle: params.actor.chatTitle ?? null,
-      },
-      source: params.source,
-      botId: params.botId ?? null,
-    };
-  }
-
-  private buildManualModerationFanoutJobId(
-    kind: AdminManualFanoutJob['kind'],
-    sourceChatId: string,
-    targetUserId: string,
-    source: Extract<AdminActionSource, 'miniapp' | 'group_command' | 'private_command'>,
-  ): string {
-    return `${kind}__${source}__${sourceChatId}__${targetUserId}__${randomUUID()}`;
-  }
-
-  private async enqueueManualModerationFanout(job: AdminManualFanoutJob): Promise<boolean> {
-    if (!this.adminManualFanoutQueue) {
-      return false;
-    }
-
-    try {
-      await this.adminManualFanoutQueue.add('execute-admin-manual-fanout', job, {
-        jobId: job.jobId,
-        priority: this.resolveManualModerationFanoutQueuePriority(job),
-        attempts: 5,
-        removeOnComplete: true,
-        removeOnFail: false,
-        backoff: {
-          type: 'exponential',
-          delay: 1_000,
-        },
-      });
-      return true;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          jobId: job.jobId,
-          kind: job.kind,
-          sourceChatId: job.sourceChatId,
-          targetUserId: job.targetUserId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to enqueue manual moderation fanout',
-      );
-      return false;
-    }
-  }
-
-  private resolveManualModerationFanoutQueuePriority(job: AdminManualFanoutJob): number {
-    return job.kind === 'manual_group_moderation_command'
-      ? ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY
-      : ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY;
-  }
-
-  private buildQueuedManualMuteFanoutSummary(jobId: string) {
-    return {
-      mode: 'queued',
-      jobId,
-      mutedChatsCount: 0,
-      mutedChatIds: [] as string[],
-      skippedChatsCount: 0,
-      skippedChatIds: [] as string[],
-      failedChatsCount: 0,
-      failedChatIds: [] as string[],
-    };
-  }
-
-  private buildQueuedManualBanFanoutSummary(jobId: string) {
-    return {
-      mode: 'queued',
-      jobId,
-      removedChatsCount: 0,
-      removedChatIds: [] as string[],
-      skippedChatsCount: 0,
-      skippedChatIds: [] as string[],
-      failedChatsCount: 0,
-      failedChatIds: [] as string[],
-      deletedMessageCount: 0,
-      failedMessageDeleteCount: 0,
-    };
-  }
-
   private buildManualModerationFanoutOperationKey(params: {
     operation: ManualModerationFanoutLedgerOperation;
     sourceChatId: string;
@@ -11859,6 +11492,118 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
+  private buildExistingManualModerationFanoutLedgerClaim(
+    row: ManualModerationFanoutLedgerRow,
+  ): ManualModerationFanoutLedgerClaim {
+    return {
+      claimed: false,
+      operationKey: row.operationKey,
+      row,
+      reason:
+        row.status === PrismaManualModerationFanoutLedgerStatus.IN_PROGRESS
+          ? 'fresh-lock'
+          : row.status === PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS
+            ? 'ambiguous'
+            : 'terminal',
+    };
+  }
+
+  private async readManualModerationFanoutIntentRow(params: {
+    rootIntentKey: string;
+    operation: Extract<
+      ManualModerationFanoutLedgerOperation,
+      'COMMAND_SOURCE_BAN' | 'COMMAND_SOURCE_MUTE'
+    >;
+    sourceChatId: string;
+    targetChatId: string;
+    targetUserId: string;
+  }): Promise<ManualModerationFanoutLedgerRow | null> {
+    const rows = (await this.prisma.manualModerationFanoutLedgerEntry.findMany({
+      where: {
+        rootIntentKey: params.rootIntentKey,
+        operation: params.operation,
+        sourceChatId: params.sourceChatId,
+        targetChatId: params.targetChatId,
+        targetUserId: params.targetUserId,
+      },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: 16,
+    })) as ManualModerationFanoutLedgerRow[];
+    const statusPriority = [
+      PrismaManualModerationFanoutLedgerStatus.SUCCEEDED,
+      PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS,
+      PrismaManualModerationFanoutLedgerStatus.IN_PROGRESS,
+      PrismaManualModerationFanoutLedgerStatus.FAILED_TERMINAL,
+      PrismaManualModerationFanoutLedgerStatus.SKIPPED,
+      PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+    ];
+    for (const status of statusPriority) {
+      const row = rows.find((candidate) => candidate.status === status);
+      if (row) {
+        return row;
+      }
+    }
+    return rows[0] ?? null;
+  }
+
+  private resolveManualMuteResultFromLedger(
+    row: ManualModerationFanoutLedgerRow,
+    fallback: {
+      userId: string;
+      muteDurationHours: number | null;
+      muteExpiresAt: Date | null;
+      mutePermanent: boolean;
+    },
+  ): ManualModerationActionResult {
+    const metadata = this.readObjectPayloadOrNull(row.metadata);
+    const mutePermanent =
+      typeof metadata?.mutePermanent === 'boolean'
+        ? metadata.mutePermanent
+        : fallback.mutePermanent;
+    const muteDurationHours = mutePermanent
+      ? null
+      : typeof metadata?.muteDurationHours === 'number' &&
+          Number.isFinite(metadata.muteDurationHours)
+        ? metadata.muteDurationHours
+        : fallback.muteDurationHours;
+    const muteExpiresAt = mutePermanent
+      ? null
+      : (this.toIsoString(metadata?.muteExpiresAt) ??
+        (fallback.muteExpiresAt ? fallback.muteExpiresAt.toISOString() : null));
+    return manualModerationActionResultSchema.parse({
+      ok: true,
+      action: 'MUTE',
+      userId: fallback.userId,
+      muteDurationHours,
+      muteExpiresAt,
+      message: mutePermanent ? 'Мут включён без срока.' : `Мут включён на ${muteDurationHours} ч.`,
+    });
+  }
+
+  private resolveManualBanExecutionModeFromLedger(
+    row: ManualModerationFanoutLedgerRow,
+    fallback: ManualBanExecutionMode = 'MAX_BLOCK',
+  ): ManualBanExecutionMode {
+    const metadata = this.readObjectPayloadOrNull(row.metadata);
+    const value = row.executionMode ?? metadata?.executionMode;
+    return value === 'MAX_REMOVE_ONLY' || value === 'MAX_BLOCK' ? value : fallback;
+  }
+
+  private resolveManualBanResultFromLedger(
+    row: ManualModerationFanoutLedgerRow,
+    targetUserId: string,
+  ): ManualModerationActionResult {
+    const executionMode = this.resolveManualBanExecutionModeFromLedger(row);
+    return manualModerationActionResultSchema.parse({
+      ok: true,
+      action: 'BAN',
+      userId: targetUserId,
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
+    });
+  }
+
   private throwManualModerationFanoutLedgerClaimBlocked(
     claim: ManualModerationFanoutLedgerClaim,
     actionLabel: string,
@@ -11876,13 +11621,13 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (claim.row?.status === PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS) {
-      throw new BadRequestException(
+      throw new ManualModerationOutcomeUncertainError(
         `MAX не подтвердил результат предыдущей попытки применить ${actionLabel}. Повтор не выполняется, чтобы не применить действие дважды.`,
       );
     }
 
     throw new BadRequestException(
-      `Операция модерации уже завершена со статусом ${claim.row?.status ?? 'UNKNOWN'}.`,
+      'Предыдущая попытка этой операции уже завершена. Проверьте статус участника перед повтором.',
     );
   }
 
@@ -12523,12 +12268,14 @@ export class AdminService implements OnModuleDestroy {
         }
       } catch (error: unknown) {
         const orderingFailure = this.isManualModerationOrderingFailure(error);
+        const retryableOrderingFailure = this.isRetryableManualModerationOrderingFailure(error);
         await this.markManualModerationFanoutLedgerFailed({
           operationKey,
           lockToken: claim.lockToken,
-          status: orderingFailure
-            ? PrismaManualModerationFanoutLedgerStatus.FAILED_TERMINAL
-            : PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+          status:
+            orderingFailure && !retryableOrderingFailure
+              ? PrismaManualModerationFanoutLedgerStatus.FAILED_TERMINAL
+              : PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
           error,
           botId: resolvedBotId ?? null,
           metadata: muteMetadata,
@@ -12543,7 +12290,7 @@ export class AdminService implements OnModuleDestroy {
           'Failed to apply manual mute fanout in managed chat',
         );
         result.failedChatIds.push(chat.id);
-        if (!orderingFailure) {
+        if (!orderingFailure || retryableOrderingFailure) {
           result.retryableFailedChatIds.push(chat.id);
         }
       }
@@ -12606,10 +12353,16 @@ export class AdminService implements OnModuleDestroy {
 
       let resolvedBotId: string | undefined;
       try {
-        resolvedBotId = await this.resolveManualModerationActionBotAssignment(chat.id, 'moderate_member');
+        resolvedBotId = await this.resolveManualModerationActionBotAssignment(
+          chat.id,
+          'moderate_member',
+        );
       } catch (error: unknown) {
         const retryable = this.isRetryableManualFanoutPreparationError(error);
-        this.logger.warn({ chatId: chat.id, targetUserId, err: String(error) }, 'Manual ban fanout has no eligible bot route');
+        this.logger.warn(
+          { chatId: chat.id, targetUserId, err: String(error) },
+          'Manual ban fanout has no eligible bot route',
+        );
         result.failedChatIds.push(chat.id);
         if (retryable) {
           result.retryableFailedChatIds.push(chat.id);
@@ -12838,6 +12591,7 @@ export class AdminService implements OnModuleDestroy {
         }
       } catch (error: unknown) {
         const orderingFailure = this.isManualModerationOrderingFailure(error);
+        const retryableOrderingFailure = this.isRetryableManualModerationOrderingFailure(error);
         const ambiguousAttemptedMutation = this.isAmbiguousAttemptedMaxMemberMutation(error);
         this.logger.warn(
           {
@@ -12864,7 +12618,7 @@ export class AdminService implements OnModuleDestroy {
           status:
             remoteActionConfirmed || ambiguousAttemptedMutation
               ? PrismaManualModerationFanoutLedgerStatus.AMBIGUOUS
-              : orderingFailure
+              : orderingFailure && !retryableOrderingFailure
                 ? PrismaManualModerationFanoutLedgerStatus.FAILED_TERMINAL
                 : PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
           error,
@@ -12876,7 +12630,11 @@ export class AdminService implements OnModuleDestroy {
           },
         });
         result.failedChatIds.push(chat.id);
-        if (!remoteActionConfirmed && !ambiguousAttemptedMutation && !orderingFailure) {
+        if (
+          !remoteActionConfirmed &&
+          !ambiguousAttemptedMutation &&
+          (!orderingFailure || retryableOrderingFailure)
+        ) {
           result.retryableFailedChatIds.push(chat.id);
         }
         continue;
@@ -12938,6 +12696,21 @@ export class AdminService implements OnModuleDestroy {
       botId?: string;
     } = {},
   ): Promise<'present' | 'absent' | 'protected'> {
+    return (
+      (await this.resolveConfirmedManualFanoutTargetState(chatId, targetUserId, requestOptions)) ??
+      'present'
+    );
+  }
+
+  private async resolveConfirmedManualFanoutTargetState(
+    chatId: string,
+    targetUserId: string,
+    requestOptions: {
+      trafficClass?: 'critical' | 'interactive' | 'background';
+      botId?: string;
+      bypassCache?: boolean;
+    } = {},
+  ): Promise<'present' | 'absent' | 'protected' | null> {
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
       getChatMemberAccess?: (
         chatId: string,
@@ -12945,11 +12718,12 @@ export class AdminService implements OnModuleDestroy {
         options?: {
           trafficClass?: 'critical' | 'interactive' | 'background';
           botId?: string;
+          bypassCache?: boolean;
         },
       ) => Promise<MaxChatMemberAccess | null>;
     };
     if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
-      return 'present';
+      return null;
     }
 
     try {
@@ -12972,9 +12746,9 @@ export class AdminService implements OnModuleDestroy {
           targetUserId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to resolve target state for manual command fanout; will attempt action anyway',
+        'Failed to confirm target state for manual command fanout',
       );
-      return 'present';
+      return null;
     }
   }
 
@@ -13329,6 +13103,17 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private async clearTerminalBanStateAfterConfirmedUnban(
+    chatId: string,
+    targetUserId: string,
+  ): Promise<void> {
+    const clearTerminalBanState = (this.maxClient as Partial<MaxClientService>)
+      .clearTerminalBanStateAfterConfirmedUnban;
+    if (typeof clearTerminalBanState === 'function') {
+      await clearTerminalBanState.call(this.maxClient, chatId, targetUserId);
+    }
+  }
+
   private isAlreadyPresentMemberAddError(message: string): boolean {
     const normalized = message.trim().toLowerCase();
     return (
@@ -13347,19 +13132,31 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<string> {
     const maxApiMessage = this.extractMaxApiErrorMessage(error);
     if (!this.isAmbiguousMaxMemberModerationError(maxApiMessage)) {
-      return maxApiMessage;
+      return action === 'BAN'
+        ? 'MAX отклонил бан. Проверьте тип чата, статус участника и права бота.'
+        : 'MAX отклонил мут. Проверьте статус участника и права бота.';
     }
 
     try {
       await this.assertBotCanManageMembers(chatId, action, botId);
     } catch (diagnosticError: unknown) {
-      return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
+      return (
+        this.extractExpectedManualGroupCommandErrorMessage(diagnosticError) ||
+        (action === 'BAN'
+          ? 'MAX отклонил бан. Проверьте тип чата, статус участника и права бота.'
+          : 'MAX отклонил мут. Проверьте статус участника и права бота.')
+      );
     }
 
     try {
       await this.assertTargetUserCanBeModerated(chatId, targetUserId, action, botId);
     } catch (diagnosticError: unknown) {
-      return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
+      return (
+        this.extractExpectedManualGroupCommandErrorMessage(diagnosticError) ||
+        (action === 'BAN'
+          ? 'MAX отклонил бан. Проверьте тип чата, статус участника и права бота.'
+          : 'MAX отклонил мут. Проверьте статус участника и права бота.')
+      );
     }
 
     return action === 'BAN'
@@ -13375,17 +13172,20 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<string> {
     const maxApiMessage = this.extractMaxApiErrorMessage(error);
     if (maxApiMessage && !this.isAmbiguousMaxMemberModerationError(maxApiMessage)) {
-      return maxApiMessage;
+      return 'Участника не удалось вернуть в чат: MAX отклонил действие. Проверьте тип чата, статус участника и права бота.';
     }
 
     try {
       await this.assertBotCanManageMembers(chatId, 'UNBAN', botId);
     } catch (diagnosticError: unknown) {
-      return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
+      return (
+        this.extractExpectedManualGroupCommandErrorMessage(diagnosticError) ||
+        'Участника не удалось вернуть в чат: MAX отклонил действие. Проверьте тип чата, статус участника и права бота.'
+      );
     }
 
     if (maxApiMessage) {
-      return maxApiMessage;
+      return 'Участника не удалось вернуть в чат: MAX отклонил действие. Проверьте тип чата, статус участника и права бота.';
     }
 
     return 'Участника не удалось вернуть в чат: MAX отклонил действие. Проверьте тип чата, статус участника и права бота.';
@@ -15462,12 +15262,7 @@ export class AdminService implements OnModuleDestroy {
     const type = this.readLowerString(row.type);
     const from = this.toSafeInteger(row.from);
     const length = this.toSafeInteger(row.length);
-    if (
-      !type ||
-      from < 0 ||
-      length <= 0 ||
-      !isMaxTextMarkupType(type)
-    ) {
+    if (!type || from < 0 || length <= 0 || !isMaxTextMarkupType(type)) {
       return null;
     }
 

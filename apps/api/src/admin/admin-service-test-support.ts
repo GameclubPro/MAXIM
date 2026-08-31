@@ -427,7 +427,6 @@ export function createPrismaMock() {
       'jobId',
       'rootIntentKey',
       'sourceKind',
-      'operation',
       'sourceChatId',
       'targetChatId',
       'targetUserId',
@@ -443,17 +442,13 @@ export function createPrismaMock() {
         return false;
       }
     }
-    if (typeof where.status === 'string' && row.status !== where.status) {
-      return false;
-    }
-    if (where.status && typeof where.status === 'object') {
-      const statusFilter = where.status as { in?: string[]; not?: string };
-      if (Array.isArray(statusFilter.in) && !statusFilter.in.includes(row.status)) {
-        return false;
-      }
-      if (typeof statusFilter.not === 'string' && row.status === statusFilter.not) {
-        return false;
-      }
+    for (const key of ['status', 'operation'] as const) {
+      const filter = where[key];
+      if (typeof filter === 'string' && row[key] !== filter) return false;
+      if (!filter || typeof filter !== 'object') continue;
+      const { in: included, not: excluded } = filter as { in?: string[]; not?: string };
+      if (Array.isArray(included) && !included.includes(row[key])) return false;
+      if (typeof excluded === 'string' && row[key] === excluded) return false;
     }
     if ('lockedAt' in where && where.lockedAt === null && row.lockedAt !== null) {
       return false;

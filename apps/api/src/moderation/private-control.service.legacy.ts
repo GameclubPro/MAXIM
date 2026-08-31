@@ -8831,11 +8831,7 @@ export class PrivateControlService {
     const userMessage =
       typeof badRequestDetails === 'string' && badRequestDetails.trim().length > 0
         ? badRequestDetails
-        : error instanceof BadRequestException &&
-            typeof error.message === 'string' &&
-            error.message.trim().length > 0
-          ? error.message
-          : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
+        : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
     const session = await this.loadSessionForDiagnostics(context.actor.userId);
     const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
 

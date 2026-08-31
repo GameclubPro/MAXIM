@@ -243,6 +243,7 @@ export type ManualModerationExecutionOptions = {
   fanoutLedgerJobId?: string | null;
   expectedSanctionEventId?: string | null;
   onModerationEventRecorded?: (eventId: string) => void;
+  onAlreadyApplied?: () => void;
 };
 export type ResolveManualModerationActionBotAssignmentOptions = {
   preferredBotId?: string | null;

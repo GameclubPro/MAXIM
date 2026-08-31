@@ -1,6 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -6644,6 +6645,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<boolean> {
     const { update, chatId, chatTitle, senderId, senderName, messageId, settings, superBanOnly } =
       params;
+    if (update.type !== 'message_created') {
+      return false;
+    }
     const commandBotId = this.readExecutionOwnerBotId(update);
     const directText = extractDirectIncomingMessageText(update);
     let command: AdminForwardedModerationCommand | null;
@@ -6917,14 +6921,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to enqueue forwarded admin moderation command',
         );
-        if (command.action === 'SUPER_BAN') {
-          await this.sendGroupAdminCommandNotice({
-            chatId,
-            botId: commandBotId,
-            settings,
-            text: 'Команда `супер бан` не запущена. Повторите через несколько секунд.',
-          });
-        }
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          botId: commandBotId,
+          settings,
+          text:
+            command.action === 'SUPER_BAN'
+              ? 'Команда `супер бан` не запущена. Повторите через несколько секунд.'
+              : 'Команда не запущена. Повторите через несколько секунд.',
+        });
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -7008,24 +7013,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractGroupAdminCommandErrorMessage(error: unknown): string {
-    if (error instanceof BadRequestException) {
+    if (error instanceof BadRequestException || error instanceof ForbiddenException) {
       const response = error.getResponse();
       if (typeof response === 'string' && response.trim().length > 0) {
-        return response.trim();
+        const normalized = response.trim();
+        return normalized.length <= 1_000 && /[А-Яа-яЁё]/u.test(normalized)
+          ? normalized
+          : 'Попробуйте ещё раз через несколько секунд.';
       }
 
       if (response && typeof response === 'object') {
         const message = (response as { message?: unknown }).message;
         if (typeof message === 'string' && message.trim().length > 0) {
-          return message.trim();
+          const normalized = message.trim();
+          return normalized.length <= 1_000 && /[А-Яа-яЁё]/u.test(normalized)
+            ? normalized
+            : 'Попробуйте ещё раз через несколько секунд.';
         }
       }
     }
-
-    if (error instanceof Error && error.message.trim().length > 0) {
-      return error.message.trim();
-    }
-
     return 'Попробуйте ещё раз через несколько секунд.';
   }
 

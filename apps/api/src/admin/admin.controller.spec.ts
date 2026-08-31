@@ -1,5 +1,12 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
-import { ModerationSanctionStateLockBusyError } from '../moderation/moderation-sanction-state-lock.service';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import {
+  ModerationSanctionStateLockBusyError,
+  ModerationSanctionStateLockUnavailableError,
+} from '../moderation/moderation-sanction-state-lock.service';
 import { AdminAutopostController } from './admin-autopost.controller';
 import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
@@ -199,12 +206,10 @@ describe('admin domain controllers', () => {
     const controller = new AdminManualModerationController(manualModerationService as never);
 
     const error = await controller
-      .applyManualModerationAction(
-        'chat-1',
-        'user-2',
-        user as never,
-        { action: 'BAN', scope: 'current_chat' },
-      )
+      .applyManualModerationAction('chat-1', 'user-2', user as never, {
+        action: 'BAN',
+        scope: 'current_chat',
+      })
       .then(
         () => null,
         (reason: unknown) => reason,
@@ -214,6 +219,34 @@ describe('admin domain controllers', () => {
     expect((error as ConflictException).getResponse()).toEqual({
       code: 'MODERATION_ACTION_IN_PROGRESS',
       message: 'Действие для этого участника уже выполняется. Дождитесь результата.',
+    });
+  });
+
+  it('maps an unavailable manual moderation lock to a safe HTTP response', async () => {
+    const manualModerationService = {
+      applyManualModerationAction: jest.fn().mockRejectedValue(
+        new ModerationSanctionStateLockUnavailableError({
+          chatId: 'chat-1',
+          userId: 'user-2',
+        }),
+      ),
+    };
+    const controller = new AdminManualModerationController(manualModerationService as never);
+
+    const error = await controller
+      .applyManualModerationAction('chat-1', 'user-2', user as never, {
+        action: 'BAN',
+        scope: 'current_chat',
+      })
+      .then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as ServiceUnavailableException).getResponse()).toEqual({
+      code: 'MODERATION_ACTION_STATUS_UNCERTAIN',
+      message: 'Статус действия временно недоступен. Обновите список участников.',
     });
   });
 

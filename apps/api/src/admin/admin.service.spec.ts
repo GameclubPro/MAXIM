@@ -4450,6 +4450,7 @@ describe('AdminService.applyManualModerationAction', () => {
       }),
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       unbanMember: jest.fn(),
+      clearTerminalBanStateAfterConfirmedUnban: jest.fn().mockResolvedValue(undefined),
     };
     const redisCounter = {
       deleteKeysByPattern: jest.fn().mockResolvedValue(2),
@@ -4479,6 +4480,10 @@ describe('AdminService.applyManualModerationAction', () => {
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
     expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(maxClient.clearTerminalBanStateAfterConfirmedUnban).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+    );
     expect(redisCounter.deleteKeysByPattern).toHaveBeenCalledWith(
       buildDuplicateUserPattern('chat-1', 'user-4'),
     );
@@ -5219,7 +5224,7 @@ describe('AdminService.applyManualSystemBan', () => {
       expect.objectContaining({
         priority: 1,
         attempts: 5,
-        removeOnComplete: true,
+        removeOnComplete: { age: 24 * 60 * 60, count: 10_000 },
         removeOnFail: false,
       }),
     );
@@ -5953,6 +5958,7 @@ describe('AdminService.applyManualSystemBan', () => {
         allowTargetDisplayNameRemoteLookup: false,
         fanoutAllChats: false,
         fanoutLedgerJobId: 'job-command-1',
+        onAlreadyApplied: expect.any(Function),
         onModerationEventRecorded: expect.any(Function),
       },
     );
@@ -5976,7 +5982,9 @@ describe('AdminService.applyManualSystemBan', () => {
         actionHealthLane: 'background',
         sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
+        beforeImmediateSendMutation: expect.any(Function),
         botId: 'bot-2',
+        idempotencyKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
       },
     );
   });
@@ -6427,7 +6435,9 @@ describe('AdminService.applyManualSystemBan', () => {
         actionHealthLane: 'background',
         sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
+        beforeImmediateSendMutation: expect.any(Function),
         botId: 'bot-5',
+        idempotencyKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
       },
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -6476,6 +6486,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
+
 
   it('processes queued primary group permanent mute commands outside the webhook hot path', async () => {
     const prisma = createPrismaMock();
@@ -6547,6 +6558,7 @@ describe('AdminService.applyManualSystemBan', () => {
         allowTargetDisplayNameRemoteLookup: false,
         fanoutAllChats: false,
         fanoutLedgerJobId: 'job-command-1',
+        onAlreadyApplied: expect.any(Function),
         onModerationEventRecorded: expect.any(Function),
       },
     );
@@ -6568,6 +6580,8 @@ describe('AdminService.applyManualSystemBan', () => {
         actionHealthLane: 'background',
         sourceTag: 'moderation_notice',
         autoDeleteDelayMs: 3 * 60 * 1000,
+        beforeImmediateSendMutation: expect.any(Function),
+        idempotencyKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
       },
     );
   });
@@ -7297,7 +7311,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          operationKey: expect.stringContaining('COMMAND_NOTICE_SUCCESS'),
+          operationKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
         }),
         data: expect.objectContaining({
           status: 'SUCCEEDED',
@@ -7305,6 +7319,7 @@ describe('AdminService.applyManualSystemBan', () => {
       }),
     );
   });
+
 
   it('processes queued local manual ban cleanup without running cross-chat fanout', async () => {
     const prisma = createPrismaMock();
