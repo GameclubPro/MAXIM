@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
+  buildMessageScopedModerationActionClaimKey,
+  buildModerationMessageViolationProcessingClaimKey,
+} from '../moderation/moderation-message-action-claim';
+import {
   BOT_AUTO_DELETE_PRESENCE_REPAIR_USAGE,
   assertBotAutoDeletePresenceRepairRole,
   botAutoDeletePresenceRepairHasFailures,
@@ -9,10 +13,41 @@ import {
   readBotAutoDeletePresenceRepairOptions,
   runBotAutoDeletePresenceRepair,
   type BotAutoDeletePresenceRepairIntent,
+  type BotAutoDeletePresenceRepairLegacyClaim,
   type BotAutoDeletePresenceRepairOptions,
 } from './repair-bot-auto-delete-presence';
 
 const NOW = new Date('2026-08-31T18:00:00.000Z');
+const LEGACY_CLAIM_CREATED_AT = new Date('2026-08-31T15:04:00.000Z');
+const LEGACY_MESSAGE_AT = new Date('2026-08-31T15:03:58.000Z');
+
+function legacyClaim(
+  overrides: Partial<BotAutoDeletePresenceRepairLegacyClaim> = {},
+): BotAutoDeletePresenceRepairLegacyClaim {
+  const chatId = overrides.chatId ?? 'chat-1';
+  const userId = overrides.userId ?? 'bot-user-1';
+  const messageId = overrides.messageId ?? 'message-1';
+  const ruleCode = overrides.ruleCode ?? 'BOT_MESSAGE_AUTO_DELETE';
+  const updateType = overrides.updateType ?? 'message_action';
+  return {
+    id: 'claim-1',
+    dedupeKey: buildModerationMessageViolationProcessingClaimKey({
+      chatId,
+      userId,
+      messageId,
+      ruleCode,
+      updateType,
+    }).dedupeKey,
+    messageActionKey: buildMessageScopedModerationActionClaimKey(chatId, messageId),
+    chatId,
+    userId,
+    messageId,
+    ruleCode,
+    updateType,
+    createdAt: LEGACY_CLAIM_CREATED_AT,
+    ...overrides,
+  };
+}
 
 function intent(
   overrides: Partial<BotAutoDeletePresenceRepairIntent> = {},
@@ -69,6 +104,15 @@ function fixture(
     storedIntent?: BotAutoDeletePresenceRepairIntent | null;
     presence?: 'present' | 'absent';
     casRows?: Array<{ id: string }>;
+    claim?: BotAutoDeletePresenceRepairLegacyClaim | null;
+    membership?: {
+      id: string;
+      chatId: string;
+      botId: string;
+      status: 'ACTIVE' | 'REMOVED';
+      chat: { entityType: 'CHAT' | 'CHANNEL' };
+    } | null;
+    exactRow?: Record<string, unknown> | null;
   } = {},
 ) {
   const storedIntent = params.storedIntent === undefined ? intent() : params.storedIntent;
@@ -84,13 +128,56 @@ function fixture(
     moderationDeleteIntent: {
       findUnique: jest.fn().mockResolvedValue(storedIntent),
     },
+    moderationViolationMessageClaim: {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue(params.claim === undefined ? legacyClaim() : params.claim),
+    },
+    chatBotMembership: {
+      findUnique: jest.fn().mockResolvedValue(
+        params.membership === undefined
+          ? {
+              id: 'membership-1',
+              chatId: 'chat-1',
+              botId: 'bot-1',
+              status: 'ACTIVE',
+              chat: { entityType: 'CHAT' },
+            }
+          : params.membership,
+      ),
+    },
     $transaction: transaction,
   };
   const maxClient = {
     getExactMessagePresence: jest.fn().mockResolvedValue(params.presence ?? 'present'),
+    getExactMessageRow: jest.fn().mockResolvedValue(
+      params.exactRow === undefined
+        ? {
+            message_id: 'message-1',
+            chat_id: 'chat-1',
+            sender_id: 'bot-user-1',
+            timestamp: LEGACY_MESSAGE_AT.getTime(),
+          }
+        : params.exactRow,
+    ),
+  };
+  const botRegistry = {
+    resolveBotIdFromUserId: jest.fn(
+      (userId: string | number | null | undefined): string | null =>
+        String(userId ?? '') === 'bot-user-1' ? 'bot-1' : null,
+    ),
+    getBotById: jest.fn((botId: string | null | undefined) =>
+      botId === 'bot-1' ? { id: 'bot-1', state: 'active' } : null,
+    ),
   };
   const intentService = {
     getRolloutForRuleCodes: jest.fn().mockReturnValue('execute'),
+    ensureBotMessageAutoDeleteRepairIntentWithAudit: jest.fn().mockResolvedValue({
+      created: true,
+      intentId: 'intent-created-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    }),
     enqueueCurrentIntentWakeupStrict: jest.fn().mockResolvedValue(undefined),
   };
 
@@ -98,10 +185,12 @@ function fixture(
     dependencies: {
       prisma: prisma as never,
       maxClient: maxClient as never,
+      botRegistry: botRegistry as never,
       intentService: intentService as never,
     },
     prisma,
     maxClient,
+    botRegistry,
     intentService,
     transaction,
     queryRaw,
@@ -247,6 +336,9 @@ describe('bot auto-delete exact-presence repair', () => {
       requested: 1,
       wouldReopen: 0,
       reopened: 0,
+      wouldCreate: 0,
+      created: 0,
+      reconciledExisting: 0,
       alreadyAbsent: 0,
       ineligible: 1,
       casConflicts: 0,
@@ -474,6 +566,322 @@ describe('bot auto-delete exact-presence repair', () => {
     expect(maxClient.getExactMessagePresence).toHaveBeenCalledTimes(1);
     expect(auditCreate).toHaveBeenCalledTimes(1);
     expect(intentService.enqueueCurrentIntentWakeupStrict).toHaveBeenCalledWith('intent-1');
+  });
+
+  it('requires an exact indexed legacy claim when the intent is missing', async () => {
+    const { dependencies, prisma, maxClient, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      ineligible: 1,
+      outcomes: [expect.objectContaining({ result: 'ineligible', reason: 'legacy_claim_missing' })],
+    });
+
+    expect(prisma.moderationViolationMessageClaim.findUnique).toHaveBeenCalledWith({
+      where: {
+        messageActionKey: buildMessageScopedModerationActionClaimKey('chat-1', 'message-1'),
+      },
+      select: expect.any(Object),
+    });
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['dedupe key', legacyClaim({ dedupeKey: 'v1:wrong' })],
+    ['message action key', legacyClaim({ messageActionKey: 'v1:wrong' })],
+    ['rule', legacyClaim({ ruleCode: 'REQUIRED_SUBSCRIPTION' })],
+    ['update type', legacyClaim({ updateType: 'message_created' })],
+  ])('rejects a legacy claim with mismatched %s', async (_label, claim) => {
+    const { dependencies, maxClient, intentService } = fixture({ storedIntent: null, claim });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      ineligible: 1,
+      outcomes: [
+        expect.objectContaining({
+          result: 'ineligible',
+          reason: 'legacy_claim_identity_mismatch',
+        }),
+      ],
+    });
+
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+  });
+
+  it('requires an executable registry mapping and exact active CHAT membership', async () => {
+    const unresolved = fixture({ storedIntent: null });
+    unresolved.botRegistry.resolveBotIdFromUserId.mockReturnValueOnce(null);
+    await expect(
+      runBotAutoDeletePresenceRepair(unresolved.dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'legacy_claim_bot_unresolved' })],
+    });
+    expect(unresolved.prisma.chatBotMembership.findUnique).not.toHaveBeenCalled();
+
+    const draining = fixture({ storedIntent: null });
+    draining.botRegistry.getBotById.mockReturnValueOnce({ id: 'bot-1', state: 'draining' });
+    await expect(
+      runBotAutoDeletePresenceRepair(draining.dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'legacy_origin_bot_not_executable' })],
+    });
+    expect(draining.prisma.chatBotMembership.findUnique).not.toHaveBeenCalled();
+
+    const removed = fixture({
+      storedIntent: null,
+      membership: {
+        id: 'membership-1',
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        status: 'REMOVED',
+        chat: { entityType: 'CHAT' },
+      },
+    });
+    await expect(
+      runBotAutoDeletePresenceRepair(removed.dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'legacy_active_membership_missing' })],
+    });
+    expect(removed.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+
+    const channel = fixture({
+      storedIntent: null,
+      membership: {
+        id: 'membership-1',
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        status: 'ACTIVE',
+        chat: { entityType: 'CHANNEL' },
+      },
+    });
+    await expect(
+      runBotAutoDeletePresenceRepair(channel.dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'legacy_chat_not_chat' })],
+    });
+    expect(channel.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('requires the live sender and timestamp to match the exact legacy claim', async () => {
+    const senderMismatch = fixture({
+      storedIntent: null,
+      exactRow: {
+        message_id: 'message-1',
+        chat_id: 'chat-1',
+        sender_id: 'bot-user-2',
+        timestamp: LEGACY_MESSAGE_AT.getTime(),
+      },
+    });
+    senderMismatch.botRegistry.resolveBotIdFromUserId.mockImplementation(
+      (userId: string | number | null | undefined) =>
+        String(userId ?? '') === 'bot-user-1'
+          ? 'bot-1'
+          : String(userId ?? '') === 'bot-user-2'
+            ? 'bot-2'
+            : null,
+    );
+    await expect(
+      runBotAutoDeletePresenceRepair(senderMismatch.dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'legacy_live_sender_mismatch' })],
+    });
+
+    const timestampMismatch = fixture({
+      storedIntent: null,
+      exactRow: {
+        message_id: 'message-1',
+        chat_id: 'chat-1',
+        sender_id: 'bot-user-1',
+        timestamp: LEGACY_CLAIM_CREATED_AT.getTime() - 11 * 60_000,
+      },
+    });
+    await expect(
+      runBotAutoDeletePresenceRepair(timestampMismatch.dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      outcomes: [expect.objectContaining({ reason: 'legacy_live_timestamp_mismatch' })],
+    });
+    expect(
+      timestampMismatch.intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('does not mutate a missing intent when the exact row is absent or lookup is unknown', async () => {
+    const absent = fixture({ storedIntent: null, exactRow: null });
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        absent.dependencies,
+        options({ apply: true, actorUserId: 'operator-1' }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      alreadyAbsent: 1,
+      outcomes: [expect.objectContaining({ result: 'already_absent', intentId: null })],
+    });
+    expect(
+      absent.intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit,
+    ).not.toHaveBeenCalled();
+
+    const unknown = fixture({ storedIntent: null });
+    unknown.maxClient.getExactMessageRow.mockRejectedValueOnce(new Error('MAX timeout'));
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        unknown.dependencies,
+        options({ apply: true, actorUserId: 'operator-1' }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      errors: 1,
+      outcomes: [
+        expect.objectContaining({
+          result: 'error',
+          error: expect.stringContaining('Exact live message lookup failed'),
+        }),
+      ],
+    });
+    expect(
+      unknown.intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('reports would_create for a live exact legacy message without mutating', async () => {
+    const { dependencies, prisma, maxClient, intentService } = fixture({ storedIntent: null });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      wouldCreate: 1,
+      created: 0,
+      outcomes: [
+        expect.objectContaining({
+          result: 'would_create',
+          intentId: null,
+          presenceBotId: 'bot-1',
+        }),
+      ],
+    });
+
+    expect(prisma.chatBotMembership.findUnique).toHaveBeenCalledWith({
+      where: { chatId_botId: { chatId: 'chat-1', botId: 'bot-1' } },
+      select: expect.any(Object),
+    });
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledWith('chat-1', 'message-1', {
+      botId: 'bot-1',
+      bypassCache: true,
+      trafficClass: 'interactive',
+      actionHealthLane: 'interactive',
+      sourceTag: 'moderation_delete',
+      timeoutMs: 5_000,
+    });
+    expect(maxClient.getExactMessagePresence).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+    expect(intentService.enqueueCurrentIntentWakeupStrict).not.toHaveBeenCalled();
+  });
+
+  it('atomically creates and audits a missing intent before strict enqueue', async () => {
+    const { dependencies, intentService } = fixture({ storedIntent: null });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({ apply: true, actorUserId: 'operator-1' }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      created: 1,
+      errors: 0,
+      outcomes: [expect.objectContaining({ result: 'created', intentId: 'intent-created-1' })],
+    });
+
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'BOT_MESSAGE_AUTO_DELETE',
+        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+        subjectUserId: 'bot-user-1',
+        sourceMessageAt: LEGACY_MESSAGE_AT,
+        entityType: 'CHAT',
+        messageAuthorKind: 'bot',
+        originBotId: 'bot-1',
+        routingPolicy: 'origin_only',
+        executeAt: NOW,
+        event: expect.objectContaining({ userId: 'bot-user-1', eventType: 'MESSAGE' }),
+      }),
+      {
+        actorUserId: 'operator-1',
+        auditPayload: expect.objectContaining({
+          repairVersion: 1,
+          claimId: 'claim-1',
+          claimMessageActionKey: buildMessageScopedModerationActionClaimKey('chat-1', 'message-1'),
+          claimUserId: 'bot-user-1',
+          liveMessageId: 'message-1',
+          liveSenderId: 'bot-user-1',
+          liveMessageAt: LEGACY_MESSAGE_AT.toISOString(),
+          presenceCheckedAt: NOW.toISOString(),
+          originBotId: 'bot-1',
+        }),
+      },
+    );
+    expect(
+      intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit.mock.invocationCallOrder[0],
+    ).toBeLessThan(intentService.enqueueCurrentIntentWakeupStrict.mock.invocationCallOrder[0]);
+    expect(intentService.enqueueCurrentIntentWakeupStrict).toHaveBeenCalledWith('intent-created-1');
+  });
+
+  it('strictly enqueues a concurrently reconciled missing intent and surfaces queue failure', async () => {
+    const reconciled = fixture({ storedIntent: null });
+    reconciled.intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit.mockResolvedValueOnce({
+      created: false,
+      intentId: 'intent-concurrent-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        reconciled.dependencies,
+        options({ apply: true, actorUserId: 'operator-1' }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      reconciledExisting: 1,
+      outcomes: [
+        expect.objectContaining({
+          result: 'reconciled_existing',
+          intentId: 'intent-concurrent-1',
+        }),
+      ],
+    });
+    expect(reconciled.intentService.enqueueCurrentIntentWakeupStrict).toHaveBeenCalledWith(
+      'intent-concurrent-1',
+    );
+
+    const failed = fixture({ storedIntent: null });
+    failed.intentService.enqueueCurrentIntentWakeupStrict.mockRejectedValueOnce(
+      new Error('queue.add failed'),
+    );
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        failed.dependencies,
+        options({ apply: true, actorUserId: 'operator-1' }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      errors: 1,
+      outcomes: [
+        expect.objectContaining({
+          result: 'created_enqueue_failed',
+          intentId: 'intent-created-1',
+          error: 'queue.add failed',
+        }),
+      ],
+    });
   });
 
   it('uses a narrow operator module without runtime processors or reconcilers', () => {

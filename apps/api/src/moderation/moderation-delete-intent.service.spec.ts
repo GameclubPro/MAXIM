@@ -9,6 +9,7 @@ import {
   CommercialOcrDeleteGuardRejectedError,
 } from './commercial-ocr/commercial-ocr-delete-guard.service';
 import {
+  BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
   ModerationDeleteIntentService,
   PhotoDuplicateDeleteIntentGuardRejectedError,
 } from './moderation-delete-intent.service';
@@ -371,9 +372,266 @@ function requiredSubscriptionDeleteIntentInput() {
   };
 }
 
+function botMessageAutoDeleteRepairIntentInput(
+  overrides: Partial<EnsureModerationDeleteIntentInput> = {},
+): EnsureModerationDeleteIntentInput {
+  const sourceMessageAt = new Date('2026-08-31T12:00:00.000Z');
+  return {
+    chatId: 'chat-1',
+    messageId: 'message-1',
+    reasonKey: 'BOT_MESSAGE_AUTO_DELETE',
+    ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+    subjectUserId: 'bot-user-1',
+    sourceMessageAt,
+    entityType: 'CHAT',
+    messageAuthorKind: 'bot',
+    originBotId: 'bot-1',
+    routingPolicy: 'origin_only',
+    executeAt: new Date('2026-08-31T12:01:00.000Z'),
+    retryUntilAt: new Date('2026-09-01T12:01:00.000Z'),
+    event: {
+      userId: 'bot-user-1',
+      eventType: 'MESSAGE',
+      metadata: { repairClaimId: 'claim-1' },
+    },
+    ...overrides,
+  };
+}
+
 describe('ModerationDeleteIntentService', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('atomically creates and audits a missing BOT_MESSAGE_AUTO_DELETE repair intent', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:01:00.000Z'));
+    const input = botMessageAutoDeleteRepairIntentInput();
+    const persisted = {
+      ...baseIntent,
+      id: 'repair-intent-1',
+      chatId: input.chatId,
+      messageId: input.messageId,
+      subjectUserId: input.subjectUserId,
+      sourceMessageAt: input.sourceMessageAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'bot',
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_only',
+      status: 'PENDING' as const,
+      executeAt: input.executeAt as Date,
+      nextAttemptAt: input.executeAt as Date,
+      retryUntilAt: input.retryUntilAt as Date,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const verified = {
+      ...persisted,
+      botMessageAutoDeleteReason: true,
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+      replacementCleanup: false,
+      commercialOcrDeleteReason: false,
+      nonCommercialOcrDeleteReason: true,
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([persisted])
+      .mockResolvedValueOnce([verified]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const auditCreate = jest.fn().mockResolvedValue({ id: 'audit-1' });
+    const transaction = jest.fn(
+      async (
+        callback: (tx: unknown) => Promise<unknown>,
+        _options: { isolationLevel: Prisma.TransactionIsolationLevel },
+      ) =>
+        callback({
+          $queryRaw: txQueryRaw,
+          $executeRaw: txExecuteRaw,
+          auditLog: { create: auditCreate },
+        }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(input, {
+        actorUserId: ' operator-1 ',
+        auditPayload: {
+          claimId: 'claim-1',
+          exactPresence: 'present',
+          intentId: 'caller-cannot-override',
+        },
+      }),
+    ).resolves.toEqual({
+      created: true,
+      intentId: 'repair-intent-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(txQueryRaw).toHaveBeenCalledTimes(3);
+    expect(txExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(auditCreate).toHaveBeenCalledWith({
+      data: {
+        chatId: 'chat-1',
+        actorUserId: 'operator-1',
+        action: BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
+        payload: expect.objectContaining({
+          claimId: 'claim-1',
+          exactPresence: 'present',
+          repairVersion: 1,
+          repairKind: 'legacy_missing_intent',
+          intentId: 'repair-intent-1',
+          messageId: 'message-1',
+          ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+          originBotId: 'bot-1',
+        }),
+      },
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('returns an existing matching repair intent without duplicating its creation audit', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:01:00.000Z'));
+    const input = botMessageAutoDeleteRepairIntentInput();
+    const persisted = {
+      ...baseIntent,
+      id: 'repair-intent-existing',
+      subjectUserId: input.subjectUserId,
+      sourceMessageAt: input.sourceMessageAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'bot',
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_only',
+      status: 'PENDING' as const,
+      executeAt: input.executeAt as Date,
+      nextAttemptAt: input.executeAt as Date,
+      retryUntilAt: input.retryUntilAt as Date,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const verified = {
+      ...persisted,
+      botMessageAutoDeleteReason: true,
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+      replacementCleanup: false,
+      commercialOcrDeleteReason: false,
+      nonCommercialOcrDeleteReason: true,
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: persisted.id }])
+      .mockResolvedValueOnce([persisted])
+      .mockResolvedValueOnce([verified]);
+    const auditCreate = jest.fn();
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $queryRaw: txQueryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(0),
+        auditLog: { create: auditCreate },
+      }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(input, {
+        actorUserId: 'operator-1',
+        auditPayload: { claimId: 'claim-1' },
+      }),
+    ).resolves.toEqual({
+      created: false,
+      intentId: 'repair-intent-existing',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects a persisted mixed-reason repair intent before writing its audit', async () => {
+    const input = botMessageAutoDeleteRepairIntentInput();
+    const persisted = {
+      ...baseIntent,
+      id: 'repair-intent-mixed',
+      subjectUserId: input.subjectUserId,
+      sourceMessageAt: input.sourceMessageAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'bot',
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_only',
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const mixed = {
+      ...persisted,
+      botMessageAutoDeleteReason: true,
+      botMessageAutoDeleteOnly: false,
+      requiredSubscriptionDeleteReason: true,
+      replacementCleanup: false,
+      commercialOcrDeleteReason: false,
+    };
+    const auditCreate = jest.fn();
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([persisted])
+      .mockResolvedValueOnce([mixed]);
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $queryRaw: txQueryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        auditLog: { create: auditCreate },
+      }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(input, {
+        actorUserId: 'operator-1',
+        auditPayload: { claimId: 'claim-1' },
+      }),
+    ).rejects.toThrow('is not an active matching BOT_MESSAGE_AUTO_DELETE-only repair intent');
+
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['channel', { entityType: 'CHANNEL' as const }],
+    ['user-authored', { messageAuthorKind: 'user' as const }],
+    ['cross-bot routing', { routingPolicy: 'origin_first' as const }],
+    ['another rule', { reasonKey: 'OTHER', ruleCode: 'OTHER' }],
+    ['mismatched reason key', { reasonKey: 'OTHER' }],
+    ['missing origin', { originBotId: null }],
+    ['missing subject', { subjectUserId: null }],
+    ['missing source timestamp', { sourceMessageAt: null }],
+    ['mismatched event user', { event: { userId: 'other-bot', eventType: 'MESSAGE' as const } }],
+    ['non-message event', { event: { userId: 'bot-user-1', eventType: 'SYSTEM' as const } }],
+  ])('rejects %s input before starting missing-intent repair', async (_label, override) => {
+    const transaction = jest.fn();
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(
+        botMessageAutoDeleteRepairIntentInput(override),
+        {
+          actorUserId: 'operator-1',
+          auditPayload: { claimId: 'claim-1' },
+        },
+      ),
+    ).rejects.toThrow();
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('atomically claims the OCR action, materializes its intent and reason, then enqueues after commit', async () => {

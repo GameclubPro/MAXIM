@@ -1,10 +1,18 @@
 import { config as loadEnv } from 'dotenv';
 import { resolve } from 'node:path';
 
+import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { canExecuteActionsForBotState } from '../max/max-bot-state.util';
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import { parseLinkHistoryListedMessage } from '../moderation/link-history-recovery.util';
+import {
+  buildMessageScopedModerationActionClaimKey,
+  buildModerationMessageViolationProcessingClaimKey,
+} from '../moderation/moderation-message-action-claim';
 import type { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import { Prisma, type ModerationDeleteIntentStatus } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { SCHEDULED_BOT_DELETE_REASON } from './repair-missed-moderation-deletes.util';
 
 const BOT_MESSAGE_AUTO_DELETE_RULE_CODE = 'BOT_MESSAGE_AUTO_DELETE';
 const REPAIR_AUDIT_ACTION = 'OPERATOR_REOPEN_BOT_MESSAGE_AUTO_DELETE_PRESENT';
@@ -12,6 +20,7 @@ const MAX_TARGETS = 20;
 const MAX_ID_LENGTH = 256;
 const REPAIR_RETRY_HORIZON_MS = 24 * 60 * 60_000;
 const REPAIR_PRESENCE_TIMEOUT_MS = 5_000;
+const LEGACY_CLAIM_LIVE_MESSAGE_WINDOW_MS = 10 * 60_000;
 
 const REPAIRABLE_STATUSES = new Set<ModerationDeleteIntentStatus>([
   'PENDING',
@@ -57,8 +66,41 @@ const INTENT_SELECT = {
   },
 } satisfies Prisma.ModerationDeleteIntentSelect;
 
+const LEGACY_CLAIM_SELECT = {
+  id: true,
+  dedupeKey: true,
+  messageActionKey: true,
+  chatId: true,
+  userId: true,
+  messageId: true,
+  ruleCode: true,
+  updateType: true,
+  createdAt: true,
+} satisfies Prisma.ModerationViolationMessageClaimSelect;
+
+const LEGACY_MEMBERSHIP_SELECT = {
+  id: true,
+  chatId: true,
+  botId: true,
+  status: true,
+  chat: {
+    select: {
+      entityType: true,
+    },
+  },
+} satisfies Prisma.ChatBotMembershipSelect;
+
 export type BotAutoDeletePresenceRepairIntent = Prisma.ModerationDeleteIntentGetPayload<{
   select: typeof INTENT_SELECT;
+}>;
+
+export type BotAutoDeletePresenceRepairLegacyClaim =
+  Prisma.ModerationViolationMessageClaimGetPayload<{
+    select: typeof LEGACY_CLAIM_SELECT;
+  }>;
+
+type BotAutoDeletePresenceRepairLegacyMembership = Prisma.ChatBotMembershipGetPayload<{
+  select: typeof LEGACY_MEMBERSHIP_SELECT;
 }>;
 
 export type BotAutoDeletePresenceRepairTarget = {
@@ -83,7 +125,17 @@ type IneligibleReason =
   | 'missing_origin_bot'
   | 'non_origin_only_routing'
   | 'managed_output_auto_delete_blocked'
-  | 'execution_rollout_disabled';
+  | 'execution_rollout_disabled'
+  | 'legacy_claim_missing'
+  | 'legacy_claim_identity_mismatch'
+  | 'legacy_claim_bot_unresolved'
+  | 'legacy_origin_bot_not_executable'
+  | 'legacy_active_membership_missing'
+  | 'legacy_chat_not_chat'
+  | 'legacy_live_message_unparseable'
+  | 'legacy_live_message_identity_mismatch'
+  | 'legacy_live_sender_mismatch'
+  | 'legacy_live_timestamp_mismatch';
 
 export type BotAutoDeletePresenceRepairOutcome = BotAutoDeletePresenceRepairTarget & {
   intentId: string | null;
@@ -91,6 +143,10 @@ export type BotAutoDeletePresenceRepairOutcome = BotAutoDeletePresenceRepairTarg
     | 'would_reopen'
     | 'reopened'
     | 'reopened_enqueue_failed'
+    | 'would_create'
+    | 'created'
+    | 'reconciled_existing'
+    | 'created_enqueue_failed'
     | 'already_absent'
     | 'ineligible'
     | 'cas_conflict'
@@ -106,6 +162,9 @@ export type BotAutoDeletePresenceRepairSummary = {
   requested: number;
   wouldReopen: number;
   reopened: number;
+  wouldCreate: number;
+  created: number;
+  reconciledExisting: number;
   alreadyAbsent: number;
   ineligible: number;
   casConflicts: number;
@@ -115,10 +174,13 @@ export type BotAutoDeletePresenceRepairSummary = {
 
 type RepairDependencies = {
   prisma: PrismaService;
-  maxClient: Pick<MaxClientService, 'getExactMessagePresence'>;
+  maxClient: Pick<MaxClientService, 'getExactMessagePresence' | 'getExactMessageRow'>;
+  botRegistry: Pick<MaxBotRegistryService, 'getBotById' | 'resolveBotIdFromUserId'>;
   intentService: Pick<
     ModerationDeleteIntentService,
-    'enqueueCurrentIntentWakeupStrict' | 'getRolloutForRuleCodes'
+    | 'enqueueCurrentIntentWakeupStrict'
+    | 'ensureBotMessageAutoDeleteRepairIntentWithAudit'
+    | 'getRolloutForRuleCodes'
   >;
 };
 
@@ -269,6 +331,242 @@ function ineligibleOutcome(
   };
 }
 
+function legacyIneligibleOutcome(
+  target: BotAutoDeletePresenceRepairTarget,
+  reason: IneligibleReason,
+  presenceBotId: string | null = null,
+): BotAutoDeletePresenceRepairOutcome {
+  return {
+    ...target,
+    intentId: null,
+    result: 'ineligible',
+    reason,
+    previousStatus: null,
+    presenceBotId,
+  };
+}
+
+async function repairMissingLegacyIntent(
+  dependencies: RepairDependencies,
+  options: BotAutoDeletePresenceRepairOptions,
+  target: BotAutoDeletePresenceRepairTarget,
+  now: () => Date,
+): Promise<BotAutoDeletePresenceRepairOutcome> {
+  const expectedMessageActionKey = buildMessageScopedModerationActionClaimKey(
+    target.chatId,
+    target.messageId,
+  );
+  const claim = await dependencies.prisma.moderationViolationMessageClaim.findUnique({
+    where: { messageActionKey: expectedMessageActionKey },
+    select: LEGACY_CLAIM_SELECT,
+  });
+  if (!claim) {
+    return legacyIneligibleOutcome(target, 'legacy_claim_missing');
+  }
+  const expectedDedupeKey = buildModerationMessageViolationProcessingClaimKey({
+    chatId: target.chatId,
+    userId: claim.userId,
+    messageId: target.messageId,
+    ruleCode: BOT_MESSAGE_AUTO_DELETE_RULE_CODE,
+    updateType: 'message_action',
+  }).dedupeKey;
+  if (
+    claim.dedupeKey !== expectedDedupeKey ||
+    claim.messageActionKey !== expectedMessageActionKey ||
+    claim.chatId !== target.chatId ||
+    claim.messageId !== target.messageId ||
+    claim.ruleCode !== BOT_MESSAGE_AUTO_DELETE_RULE_CODE ||
+    claim.updateType !== 'message_action'
+  ) {
+    return legacyIneligibleOutcome(target, 'legacy_claim_identity_mismatch');
+  }
+
+  const originBotId = dependencies.botRegistry.resolveBotIdFromUserId(claim.userId);
+  if (!originBotId) {
+    return legacyIneligibleOutcome(target, 'legacy_claim_bot_unresolved');
+  }
+  const originBot = dependencies.botRegistry.getBotById(originBotId);
+  if (!originBot || !canExecuteActionsForBotState(originBot.state)) {
+    return legacyIneligibleOutcome(target, 'legacy_origin_bot_not_executable', originBotId);
+  }
+
+  const membership: BotAutoDeletePresenceRepairLegacyMembership | null =
+    await dependencies.prisma.chatBotMembership.findUnique({
+      where: {
+        chatId_botId: {
+          chatId: target.chatId,
+          botId: originBotId,
+        },
+      },
+      select: LEGACY_MEMBERSHIP_SELECT,
+    });
+  if (
+    !membership ||
+    membership.chatId !== target.chatId ||
+    membership.botId !== originBotId ||
+    membership.status !== 'ACTIVE'
+  ) {
+    return legacyIneligibleOutcome(target, 'legacy_active_membership_missing', originBotId);
+  }
+  if (membership.chat.entityType !== 'CHAT') {
+    return legacyIneligibleOutcome(target, 'legacy_chat_not_chat', originBotId);
+  }
+  if (
+    dependencies.intentService.getRolloutForRuleCodes(target.chatId, [
+      BOT_MESSAGE_AUTO_DELETE_RULE_CODE,
+    ]) !== 'execute'
+  ) {
+    return legacyIneligibleOutcome(target, 'execution_rollout_disabled', originBotId);
+  }
+
+  const presenceCheckedAt = now();
+  let exactRow: Record<string, unknown> | null;
+  try {
+    exactRow = await dependencies.maxClient.getExactMessageRow(target.chatId, target.messageId, {
+      botId: originBotId,
+      bypassCache: true,
+      trafficClass: 'interactive',
+      actionHealthLane: 'interactive',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      timeoutMs: REPAIR_PRESENCE_TIMEOUT_MS,
+    });
+  } catch (error: unknown) {
+    return {
+      ...target,
+      intentId: null,
+      result: 'error',
+      reason: null,
+      previousStatus: null,
+      presenceBotId: originBotId,
+      error: `Exact live message lookup failed: ${normalizeError(error)}`,
+    };
+  }
+  if (!exactRow) {
+    return {
+      ...target,
+      intentId: null,
+      result: 'already_absent',
+      reason: null,
+      previousStatus: null,
+      presenceBotId: originBotId,
+    };
+  }
+
+  const liveMessage = parseLinkHistoryListedMessage(exactRow);
+  if (!liveMessage) {
+    return legacyIneligibleOutcome(target, 'legacy_live_message_unparseable', originBotId);
+  }
+  if (liveMessage.messageId !== target.messageId) {
+    return legacyIneligibleOutcome(target, 'legacy_live_message_identity_mismatch', originBotId);
+  }
+  const liveOriginBotId = dependencies.botRegistry.resolveBotIdFromUserId(liveMessage.senderId);
+  if (!liveOriginBotId || liveOriginBotId !== originBotId) {
+    return legacyIneligibleOutcome(target, 'legacy_live_sender_mismatch', originBotId);
+  }
+  if (
+    Math.abs(liveMessage.timestampMs - claim.createdAt.getTime()) >
+    LEGACY_CLAIM_LIVE_MESSAGE_WINDOW_MS
+  ) {
+    return legacyIneligibleOutcome(target, 'legacy_live_timestamp_mismatch', originBotId);
+  }
+
+  if (!options.apply) {
+    return {
+      ...target,
+      intentId: null,
+      result: 'would_create',
+      reason: null,
+      previousStatus: null,
+      presenceBotId: originBotId,
+    };
+  }
+
+  const liveMessageAt = new Date(liveMessage.timestampMs);
+  const retryUntilAt = new Date(presenceCheckedAt.getTime() + REPAIR_RETRY_HORIZON_MS);
+  let ensured: Awaited<
+    ReturnType<ModerationDeleteIntentService['ensureBotMessageAutoDeleteRepairIntentWithAudit']>
+  >;
+  try {
+    ensured = await dependencies.intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit(
+      {
+        chatId: target.chatId,
+        messageId: target.messageId,
+        reasonKey: BOT_MESSAGE_AUTO_DELETE_RULE_CODE,
+        ruleCode: BOT_MESSAGE_AUTO_DELETE_RULE_CODE,
+        subjectUserId: claim.userId,
+        sourceMessageAt: liveMessageAt,
+        entityType: 'CHAT',
+        messageAuthorKind: 'bot',
+        originBotId,
+        routingPolicy: 'origin_only',
+        executeAt: presenceCheckedAt,
+        retryUntilAt,
+        event: {
+          userId: claim.userId,
+          eventType: 'MESSAGE',
+          maskedExcerpt: null,
+          score: 0.5,
+          metadata: {
+            reason: SCHEDULED_BOT_DELETE_REASON,
+            repairSource: 'exact_legacy_message_action_claim',
+          },
+        },
+      },
+      {
+        actorUserId: options.actorUserId!,
+        auditPayload: {
+          repairVersion: 1,
+          claimId: claim.id,
+          claimDedupeKey: claim.dedupeKey,
+          claimMessageActionKey: expectedMessageActionKey,
+          claimCreatedAt: claim.createdAt.toISOString(),
+          claimUserId: claim.userId,
+          ruleCode: claim.ruleCode,
+          updateType: claim.updateType,
+          liveMessageId: liveMessage.messageId,
+          liveSenderId: liveMessage.senderId!,
+          liveMessageAt: liveMessageAt.toISOString(),
+          presenceCheckedAt: presenceCheckedAt.toISOString(),
+          originBotId,
+        },
+      },
+    );
+  } catch (error: unknown) {
+    return {
+      ...target,
+      intentId: null,
+      result: 'error',
+      reason: null,
+      previousStatus: null,
+      presenceBotId: originBotId,
+      error: `Atomic missing-intent create failed: ${normalizeError(error)}`,
+    };
+  }
+
+  try {
+    await dependencies.intentService.enqueueCurrentIntentWakeupStrict(ensured.intentId);
+  } catch (error: unknown) {
+    return {
+      ...target,
+      intentId: ensured.intentId,
+      result: 'created_enqueue_failed',
+      reason: null,
+      previousStatus: null,
+      presenceBotId: originBotId,
+      error: normalizeError(error),
+    };
+  }
+
+  return {
+    ...target,
+    intentId: ensured.intentId,
+    result: ensured.created ? 'created' : 'reconciled_existing',
+    reason: null,
+    previousStatus: null,
+    presenceBotId: originBotId,
+  };
+}
+
 async function reopenIntentWithAudit(params: {
   prisma: PrismaService;
   intent: BotAutoDeletePresenceRepairIntent;
@@ -384,6 +682,9 @@ async function repairOne(
     },
     select: INTENT_SELECT,
   });
+  if (!storedIntent) {
+    return repairMissingLegacyIntent(dependencies, options, target, now);
+  }
   const eligibility = classifyBotAutoDeletePresenceRepairIntent(storedIntent);
   if (!eligibility.eligible) {
     return ineligibleOutcome(target, storedIntent, eligibility.reason);
@@ -530,11 +831,15 @@ export async function runBotAutoDeletePresenceRepair(
     requested: outcomes.length,
     wouldReopen: outcomes.filter((outcome) => outcome.result === 'would_reopen').length,
     reopened: outcomes.filter((outcome) => outcome.result === 'reopened').length,
+    wouldCreate: outcomes.filter((outcome) => outcome.result === 'would_create').length,
+    created: outcomes.filter((outcome) => outcome.result === 'created').length,
+    reconciledExisting: outcomes.filter((outcome) => outcome.result === 'reconciled_existing')
+      .length,
     alreadyAbsent: outcomes.filter((outcome) => outcome.result === 'already_absent').length,
     ineligible: outcomes.filter((outcome) => outcome.result === 'ineligible').length,
     casConflicts: outcomes.filter((outcome) => outcome.result === 'cas_conflict').length,
-    errors: outcomes.filter(
-      (outcome) => outcome.result === 'error' || outcome.result === 'reopened_enqueue_failed',
+    errors: outcomes.filter((outcome) =>
+      ['error', 'reopened_enqueue_failed', 'created_enqueue_failed'].includes(outcome.result),
     ).length,
     outcomes,
   };
@@ -580,9 +885,13 @@ function writeSummary(summary: BotAutoDeletePresenceRepairSummary, json: boolean
   process.stdout.write(
     `${summary.apply ? 'Apply' : 'Dry-run'}: requested=${summary.requested} wouldReopen=${
       summary.wouldReopen
-    } reopened=${summary.reopened} alreadyAbsent=${summary.alreadyAbsent} ineligible=${
-      summary.ineligible
-    } casConflicts=${summary.casConflicts} errors=${summary.errors}\n`,
+    } reopened=${summary.reopened} wouldCreate=${summary.wouldCreate} created=${
+      summary.created
+    } reconciledExisting=${summary.reconciledExisting} alreadyAbsent=${
+      summary.alreadyAbsent
+    } ineligible=${summary.ineligible} casConflicts=${summary.casConflicts} errors=${
+      summary.errors
+    }\n`,
   );
 }
 
@@ -599,12 +908,14 @@ async function main(): Promise<void> {
   const [
     { NestFactory },
     { BotAutoDeletePresenceRepairModule },
+    { MaxBotRegistryService },
     { MaxClientService },
     { ModerationDeleteIntentService },
     { PrismaService },
   ] = await Promise.all([
     import('@nestjs/core'),
     import('./bot-auto-delete-presence-repair.module'),
+    import('../max/max-bot-registry.service'),
     import('../max/max-client.service'),
     import('../moderation/moderation-delete-intent.service'),
     import('../prisma/prisma.service'),
@@ -617,6 +928,7 @@ async function main(): Promise<void> {
       {
         prisma: app.get(PrismaService),
         maxClient: app.get(MaxClientService),
+        botRegistry: app.get(MaxBotRegistryService),
         intentService: app.get(ModerationDeleteIntentService),
       },
       options,

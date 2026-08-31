@@ -90,6 +90,8 @@ const BOT_MESSAGE_AUTO_DELETE_SUCCESS_VERIFICATION_PENDING_ERROR_CODE =
   'bot_message_auto_delete_success_verification_pending';
 const BOT_MESSAGE_AUTO_DELETE_SUCCESS_STILL_PRESENT_ERROR_CODE =
   'bot_message_auto_delete_success_still_present';
+export const BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION =
+  'OPERATOR_CREATE_MISSING_BOT_MESSAGE_AUTO_DELETE_INTENT';
 const NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE = 'night_mode_close_notice_cleanup_stale';
 const DELETE_QUEUE_PRIORITY_INTERACTIVE = 1;
 const DELETE_QUEUE_PRIORITY_BACKGROUND = 10;
@@ -207,6 +209,23 @@ type BotMessageAutoDeleteRetryLimitOutcome =
   | { kind: 'continue'; intent: IntentRow }
   | { kind: 'terminal'; intent: IntentRow }
   | { kind: 'lease_lost' };
+
+type BotMessageAutoDeleteRepairActiveStatus = Extract<
+  ModerationDeleteIntentStatus,
+  'PENDING' | 'RETRYABLE' | 'WAITING_CAPABILITY' | 'AMBIGUOUS'
+>;
+
+export type BotMessageAutoDeleteRepairIntentAuditOptions = {
+  actorUserId: string;
+  auditPayload: Prisma.InputJsonObject;
+};
+
+export type EnsureBotMessageAutoDeleteRepairIntentResult = {
+  created: boolean;
+  intentId: string;
+  rollout: 'execute';
+  status: BotMessageAutoDeleteRepairActiveStatus;
+};
 
 export type ModerationDeleteIntentAttemptOptions = {
   /** Fences this inline attempt only; the persisted intent remains the durable recovery owner. */
@@ -502,6 +521,125 @@ export class ModerationDeleteIntentService {
     input: EnsureModerationDeleteIntentInput,
   ): Promise<EnsureModerationDeleteIntentResult> {
     return this.persistIntent(input, true);
+  }
+
+  async ensureBotMessageAutoDeleteRepairIntentWithAudit(
+    input: EnsureModerationDeleteIntentInput,
+    options: BotMessageAutoDeleteRepairIntentAuditOptions,
+  ): Promise<EnsureBotMessageAutoDeleteRepairIntentResult> {
+    const normalized = this.normalizeInput(input);
+    const actorUserId = options.actorUserId.trim();
+    if (!actorUserId) {
+      throw new Error('actorUserId is required for bot-message auto-delete intent repair');
+    }
+    if (
+      !options.auditPayload ||
+      typeof options.auditPayload !== 'object' ||
+      Array.isArray(options.auditPayload)
+    ) {
+      throw new Error('auditPayload must be a JSON object for bot-message auto-delete repair');
+    }
+    if (
+      normalized.reasonKey !== BOT_MESSAGE_AUTO_DELETE_RULE_CODE ||
+      normalized.ruleCode !== BOT_MESSAGE_AUTO_DELETE_RULE_CODE ||
+      normalized.entityType !== 'CHAT' ||
+      normalized.messageAuthorKind !== 'bot' ||
+      input.routingPolicy !== 'origin_only' ||
+      normalized.routingPolicy !== 'origin_only' ||
+      !normalized.originBotId ||
+      !normalized.subjectUserId ||
+      !normalized.sourceMessageAt ||
+      this.optionalString(input.event?.userId) !== normalized.subjectUserId ||
+      input.event?.eventType !== 'MESSAGE'
+    ) {
+      throw new Error(
+        'Bot-message auto-delete repair requires exact BOT_MESSAGE_AUTO_DELETE CHAT/bot/origin_only identity and MESSAGE author evidence',
+      );
+    }
+    const expectedSourceMessageAt = normalized.sourceMessageAt;
+
+    // FLAG: Only exact legacy repair evidence may create deletion ownership; intent persistence,
+    // persisted classifier verification, and the creation audit must remain one atomic transaction.
+    return this.runSerializableTransaction(async (tx) => {
+      const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT intent."id"
+        FROM "moderation_delete_intents" intent
+        WHERE intent."chat_id" = ${normalized.chatId}
+          AND intent."message_id" = ${normalized.messageId}
+        LIMIT 1
+      `);
+      const existingIntentId = existingRows[0]?.id ?? null;
+      const ensured = await this.persistIntent(input, false, tx);
+      if (!ensured.intentId) {
+        throw new Error('Bot-message auto-delete repair did not persist an intent');
+      }
+
+      const currentRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+        SELECT ${this.intentSelectSql('intent')}
+        FROM "moderation_delete_intents" intent
+        WHERE intent."id" = ${ensured.intentId}
+        LIMIT 1
+      `);
+      const current = currentRows[0];
+      const activeStatuses: ReadonlySet<ModerationDeleteIntentStatus> = new Set([
+        'PENDING',
+        'RETRYABLE',
+        'WAITING_CAPABILITY',
+        'AMBIGUOUS',
+      ]);
+      const matchingSubject = current?.subjectUserId === normalized.subjectUserId;
+      const matchingSource =
+        current?.sourceMessageAt?.getTime() === expectedSourceMessageAt.getTime();
+      if (
+        !current ||
+        current.id !== ensured.intentId ||
+        current.chatId !== normalized.chatId ||
+        current.messageId !== normalized.messageId ||
+        current.entityType !== 'CHAT' ||
+        current.messageAuthorKind !== 'bot' ||
+        current.originBotId !== normalized.originBotId ||
+        current.routingPolicy !== 'origin_only' ||
+        !matchingSubject ||
+        !matchingSource ||
+        current.botMessageAutoDeleteReason !== true ||
+        !this.isBotMessageAutoDeleteOnlyReason(current) ||
+        ensured.rollout !== 'execute' ||
+        ensured.status !== current.status ||
+        !activeStatuses.has(current.status) ||
+        !this.isExecutionEnabledForIntent(current)
+      ) {
+        throw new Error(
+          `Persisted moderation delete intent ${ensured.intentId} is not an active matching BOT_MESSAGE_AUTO_DELETE-only repair intent`,
+        );
+      }
+
+      const created = existingIntentId === null;
+      if (created) {
+        await tx.auditLog.create({
+          data: {
+            chatId: current.chatId,
+            actorUserId,
+            action: BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
+            payload: {
+              ...options.auditPayload,
+              repairVersion: 1,
+              repairKind: 'legacy_missing_intent',
+              intentId: current.id,
+              messageId: current.messageId,
+              ruleCode: BOT_MESSAGE_AUTO_DELETE_RULE_CODE,
+              originBotId: current.originBotId,
+            },
+          },
+        });
+      }
+
+      return {
+        created,
+        intentId: current.id,
+        rollout: 'execute',
+        status: current.status as BotMessageAutoDeleteRepairActiveStatus,
+      };
+    });
   }
 
   async ensureIntentWithMessageActionClaim(params: {
