@@ -14,6 +14,7 @@ import {
   runBotAutoDeletePresenceRepair,
   type BotAutoDeletePresenceRepairIntent,
   type BotAutoDeletePresenceRepairLegacyClaim,
+  type BotAutoDeletePresenceRepairLegacyOutboundDelete,
   type BotAutoDeletePresenceRepairLegacyOutboundSend,
   type BotAutoDeletePresenceRepairOptions,
 } from './repair-bot-auto-delete-presence';
@@ -31,6 +32,8 @@ function legacyOutboundSend(
     actionType: 'SEND_MESSAGE',
     chatId: 'chat-1',
     sourceTag: 'moderation_notice',
+    trafficClass: 'background',
+    actionHealthLane: 'background',
     status: 'SUCCEEDED',
     ambiguous: false,
     terminal: true,
@@ -39,6 +42,50 @@ function legacyOutboundSend(
     metadata: { autoDeleteDelayMs: 120_000 },
     completedAt: LEGACY_MESSAGE_AT,
     updatedAt: new Date('2026-08-31T15:04:01.000Z'),
+    ...overrides,
+  };
+}
+
+function legacyOutboundDelete(
+  overrides: Partial<BotAutoDeletePresenceRepairLegacyOutboundDelete> = {},
+): BotAutoDeletePresenceRepairLegacyOutboundDelete {
+  return {
+    id: 'delete-ledger-1',
+    jobId: 'delete-job-1',
+    actionType: 'DELETE_MESSAGE',
+    chatId: 'chat-1',
+    botId: 'bot-1',
+    messageId: 'message-1',
+    sourceTag: 'moderation_notice',
+    trafficClass: 'background',
+    actionHealthLane: 'background',
+    status: 'SUCCEEDED',
+    ambiguous: false,
+    terminal: true,
+    attemptCount: 1,
+    lastStatusCode: null,
+    lastErrorCode: null,
+    lastError: null,
+    dispatchBotId: null,
+    metadata: {
+      createdAt: '2026-08-31T15:04:00.000Z',
+      scheduledFor: '2026-08-31T15:06:00.000Z',
+      routing: null,
+      candidateBotIds: [],
+      attemptedBotIds: [],
+      autoDeleteDelayMs: null,
+      sendAutoDelete: null,
+      hasText: false,
+      textLength: 0,
+      hasOptions: false,
+      optionKeys: [],
+    },
+    createdAt: new Date('2026-08-31T15:04:00.100Z'),
+    enqueuedAt: new Date('2026-08-31T15:04:00.200Z'),
+    firstAttemptAt: new Date('2026-08-31T15:06:00.500Z'),
+    lastAttemptAt: new Date('2026-08-31T15:06:00.500Z'),
+    completedAt: new Date('2026-08-31T15:06:01.000Z'),
+    updatedAt: new Date('2026-08-31T15:06:01.000Z'),
     ...overrides,
   };
 }
@@ -128,6 +175,7 @@ function fixture(
     casRows?: Array<{ id: string }>;
     claim?: BotAutoDeletePresenceRepairLegacyClaim | null;
     outboundSends?: BotAutoDeletePresenceRepairLegacyOutboundSend[];
+    outboundDeletes?: BotAutoDeletePresenceRepairLegacyOutboundDelete[];
     membership?: {
       id: string;
       chatId: string;
@@ -157,7 +205,13 @@ function fixture(
         .mockResolvedValue(params.claim === undefined ? legacyClaim() : params.claim),
     },
     maxActionLedgerEntry: {
-      findMany: jest.fn().mockResolvedValue(params.outboundSends ?? []),
+      findMany: jest.fn((args: { where?: { actionType?: string } }) =>
+        Promise.resolve(
+          args.where?.actionType === 'DELETE_MESSAGE'
+            ? (params.outboundDeletes ?? [])
+            : (params.outboundSends ?? []),
+        ),
+      ),
     },
     chatBotMembership: {
       findUnique: jest.fn().mockResolvedValue(
@@ -618,7 +672,6 @@ describe('bot auto-delete exact-presence repair', () => {
       where: {
         chatId: 'chat-1',
         actionType: 'SEND_MESSAGE',
-        remoteMessageId: 'message-1',
         updatedAt: {
           gte: new Date('2026-08-24T18:00:00.000Z'),
           lte: new Date('2026-08-31T18:05:00.000Z'),
@@ -626,7 +679,7 @@ describe('bot auto-delete exact-presence repair', () => {
       },
       select: expect.any(Object),
       orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-      take: 2,
+      take: 1_000,
     });
     expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
     expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
@@ -651,12 +704,12 @@ describe('bot auto-delete exact-presence repair', () => {
     [
       'missing auto-delete metadata',
       [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
-      'legacy_outbound_send_auto_delete_missing',
+      'legacy_outbound_delete_missing',
     ],
     [
       'unsupported auto-delete delay',
       [legacyOutboundSend({ metadata: { autoDeleteDelayMs: 45_000 } })],
-      'legacy_outbound_send_auto_delete_missing',
+      'legacy_outbound_delete_missing',
     ],
     [
       'missing dispatch bot',
@@ -678,6 +731,169 @@ describe('bot auto-delete exact-presence repair', () => {
     });
 
     expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'ambiguous duplicate rows',
+      [
+        legacyOutboundDelete(),
+        legacyOutboundDelete({ id: 'delete-ledger-2', jobId: 'delete-job-2' }),
+      ],
+      'legacy_outbound_delete_ambiguous',
+    ],
+    [
+      'foreign origin bot',
+      [legacyOutboundDelete({ botId: 'bot-2' })],
+      'legacy_outbound_delete_identity_mismatch',
+    ],
+    [
+      'foreign source tag',
+      [legacyOutboundDelete({ sourceTag: 'moderation_delete' })],
+      'legacy_outbound_delete_identity_mismatch',
+    ],
+    [
+      'unverified terminal state',
+      [legacyOutboundDelete({ terminal: false })],
+      'legacy_outbound_delete_identity_mismatch',
+    ],
+    [
+      'missing delayed schedule',
+      [legacyOutboundDelete({ metadata: { createdAt: '2026-08-31T15:04:00.000Z' } })],
+      'legacy_outbound_delete_schedule_missing',
+    ],
+  ])('rejects outbound DELETE ledger evidence with %s', async (_label, outboundDeletes, reason) => {
+    const { dependencies, maxClient, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
+      outboundDeletes,
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      ineligible: 1,
+      outcomes: [expect.objectContaining({ result: 'ineligible', reason })],
+    });
+
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+  });
+
+  it('creates an audited intent from exact outbound delayed DELETE evidence', async () => {
+    const { dependencies, prisma, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
+      outboundDeletes: [legacyOutboundDelete()],
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({ apply: true, actorUserId: 'operator-1' }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      created: 1,
+      ineligible: 0,
+      errors: 0,
+      outcomes: [expect.objectContaining({ result: 'created', presenceBotId: 'bot-1' })],
+    });
+
+    expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        chatId: 'chat-1',
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'message-1',
+        status: 'SUCCEEDED',
+        updatedAt: {
+          gte: new Date('2026-08-24T18:00:00.000Z'),
+          lte: new Date('2026-08-31T18:05:00.000Z'),
+        },
+      },
+      select: expect.any(Object),
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: 2,
+    });
+
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        subjectUserId: 'bot-user-1',
+        sourceMessageAt: LEGACY_MESSAGE_AT,
+        originBotId: 'bot-1',
+        event: expect.objectContaining({
+          metadata: expect.objectContaining({
+            repairSource: 'exact_outbound_scheduled_delete_ledger',
+          }),
+        }),
+      }),
+      {
+        actorUserId: 'operator-1',
+        auditPayload: expect.objectContaining({
+          repairVersion: 1,
+          evidenceVersion: 3,
+          evidenceSource: 'outbound_delete_ledger',
+          sendLedgerId: 'send-ledger-1',
+          deleteLedgerId: 'delete-ledger-1',
+          deleteLedgerJobId: 'delete-job-1',
+          deleteLedgerStatus: 'SUCCEEDED',
+          deleteLedgerSourceTag: 'moderation_notice',
+          deleteLedgerScheduledFor: '2026-08-31T15:06:00.000Z',
+          deleteScheduledDelayMs: 120_000,
+          deleteAnchoredDelayMs: 122_000,
+          deleteScheduleEvidenceMode: 'fresh_full_delay',
+          liveMessageId: 'message-1',
+          liveSenderId: 'bot-user-1',
+          originBotId: 'bot-1',
+        }),
+      },
+    );
+    expect(intentService.enqueueCurrentIntentWakeupStrict).toHaveBeenCalledWith('intent-created-1');
+  });
+
+  it('accepts a recovered legacy DELETE with a partial delay anchored to SEND completion', async () => {
+    const recoveredDelete = legacyOutboundDelete({
+      metadata: {
+        createdAt: '2026-08-31T15:05:00.000Z',
+        scheduledFor: '2026-08-31T15:05:58.000Z',
+        routing: null,
+        candidateBotIds: [],
+        attemptedBotIds: [],
+        autoDeleteDelayMs: null,
+        sendAutoDelete: null,
+        hasText: false,
+        textLength: 0,
+        hasOptions: false,
+        optionKeys: [],
+      },
+      createdAt: new Date('2026-08-31T15:05:00.100Z'),
+      enqueuedAt: new Date('2026-08-31T15:05:00.200Z'),
+      firstAttemptAt: new Date('2026-08-31T15:05:58.500Z'),
+      lastAttemptAt: new Date('2026-08-31T15:05:58.500Z'),
+      completedAt: new Date('2026-08-31T15:05:59.000Z'),
+      updatedAt: new Date('2026-08-31T15:05:59.000Z'),
+    });
+    const { dependencies, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [legacyOutboundSend({ metadata: { autoDeleteDelayMs: null } })],
+      outboundDeletes: [recoveredDelete],
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, options(), () => NOW),
+    ).resolves.toMatchObject({
+      wouldCreate: 1,
+      ineligible: 0,
+      errors: 0,
+      outcomes: [expect.objectContaining({ result: 'would_create', presenceBotId: 'bot-1' })],
+    });
+
     expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
   });
 
