@@ -7,7 +7,7 @@ MAXIM_WEBHOOK_ROLLOUT_STOP_TIMEOUT_SEC="${MAXIM_WEBHOOK_ROLLOUT_STOP_TIMEOUT_SEC
 MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE="${MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE:-0}"
 MAXIM_WEBHOOK_ROLLOUT_OWNER_TOKEN="${MAXIM_WEBHOOK_ROLLOUT_OWNER_TOKEN:-}"
 MAXIM_WEBHOOK_QUEUES_MAY_BE_PAUSED=0
-MAXIM_WEBHOOK_LEGACY_TIMEOUT_QUARANTINES_FENCED=0
+MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED=0
 
 MAXIM_WEBHOOK_PENDING_TIMEOUT_QUARANTINE_PREFIX='WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
 
@@ -132,14 +132,26 @@ SELECT CASE WHEN EXISTS (
 ) THEN 'true' ELSE 'false' END AS has_timeout_quarantine_column \gset
 \if :has_timeout_quarantine_column
 SELECT CASE
+-- FLAG: A future lease can still own detached work. Expired and pre-lease markers remain replay
+-- fences, but rollout may classify them separately before proving every moderation owner stopped.
 WHEN EXISTS (
   SELECT 1
   FROM "webhook_events"
   WHERE "status" = 'FAILED'
     AND LEFT(COALESCE("error_message", ''), 37) = '${MAXIM_WEBHOOK_PENDING_TIMEOUT_QUARANTINE_PREFIX}'
     AND "timeout_quarantine_expires_at" IS NOT NULL
+    AND "timeout_quarantine_expires_at" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
   LIMIT 1
 ) THEN 1
+WHEN EXISTS (
+  SELECT 1
+  FROM "webhook_events"
+  WHERE "status" = 'FAILED'
+    AND LEFT(COALESCE("error_message", ''), 37) = '${MAXIM_WEBHOOK_PENDING_TIMEOUT_QUARANTINE_PREFIX}'
+    AND "timeout_quarantine_expires_at" IS NOT NULL
+    AND "timeout_quarantine_expires_at" <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+  LIMIT 1
+) THEN 2
 WHEN EXISTS (
   SELECT 1
   FROM "webhook_events"
@@ -195,7 +207,7 @@ maxim_webhook_assert_api_rollout_quiescence() {
     else
       state=$?
     fi
-    if [[ "$state" -eq 3 && "$MAXIM_WEBHOOK_LEGACY_TIMEOUT_QUARANTINES_FENCED" -eq 1 ]]; then
+    if [[ "$state" -eq 3 && "$MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED" -eq 1 ]]; then
       state=1
     fi
     if [[ "$state" -ne 0 ]]; then
@@ -215,7 +227,7 @@ maxim_webhook_assert_api_rollout_quiescence() {
       else
         state=$?
       fi
-      if [[ "$state" -eq 3 && "$MAXIM_WEBHOOK_LEGACY_TIMEOUT_QUARANTINES_FENCED" -eq 1 ]]; then
+      if [[ "$state" -eq 3 && "$MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED" -eq 1 ]]; then
         state=1
       fi
       if [[ "$state" -eq 1 ]]; then
@@ -261,7 +273,7 @@ maxim_webhook_quiesce_for_api_rollout() {
     if [[ "$quiescence_state" -ne 3 ]]; then
       return "$quiescence_state"
     fi
-    echo "Legacy timeout quarantine markers require a stopped-worker rollout fence."
+    echo "Stale timeout quarantine markers require a stopped-worker rollout fence."
   fi
 
   docker compose "${compose_args_ref[@]}" stop \
@@ -270,10 +282,9 @@ maxim_webhook_quiesce_for_api_rollout() {
   maxim_webhook_rollout_verify_services_stopped \
     "$compose_args_var" "${MAXIM_WEBHOOK_MODERATION_SERVICES[@]}"
 
-  # FLAG: Pre-lease runtimes leave the same NULL-deadline marker for live detached work and for a
-  # settled terminal failure. Once every owning moderation process is stopped, those markers remain
-  # replay-blocking but can no longer hide mixed-version execution.
-  MAXIM_WEBHOOK_LEGACY_TIMEOUT_QUARANTINES_FENCED=1
+  # FLAG: Pre-lease NULL deadlines and expired leases remain replay-blocking in storage. Once every
+  # owning moderation process is stopped, they can no longer hide mixed-version execution.
+  MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED=1
   maxim_webhook_assert_api_rollout_quiescence "$compose_args_var"
   echo "Active and detached webhook work fenced under the global queue pause."
   echo "Webhook enqueue and moderation roles are quiesced."

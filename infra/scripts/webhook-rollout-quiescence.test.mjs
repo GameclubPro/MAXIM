@@ -35,8 +35,20 @@ test('keeps the shared quiescence helper syntactically valid and fail-closed', (
   assert.match(library, /pg_catalog\.pg_attribute/u);
   assert.match(library, /\\if :has_timeout_quarantine_column/u);
   assert.match(library, /"timeout_quarantine_expires_at" IS NOT NULL/u);
+  assert.match(
+    library,
+    /"timeout_quarantine_expires_at" > \(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'\)/u,
+  );
   assert.match(library, /"timeout_quarantine_expires_at" IS NULL/u);
-  assert.match(library, /MAXIM_WEBHOOK_LEGACY_TIMEOUT_QUARANTINES_FENCED/u);
+  assert.match(
+    library,
+    /"timeout_quarantine_expires_at" <= \(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'\)/u,
+  );
+  assert.match(library, /MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED/u);
+  assert.match(
+    library,
+    /WHEN EXISTS \([\s\S]*?"timeout_quarantine_expires_at" IS NOT NULL[\s\S]*?"timeout_quarantine_expires_at" > \(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'\)[\s\S]*?\) THEN 1\nWHEN EXISTS \([\s\S]*?"timeout_quarantine_expires_at" IS NOT NULL[\s\S]*?"timeout_quarantine_expires_at" <= \(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'\)[\s\S]*?\) THEN 2\nWHEN EXISTS \([\s\S]*?"timeout_quarantine_expires_at" IS NULL[\s\S]*?\) THEN 2/u,
+  );
   assert.match(library, /Active or detached webhook executions did not settle/u);
   assert.match(library, /Could not query pending webhook timeout quarantine state/u);
   assert.match(library, /stop[\s\S]*MAXIM_WEBHOOK_MODERATION_SERVICES/u);
@@ -57,6 +69,31 @@ test('fails closed when the timeout-quarantine Postgres query fails', () => {
 
   assert.equal(result.status, 2);
   assert.match(result.stderr, /Could not query pending webhook timeout quarantine state\./u);
+});
+
+test('maps live, stale, and empty timeout-quarantine query states without ambiguity', () => {
+  const libraryPath = resolve(root, 'infra/scripts/lib/webhook-rollout-quiescence.sh');
+  const script = `
+    set -euo pipefail
+    ROOT_DIR=${JSON.stringify(root)}
+    source ${JSON.stringify(libraryPath)}
+    COMPOSE_FILES=()
+    query_state=0
+    timeout() { printf '%s\\n' "$query_state"; }
+    statuses=()
+    for query_state in 0 1 2; do
+      if maxim_webhook_rollout_has_pending_timeout_quarantine COMPOSE_FILES; then
+        statuses+=(0)
+      else
+        statuses+=($?)
+      fi
+    done
+    printf '%s\\n' "${'${statuses[*]}'}"
+  `;
+  const result = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '1 0 3');
 });
 
 test('fails closed when Docker cannot inspect a stopped rollout service', () => {
@@ -97,7 +134,7 @@ test('requires two stable queue and quarantine observations before continuing', 
   assert.equal(result.stdout.trim(), '2 2');
 });
 
-test('requires stopped moderation owners before accepting pre-lease timeout markers', () => {
+test('requires stopped moderation owners before accepting expired and pre-lease timeout markers', () => {
   const libraryPath = resolve(root, 'infra/scripts/lib/webhook-rollout-quiescence.sh');
   const script = `
     set -euo pipefail
@@ -116,7 +153,7 @@ test('requires stopped moderation owners before accepting pre-lease timeout mark
     else
       first_status=$?
     fi
-    MAXIM_WEBHOOK_LEGACY_TIMEOUT_QUARANTINES_FENCED=1
+    MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED=1
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
     printf '%s %s %s\\n' "$first_status" "$control_calls" "$quarantine_calls"
   `;
@@ -129,7 +166,7 @@ test('requires stopped moderation owners before accepting pre-lease timeout mark
   const stopped = library.indexOf(
     'maxim_webhook_rollout_verify_services_stopped \\\n    "$compose_args_var" "${MAXIM_WEBHOOK_MODERATION_SERVICES[@]}"',
   );
-  const fenced = library.indexOf('MAXIM_WEBHOOK_LEGACY_TIMEOUT_QUARANTINES_FENCED=1');
+  const fenced = library.indexOf('MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED=1');
   const finalFence = library.indexOf(
     'maxim_webhook_assert_api_rollout_quiescence "$compose_args_var"',
     fenced,
@@ -163,6 +200,26 @@ test('aborts if the owned queue pause is lost while quarantine settlement is pen
   assert.match(result.stderr, /owned pause lost/u);
 });
 
+test('keeps a future timeout lease blocking after stale markers are fenced', () => {
+  const libraryPath = resolve(root, 'infra/scripts/lib/webhook-rollout-quiescence.sh');
+  const script = `
+    set -euo pipefail
+    ROOT_DIR=${JSON.stringify(root)}
+    source ${JSON.stringify(libraryPath)}
+    COMPOSE_FILES=()
+    MAXIM_WEBHOOK_ROLLOUT_DRAIN_TIMEOUT_SEC=1
+    MAXIM_WEBHOOK_STALE_TIMEOUT_QUARANTINES_FENCED=1
+    maxim_webhook_rollout_control() { :; }
+    maxim_webhook_rollout_has_pending_timeout_quarantine() { return 0; }
+    sleep() { SECONDS=$((SECONDS + 2)); }
+    maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  `;
+  const result = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Active or detached webhook executions did not settle/u);
+});
+
 test('keeps the live quarantine lookup aligned with its partial migration index', () => {
   const library = read('infra/scripts/lib/webhook-rollout-quiescence.sh');
   const migration = read(
@@ -176,6 +233,14 @@ test('keeps the live quarantine lookup aligned with its partial migration index'
     /LEFT\(COALESCE\("error_message", ''\), 37\) = '\$\{MAXIM_WEBHOOK_PENDING_TIMEOUT_QUARANTINE_PREFIX\}'/u,
   );
   assert.match(library, /"timeout_quarantine_expires_at" IS NULL/u);
+  assert.match(
+    library,
+    /"timeout_quarantine_expires_at" > \(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'\)/u,
+  );
+  assert.match(
+    library,
+    /"timeout_quarantine_expires_at" <= \(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'\)/u,
+  );
   assert.match(
     migration,
     /LEFT\(COALESCE\("error_message", ''\), 37\) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'/u,
