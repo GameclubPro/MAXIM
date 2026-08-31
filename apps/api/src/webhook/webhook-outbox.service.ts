@@ -43,7 +43,9 @@ const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
 const WEBHOOK_WORK_UNIT_OVERSCAN_SIZE = 5_000;
 const DEGRADED_WEBHOOK_WORK_UNIT_OVERSCAN_SIZE = 1_000;
 const DEGRADED_ENQUEUE_BATCH_SIZE = 100;
-const DEGRADED_ENQUEUE_CONCURRENCY = 4;
+// FLAG: api-enqueue has four DB connections. Six workers overlap Redis/cache waits without
+// restoring the normal 32-way fanout while the database is under recovery pressure.
+const DEGRADED_ENQUEUE_CONCURRENCY = 6;
 const DEGRADED_QUEUED_REPAIR_INTERVAL_MS = 5_000;
 const ENQUEUE_ADMISSION_MODE_CACHE_MS = 5_000;
 const RECEIVED_BATCH_SHARE = 0.75;

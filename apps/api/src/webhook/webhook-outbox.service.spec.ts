@@ -1419,16 +1419,30 @@ describe('WebhookOutboxService', () => {
 
     expect(initial).toMatchObject({
       batchSize: 100,
-      enqueueConcurrency: 4,
+      enqueueConcurrency: 6,
       includeQueuedRepair: true,
     });
     expect(cached).toMatchObject({ includeQueuedRepair: false });
     expect(afterReadFailure).toMatchObject({
       batchSize: 100,
-      enqueueConcurrency: 4,
+      enqueueConcurrency: 6,
       includeQueuedRepair: true,
     });
     expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not raise configured enqueue limits while system mode degrades', async () => {
+    const { service } = createService({
+      systemMode: 'degrade',
+      configOverrides: { ENQUEUE_BATCH_SIZE: 50, ENQUEUE_CONCURRENCY: 3 },
+    });
+
+    await expect(
+      (service as unknown as EnqueueAdmissionInternals).resolveEnqueueAdmission(new Date()),
+    ).resolves.toMatchObject({
+      batchSize: 50,
+      enqueueConcurrency: 3,
+    });
   });
 
   it('skips BullMQ lookups before activating a pristine received event', async () => {
