@@ -2068,25 +2068,29 @@ describe('ModerationDeleteIntentService', () => {
     expect(executedSql).not.toContain('"delete_dispatch_started_at" = CURRENT_TIMESTAMP');
   });
 
-  it('allows BOT_MESSAGE_AUTO_DELETE when no managed output owns the message', async () => {
+  it('keeps BOT_MESSAGE_AUTO_DELETE ambiguous until MAX confirms exact absence', async () => {
     const autoDeleteIntent = {
       ...baseIntent,
       messageAuthorKind: 'bot',
       routingPolicy: 'origin_only',
       botMessageAutoDeleteOnly: true,
     };
-    const completedIntent = {
+    const pendingVerificationIntent = {
       ...autoDeleteIntent,
-      status: 'SUCCEEDED',
+      status: 'AMBIGUOUS',
       lastBotId: 'bot-1',
-      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      nextAttemptAt: new Date(Date.now() + 5_000),
       leaseToken: null,
       leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'bot_message_auto_delete_success_verification_pending',
     };
     const queryRaw = jest
       .fn()
       .mockResolvedValueOnce([autoDeleteIntent])
-      .mockResolvedValueOnce([completedIntent]);
+      .mockResolvedValueOnce([pendingVerificationIntent]);
     const deleteMessage = jest.fn().mockResolvedValue(undefined);
     const { service, prisma } = createService(
       {},
@@ -2100,7 +2104,7 @@ describe('ModerationDeleteIntentService', () => {
 
     const result = await service.executeLeasedIntent('intent-1', 'lease-1');
 
-    expect(result).toMatchObject({ kind: 'confirmed', confirmed: true, status: 'SUCCEEDED' });
+    expect(result).toMatchObject({ kind: 'ambiguous', confirmed: false, status: 'AMBIGUOUS' });
     expect(prisma.managedBroadcastDelivery.findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.managedGiveaway.findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.vkParsingPost.findFirst).toHaveBeenCalledTimes(2);
@@ -2111,6 +2115,303 @@ describe('ModerationDeleteIntentService', () => {
       'chat-1',
       'message-1',
       expect.objectContaining({ botId: 'bot-1', immediate: true }),
+    );
+    const pendingVerificationQuery = prisma.$executeRaw.mock.calls
+      .map(
+        (call: unknown[]) =>
+          call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+      )
+      .find((query) =>
+        query.values?.includes('bot_message_auto_delete_success_verification_pending'),
+      );
+    expect(pendingVerificationQuery?.strings?.join('?') ?? '').toContain(
+      'CAST(\'AMBIGUOUS\' AS "ModerationDeleteIntentStatus")',
+    );
+    expect(pendingVerificationQuery?.strings?.join('?') ?? '').toContain(
+      '"remote_delete_succeeded_at" = COALESCE',
+    );
+  });
+
+  it('completes acknowledged BOT_MESSAGE_AUTO_DELETE only after exact absence', async () => {
+    const pendingVerificationIntent = {
+      ...baseIntent,
+      attemptCount: 2,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leasedFromStatus: 'AMBIGUOUS',
+    };
+    const completedIntent = {
+      ...pendingVerificationIntent,
+      status: 'SUCCEEDED',
+      lastBotId: 'bot-1',
+      succeededBotId: 'bot-1',
+      absenceVerifiedAt: new Date(),
+      absenceVerifiedBotId: 'bot-1',
+      absenceVerificationCode: 'post_success_exact_absence',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([pendingVerificationIntent])
+      .mockResolvedValueOnce([completedIntent]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const transaction = jest.fn(
+      async (callback: (tx: { $executeRaw: jest.Mock }) => Promise<unknown>) =>
+        callback({ $executeRaw: txExecuteRaw }),
+    );
+    const deleteMessage = jest.fn();
+    const getExactMessagePresence = jest.fn().mockResolvedValue('absent');
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        $transaction: transaction,
+      },
+      { deleteMessage, getExactMessagePresence },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      confirmed: true,
+      status: 'SUCCEEDED',
+      botId: 'bot-1',
+    });
+
+    expect(getExactMessagePresence).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-1', bypassCache: true }),
+    );
+    expect(deleteMessage).not.toHaveBeenCalled();
+    const completionQuery = txExecuteRaw.mock.calls[0]?.[0] as
+      | { strings?: readonly string[]; values?: readonly unknown[] }
+      | undefined;
+    expect(completionQuery?.strings?.join('?') ?? '').toContain('"absence_verified_at" = COALESCE');
+    expect(completionQuery?.values).toContain('post_success_exact_absence');
+  });
+
+  it('clears an acknowledged auto-delete marker and retries when the exact message is present', async () => {
+    const pendingVerificationIntent = {
+      ...baseIntent,
+      attemptCount: 2,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leasedFromStatus: 'AMBIGUOUS',
+    };
+    const retriedVerificationIntent = {
+      ...pendingVerificationIntent,
+      status: 'AMBIGUOUS',
+      lastBotId: 'bot-1',
+      nextAttemptAt: new Date(Date.now() + 10_000),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'bot_message_auto_delete_success_verification_pending',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([pendingVerificationIntent])
+      .mockResolvedValueOnce([retriedVerificationIntent]);
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const deleteMessage = jest.fn().mockResolvedValue(undefined);
+    const getExactMessagePresence = jest.fn().mockResolvedValue('present');
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage, getExactMessagePresence },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'ambiguous',
+      confirmed: false,
+      status: 'AMBIGUOUS',
+    });
+
+    expect(getExactMessagePresence).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({
+        botId: 'bot-1',
+        idempotencyKey: 'moderation-delete-intent-intent-1-attempt-2',
+      }),
+    );
+    const executedQueries = executeRaw.mock.calls.map(
+      (call: unknown[]) => call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+    );
+    const executedSql = executedQueries.map((query) => query.strings?.join('?') ?? '').join('\n');
+    expect(executedSql).toContain('"remote_delete_succeeded_at" = NULL');
+    expect(
+      executedQueries.some((query) =>
+        query.values?.includes('bot_message_auto_delete_success_still_present'),
+      ),
+    ).toBe(true);
+    expect(
+      executedQueries.some((query) =>
+        query.values?.includes('bot_message_auto_delete_success_verification_pending'),
+      ),
+    ).toBe(true);
+  });
+
+  it('preserves acknowledged auto-delete evidence when exact presence is unknown', async () => {
+    const pendingVerificationIntent = {
+      ...baseIntent,
+      attemptCount: 2,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leasedFromStatus: 'AMBIGUOUS',
+    };
+    const stillAmbiguousIntent = {
+      ...pendingVerificationIntent,
+      status: 'AMBIGUOUS',
+      nextAttemptAt: new Date(Date.now() + 10_000),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'predelete_presence_unknown',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([pendingVerificationIntent])
+      .mockResolvedValueOnce([stillAmbiguousIntent]);
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const deleteMessage = jest.fn();
+    const getExactMessagePresence = jest
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('lookup timeout'), { code: 'ETIMEDOUT' }));
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage, getExactMessagePresence },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'ambiguous',
+      confirmed: false,
+      status: 'AMBIGUOUS',
+    });
+
+    expect(deleteMessage).not.toHaveBeenCalled();
+    const executedSql = executeRaw.mock.calls
+      .map((call: unknown[]) => {
+        const query = call[0] as { strings?: readonly string[] };
+        return query.strings?.join('?') ?? '';
+      })
+      .join('\n');
+    expect(executedSql).not.toContain('"remote_delete_succeeded_at" = NULL');
+  });
+
+  it('does not verify or retry auto-delete after losing its lease', async () => {
+    const pendingVerificationIntent = {
+      ...baseIntent,
+      attemptCount: 2,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leasedFromStatus: 'AMBIGUOUS',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([pendingVerificationIntent])
+      .mockResolvedValueOnce([pendingVerificationIntent]);
+    const executeRaw = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    const deleteMessage = jest.fn();
+    const getExactMessagePresence = jest.fn();
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage, getExactMessagePresence },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'pending',
+      confirmed: false,
+      status: 'IN_PROGRESS',
+    });
+
+    expect(getExactMessagePresence).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('uses a sixth auto-delete claim only to verify and never dispatches a sixth DELETE', async () => {
+    const pendingVerificationIntent = {
+      ...baseIntent,
+      attemptCount: 6,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leasedFromStatus: 'AMBIGUOUS',
+    };
+    const clearedIntent = {
+      ...pendingVerificationIntent,
+      remoteDeleteSucceededAt: null,
+      remoteDeleteSucceededBotId: null,
+    };
+    const terminalIntent = {
+      ...clearedIntent,
+      status: 'FAILED_TERMINAL',
+      lastErrorCode: 'bot_message_auto_delete_retry_limit_reached',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const rootQueryRaw = jest.fn().mockResolvedValueOnce([pendingVerificationIntent]);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: 'intent-1' }])
+      .mockResolvedValueOnce([clearedIntent])
+      .mockResolvedValueOnce([terminalIntent]);
+    const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
+      callback({ $queryRaw: txQueryRaw }),
+    );
+    const deleteMessage = jest.fn();
+    const getExactMessagePresence = jest.fn().mockResolvedValue('present');
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: rootQueryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        $transaction: transaction,
+      },
+      { deleteMessage, getExactMessagePresence },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).not.toHaveBeenCalled();
+    expect(txQueryRaw.mock.calls[2]?.[0]?.values).toContain(
+      'bot_message_auto_delete_retry_limit_reached',
     );
   });
 
@@ -2193,6 +2494,56 @@ describe('ModerationDeleteIntentService', () => {
     });
     expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
     expect(deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps immediate success finalization for an auto-delete intent mixed with OCR', async () => {
+    const mixedReasonIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      commercialOcrGuardRequired: true,
+      commercialOcrDeleteReason: true,
+    };
+    const completedIntent = {
+      ...mixedReasonIntent,
+      status: 'SUCCEEDED',
+      lastBotId: 'bot-1',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([mixedReasonIntent])
+      .mockResolvedValueOnce([completedIntent]);
+    const deleteMessage = jest.fn().mockResolvedValue(undefined);
+    const { service, prisma } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+      },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      confirmed: true,
+      status: 'SUCCEEDED',
+    });
+
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+    const executedSql = prisma.$executeRaw.mock.calls
+      .map((call: unknown[]) => {
+        const query = call[0] as { strings?: readonly string[] };
+        return query.strings?.join('?') ?? '';
+      })
+      .join('\n');
+    expect(executedSql).not.toContain('bot_message_auto_delete_success_verification_pending');
   });
 
   it('allows NIGHT_MODE_CLOSE_NOTICE_CLEANUP for a persisted close notice', async () => {
@@ -5806,6 +6157,116 @@ describe('ModerationDeleteIntentService', () => {
     expect(queue.add).toHaveBeenCalledTimes(2);
     expect(queue.add.mock.calls[0]?.[2]?.jobId).toBe('mdi-intent-1');
     expect(queue.add.mock.calls[1]?.[2]?.jobId).toBe('mdi-intent-1');
+  });
+
+  it('strictly enqueues the current due persisted intent for operator repair', async () => {
+    const pendingIntent = {
+      ...baseIntent,
+      status: 'PENDING',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: jest.fn().mockResolvedValueOnce([pendingIntent]) },
+    );
+
+    await expect(service.enqueueCurrentIntentWakeupStrict('intent-1')).resolves.toBeUndefined();
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({
+        jobId: 'mdi-intent-1',
+        priority: 1,
+        attempts: 1,
+      }),
+    );
+  });
+
+  it('propagates a strict operator-repair queue handoff failure', async () => {
+    const pendingIntent = {
+      ...baseIntent,
+      status: 'PENDING',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const queueError = new Error('redis unavailable');
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: jest.fn().mockResolvedValueOnce([pendingIntent]) },
+    );
+    queue.add.mockRejectedValueOnce(queueError);
+
+    await expect(service.enqueueCurrentIntentWakeupStrict('intent-1')).rejects.toBe(queueError);
+  });
+
+  it.each(['SUCCEEDED', 'IN_PROGRESS'] as const)(
+    'treats a strict operator-repair handoff race to %s as a harmless no-op',
+    async (status) => {
+      const currentIntent = {
+        ...baseIntent,
+        status,
+        ...(status === 'SUCCEEDED'
+          ? { leaseToken: null, leaseExpiresAt: null, leasedFromStatus: null }
+          : {}),
+      };
+      const { service, queue } = createService(
+        {},
+        { $queryRaw: jest.fn().mockResolvedValueOnce([currentIntent]) },
+      );
+
+      await expect(service.enqueueCurrentIntentWakeupStrict('intent-1')).resolves.toBeUndefined();
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
+
+  it('applies normal due, retry-window, and execution checks to strict handoff', async () => {
+    const now = Date.now();
+    const futureIntent = {
+      ...baseIntent,
+      status: 'PENDING',
+      nextAttemptAt: new Date(now + 60_000),
+      retryUntilAt: new Date(now + 120_000),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const exhaustedIntent = {
+      ...futureIntent,
+      executeAt: new Date(now - 2_000),
+      nextAttemptAt: new Date(now - 1_000),
+      retryUntilAt: new Date(now - 2_000),
+    };
+    const shadowIntent = {
+      ...futureIntent,
+      nextAttemptAt: new Date(now - 1_000),
+      retryUntilAt: new Date(now + 60_000),
+    };
+    const dueQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([futureIntent])
+      .mockResolvedValueOnce([exhaustedIntent]);
+    const { service, queue } = createService({}, { $queryRaw: dueQueryRaw });
+    const shadow = createService(
+      { MODERATION_DELETE_INTENT_MODE: 'shadow' },
+      { $queryRaw: jest.fn().mockResolvedValueOnce([shadowIntent]) },
+    );
+
+    await expect(service.enqueueCurrentIntentWakeupStrict('intent-future')).rejects.toThrow(
+      'intent-1 is not due for enqueue',
+    );
+    await expect(service.enqueueCurrentIntentWakeupStrict('intent-exhausted')).rejects.toThrow(
+      'intent-1 has no mutation evidence and its retry window is exhausted',
+    );
+    await expect(shadow.service.enqueueCurrentIntentWakeupStrict('intent-shadow')).rejects.toThrow(
+      'intent-1 is not executable in the current rollout',
+    );
+
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(shadow.queue.add).not.toHaveBeenCalled();
   });
 
   it('leaves DB state unleased when the DB-to-Redis handoff fails', async () => {

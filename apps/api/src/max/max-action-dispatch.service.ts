@@ -131,6 +131,18 @@ export class MaxActionDispatchService {
       );
     }
 
+    if (
+      typeof job.autoDeleteDelayMs === 'number' &&
+      Number.isFinite(job.autoDeleteDelayMs) &&
+      job.autoDeleteDelayMs > 0
+    ) {
+      await this.maxClient.ensureSendAutoDeleteScheduled(job, {
+        remoteMessageId: completedSendMessageId,
+        dispatchBotId: persistedDispatchBotId,
+        completedAt: completedSendDispatch?.completedAt ?? null,
+      });
+    }
+
     return {
       messageId: completedSendMessageId,
       url: null,

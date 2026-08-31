@@ -102,11 +102,13 @@ export type MaxSendDispatchClaim =
       kind: 'recovered';
       remoteMessageId: string;
       dispatchBotId: string | null;
+      completedAt: Date | null;
     };
 
 export type MaxCompletedSendDispatch = {
   remoteMessageId: string;
   dispatchBotId: string | null;
+  completedAt: Date | null;
 };
 
 export type ExactCompletedNightModeCloseNoticeDispatch = {
@@ -143,6 +145,7 @@ type MaxSendDispatchState = {
   dispatchStartedAt: Date | null;
   dispatchBotId: string | null;
   remoteMessageId: string | null;
+  completedAt: Date | null;
 };
 
 type MaxSendLedgerPreparationFailure = {
@@ -357,6 +360,7 @@ export class MaxActionLedgerService {
         dispatchStartedAt: true,
         dispatchBotId: true,
         remoteMessageId: true,
+        completedAt: true,
       },
     });
 
@@ -431,6 +435,7 @@ export class MaxActionLedgerService {
         dispatchStartedAt: true,
         dispatchBotId: true,
         remoteMessageId: true,
+        completedAt: true,
       },
     });
     if (!row) {
@@ -613,7 +618,7 @@ export class MaxActionLedgerService {
   }
 
   async recordSucceeded(job: MaxActionJob): Promise<void> {
-    await this.upsert(job, {
+    const mutation: MaxActionLedgerMutation = {
       status: MaxActionLedgerStatus.SUCCEEDED,
       ambiguous: false,
       terminal: true,
@@ -621,7 +626,22 @@ export class MaxActionLedgerService {
       lastStatusCode: null,
       lastErrorCode: null,
       lastError: null,
-    });
+    };
+    if (job.actionType === 'SEND_MESSAGE') {
+      await this.createLedgerIfAbsent(job, mutation);
+      await this.prisma.maxActionLedgerEntry.updateMany({
+        where: {
+          jobId: job.idempotencyKey,
+          remoteMessageId: null,
+        },
+        data: {
+          ...this.buildUpdateInput(job),
+          ...this.buildPlainMutationInput(mutation),
+        },
+      });
+      return;
+    }
+    await this.upsert(job, mutation);
   }
 
   async recordSkipped(job: MaxActionJob, reason: string): Promise<void> {
@@ -710,7 +730,7 @@ export class MaxActionLedgerService {
     job: MaxActionJob,
     dispatchToken: string,
     remoteMessageId: string,
-  ): Promise<void> {
+  ): Promise<Date | null> {
     this.assertSendAction(job);
     const normalizedToken = this.requireDispatchToken(dispatchToken);
     const normalizedRemoteMessageId = this.nullableString(remoteMessageId);
@@ -720,6 +740,7 @@ export class MaxActionLedgerService {
       );
     }
 
+    const completedAt = new Date();
     let completed: { count: number };
     try {
       completed = await this.prisma.maxActionLedgerEntry.updateMany({
@@ -733,7 +754,7 @@ export class MaxActionLedgerService {
           status: MaxActionLedgerStatus.SUCCEEDED,
           ambiguous: false,
           terminal: true,
-          completedAt: new Date(),
+          completedAt,
           lastStatusCode: null,
           lastErrorCode: null,
           lastError: null,
@@ -750,18 +771,18 @@ export class MaxActionLedgerService {
         throw error;
       }
       if (recovered?.remoteMessageId === normalizedRemoteMessageId) {
-        return;
+        return recovered.completedAt;
       }
       throw error;
     }
     if (completed.count === 1) {
-      return;
+      return completedAt;
     }
 
     const row = await this.readSendDispatchState(job.idempotencyKey);
     const recovered = this.readCompletedSendDispatchFromState(job, row);
     if (recovered?.remoteMessageId === normalizedRemoteMessageId) {
-      return;
+      return recovered.completedAt;
     }
 
     throw new UnrecoverableError(
@@ -1527,7 +1548,7 @@ export class MaxActionLedgerService {
 
   private readCompletedSendDispatchFromState(
     job: MaxActionJob,
-    state: Pick<MaxSendDispatchState, 'dispatchBotId' | 'remoteMessageId'> | null,
+    state: Pick<MaxSendDispatchState, 'dispatchBotId' | 'remoteMessageId' | 'completedAt'> | null,
   ): MaxCompletedSendDispatch | null {
     if (job.actionType !== 'SEND_MESSAGE') {
       return null;
@@ -1547,6 +1568,7 @@ export class MaxActionLedgerService {
     return {
       remoteMessageId,
       dispatchBotId,
+      completedAt: state?.completedAt ?? null,
     };
   }
 
@@ -1563,6 +1585,7 @@ export class MaxActionLedgerService {
         dispatchStartedAt: true,
         dispatchBotId: true,
         remoteMessageId: true,
+        completedAt: true,
       },
     });
   }

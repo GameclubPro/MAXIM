@@ -69,6 +69,7 @@ import {
 import {
   markMaxSendDispatchLedgerFinalized,
   MaxActionLedgerService,
+  type MaxCompletedSendDispatch,
 } from './max-action-ledger.service';
 import {
   markMaxPreDispatchGuardRejected,
@@ -206,10 +207,13 @@ export type MaxPublishedMessage = {
 };
 
 const MAX_RECOVERED_SEND_DISPATCH_RESPONSE = Symbol('max-recovered-send-dispatch-response');
+const MAX_SEND_DISPATCH_COMPLETION_RESPONSE = Symbol('max-send-dispatch-completion-response');
 type MaxQueuedSendResponse = Record<string, unknown> & {
   [MAX_RECOVERED_SEND_DISPATCH_RESPONSE]?: {
     dispatchBotId: string | null;
+    completedAt: Date | null;
   };
+  [MAX_SEND_DISPATCH_COMPLETION_RESPONSE]?: MaxCompletedSendDispatch;
 };
 
 type MaxMessageMarkup = MaxTextMarkup;
@@ -2600,6 +2604,63 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
+  async ensureSendAutoDeleteScheduled(
+    action: MaxActionJob,
+    completedSend: MaxCompletedSendDispatch,
+  ): Promise<void> {
+    const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
+    if (autoDeleteDelayMs <= 0) {
+      return;
+    }
+    if (action.actionType !== 'SEND_MESSAGE') {
+      throw new Error('Auto-delete scheduling requires a completed SEND_MESSAGE action');
+    }
+
+    const persistedDispatchBotId = this.assertRecoveredSendDispatchBot(
+      action,
+      completedSend.dispatchBotId,
+    );
+    const explicitUnroutedBotId =
+      !action.routing && !action.candidateBotIds?.length
+        ? this.readTrimmedString(action.botId)
+        : null;
+    const dispatchBotId = persistedDispatchBotId ?? explicitUnroutedBotId;
+    if (!dispatchBotId) {
+      throw new UnrecoverableError(
+        `Completed MAX SEND_MESSAGE ${action.idempotencyKey} has no persisted dispatch bot for auto-delete`,
+      );
+    }
+
+    const completedAtMs = completedSend.completedAt?.getTime();
+    const remainingDelayMs =
+      typeof completedAtMs === 'number' && Number.isFinite(completedAtMs)
+        ? Math.max(0, Math.min(autoDeleteDelayMs, completedAtMs + autoDeleteDelayMs - Date.now()))
+        : autoDeleteDelayMs;
+
+    try {
+      await this.dispatchAction(
+        {
+          actionType: 'DELETE_MESSAGE',
+          chatId: action.chatId,
+          messageId: completedSend.remoteMessageId,
+        },
+        this.buildAutoDeleteDispatchOptions(action, dispatchBotId, remainingDelayMs),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: action.chatId,
+          messageId: completedSend.remoteMessageId,
+          autoDeleteDelayMs,
+          remainingDelayMs,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to enqueue auto-delete for sent bot message',
+      );
+      throw error;
+    }
+  }
+
   async executeActionJob(
     job: MaxActionJob,
     executionOptions: MaxActionExecutionOptions = {},
@@ -2622,6 +2683,11 @@ export class MaxClientService implements OnModuleDestroy {
         action,
         completedSendDispatch?.dispatchBotId ?? null,
       );
+      await this.ensureSendAutoDeleteScheduled(action, {
+        remoteMessageId: completedSendMessageId,
+        dispatchBotId,
+        completedAt: completedSendDispatch?.completedAt ?? null,
+      });
       return {
         messageId: completedSendMessageId,
         url: null,
@@ -2676,36 +2742,25 @@ export class MaxClientService implements OnModuleDestroy {
           if (!sentMessageId) {
             throw new Error('MAX SEND_MESSAGE response has no remote message id');
           }
-          const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
-          if (autoDeleteDelayMs > 0) {
-            try {
-              await this.dispatchAction(
-                {
-                  actionType: 'DELETE_MESSAGE',
-                  chatId: action.chatId,
-                  messageId: sentMessageId,
-                },
-                this.buildAutoDeleteDispatchOptions(action, bot.id, autoDeleteDelayMs),
-              );
-            } catch (error: unknown) {
-              this.logger.warn(
-                {
-                  chatId: action.chatId,
-                  messageId: sentMessageId,
-                  autoDeleteDelayMs,
-                  error: error instanceof Error ? error.message : 'Unknown error',
-                },
-                'Failed to enqueue auto-delete for sent bot message',
-              );
-            }
-          }
-          const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
           const recoveredSendDispatch = sendResponse[MAX_RECOVERED_SEND_DISPATCH_RESPONSE];
+          const completedSendDispatch = sendResponse[MAX_SEND_DISPATCH_COMPLETION_RESPONSE] ?? {
+            remoteMessageId: sentMessageId,
+            dispatchBotId: recoveredSendDispatch?.dispatchBotId ?? bot.id,
+            completedAt: recoveredSendDispatch?.completedAt ?? null,
+          };
+          await this.ensureSendAutoDeleteScheduled(action, completedSendDispatch);
+          const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
           return {
             messageId: sentMessageId,
             url: this.parseChatLink(sendResponse),
             ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
-            ...(recoveredSendDispatch ? { recoveredSendDispatch } : {}),
+            ...(recoveredSendDispatch
+              ? {
+                  recoveredSendDispatch: {
+                    dispatchBotId: recoveredSendDispatch.dispatchBotId,
+                  },
+                }
+              : {}),
           };
         }
 
@@ -6432,11 +6487,18 @@ export class MaxClientService implements OnModuleDestroy {
           const claim = await this.actionLedgerService!.claimSendDispatch(action, botId);
           if (claim.kind === 'recovered') {
             const dispatchBotId = this.assertRecoveredSendDispatchBot(action, claim.dispatchBotId);
+            const completedSendDispatch: MaxCompletedSendDispatch = {
+              remoteMessageId: claim.remoteMessageId,
+              dispatchBotId,
+              completedAt: claim.completedAt ?? null,
+            };
             return {
               message_id: claim.remoteMessageId,
               [MAX_RECOVERED_SEND_DISPATCH_RESPONSE]: {
                 dispatchBotId,
+                completedAt: claim.completedAt ?? null,
               },
+              [MAX_SEND_DISPATCH_COMPLETION_RESPONSE]: completedSendDispatch,
             };
           }
 
@@ -6450,12 +6512,19 @@ export class MaxClientService implements OnModuleDestroy {
           if (!remoteMessageId) {
             throw new Error('MAX SEND_MESSAGE response has no remote message id');
           }
-          await this.actionLedgerService!.completeSendDispatch(
+          const completedAt = await this.actionLedgerService!.completeSendDispatch(
             action,
             claim.dispatchToken,
             remoteMessageId,
           );
-          return response;
+          return {
+            ...response,
+            [MAX_SEND_DISPATCH_COMPLETION_RESPONSE]: {
+              remoteMessageId,
+              dispatchBotId: botId,
+              completedAt,
+            },
+          };
         },
         mutationOptions,
       );
@@ -6570,11 +6639,18 @@ export class MaxClientService implements OnModuleDestroy {
           action,
           recovered?.dispatchBotId ?? null,
         );
+        const completedSendDispatch: MaxCompletedSendDispatch = {
+          remoteMessageId: recoveredRemoteMessageId,
+          dispatchBotId,
+          completedAt: recovered?.completedAt ?? null,
+        };
         return {
           message_id: recoveredRemoteMessageId,
           [MAX_RECOVERED_SEND_DISPATCH_RESPONSE]: {
             dispatchBotId,
+            completedAt: recovered?.completedAt ?? null,
           },
+          [MAX_SEND_DISPATCH_COMPLETION_RESPONSE]: completedSendDispatch,
         };
       }
     }

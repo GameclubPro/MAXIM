@@ -455,6 +455,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
       recordStarted?: jest.Mock;
       recordSucceeded?: jest.Mock;
       recordFailed?: jest.Mock;
+      recordEnqueuedIfAbsent?: jest.Mock;
+      recordEnqueueFailedIfAbsent?: jest.Mock;
+      hasExecutionEvidenceSince?: jest.Mock;
       getCompletedSendDispatch?: jest.Mock;
       getCompletedSendDispatchResult?: jest.Mock;
       claimSendDispatch?: jest.Mock;
@@ -899,30 +902,38 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('returns a recovered immediate send without rewriting its terminal ledger state', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:00:30.000Z'));
     const httpService = { request: jest.fn() };
     const beforeImmediateSendMutation = jest.fn();
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
     const actionLedgerService = {
       isIrreversibleAction: jest.fn().mockReturnValue(true),
       assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
       recordStarted: jest.fn().mockResolvedValue(undefined),
       recordSucceeded: jest.fn().mockResolvedValue(undefined),
       recordFailed: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
       getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
         remoteMessageId: 'mid-immediate-recovered-1',
         dispatchBotId: '777000_bot',
+        completedAt: new Date('2026-08-31T12:00:00.000Z'),
       }),
       claimSendDispatch: jest.fn(),
       completeSendDispatch: jest.fn(),
       releaseSendDispatch: jest.fn(),
       recordAmbiguousSendDispatch: jest.fn(),
     };
-    const service = createService(httpService, {}, undefined, actionLedgerService);
+    const service = createService(httpService, {}, actionQueue, actionLedgerService);
 
     await expect(
       service.sendMessage('chat-1', 'Night notice', undefined, {
         immediate: true,
         botId: '777000_bot',
         idempotencyKey: 'night-mode:open:chat-1:session:session-recovered-1',
+        autoDeleteDelayMs: 60_000,
         beforeImmediateSendMutation,
       }),
     ).resolves.toEqual({
@@ -944,6 +955,16 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(actionLedgerService.claimSendDispatch).not.toHaveBeenCalled();
     expect(beforeImmediateSendMutation).not.toHaveBeenCalled();
     expect(httpService.request).not.toHaveBeenCalled();
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        chatId: 'chat-1',
+        messageId: 'mid-immediate-recovered-1',
+        botId: '777000_bot',
+      }),
+      expect.objectContaining({ delay: 30_000 }),
+    );
 
     await service.onModuleDestroy();
   });
@@ -1567,6 +1588,204 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect.objectContaining({
         delay: 60_000,
       }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('anchors fresh auto-delete delay to the exact ledger completion time', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:00:00.000Z'));
+    const completedAt = new Date('2026-08-31T12:00:00.000Z');
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-slow-completion-1',
+          },
+        }),
+      ),
+    };
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      claimSendDispatch: jest.fn().mockResolvedValue({
+        kind: 'claimed',
+        dispatchToken: 'dispatch-token-slow-completion-1',
+      }),
+      completeSendDispatch: jest.fn().mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-08-31T12:00:25.000Z'));
+        return completedAt;
+      }),
+      releaseSendDispatch: jest.fn(),
+      recordAmbiguousSendDispatch: jest.fn(),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, actionQueue, actionLedgerService);
+
+    await service.executeActionJob({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      text: 'hello',
+      botId: '777000_bot',
+      autoDeleteDelayMs: 60_000,
+      attempt: 1,
+      idempotencyKey: 'send-auto-delete-slow-completion',
+      createdAt: completedAt.toISOString(),
+    });
+
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'mid-slow-completion-1',
+      }),
+      expect.objectContaining({ delay: 35_000 }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('recovers a completed send after auto-delete enqueue failure without sending twice', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:00:00.000Z'));
+    const enqueueError = new Error('redis is unavailable');
+    const completedAt = new Date('2026-08-31T12:00:00.000Z');
+    let completedSend: {
+      remoteMessageId: string;
+      dispatchBotId: string;
+      completedAt: Date;
+    } | null = null;
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-auto-delete-enqueue-failed-1',
+          },
+        }),
+      ),
+    };
+    const actionQueue = {
+      add: jest.fn().mockRejectedValueOnce(enqueueError).mockResolvedValueOnce(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockImplementation(async () => completedSend),
+      claimSendDispatch: jest.fn().mockResolvedValue({
+        kind: 'claimed',
+        dispatchToken: 'dispatch-token-auto-delete-1',
+      }),
+      completeSendDispatch: jest.fn().mockImplementation(async () => {
+        completedSend = {
+          remoteMessageId: 'mid-auto-delete-enqueue-failed-1',
+          dispatchBotId: '777000_bot',
+          completedAt,
+        };
+        return completedAt;
+      }),
+      releaseSendDispatch: jest.fn(),
+      recordAmbiguousSendDispatch: jest.fn(),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      hasExecutionEvidenceSince: jest.fn().mockResolvedValue(false),
+      recordEnqueueFailedIfAbsent: jest.fn().mockResolvedValue(undefined),
+      recordEnqueuedIfAbsent: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(httpService, {}, actionQueue, actionLedgerService);
+    const job = {
+      actionType: 'SEND_MESSAGE' as const,
+      chatId: 'chat-1',
+      text: 'hello',
+      botId: '777000_bot',
+      autoDeleteDelayMs: 60_000,
+      attempt: 1,
+      idempotencyKey: 'send-auto-delete-enqueue-failure',
+      createdAt: new Date().toISOString(),
+    };
+
+    await expect(service.executeActionJob(job)).rejects.toBe(enqueueError);
+
+    expect(actionLedgerService.completeSendDispatch).toHaveBeenCalledWith(
+      job,
+      'dispatch-token-auto-delete-1',
+      'mid-auto-delete-enqueue-failed-1',
+    );
+    jest.setSystemTime(new Date('2026-08-31T12:00:20.000Z'));
+
+    await expect(
+      service.executeActionJob({
+        ...job,
+        attempt: 2,
+      }),
+    ).resolves.toEqual({
+      messageId: 'mid-auto-delete-enqueue-failed-1',
+      url: null,
+      recoveredSendDispatch: {
+        dispatchBotId: '777000_bot',
+      },
+    });
+
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.claimSendDispatch).toHaveBeenCalledTimes(1);
+    expect(actionQueue.add).toHaveBeenCalledTimes(2);
+    expect(actionQueue.add.mock.calls[0][2].jobId).toBe(actionQueue.add.mock.calls[1][2].jobId);
+    expect(actionLedgerService.recordEnqueueFailedIfAbsent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'mid-auto-delete-enqueue-failed-1',
+      }),
+      enqueueError,
+    );
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledTimes(1);
+    expect(actionQueue.add).toHaveBeenNthCalledWith(
+      2,
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'mid-auto-delete-enqueue-failed-1',
+      }),
+      expect.objectContaining({ delay: 40_000 }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('enqueues an overdue recovered auto-delete without another delay', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:02:00.000Z'));
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createService({}, {}, actionQueue);
+
+    await service.ensureSendAutoDeleteScheduled(
+      {
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        text: 'hello',
+        botId: '777000_bot',
+        autoDeleteDelayMs: 60_000,
+        attempt: 2,
+        idempotencyKey: 'send-auto-delete-overdue',
+        createdAt: '2026-08-31T12:00:00.000Z',
+      },
+      {
+        remoteMessageId: 'mid-auto-delete-overdue-1',
+        dispatchBotId: '777000_bot',
+        completedAt: new Date('2026-08-31T12:00:30.000Z'),
+      },
+    );
+
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'mid-auto-delete-overdue-1',
+      }),
+      expect.not.objectContaining({ delay: expect.anything() }),
     );
 
     await service.onModuleDestroy();

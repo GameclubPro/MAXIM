@@ -310,6 +310,7 @@ describe('MaxActionDispatchService', () => {
   it('recovers a completed SEND_MESSAGE before route resolution or bot execution', async () => {
     const maxClient = {
       executeActionJob: jest.fn(),
+      ensureSendAutoDeleteScheduled: jest.fn(),
     };
     const actionLedgerService = {
       getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
@@ -352,8 +353,61 @@ describe('MaxActionDispatchService', () => {
 
     expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
     expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+    expect(maxClient.ensureSendAutoDeleteScheduled).not.toHaveBeenCalled();
     expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
     expect(actionLedgerService.getCompletedSendDispatch).not.toHaveBeenCalled();
+  });
+
+  it('propagates auto-delete enqueue failure while recovering a completed send', async () => {
+    const enqueueError = new Error('auto-delete queue unavailable');
+    const completedAt = new Date('2026-08-31T12:00:00.000Z');
+    const maxClient = {
+      executeActionJob: jest.fn(),
+      ensureSendAutoDeleteScheduled: jest.fn().mockRejectedValue(enqueueError),
+    };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+        remoteMessageId: 'mid-recovered-auto-delete-1',
+        dispatchBotId: 'survivor-bot',
+        completedAt,
+      }),
+      recordStarted: jest.fn(),
+      recordSucceeded: jest.fn(),
+      recordSkipped: jest.fn(),
+      recordFailed: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn(),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+      maxBotLinkService as never,
+    );
+    const job = {
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      botId: 'survivor-bot',
+      routing: { purpose: 'send_message' },
+      text: 'hello',
+      autoDeleteDelayMs: 60_000,
+      attempt: 2,
+      idempotencyKey: 'job-send-recovered-auto-delete',
+      createdAt: '2026-08-31T12:00:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job)).rejects.toBe(enqueueError);
+
+    expect(maxClient.ensureSendAutoDeleteScheduled).toHaveBeenCalledWith(job, {
+      remoteMessageId: 'mid-recovered-auto-delete-1',
+      dispatchBotId: 'survivor-bot',
+      completedAt,
+    });
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
   });
 
   it.each([

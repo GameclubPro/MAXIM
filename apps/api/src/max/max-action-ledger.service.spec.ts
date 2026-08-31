@@ -1235,6 +1235,7 @@ describe('MaxActionLedgerService', () => {
           dispatchStartedAt: true,
           dispatchBotId: true,
           remoteMessageId: true,
+          completedAt: true,
         },
       });
     },
@@ -1387,6 +1388,7 @@ describe('MaxActionLedgerService', () => {
       kind: 'recovered',
       remoteMessageId: 'mid-remote-1',
       dispatchBotId: 'bot-1',
+      completedAt: null,
     });
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(1);
   });
@@ -1433,10 +1435,12 @@ describe('MaxActionLedgerService', () => {
       kind: 'recovered',
       remoteMessageId: 'mid-required-1',
       dispatchBotId: 'required-bot',
+      completedAt: null,
     });
   });
 
   it('recovers the bot that actually authored a completed survivor dispatch', async () => {
+    const completedAt = new Date('2026-07-11T09:00:01.000Z');
     const { service } = createService({
       status: MaxActionLedgerStatus.SUCCEEDED,
       ambiguous: false,
@@ -1445,11 +1449,13 @@ describe('MaxActionLedgerService', () => {
       dispatchStartedAt: new Date('2026-07-11T09:00:00.000Z'),
       dispatchBotId: 'bot-2',
       remoteMessageId: 'mid-survivor-1',
+      completedAt,
     });
 
     await expect(service.getCompletedSendDispatchResult(createJob())).resolves.toEqual({
       remoteMessageId: 'mid-survivor-1',
       dispatchBotId: 'bot-2',
+      completedAt,
     });
   });
 
@@ -1606,14 +1612,21 @@ describe('MaxActionLedgerService', () => {
     ).resolves.toEqual({
       remoteMessageId: 'mid-required-1',
       dispatchBotId: 'required-bot',
+      completedAt: null,
     });
   });
 
   it('persists the remote message id and terminal success using token CAS', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:00:00.000Z'));
     const { service, prisma } = createService();
 
-    await service.completeSendDispatch(createJob(), 'dispatch-token', 'mid-remote-1');
+    const completedAt = await service.completeSendDispatch(
+      createJob(),
+      'dispatch-token',
+      'mid-remote-1',
+    );
 
+    expect(completedAt).toEqual(new Date('2026-08-31T12:00:00.000Z'));
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
       where: {
         jobId: 'job-1',
@@ -1625,12 +1638,39 @@ describe('MaxActionLedgerService', () => {
         status: MaxActionLedgerStatus.SUCCEEDED,
         ambiguous: false,
         terminal: true,
-        completedAt: expect.any(Date),
+        completedAt,
       }),
     });
   });
 
+  it('does not overwrite a completed send timestamp during generic success bookkeeping', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:05:00.000Z'));
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'dispatch-token',
+      dispatchStartedAt: new Date('2026-08-31T12:00:00.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: 'mid-remote-1',
+      completedAt: new Date('2026-08-31T12:00:01.000Z'),
+    });
+
+    await service.recordSucceeded(createJob());
+
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          jobId: 'job-1',
+          remoteMessageId: null,
+        },
+      }),
+    );
+    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+  });
+
   it('recovers success when the completion write committed but its database acknowledgement was lost', async () => {
+    const completedAt = new Date('2026-07-11T09:00:01.000Z');
     const { service, prisma } = createService({
       status: MaxActionLedgerStatus.SUCCEEDED,
       ambiguous: false,
@@ -1639,6 +1679,7 @@ describe('MaxActionLedgerService', () => {
       dispatchStartedAt: new Date('2026-07-11T09:00:00.000Z'),
       dispatchBotId: 'bot-1',
       remoteMessageId: 'mid-remote-1',
+      completedAt,
     });
     prisma.maxActionLedgerEntry.updateMany.mockRejectedValueOnce(
       new Error('database response lost after commit'),
@@ -1646,7 +1687,7 @@ describe('MaxActionLedgerService', () => {
 
     await expect(
       service.completeSendDispatch(createJob(), 'dispatch-token', 'mid-remote-1'),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual(completedAt);
   });
 
   it('releases only the matching unresolved dispatch token after a definitive rejection', async () => {
