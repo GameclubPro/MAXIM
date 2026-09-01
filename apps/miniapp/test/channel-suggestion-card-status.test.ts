@@ -23,8 +23,10 @@ test('both suggestion histories render a concise status and exceptional detail o
   for (const source of [dedicatedHistorySource, legacyPageSource]) {
     assert.match(source, /\{status\.badge\}/u);
     assert.match(source, /status\.detail/u);
+    assert.match(source, /\{hasSuggestionText \? \([\s\S]*?<p>/u);
     assert.doesNotMatch(source, /channel-suggest-card__status-copy/u);
     assert.doesNotMatch(source, /status\.(?:headline|note)/u);
+    assert.doesNotMatch(source, /Предложение отправлено.*(?:фото|видео|медиа)/u);
   }
   assert.match(
     dedicatedPageSource,

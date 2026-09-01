@@ -486,32 +486,6 @@ function resolveMessageWidthTone(
   return 'is-medium';
 }
 
-function resolveSuggestionText(message: ChannelDialogMessage): string {
-  const normalized = message.text.trim();
-  if (normalized) {
-    return normalized;
-  }
-
-  if (message.hasVideo && !message.hasImage) {
-    return 'Предложение отправлено только с видео.';
-  }
-
-  const imageCount = Math.max(
-    message.imageCount ?? 0,
-    message.imageFileNames?.length ?? 0,
-    message.imageFileName ? 1 : 0,
-  );
-  if (imageCount > 1) {
-    return `Предложение отправлено с ${imageCount} фото.`;
-  }
-
-  if (message.hasImage && !message.hasVideo) {
-    return 'Предложение отправлено только с фото.';
-  }
-
-  return 'Предложение отправлено только с медиа.';
-}
-
 function resolveSuggestionAttachmentLabel(message: ChannelDialogMessage): string {
   if (message.hasVideo) {
     const fileName = message.videoFileName?.trim();
@@ -4055,8 +4029,8 @@ export function ChannelDialogPage({
                     <div className="channel-suggest-list channel-suggest-list--history">
                       {messages.map((message) => {
                         const status = resolveSuggestionStatus(message);
-                        const suggestionText = resolveSuggestionText(message);
-                        const hasSuggestionText = message.text.trim().length > 0;
+                        const suggestionText = message.text.trim();
+                        const hasSuggestionText = suggestionText.length > 0;
                         const hasMedia =
                           message.hasImage ||
                           message.hasVideo ||
@@ -4083,17 +4057,19 @@ export function ChannelDialogPage({
                               </time>
                             </div>
 
-                            <p className={cn(!hasSuggestionText && 'is-muted')}>
-                              {hasSuggestionText && message.textFormat === 'markdown' ? (
-                                <MaxMarkdownPreview
-                                  value={message.text}
-                                  preserveLinks
-                                  fallback={suggestionText}
-                                />
-                              ) : (
-                                suggestionText
-                              )}
-                            </p>
+                            {hasSuggestionText ? (
+                              <p>
+                                {message.textFormat === 'markdown' ? (
+                                  <MaxMarkdownPreview
+                                    value={message.text}
+                                    preserveLinks
+                                    fallback={suggestionText}
+                                  />
+                                ) : (
+                                  suggestionText
+                                )}
+                              </p>
+                            ) : null}
 
                             {hasMedia ? (
                               <span className="channel-suggest-card__media">

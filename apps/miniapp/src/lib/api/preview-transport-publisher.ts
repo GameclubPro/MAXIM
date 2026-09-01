@@ -50,6 +50,9 @@ import { replacePreviewPublication } from './preview-transport-publications';
 import { parseJsonBody } from './preview-transport-shared';
 import type { PreviewState } from './preview-transport-state';
 
+const PREVIEW_PUBLISHER_SUGGESTION_IMAGE_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
 function getPreviewPublisherPolicies(
   state: PreviewState,
 ): Record<string, ManagedEntityPublicationPolicy> {
@@ -215,6 +218,7 @@ function listPreviewPublisherSuggestions(
   const reviews = getPreviewPublisherSuggestionReviews(state);
   return Array.from({ length: count }, (_, index) => {
     const id = `preview-suggestion-${entityId}-${String(index + 1).padStart(3, '0')}`;
+    const isImageOnlyFixture = index === 1;
     const initialStatus: PublisherSuggestion['reviewStatus'] =
       index < Math.ceil(count * 0.35)
         ? 'pending'
@@ -227,8 +231,9 @@ function listPreviewPublisherSuggestions(
     const textFormat: PublisherSuggestion['textFormat'] = index === 0 ? 'markdown' : 'plain';
     return publisherSuggestionSchema.parse({
       id,
-      text:
-        textFormat === 'markdown'
+      text: isImageOnlyFixture
+        ? ''
+        : textFormat === 'markdown'
           ? `**Идея для публикации №${index + 1}\n\nВажная новость сообщества с проверенными деталями.**`
           : `Идея для публикации №${index + 1}: важная новость сообщества с проверенными деталями.`,
       textFormat,
@@ -238,9 +243,18 @@ function listPreviewPublisherSuggestions(
       publicationId:
         getPreviewPublisherSuggestionPublicationIds(state)[id] ??
         (reviewStatus === 'published' ? `preview-publication-${index + 1}` : null),
-      imageCount: index % 3,
+      imageCount: isImageOnlyFixture ? 1 : index % 3,
     });
   });
+}
+
+function buildPreviewPublisherSuggestionMedia(suggestion: PublisherSuggestion) {
+  return Array.from({ length: suggestion.imageCount }, (_, index) => ({
+    type: 'image' as const,
+    base64: PREVIEW_PUBLISHER_SUGGESTION_IMAGE_BASE64,
+    mimeType: 'image/png',
+    fileName: `suggestion-photo-${index + 1}.png`,
+  }));
 }
 
 const PREVIEW_PUBLISHER_SUGGESTIONS_CURSOR_PATTERN = /^preview_(pending|history)_([1-9]\d*)$/u;
@@ -890,7 +904,7 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
           text: suggestion.text,
           textFormat: suggestion.textFormat,
           buttons: [],
-          media: [],
+          media: buildPreviewPublisherSuggestionMedia(suggestion),
         },
         audience: {
           selection: 'SELECTED',

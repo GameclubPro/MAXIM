@@ -59,6 +59,8 @@ test('preview suggestion history includes an unreachable-editor delivery state',
         state: string;
         deliveredCount: number;
         targetCount: number;
+        pendingCount: number;
+        unreachableCount: number;
       };
     }>;
   };
@@ -67,8 +69,8 @@ test('preview suggestion history includes an unreachable-editor delivery state',
   assert.deepEqual(unreachable?.suggestionDelivery, {
     state: 'no_reachable_editor',
     deliveredCount: 0,
-    targetCount: 2,
+    targetCount: 0,
     pendingCount: 0,
-    unreachableCount: 2,
+    unreachableCount: 0,
   });
 });

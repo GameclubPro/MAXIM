@@ -9,17 +9,16 @@ export const MAX_CHANNEL_DIALOG_COMMENT_FILES = 3;
 export const MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 = 24_000_000;
 
-export const publishChannelEngagementRequestSchema = /*#__PURE__*/ z
-  .object({
-    text: z
-      .string()
-      .trim()
-      .min(1)
-      .max(2_000)
-      .default('Есть идея или обратная связь? Нажмите кнопку ниже.'),
-    commentsButtonText: z.string().trim().min(1).max(32).default('💬 Комментарии'),
-    suggestButtonText: z.string().trim().min(1).max(32).default('📰 Предложить пост'),
-  });
+export const publishChannelEngagementRequestSchema = /*#__PURE__*/ z.object({
+  text: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2_000)
+    .default('Есть идея или обратная связь? Нажмите кнопку ниже.'),
+  commentsButtonText: z.string().trim().min(1).max(32).default('💬 Комментарии'),
+  suggestButtonText: z.string().trim().min(1).max(32).default('📰 Предложить пост'),
+});
 export type PublishChannelEngagementRequest = z.infer<typeof publishChannelEngagementRequestSchema>;
 
 export const publishChannelEngagementResultSchema = /*#__PURE__*/ z.object({
@@ -252,9 +251,7 @@ export const channelSuggestionDeliveryStateSchema = /*#__PURE__*/ z.enum([
   'no_reachable_editor',
   'uncertain',
 ]);
-export type ChannelSuggestionDeliveryState = z.infer<
-  typeof channelSuggestionDeliveryStateSchema
->;
+export type ChannelSuggestionDeliveryState = z.infer<typeof channelSuggestionDeliveryStateSchema>;
 
 export const channelSuggestionDeliverySummarySchema = /*#__PURE__*/ z.object({
   state: channelSuggestionDeliveryStateSchema,
@@ -266,6 +263,25 @@ export const channelSuggestionDeliverySummarySchema = /*#__PURE__*/ z.object({
 export type ChannelSuggestionDeliverySummary = z.infer<
   typeof channelSuggestionDeliverySummarySchema
 >;
+
+export const channelDialogSuggestionDeliverySchema = /*#__PURE__*/ z
+  .object({
+    state: channelSuggestionDeliveryStateSchema,
+    // FLAG: Normalize legacy wire counts for two-way rollout compatibility without exposing topology.
+    deliveredCount: z.number().int().min(0).optional(),
+    targetCount: z.number().int().min(0).optional(),
+    pendingCount: z.number().int().min(0).optional(),
+    unreachableCount: z.number().int().min(0).optional(),
+  })
+  .strict()
+  .transform((value) => ({
+    state: value.state,
+    deliveredCount: 0 as const,
+    targetCount: 0 as const,
+    pendingCount: 0 as const,
+    unreachableCount: 0 as const,
+  }));
+export type ChannelDialogSuggestionDelivery = z.infer<typeof channelDialogSuggestionDeliverySchema>;
 
 export const channelDialogAttachmentSchema = /*#__PURE__*/ z.object({
   kind: channelDialogAttachmentKindSchema,
@@ -301,7 +317,7 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   canDelete: z.boolean().default(false),
   canDeleteAsAdmin: z.boolean().default(false),
   delivered: z.boolean().optional(),
-  suggestionDelivery: channelSuggestionDeliverySummarySchema.optional(),
+  suggestionDelivery: channelDialogSuggestionDeliverySchema.optional(),
   reviewStatus: channelDialogSuggestionReviewStatusSchema.optional(),
   publishedUrl: z.string().trim().max(2_048).nullable().optional(),
   hasImage: z.boolean().optional(),

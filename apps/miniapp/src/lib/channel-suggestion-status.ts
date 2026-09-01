@@ -45,10 +45,6 @@ export function resolveSuggestionStatus(
       case 'partially_delivered':
         return {
           badge: 'Доставлено частично',
-          detail:
-            delivery.targetCount > 0
-              ? `Доставлено редакторам: ${delivery.deliveredCount} из ${delivery.targetCount}`
-              : 'Не все редакторы получили предложение',
           tone: 'pending',
         };
       case 'no_reachable_editor':

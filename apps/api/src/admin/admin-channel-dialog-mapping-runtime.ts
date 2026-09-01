@@ -168,7 +168,13 @@ export class AdminChannelDialogMappingRuntime {
       ...(type === 'suggest'
         ? {
             delivered,
-            suggestionDelivery: buildChannelSuggestionDeliverySummary(payload),
+            suggestionDelivery: {
+              state: buildChannelSuggestionDeliverySummary(payload).state,
+              deliveredCount: 0,
+              targetCount: 0,
+              pendingCount: 0,
+              unreachableCount: 0,
+            },
             reviewStatus: reviewStatus ?? 'pending',
             publishedUrl: publishedUrl ?? null,
             textFormat,

@@ -682,6 +682,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           imageCount: 1,
           imageFileName: 'suggestion.jpg',
           imageFileNames: ['suggestion.jpg'],
+          suggestionDelivery: {
+            state: 'partially_delivered',
+            deliveredCount: 1,
+            targetCount: 3,
+            pendingCount: 0,
+            unreachableCount: 2,
+          },
         },
         createdAt: new Date('2026-03-20T09:10:00.000Z'),
       },
@@ -721,6 +728,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       imageCount: 1,
       imageFileName: 'suggestion.jpg',
       imageFileNames: ['suggestion.jpg'],
+    });
+    expect(result.messages[0]?.suggestionDelivery).toEqual({
+      state: 'partially_delivered',
+      deliveredCount: 0,
+      targetCount: 0,
+      pendingCount: 0,
+      unreachableCount: 0,
     });
   });
 

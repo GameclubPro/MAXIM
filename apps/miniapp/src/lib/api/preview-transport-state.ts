@@ -132,7 +132,7 @@ export type PreviewState = {
 };
 
 export type PreviewDialogBucket = {
-  introText: string;
+  introText: string | null;
   messages: ChannelDialogMessage[];
   notificationMode?: ChannelDialogNotificationMode;
   notificationScope?: ChannelDialogNotificationScope;
@@ -782,9 +782,9 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
           suggestionDelivery: {
             state: 'no_reachable_editor',
             deliveredCount: 0,
-            targetCount: 2,
+            targetCount: 0,
             pendingCount: 0,
-            unreachableCount: 2,
+            unreachableCount: 0,
           },
           reviewStatus: 'pending',
           hasImage: true,

@@ -367,6 +367,21 @@ describe('Publisher channel comment profile ownership', () => {
 });
 
 describe('Publisher channel suggestions with photos', () => {
+  it('does not synthesize channel requirements when none are configured', async () => {
+    const { mapAuditLog, prisma, runtime } = createSuggestionHarness();
+    prisma.auditLog.findMany.mockResolvedValue([]);
+
+    const result = await runtime.getChannelDialog({
+      chatId: 'channel-1',
+      user,
+      dialogTypeRaw: 'suggest',
+      token: TOKEN,
+      mapAuditLog,
+    });
+
+    expect(result.introText).toBeNull();
+  });
+
   it.each([
     ['text-only', { token: TOKEN, text: 'Только текст' }, 0],
     [

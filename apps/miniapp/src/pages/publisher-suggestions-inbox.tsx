@@ -290,12 +290,13 @@ export function PublisherSuggestionsInbox({
                     }).format(new Date(suggestion.createdAt))}
                   </time>
                 </div>
-                <MaxMarkdownPreview
-                  value={suggestion.text}
-                  sourceFormat={suggestion.textFormat}
-                  className="publisher-suggestion-row__text"
-                  fallback="Предложение без текста"
-                />
+                {suggestion.text.trim() ? (
+                  <MaxMarkdownPreview
+                    value={suggestion.text}
+                    sourceFormat={suggestion.textFormat}
+                    className="publisher-suggestion-row__text"
+                  />
+                ) : null}
                 {suggestion.imageCount > 0 ? (
                   <span className="publisher-suggestion-row__media">
                     <MediaImage aria-hidden />
@@ -306,7 +307,7 @@ export function PublisherSuggestionsInbox({
                   <p className="publisher-suggestion-row__error" role="alert">
                     {describeUserFacingError(
                       new Error(suggestion.reviewError),
-                      'Не удалось создать публикацию',
+                      'Не удалось создать черновик',
                     )}
                   </p>
                 ) : null}
@@ -411,12 +412,13 @@ export function PublisherSuggestionsInbox({
             previewTitle={confirmationSuggestion.authorDisplayName || 'Пользователь'}
             previewMeta={
               <>
-                <MaxMarkdownPreview
-                  value={confirmationSuggestion.text}
-                  sourceFormat={confirmationSuggestion.textFormat}
-                  className="publisher-suggestion-confirm__text"
-                  fallback="Предложение без текста"
-                />
+                {confirmationSuggestion.text.trim() ? (
+                  <MaxMarkdownPreview
+                    value={confirmationSuggestion.text}
+                    sourceFormat={confirmationSuggestion.textFormat}
+                    className="publisher-suggestion-confirm__text"
+                  />
+                ) : null}
                 {confirmationSuggestion.imageCount > 0 ? (
                   <span className="publisher-suggestion-row__media">
                     <MediaImage aria-hidden />

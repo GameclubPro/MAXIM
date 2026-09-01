@@ -699,6 +699,64 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publisher-channel-suggestions-image-only-cancel-confirm',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      const imageOnlyCards = page.locator('.publisher-suggestion-row').filter({
+        has: page.getByText('Автор 2', { exact: true }),
+      });
+      if ((await imageOnlyCards.count()) !== 1) {
+        throw new Error('Publisher image-only suggestion fixture is missing or ambiguous.');
+      }
+
+      const imageOnlyCard = imageOnlyCards.first();
+      await imageOnlyCard.getByText('1 фото', { exact: true }).waitFor({ state: 'visible' });
+      if ((await imageOnlyCard.locator('.publisher-suggestion-row__text').count()) !== 0) {
+        throw new Error('Publisher image-only suggestion unexpectedly rendered a text block.');
+      }
+      if (((await page.locator('body').textContent()) ?? '').includes('Предложение без текста')) {
+        throw new Error('Publisher image-only suggestion rendered forbidden fallback copy.');
+      }
+
+      await imageOnlyCard.getByRole('button', { name: 'Отклонить', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Отклонить предложение?' });
+      await dialog.waitFor({ state: 'visible' });
+      await dialog.getByText('1 фото', { exact: true }).waitFor({ state: 'visible' });
+      if (((await page.locator('body').textContent()) ?? '').includes('Предложение без текста')) {
+        throw new Error('Publisher image-only confirmation rendered forbidden fallback copy.');
+      }
+    },
+  },
+  {
+    name: 'publisher-channel-suggestions-image-only-open-draft',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      const imageOnlyCards = page.locator('.publisher-suggestion-row').filter({
+        has: page.getByText('Автор 2', { exact: true }),
+      });
+      if ((await imageOnlyCards.count()) !== 1) {
+        throw new Error('Publisher image-only suggestion fixture is missing or ambiguous.');
+      }
+
+      await imageOnlyCards
+        .first()
+        .getByRole('button', { name: 'Открыть в редакторе', exact: true })
+        .click();
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      const retainedMedia = page.locator('.publication-retained-media');
+      await retainedMedia.waitFor({ state: 'visible' });
+      await retainedMedia
+        .getByText('suggestion-photo-1.png', { exact: true })
+        .waitFor({ state: 'visible' });
+      if ((await retainedMedia.count()) !== 1) {
+        throw new Error('Publisher image-only draft did not preserve exactly one photo.');
+      }
+      for (const label of ['💬 Комментарии', '✍️ Предложить объявление', '📞 Заказать рекламу']) {
+        await page.getByText(label, { exact: true }).waitFor({ state: 'visible' });
+      }
+    },
+  },
+  {
     name: 'publisher-channel-suggestions-history',
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
@@ -1717,6 +1775,39 @@ const scenarioBehaviors = [
     name: 'channel-dialog-suggest',
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
+      await page.getByText('Требования', { exact: true }).waitFor({ state: 'visible' });
+      await page
+        .getByText('Только события нашего города с датой, адресом и контактами.', {
+          exact: true,
+        })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'channel-dialog-suggest-publisher',
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+      await page.getByRole('textbox', { name: 'Текст объявления' }).waitFor({ state: 'visible' });
+      if ((await page.getByText('Требования', { exact: true }).count()) !== 0) {
+        throw new Error('Publisher suggestion dialog rendered synthetic requirements.');
+      }
+
+      const imageOnlyCard = page.locator('.channel-suggest-card').filter({
+        has: page.getByText('Фото · market-evening.webp', { exact: true }),
+      });
+      if ((await imageOnlyCard.count()) !== 1) {
+        throw new Error('Public image-only suggestion fixture is missing or ambiguous.');
+      }
+      if (
+        (await imageOnlyCard
+          .locator(':scope > p:not(.channel-suggest-card__status-detail)')
+          .count()) !== 0
+      ) {
+        throw new Error('Public image-only suggestion unexpectedly rendered a text block.');
+      }
+      if (((await page.locator('body').textContent()) ?? '').includes('Предложение отправлено')) {
+        throw new Error('Public suggestion history rendered generated media fallback copy.');
+      }
     },
   },
   {

@@ -1488,7 +1488,7 @@ export function ChannelSuggestDialogPage({
                   canSubmitMessage && 'is-ready',
                   isComposerBusy && 'is-busy',
                 )}
-                aria-label="Предложить пост"
+                aria-label="Предложить объявление"
               >
                 {draftImagesNeedReselection || SUGGEST_DRAFT_MAX_LENGTH - draftLength <= 200 ? (
                   <div className="channel-suggest-composer__head">
@@ -1576,7 +1576,7 @@ export function ChannelSuggestDialogPage({
                           <div
                             className="channel-suggest-composer__rich-editor"
                             role="textbox"
-                            aria-label="Текст предложения"
+                            aria-label="Текст объявления"
                             aria-busy="true"
                           />
                         }
@@ -1585,11 +1585,11 @@ export function ChannelSuggestDialogPage({
                           ref={richTextEditorRef}
                           value={draft}
                           onChange={handleDraftTextChange}
-                          placeholder="Текст идеи или подпись к фото"
+                          placeholder="Текст объявления"
                           maxLength={SUGGEST_DRAFT_MAX_LENGTH}
                           disabled={isSubmitPending}
                           onNormalizationReadyChange={setEditorReady}
-                          ariaLabel="Текст предложения"
+                          ariaLabel="Текст объявления"
                           className="channel-suggest-composer__rich-editor"
                           onPasteFiles={canUploadImages ? prepareDraftImagesFromFiles : undefined}
                         />

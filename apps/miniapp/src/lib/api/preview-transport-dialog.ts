@@ -300,6 +300,7 @@ export function buildPreviewDialogResponse(
   dialogType: ChannelDialogType,
   bucket: PreviewDialogBucket,
   viewerUserId: string,
+  profile: PreviewState['me']['profile'],
 ): ChannelDialogResponse {
   const previewThreadVariant =
     typeof window !== 'undefined'
@@ -321,7 +322,8 @@ export function buildPreviewDialogResponse(
   return channelDialogResponseSchema.parse({
     chatId,
     type: dialogType,
-    introText: normalizedBucket.introText,
+    introText:
+      profile === 'publisher' && dialogType === 'suggest' ? null : normalizedBucket.introText,
     messages: normalizedBucket.messages.map((message) =>
       decoratePreviewDialogMessageAccess(message, viewerUserId),
     ),
@@ -386,7 +388,9 @@ function handleChatDialogPreviewRequest(
         dialogType,
         url.searchParams.get('token'),
       );
-      return cloneJson(buildPreviewDialogResponse(chatId, dialogType, bucket, state.me.userId));
+      return cloneJson(
+        buildPreviewDialogResponse(chatId, dialogType, bucket, state.me.userId, state.me.profile),
+      );
     }
 
     if (tail[2] === 'messages' && method === 'POST') {
@@ -520,7 +524,15 @@ function handleChannelDialogPreviewRequest(
         dialogType,
         url.searchParams.get('token'),
       );
-      return cloneJson(buildPreviewDialogResponse(channelId, dialogType, bucket, state.me.userId));
+      return cloneJson(
+        buildPreviewDialogResponse(
+          channelId,
+          dialogType,
+          bucket,
+          state.me.userId,
+          state.me.profile,
+        ),
+      );
     }
 
     if (tail[2] === 'messages' && method === 'POST') {

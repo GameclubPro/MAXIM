@@ -422,6 +422,20 @@ test('preview can render the isolated publisher profile', () => {
   ]);
 });
 
+test('preview suggestion intro copy matches each production profile', async () => {
+  const [publisherDialog, majorDialog] = await Promise.all([
+    createPreviewApiTransport({ search: '?profile=publisher' }).request(
+      '/channels/preview-channel/dialog/suggest?token=preview-suggest-token-0001',
+    ),
+    createPreviewApiTransport().request(
+      '/channels/preview-channel/dialog/suggest?token=preview-suggest-token-0001',
+    ),
+  ]);
+
+  assert.equal((publisherDialog as { introText: unknown }).introText, null);
+  assert.match(String((majorDialog as { introText: unknown }).introText), /Только события/u);
+});
+
 test('preview publisher suggestions preserve multiline rich text source format', async () => {
   const suggestions = await listPublisherSuggestions(
     createPreviewApiTransport({
@@ -505,18 +519,12 @@ test('preview publisher review exposes asynchronous publishing and updates serve
   assert.equal(publishing.suggestion.reviewStatus, 'publishing');
   assert.equal(publishing.suggestion.publicationId, null);
 
-  const cancelTarget = before.items.find(
-    (suggestion) => suggestion.reviewStatus === 'pending' && suggestion.id !== publishTarget.id,
-  );
-  assert.ok(cancelTarget);
-  await reviewPublisherSuggestion(api, 'preview-channel', cancelTarget.id, {
-    action: 'cancel',
-  });
   const draftTarget = before.items.find(
     (suggestion) =>
       suggestion.reviewStatus === 'pending' &&
       suggestion.id !== publishTarget.id &&
-      suggestion.id !== cancelTarget.id,
+      suggestion.text.trim() === '' &&
+      suggestion.imageCount > 0,
   );
   assert.ok(draftTarget);
   const drafted = await reviewPublisherSuggestion(api, 'preview-channel', draftTarget.id, {
@@ -527,6 +535,17 @@ test('preview publisher review exposes asynchronous publishing and updates serve
   const draftPublication = await getPublication(api, drafted.suggestion.publicationId);
   assert.equal(draftPublication.lifecycle, 'DRAFT');
   assert.equal(draftPublication.content.text, draftTarget.text);
+  assert.equal(draftPublication.content.media.length, draftTarget.imageCount);
+  const cancelTarget = before.items.find(
+    (suggestion) =>
+      suggestion.reviewStatus === 'pending' &&
+      suggestion.id !== publishTarget.id &&
+      suggestion.id !== draftTarget.id,
+  );
+  assert.ok(cancelTarget);
+  await reviewPublisherSuggestion(api, 'preview-channel', cancelTarget.id, {
+    action: 'cancel',
+  });
   const pendingAfter = await listPublisherSuggestions(api, 'preview-channel');
   const historyAfter = await listPublisherSuggestions(api, 'preview-channel', {
     view: 'history',

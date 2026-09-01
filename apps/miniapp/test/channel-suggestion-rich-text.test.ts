@@ -17,6 +17,13 @@ test('dedicated channel suggestions render formatting instead of markdown marker
   assert.doesNotMatch(suggestionPageSource, /<MaxMarkdownEditor/u);
 });
 
+test('public suggestion composer matches the channel announcement terminology', () => {
+  assert.match(suggestionPageSource, /aria-label="Предложить объявление"/u);
+  assert.match(suggestionPageSource, /placeholder="Текст объявления"/u);
+  assert.match(suggestionPageSource, /ariaLabel="Текст объявления"/u);
+  assert.doesNotMatch(suggestionPageSource, /Предложить пост|Текст идеи или подпись к фото/u);
+});
+
 test('rich channel suggestions stay within the server text limit', () => {
   assert.match(suggestionPageSource, /draftLength <= SUGGEST_DRAFT_MAX_LENGTH/u);
   assert.match(suggestionPageSource, /draftLength > SUGGEST_DRAFT_MAX_LENGTH/u);

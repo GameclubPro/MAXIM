@@ -121,6 +121,13 @@ test('channel suggestions open drafts directly, confirm rejection, and page both
   assert.match(suggestionsSource, /<MaxMarkdownPreview/u);
   assert.match(suggestionsSource, /sourceFormat=\{suggestion\.textFormat\}/u);
   assert.match(suggestionsSource, /sourceFormat=\{confirmationSuggestion\.textFormat\}/u);
+  assert.match(suggestionsSource, /suggestion\.text\.trim\(\) \? \([\s\S]*?<MaxMarkdownPreview/u);
+  assert.match(
+    suggestionsSource,
+    /confirmationSuggestion\.text\.trim\(\) \? \([\s\S]*?<MaxMarkdownPreview/u,
+  );
+  assert.match(suggestionsSource, /Не удалось создать черновик/u);
+  assert.doesNotMatch(suggestionsSource, /Предложение без текста|Не удалось создать публикацию/u);
   assert.doesNotMatch(suggestionsSource, /<p>\{suggestion\.text\}<\/p>/u);
   assert.doesNotMatch(suggestionsSource, /items\.slice\(0, 20\)/u);
   assert.doesNotMatch(suggestionsSource, /Передано в посты/u);

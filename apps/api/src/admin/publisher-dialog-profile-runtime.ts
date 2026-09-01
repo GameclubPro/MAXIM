@@ -122,7 +122,7 @@ export class PublisherDialogProfileRuntime {
     return channelDialogResponseSchema.parse({
       chatId: params.chatId,
       type: dialogType,
-      introText: 'Отправьте идею администраторам канала.',
+      introText: null,
       messages: rows
         .slice()
         .reverse()

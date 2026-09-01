@@ -37,6 +37,8 @@ const DEFAULT_SCENARIOS = [
   'publisher-channel-modules',
   'publisher-channel-suggestions-open-draft',
   'publisher-channel-suggestions-cancel-confirm',
+  'publisher-channel-suggestions-image-only-cancel-confirm',
+  'publisher-channel-suggestions-image-only-open-draft',
   'publisher-channel-suggestions-history',
   'publisher-entity-modules-vk',
   'publisher-channel-modules-vk-editor',

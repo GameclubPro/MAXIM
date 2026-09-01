@@ -251,6 +251,21 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     profile: 'publisher',
     publisherSuggestions: 'large',
   });
+  assert.deepEqual(
+    scenarios.get('publisher-channel-suggestions-image-only-cancel-confirm')?.searchParams,
+    {
+      profile: 'publisher',
+      publisherSuggestions: 'large',
+    },
+  );
+  assert.deepEqual(
+    scenarios.get('publisher-channel-suggestions-image-only-open-draft')?.searchParams,
+    {
+      profile: 'publisher',
+      publisherSuggestions: 'large',
+      channelPostSignature: 'button',
+    },
+  );
   assert.deepEqual(scenarios.get('publisher-channel-suggestions-history')?.searchParams, {
     profile: 'publisher',
     publisherSuggestions: 'large',
@@ -266,6 +281,85 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   assert.deepEqual(scenarios.get('channel-settings-publisher-policy-permission')?.searchParams, {
     publisherPolicyState: 'permission',
   });
+});
+
+test('image-only publisher suggestion has fail-closed visual guards', () => {
+  const scenarioName = 'publisher-channel-suggestions-image-only-cancel-confirm';
+  const scenario = MINIAPP_VISUAL_SCENARIOS.find((candidate) => candidate.name === scenarioName);
+  assert.equal(scenario?.routeId, 'publisher-entity-modules');
+  assert.equal(scenario?.path, '/publisher/channel/preview-channel');
+  assert.ok(scenario?.features.includes('publisher'));
+
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const behaviorStart = captureSource.indexOf(`name: '${scenarioName}'`);
+  const behaviorEnd = captureSource.indexOf(
+    "name: 'publisher-channel-suggestions-image-only-open-draft'",
+    behaviorStart,
+  );
+  const behaviorSource = captureSource.slice(behaviorStart, behaviorEnd);
+  assert.ok(behaviorStart >= 0 && behaviorEnd > behaviorStart);
+  assert.match(behaviorSource, /Автор 2/u);
+  assert.match(behaviorSource, /1 фото/u);
+  assert.match(behaviorSource, /publisher-suggestion-row__text/u);
+  assert.match(behaviorSource, /Предложение без текста/u);
+  assert.match(behaviorSource, /Отклонить предложение\?/u);
+
+  const auditSource = readFileSync(
+    new URL('../../../scripts/audit-miniapp-visual.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(auditSource, new RegExp(`'${scenarioName}'`, 'u'));
+});
+
+test('image-only publisher suggestion opens a draft with retained media', () => {
+  const scenarioName = 'publisher-channel-suggestions-image-only-open-draft';
+  const scenario = MINIAPP_VISUAL_SCENARIOS.find((candidate) => candidate.name === scenarioName);
+  assert.equal(scenario?.routeId, 'publisher-entity-modules');
+  assert.equal(scenario?.path, '/publisher/channel/preview-channel');
+
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const behaviorStart = captureSource.indexOf(`name: '${scenarioName}'`);
+  const behaviorEnd = captureSource.indexOf(
+    "name: 'publisher-channel-suggestions-history'",
+    behaviorStart,
+  );
+  const behaviorSource = captureSource.slice(behaviorStart, behaviorEnd);
+  assert.ok(behaviorStart >= 0 && behaviorEnd > behaviorStart);
+  assert.match(behaviorSource, /Автор 2/u);
+  assert.match(behaviorSource, /Открыть в редакторе/u);
+  assert.match(behaviorSource, /publication-retained-media/u);
+  assert.match(behaviorSource, /suggestion-photo-1\.png/u);
+  assert.match(behaviorSource, /💬 Комментарии/u);
+  assert.match(behaviorSource, /✍️ Предложить объявление/u);
+  assert.match(behaviorSource, /📞 Заказать рекламу/u);
+});
+
+test('public suggestion scenarios keep Major rules and reject Publisher synthetic copy', () => {
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const behaviorStart = captureSource.indexOf("name: 'channel-dialog-suggest-publisher'");
+  const behaviorEnd = captureSource.indexOf("name: 'publisher-entity-modules-cold'", behaviorStart);
+  const behaviorSource = captureSource.slice(behaviorStart, behaviorEnd);
+  const majorBehaviorStart = captureSource.indexOf("name: 'channel-dialog-suggest'");
+  const majorBehaviorSource = captureSource.slice(majorBehaviorStart, behaviorStart);
+
+  assert.ok(majorBehaviorStart >= 0 && behaviorStart > majorBehaviorStart);
+  assert.match(majorBehaviorSource, /Требования/u);
+  assert.match(majorBehaviorSource, /Только события нашего города/u);
+  assert.ok(behaviorStart >= 0 && behaviorEnd > behaviorStart);
+  assert.match(behaviorSource, /Текст объявления/u);
+  assert.match(behaviorSource, /Требования/u);
+  assert.match(behaviorSource, /Фото · market-evening\.webp/u);
+  assert.match(behaviorSource, /channel-suggest-card__status-detail/u);
+  assert.match(behaviorSource, /Предложение отправлено/u);
 });
 
 test('publisher publication buttons cover direct empty, filled, error, and keyboard states', () => {

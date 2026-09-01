@@ -466,6 +466,26 @@ const baseScenarios = [
       },
     ],
     [
+      'publisher-channel-suggestions-image-only-cancel-confirm',
+      {
+        path: '/publisher/channel/preview-channel',
+        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-channel-suggestions-image-only-open-draft',
+      {
+        path: '/publisher/channel/preview-channel',
+        searchParams: {
+          profile: 'publisher',
+          publisherSuggestions: 'large',
+          channelPostSignature: 'button',
+        },
+        features: ['publisher'],
+      },
+    ],
+    [
       'publisher-channel-suggestions-history',
       {
         path: '/publisher/channel/preview-channel',
