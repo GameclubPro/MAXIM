@@ -200,7 +200,7 @@ describe('ActionHealthService', () => {
     await service.onModuleDestroy();
   });
 
-  it('reads v2 rollout buckets while retaining dual writes for rollback', async () => {
+  it('reads and writes only v2 rollout buckets after contraction', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T20:00:59.000Z'));
     const service = new ActionHealthService(createConfigMock() as never);
     const redisInstance = redisInstances[0];
@@ -228,24 +228,19 @@ describe('ActionHealthService', () => {
     const writeCommands = redisInstance!.pipeline.mock.results
       .slice(0, 2)
       .flatMap((result) => (result.value as { commands: PipelineCommand[] }).commands);
-    expect(writeCommands.filter((command) => command.kind === 'pexpire')).toHaveLength(8);
+    expect(writeCommands.filter((command) => command.kind === 'pexpire')).toHaveLength(4);
     expect(
       writeCommands
         .filter((command) => command.kind === 'pexpire')
         .every((command) => command.args[1] === 180_000),
     ).toBe(true);
     const counterWriteCommands = writeCommands.filter((command) => command.kind === 'hincrby');
-    expect(counterWriteCommands).toHaveLength(8);
+    expect(counterWriteCommands).toHaveLength(4);
     expect(
-      counterWriteCommands.filter((command) =>
-        String(command.args[0]).startsWith('system:action-health:v1:'),
-      ),
-    ).toHaveLength(4);
-    expect(
-      counterWriteCommands.filter((command) =>
+      counterWriteCommands.every((command) =>
         String(command.args[0]).startsWith('system:action-health:v2:'),
       ),
-    ).toHaveLength(4);
+    ).toBe(true);
 
     jest.setSystemTime(new Date('2026-03-30T20:01:01.000Z'));
     await service.refreshSnapshots(60);

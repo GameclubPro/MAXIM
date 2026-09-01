@@ -56,7 +56,7 @@ const ACTION_HEALTH_SHARED_BUCKET_TTL_MS = 180_000;
 // FLAG: Advance only bridge -> switch -> contract across separate full API releases. Never skip a
 // phase: adjacent phases are deliberately read/write compatible during rollout and rollback.
 function resolveActionHealthSharedStoragePhase(): ActionHealthSharedStoragePhase {
-  return 'switch_v2_read_dual_write';
+  return 'contract_v2_only';
 }
 
 @Injectable()
