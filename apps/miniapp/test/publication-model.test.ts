@@ -598,7 +598,7 @@ test('previews Publisher-owned channel suggestions without importing Major chann
   ]);
 });
 
-test('deduplicates system button previews across mixed publication targets', () => {
+test('does not merge incompatible system button previews across targets', () => {
   assert.deepEqual(
     buildPublicationSystemButtons([
       chatTarget,
@@ -610,6 +610,23 @@ test('deduplicates system button previews across mixed publication targets', () 
         ...channelTarget,
         id: 'channel-2',
         channelOverview: { commentsEnabled: false, postSuggestionsEnabled: true },
+      },
+    ]),
+    [],
+  );
+});
+
+test('keeps an exact shared system button preview for matching targets', () => {
+  assert.deepEqual(
+    buildPublicationSystemButtons([
+      {
+        ...channelTarget,
+        channelOverview: { commentsEnabled: true, postSuggestionsEnabled: true },
+      },
+      {
+        ...channelTarget,
+        id: 'channel-2',
+        channelOverview: { commentsEnabled: true, postSuggestionsEnabled: true },
       },
     ]),
     [
@@ -848,7 +865,7 @@ test('restores publisher readiness with an autosaved off-page target', () => {
   assert.deepEqual(restored?.targets[0]?.readiness, readiness);
 });
 
-test('restores Publisher-owned system button metadata from an autosaved draft', () => {
+test('restores per-target Publisher system button metadata from an autosaved draft', () => {
   const draft = createEmptyPublicationDraft([
     { ...chatTarget, publisherChatCommentsEnabled: true },
     {
@@ -868,7 +885,11 @@ test('restores Publisher-owned system button metadata from an autosaved draft', 
   assert.equal(restored?.targets[0]?.publisherChatCommentsEnabled, true);
   assert.equal(restored?.targets[1]?.publisherChannelCommentsEnabled, true);
   assert.equal(restored?.targets[1]?.publisherChannelSuggestionsEnabled, true);
-  assert.deepEqual(buildPublicationSystemButtons(restored?.targets ?? []), [
+  assert.deepEqual(buildPublicationSystemButtons(restored?.targets ?? []), []);
+  assert.deepEqual(buildPublicationSystemButtons(restored?.targets.slice(0, 1) ?? []), [
+    { kind: 'comments', text: '💬 Комментарии' },
+  ]);
+  assert.deepEqual(buildPublicationSystemButtons(restored?.targets.slice(1, 2) ?? []), [
     { kind: 'comments', text: '💬 Комментарии' },
     { kind: 'suggest', text: '✍️ Предложить объявление' },
   ]);
@@ -1037,9 +1058,24 @@ test('keeps retained asset references and builds a real video payload', () => {
       fileName: 'photo.jpg',
       sizeBytes: 120,
     },
+    {
+      id: 'asset-image-2',
+      type: 'image',
+      mimeType: 'image/png',
+      fileName: 'second.png',
+      sizeBytes: 90,
+    },
   ];
+  retainedDraft.images = [{ base64: 'bmV3LWltYWdl', mimeType: 'image/jpeg', fileName: 'new.jpg' }];
   assert.deepEqual(buildPublicationContent(retainedDraft).media, [
     { type: 'image-ref', assetId: 'asset-image-1' },
+    { type: 'image-ref', assetId: 'asset-image-2' },
+    {
+      type: 'image',
+      base64: 'bmV3LWltYWdl',
+      mimeType: 'image/jpeg',
+      fileName: 'new.jpg',
+    },
   ]);
 
   const videoDraft = createEmptyPublicationDraft([channelTarget]);

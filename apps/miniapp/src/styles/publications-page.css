@@ -618,7 +618,7 @@
 
   .publication-editor-section__head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
@@ -650,7 +650,6 @@
     font: inherit;
   }
 
-  .publication-retained-media,
   .publications-inline-notice,
   .publications-calendar-error {
     min-height: 44px;
@@ -665,44 +664,6 @@
     color: var(--publication-success-ink-strong);
     font-size: 0.75rem;
     font-weight: 700;
-  }
-
-  .publication-retained-media button {
-    width: 44px;
-    height: 44px;
-    display: grid;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    place-items: center;
-  }
-
-  .publication-retained-media button svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .publication-retained-media.has-previews {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 44px;
-  }
-
-  .publication-retained-media__previews {
-    min-width: 0;
-    display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
-    gap: 4px;
-  }
-
-  .publication-retained-media__previews img {
-    width: 100%;
-    aspect-ratio: 1;
-    display: block;
-    object-fit: cover;
-    border-radius: 6px;
-    background: var(--color-surface-muted);
   }
 
   .publications-inline-notice.is-warning {

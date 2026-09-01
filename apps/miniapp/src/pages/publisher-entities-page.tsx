@@ -164,6 +164,11 @@ export function PublisherEntitiesPage({
   const otherTypeCount = summary[otherView];
   const hasCatalogControls =
     summary.total > 0 || query.trim().length > 0 || readinessFilter !== 'all';
+  const showCatalogStatus =
+    searchSettling ||
+    debouncedQuery.length > 0 ||
+    readinessFilter !== 'all' ||
+    entities.length < filteredTotal;
   const shouldVirtualize = entities.length > PUBLISHER_ENTITY_VIRTUALIZATION_THRESHOLD;
   const virtualRange = useMemo(
     () =>
@@ -251,23 +256,12 @@ export function PublisherEntitiesPage({
         await queryClient.resetQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
         pushToast({
           tone: 'info',
-          title: 'Список обновлён',
-          description: 'Новых проверок доступа не потребовалось.',
+          title: 'Подключения актуальны',
         });
         return;
       }
 
       setBulkRefresh({ phase: 'polling', queuedCount: refresh.queuedCount });
-      pushToast({
-        tone: 'info',
-        title: 'Проверка запущена',
-        description: `В очереди ${formatRussianCountLabel(
-          refresh.queuedCount,
-          'подключение',
-          'подключения',
-          'подключений',
-        )}.`,
-      });
 
       let consecutiveReadFailures = 0;
       for (const delayMs of PUBLISHER_BULK_REFRESH_POLL_DELAYS_MS) {
@@ -291,7 +285,6 @@ export function PublisherEntitiesPage({
           pushToast({
             tone: 'success',
             title: 'Подключения обновлены',
-            description: 'Показаны свежие статусы доступа Публика.',
           });
           return;
         }
@@ -301,20 +294,16 @@ export function PublisherEntitiesPage({
       pushToast({
         tone: consecutiveReadFailures >= 2 ? 'danger' : 'info',
         title:
-          consecutiveReadFailures >= 2
-            ? 'Проверка запущена, но список недоступен'
-            : 'MAX ещё проверяет подключения',
+          consecutiveReadFailures >= 2 ? 'Не удалось обновить список' : 'Проверка продолжается',
         description:
-          consecutiveReadFailures >= 2
-            ? 'Повторите обновление списка позже.'
-            : 'Запрос принят. Свежий статус появится после завершения проверки.',
+          consecutiveReadFailures >= 2 ? 'Повторите позже.' : 'Обновите список через минуту.',
       });
     } catch (error: unknown) {
       if (!abortController.signal.aborted) {
         pushToast({
           tone: 'danger',
-          title: 'Не удалось запустить проверку',
-          description: describeUserFacingError(error, 'Повторите запрос позже.'),
+          title: 'Не удалось проверить подключения',
+          description: describeUserFacingError(error, 'Повторите позже.'),
         });
       }
     } finally {
@@ -359,8 +348,8 @@ export function PublisherEntitiesPage({
         if (!abortController.signal.aborted) {
           pushToast({
             tone: 'danger',
-            title: 'Не удалось запустить проверку',
-            description: describeUserFacingError(error, 'Повторите запрос позже.'),
+            title: 'Не удалось проверить подключение',
+            description: describeUserFacingError(error, 'Повторите позже.'),
           });
         }
         return;
@@ -369,11 +358,6 @@ export function PublisherEntitiesPage({
         return;
       }
       setEntityRefresh({ entityKey, phase: 'polling' });
-      pushToast({
-        tone: 'info',
-        title: 'Проверка поставлена в очередь',
-        description: 'Жду новый статус от MAX.',
-      });
 
       const result = await pollPublisherEntityRefresh({
         initialEntity: entity,
@@ -392,33 +376,31 @@ export function PublisherEntitiesPage({
         await queryClient.resetQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
         const presentation = getPublisherReadinessPresentation(result.entity.readiness);
         pushToast({
-          tone: 'success',
-          title: result.entity.readiness.canPublish
-            ? 'Доступ Публика подтверждён'
-            : 'Проверка завершена',
-          description: presentation.detail,
+          tone: result.entity.readiness.canPublish ? 'success' : 'info',
+          title: result.entity.readiness.canPublish ? 'Подключение готово' : 'Проверка завершена',
+          description: result.entity.readiness.canPublish ? undefined : presentation.detail,
         });
         return;
       }
       if (result.status === 'read_failed') {
         pushToast({
           tone: 'danger',
-          title: 'Проверка запущена, но статус недоступен',
-          description: describeUserFacingError(result.error, 'Обновите список позже.'),
+          title: 'Не удалось обновить статус',
+          description: describeUserFacingError(result.error, 'Повторите позже.'),
         });
         return;
       }
       pushToast({
         tone: 'info',
-        title: 'Статус пока не обновился',
-        description: 'Запрос принят. Повторите проверку через минуту.',
+        title: 'Проверка продолжается',
+        description: 'Обновите статус через минуту.',
       });
     } catch (error: unknown) {
       if (!abortController.signal.aborted) {
         pushToast({
           tone: 'danger',
-          title: 'Проверка запущена, но статус недоступен',
-          description: describeUserFacingError(error, 'Обновите список позже.'),
+          title: 'Не удалось обновить статус',
+          description: describeUserFacingError(error, 'Повторите позже.'),
         });
       }
     } finally {
@@ -496,7 +478,7 @@ export function PublisherEntitiesPage({
         <Link
           to={buildPublisherEntityModulesRoute(entity)}
           className="publisher-entity-row__main"
-          aria-label={`Открыть модули для ${
+          aria-label={`Открыть разделы для ${
             entity.title || (entity.entityType === 'channel' ? 'канала' : 'чата')
           }`}
         >
@@ -598,7 +580,7 @@ export function PublisherEntitiesPage({
           <span>
             {bulkRefresh.phase === 'enqueueing'
               ? 'Запускаю проверку MAX'
-              : `Проверяю подключений: ${bulkRefresh.queuedCount}`}
+              : `Проверяю подключения · ${bulkRefresh.queuedCount}`}
           </span>
         </div>
       ) : null}
@@ -636,13 +618,15 @@ export function PublisherEntitiesPage({
                 </button>
               ))}
             </div>
-            <span role="status">
-              {formatEntityListStatus(
-                entities.length,
-                filteredTotal,
-                entitiesQuery.isLoading || searchSettling,
-              )}
-            </span>
+            {showCatalogStatus ? (
+              <span role="status">
+                {formatEntityListStatus(
+                  entities.length,
+                  filteredTotal,
+                  entitiesQuery.isLoading || searchSettling,
+                )}
+              </span>
+            ) : null}
           </div>
         </>
       ) : null}

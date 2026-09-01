@@ -1,0 +1,24 @@
+@layer pages {
+  .publication-editor-section__preview-target {
+    min-width: 0;
+    max-width: min(58%, 240px);
+    min-height: 34px;
+    margin-left: auto;
+    padding: 0 9px;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: 7px;
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 720;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .publication-editor-section__preview-target:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}

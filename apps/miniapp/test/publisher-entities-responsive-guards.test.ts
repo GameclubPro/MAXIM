@@ -151,4 +151,9 @@ test('publisher home runs a real bounded MAX recheck and exposes forwarding onbo
     pageSource,
     /aria-label="Обновить чаты и каналы"[\s\S]*?resetQueries\(\{ queryKey: entitiesQueryKey/u,
   );
+  assert.match(pageSource, /Проверяю подключения ·/u);
+  assert.doesNotMatch(
+    pageSource,
+    /Проверка поставлена в очередь|description: 'Жду новый статус|MAX ещё проверяет/u,
+  );
 });

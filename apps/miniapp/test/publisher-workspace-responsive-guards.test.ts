@@ -101,6 +101,11 @@ test('publisher target selection is a full-screen sheet with stable virtual rows
   assert.match(pickerSource, /remoteSource\.fetchNextPageError \|\|/u);
   assert.match(
     pickerSource,
+    /`Показано \$\{filteredChoices\.length\} из \$\{remoteSource\.filteredTotal\}`/u,
+  );
+  assert.doesNotMatch(pickerSource, /Выберите для публикации/u);
+  assert.match(
+    pickerSource,
     /className=\{cn\('publication-target-picker__list'[\s\S]*?publication-target-picker__pagination[\s\S]*?publication-target-picker__load-more/u,
   );
   assert.match(

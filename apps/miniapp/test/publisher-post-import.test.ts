@@ -220,7 +220,12 @@ test('publication import stays isolated and reloadable without replacing the man
     pageSource,
     /editorContext\?\.kind === 'edit' \|\| editorContext\?\.kind === 'import'/u,
   );
-  assert.match(pageSource, /savedCreateDraftRef\.current = draft/u);
+  assert.match(pageSource, /savedCreateDraftRef\.current = \{ draft, missingImageCount \}/u);
+  assert.match(pageSource, /replaceDraft\(isolatedDraft\)/u);
+  assert.match(
+    pageSource,
+    /replaceDraft\([\s\S]*?savedCreateDraft\?\.draft[\s\S]*?savedCreateDraft\?\.missingImageCount/u,
+  );
   assert.match(pageSource, /mode === 'import'[\s\S]*?expectedRevision: details\.version/u);
   assert.match(pageSource, /setComposeRoute\(true,[\s\S]*?importDraftId/u);
   assert.match(controllerSource, /getPublisherPostImportByToken\(api, validRouteToken/u);

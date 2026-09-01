@@ -31,60 +31,68 @@ test('published and cancelled review outcomes stay authoritative over delivery',
     unreachableCount: 1,
   };
 
-  assert.equal(
+  assert.deepEqual(
     resolveSuggestionStatus(
       createSuggestion({ reviewStatus: 'published', suggestionDelivery: unreachableDelivery }),
-    ).headline,
-    'Редактор создал публикацию',
+    ),
+    { badge: 'Принято', tone: 'published' },
   );
-  assert.equal(
+  assert.deepEqual(
     resolveSuggestionStatus(
       createSuggestion({
         reviewStatus: 'published',
         publishedUrl: 'https://max.ru/channel/message/1',
         suggestionDelivery: unreachableDelivery,
       }),
-    ).headline,
-    'Пост вышел в канале',
+    ),
+    { badge: 'Опубликовано', tone: 'published' },
   );
-  assert.equal(
+  assert.deepEqual(
     resolveSuggestionStatus(
       createSuggestion({ reviewStatus: 'cancelled', suggestionDelivery: unreachableDelivery }),
-    ).headline,
-    'Идея не ушла в публикацию',
+    ),
+    { badge: 'Отклонено', tone: 'cancelled' },
   );
 });
 
-test('maps aggregate delivery states to truthful public suggestion statuses', () => {
+test('maps aggregate delivery states to concise public suggestion statuses', () => {
   const cases = [
     {
       state: 'queued' as const,
       counts: [0, 2, 2, 0] as const,
-      headline: 'Ждёт доставки редакторам',
+      expected: { badge: 'В очереди', tone: 'pending' as const },
     },
     {
       state: 'delivered' as const,
       counts: [2, 2, 0, 0] as const,
-      headline: 'Материал доставлен редакторам',
+      expected: { badge: 'На рассмотрении', tone: 'pending' as const },
     },
     {
       state: 'partially_delivered' as const,
       counts: [1, 3, 0, 2] as const,
-      headline: 'Доставлено части редакторов',
+      expected: {
+        badge: 'Доставлено частично',
+        detail: 'Доставлено редакторам: 1 из 3',
+        tone: 'pending' as const,
+      },
     },
     {
       state: 'no_reachable_editor' as const,
       counts: [0, 2, 0, 2] as const,
-      headline: 'Сохранено, редакторы пока недоступны',
+      expected: {
+        badge: 'Не доставлено',
+        detail: 'Редакторы пока недоступны',
+        tone: 'pending' as const,
+      },
     },
     {
       state: 'uncertain' as const,
       counts: [0, 1, 0, 0] as const,
-      headline: 'Доставка требует проверки',
+      expected: { badge: 'Проверяем', tone: 'pending' as const },
     },
   ];
 
-  for (const { state, counts, headline } of cases) {
+  for (const { state, counts, expected } of cases) {
     const [deliveredCount, targetCount, pendingCount, unreachableCount] = counts;
     const status = resolveSuggestionStatus(
       createSuggestion({
@@ -98,12 +106,11 @@ test('maps aggregate delivery states to truthful public suggestion statuses', ()
       }),
     );
 
-    assert.equal(status.headline, headline);
-    assert.equal(status.tone, 'pending');
+    assert.deepEqual(status, expected);
   }
 });
 
-test('partial delivery exposes only aggregate counts', () => {
+test('partial delivery exposes only the useful aggregate count', () => {
   const status = resolveSuggestionStatus(
     createSuggestion({
       suggestionDelivery: {
@@ -116,22 +123,22 @@ test('partial delivery exposes only aggregate counts', () => {
     }),
   );
 
-  assert.equal(
-    status.note,
-    'Подтверждена доставка 1 из 3. Для остальных доставка пока не подтверждена.',
-  );
+  assert.deepEqual(status, {
+    badge: 'Доставлено частично',
+    detail: 'Доставлено редакторам: 1 из 3',
+    tone: 'pending',
+  });
 });
 
-test('legacy undelivered suggestions are described as saved rather than sent', () => {
+test('legacy undelivered suggestions remain visibly distinct from delivered ones', () => {
   assert.deepEqual(resolveSuggestionStatus(createSuggestion({ delivered: false })), {
-    badge: 'Сохранено',
-    headline: 'Предложка сохранена',
-    note: 'Доставка редакторам пока не подтверждена.',
+    badge: 'Не доставлено',
+    detail: 'Доставка редакторам не подтверждена',
     tone: 'pending',
   });
 
-  assert.equal(
-    resolveSuggestionStatus(createSuggestion({ delivered: true })).headline,
-    'Материал ушёл редакторам',
-  );
+  assert.deepEqual(resolveSuggestionStatus(createSuggestion({ delivered: true })), {
+    badge: 'На рассмотрении',
+    tone: 'pending',
+  });
 });

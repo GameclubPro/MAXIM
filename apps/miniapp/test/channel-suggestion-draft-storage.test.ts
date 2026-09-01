@@ -94,6 +94,7 @@ test('restores a bounded text and photo draft with its exact retry identity', ()
   assert.equal(restored?.requestIdentity.requestId, 'publisher-suggestion_12345678');
   assert.equal(restored?.imagesNeedReselection, false);
   assert.equal(restored?.imageCount, 1);
+  assert.equal(restored?.missingImageCount, 0);
   assert.equal(restored?.threadScope, THREAD_SCOPE_A);
 });
 
@@ -120,6 +121,50 @@ test('keeps text but requires an explicit decision when stored photo bytes are m
   assert.deepEqual(restored?.attachments, []);
   assert.equal(restored?.imagesNeedReselection, true);
   assert.equal(restored?.imageCount, 2);
+  assert.equal(restored?.missingImageCount, 2);
+});
+
+test('keeps reselected photos while reporting the exact remainder still missing', () => {
+  const restored = parseChannelSuggestionDraftEnvelope(
+    {
+      version: 1,
+      savedAt: '2026-09-01T08:59:00.000Z',
+      expiresAt: '2026-09-04T08:59:00.000Z',
+      text: 'Подпись к трём фото',
+      imageCount: 3,
+      threadScope: THREAD_SCOPE_A,
+      requestIdentity: {
+        requestId: null,
+        draftRevision: 2,
+        requestRevision: null,
+      },
+    },
+    Date.parse('2026-09-01T09:00:00.000Z'),
+    {
+      version: 1,
+      attachments: [
+        {
+          type: 'image',
+          base64: 'aW1hZ2U=',
+          mimeType: 'image/jpeg',
+          fileName: 'restored.jpg',
+          size: 5,
+        },
+        {
+          type: 'image',
+          base64: '',
+          mimeType: 'image/jpeg',
+          fileName: 'damaged.jpg',
+          size: 0,
+        },
+      ],
+    },
+  );
+
+  assert.equal(restored?.imagesNeedReselection, true);
+  assert.equal(restored?.imageCount, 3);
+  assert.equal(restored?.missingImageCount, 2);
+  assert.equal(restored?.attachments[0]?.fileName, 'restored.jpg');
 });
 
 test('rejects expired drafts and identities that are not bound to a revision', () => {
@@ -295,6 +340,44 @@ test('localStorage fallback preserves text and retry identity without photo byte
     assert.deepEqual(restored?.attachments, []);
     assert.equal(restored?.imagesNeedReselection, true);
     assert.equal(restored?.imageCount, 1);
+    assert.equal(restored?.missingImageCount, 1);
+
+    const reselectedAttachment = {
+      type: 'image' as const,
+      base64: 'cmVzZWxlY3RlZA==',
+      mimeType: 'image/jpeg',
+      fileName: 'reselected.jpg',
+      size: 10,
+      previewUrl: 'data:image/jpeg;base64,cmVzZWxlY3RlZA==',
+    };
+    await saveChannelSuggestionDraft(scope, {
+      text: 'Одно фото выбрано, ещё два нужны',
+      attachments: [reselectedAttachment],
+      requestIdentity: {
+        requestId: null,
+        draftRevision: 4,
+        requestRevision: null,
+      },
+      imagesNeedReselection: true,
+      imageCount: 3,
+    });
+    const partialEnvelope = JSON.parse(values.get(storageKey) ?? 'null');
+    const partialReload = parseChannelSuggestionDraftEnvelope(partialEnvelope, Date.now(), {
+      version: 1,
+      attachments: [
+        {
+          type: 'image',
+          base64: reselectedAttachment.base64,
+          mimeType: reselectedAttachment.mimeType,
+          fileName: reselectedAttachment.fileName,
+          size: reselectedAttachment.size,
+        },
+      ],
+    });
+    assert.equal(partialReload?.attachments.length, 1);
+    assert.equal(partialReload?.imageCount, 3);
+    assert.equal(partialReload?.missingImageCount, 2);
+    assert.equal(partialReload?.imagesNeedReselection, true);
 
     await clearChannelSuggestionDraft(scope);
     assert.equal(values.has(storageKey), false);

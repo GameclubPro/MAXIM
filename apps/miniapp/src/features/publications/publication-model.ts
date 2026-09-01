@@ -566,40 +566,40 @@ export function buildPublicationSystemButtons(
     | 'publisherChatCommentsEnabled'
   >[],
 ): BroadcastSystemButtonPreview[] {
-  return buildChannelBroadcastSystemButtons({
-    commentsEnabled: targets.some(
-      (target) =>
+  const previews = targets.map((target) =>
+    buildChannelBroadcastSystemButtons({
+      commentsEnabled:
         (target.entityType === 'chat' && target.publisherChatCommentsEnabled === true) ||
         (target.entityType === 'channel' &&
           (target.publisherChannelCommentsEnabled === true ||
-            target.channelOverview?.commentsEnabled)),
-    ),
-    postSuggestionsEnabled: targets.some(
-      (target) =>
+            target.channelOverview?.commentsEnabled === true)),
+      postSuggestionsEnabled:
         target.entityType === 'channel' &&
         (target.publisherChannelSuggestionsEnabled === true ||
-          target.channelOverview?.postSuggestionsEnabled),
-    ),
-    postSuggestionsButtonText: targets.some(
-      (target) =>
-        target.entityType === 'channel' && target.publisherChannelSuggestionsEnabled === true,
-    )
-      ? '✍️ Предложить объявление'
-      : null,
-    ctaButtonEnabled: targets.some(
-      (target) =>
+          target.channelOverview?.postSuggestionsEnabled === true),
+      postSuggestionsButtonText:
+        target.entityType === 'channel' && target.publisherChannelSuggestionsEnabled === true
+          ? '✍️ Предложить объявление'
+          : null,
+      ctaButtonEnabled:
         target.entityType === 'channel' &&
         target.publisherChannelPostSignature?.enabled === true &&
         target.publisherChannelPostSignature.presentation === 'button',
-    ),
-    ctaButtonText:
-      targets.find(
-        (target) =>
-          target.entityType === 'channel' &&
-          target.publisherChannelPostSignature?.enabled === true &&
-          target.publisherChannelPostSignature.presentation === 'button',
-      )?.publisherChannelPostSignature?.text ?? null,
-  });
+      ctaButtonText:
+        target.entityType === 'channel' ? target.publisherChannelPostSignature?.text : null,
+    }),
+  );
+  const firstPreview = previews[0] ?? [];
+  const allMatch = previews.every(
+    (preview) =>
+      preview.length === firstPreview.length &&
+      preview.every(
+        (button, index) =>
+          button.kind === firstPreview[index]?.kind && button.text === firstPreview[index]?.text,
+      ),
+  );
+
+  return allMatch ? firstPreview : [];
 }
 
 export function getPublicationTargetKey(
@@ -878,34 +878,37 @@ export function buildPublicationContent(draft: PublicationDraft): PublicationCon
   const buttons = (draft.buttonEnabled ? trimBroadcastLinkButtons(draft.buttons) : []).map(
     (button, index) => ({ ...button, row: index }),
   );
-  const retainedMedia = draft.retainedAssets.map((asset) =>
-    asset.type === 'video'
-      ? { type: 'video-ref' as const, assetId: asset.id }
-      : { type: 'image-ref' as const, assetId: asset.id },
-  );
-  const newMedia =
+  const selectedVideo =
     draft.mediaType === 'video' && (draft.mediaBase64 || draft.mediaPayload)
-      ? [
-          {
-            type: 'video' as const,
-            payload: draft.mediaPayload,
-            base64: draft.mediaBase64,
-            mimeType: draft.mediaMimeType,
-            fileName: draft.mediaFileName,
-          },
-        ]
-      : draft.images.map((image) => ({
-          type: 'image' as const,
-          base64: image.base64,
-          mimeType: image.mimeType,
-          fileName: image.fileName,
-        }));
+      ? {
+          type: 'video' as const,
+          payload: draft.mediaPayload,
+          base64: draft.mediaBase64,
+          mimeType: draft.mediaMimeType,
+          fileName: draft.mediaFileName,
+        }
+      : null;
+  const retainedVideo = draft.retainedAssets.find((asset) => asset.type === 'video');
+  const retainedImages = draft.retainedAssets
+    .filter((asset) => asset.type === 'image')
+    .map((asset) => ({ type: 'image-ref' as const, assetId: asset.id }));
+  const newImages = draft.images.map((image) => ({
+    type: 'image' as const,
+    base64: image.base64,
+    mimeType: image.mimeType,
+    fileName: image.fileName,
+  }));
+  const media = selectedVideo
+    ? [selectedVideo]
+    : retainedVideo
+      ? [{ type: 'video-ref' as const, assetId: retainedVideo.id }]
+      : [...retainedImages, ...newImages];
 
   return {
     text: draft.text.trim(),
     textFormat: draft.textFormat,
     buttons,
-    media: newMedia.length > 0 ? newMedia : retainedMedia,
+    media,
   };
 }
 

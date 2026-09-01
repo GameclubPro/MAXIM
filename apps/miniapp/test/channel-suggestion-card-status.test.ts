@@ -19,11 +19,12 @@ const suggestionCss = readFileSync(
   'utf8',
 );
 
-test('both suggestion histories render the aggregate status explanation', () => {
+test('both suggestion histories render a concise status and exceptional detail only', () => {
   for (const source of [dedicatedHistorySource, legacyPageSource]) {
-    assert.match(source, /className="channel-suggest-card__status-copy"/u);
-    assert.match(source, /<strong>\{status\.headline\}<\/strong>/u);
-    assert.match(source, /<span>\{status\.note\}<\/span>/u);
+    assert.match(source, /\{status\.badge\}/u);
+    assert.match(source, /status\.detail/u);
+    assert.doesNotMatch(source, /channel-suggest-card__status-copy/u);
+    assert.doesNotMatch(source, /status\.(?:headline|note)/u);
   }
   assert.match(
     dedicatedPageSource,
@@ -53,13 +54,22 @@ test('suggestion child chunks recover without crashing the route', () => {
   assert.match(dedicatedPageSource, /return \{ default: LazySuggestionChunkLoadFailure/u);
 });
 
-test('suggestion status copy stays compact and unframed', () => {
-  assert.match(suggestionCss, /\.channel-suggest-card__status-copy \{[\s\S]*?display: grid;/u);
+test('suggestion status stays compact without an explanatory block', () => {
   assert.match(
     suggestionCss,
-    /\.channel-suggest-card__status-copy strong \{[\s\S]*?font-size: 0\.75rem;/u,
+    /\.channel-suggest-status \{[\s\S]*?min-height: 28px;[\s\S]*?font-size: 0\.7rem;/u,
   );
-  assert.doesNotMatch(suggestionCss, /\.channel-suggest-card__status-copy \{[^}]*background:/u);
+  assert.doesNotMatch(suggestionCss, /channel-suggest-card__status-copy/u);
+  assert.match(suggestionCss, /\.channel-suggest-card__status-detail/u);
+});
+
+test('legacy comments use one factual empty state and direct success messages', () => {
+  assert.match(legacyPageSource, /<strong>Комментариев пока нет<\/strong>/u);
+  assert.doesNotMatch(legacyPageSource, /Здесь пока тихо|Напишите первый комментарий/u);
+  assert.doesNotMatch(
+    legacyPageSource,
+    /title: 'Готово',[\s\S]*?Комментарий (?:отправлен|обновлён|удалён)/u,
+  );
 });
 
 test('suggestion keyboard effects survive polling and restore existing focus', () => {

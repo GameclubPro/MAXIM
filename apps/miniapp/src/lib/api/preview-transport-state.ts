@@ -742,7 +742,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     },
     suggest: {
       introText:
-        'Предложение поста сразу уходит редактору канала.\n\nМожно приложить фото или видео и потом отследить статус прямо здесь.',
+        'Только события нашего города с датой, адресом и контактами.\n\nБез дублей, запрещённых товаров и скрытой рекламы.',
       messages: [
         buildPreviewDialogMessage({
           id: 'channel-suggest-1',

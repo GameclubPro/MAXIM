@@ -43,7 +43,7 @@ test('blocked Publik modules explain readiness and run one bounded targeted rech
   assert.match(modulesCss, /\.publisher-entity-modules-page__recheck \{[\s\S]*?min-height: 44px;/u);
 });
 
-test('channel suggestions confirm terminal actions and page both server views independently', () => {
+test('channel suggestions open drafts directly, confirm rejection, and page both views', () => {
   assert.match(modulesSource, /<LazyPublisherSuggestionsInbox/u);
   assert.match(modulesSource, /await import\('\.\/publisher-suggestions-inbox'\)/u);
   assert.match(
@@ -61,28 +61,44 @@ test('channel suggestions confirm terminal actions and page both server views in
   assert.match(suggestionsSource, /if \(!enabled\) \{\s*return null;/u);
   assert.match(suggestionsSource, /<LazyActionConfirmSheet/u);
   assert.match(suggestionsSource, /await import\('\.\.\/components\/ui\/action-confirm-sheet'\)/u);
-  assert.match(suggestionsSource, /'Открыть предложку в редакторе\?'/u);
-  assert.match(suggestionsSource, /'Отклонить предложку\?'/u);
+  assert.doesNotMatch(suggestionsSource, /Открыть предложение в редакторе\?/u);
+  assert.match(suggestionsSource, /title="Отклонить предложение\?"/u);
   assert.match(
+    suggestionsSource,
+    /onClick=\{\(\) => void openSuggestionDraft\(suggestion\.id\)\}/u,
+  );
+  assert.match(suggestionsSource, /setConfirmation\(\{ suggestionId: suggestion\.id \}\)/u);
+  assert.match(suggestionsSource, /Отменить это действие нельзя\./u);
+  assert.match(suggestionsSource, /tone="danger"/u);
+  assert.match(suggestionsSource, /isBusy=\{cancelMutation\.isPending\}/u);
+  assert.match(suggestionsSource, /onClose=\{\(\) => setConfirmation\(null\)\}/u);
+  assert.match(
+    suggestionsSource,
+    /onConfirm=\{\(\) => cancelMutation\.mutate\(confirmationSuggestion\.id\)\}/u,
+  );
+  assert.doesNotMatch(
     suggestionsSource,
     /setConfirmation\(\{ suggestionId: suggestion\.id, action: 'draft' \}\)/u,
   );
   assert.match(
     suggestionsSource,
-    /setConfirmation\(\{ suggestionId: suggestion\.id, action: 'cancel' \}\)/u,
+    /const draftOpenGateRef = useRef\(new PublisherSuggestionDraftOpenGate\(\)\)/u,
   );
-  assert.match(suggestionsSource, /Отменить это действие нельзя\./u);
   assert.match(
     suggestionsSource,
-    /tone=\{confirmation\.action === 'draft' \? 'accent' : 'danger'\}/u,
+    /const normalizedSuggestionId = gate\.tryStart\(suggestionId\)[\s\S]*?const response = await reviewPublisherSuggestion/u,
   );
-  assert.match(suggestionsSource, /isBusy=\{reviewMutation\.isPending\}/u);
-  assert.match(suggestionsSource, /onClose=\{\(\) => setConfirmation\(null\)\}/u);
-  assert.match(suggestionsSource, /action: confirmation\.action/u);
-  assert.doesNotMatch(
+  assert.match(suggestionsSource, /finally \{[\s\S]*?gate\.finish\(normalizedSuggestionId\)/u);
+  assert.match(
     suggestionsSource,
-    /onClick=\{\(\) =>\s*reviewMutation\.mutate\(\{ suggestionId: suggestion\.id/u,
+    /if \(!draftOpenGateRef\.current\.tryCommitNavigation\(\)\) \{[\s\S]*?navigate\(`/u,
   );
+  assert.match(suggestionsSource, /disabled=\{draftOpenBusy \|\| cancelMutation\.isPending\}/u);
+  assert.match(
+    suggestionsSource,
+    /aria-busy=\{openingDraftSuggestionIds\.has\(suggestion\.id\)\}/u,
+  );
+  assert.match(suggestionsSource, /'Готовим черновик'/u);
   assert.match(suggestionsSource, /useInfiniteQuery/u);
   assert.match(suggestionsSource, /requestView: 'pending'/u);
   assert.match(suggestionsSource, /requestView: 'history'/u);

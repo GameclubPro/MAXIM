@@ -26,12 +26,54 @@ type PublicationComposerState = {
   hydrated: boolean;
   hasSavedDraft: boolean;
   imagesNeedReselection: boolean;
+  missingImageCount: number;
   persistencePending: boolean;
+  replaceDraft: (draft: PublicationDraft, missingImageCount?: number) => void;
   clearDraft: (targets?: PublicationTarget[]) => Promise<void>;
   discardMissingImages: () => void;
-  resolveMissingImages: () => void;
+  resolveMissingImages: (currentImageCount: number) => void;
   flushDraft: () => Promise<void>;
 };
+
+export type PublicationImageRecoveryState = {
+  missingImageCount: number;
+  expectedImageCount: number | null;
+};
+
+export function createPublicationImageRecoveryState(
+  missingImageCount: number,
+  currentImageCount: number,
+): PublicationImageRecoveryState {
+  const normalizedMissingImageCount = Number.isSafeInteger(missingImageCount)
+    ? Math.max(0, missingImageCount)
+    : 0;
+  const normalizedCurrentImageCount = Number.isSafeInteger(currentImageCount)
+    ? Math.max(0, currentImageCount)
+    : 0;
+  return {
+    missingImageCount: normalizedMissingImageCount,
+    expectedImageCount:
+      normalizedMissingImageCount > 0
+        ? normalizedCurrentImageCount + normalizedMissingImageCount
+        : null,
+  };
+}
+
+export function resolvePublicationImageRecoveryState(
+  recovery: PublicationImageRecoveryState,
+  currentImageCount: number,
+): PublicationImageRecoveryState {
+  if (recovery.expectedImageCount === null) {
+    return createPublicationImageRecoveryState(0, currentImageCount);
+  }
+  const normalizedCurrentImageCount = Number.isSafeInteger(currentImageCount)
+    ? Math.max(0, currentImageCount)
+    : 0;
+  return createPublicationImageRecoveryState(
+    Math.max(0, recovery.expectedImageCount - normalizedCurrentImageCount),
+    normalizedCurrentImageCount,
+  );
+}
 
 export function usePublicationComposer(
   editorOpen: boolean,
@@ -43,19 +85,20 @@ export function usePublicationComposer(
   const [draft, setDraft] = useState<PublicationDraft>(() => createEmptyPublicationDraft());
   const [hydrated, setHydrated] = useState(false);
   const [hasSavedDraft, setHasSavedDraft] = useState(false);
-  const [imagesNeedReselection, setImagesNeedReselection] = useState(false);
+  const [missingImageCount, setMissingImageCount] = useState(0);
   const [persistencePending, setPersistencePending] = useState(false);
   const saveTimerRef = useRef<number | null>(null);
   const persistenceOperationRef = useRef<Promise<void>>(Promise.resolve());
   const mountedRef = useRef(true);
   const draftRef = useRef(draft);
-  const imagesNeedReselectionRef = useRef(imagesNeedReselection);
+  const missingImageCountRef = useRef(missingImageCount);
+  const missingImageRecoveryRef = useRef<{ expectedImageCount: number } | null>(null);
   const hydratedRef = useRef(hydrated);
   const persistenceEnabledRef = useRef(persistenceEnabled);
   const normalizedUserId = enabled ? userId?.trim() || null : null;
 
   draftRef.current = draft;
-  imagesNeedReselectionRef.current = imagesNeedReselection;
+  missingImageCountRef.current = missingImageCount;
   hydratedRef.current = hydrated;
   persistenceEnabledRef.current = persistenceEnabled;
 
@@ -65,6 +108,31 @@ export function usePublicationComposer(
       mountedRef.current = false;
     };
   }, []);
+
+  const updateMissingImageRecovery = useCallback(
+    (nextMissingImageCount: number, currentImageCount: number) => {
+      const recovery = createPublicationImageRecoveryState(
+        nextMissingImageCount,
+        currentImageCount,
+      );
+      setMissingImageCount(recovery.missingImageCount);
+      missingImageCountRef.current = recovery.missingImageCount;
+      missingImageRecoveryRef.current =
+        recovery.expectedImageCount === null
+          ? null
+          : { expectedImageCount: recovery.expectedImageCount };
+    },
+    [],
+  );
+
+  const replaceDraft = useCallback(
+    (nextDraft: PublicationDraft, nextMissingImageCount = 0) => {
+      draftRef.current = nextDraft;
+      setDraft(nextDraft);
+      updateMissingImageRecovery(nextMissingImageCount, nextDraft.images.length);
+    },
+    [updateMissingImageRecovery],
+  );
 
   const trackPersistence = useCallback((operation: Promise<void>): Promise<void> => {
     const tracked = operation.catch(() => undefined);
@@ -81,18 +149,18 @@ export function usePublicationComposer(
   }, []);
 
   const persistSnapshot = useCallback(
-    (snapshot: PublicationDraft, missingImages: boolean): Promise<void> => {
+    (snapshot: PublicationDraft, missingImages: number): Promise<void> => {
       if (!normalizedUserId) {
         return Promise.resolve();
       }
-      const hasDraft = missingImages || !isPublicationDraftEmpty(snapshot);
+      const hasDraft = missingImages > 0 || !isPublicationDraftEmpty(snapshot);
       if (mountedRef.current) {
         setHasSavedDraft(hasDraft);
       }
       return trackPersistence(
         hasDraft
           ? savePublicationDraft(snapshot, normalizedUserId, {
-              imagesNeedReselection: missingImages,
+              missingImageCount: missingImages,
             })
           : clearPublicationDraft(normalizedUserId),
       );
@@ -106,7 +174,7 @@ export function usePublicationComposer(
       saveTimerRef.current = null;
     }
     if (normalizedUserId && hydratedRef.current && persistenceEnabledRef.current) {
-      await persistSnapshot(draftRef.current, imagesNeedReselectionRef.current);
+      await persistSnapshot(draftRef.current, missingImageCountRef.current);
     }
     await persistenceOperationRef.current;
     if (normalizedUserId) {
@@ -116,15 +184,13 @@ export function usePublicationComposer(
 
   useEffect(() => {
     if (!enabled || !normalizedUserId) {
-      setDraft(createEmptyPublicationDraft());
-      setImagesNeedReselection(false);
+      replaceDraft(createEmptyPublicationDraft());
       setHasSavedDraft(false);
       setHydrated(true);
       return undefined;
     }
 
-    setDraft(createEmptyPublicationDraft());
-    setImagesNeedReselection(false);
+    replaceDraft(createEmptyPublicationDraft());
     setHasSavedDraft(false);
     setHydrated(false);
     let cancelled = false;
@@ -134,9 +200,8 @@ export function usePublicationComposer(
           return;
         }
         if (stored.draft) {
-          setDraft(stored.draft);
-          setImagesNeedReselection(stored.imagesNeedReselection);
-          setHasSavedDraft(stored.imagesNeedReselection || !isPublicationDraftEmpty(stored.draft));
+          replaceDraft(stored.draft, stored.missingImageCount);
+          setHasSavedDraft(stored.missingImageCount > 0 || !isPublicationDraftEmpty(stored.draft));
         }
         setHydrated(true);
       })
@@ -148,7 +213,7 @@ export function usePublicationComposer(
     return () => {
       cancelled = true;
     };
-  }, [enabled, normalizedUserId]);
+  }, [enabled, normalizedUserId, replaceDraft]);
 
   useEffect(() => {
     if (!enabled || !normalizedUserId || !hydrated || !persistenceEnabled) {
@@ -159,7 +224,7 @@ export function usePublicationComposer(
     }
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
-      void persistSnapshot(draft, imagesNeedReselection);
+      void persistSnapshot(draft, missingImageCount);
     }, 350);
     return () => {
       if (saveTimerRef.current !== null) {
@@ -171,7 +236,7 @@ export function usePublicationComposer(
     draft,
     enabled,
     hydrated,
-    imagesNeedReselection,
+    missingImageCount,
     normalizedUserId,
     persistenceEnabled,
     persistSnapshot,
@@ -197,6 +262,7 @@ export function usePublicationComposer(
     };
   }, [enabled, flushDraft, normalizedUserId]);
 
+  const imagesNeedReselection = missingImageCount > 0;
   const hasDraft = imagesNeedReselection || !isPublicationDraftEmpty(draft);
   const shouldProtectClose =
     enabled && ((editorOpen && (pendingWork || hasDraft)) || persistencePending);
@@ -222,23 +288,36 @@ export function usePublicationComposer(
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
       }
-      setDraft(createEmptyPublicationDraft(targets));
-      setImagesNeedReselection(false);
+      replaceDraft(createEmptyPublicationDraft(targets));
       setHasSavedDraft(false);
       if (normalizedUserId) {
         await trackPersistence(clearPublicationDraft(normalizedUserId));
       }
     },
-    [normalizedUserId, trackPersistence],
+    [normalizedUserId, replaceDraft, trackPersistence],
   );
 
   const discardMissingImages = useCallback(() => {
-    setImagesNeedReselection(false);
-  }, []);
+    updateMissingImageRecovery(0, draftRef.current.images.length);
+  }, [updateMissingImageRecovery]);
 
-  const resolveMissingImages = useCallback(() => {
-    setImagesNeedReselection(false);
-  }, []);
+  const resolveMissingImages = useCallback(
+    (currentImageCount: number) => {
+      const expectedImageCount = missingImageRecoveryRef.current?.expectedImageCount ?? null;
+      if (expectedImageCount === null) {
+        return;
+      }
+      const recovery = resolvePublicationImageRecoveryState(
+        {
+          missingImageCount: missingImageCountRef.current,
+          expectedImageCount,
+        },
+        currentImageCount,
+      );
+      updateMissingImageRecovery(recovery.missingImageCount, currentImageCount);
+    },
+    [updateMissingImageRecovery],
+  );
 
   return {
     draft,
@@ -246,7 +325,9 @@ export function usePublicationComposer(
     hydrated,
     hasSavedDraft,
     imagesNeedReselection,
+    missingImageCount,
     persistencePending,
+    replaceDraft,
     clearDraft,
     discardMissingImages,
     resolveMissingImages,

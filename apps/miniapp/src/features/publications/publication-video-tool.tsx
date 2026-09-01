@@ -8,7 +8,9 @@ type PublicationVideoToolProps = {
   disabled: boolean;
   preparing: boolean;
   needsReselection: boolean;
+  blockedReason?: string | null;
   onFile: (file: File | undefined) => Promise<void>;
+  onBlocked?: () => void;
 };
 
 export function PublicationVideoTool({
@@ -16,26 +18,30 @@ export function PublicationVideoTool({
   disabled,
   preparing,
   needsReselection,
+  blockedReason = null,
   onFile,
+  onBlocked,
 }: PublicationVideoToolProps) {
   const statusId = useId();
-  const label = preparing
-    ? 'Готовим видео'
-    : needsReselection
-      ? 'Выбрать видео снова'
-      : 'Добавить видео';
+  const interactionBlocked = Boolean(blockedReason) && !disabled;
+  const label = interactionBlocked
+    ? blockedReason!
+    : preparing
+      ? 'Готовим видео'
+      : needsReselection
+        ? 'Выбрать видео снова'
+        : 'Добавить видео';
 
   return (
-    <label
+    <span
       className={cn(
         'broadcast-content-composer__tool',
         'publication-video-tool',
         active && 'is-active',
         needsReselection && 'is-danger',
+        interactionBlocked && 'is-blocked',
         disabled && 'is-disabled',
       )}
-      aria-label={label}
-      aria-disabled={disabled}
       aria-busy={preparing || undefined}
       title={label}
     >
@@ -61,20 +67,30 @@ export function PublicationVideoTool({
           {label}
         </span>
       ) : null}
-      <input
-        type="file"
-        accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.mov,.mkv,.webm"
-        aria-label={label}
-        aria-invalid={needsReselection || undefined}
-        aria-describedby={preparing || needsReselection ? statusId : undefined}
-        disabled={disabled}
-        onChange={(event) => {
-          const input = event.currentTarget;
-          void onFile(input.files?.[0]).finally(() => {
-            input.value = '';
-          });
-        }}
-      />
-    </label>
+      {interactionBlocked ? (
+        <button
+          type="button"
+          className="publication-video-tool__blocker"
+          aria-label={label}
+          title={label}
+          onClick={onBlocked}
+        />
+      ) : (
+        <input
+          type="file"
+          accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.mov,.mkv,.webm"
+          aria-label={label}
+          aria-invalid={needsReselection || undefined}
+          aria-describedby={preparing || needsReselection ? statusId : undefined}
+          disabled={disabled}
+          onChange={(event) => {
+            const input = event.currentTarget;
+            void onFile(input.files?.[0]).finally(() => {
+              input.value = '';
+            });
+          }}
+        />
+      )}
+    </span>
   );
 }

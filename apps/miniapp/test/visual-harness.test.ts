@@ -179,6 +179,10 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     profile: 'publisher',
     compose: '1',
   });
+  assert.deepEqual(scenarios.get('publications-publisher-compose-media-first')?.searchParams, {
+    profile: 'publisher',
+    compose: '1',
+  });
   assert.deepEqual(scenarios.get('publications-publisher-empty')?.searchParams, {
     profile: 'publisher',
     publisherState: 'empty',
@@ -239,7 +243,7 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     scenarios.get('publisher-entity-modules-blocked')?.path,
     '/publisher/chat/preview-chat-2',
   );
-  assert.deepEqual(scenarios.get('publisher-channel-suggestions-confirm')?.searchParams, {
+  assert.deepEqual(scenarios.get('publisher-channel-suggestions-open-draft')?.searchParams, {
     profile: 'publisher',
     publisherSuggestions: 'large',
   });
@@ -430,8 +434,8 @@ test('large publisher recipient picker reaches every target through real scroll 
   assert.doesNotMatch(scenarioSource, /scrollIntoViewIfNeeded|\.scrollTop\s*=/u);
   assert.match(scenarioSource, /data-target-position="200"/u);
   assert.match(scenarioSource, /document\.elementFromPoint/u);
-  assert.match(scenarioSource, /'30 из 200'/u);
-  assert.match(scenarioSource, /'Получателей: 200'/u);
+  assert.match(scenarioSource, /'Показано 30 из 200'/u);
+  assert.match(scenarioSource, /'Показано 200 из 200'/u);
   assert.match(
     captureSource,
     /async function scrollPaginatedListToStatus[\s\S]*?Date\.now\(\) \+ timeoutMs[\s\S]*?page\.mouse\.wheel\(0, 1_200\)[\s\S]*?waitForFunction/u,

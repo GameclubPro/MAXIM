@@ -198,11 +198,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         return;
       }
       setEntityRecheckPhase('polling');
-      pushToast({
-        tone: 'info',
-        title: 'Проверка поставлена в очередь',
-        description: 'Жду новый статус доступа от MAX.',
-      });
 
       const result = await pollPublisherEntityRefresh({
         initialEntity,
@@ -226,32 +221,30 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         const nextReadiness = getPublisherReadinessPresentation(result.entity.readiness);
         pushToast({
           tone: result.entity.readiness.canPublish ? 'success' : 'info',
-          title: result.entity.readiness.canPublish
-            ? 'Доступ Публика подтверждён'
-            : 'Проверка завершена',
-          description: nextReadiness.detail,
+          title: result.entity.readiness.canPublish ? 'Подключение готово' : 'Проверка завершена',
+          description: result.entity.readiness.canPublish ? undefined : nextReadiness.detail,
         });
         return;
       }
       if (result.status === 'read_failed') {
         pushToast({
           tone: 'danger',
-          title: 'Проверка запущена, но статус недоступен',
-          description: describeUserFacingError(result.error, 'Повторите обновление позже.'),
+          title: 'Не удалось обновить статус',
+          description: describeUserFacingError(result.error, 'Повторите позже.'),
         });
         return;
       }
       pushToast({
         tone: 'info',
-        title: 'MAX ещё проверяет доступ',
-        description: 'Запрос принят. Свежий статус появится после завершения проверки.',
+        title: 'Проверка продолжается',
+        description: 'Обновите статус через минуту.',
       });
     } catch (error: unknown) {
       if (!abortController.signal.aborted) {
         pushToast({
           tone: 'danger',
-          title: 'Не удалось запустить проверку',
-          description: describeUserFacingError(error, 'Повторите запрос позже.'),
+          title: 'Не удалось проверить подключение',
+          description: describeUserFacingError(error, 'Повторите позже.'),
         });
       }
     } finally {
@@ -269,7 +262,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       <section className="publisher-entity-modules-page">
         <div className="publisher-entity-modules-page__state has-error" role="alert">
           <WarningCircle aria-hidden />
-          <strong>Сущность не найдена</strong>
+          <strong>Чат или канал не найден</strong>
           <Link to="/">Вернуться</Link>
         </div>
       </section>
@@ -281,7 +274,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       <section className="publisher-entity-modules-page" aria-busy="true">
         <div className="publisher-entity-modules-page__state" role="status">
           <Refresh className="is-refreshing" aria-hidden />
-          <strong>Загружаю модули</strong>
+          <strong>Загружаю разделы</strong>
         </div>
       </section>
     );
@@ -293,7 +286,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       <section className="publisher-entity-modules-page">
         <div className="publisher-entity-modules-page__state has-error" role="alert">
           <WarningCircle aria-hidden />
-          <strong>Не удалось загрузить модули</strong>
+          <strong>Не удалось загрузить разделы</strong>
           <button type="button" onClick={() => void entityQuery.refetch()}>
             <Refresh aria-hidden />
             <span>Повторить</span>
@@ -338,7 +331,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         <button
           type="button"
           className={cn('publisher-entity-modules-page__refresh', refreshing && 'is-refreshing')}
-          aria-label="Перезагрузить данные модулей"
+          aria-label="Обновить данные"
           title="Перезагрузить данные"
           disabled={busy}
           onClick={() =>
@@ -389,7 +382,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             <Post />
           </span>
           <span className="publisher-entity-module__copy">
-            <strong>Постинг</strong>
+            <strong>Посты</strong>
           </span>
           {entity.readiness.canPublish ? (
             <Link
@@ -476,7 +469,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Комментарии</strong>
-                <small>Посты Публика</small>
               </span>
               <ModuleSwitch
                 checked={entity.moduleSettings.channelCommentsEnabled === true}
@@ -495,12 +487,12 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 <ChatBubble />
               </span>
               <span className="publisher-entity-module__copy">
-                <strong>Предложки</strong>
+                <strong>Предложения</strong>
               </span>
               <ModuleSwitch
                 checked={entity.moduleSettings.channelSuggestionsEnabled === true}
                 disabled={mutation.isPending}
-                label={`${entity.moduleSettings.channelSuggestionsEnabled ? 'Выключить' : 'Включить'} предложки`}
+                label={`${entity.moduleSettings.channelSuggestionsEnabled ? 'Выключить' : 'Включить'} предложения`}
                 onChange={(channelSuggestionsEnabled) =>
                   mutation.mutate({ channelSuggestionsEnabled })
                 }
@@ -512,7 +504,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 fallback={
                   <div className="publisher-suggestions-state" role="status">
                     <Refresh className="is-refreshing" aria-hidden />
-                    <span>Загружаю предложки</span>
+                    <span>Загружаю предложения</span>
                   </div>
                 }
               >

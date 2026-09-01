@@ -5,7 +5,7 @@ import type {
 } from '@maxim/contracts/publisher';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { EditPencil, MediaImage, NavArrowDown, Refresh, Xmark } from 'iconoir-react';
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { useToast } from '../components/ui/toast';
@@ -14,6 +14,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { getPublisherSuggestionStatusLabel } from './publisher-entity-modules-page-model';
+import { PublisherSuggestionDraftOpenGate } from './publisher-suggestion-draft-open-gate';
 import {
   loadPublisherSuggestionsPage,
   shouldLoadPublisherSuggestions,
@@ -26,7 +27,6 @@ const LazyActionConfirmSheet = lazy(async () => {
 
 type PublisherSuggestionConfirmation = {
   suggestionId: string;
-  action: 'draft' | 'cancel';
 };
 
 const PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS = 4_000;
@@ -67,6 +67,11 @@ export function PublisherSuggestionsInbox({
   const queryClient = useQueryClient();
   const [view, setView] = useState<PublisherSuggestionsView>('pending');
   const [confirmation, setConfirmation] = useState<PublisherSuggestionConfirmation | null>(null);
+  const [openingDraftSuggestionIds, setOpeningDraftSuggestionIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const draftOpenGateRef = useRef(new PublisherSuggestionDraftOpenGate());
+  const draftOpenEpochRef = useRef(0);
   const queryRoot = useMemo(() => ['publisher-suggestions', entityId] as const, [entityId]);
   const pendingQueryKey = useMemo(() => [...queryRoot, 'pending'] as const, [queryRoot]);
   const historyQueryKey = useMemo(() => [...queryRoot, 'history'] as const, [queryRoot]);
@@ -138,39 +143,35 @@ export function PublisherSuggestionsInbox({
     (suggestion) =>
       suggestion.id === confirmation?.suggestionId && suggestion.reviewStatus === 'pending',
   );
-  const reviewMutation = useMutation({
-    mutationFn: ({ suggestionId, action }: { suggestionId: string; action: 'draft' | 'cancel' }) =>
-      reviewPublisherSuggestion(api, entityId, suggestionId, { action }),
-    onSuccess: async (response, variables) => {
+  const cancelMutation = useMutation({
+    mutationFn: (suggestionId: string) =>
+      reviewPublisherSuggestion(api, entityId, suggestionId, { action: 'cancel' }),
+    onSuccess: async () => {
       setConfirmation(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryRoot }),
-        queryClient.invalidateQueries({ queryKey: ['publications'] }),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: queryRoot });
       pushToast({
         tone: 'success',
-        title:
-          variables.action === 'draft'
-            ? response.suggestion.reviewStatus === 'drafted'
-              ? 'Черновик готов'
-              : 'Готовим черновик'
-            : 'Предложка отклонена',
+        title: 'Предложение отклонено',
       });
-      if (variables.action === 'draft' && response.suggestion.publicationId) {
-        navigate(`/publications?draft=${encodeURIComponent(response.suggestion.publicationId)}`);
-      }
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: describeUserFacingError(error, 'Не удалось обработать предложку'),
+        title: describeUserFacingError(error, 'Не удалось обработать предложение'),
       });
     },
   });
 
   useEffect(() => {
+    draftOpenEpochRef.current += 1;
+    draftOpenGateRef.current.reset();
     setView('pending');
     setConfirmation(null);
+    setOpeningDraftSuggestionIds(new Set());
+    return () => {
+      draftOpenEpochRef.current += 1;
+      draftOpenGateRef.current.reset(true);
+    };
   }, [entityId]);
 
   if (!enabled) {
@@ -178,20 +179,70 @@ export function PublisherSuggestionsInbox({
   }
 
   const openPublicationDraft = (publicationId: string) => {
+    if (!draftOpenGateRef.current.tryCommitNavigation()) {
+      return;
+    }
     navigate(`/publications?draft=${encodeURIComponent(publicationId)}`);
   };
+
+  const openSuggestionDraft = async (suggestionId: string) => {
+    const gate = draftOpenGateRef.current;
+    const normalizedSuggestionId = gate.tryStart(suggestionId);
+    if (!normalizedSuggestionId) {
+      return;
+    }
+    const epoch = draftOpenEpochRef.current;
+    setOpeningDraftSuggestionIds((current) => new Set(current).add(normalizedSuggestionId));
+
+    try {
+      const response = await reviewPublisherSuggestion(api, entityId, normalizedSuggestionId, {
+        action: 'draft',
+      });
+      if (epoch !== draftOpenEpochRef.current) {
+        return;
+      }
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryRoot }),
+        queryClient.invalidateQueries({ queryKey: ['publications'] }),
+      ]);
+      const publicationId = response.suggestion.publicationId;
+      if (!publicationId) {
+        pushToast({ tone: 'info', title: 'Черновик ещё готовится' });
+        return;
+      }
+      openPublicationDraft(publicationId);
+    } catch (error: unknown) {
+      if (epoch === draftOpenEpochRef.current) {
+        pushToast({
+          tone: 'danger',
+          title: describeUserFacingError(error, 'Не удалось открыть предложение'),
+        });
+      }
+    } finally {
+      if (epoch === draftOpenEpochRef.current) {
+        gate.finish(normalizedSuggestionId);
+        setOpeningDraftSuggestionIds((current) => {
+          const next = new Set(current);
+          next.delete(normalizedSuggestionId);
+          return next;
+        });
+      }
+    }
+  };
+
+  const draftOpenBusy = openingDraftSuggestionIds.size > 0;
 
   return (
     <>
       <div className="publisher-suggestions-workspace">
-        <div className="publisher-suggestions-filters" role="group" aria-label="Раздел предложек">
+        <div className="publisher-suggestions-filters" role="group" aria-label="Раздел предложений">
           <button
             type="button"
             className={cn(view === 'pending' && 'is-active')}
             aria-pressed={view === 'pending'}
             onClick={() => setView('pending')}
           >
-            <span>Ожидают</span>
+            <span>Новые</span>
             <strong aria-label={pendingTotal === undefined ? 'Считаю' : undefined}>
               {pendingTotal ?? '...'}
             </strong>
@@ -212,11 +263,11 @@ export function PublisherSuggestionsInbox({
         {activeQuery.isLoading ? (
           <div className="publisher-suggestions-state" role="status">
             <Refresh className="is-refreshing" aria-hidden />
-            <span>Загружаю предложки</span>
+            <span>Загружаю предложения</span>
           </div>
         ) : activeQuery.isError ? (
           <div className="publisher-suggestions-state has-error" role="alert">
-            <span>Не удалось загрузить предложки</span>
+            <span>Не удалось загрузить предложения</span>
             <button type="button" onClick={() => void activeQuery.refetch()}>
               Повторить
             </button>
@@ -224,7 +275,7 @@ export function PublisherSuggestionsInbox({
         ) : suggestions.length > 0 ? (
           <div
             className="publisher-suggestions-inbox"
-            aria-label={view === 'pending' ? 'Предложки, ожидающие решения' : 'История предложек'}
+            aria-label={view === 'pending' ? 'Новые предложения' : 'История предложений'}
           >
             {suggestions.map((suggestion) => (
               <article key={suggestion.id} className="publisher-suggestion-row">
@@ -243,7 +294,7 @@ export function PublisherSuggestionsInbox({
                   value={suggestion.text}
                   sourceFormat={suggestion.textFormat}
                   className="publisher-suggestion-row__text"
-                  fallback="Предложка без текста"
+                  fallback="Предложение без текста"
                 />
                 {suggestion.imageCount > 0 ? (
                   <span className="publisher-suggestion-row__media">
@@ -252,29 +303,37 @@ export function PublisherSuggestionsInbox({
                   </span>
                 ) : null}
                 {suggestion.reviewError ? (
-                  <p className="publisher-suggestion-row__error" role="status">
-                    Не удалось создать публикацию: {suggestion.reviewError}
+                  <p className="publisher-suggestion-row__error" role="alert">
+                    {describeUserFacingError(
+                      new Error(suggestion.reviewError),
+                      'Не удалось создать публикацию',
+                    )}
                   </p>
                 ) : null}
                 {suggestion.reviewStatus === 'pending' ? (
                   <div className="publisher-suggestion-row__actions">
                     <button
                       type="button"
-                      disabled={reviewMutation.isPending}
-                      onClick={() =>
-                        setConfirmation({ suggestionId: suggestion.id, action: 'draft' })
-                      }
+                      disabled={draftOpenBusy || cancelMutation.isPending}
+                      aria-busy={openingDraftSuggestionIds.has(suggestion.id)}
+                      onClick={() => void openSuggestionDraft(suggestion.id)}
                     >
-                      <EditPencil aria-hidden />
-                      <span>Открыть в редакторе</span>
+                      {openingDraftSuggestionIds.has(suggestion.id) ? (
+                        <Refresh className="is-refreshing" aria-hidden />
+                      ) : (
+                        <EditPencil aria-hidden />
+                      )}
+                      <span>
+                        {openingDraftSuggestionIds.has(suggestion.id)
+                          ? 'Готовим черновик'
+                          : 'Открыть в редакторе'}
+                      </span>
                     </button>
                     <button
                       type="button"
                       className="is-secondary"
-                      disabled={reviewMutation.isPending}
-                      onClick={() =>
-                        setConfirmation({ suggestionId: suggestion.id, action: 'cancel' })
-                      }
+                      disabled={draftOpenBusy || cancelMutation.isPending}
+                      onClick={() => setConfirmation({ suggestionId: suggestion.id })}
                     >
                       <Xmark aria-hidden />
                       <span>Отклонить</span>
@@ -307,7 +366,7 @@ export function PublisherSuggestionsInbox({
           </div>
         ) : (
           <div className="publisher-suggestions-state" role="status">
-            <span>{view === 'pending' ? 'Новых предложек нет' : 'История пока пуста'}</span>
+            <span>{view === 'pending' ? 'Новых предложений нет' : 'История пока пуста'}</span>
           </div>
         )}
 
@@ -336,21 +395,19 @@ export function PublisherSuggestionsInbox({
         ) : null}
       </div>
 
+      {draftOpenBusy ? (
+        <span className="publisher-suggestions-sr" role="status" aria-live="polite">
+          Готовим черновик
+        </span>
+      ) : null}
+
       {confirmation && confirmationSuggestion ? (
         <Suspense fallback={null}>
           <LazyActionConfirmSheet
-            id={`publisher-suggestion-${confirmation.action}-confirm`}
+            id="publisher-suggestion-cancel-confirm"
             open
-            title={
-              confirmation.action === 'draft'
-                ? 'Открыть предложку в редакторе?'
-                : 'Отклонить предложку?'
-            }
-            summary={
-              confirmation.action === 'draft'
-                ? 'Создадим черновик с исходным текстом и фото. В редакторе можно проверить пост и выбрать время.'
-                : 'Предложка будет отклонена и перемещена в историю. Отменить это действие нельзя.'
-            }
+            title="Отклонить предложение?"
+            summary="Предложение переместится в историю. Отменить это действие нельзя."
             previewTitle={confirmationSuggestion.authorDisplayName || 'Пользователь'}
             previewMeta={
               <>
@@ -358,7 +415,7 @@ export function PublisherSuggestionsInbox({
                   value={confirmationSuggestion.text}
                   sourceFormat={confirmationSuggestion.textFormat}
                   className="publisher-suggestion-confirm__text"
-                  fallback="Предложка без текста"
+                  fallback="Предложение без текста"
                 />
                 {confirmationSuggestion.imageCount > 0 ? (
                   <span className="publisher-suggestion-row__media">
@@ -368,20 +425,13 @@ export function PublisherSuggestionsInbox({
                 ) : null}
               </>
             }
-            confirmLabel={
-              confirmation.action === 'draft' ? 'Открыть редактор' : 'Отклонить предложку'
-            }
-            confirmBusyLabel={confirmation.action === 'draft' ? 'Готовлю...' : 'Отклоняю...'}
+            confirmLabel="Отклонить предложение"
+            confirmBusyLabel="Отклоняю..."
             cancelLabel="Отмена"
-            tone={confirmation.action === 'draft' ? 'accent' : 'danger'}
-            isBusy={reviewMutation.isPending}
+            tone="danger"
+            isBusy={cancelMutation.isPending}
             onClose={() => setConfirmation(null)}
-            onConfirm={() =>
-              reviewMutation.mutate({
-                suggestionId: confirmationSuggestion.id,
-                action: confirmation.action,
-              })
-            }
+            onConfirm={() => cancelMutation.mutate(confirmationSuggestion.id)}
           />
         </Suspense>
       ) : null}

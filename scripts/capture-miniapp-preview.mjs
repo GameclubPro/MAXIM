@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
@@ -481,8 +481,7 @@ async function scrollPaginatedListToStatus(page, options) {
           const current = statuses.at(-1)?.textContent?.trim() ?? '';
           const loadMore = document.querySelector(loadMoreSelector);
           return (
-            current !== previous ||
-            (loadMore instanceof HTMLButtonElement && !loadMore.disabled)
+            current !== previous || (loadMore instanceof HTMLButtonElement && !loadMore.disabled)
           );
         },
         {
@@ -608,29 +607,29 @@ const scenarioBehaviors = [
     name: 'publisher-entity-modules',
     beforeShot: async (page) => {
       await page
-        .getByRole('link', { name: /модули/iu })
+        .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByText('Постинг', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('Посты', { exact: true }).waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publisher-channel-modules',
     beforeShot: async (page) => {
       await page
-        .getByRole('link', { name: /модули/iu })
+        .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByText('Предложки', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('Предложения', { exact: true }).waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publisher-entity-modules-vk',
     beforeShot: async (page) => {
       await page
-        .getByRole('link', { name: /модули/iu })
+        .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
@@ -644,7 +643,7 @@ const scenarioBehaviors = [
     name: 'publisher-channel-modules-vk-editor',
     beforeShot: async (page) => {
       await page
-        .getByRole('link', { name: /модули/iu })
+        .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
@@ -676,17 +675,17 @@ const scenarioBehaviors = [
     },
   },
   {
-    name: 'publisher-channel-suggestions-confirm',
+    name: 'publisher-channel-suggestions-open-draft',
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
       await page.getByRole('button', { name: 'Открыть в редакторе', exact: true }).first().click();
-      const dialog = page.getByRole('dialog', { name: 'Открыть предложку в редакторе?' });
-      await dialog.waitFor({ state: 'visible' });
-      const preview = dialog.locator('.publisher-suggestion-confirm__text');
-      if (/\*\*|\+\+|~~/u.test((await preview.textContent()) ?? '')) {
-        throw new Error('Publisher suggestion confirmation leaked Markdown markers.');
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
+      await editor.waitFor({ state: 'visible' });
+      if (/\*\*|\+\+|~~/u.test((await editor.textContent()) ?? '')) {
+        throw new Error('Publisher suggestion draft leaked Markdown markers.');
       }
-      await preview.locator('strong').first().waitFor({ state: 'visible' });
+      await editor.locator('strong').first().waitFor({ state: 'visible' });
     },
   },
   {
@@ -695,7 +694,7 @@ const scenarioBehaviors = [
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
       await page.getByRole('button', { name: 'Отклонить', exact: true }).first().click();
       await page
-        .getByRole('dialog', { name: 'Отклонить предложку?' })
+        .getByRole('dialog', { name: 'Отклонить предложение?' })
         .waitFor({ state: 'visible' });
     },
   },
@@ -1059,15 +1058,17 @@ const scenarioBehaviors = [
       await page.locator('.publication-target-picker__summary').click();
       const list = page.locator('.publication-target-picker__list');
       await list.waitFor({ state: 'visible' });
-      await page.getByText('30 из 200', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('Показано 30 из 200', { exact: true }).waitFor({ state: 'visible' });
       await scrollPaginatedListToStatus(page, {
         list,
         statusSelector: '.publication-target-picker__loaded',
-        expectedStatus: 'Получателей: 200',
+        expectedStatus: 'Показано 200 из 200',
         loadMoreSelector: '.publication-target-picker__load-more',
         label: 'Publisher recipient scroll',
       });
-      await page.locator('.publication-target-picker__list.is-virtual').waitFor({ state: 'visible' });
+      await page
+        .locator('.publication-target-picker__list.is-virtual')
+        .waitFor({ state: 'visible' });
       for (let attempt = 0; attempt < 8; attempt += 1) {
         await page.mouse.wheel(0, 1_200);
         await page.waitForTimeout(50);
@@ -1104,8 +1105,15 @@ const scenarioBehaviors = [
         .filter({ hasText: 'Новости Южного' })
         .first()
         .click();
+      await page
+        .locator('.publication-target-row')
+        .filter({ hasText: 'Садоводы Южного' })
+        .first()
+        .click();
       await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
-      await summary.getByText('Новости Южного', { exact: true }).waitFor({ state: 'visible' });
+      const previewTarget = page.getByLabel('Получатель в предпросмотре', { exact: true });
+      await previewTarget.waitFor({ state: 'visible' });
+      await previewTarget.selectOption({ label: 'Новости Южного' });
       await page
         .locator('.publication-content-composer .max-rich-text-editor__surface')
         .fill('Анонс события для жителей района.');
@@ -1115,6 +1123,55 @@ const scenarioBehaviors = [
       const expectedLabels = ['💬 Комментарии', '✍️ Предложить объявление', '📞 Заказать рекламу'];
       if (JSON.stringify(systemButtonLabels) !== JSON.stringify(expectedLabels)) {
         throw new Error(`Publisher system buttons differ: ${JSON.stringify(systemButtonLabels)}`);
+      }
+      await previewTarget.selectOption({ label: 'Садоводы Южного' });
+      const chatButtonLabels = await page
+        .locator('.publication-content-composer .broadcast-message-card__button')
+        .allTextContents();
+      if (chatButtonLabels.length !== 0) {
+        throw new Error(`Chat preview leaked channel buttons: ${JSON.stringify(chatButtonLabels)}`);
+      }
+      await previewTarget.selectOption({ label: 'Новости Южного' });
+      const restoredChannelLabels = await page
+        .locator('.publication-content-composer .broadcast-message-card__button')
+        .allTextContents();
+      if (JSON.stringify(restoredChannelLabels) !== JSON.stringify(expectedLabels)) {
+        throw new Error(
+          `Channel preview did not restore exact buttons: ${JSON.stringify(restoredChannelLabels)}`,
+        );
+      }
+    },
+  },
+  {
+    name: 'publications-publisher-compose-media-first',
+    beforeShot: async (page) => {
+      const summary = page.locator('.publication-target-picker__summary');
+      await summary.click();
+      await page
+        .locator('.publication-target-row')
+        .filter({ hasText: 'Новости Южного' })
+        .first()
+        .click();
+      await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
+
+      const imageInput = page
+        .locator('.publication-content-composer input[type="file"][accept="image/*"]')
+        .first();
+      await imageInput.setInputFiles({
+        name: 'afisha.png',
+        mimeType: 'image/png',
+        buffer: await readFile(path.join(ROOT_DIR, 'apps/miniapp/public/apple-touch-icon.png')),
+      });
+      const image = page.locator('.publication-content-composer .broadcast-message-card__image');
+      await image.waitFor({ state: 'visible' });
+
+      const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
+      await editor.fill('Афиша добавлена после фотографии.');
+      if ((await editor.textContent())?.trim() !== 'Афиша добавлена после фотографии.') {
+        throw new Error('Publisher composer did not accept text after selecting a photo.');
+      }
+      if (!(await image.isVisible())) {
+        throw new Error('Publisher composer lost the selected photo after entering text.');
       }
     },
   },
@@ -1666,14 +1723,14 @@ const scenarioBehaviors = [
     name: 'publisher-entity-modules-cold',
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByText('Постинг', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('Посты', { exact: true }).waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publisher-channel-modules-cold',
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByText('Предложки', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('Предложения', { exact: true }).waitFor({ state: 'visible' });
     },
   },
   {

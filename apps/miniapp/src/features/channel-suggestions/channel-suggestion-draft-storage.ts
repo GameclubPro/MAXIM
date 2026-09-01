@@ -36,6 +36,7 @@ export type StoredChannelSuggestionDraft = {
   savedAt: string;
   imagesNeedReselection: boolean;
   imageCount: number;
+  missingImageCount: number;
   threadScope: string | null;
 };
 
@@ -218,10 +219,11 @@ export function parseChannelSuggestionDraftEnvelope(
     (attachment): attachment is StoredAttachment => attachment !== null,
   );
   const mediaValid =
-    validAttachments.length === imageCount &&
+    validAttachments.length <= imageCount &&
     validAttachments.reduce((total, attachment) => total + attachment.base64.length, 0) <=
       MAX_TOTAL_BASE64_LENGTH;
   const attachments = mediaValid ? validAttachments : [];
+  const missingImageCount = Math.max(0, imageCount - attachments.length);
   return {
     text,
     attachments: attachments.map((attachment) => ({
@@ -230,8 +232,9 @@ export function parseChannelSuggestionDraftEnvelope(
     })),
     requestIdentity,
     savedAt: new Date(savedAtMs).toISOString(),
-    imagesNeedReselection: imageCount > 0 && !mediaValid,
+    imagesNeedReselection: missingImageCount > 0,
     imageCount,
+    missingImageCount,
     threadScope: readThreadScope(value.threadScope),
   };
 }
@@ -547,7 +550,7 @@ export async function loadChannelSuggestionDraft(
   }
   if (!resolved.draft) {
     mediaCache.delete(storageKey);
-  } else if (resolved.source === 'indexed' && !resolved.draft.imagesNeedReselection) {
+  } else if (resolved.source === 'indexed') {
     const mediaStored =
       resolved.draft.imageCount === 0 ||
       (isObject(state.media) &&
@@ -585,7 +588,7 @@ export async function saveChannelSuggestionDraft(
     expiresAt: new Date(savedAt.getTime() + DRAFT_TTL_MS).toISOString(),
     text: draft.text.slice(0, MAX_TEXT_LENGTH),
     imageCount: draft.imagesNeedReselection
-      ? Math.max(1, Math.min(MAX_IMAGES, draft.imageCount))
+      ? Math.min(MAX_IMAGES, Math.max(draft.attachments.length + 1, draft.imageCount))
       : Math.min(MAX_IMAGES, draft.attachments.length),
     requestIdentity: { ...draft.requestIdentity },
     threadScope,
@@ -593,20 +596,15 @@ export async function saveChannelSuggestionDraft(
   writeLocalEnvelope(storageKey, envelope);
   await enqueue(storageKey, async () => {
     const cached = mediaCache.get(storageKey);
-    const mediaChanged =
-      draft.imagesNeedReselection || !cached?.stored || cached.attachments !== draft.attachments;
+    const mediaChanged = !cached?.stored || cached.attachments !== draft.attachments;
     const stored = await writeState(
       storageKey,
       envelope,
-      mediaChanged
-        ? draft.imagesNeedReselection
-          ? null
-          : draft.attachments.slice(0, MAX_IMAGES)
-        : undefined,
+      mediaChanged ? draft.attachments.slice(0, MAX_IMAGES) : undefined,
     );
-    if (stored && !draft.imagesNeedReselection) {
+    if (stored) {
       mediaCache.set(storageKey, { attachments: draft.attachments, stored: true });
-    } else if (!stored || draft.imagesNeedReselection) {
+    } else {
       mediaCache.delete(storageKey);
     }
   });

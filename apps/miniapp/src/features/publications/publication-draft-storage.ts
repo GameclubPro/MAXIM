@@ -1,5 +1,6 @@
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import { channelPostSignatureSettingsSchema } from '@maxim/contracts/channel-post-signature';
+import { MAX_PUBLICATION_IMAGES } from '@maxim/contracts/publication';
 import { publisherEntityReadinessSchema } from '@maxim/contracts/publisher';
 import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
 import {
@@ -47,6 +48,7 @@ const draftStorageQueues = new Map<string, Promise<void>>();
 export type PublicationDraftLoadState = {
   draft: PublicationDraft | null;
   imagesNeedReselection: boolean;
+  missingImageCount: number;
   savedAt: string | null;
   source: 'indexed' | 'local' | null;
 };
@@ -390,30 +392,28 @@ function readEnvelopeCandidate(params: {
 
   const usesSeparateMedia = params.envelope.version === 2 || params.envelope.version === 3;
   let images = draft.images;
-  let imagesNeedReselection = false;
+  let missingImageCount = 0;
   if (usesSeparateMedia) {
     const declaredImageCount =
       typeof params.envelope.imageCount === 'number' &&
       Number.isInteger(params.envelope.imageCount) &&
-      params.envelope.imageCount >= 0
+      params.envelope.imageCount >= 0 &&
+      params.envelope.imageCount <= MAX_PUBLICATION_IMAGES
         ? params.envelope.imageCount
         : null;
     const hasImages = params.envelope.hasImages === true || (declaredImageCount ?? 0) > 0;
     images =
       params.source === 'indexed' && hasImages ? readDraftMediaEnvelope(params.mediaEnvelope) : [];
-    imagesNeedReselection =
-      hasImages &&
-      (images.length === 0 ||
-        (declaredImageCount !== null && images.length !== declaredImageCount));
-    if (imagesNeedReselection) {
-      images = [];
-    }
+    const expectedImageCount = hasImages ? Math.max(1, declaredImageCount ?? images.length) : 0;
+    images = images.slice(0, expectedImageCount);
+    missingImageCount = Math.max(0, expectedImageCount - images.length);
   }
 
   return {
     candidate: {
       draft: { ...draft, images },
-      imagesNeedReselection,
+      imagesNeedReselection: missingImageCount > 0,
+      missingImageCount,
       savedAt,
       savedAtMs,
       source: params.source,
@@ -458,6 +458,7 @@ export function resolvePublicationDraftLoadState(params: {
   return {
     draft: selected?.draft ?? null,
     imagesNeedReselection: selected?.imagesNeedReselection ?? false,
+    missingImageCount: selected?.missingImageCount ?? 0,
     savedAt: selected?.savedAt ?? null,
     source: selected?.source ?? null,
     discardIndexed:
@@ -610,6 +611,7 @@ export async function loadPublicationDraft(userId: string): Promise<PublicationD
   return {
     draft: resolved.draft,
     imagesNeedReselection: resolved.imagesNeedReselection,
+    missingImageCount: resolved.missingImageCount,
     savedAt: resolved.savedAt,
     source: resolved.source,
   };
@@ -618,18 +620,26 @@ export async function loadPublicationDraft(userId: string): Promise<PublicationD
 export async function savePublicationDraft(
   draft: PublicationDraft,
   userId: string,
-  options: { imagesNeedReselection?: boolean; nowMs?: number } = {},
+  options: { missingImageCount?: number; nowMs?: number } = {},
 ): Promise<void> {
   const storageKey = buildPublicationDraftStorageKey(requirePublicationDraftUserId(userId));
   const persisted = preparePublicationDraftForIndexedPersistence(draft);
-  const imagesNeedReselection = options.imagesNeedReselection === true;
+  const requestedMissingImageCount =
+    typeof options.missingImageCount === 'number' && Number.isSafeInteger(options.missingImageCount)
+      ? Math.max(0, options.missingImageCount)
+      : 0;
+  const missingImageCount = Math.min(
+    requestedMissingImageCount,
+    Math.max(0, MAX_PUBLICATION_IMAGES - persisted.images.length),
+  );
+  const imagesNeedReselection = missingImageCount > 0;
   const hasImages = persisted.hasImages || imagesNeedReselection;
   const envelope: DraftEnvelope = {
     version: STORAGE_VERSION,
     savedAt: new Date(options.nowMs ?? Date.now()).toISOString(),
     draft: persisted.draft,
     hasImages,
-    imageCount: persisted.images.length || (imagesNeedReselection ? 1 : 0),
+    imageCount: persisted.images.length + missingImageCount,
   };
   writeLocalEnvelope(storageKey, envelope);
 

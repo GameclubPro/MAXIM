@@ -274,6 +274,8 @@ export function PublicationsPage({
     hydrated,
     hasSavedDraft,
     imagesNeedReselection,
+    missingImageCount,
+    replaceDraft,
     clearDraft,
     discardMissingImages,
     resolveMissingImages,
@@ -285,7 +287,10 @@ export function PublicationsPage({
     mediaPreparing,
     userId,
   );
-  const savedCreateDraftRef = useRef<PublicationDraft | null>(null);
+  const savedCreateDraftRef = useRef<{
+    draft: PublicationDraft;
+    missingImageCount: number;
+  } | null>(null);
   const isolatedDraftBaselineRef = useRef<PublicationDraft | null>(null);
   const initialComposeRouteAppliedRef = useRef(false);
   const editorReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -325,6 +330,7 @@ export function PublicationsPage({
   );
   const [legacyFiltersOpen, setLegacyFiltersOpen] = useState(false);
   const [buttonsOpen, setButtonsOpen] = useState(false);
+  const [previewTargetKey, setPreviewTargetKey] = useState<string | null>(null);
   const [importOmissions, setImportOmissions] = useState<PublisherPostImportOmission[]>([]);
   const [fieldError, setFieldError] = useState('');
   const [validationStarted, setValidationStarted] = useState(false);
@@ -711,12 +717,12 @@ export function PublicationsPage({
         return { details, mode, sessionId: sessionId ?? null, omissions: omissions ?? [] };
       }),
     onSuccess: ({ details, mode, sessionId, omissions }) => {
-      savedCreateDraftRef.current = draft;
+      savedCreateDraftRef.current = { draft, missingImageCount };
       const sourceDraft = createPublicationDraftFromDetails(details);
       const isolatedDraft =
         mode === 'duplicate' ? createPublicationDuplicateDraft(sourceDraft) : sourceDraft;
       isolatedDraftBaselineRef.current = isolatedDraft;
-      setDraft(isolatedDraft);
+      replaceDraft(isolatedDraft);
       setEditorContext(
         mode === 'edit'
           ? { kind: 'edit', publicationId: details.id, expectedRevision: details.version }
@@ -905,7 +911,12 @@ export function PublicationsPage({
   const currentListQuery =
     view === 'history' ? historyQuery : view === 'schedules' ? schedulesQuery : currentQuery;
   const visibleCustomButtons = draft.buttonEnabled ? trimBroadcastLinkButtons(draft.buttons) : [];
-  const systemButtons = buildPublicationSystemButtons(draft.targets);
+  const previewTarget =
+    draft.targets.find((target) => getPublicationTargetKey(target) === previewTargetKey) ??
+    draft.targets[0] ??
+    null;
+  const resolvedPreviewTargetKey = previewTarget ? getPublicationTargetKey(previewTarget) : null;
+  const systemButtons = buildPublicationSystemButtons(previewTarget ? [previewTarget] : []);
   const visibleCustomButtonCount = visibleCustomButtons.length;
   const videoNeedsReselection = publicationDraftNeedsVideoReselection(draft);
   const hasSelectedVideo =
@@ -1434,9 +1445,11 @@ export function PublicationsPage({
   }
 
   function restoreCreateDraftAndClose() {
-    if (savedCreateDraftRef.current) {
-      setDraft(savedCreateDraftRef.current);
-    }
+    const savedCreateDraft = savedCreateDraftRef.current;
+    replaceDraft(
+      savedCreateDraft?.draft ?? createEmptyPublicationDraft(),
+      savedCreateDraft?.missingImageCount ?? 0,
+    );
     savedCreateDraftRef.current = null;
     isolatedDraftBaselineRef.current = null;
     setEditorContext(null);
@@ -2468,6 +2481,20 @@ export function PublicationsPage({
     if (!file) {
       return;
     }
+    if (
+      missingImageCount > 0 ||
+      draft.images.length > 0 ||
+      draft.retainedAssets.some((asset) => asset.type === 'image')
+    ) {
+      pushToast({
+        tone: 'info',
+        title:
+          missingImageCount > 0
+            ? 'Сначала завершите восстановление фото'
+            : 'Сначала удалите добавленные фото',
+      });
+      return;
+    }
     setVideoPreparing(true);
     try {
       const mediaMimeType = inferPublicationVideoMimeType(file.name, file.type);
@@ -2496,7 +2523,7 @@ export function PublicationsPage({
     } catch (error) {
       pushToast({
         tone: 'info',
-        title: error instanceof Error ? error.message : 'Не удалось подготовить видео.',
+        title: describeUserFacingError(error, 'Не удалось подготовить видео'),
       });
     } finally {
       setVideoPreparing(false);
@@ -2510,11 +2537,11 @@ export function PublicationsPage({
     setPendingDraftClear(false);
     setFieldError('');
     setValidationStarted(false);
-    if (editorContext?.kind === 'duplicate' || editorContext?.kind === 'import') {
-      if (editorContext.kind === 'import') {
+    if (isIsolatedPublicationEditor(editorContext?.kind ?? null)) {
+      if (editorContext?.kind === 'import') {
         setImportOmissions([]);
       }
-      setDraft(createEmptyPublicationDraft());
+      replaceDraft(createEmptyPublicationDraft());
       return;
     }
     void clearDraft();
@@ -2650,18 +2677,22 @@ export function PublicationsPage({
               importedAssetPreviews={importedAssetPreviews}
               customButtons={visibleCustomButtons}
               systemButtons={systemButtons}
+              previewTargets={draft.targets}
+              previewTargetKey={resolvedPreviewTargetKey}
               customButtonCount={visibleCustomButtonCount}
               hasButtonErrors={hasButtonErrors}
               showButtonsLabel={isPublisherProfile}
               isBusy={isBusy}
               operationBusy={operationBusy}
               imagesNeedReselection={imagesNeedReselection}
+              missingImageCount={missingImageCount}
               retainedVideo={Boolean(retainedVideo)}
               videoPreparing={videoPreparing}
               videoNeedsReselection={videoNeedsReselection}
               fieldError={fieldError}
               onDiscardMissingImages={discardMissingImages}
               onResolveMissingImages={resolveMissingImages}
+              onPreviewTargetChange={setPreviewTargetKey}
               onOpenButtons={() => setButtonsOpen(true)}
               onVideoFile={handlePublicationVideoFile}
               onImagePreparationChange={setMediaPreparing}
@@ -2741,12 +2772,10 @@ export function PublicationsPage({
             editScope === 'retry'
               ? 'Отправка · после ручного повтора'
               : `Когда · ${formatDraftTiming(draft)}`,
-            visibleCustomButtonCount > 0 ? `Кнопки · ${visibleCustomButtonCount}` : 'Кнопки · нет',
-            isPublisherProfile && systemButtons.length > 0
-              ? `Автокнопки · ${systemButtons.length}`
-              : null,
+            visibleCustomButtonCount > 0 ? `Доп. кнопки · ${visibleCustomButtonCount}` : null,
             hasMedia
-              ? draft.retainedAssets.some((asset) => asset.type === 'video')
+              ? draft.mediaType === 'video' ||
+                draft.retainedAssets.some((asset) => asset.type === 'video')
                 ? 'Видео'
                 : 'Медиа'
               : null,

@@ -63,10 +63,11 @@ test('Major chat settings do not expose the Publisher-owned comments module', ()
 test('publication previews include saved channel system buttons', () => {
   assert.match(
     publicationsSource,
-    /const systemButtons = buildPublicationSystemButtons\(draft\.targets\)/u,
+    /const systemButtons = buildPublicationSystemButtons\(previewTarget \? \[previewTarget\] : \[\]\)/u,
   );
   assert.match(publicationsSource, /systemButtons=\{systemButtons\}/u);
-  assert.match(publicationsSource, /`Автокнопки · \$\{systemButtons\.length\}`/u);
+  assert.match(publicationsSource, /previewTargetKey=\{resolvedPreviewTargetKey\}/u);
+  assert.doesNotMatch(publicationsSource, /Автокнопки|Кнопки · нет/u);
   assert.match(
     publicationsSource,
     /const visibleCustomButtonCount = visibleCustomButtons\.length/u,

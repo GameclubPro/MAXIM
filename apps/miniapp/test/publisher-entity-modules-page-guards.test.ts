@@ -23,15 +23,17 @@ test('Publik module workspace owns its settings and never imports Major presenta
 });
 
 test('Publik channels expose comments independently from suggestions', () => {
-  assert.match(
-    pageSource,
-    /checked=\{entity\.moduleSettings\.channelCommentsEnabled === true\}/u,
-  );
-  assert.match(
-    pageSource,
-    /mutation\.mutate\(\{ channelCommentsEnabled \}\)/u,
-  );
-  assert.match(pageSource, /<small>Посты Публика<\/small>/u);
+  assert.match(pageSource, /checked=\{entity\.moduleSettings\.channelCommentsEnabled === true\}/u);
+  assert.match(pageSource, /mutation\.mutate\(\{ channelCommentsEnabled \}\)/u);
+  assert.doesNotMatch(pageSource, /<small>Посты Публика<\/small>/u);
+  assert.match(pageSource, /<strong>Комментарии<\/strong>/u);
+});
+
+test('module labels and refresh feedback avoid internal workflow copy', () => {
+  assert.match(pageSource, /<strong>Посты<\/strong>/u);
+  assert.match(pageSource, /<strong>Предложения<\/strong>/u);
+  assert.doesNotMatch(pageSource, /Постинг|Предложки/u);
+  assert.doesNotMatch(pageSource, /Проверка поставлена в очередь|Жду новый статус|MAX ещё/u);
 });
 
 test('VK module is capability-gated, lazy, and inactive while its workspace is closed', () => {

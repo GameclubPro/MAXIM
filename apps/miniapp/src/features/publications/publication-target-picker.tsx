@@ -369,11 +369,11 @@ export function PublicationTargetPicker({
     const absoluteIndex = shouldVirtualize
       ? virtualRange.startIndex + renderedIndex
       : renderedIndex;
-    const readinessLabel = choice.readiness
-      ? getPublisherReadinessLabel(choice.readiness)
-      : choice.entityType === 'channel'
-        ? 'Канал'
-        : 'Чат';
+    const entityTypeLabel = choice.entityType === 'channel' ? 'Канал' : 'Чат';
+    const readinessLabel =
+      choice.readiness && !choice.readiness.canPublish
+        ? getPublisherReadinessLabel(choice.readiness)
+        : entityTypeLabel;
     return (
       <button
         key={getPublicationTargetKey(choice)}
@@ -473,10 +473,9 @@ export function PublicationTargetPicker({
             <header className="publication-target-picker__sheet-header">
               <span>
                 <strong id={editorTitleId}>Получатели</strong>
-                <small>
-                  {notice ??
-                    (value.length > 0 ? `Выбрано: ${value.length}` : 'Выберите для публикации')}
-                </small>
+                {notice || value.length > 0 ? (
+                  <small>{notice ?? `Выбрано: ${value.length}`}</small>
+                ) : null}
               </span>
               <button
                 type="button"
@@ -594,11 +593,15 @@ export function PublicationTargetPicker({
             )}
             {remoteSource && !remoteSource.settling ? (
               <div className="publication-target-picker__pagination">
-                {remoteSource.filteredTotal !== null ? (
+                {remoteSource.filteredTotal !== null &&
+                (remoteSource.hasNextPage ||
+                  remoteSource.fetchingNextPage ||
+                  remoteSource.fetchNextPageError ||
+                  query.trim().length > 0 ||
+                  filter !== 'all' ||
+                  filteredChoices.length > TARGET_LIST_VIRTUALIZATION_THRESHOLD) ? (
                   <span className="publication-target-picker__loaded" role="status">
-                    {filteredChoices.length === remoteSource.filteredTotal
-                      ? `Получателей: ${remoteSource.filteredTotal}`
-                      : `${filteredChoices.length} из ${remoteSource.filteredTotal}`}
+                    {`Показано ${filteredChoices.length} из ${remoteSource.filteredTotal}`}
                   </span>
                 ) : null}
                 {remoteSource.hasNextPage ? (

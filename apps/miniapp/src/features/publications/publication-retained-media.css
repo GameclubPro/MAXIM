@@ -1,0 +1,68 @@
+@layer pages {
+  .publication-retained-media {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 8px 6px 11px;
+    border: 1px solid var(--publication-success-border);
+    border-radius: 8px;
+    background: var(--publication-success-bg-muted);
+    color: var(--publication-success-ink-strong);
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+
+  .publication-retained-media button {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    place-items: center;
+  }
+
+  .publication-retained-media > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .publication-retained-media button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .publication-retained-media.has-previews {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) 44px;
+    align-items: center;
+    padding-left: 7px;
+  }
+
+  .publication-retained-media__previews {
+    min-width: 0;
+    grid-column: 1;
+  }
+
+  .publication-retained-media__previews img {
+    width: 100%;
+    aspect-ratio: 1;
+    display: block;
+    object-fit: cover;
+    border-radius: 6px;
+    background: var(--color-surface-muted);
+  }
+
+  .publication-retained-media.has-previews > span {
+    grid-column: 2;
+  }
+
+  .publication-retained-media.has-previews > button {
+    grid-column: 3;
+  }
+}

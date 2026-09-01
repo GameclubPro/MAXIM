@@ -949,33 +949,6 @@
     font-style: italic;
   }
 
-  .channel-suggest-card__status-copy {
-    min-width: 0;
-    padding-top: 7px;
-    border-top: 1px solid var(--suggest-line);
-    display: grid;
-    gap: 2px;
-  }
-
-  .channel-suggest-card__status-copy strong,
-  .channel-suggest-card__status-copy span {
-    overflow-wrap: anywhere;
-  }
-
-  .channel-suggest-card__status-copy strong {
-    color: var(--suggest-ink);
-    font-size: 0.75rem;
-    font-weight: 800;
-    line-height: 1.25;
-  }
-
-  .channel-suggest-card__status-copy span {
-    color: var(--suggest-muted);
-    font-size: 0.68rem;
-    font-weight: 600;
-    line-height: 1.35;
-  }
-
   .channel-suggest-card__media {
     width: fit-content;
     max-width: 100%;
@@ -993,6 +966,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .channel-suggest-card__status-detail {
+    padding-top: 7px;
+    border-top: 1px solid var(--suggest-line);
+    color: var(--suggest-muted);
+    font-size: 0.7rem;
+    font-weight: 650;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .channel-suggest-card__media svg {

@@ -88,6 +88,23 @@ test('local storage fallback never receives publication image bytes', async () =
     assert.equal(JSON.parse(stored).hasImages, true);
     assert.equal(JSON.parse(stored).imageCount, 1);
     assert.equal(values.has(buildPublicationDraftStorageKey(null)), false);
+
+    await savePublicationDraft(draft, 'user-1', { missingImageCount: 2 });
+    const partialRecovery = JSON.parse(values.get(storageKey) ?? 'null');
+    assert.equal(partialRecovery.hasImages, true);
+    assert.equal(partialRecovery.imageCount, 3);
+    const partialReload = resolvePublicationDraftLoadState({
+      indexedEnvelope: partialRecovery,
+      indexedMediaEnvelope: {
+        version: 1,
+        images: [{ base64: 'restored-photo', mimeType: 'image/jpeg', fileName: 'photo.jpg' }],
+      },
+      localEnvelope: null,
+      nowMs: Date.now(),
+    });
+    assert.equal(partialReload.draft?.images.length, 1);
+    assert.equal(partialReload.missingImageCount, 2);
+    assert.equal(partialReload.imagesNeedReselection, true);
     await clearPublicationDraft('user-1');
   } finally {
     Object.defineProperty(globalThis, 'window', {
@@ -123,6 +140,7 @@ test('uses the newest draft and reports photos missing from a newer lightweight 
   assert.equal(resolved.source, 'local');
   assert.equal(resolved.draft?.text, 'Свежий текст');
   assert.equal(resolved.imagesNeedReselection, true);
+  assert.equal(resolved.missingImageCount, 1);
   assert.deepEqual(resolved.draft?.images, []);
   assert.equal(resolved.discardIndexed, true);
 });
@@ -147,9 +165,36 @@ test('prefers complete indexed media when split records have the same timestamp'
 
   assert.equal(resolved.source, 'indexed');
   assert.equal(resolved.imagesNeedReselection, false);
+  assert.equal(resolved.missingImageCount, 0);
   assert.deepEqual(
     resolved.draft?.images.map((image) => image.base64),
     ['photo'],
+  );
+});
+
+test('keeps valid partial media and reports only the photos that are still missing', () => {
+  const resolved = resolvePublicationDraftLoadState({
+    nowMs: Date.parse('2026-09-01T10:00:00.000Z'),
+    indexedEnvelope: {
+      version: 3,
+      savedAt: '2026-09-01T09:00:00.000Z',
+      hasImages: true,
+      imageCount: 3,
+      draft: { text: 'Три фото', images: [] },
+    },
+    indexedMediaEnvelope: {
+      version: 1,
+      images: [{ base64: 'restored-photo', mimeType: 'image/jpeg', fileName: 'one.jpg' }],
+    },
+    localEnvelope: null,
+  });
+
+  assert.equal(resolved.source, 'indexed');
+  assert.equal(resolved.imagesNeedReselection, true);
+  assert.equal(resolved.missingImageCount, 2);
+  assert.deepEqual(
+    resolved.draft?.images.map((image) => image.base64),
+    ['restored-photo'],
   );
 });
 

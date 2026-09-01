@@ -18,6 +18,14 @@ const composerHookSource = readFileSync(
   new URL('../src/features/publications/use-publication-composer.ts', import.meta.url),
   'utf8',
 );
+const retainedMediaSource = readFileSync(
+  new URL('../src/features/publications/publication-retained-media.tsx', import.meta.url),
+  'utf8',
+);
+const videoToolSource = readFileSync(
+  new URL('../src/features/publications/publication-video-tool.tsx', import.meta.url),
+  'utf8',
+);
 
 test('keeps text editable while image tools remain busy', () => {
   assert.match(composerSource, /const editorDisabled = disabled;/u);
@@ -82,7 +90,50 @@ test('image normalization and preview data urls are memoized across text edits',
 
 test('missing persisted photo bytes require explicit reselection or dismissal', () => {
   assert.match(pageSource, /imagesNeedReselection/u);
-  assert.match(contentEditorSource, /Фото из локального черновика недоступны/u);
+  assert.match(contentEditorSource, /missingImageCount/u);
   assert.match(contentEditorSource, /onDiscardMissingImages\(\)/u);
-  assert.match(contentEditorSource, /onResolveMissingImages\(\)/u);
+  assert.match(contentEditorSource, /onResolveMissingImages\(images\.length\)/u);
+  assert.match(composerHookSource, /expectedImageCount/u);
+});
+
+test('isolated editors snapshot, reset, and restore create media recovery atomically', () => {
+  assert.match(pageSource, /savedCreateDraftRef\.current = \{ draft, missingImageCount \}/u);
+  assert.match(pageSource, /replaceDraft\(isolatedDraft\)/u);
+  assert.match(
+    pageSource,
+    /function restoreCreateDraftAndClose[\s\S]*?replaceDraft\([\s\S]*?savedCreateDraft\?\.draft[\s\S]*?savedCreateDraft\?\.missingImageCount/u,
+  );
+  assert.match(
+    composerHookSource,
+    /replaceDraft: \(draft: PublicationDraft, missingImageCount\?: number\) => void/u,
+  );
+});
+
+test('new photos preserve retained assets and share the ten-photo limit', () => {
+  assert.match(
+    contentEditorSource,
+    /maxLocalImageCount = Math\.max\(0, MAX_PUBLICATION_IMAGES - retainedImageCount\)/u,
+  );
+  assert.match(contentEditorSource, /maxImages=\{Math\.max\(1, maxLocalImageCount\)\}/u);
+  const imageChange = contentEditorSource.match(
+    /onImagesChange=\{\(images\) => \{([\s\S]*?)onImagePreparationChange=/u,
+  )?.[1];
+  assert.ok(imageChange);
+  assert.doesNotMatch(imageChange, /retainedAssets:\s*\[\]/u);
+  assert.match(retainedMediaSource, /onRemove\(asset\.id\)/u);
+});
+
+test('selecting video with photos reports the conflict before mutating media', () => {
+  const handler = pageSource.match(
+    /async function handlePublicationVideoFile[\s\S]*?function confirmDraftClear/u,
+  )?.[0];
+  assert.ok(handler);
+  assert.ok(handler.indexOf("asset.type === 'image'") < handler.indexOf('setVideoPreparing(true)'));
+  assert.match(handler, /Сначала удалите добавленные фото/u);
+  assert.match(contentEditorSource, /blockedReason=\{videoBlockedReason\}/u);
+  assert.match(contentEditorSource, /onBlocked=\{\(\) => videoBlockedReason && onInfo/u);
+  assert.match(
+    videoToolSource,
+    /interactionBlocked \? \([\s\S]*?publication-video-tool__blocker[\s\S]*?\) : \([\s\S]*?<input/u,
+  );
 });

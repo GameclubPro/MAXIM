@@ -55,14 +55,14 @@ test('overlapping pasted images share an immediate preparation and submit guard'
 });
 
 test('suggestion submit confirmations do not claim delivery before it is confirmed', () => {
-  assert.match(suggestionPageSource, /description: 'Предложка сохранена\.'/u);
-  assert.doesNotMatch(suggestionPageSource, /description: 'Предложка отправлена\.'/u);
+  assert.match(suggestionPageSource, /title: 'Предложение сохранено'/u);
+  assert.doesNotMatch(suggestionPageSource, /Предложение отправлено/u);
   assert.match(
     legacyDialogPageSource,
-    /dialogType === 'suggest' \? 'Предложка сохранена\.' : 'Комментарий отправлен\.'/u,
+    /dialogType === 'suggest' \? 'Предложение сохранено' : 'Комментарий отправлен'/u,
   );
   assert.doesNotMatch(
     legacyDialogPageSource,
-    /dialogType === 'suggest' \? 'Предложка отправлена\.'/u,
+    /dialogType === 'suggest' \? 'Предложение отправлено'/u,
   );
 });

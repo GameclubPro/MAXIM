@@ -885,7 +885,7 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
           : 'cancelled';
     if (request.action === 'draft') {
       const publication = replacePreviewPublication(state, null, {
-        title: 'Предложка',
+        title: 'Предложение',
         content: {
           text: suggestion.text,
           textFormat: suggestion.textFormat,

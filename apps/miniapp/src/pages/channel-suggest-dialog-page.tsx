@@ -64,6 +64,7 @@ import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments'
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { maxSelectionChanged, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/channel-dialog-suggest.css';
 
 const SUGGEST_DRAFT_MAX_LENGTH = 2_000;
@@ -679,81 +680,81 @@ export function ChannelSuggestDialogPage({
       return;
     }
 
-    setDraftAttachments((current) => {
-      const accepted = [...current];
-      let totalBase64Length = calculateDraftAttachmentsBase64Length(current);
-      let rejectedByCount = 0;
-      let rejectedBySize = 0;
-      let rejectedAsDuplicate = 0;
+    const current = draftAttachmentsRef.current;
+    const accepted = [...current];
+    let totalBase64Length = calculateDraftAttachmentsBase64Length(current);
+    let rejectedByCount = 0;
+    let rejectedBySize = 0;
+    let rejectedAsDuplicate = 0;
 
-      for (const attachment of nextAttachments) {
-        if (
-          accepted.some(
-            (existing) =>
-              existing.mimeType === attachment.mimeType && existing.base64 === attachment.base64,
-          )
-        ) {
-          rejectedAsDuplicate += 1;
-          continue;
-        }
-        if (accepted.length >= MAX_SUGGEST_IMAGES) {
-          rejectedByCount += 1;
-          continue;
-        }
-
-        if (attachment.base64.length > MAX_SUGGEST_IMAGE_BASE64_LENGTH) {
-          rejectedBySize += 1;
-          continue;
-        }
-
-        const nextTotalBase64Length = totalBase64Length + attachment.base64.length;
-        if (nextTotalBase64Length > MAX_SUGGEST_ATTACHMENTS_TOTAL_BASE64) {
-          rejectedBySize += 1;
-          continue;
-        }
-
-        accepted.push(attachment);
-        totalBase64Length = nextTotalBase64Length;
+    for (const attachment of nextAttachments) {
+      if (
+        accepted.some(
+          (existing) =>
+            existing.mimeType === attachment.mimeType && existing.base64 === attachment.base64,
+        )
+      ) {
+        rejectedAsDuplicate += 1;
+        continue;
+      }
+      if (accepted.length >= MAX_SUGGEST_IMAGES) {
+        rejectedByCount += 1;
+        continue;
       }
 
-      const addedCount = accepted.length - current.length;
-      if (addedCount === 0) {
-        pushToast({
-          tone: 'danger',
-          title:
-            rejectedAsDuplicate > 0 && rejectedBySize === 0 && rejectedByCount === 0
-              ? 'Это фото уже добавлено'
-              : rejectedBySize > 0
-                ? 'Фото слишком тяжёлые'
-                : 'Слишком много фото',
-          description:
-            rejectedByCount > 0
-              ? `Можно добавить до ${MAX_SUGGEST_IMAGES} фото.`
-              : 'Уберите часть фото и попробуйте снова.',
-        });
-        return current;
+      if (attachment.base64.length > MAX_SUGGEST_IMAGE_BASE64_LENGTH) {
+        rejectedBySize += 1;
+        continue;
       }
 
-      if (rejectedByCount > 0 || rejectedBySize > 0 || rejectedAsDuplicate > 0) {
-        pushToast({
-          tone: 'info',
-          title: `Добавили ${addedCount} из ${nextAttachments.length}`,
-          description:
-            rejectedByCount > 0
-              ? `Лимит предложки — ${MAX_SUGGEST_IMAGES} фото. Остальные не добавили.`
-              : rejectedBySize > 0
-                ? 'Часть фото не добавили, потому что суммарный размер получился слишком большим.'
-                : 'Повторяющиеся фото не добавили.',
-        });
+      const nextTotalBase64Length = totalBase64Length + attachment.base64.length;
+      if (nextTotalBase64Length > MAX_SUGGEST_ATTACHMENTS_TOTAL_BASE64) {
+        rejectedBySize += 1;
+        continue;
       }
 
-      maxSelectionChanged();
-      markDraftContentChanged();
-      setDraftImagesNeedReselection(false);
-      setMissingDraftImageCount(0);
-      draftAttachmentsRef.current = accepted;
-      return accepted;
-    });
+      accepted.push(attachment);
+      totalBase64Length = nextTotalBase64Length;
+    }
+
+    const addedCount = accepted.length - current.length;
+    if (addedCount === 0) {
+      pushToast({
+        tone: 'danger',
+        title:
+          rejectedAsDuplicate > 0 && rejectedBySize === 0 && rejectedByCount === 0
+            ? 'Это фото уже добавлено'
+            : rejectedBySize > 0
+              ? 'Фото слишком тяжёлые'
+              : 'Слишком много фото',
+        description:
+          rejectedByCount > 0
+            ? `Можно добавить до ${MAX_SUGGEST_IMAGES} фото.`
+            : 'Уберите часть фото и попробуйте снова.',
+      });
+      return;
+    }
+
+    if (rejectedByCount > 0 || rejectedBySize > 0 || rejectedAsDuplicate > 0) {
+      pushToast({
+        tone: 'info',
+        title: `Добавили ${addedCount} из ${nextAttachments.length}`,
+        description:
+          rejectedByCount > 0
+            ? `Можно добавить до ${MAX_SUGGEST_IMAGES} фото. Остальные не добавлены.`
+            : rejectedBySize > 0
+              ? 'Часть фото не добавили, потому что суммарный размер получился слишком большим.'
+              : 'Повторяющиеся фото не добавили.',
+      });
+    }
+
+    maxSelectionChanged();
+    markDraftContentChanged();
+    const nextMissingCount = Math.max(0, missingDraftImageCount - addedCount);
+    setMissingDraftImageCount(nextMissingCount);
+    setDraftImagesNeedReselection(nextMissingCount > 0);
+    draftAttachmentsRef.current = accepted;
+    setDraftAttachments(accepted);
   };
 
   const prepareDraftImagesFromFiles = async (files: File[]) => {
@@ -775,7 +776,7 @@ export function ChannelSuggestDialogPage({
         pushToast({
           tone: 'info',
           title: 'Больше фото не поместится',
-          description: `В одной предложке может быть до ${MAX_SUGGEST_IMAGES} фото.`,
+          description: `Можно добавить до ${MAX_SUGGEST_IMAGES} фото.`,
         });
         return;
       }
@@ -824,10 +825,8 @@ export function ChannelSuggestDialogPage({
           if (!imagePreparationGuard.owns(preparationRun)) {
             return;
           }
-          if (!firstError && error instanceof Error && error.message.trim()) {
-            firstError = error.message;
-          } else if (!firstError) {
-            firstError = 'Не удалось подготовить фото.';
+          if (!firstError) {
+            firstError = describeUserFacingError(error, 'Не удалось подготовить фото');
           }
         } finally {
           if (imagePreparationGuard.owns(preparationRun)) {
@@ -858,10 +857,7 @@ export function ChannelSuggestDialogPage({
         pushToast({
           tone: 'danger',
           title: 'Фото не добавлено',
-          description:
-            error instanceof Error && error.message.trim()
-              ? error.message
-              : 'Не удалось подготовить фото.',
+          description: describeUserFacingError(error, 'Не удалось подготовить фото'),
         });
       }
     } finally {
@@ -963,14 +959,18 @@ export function ChannelSuggestDialogPage({
   };
 
   const handleDraftAttachmentRemove = (index: number) => {
-    setDraftAttachments((current) => {
-      const next = current.filter((_, attachmentIndex) => attachmentIndex !== index);
-      if (next.length !== current.length) {
-        markDraftContentChanged();
-        draftAttachmentsRef.current = next;
-      }
-      return next;
-    });
+    const current = draftAttachmentsRef.current;
+    const next = current.filter((_, attachmentIndex) => attachmentIndex !== index);
+    if (next.length === current.length) {
+      return;
+    }
+    const restoresMissingSlot = draftImagesNeedReselection;
+    markDraftContentChanged();
+    draftAttachmentsRef.current = next;
+    setDraftAttachments(next);
+    if (restoresMissingSlot) {
+      setMissingDraftImageCount((current) => Math.min(MAX_SUGGEST_IMAGES, current + 1));
+    }
     maxSelectionChanged();
     resetAttachmentPicker();
   };
@@ -1007,8 +1007,7 @@ export function ChannelSuggestDialogPage({
       );
       pushToast({
         tone: 'success',
-        title: 'Готово',
-        description: 'Предложка сохранена.',
+        title: 'Предложение сохранено',
       });
       setDraft('');
       draftValueRef.current = '';
@@ -1051,8 +1050,7 @@ export function ChannelSuggestDialogPage({
 
       pushToast({
         tone: 'danger',
-        title: 'Ошибка',
-        description: message,
+        title: describeUserFacingError(error, 'Не удалось отправить предложение'),
       });
     },
   });
@@ -1090,7 +1088,7 @@ export function ChannelSuggestDialogPage({
           setDraft(stored.text);
           setDraftAttachments(stored.attachments);
           setDraftImagesNeedReselection(stored.imagesNeedReselection);
-          setMissingDraftImageCount(stored.imagesNeedReselection ? stored.imageCount : 0);
+          setMissingDraftImageCount(stored.missingImageCount);
         }
         setDraftHydrated(true);
       })
@@ -1134,7 +1132,7 @@ export function ChannelSuggestDialogPage({
           requestIdentity: requestIdentityRef.current,
           imagesNeedReselection: draftImagesNeedReselection,
           imageCount: draftImagesNeedReselection
-            ? missingDraftImageCount
+            ? draftAttachmentsRef.current.length + missingDraftImageCount
             : draftAttachmentsRef.current.length,
         },
       );
@@ -1176,7 +1174,7 @@ export function ChannelSuggestDialogPage({
           requestIdentity: requestIdentityRef.current,
           imagesNeedReselection: draftImagesNeedReselection,
           imageCount: draftImagesNeedReselection
-            ? missingDraftImageCount
+            ? draftAttachmentsRef.current.length + missingDraftImageCount
             : draftAttachmentsRef.current.length,
         },
       ).then(() =>
@@ -1254,7 +1252,9 @@ export function ChannelSuggestDialogPage({
         attachments: canUploadImages ? draftAttachments : [],
         requestIdentity: resolvedRequest.identity,
         imagesNeedReselection: draftImagesNeedReselection,
-        imageCount: draftImagesNeedReselection ? missingDraftImageCount : draftAttachments.length,
+        imageCount: draftImagesNeedReselection
+          ? draftAttachments.length + missingDraftImageCount
+          : draftAttachments.length,
       },
     );
     sendMutation.mutate({
@@ -1460,7 +1460,10 @@ export function ChannelSuggestDialogPage({
               <StatusState
                 tone="danger"
                 title="Не удалось загрузить"
-                description={normalizeApiError(dialogQuery.error)}
+                description={describeUserFacingError(
+                  dialogQuery.error,
+                  'Не удалось загрузить предложения',
+                )}
                 action={
                   <button
                     type="button"
@@ -1487,23 +1490,18 @@ export function ChannelSuggestDialogPage({
                 )}
                 aria-label="Предложить пост"
               >
-                <div className="channel-suggest-composer__head">
-                  <span
-                    className={cn(
-                      'channel-suggest-composer__status',
-                      canSubmitMessage ? 'is-ready' : 'is-empty',
-                    )}
-                  >
-                    {draftImagesNeedReselection
-                      ? 'Нужно фото'
-                      : canSubmitMessage
-                        ? 'Готов'
-                        : 'Пусто'}
-                  </span>
-                  <span className="channel-suggest-composer__counter">
-                    {draftLength}/{SUGGEST_DRAFT_MAX_LENGTH}
-                  </span>
-                </div>
+                {draftImagesNeedReselection || SUGGEST_DRAFT_MAX_LENGTH - draftLength <= 200 ? (
+                  <div className="channel-suggest-composer__head">
+                    {draftImagesNeedReselection ? (
+                      <span className="channel-suggest-composer__status">Нужно фото</span>
+                    ) : null}
+                    {SUGGEST_DRAFT_MAX_LENGTH - draftLength <= 200 ? (
+                      <span className="channel-suggest-composer__counter">
+                        {draftLength}/{SUGGEST_DRAFT_MAX_LENGTH}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {draftImagesNeedReselection ? (
                   <div className="channel-suggest-composer__restore-warning" role="alert">
@@ -1512,8 +1510,12 @@ export function ChannelSuggestDialogPage({
                         ? `Не удалось восстановить ${missingDraftImageCount} фото. Добавьте их снова.`
                         : 'Не удалось восстановить фото. Добавьте его снова.'}
                     </span>
-                    <button type="button" onClick={handleDiscardMissingDraftImages}>
-                      Без фото
+                    <button
+                      type="button"
+                      disabled={isSubmitPending || isPreparingImage}
+                      onClick={handleDiscardMissingDraftImages}
+                    >
+                      {draftAttachments.length > 0 ? 'Оставить выбранные' : 'Без фото'}
                     </button>
                   </div>
                 ) : null}
@@ -1574,7 +1576,7 @@ export function ChannelSuggestDialogPage({
                           <div
                             className="channel-suggest-composer__rich-editor"
                             role="textbox"
-                            aria-label="Текст предложки"
+                            aria-label="Текст предложения"
                             aria-busy="true"
                           />
                         }
@@ -1587,7 +1589,7 @@ export function ChannelSuggestDialogPage({
                           maxLength={SUGGEST_DRAFT_MAX_LENGTH}
                           disabled={isSubmitPending}
                           onNormalizationReadyChange={setEditorReady}
-                          ariaLabel="Текст предложки"
+                          ariaLabel="Текст предложения"
                           className="channel-suggest-composer__rich-editor"
                           onPasteFiles={canUploadImages ? prepareDraftImagesFromFiles : undefined}
                         />

@@ -450,7 +450,7 @@ const baseScenarios = [
       },
     ],
     [
-      'publisher-channel-suggestions-confirm',
+      'publisher-channel-suggestions-open-draft',
       {
         path: '/publisher/channel/preview-channel',
         searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
@@ -595,6 +595,13 @@ const baseScenarios = [
           publisherSuggestions: 'mixed',
           channelPostSignature: 'button',
         },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-compose-media-first',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
         features: ['publisher', 'broadcast'],
       },
     ],

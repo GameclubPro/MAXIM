@@ -106,6 +106,7 @@ import { useDialogFocusTrap } from '../lib/dialog-focus';
 import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/channel-dialog-comments.css';
 import '../styles/channel-dialog-image-viewer.css';
 import '../styles/channel-dialog-native-comments.css';
@@ -2466,7 +2467,7 @@ export function ChannelDialogPage({
               : `Можно добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`
             : rejectedByFileLimit > 0
               ? dialogType === 'suggest'
-                ? 'В предложке пока поддерживаются только фото.'
+                ? 'К предложению пока можно добавить только фото.'
                 : `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`
               : 'Уберите часть файлов или фото и попробуйте снова.';
 
@@ -2490,7 +2491,7 @@ export function ChannelDialogPage({
         const description =
           rejectedByCount > 0
             ? dialogType === 'suggest'
-              ? `Лимит предложки — ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото. Остальные не добавили.`
+              ? `Можно добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото. Остальные не добавлены.`
               : `Лимит комментария — ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений. Остальные фото не добавили.`
             : rejectedByFileLimit > 0
               ? dialogType === 'suggest'
@@ -2534,7 +2535,7 @@ export function ChannelDialogPage({
                 title: 'Больше фото не поместится',
                 description:
                   dialogType === 'suggest'
-                    ? `В одной предложке может быть до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`
+                    ? `Можно добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`
                     : `В одном комментарии может быть до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`,
               });
               return [];
@@ -2788,8 +2789,7 @@ export function ChannelDialogPage({
       );
       pushToast({
         tone: 'success',
-        title: 'Готово',
-        description: dialogType === 'suggest' ? 'Предложка сохранена.' : 'Комментарий отправлен.',
+        title: dialogType === 'suggest' ? 'Предложение сохранено' : 'Комментарий отправлен',
       });
       setDraft('');
       setReplyToMessageId(null);
@@ -2816,8 +2816,12 @@ export function ChannelDialogPage({
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Ошибка',
-        description: normalizeApiError(error),
+        title: describeUserFacingError(
+          error,
+          dialogType === 'suggest'
+            ? 'Не удалось отправить предложение'
+            : 'Не удалось отправить комментарий',
+        ),
       });
     },
   });
@@ -2839,8 +2843,7 @@ export function ChannelDialogPage({
       );
       pushToast({
         tone: 'success',
-        title: 'Готово',
-        description: 'Комментарий обновлён.',
+        title: 'Комментарий обновлён',
       });
       cancelEditing();
       dismissMessageActions();
@@ -2851,8 +2854,7 @@ export function ChannelDialogPage({
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Ошибка',
-        description: normalizeApiError(error),
+        title: describeUserFacingError(error, 'Не удалось обновить комментарий'),
       });
     },
   });
@@ -2872,10 +2874,7 @@ export function ChannelDialogPage({
       );
       pushToast({
         tone: 'success',
-        title: 'Готово',
-        description: variables.deletedByAdmin
-          ? 'Комментарий удалён администратором.'
-          : 'Комментарий удалён.',
+        title: 'Комментарий удалён',
       });
       if (editingMessageId === variables.messageId) {
         cancelEditing();
@@ -2888,8 +2887,7 @@ export function ChannelDialogPage({
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Ошибка',
-        description: normalizeApiError(error),
+        title: describeUserFacingError(error, 'Не удалось удалить комментарий'),
       });
     },
   });
@@ -2926,8 +2924,7 @@ export function ChannelDialogPage({
       }
       pushToast({
         tone: 'danger',
-        title: 'Ошибка',
-        description: normalizeApiError(error),
+        title: describeUserFacingError(error, 'Не удалось сохранить реакцию'),
       });
     },
     onSettled: () => {
@@ -2953,8 +2950,7 @@ export function ChannelDialogPage({
     onError: (error: unknown) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось открыть профиль',
-        description: error instanceof Error ? error.message : 'Попробуйте ещё раз.',
+        title: describeUserFacingError(error, 'Не удалось открыть профиль'),
       });
     },
   });
@@ -2997,13 +2993,12 @@ export function ChannelDialogPage({
       );
       pushToast({
         tone: 'success',
-        title: 'Готово',
-        description:
+        title:
           result.notificationSettings.mode === 'off'
-            ? 'Выключены'
+            ? 'Уведомления выключены'
             : result.notificationSettings.scope === 'all_channels'
-              ? `Для ${result.notificationSettings.availableChannelCount ?? 0} каналов`
-              : 'Включены',
+              ? `Уведомления включены для ${result.notificationSettings.availableChannelCount ?? 0} каналов`
+              : 'Уведомления включены',
       });
     },
     onError: (error, _mode, context) => {
@@ -3012,8 +3007,7 @@ export function ChannelDialogPage({
       }
       pushToast({
         tone: 'danger',
-        title: 'Не удалось обновить уведомления',
-        description: normalizeApiError(error),
+        title: describeUserFacingError(error, 'Не удалось обновить уведомления'),
       });
     },
     onSettled: () => {
@@ -3924,7 +3918,12 @@ export function ChannelDialogPage({
                 <StatusState
                   tone="danger"
                   title="Не удалось загрузить"
-                  description={normalizeApiError(dialogQuery.error)}
+                  description={describeUserFacingError(
+                    dialogQuery.error,
+                    dialogType === 'suggest'
+                      ? 'Не удалось загрузить предложения'
+                      : 'Не удалось загрузить комментарии',
+                  )}
                   action={
                     <button
                       type="button"
@@ -3952,19 +3951,13 @@ export function ChannelDialogPage({
                     )}
                     aria-label="Предложить пост"
                   >
-                    <div className="channel-suggest-composer__head">
-                      <span
-                        className={cn(
-                          'channel-suggest-composer__status',
-                          canSubmitMessage ? 'is-ready' : 'is-empty',
-                        )}
-                      >
-                        {canSubmitMessage ? 'Готов' : 'Пусто'}
-                      </span>
-                      <span className="channel-suggest-composer__counter">
-                        {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
-                      </span>
-                    </div>
+                    {COMMENT_DRAFT_MAX_LENGTH - draftLength <= 200 ? (
+                      <div className="channel-suggest-composer__head">
+                        <span className="channel-suggest-composer__counter">
+                          {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
+                        </span>
+                      </div>
+                    ) : null}
 
                     <div
                       className={cn(
@@ -3999,7 +3992,7 @@ export function ChannelDialogPage({
                             placeholder={viewModel.placeholder}
                             maxLength={COMMENT_DRAFT_MAX_LENGTH}
                             disabled={isComposePending}
-                            ariaLabel="Текст предложки"
+                            ariaLabel="Текст предложения"
                             className="channel-suggest-composer__rich-editor"
                           />
                         </div>
@@ -4109,10 +4102,9 @@ export function ChannelDialogPage({
                               </span>
                             ) : null}
 
-                            <div className="channel-suggest-card__status-copy">
-                              <strong>{status.headline}</strong>
-                              <span>{status.note}</span>
-                            </div>
+                            {status.detail ? (
+                              <p className="channel-suggest-card__status-detail">{status.detail}</p>
+                            ) : null}
 
                             {message.publishedUrl ? (
                               <a
@@ -4121,7 +4113,7 @@ export function ChannelDialogPage({
                                 target="_blank"
                                 rel="noreferrer"
                               >
-                                Открыть
+                                Открыть пост
                               </a>
                             ) : null}
                           </article>
@@ -4311,8 +4303,7 @@ export function ChannelDialogPage({
                     })
                   ) : (
                     <div className="channel-dialog-empty">
-                      <strong>Здесь пока тихо</strong>
-                      <span>Напишите первый комментарий.</span>
+                      <strong>Комментариев пока нет</strong>
                     </div>
                   )}
                 </div>

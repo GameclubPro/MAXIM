@@ -101,10 +101,9 @@ export default function ChannelSuggestionHistory({
               </span>
             ) : null}
 
-            <div className="channel-suggest-card__status-copy">
-              <strong>{status.headline}</strong>
-              <span>{status.note}</span>
-            </div>
+            {status.detail ? (
+              <p className="channel-suggest-card__status-detail">{status.detail}</p>
+            ) : null}
 
             {message.publishedUrl ? (
               <a
@@ -113,7 +112,7 @@ export default function ChannelSuggestionHistory({
                 target="_blank"
                 rel="noreferrer"
               >
-                Открыть
+                Открыть пост
               </a>
             ) : null}
           </article>
