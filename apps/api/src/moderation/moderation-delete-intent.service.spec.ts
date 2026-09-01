@@ -3598,7 +3598,10 @@ describe('ModerationDeleteIntentService', () => {
       1,
       'chat-1',
       'message-1',
-      expect.objectContaining({ botId: 'bot-1' }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
     expect(deleteMessage).toHaveBeenNthCalledWith(
       2,
@@ -3805,20 +3808,22 @@ describe('ModerationDeleteIntentService', () => {
       .fn()
       .mockResolvedValueOnce([{ ...baseIntent }])
       .mockResolvedValueOnce([waiting]);
+    const deleteMessage = jest.fn().mockRejectedValue({ response: { status: 404, data: {} } });
+    const getExactMessagePresence = jest
+      .fn()
+      .mockRejectedValue({ response: { status: 404, data: {} } });
     const { service } = createService(
       {},
       { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
       {
-        deleteMessage: jest.fn().mockRejectedValue({ response: { status: 404, data: {} } }),
+        deleteMessage,
         getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
           userId: 'bot-user-1',
           isAdmin: true,
           isOwner: false,
           permissions: ['read_all_messages', 'write'],
         }),
-        getExactMessagePresence: jest
-          .fn()
-          .mockRejectedValue({ response: { status: 404, data: {} } }),
+        getExactMessagePresence,
       },
       { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
     );
@@ -3826,6 +3831,16 @@ describe('ModerationDeleteIntentService', () => {
     const result = await service.executeLeasedIntent('intent-1', 'lease-1');
 
     expect(result).toMatchObject({ kind: 'waiting_capability', confirmed: false });
+    expect(deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ ignoreFailureMetricStatuses: [403, 404] }),
+    );
+    expect(getExactMessagePresence).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-1', bypassCache: true }),
+    );
   });
 
   it('tries another confirmed bot when retry presence is unknown for the first candidate', async () => {

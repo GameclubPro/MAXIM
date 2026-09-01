@@ -1653,6 +1653,7 @@ describe('ModerationService', () => {
         actionHealthLane: 'critical',
         sourceTag: 'moderation_delete',
         timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: [403, 404],
       });
       expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(2, 'chat-1', 'msg-1', {
         botId: 'id613002203036_4_bot',
@@ -1661,6 +1662,7 @@ describe('ModerationService', () => {
         actionHealthLane: 'critical',
         sourceTag: 'moderation_delete',
         timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: [403, 404],
       });
       expect(maxClient.sendMessage).toHaveBeenCalledWith(
         'chat-1',

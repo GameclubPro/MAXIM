@@ -12,6 +12,7 @@ import { DEFAULT_WEBHOOK_QUEUE_NAMES, JOIN_WEBHOOK_QUEUE_NAMES } from '../webhoo
 export const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
 export const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
 export const BOT_ADDED_ONBOARDING_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
+export const MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
 export type ActiveMute = {
   eventId: string;
   issuedAt: Date;

@@ -4010,6 +4010,7 @@ describe('ModerationService', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'moderation_notice',
+        ignoreFailureMetricStatuses: [403, 404],
       }),
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
@@ -4262,6 +4263,7 @@ describe('ModerationService', () => {
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
         sourceTag: 'moderation_notice',
+        ignoreFailureMetricStatuses: [403, 404],
       }),
     );
     expect(maxClient.sendMessage.mock.calls[0]?.[3]).not.toHaveProperty('immediate');

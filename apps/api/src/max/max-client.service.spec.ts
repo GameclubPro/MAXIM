@@ -6432,46 +6432,51 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('does not count ignored terminal send failures in action health metrics', async () => {
-    const error = {
-      response: {
-        status: 404,
-        data: {
-          code: 'chat.not.found',
-          message: 'Chat not found',
+  it.each([403, 404])(
+    'does not count ignored terminal send HTTP %s failures in action health metrics',
+    async (status) => {
+      const error = {
+        response: {
+          status,
+          data: {
+            code: status === 403 ? 'chat.denied' : 'chat.not.found',
+            message: status === 403 ? 'Chat denied' : 'Chat not found',
+          },
         },
-      },
-    };
-    const httpService = {
-      request: jest.fn().mockReturnValueOnce(throwError(() => error)),
-    };
-    const service = createService(httpService);
-    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
-    const actionHealthService = (
-      service as unknown as {
-        actionHealthService: {
-          recordSuccess: jest.Mock;
-          recordFailure: jest.Mock;
-          recordSuccessForLane: jest.Mock;
-          recordFailureForLane: jest.Mock;
-        };
-      }
-    ).actionHealthService;
+      };
+      const httpService = {
+        request: jest.fn().mockReturnValueOnce(throwError(() => error)),
+      };
+      const service = createService(httpService);
+      const warnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation(() => undefined);
+      const actionHealthService = (
+        service as unknown as {
+          actionHealthService: {
+            recordSuccess: jest.Mock;
+            recordFailure: jest.Mock;
+            recordSuccessForLane: jest.Mock;
+            recordFailureForLane: jest.Mock;
+          };
+        }
+      ).actionHealthService;
 
-    await expect(
-      service.sendMessageImmediateWithId('chat-1', 'Правила', undefined, {
-        ignoreFailureMetricStatuses: [404],
-      }),
-    ).rejects.toBe(error);
+      await expect(
+        service.sendMessageImmediateWithId('chat-1', 'Правила', undefined, {
+          ignoreFailureMetricStatuses: [403, 404],
+        }),
+      ).rejects.toBe(error);
 
-    expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
-    expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
-    expect(actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
-    expect(actionHealthService.recordSuccessForLane).not.toHaveBeenCalled();
-    expect(warnSpy).not.toHaveBeenCalled();
+      expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
+      expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
+      expect(actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
+      expect(actionHealthService.recordSuccessForLane).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
 
-    await service.onModuleDestroy();
-  });
+      await service.onModuleDestroy();
+    },
+  );
 
   it('logs privacy-safe unignored user-facing failures at most once per bot per 30 seconds', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-01T01:00:00.000Z'));

@@ -23,6 +23,7 @@ import {
   type ModerationMessageActionClaimData,
   type ModerationMessageActionClaimModel,
 } from './moderation-message-action-claim';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 import {
   MODERATION_DELETE_INTENT_QUEUE,
   type ModerationDeleteIntentJob,
@@ -1408,6 +1409,7 @@ export class ModerationDeleteIntentService {
             trafficClass: 'critical',
             actionHealthLane: 'critical',
             sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+            ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
             idempotencyKey: `moderation-delete-intent-${intent.id}-attempt-${intent.attemptCount}`,
           });
         } catch (error: unknown) {

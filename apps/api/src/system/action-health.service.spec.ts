@@ -200,7 +200,7 @@ describe('ActionHealthService', () => {
     await service.onModuleDestroy();
   });
 
-  it('dual-writes rollout counters while reading legacy data without double counting', async () => {
+  it('reads v2 rollout buckets while retaining dual writes for rollback', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T20:00:59.000Z'));
     const service = new ActionHealthService(createConfigMock() as never);
     const redisInstance = redisInstances[0];
@@ -234,26 +234,37 @@ describe('ActionHealthService', () => {
         .filter((command) => command.kind === 'pexpire')
         .every((command) => command.args[1] === 180_000),
     ).toBe(true);
+    const counterWriteCommands = writeCommands.filter((command) => command.kind === 'hincrby');
+    expect(counterWriteCommands).toHaveLength(8);
     expect(
-      writeCommands
-        .filter((command) => command.kind === 'hincrby')
-        .some((command) => String(command.args[0]).startsWith('system:action-health:v1:')),
-    ).toBe(true);
+      counterWriteCommands.filter((command) =>
+        String(command.args[0]).startsWith('system:action-health:v1:'),
+      ),
+    ).toHaveLength(4);
     expect(
-      writeCommands
-        .filter((command) => command.kind === 'hincrby')
-        .some((command) => String(command.args[0]).startsWith('system:action-health:v2:')),
-    ).toBe(true);
+      counterWriteCommands.filter((command) =>
+        String(command.args[0]).startsWith('system:action-health:v2:'),
+      ),
+    ).toHaveLength(4);
 
     jest.setSystemTime(new Date('2026-03-30T20:01:01.000Z'));
     await service.refreshSnapshots(60);
+    const readCommands = (
+      redisInstance!.pipeline.mock.results.at(-1)?.value as { commands: PipelineCommand[] }
+    ).commands.filter((command) => command.kind === 'hmget');
+    expect(readCommands).toHaveLength(8);
+    expect(
+      readCommands.every((command) =>
+        String(command.args[0]).startsWith('system:action-health:v2:'),
+      ),
+    ).toBe(true);
     expect(service.getSnapshot(60)).toEqual({
       windowSec: 60,
-      total: 3,
-      success: 2,
+      total: 2,
+      success: 1,
       failure: 1,
       critical: 0,
-      errorRate: 1 / 3,
+      errorRate: 0.5,
       criticalRate: 0,
     });
 

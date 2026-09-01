@@ -205,6 +205,7 @@ function expectImmediateDeleteMessage(mockFn: jest.Mock, chatId: string, message
       actionHealthLane: 'critical',
       sourceTag: 'moderation_delete',
       timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+      ignoreFailureMetricStatuses: [403, 404],
     }),
   );
 }

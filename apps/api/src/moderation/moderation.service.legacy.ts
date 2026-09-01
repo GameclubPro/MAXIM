@@ -407,6 +407,7 @@ import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_ACCESS_LOSS_HOT_PATH_TIMEOUT_MS,
   MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
+  MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
   GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
   GLOBAL_SPAMMER_EPISODE_LOCK_TTL_SEC,
   GLOBAL_SPAMMER_FANOUT_EPISODE_WINDOW_SEC,
@@ -4959,6 +4960,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
           timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
           ...(options ?? {}),
+          ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
           ...(botId ? { botId } : {}),
           ...(options?.delayMs ? {} : { immediate: true }),
         });
@@ -17794,6 +17796,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       trafficClass: interactive ? 'interactive' : 'background',
       actionHealthLane: interactive ? 'interactive' : 'background',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
     };
     if (params.botId) {
       dispatchOptions.botId = params.botId;
