@@ -333,6 +333,7 @@ describe('PublicationService', () => {
     expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
       component: 'publication-materializer',
       sourceTag: 'managed_broadcast',
+      allowRecoveryWindowRun: true,
       allowMaxApiCapacitySlowPath: true,
     });
     expect(materializeSpy).not.toHaveBeenCalled();

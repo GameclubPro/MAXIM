@@ -3832,12 +3832,11 @@ export class PublicationService {
     }[mode];
   }
 
-  private async resolveBackgroundDecision(
-    reason: 'startup' | 'scheduled',
-  ): Promise<'run' | 'slow' | 'pause'> {
+  private async resolveBackgroundDecision(reason: 'startup' | 'scheduled'): Promise<'run' | 'slow' | 'pause'> {
     const decision = await this.backgroundRuntimeGovernorService.decide({
       component: 'publication-materializer',
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+      allowRecoveryWindowRun: true,
       allowMaxApiCapacitySlowPath: true,
     });
     if (decision.action !== 'run') {
