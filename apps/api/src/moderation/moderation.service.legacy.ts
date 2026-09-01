@@ -239,6 +239,7 @@ import {
   collectForwardedNodes,
   detectMediaFlags,
   extractRawMessageNode,
+  hasForwardedMessage,
   shouldSkipAntiSpamBurstForForward,
 } from './moderation-update-extractors';
 import {
@@ -1993,6 +1994,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasVideoAttachment: mediaFlags.hasVideoAttachment,
         hasFileAttachment: mediaFlags.hasFileAttachment,
         hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
+        hasForwardedMessage: hasForwardedMessage(update),
         hasMediaBatch: mediaFlags.hasMediaBatch,
         skipAntiSpamBurstLimit,
         skipDuplicateState: Boolean(duplicateStateSkipReason),

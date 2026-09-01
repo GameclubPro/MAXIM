@@ -4455,6 +4455,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.videoMessagesEnabled : false,
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
+    draft ? !draft.forwardedMessagesEnabled : false,
     draft ? !draft.phoneNumbersEnabled : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';

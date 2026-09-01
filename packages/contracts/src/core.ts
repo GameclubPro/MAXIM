@@ -754,6 +754,7 @@ export const chatSettingsSchema = z
       videoMessagesEnabled: z.boolean().default(true),
       fileMessagesEnabled: z.boolean().default(true),
       voiceMessagesEnabled: z.boolean().default(true),
+      forwardedMessagesEnabled: z.boolean().default(true),
       phoneNumbersEnabled: z.boolean().default(true),
       phoneNumbersBotMessageEnabled: z.boolean().default(false),
       phoneNumbersBotMessageText: botMessageTextSchema,

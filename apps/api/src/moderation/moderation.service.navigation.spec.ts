@@ -4490,6 +4490,94 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
+  it('deletes a wrapped official MAX forward when forwarded messages are disabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            forwardedMessagesEnabled: false,
+            antiSpamEnabled: false,
+            antiDuplicateEnabled: false,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = new RuleEngineService(createRedisCounterMock() as never);
+    const detectSpy = jest.spyOn(ruleEngine, 'detect');
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    const update = createLinkedForwardUpdate(77);
+    update.raw = {
+      update_type: 'message_created',
+      data: {
+        wrapper: {
+          id: 'msg-linked-forward-77',
+          recipient: { chat_id: 'chat-1' },
+          sender: { id: 'user-1' },
+          body: null,
+          link: {
+            type: 'forward',
+            message: {
+              id: 'source-linked-forward-77',
+              recipient: { chat_id: 'source-chat' },
+              sender: { id: 'source-user' },
+              body: { text: 'пересланный текст 77' },
+            },
+          },
+        },
+      },
+    };
+
+    await service.handleUpdate(update);
+
+    expect(detectSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hasForwardedMessage: true,
+      }),
+    );
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-linked-forward-77');
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        messageId: 'msg-linked-forward-77',
+        ruleCode: 'FORWARDED_MESSAGE_BLOCKED',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
   it('uses a generic public reason in MESSAGE_BLOCKED_WORD bot explanation', async () => {
     const prisma = {
       chat: {

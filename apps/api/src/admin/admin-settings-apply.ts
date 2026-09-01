@@ -122,23 +122,32 @@ export async function applySettingsToAllChats(params: {
   onPartialApplied: (chatIds: readonly string[]) => Promise<void>;
   isRequiredSubscriptionCurrentlyActive: (settings: ChatSettings) => boolean;
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
-  getCurrentSourceSettings?: () => Promise<
-    Pick<ChatSettings, 'profanitySensitivity'> | null
-  >;
+  getCurrentSourceSettings?: () => Promise<Pick<
+    ChatSettings,
+    'profanitySensitivity' | 'forwardedMessagesEnabled'
+  > | null>;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
   const parsed = chatSettingsSchema.safeParse(params.body);
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }
+  const hasOwnProfanitySensitivity = hasOwnSetting(params.body, 'profanitySensitivity');
+  const hasOwnForwardedMessagesEnabled = hasOwnSetting(params.body, 'forwardedMessagesEnabled');
   const currentSourceSettings =
-    !hasOwnSetting(params.body, 'profanitySensitivity') && params.getCurrentSourceSettings
+    (!hasOwnProfanitySensitivity || !hasOwnForwardedMessagesEnabled) &&
+    params.getCurrentSourceSettings
       ? await params.getCurrentSourceSettings()
       : null;
   const parsedSettings = currentSourceSettings
     ? {
         ...parsed.data,
-        profanitySensitivity: currentSourceSettings.profanitySensitivity,
+        ...(!hasOwnProfanitySensitivity
+          ? { profanitySensitivity: currentSourceSettings.profanitySensitivity }
+          : {}),
+        ...(!hasOwnForwardedMessagesEnabled
+          ? { forwardedMessagesEnabled: currentSourceSettings.forwardedMessagesEnabled }
+          : {}),
       }
     : parsed.data;
   let normalizedSettings = params.normalizeSettings(parsedSettings);

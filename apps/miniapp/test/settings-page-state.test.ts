@@ -208,6 +208,7 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.commercialFilter.includes('textFiltersBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('photoMessagesEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.limits.includes('forwardedMessagesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsBlockedWords'));
   assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsBlockedDomains'));
@@ -387,7 +388,7 @@ test('mergeSectionSettings does not copy legacy required subscription expiry fie
   assert.equal(merged.requiredSubscriptionExpiresAt, '2026-04-01T00:00:00.000Z');
 });
 
-test('mergeSectionSettings preserves advanced duplicate and link tuning plus phone allow toggle', () => {
+test('mergeSectionSettings preserves advanced tuning and syncs limit allow toggles', () => {
   const current = createSettings({
     duplicateDetectionPreset: 'STANDARD',
     duplicatePhotoEnabled: false,
@@ -400,6 +401,7 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning plus pho
     linkWarnMaxCount: 2,
     linkMuteMaxCount: 3,
     linkBanMaxCount: 4,
+    forwardedMessagesEnabled: true,
     phoneNumbersEnabled: true,
     phoneNumbersEscalationWindowHours: 12,
   });
@@ -415,6 +417,7 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning plus pho
     linkWarnMaxCount: 1,
     linkMuteMaxCount: 2,
     linkBanMaxCount: 3,
+    forwardedMessagesEnabled: false,
     phoneNumbersEnabled: false,
     phoneNumbersEscalationWindowHours: 72,
   });
@@ -437,6 +440,7 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning plus pho
   assert.equal(linkMerged.phoneNumbersEscalationWindowHours, 12);
 
   const limitsMerged = mergeSectionSettings(current, saved, 'limits');
+  assert.equal(limitsMerged.forwardedMessagesEnabled, false);
   assert.equal(limitsMerged.phoneNumbersEnabled, false);
   assert.equal(limitsMerged.phoneNumbersEscalationWindowHours, 12);
 });

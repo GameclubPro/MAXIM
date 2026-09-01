@@ -50,6 +50,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    forwardedMessagesEnabled: true,
     phoneNumbersEnabled: true,
     photoMessageCooldownEnabled: false,
     photoMessageCooldownHours: 1,
@@ -106,6 +107,41 @@ describe('RuleEngineMessageLimitsDetector', () => {
       expect.objectContaining({ ruleCode: 'FILE_BLOCKED' }),
       expect.objectContaining({ ruleCode: 'VOICE_BLOCKED' }),
     ]);
+  });
+
+  it('blocks forwarded messages only when they are disabled', () => {
+    const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
+
+    expect(
+      detector.detectAttachmentLimits({
+        settings: buildSettings({ forwardedMessagesEnabled: false }),
+        hasForwardedMessage: true,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        ruleCode: 'FORWARDED_MESSAGE_BLOCKED',
+        reason: 'Forwarded messages are disabled by chat settings',
+      }),
+    ]);
+    expect(
+      detector.detectAttachmentLimits({
+        settings: buildSettings({ forwardedMessagesEnabled: true }),
+        hasForwardedMessage: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it('allows forwards from legacy cached settings that predate the flag', () => {
+    const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
+    const legacySettings: Partial<ChatSettings> = { ...buildSettings() };
+    delete legacySettings.forwardedMessagesEnabled;
+
+    expect(
+      detector.detectAttachmentLimits({
+        settings: legacySettings as ChatSettings,
+        hasForwardedMessage: true,
+      }),
+    ).toEqual([]);
   });
 
   it('detects blocked domains on exact hosts and subdomains', () => {

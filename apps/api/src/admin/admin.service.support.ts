@@ -729,6 +729,7 @@ export const SETTINGS_SECTION_KEYS = {
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
+    'forwardedMessagesEnabled',
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',

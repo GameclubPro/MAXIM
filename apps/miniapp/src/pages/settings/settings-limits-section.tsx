@@ -717,6 +717,34 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
 
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">
+                    Разрешить пересланные сообщения
+                  </span>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Разрешить пересланные сообщения"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.forwardedMessagesEnabled}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setFieldValue('forwardedMessagesEnabled', enabled);
+                        if (!enabled) {
+                          enableDefaultSanctionStages(setFieldValue, 'messageLimits');
+                        }
+                      }}
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="settings-native-toggle">
+                <div className="settings-native-toggle__row">
                   <span className="settings-native-toggle__title">Разрешить телефоны</span>
 
                   <label className="settings-native-switch" aria-label="Разрешить номера телефонов">

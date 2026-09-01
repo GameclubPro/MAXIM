@@ -241,4 +241,93 @@ describe('moderation update media flag extraction', () => {
     expect(hasForwardedMessage(update)).toBe(true);
     expect(shouldSkipAntiSpamBurstForForward(update)).toBe(false);
   });
+
+  it.each(['reply', 'quoted'])(
+    'does not treat a %s to a forwarded message as a forward',
+    (type) => {
+      const update = createUpdate({
+        message: {
+          body: {
+            text: 'мой ответ',
+          },
+          link: {
+            type,
+            message: {
+              link: {
+                type: 'forward',
+                message: {
+                  body: { text: 'пересланный оригинал' },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      expect(hasForwardedMessage(update)).toBe(false);
+    },
+  );
+
+  it('ignores non-content forward metadata', () => {
+    const update = createUpdate({
+      message: {
+        body: {
+          text: 'обычное сообщение',
+          forward_count: 3,
+          forwarded: false,
+        },
+      },
+    });
+
+    expect(hasForwardedMessage(update)).toBe(false);
+  });
+
+  it('detects a direct legacy body.forwarded_message payload', () => {
+    const update = createUpdate({
+      message: {
+        body: {
+          forwarded_message: {
+            body: { text: 'пересланный текст' },
+          },
+        },
+      },
+    });
+
+    expect(hasForwardedMessage(update)).toBe(true);
+  });
+
+  it.each([
+    [
+      'direct event envelope',
+      {
+        update_type: 'message_created',
+        message_created: {
+          id: 'forward-envelope-1',
+          recipient: { chat_id: 'chat-1' },
+          sender: { id: 'user-1' },
+          body: null,
+          link: { type: 'forward', message: { body: { text: 'оригинал' } } },
+        },
+      },
+    ],
+    [
+      'recursive data wrapper',
+      {
+        update_type: 'message_created',
+        data: {
+          wrapper: {
+            id: 'forward-wrapper-1',
+            recipient: { chat_id: 'chat-1' },
+            sender: { id: 'user-1' },
+            body: null,
+            link: { type: 'forward', message: { body: { text: 'оригинал' } } },
+          },
+        },
+      },
+    ],
+  ])('detects a forward in a supported %s', (_label, raw) => {
+    const update = createUpdate(raw);
+    expect(hasForwardedMessage(update)).toBe(true);
+    expect(shouldSkipAntiSpamBurstForForward(update)).toBe(true);
+  });
 });

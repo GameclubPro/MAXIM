@@ -273,6 +273,10 @@ function resolveBlockedMediaReason(ruleCode: string): {
       'голосовые сообщения в этом чате отключены',
       'отправка голосовых сообщений в этом чате отключена',
     ],
+    FORWARDED_MESSAGE_BLOCKED: [
+      'пересланные сообщения в этом чате запрещены',
+      'отправка пересланных сообщений в этом чате запрещена',
+    ],
   };
   const reason = reasons[ruleCode];
   return reason ? { legacyReason: reason[0], inheritedReason: reason[1] } : null;
@@ -294,6 +298,7 @@ export function resolveMessageLimitsSanctionReason(
     VIDEO_BLOCKED: 'видео в этом чате отключены',
     FILE_BLOCKED: 'файлы в этом чате отключены',
     VOICE_BLOCKED: 'голосовые сообщения в этом чате отключены',
+    FORWARDED_MESSAGE_BLOCKED: 'пересланные сообщения в этом чате запрещены',
   };
   const inheritedReasons: Record<string, string> = {
     PHOTO_RATE_LIMIT: 'фото отправляются чаще, чем разрешено в чате',
@@ -306,6 +311,7 @@ export function resolveMessageLimitsSanctionReason(
     VIDEO_BLOCKED: 'отправка видео в этом чате отключена',
     FILE_BLOCKED: 'отправка файлов в этом чате отключена',
     VOICE_BLOCKED: 'отправка голосовых сообщений в этом чате отключена',
+    FORWARDED_MESSAGE_BLOCKED: 'отправка пересланных сообщений в этом чате запрещена',
   };
   const legacyReason = isMessageLimitsBlockedListRuleCode(ruleCode)
     ? 'такие сообщения запрещены в чате'

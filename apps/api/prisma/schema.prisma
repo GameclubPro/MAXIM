@@ -1022,6 +1022,7 @@ model ChatSettings {
   videoMessagesEnabled                          Boolean                   @default(true) @map("video_messages_enabled")
   fileMessagesEnabled                           Boolean                   @default(true) @map("file_messages_enabled")
   voiceMessagesEnabled                          Boolean                   @default(true) @map("voice_messages_enabled")
+  forwardedMessagesEnabled                      Boolean                   @default(true) @map("forwarded_messages_enabled")
   phoneNumbersEnabled                           Boolean                   @default(true) @map("phone_numbers_enabled")
   phoneNumbersBotMessageEnabled                 Boolean                   @default(false) @map("phone_numbers_bot_message_enabled")
   phoneNumbersBotMessageText                    String                    @default("") @map("phone_numbers_bot_message_text")

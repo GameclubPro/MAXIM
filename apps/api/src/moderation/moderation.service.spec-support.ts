@@ -482,6 +482,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    forwardedMessagesEnabled: true,
     phoneNumbersEnabled: true,
     messageLimitsBlockedWords: [],
     messageLimitsBlockedDomains: [],

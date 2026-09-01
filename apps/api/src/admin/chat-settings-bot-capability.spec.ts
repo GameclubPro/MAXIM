@@ -37,6 +37,12 @@ describe('resolveChatSettingsBotCapabilityRequirements', () => {
     ]);
   });
 
+  it('requires write permission when forwarded messages are disabled', () => {
+    expect(
+      resolveRequirements({ forwardedMessagesEnabled: true }, { forwardedMessagesEnabled: false }),
+    ).toEqual([{ permission: 'write', featureKeys: ['forwardedMessagesEnabled'] }]);
+  });
+
   it('requires both write and member management for sanctions', () => {
     expect(
       resolveRequirements(

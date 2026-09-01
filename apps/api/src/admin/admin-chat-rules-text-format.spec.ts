@@ -151,6 +151,18 @@ describe('admin chat rules text format helpers', () => {
     ).toContain(expected);
   });
 
+  it('includes the forwarded-message prohibition in published rules', () => {
+    const settings = chatSettingsSchema.parse({ forwardedMessagesEnabled: false });
+
+    const text = buildRulesTextFromSettings({
+      settings,
+      domains: [],
+      requiredSubscriptionChannels: [],
+    });
+
+    expect(text).toContain('Пересланные сообщения сюда отправлять нельзя.');
+  });
+
   it('mentions repeated photos only when photo duplicate enforcement is active', () => {
     const baseSettings = chatSettingsSchema.parse({
       linkPolicy: 'ALERT_ONLY',

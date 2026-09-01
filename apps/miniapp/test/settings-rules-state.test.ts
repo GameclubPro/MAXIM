@@ -157,6 +157,7 @@ test('buildRulesTextFromSettingsScreen assembles a publishable draft from active
       russianProfanityFilterEnabled: true,
       antiSpamEnabled: true,
       photoMessagesEnabled: false,
+      forwardedMessagesEnabled: false,
       nightModeEnabled: true,
       nightModeStartTimeMinutes: 1380,
       nightModeEndTimeMinutes: 420,
@@ -194,6 +195,7 @@ test('buildRulesTextFromSettingsScreen assembles a publishable draft from active
   assert.match(text, /Пожалуйста, без мата и грубой лексики\./);
   assert.match(text, /Пожалуйста, не флудите и не спамьте\./);
   assert.match(text, /Фото сюда отправлять нельзя\./);
+  assert.match(text, /Пересланные сообщения сюда отправлять нельзя\./);
   assert.match(text, /Ночью чат работает тише: ограничения действуют с 23:00 до 07:00\./);
 });
 
@@ -216,6 +218,7 @@ test('buildRulesTextFromSettingsScreen uses the full shared rules limit', () => 
       videoMessagesEnabled: false,
       fileMessagesEnabled: false,
       voiceMessagesEnabled: false,
+      forwardedMessagesEnabled: false,
       phoneNumbersEnabled: false,
       nightModeEnabled: true,
       linkWarnEnabled: true,

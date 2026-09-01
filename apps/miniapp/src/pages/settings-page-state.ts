@@ -266,6 +266,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
+    'forwardedMessagesEnabled',
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',

@@ -134,6 +134,23 @@ test('translates message length deletion reason', () => {
   );
 });
 
+test('shows the forwarded-message restriction for base and delete rule codes', () => {
+  const cases = [
+    { ruleCode: 'FORWARDED_MESSAGE_BLOCKED', metadata: {} },
+    {
+      ruleCode: 'FORWARDED_MESSAGE_BLOCKED_DELETE',
+      metadata: { reason: 'Forwarded messages are disabled by chat settings' },
+    },
+  ] as const;
+
+  for (const violation of cases) {
+    assert.equal(
+      resolveModerationFeedReason(violation),
+      'Пересланные сообщения в этом чате запрещены.',
+    );
+  }
+});
+
 test('explains duplicate moderation window', () => {
   assert.equal(
     resolveModerationFeedReason({

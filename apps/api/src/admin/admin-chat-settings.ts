@@ -795,6 +795,7 @@ export async function saveChatSettings(params: {
       nightModeForceCloseUntil: true,
       karavanStorefrontEnabled: true,
       karavanStorefrontAdminsOnly: true,
+      forwardedMessagesEnabled: true,
       updatedAt: true,
     },
   });
@@ -819,6 +820,9 @@ export async function saveChatSettings(params: {
     karavanStorefrontAdminsOnly: hasOwnSetting(params.body, 'karavanStorefrontAdminsOnly')
       ? parsed.data.karavanStorefrontAdminsOnly
       : (currentSettings?.karavanStorefrontAdminsOnly ?? parsed.data.karavanStorefrontAdminsOnly),
+    forwardedMessagesEnabled: hasOwnSetting(params.body, 'forwardedMessagesEnabled')
+      ? parsed.data.forwardedMessagesEnabled
+      : (currentSettings?.forwardedMessagesEnabled ?? parsed.data.forwardedMessagesEnabled),
   };
   let normalizedSettings = normalizeChatSettings(
     settingsInput,

@@ -1228,6 +1228,33 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
+  it('preserves disabled forwarded messages when a stale client omits the new field', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        forwardedMessagesEnabled: false,
+      }),
+    });
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      antiSpamEnabled: false,
+    });
+
+    expect(result.forwardedMessagesEnabled).toBe(false);
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
+      expect.objectContaining({
+        forwardedMessagesEnabled: false,
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: {
+          source: 'miniapp',
+          settingKeys: ['antiSpamEnabled'],
+        },
+      }),
+    });
+  });
+
   it('preserves the storefront toggle when a stale client omits the new field', async () => {
     const { prisma, service } = createService({
       currentSettings: createPersistedChatSettings({
@@ -2069,7 +2096,7 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
-  it('preserves source profanity sensitivity for a stale full apply-to-all body', async () => {
+  it('preserves newer source settings for a stale full apply-to-all body', async () => {
     const { prisma, service } = createService({
       botAssignmentData: {
         botId: 'bot-1',
@@ -2080,13 +2107,17 @@ describe('AdminSettingsService chat rules', () => {
         createChatSummary({ id: 'chat-2', title: 'Второй чат' }),
       ],
     });
-    const sourceSettings = chatSettingsSchema.parse({ profanitySensitivity: 'STRICT' });
+    const sourceSettings = chatSettingsSchema.parse({
+      profanitySensitivity: 'STRICT',
+      forwardedMessagesEnabled: false,
+    });
     jest.spyOn(service, 'getSettings').mockResolvedValue(sourceSettings);
     const legacyBody = { ...chatSettingsSchema.parse({ antiSpamEnabled: false }) } as Record<
       string,
       unknown
     >;
     delete legacyBody.profanitySensitivity;
+    delete legacyBody.forwardedMessagesEnabled;
 
     await service.applySettingsToAllChats('chat-1', user as never, legacyBody);
 
@@ -2094,6 +2125,7 @@ describe('AdminSettingsService chat rules', () => {
       expect.objectContaining({
         antiSpamEnabled: false,
         profanitySensitivity: 'STRICT',
+        forwardedMessagesEnabled: false,
       }),
     );
   });

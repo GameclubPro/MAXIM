@@ -53,6 +53,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(settings.linkPolicy).toBe('ALERT_ONLY');
     expect(enabledBooleanKeys).toEqual([
       'fileMessagesEnabled',
+      'forwardedMessagesEnabled',
       'karavanStorefrontEnabled',
       'phoneNumbersEnabled',
       'photoMessagesEnabled',

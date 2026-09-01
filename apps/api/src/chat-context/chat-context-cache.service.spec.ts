@@ -385,6 +385,7 @@ function buildSettings(chatId: string): ChatSettings {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    forwardedMessagesEnabled: true,
     phoneNumbersEnabled: true,
     phoneNumbersBotMessageEnabled: false,
     phoneNumbersBotMessageText: '',

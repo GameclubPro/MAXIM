@@ -1018,6 +1018,7 @@ export class RuleEngineService {
     hasVideoAttachment?: boolean;
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
+    hasForwardedMessage?: boolean;
     hasMediaBatch?: boolean;
     skipAntiSpamBurstLimit?: boolean;
     skipDuplicateState?: boolean;
@@ -1040,6 +1041,7 @@ export class RuleEngineService {
       hasVideoAttachment,
       hasFileAttachment,
       hasVoiceAttachment,
+      hasForwardedMessage,
       hasMediaBatch,
       skipAntiSpamBurstLimit,
       skipDuplicateState,
@@ -1226,6 +1228,7 @@ export class RuleEngineService {
         hasVideoAttachment,
         hasFileAttachment,
         hasVoiceAttachment,
+        hasForwardedMessage,
       }),
     );
     markRuleEngineDetectStage(profile, 'attachments');

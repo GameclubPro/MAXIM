@@ -255,6 +255,8 @@ function normalizeRawModerationReason(reason: string | null): string | null {
     'Video messages are disabled by chat settings': 'Видео в этом чате отключены.',
     'File messages are disabled by chat settings': 'Файлы в этом чате отключены.',
     'Voice messages are disabled by chat settings': 'Голосовые сообщения в этом чате отключены.',
+    'Forwarded messages are disabled by chat settings':
+      'Пересланные сообщения в этом чате запрещены.',
     'Duplicate message removed': 'Повтор сообщения удален.',
     'Message removed during active mute window':
       'Сообщение отправлено во время активного мута участника.',
@@ -284,6 +286,7 @@ function resolveFallbackReason(ruleCode: string): string {
     VIDEO_BLOCKED: 'Видео в этом чате отключены.',
     FILE_BLOCKED: 'Файлы в этом чате отключены.',
     VOICE_BLOCKED: 'Голосовые сообщения в этом чате отключены.',
+    FORWARDED_MESSAGE_BLOCKED: 'Пересланные сообщения в этом чате запрещены.',
     PHOTO_RATE_LIMIT: 'Слишком частая отправка фото.',
     STICKER_RATE_LIMIT: 'Слишком частая отправка стикеров.',
     PHONE_NUMBER_BLOCKED: 'Телефонные номера запрещены в этом чате.',

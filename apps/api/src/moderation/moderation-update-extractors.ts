@@ -1,4 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { selectMaxMessageCandidate } from '../max/max-message-candidate.util';
 
 const MAX_FORWARD_SCAN_DEPTH = 8;
 
@@ -64,8 +65,11 @@ export function hasForwardedMessage(update: MaxUpdate): boolean {
     return false;
   }
 
-  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
-  return collectForwardedNodes(messageNode).length > 0;
+  const messageNode = selectMaxMessageCandidate(rawRecord, update.type)?.node ?? rawRecord;
+  const body = asRecord(messageNode.body);
+  const content = asRecord(messageNode.content);
+  const payload = asRecord(messageNode.payload);
+  return [messageNode, body, content, payload].some(hasDirectForwardMarker);
 }
 
 export function shouldSkipAntiSpamBurstForForward(update: MaxUpdate): boolean {
@@ -74,8 +78,8 @@ export function shouldSkipAntiSpamBurstForForward(update: MaxUpdate): boolean {
     return false;
   }
 
-  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
-  return collectForwardedNodes(messageNode).length > 0 && !hasDirectCurrentMessageText(messageNode);
+  const messageNode = selectMaxMessageCandidate(rawRecord, update.type)?.node ?? rawRecord;
+  return hasForwardedMessage(update) && !hasDirectCurrentMessageText(messageNode);
 }
 
 export function extractRawMessageNode(
@@ -425,6 +429,42 @@ function isMediaBatchKey(value: string): boolean {
 
 function isForwardLinkedMessage(row: Record<string, unknown>): boolean {
   return readLowerString(row.type ?? row.link_type ?? row.linkType) === 'forward';
+}
+
+function hasDirectForwardMarker(container: Record<string, unknown> | null): boolean {
+  if (!container) {
+    return false;
+  }
+
+  const link = asRecord(container.link);
+  if (readLowerString(link?.type ?? link?.link_type ?? link?.linkType) === 'forward') {
+    return true;
+  }
+
+  return [
+    container.forward,
+    container.forwarded,
+    container.forwarded_message,
+    container.forwardedMessage,
+    container.forwarded_messages,
+    container.forwardedMessages,
+  ].some(isPresentForwardPayload);
+}
+
+function isPresentForwardPayload(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => item !== null && item !== undefined && item !== false);
+  }
+  if (value && typeof value === 'object') {
+    return true;
+  }
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value !== 0;
+  }
+  return value === true;
 }
 
 function readForwardLinkedMessagePayload(row: Record<string, unknown>): unknown {

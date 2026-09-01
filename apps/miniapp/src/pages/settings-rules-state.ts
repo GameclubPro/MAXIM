@@ -242,6 +242,10 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     items.push('Голосовые сообщения сюда отправлять нельзя.');
   }
 
+  if (!settings.forwardedMessagesEnabled) {
+    items.push('Пересланные сообщения сюда отправлять нельзя.');
+  }
+
   if (!settings.phoneNumbersEnabled) {
     items.push('Телефонные номера в сообщениях запрещены.');
   }

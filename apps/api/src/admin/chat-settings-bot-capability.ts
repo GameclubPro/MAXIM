@@ -29,6 +29,7 @@ const WRITE_DISABLE_KEYS = [
   'videoMessagesEnabled',
   'fileMessagesEnabled',
   'voiceMessagesEnabled',
+  'forwardedMessagesEnabled',
   'phoneNumbersEnabled',
 ] as const satisfies readonly (keyof ChatSettings)[];
 
@@ -53,6 +54,7 @@ const messageLimitsModerationActive: EffectiveParent = (settings) =>
   !settings.videoMessagesEnabled ||
   !settings.fileMessagesEnabled ||
   !settings.voiceMessagesEnabled ||
+  !settings.forwardedMessagesEnabled ||
   settings.messageLimitsBlockedWords.length > 0 ||
   settings.messageLimitsBlockedDomains.length > 0;
 
@@ -133,6 +135,7 @@ const MESSAGE_LIMITS_PARENT_FEATURE_KEYS = [
   'videoMessagesEnabled',
   'fileMessagesEnabled',
   'voiceMessagesEnabled',
+  'forwardedMessagesEnabled',
   'messageLimitsBlockedWords',
   'messageLimitsBlockedDomains',
 ] as const satisfies readonly (keyof ChatSettings)[];
@@ -158,6 +161,7 @@ export const CHAT_SETTINGS_BOT_CAPABILITY_SELECT = {
   videoMessagesEnabled: true,
   fileMessagesEnabled: true,
   voiceMessagesEnabled: true,
+  forwardedMessagesEnabled: true,
   phoneNumbersEnabled: true,
   removeBotsFromGroupEnabled: true,
   deleteSpammersEnabled: true,

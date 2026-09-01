@@ -188,6 +188,7 @@ export class RuleEngineMessageLimitsDetector {
     hasVideoAttachment?: boolean;
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
+    hasForwardedMessage?: boolean;
   }): RuleViolation[] {
     const violations: RuleViolation[] = [];
     const {
@@ -196,6 +197,7 @@ export class RuleEngineMessageLimitsDetector {
       hasVideoAttachment,
       hasFileAttachment,
       hasVoiceAttachment,
+      hasForwardedMessage,
     } = params;
 
     if (hasPhotoAttachment && !settings.photoMessagesEnabled) {
@@ -227,6 +229,14 @@ export class RuleEngineMessageLimitsDetector {
         ruleCode: 'VOICE_BLOCKED',
         score: 0.88,
         reason: 'Voice messages are disabled by chat settings',
+      });
+    }
+
+    if (hasForwardedMessage && settings.forwardedMessagesEnabled === false) {
+      violations.push({
+        ruleCode: 'FORWARDED_MESSAGE_BLOCKED',
+        score: 0.88,
+        reason: 'Forwarded messages are disabled by chat settings',
       });
     }
 

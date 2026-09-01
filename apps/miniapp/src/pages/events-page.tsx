@@ -393,6 +393,7 @@ function formatViolationRule(ruleCode: string): string {
     VIDEO_BLOCKED: 'Видео запрещено',
     FILE_BLOCKED: 'Файлы запрещены',
     VOICE_BLOCKED: 'Голосовые запрещены',
+    FORWARDED_MESSAGE_BLOCKED: 'Пересылки запрещены',
     PHOTO_RATE_LIMIT: 'Слишком много фото',
     STICKER_RATE_LIMIT: 'Слишком много стикеров',
     DUPLICATE_WARN: 'Повторяющиеся сообщения',

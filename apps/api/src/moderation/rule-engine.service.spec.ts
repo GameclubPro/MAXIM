@@ -153,6 +153,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    forwardedMessagesEnabled: true,
     phoneNumbersEnabled: true,
     phoneNumbersBotMessageEnabled: false,
     phoneNumbersBotMessageText: '',
@@ -3807,6 +3808,22 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'VOICE_BLOCKED')).toBe(true);
+  });
+
+  it('detects FORWARDED_MESSAGE_BLOCKED when forwarded messages are disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ forwardedMessagesEnabled: false }),
+      domainAllowlist: [],
+      hasForwardedMessage: true,
+    });
+
+    expect(result.violations).toEqual([
+      expect.objectContaining({ ruleCode: 'FORWARDED_MESSAGE_BLOCKED' }),
+    ]);
   });
 
   it('detects PHOTO_RATE_LIMIT from second photo when cooldown is enabled', async () => {
