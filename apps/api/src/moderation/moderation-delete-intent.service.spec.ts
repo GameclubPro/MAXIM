@@ -2794,7 +2794,11 @@ describe('ModerationDeleteIntentService', () => {
     expect(getExactMessagePresence).toHaveBeenCalledWith(
       'chat-1',
       'message-1',
-      expect.objectContaining({ botId: 'bot-1', bypassCache: true }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
     expect(deleteMessage).not.toHaveBeenCalled();
     const completionQuery = txExecuteRaw.mock.calls[0]?.[0] as
@@ -3759,7 +3763,11 @@ describe('ModerationDeleteIntentService', () => {
     expect(getExactMessagePresence).toHaveBeenCalledWith(
       'chat-1',
       'message-1',
-      expect.objectContaining({ botId: 'bot-1', bypassCache: true }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
   });
 
@@ -3839,7 +3847,11 @@ describe('ModerationDeleteIntentService', () => {
     expect(getExactMessagePresence).toHaveBeenCalledWith(
       'chat-1',
       'message-1',
-      expect.objectContaining({ botId: 'bot-1', bypassCache: true }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
   });
 

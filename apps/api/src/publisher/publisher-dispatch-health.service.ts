@@ -10,6 +10,15 @@ export const PUBLISHER_DISPATCH_HEALTH_REDIS = Symbol('PUBLISHER_DISPATCH_HEALTH
 export const PUBLISHER_DISPATCH_PAUSE_KEY_PREFIX = 'publisher:dispatch:pause:v1:';
 const PUBLISHER_PRESERVED_PAUSE_MAX_BYTES = 16 * 1_024;
 const PUBLISHER_DISPATCH_HEALTH_READY_TIMEOUT_MS = 1_250;
+const PUBLISHER_DISPATCH_HEALTH_REDIS_STATUSES = new Set([
+  'wait',
+  'reconnecting',
+  'connecting',
+  'connect',
+  'ready',
+  'close',
+  'end',
+]);
 const PUBLISHER_DISPATCH_RECORD_PAUSE_SCRIPT = `
 -- PUBLISHER_DISPATCH_RECORD_PAUSE_V1
 local nextRaw = ARGV[1]
@@ -101,13 +110,73 @@ export class PublisherDispatchPausedError extends Error {
   }
 }
 
+export type PublisherDispatchHealthUnavailableCauseCode =
+  | 'redis_timeout'
+  | 'redis_connection'
+  | 'redis_command_error';
+
 export class PublisherDispatchHealthUnavailableError extends Error {
   readonly code = 'PUBLISHER_DISPATCH_HEALTH_UNAVAILABLE';
+  readonly causeCode: PublisherDispatchHealthUnavailableCauseCode;
+  readonly redisStatus: string;
 
-  constructor(cause: unknown) {
-    super('MAX publisher dispatch health is unavailable', { cause });
+  constructor(cause: unknown, redisStatus?: unknown) {
+    const causeCode = classifyPublisherDispatchHealthUnavailableCause(cause);
+    const normalizedRedisStatus = normalizePublisherDispatchHealthRedisStatus(redisStatus);
+    super(
+      `MAX publisher dispatch health is unavailable (cause=${causeCode}; redis=${normalizedRedisStatus})`,
+      { cause },
+    );
     this.name = 'PublisherDispatchHealthUnavailableError';
+    this.causeCode = causeCode;
+    this.redisStatus = normalizedRedisStatus;
   }
+}
+
+function classifyPublisherDispatchHealthUnavailableCause(
+  error: unknown,
+): PublisherDispatchHealthUnavailableCauseCode {
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && !visited.has(current); depth += 1) {
+    visited.add(current);
+    const row = current as { cause?: unknown; code?: unknown; message?: unknown };
+    const code = typeof row.code === 'string' ? row.code.trim().toUpperCase() : '';
+    const message = typeof row.message === 'string' ? row.message.toLowerCase() : '';
+    if (code === 'ETIMEDOUT' || message.includes('timed out') || message.includes('timeout')) {
+      return 'redis_timeout';
+    }
+    if (
+      [
+        'ECONNREFUSED',
+        'ECONNRESET',
+        'EPIPE',
+        'ENOTFOUND',
+        'EAI_AGAIN',
+        'ENETUNREACH',
+        'EHOSTUNREACH',
+      ].includes(code) ||
+      message.includes('connection is closed') ||
+      message.includes('connection ended') ||
+      message.includes('connection closed') ||
+      message.includes('socket closed') ||
+      message.includes('reached the max retries per request limit') ||
+      message.includes("stream isn't writeable") ||
+      message.includes('stream is not writeable')
+    ) {
+      return 'redis_connection';
+    }
+    current = row.cause;
+  }
+  return 'redis_command_error';
+}
+
+function normalizePublisherDispatchHealthRedisStatus(status: unknown): string {
+  if (typeof status !== 'string') {
+    return 'unknown';
+  }
+  const normalized = status.trim().toLowerCase();
+  return PUBLISHER_DISPATCH_HEALTH_REDIS_STATUSES.has(normalized) ? normalized : 'unknown';
 }
 
 export function extractPublisherMaxStatusCode(error: unknown): number | null {
@@ -213,7 +282,7 @@ export class PublisherDispatchHealthService implements OnModuleDestroy {
       await this.ensureRedisReady();
       return await this.redis.get(buildPublisherDispatchPauseKey(this.publisherBotId));
     } catch (error: unknown) {
-      throw new PublisherDispatchHealthUnavailableError(error);
+      throw new PublisherDispatchHealthUnavailableError(error, this.redis.status);
     }
   }
 

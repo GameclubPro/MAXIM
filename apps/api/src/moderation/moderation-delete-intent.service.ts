@@ -4491,6 +4491,7 @@ export class ModerationDeleteIntentService {
       actionHealthLane: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
       timeoutMs: this.deleteTimeoutMs,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
     });
   }
 

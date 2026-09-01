@@ -128,15 +128,67 @@ describe('PublisherDispatchHealthService', () => {
 
   it('wraps only a Redis pause lookup failure as unavailable', async () => {
     const { service, redis } = createHarness();
-    const redisFailure = new Error('redis read failed');
+    const redisFailure = Object.assign(new Error('Command timed out'), { code: 'ETIMEDOUT' });
+    Object.assign(redis, { status: 'ready' });
     redis.get.mockRejectedValueOnce(redisFailure);
 
     await expect(service.assertDispatchAllowed()).rejects.toMatchObject({
       name: PublisherDispatchHealthUnavailableError.name,
       code: 'PUBLISHER_DISPATCH_HEALTH_UNAVAILABLE',
       cause: redisFailure,
+      causeCode: 'redis_timeout',
+      redisStatus: 'ready',
+      message: 'MAX publisher dispatch health is unavailable (cause=redis_timeout; redis=ready)',
     });
   });
+
+  it.each([
+    ['closed connection', new Error('Connection is closed.')],
+    [
+      'offline queue rejection',
+      new Error("Stream isn't writeable and enableOfflineQueue is false"),
+    ],
+    ['temporary DNS failure', Object.assign(new Error('lookup failed'), { code: 'EAI_AGAIN' })],
+    ['unreachable network', Object.assign(new Error('connect failed'), { code: 'ENETUNREACH' })],
+    [
+      'ioredis retry exhaustion',
+      new Error('Reached the max retries per request limit (which is 1).'),
+    ],
+  ])('classifies %s without exposing the raw Redis error', async (_label, redisFailure) => {
+    const { service, redis } = createHarness();
+    Object.assign(redis, { status: 'ready' });
+    redis.get.mockRejectedValueOnce(redisFailure);
+
+    await expect(service.assertDispatchAllowed()).rejects.toMatchObject({
+      cause: redisFailure,
+      causeCode: 'redis_connection',
+      redisStatus: 'ready',
+      message: 'MAX publisher dispatch health is unavailable (cause=redis_connection; redis=ready)',
+    });
+  });
+
+  it.each([
+    [
+      'nested network cause',
+      new Error('outer failure', {
+        cause: Object.assign(new Error('connect failed'), { code: 'EHOSTUNREACH' }),
+      }),
+      'unexpected-status',
+      'redis_connection',
+      'unknown',
+    ],
+    ['unknown command failure', new Error('WRONGTYPE'), 'ready', 'redis_command_error', 'ready'],
+  ])(
+    'classifies %s with an allowlisted public message',
+    (_label, redisFailure, status, causeCode, redisStatus) => {
+      expect(new PublisherDispatchHealthUnavailableError(redisFailure, status)).toMatchObject({
+        cause: redisFailure,
+        causeCode,
+        redisStatus,
+        message: `MAX publisher dispatch health is unavailable (cause=${causeCode}; redis=${redisStatus})`,
+      });
+    },
+  );
 
   it('waits for a connecting Redis client before the first startup read', async () => {
     const { service, redis } = createHarness();
@@ -187,6 +239,8 @@ describe('PublisherDispatchHealthService', () => {
     await expect(paused).rejects.toMatchObject({
       name: PublisherDispatchHealthUnavailableError.name,
       code: 'PUBLISHER_DISPATCH_HEALTH_UNAVAILABLE',
+      causeCode: 'redis_connection',
+      redisStatus: 'end',
     });
     expect(redis.get).not.toHaveBeenCalled();
   });
