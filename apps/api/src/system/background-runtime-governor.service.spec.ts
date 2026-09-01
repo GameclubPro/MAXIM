@@ -60,6 +60,12 @@ function mockSystemPressure(
 function createStackRateLimitSnapshot(overrides: Record<string, unknown> = {}) {
   return {
     windowSec: 60,
+    totalRequests: 0,
+    trafficClasses: {
+      critical: { totalRequests: 0 },
+      interactive: { totalRequests: 0 },
+      background: { totalRequests: 0 },
+    },
     smoothedLoad: 0,
     peakLoad: 0,
     avgLoad: 0,
@@ -127,7 +133,6 @@ function createDecisionSnapshotForTest() {
       topBots: [],
     },
     criticalLimiter: null,
-    topSources: [],
     workerSkew: { groupName: null, pressure: 0, totalPressure: 0, share: 0 },
   };
 }
@@ -425,7 +430,16 @@ describe('BackgroundRuntimeGovernorService', () => {
           },
           sources: {},
         }),
-        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(
+          createStackRateLimitSnapshot({
+            totalRequests: 10,
+            trafficClasses: {
+              critical: { totalRequests: 1 },
+              interactive: { totalRequests: 3 },
+              background: { totalRequests: 6 },
+            },
+          }),
+        ),
         getStackCriticalLimiterSnapshot: jest
           .fn()
           .mockResolvedValue(createCriticalLimiterSnapshot()),
@@ -512,7 +526,24 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
   });
 
-  it('slows background work when background source share grows too large', async () => {
+  it('slows background work from bounded shared stack background share', async () => {
+    const getSourceTrafficSnapshot = jest.fn();
+    const getStackRateLimitSnapshot = jest
+      .fn()
+      .mockImplementation((options: { capacityScope?: 'shared' | 'service' }) =>
+        Promise.resolve(
+          options.capacityScope === 'shared'
+            ? createStackRateLimitSnapshot({
+                totalRequests: 100,
+                trafficClasses: {
+                  critical: { totalRequests: 5 },
+                  interactive: { totalRequests: 20 },
+                  background: { totalRequests: 75 },
+                },
+              })
+            : createStackRateLimitSnapshot(),
+        ),
+      );
     const service = new BackgroundRuntimeGovernorService(
       {
         getSnapshot: jest.fn().mockResolvedValue({
@@ -546,33 +577,16 @@ describe('BackgroundRuntimeGovernorService', () => {
         }),
       } as never,
       {
-        getSourceTrafficSnapshot: jest.fn().mockResolvedValue({
-          overall: {
-            totalRequests: 100,
-            trafficClasses: {
-              critical: { totalRequests: 5 },
-              interactive: { totalRequests: 20 },
-              background: { totalRequests: 75 },
-            },
-          },
-          sources: {
-            managed_refresh: {
-              trafficClasses: {
-                background: {
-                  totalRequests: 50,
-                  avgRps: 0.4,
-                  peakRps: 6,
-                },
-              },
-            },
-          },
-        }),
-        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
+        getSourceTrafficSnapshot,
+        getStackRateLimitSnapshot,
         getStackCriticalLimiterSnapshot: jest
           .fn()
           .mockResolvedValue(createCriticalLimiterSnapshot()),
       } as never,
-      createConfigMock({ BACKGROUND_GOVERNOR_BACKGROUND_SHARE_THRESHOLD: 0.4 }),
+      createConfigMock({
+        BACKGROUND_GOVERNOR_SOURCE_WINDOW_SEC: 300,
+        BACKGROUND_GOVERNOR_BACKGROUND_SHARE_THRESHOLD: 0.4,
+      }),
       {
         recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
       } as never,
@@ -583,6 +597,15 @@ describe('BackgroundRuntimeGovernorService', () => {
       service.decide({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
     ).resolves.toMatchObject({
       action: 'slow',
+    });
+    expect(getSourceTrafficSnapshot).not.toHaveBeenCalled();
+    expect(getStackRateLimitSnapshot).toHaveBeenNthCalledWith(1, {
+      windowSec: 300,
+      capacityScope: 'shared',
+    });
+    expect(getStackRateLimitSnapshot).toHaveBeenNthCalledWith(2, {
+      windowSec: 60,
+      capacityScope: 'service',
     });
   });
 
@@ -720,6 +743,7 @@ describe('BackgroundRuntimeGovernorService', () => {
   });
 
   it('keeps aggregate stack and hottest-bot load observational at runtime', async () => {
+    const getSourceTrafficSnapshot = jest.fn();
     const getStackRateLimitSnapshot = jest
       .fn()
       .mockResolvedValue(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }));
@@ -761,17 +785,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         }),
       } as never,
       {
-        getSourceTrafficSnapshot: jest.fn().mockResolvedValue({
-          overall: {
-            totalRequests: 0,
-            trafficClasses: {
-              critical: { totalRequests: 0 },
-              interactive: { totalRequests: 0 },
-              background: { totalRequests: 0 },
-            },
-          },
-          sources: {},
-        }),
+        getSourceTrafficSnapshot,
         getStackRateLimitSnapshot,
         getStackCriticalLimiterSnapshot: jest
           .fn()
@@ -779,6 +793,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         getBotRateLimitSnapshot,
       } as never,
       createConfigMock({
+        BACKGROUND_GOVERNOR_SOURCE_WINDOW_SEC: 60,
         BACKGROUND_GOVERNOR_BOT_LOAD_SLOW_THRESHOLD: 0.35,
         BACKGROUND_GOVERNOR_BOT_LOAD_PAUSE_THRESHOLD: 0.7,
       }),
@@ -806,8 +821,14 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
     expect(getStackRateLimitSnapshot).toHaveBeenCalledWith({
       windowSec: 60,
+      capacityScope: 'shared',
+    });
+    expect(getStackRateLimitSnapshot).toHaveBeenCalledWith({
+      windowSec: 60,
       capacityScope: 'service',
     });
+    expect(getStackRateLimitSnapshot).toHaveBeenCalledTimes(2);
+    expect(getSourceTrafficSnapshot).not.toHaveBeenCalled();
     expect(getBotRateLimitSnapshot).toHaveBeenCalledWith(['bot-a', 'bot-b', 'bot-c'], {
       windowSec: 60,
       capacityScope: 'service',
@@ -825,7 +846,17 @@ describe('BackgroundRuntimeGovernorService', () => {
           background: { totalRequests: 6 },
         },
       },
-      sources: {},
+      sources: {
+        managed_refresh: {
+          trafficClasses: {
+            background: {
+              totalRequests: 6,
+              avgRps: 0.1,
+              peakRps: 2,
+            },
+          },
+        },
+      },
     });
     const getRateLimitOutcomeSnapshot = jest.fn().mockResolvedValue({
       windowSec: 600,
@@ -837,7 +868,20 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
     const getStackRateLimitSnapshot = jest
       .fn()
-      .mockResolvedValue(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }));
+      .mockImplementation((options: { capacityScope?: 'shared' | 'service' }) =>
+        Promise.resolve(
+          options.capacityScope === 'shared'
+            ? createStackRateLimitSnapshot({
+                totalRequests: 10,
+                trafficClasses: {
+                  critical: { totalRequests: 1 },
+                  interactive: { totalRequests: 3 },
+                  background: { totalRequests: 6 },
+                },
+              })
+            : createStackRateLimitSnapshot({ smoothedLoad: 0.48 }),
+        ),
+      );
     const getStackCriticalLimiterSnapshot = jest
       .fn()
       .mockResolvedValueOnce({ windowSec: 60, internalRejects: 1 })
@@ -847,7 +891,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       .mockResolvedValueOnce({
         'bot-a': { smoothedLoad: 0.4, peakLoad: 0.5, avgLoad: 0.2 },
       })
-      .mockResolvedValueOnce({
+      .mockResolvedValue({
         'bot-a': { smoothedLoad: 0.1, peakLoad: 0.2, avgLoad: 0.05 },
       });
     const service = new BackgroundRuntimeGovernorService(
@@ -877,13 +921,33 @@ describe('BackgroundRuntimeGovernorService', () => {
     );
     mockSystemPressure(service, { enabled: false });
 
-    await expect(service.getDashboardBudgetSummary()).resolves.toMatchObject({
+    const [firstDashboard, secondDashboard] = await Promise.all([
+      service.getDashboardBudgetSummary(),
+      service.getDashboardBudgetSummary(),
+    ]);
+    expect(firstDashboard).toMatchObject({
       backgroundShare: 0.6,
+      topSources: [
+        {
+          sourceTag: 'managed_refresh',
+          totalRequests: 6,
+          avgRps: 0.1,
+          peakRps: 2,
+        },
+      ],
       stackLoad: { smoothedLoad: 0.48 },
       botLoad: {
         maxSmoothedLoad: 0.1,
         topBots: [expect.objectContaining({ botId: 'bot-a', smoothedLoad: 0.1 })],
       },
+    });
+    expect(secondDashboard).toMatchObject({
+      backgroundShare: 0.6,
+      topSources: [expect.objectContaining({ sourceTag: 'managed_refresh', totalRequests: 6 })],
+    });
+    await expect(service.getDashboardBudgetSummary()).resolves.toMatchObject({
+      backgroundShare: 0.6,
+      topSources: [expect.objectContaining({ sourceTag: 'managed_refresh', totalRequests: 6 })],
     });
     await expect(service.getCriticalLimiterSnapshot()).resolves.toEqual({
       windowSec: 600,
@@ -894,6 +958,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       internalRejects: 4,
     });
     expect(getSourceTrafficSnapshot).toHaveBeenCalledWith({ windowSec: 60 });
+    expect(getSourceTrafficSnapshot).toHaveBeenCalledTimes(1);
     expect(getSourceSnapshot).not.toHaveBeenCalled();
     expect(getStackCriticalLimiterSnapshot).toHaveBeenCalledTimes(2);
     expect(getStackCriticalLimiterSnapshot).toHaveBeenNthCalledWith(1, { windowSec: 600 });
@@ -901,14 +966,20 @@ describe('BackgroundRuntimeGovernorService', () => {
     expect(getRateLimitOutcomeSnapshot).not.toHaveBeenCalled();
     expect(getStackRateLimitSnapshot).toHaveBeenNthCalledWith(1, {
       windowSec: 60,
+      capacityScope: 'shared',
+    });
+    expect(getStackRateLimitSnapshot).toHaveBeenNthCalledWith(2, {
+      windowSec: 60,
       capacityScope: 'service',
     });
-    expect(getStackRateLimitSnapshot).toHaveBeenCalledTimes(1);
+    expect(getStackRateLimitSnapshot).toHaveBeenCalledTimes(2);
     expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(1, ['bot-a'], {
       windowSec: 60,
       capacityScope: 'service',
     });
     expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(2, ['bot-a'], { windowSec: 60 });
+    expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(3, ['bot-a'], { windowSec: 60 });
+    expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(4, ['bot-a'], { windowSec: 60 });
   });
 
   it('reuses the direct critical limiter snapshot for the default alert window', async () => {

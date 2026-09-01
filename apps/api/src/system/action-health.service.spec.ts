@@ -1,6 +1,7 @@
 import { ActionHealthService } from './action-health.service';
 
 type RedisHashes = Map<string, Record<string, string>>;
+type PipelineCommand = { kind: 'hincrby' | 'pexpire' | 'hmget'; args: unknown[] };
 
 const redisInstances: Array<{
   hashes: RedisHashes;
@@ -9,8 +10,9 @@ const redisInstances: Array<{
 }> = [];
 
 function createPipeline(hashes: RedisHashes) {
-  const commands: Array<{ kind: 'hincrby' | 'pexpire' | 'hmget'; args: unknown[] }> = [];
+  const commands: PipelineCommand[] = [];
   const pipeline = {
+    commands,
     hincrby: (...args: [string, string, number]) => pipelineImpl.hincrby(...args),
     pexpire: (...args: [string, number]) => pipelineImpl.pexpire(...args),
     hmget: (...args: [string, ...string[]]) => pipelineImpl.hmget(...args),
@@ -149,6 +151,111 @@ describe('ActionHealthService', () => {
 
     await service.refreshSnapshots(60, ['bot-a']);
     expect(redisInstance!.pipeline.mock.calls.length).toBe(pipelineCallsAfterFirstRefresh);
+
+    await service.onModuleDestroy();
+  });
+
+  it('surfaces command-level shared counter write failures', async () => {
+    const service = new ActionHealthService(createConfigMock() as never);
+    const redisInstance = redisInstances[0];
+    expect(redisInstance).toBeDefined();
+    const failedPipeline = createPipeline(redisInstance!.hashes);
+    failedPipeline.exec = jest
+      .fn()
+      .mockResolvedValue([[new Error('simulated command failure'), null]]);
+    redisInstance!.pipeline.mockReturnValueOnce(failedPipeline);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+
+    service.recordSuccess();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      { err: 'simulated command failure' },
+      'Failed to persist shared action health counters',
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not cache partial shared snapshots after a command-level read failure', async () => {
+    const service = new ActionHealthService(createConfigMock() as never);
+    const redisInstance = redisInstances[0];
+    expect(redisInstance).toBeDefined();
+    const failedPipeline = createPipeline(redisInstance!.hashes);
+    failedPipeline.exec = jest
+      .fn()
+      .mockResolvedValue([[new Error('simulated read failure'), null]]);
+    redisInstance!.pipeline.mockReturnValueOnce(failedPipeline);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+
+    await service.refreshSnapshots(60);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      { err: 'simulated read failure' },
+      'Failed to refresh shared action health snapshot',
+    );
+    expect((service as any).sharedSnapshotCache.size).toBe(0);
+
+    await service.onModuleDestroy();
+  });
+
+  it('dual-writes rollout counters while reading legacy data without double counting', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T20:00:59.000Z'));
+    const service = new ActionHealthService(createConfigMock() as never);
+    const redisInstance = redisInstances[0];
+    expect(redisInstance).toBeDefined();
+    const firstSec = Math.floor(Date.now() / 1_000);
+    redisInstance!.hashes.set('system:action-health:v1:global', {
+      [`success:${firstSec}`]: '1',
+    });
+
+    service.recordSuccess(null, Date.now());
+    service.recordFailure(false, null, Date.now() + 2_000);
+    await Promise.resolve();
+
+    const globalBucketKeys = [...redisInstance!.hashes.keys()]
+      .filter((key) => key.startsWith('system:action-health:v2:global:minute:'))
+      .sort();
+    expect(globalBucketKeys).toHaveLength(2);
+    expect(globalBucketKeys[0]).not.toBe(globalBucketKeys[1]);
+    expect(
+      globalBucketKeys.every(
+        (key) => Object.keys(redisInstance!.hashes.get(key) ?? {}).length <= 3 * 60,
+      ),
+    ).toBe(true);
+
+    const writeCommands = redisInstance!.pipeline.mock.results
+      .slice(0, 2)
+      .flatMap((result) => (result.value as { commands: PipelineCommand[] }).commands);
+    expect(writeCommands.filter((command) => command.kind === 'pexpire')).toHaveLength(8);
+    expect(
+      writeCommands
+        .filter((command) => command.kind === 'pexpire')
+        .every((command) => command.args[1] === 180_000),
+    ).toBe(true);
+    expect(
+      writeCommands
+        .filter((command) => command.kind === 'hincrby')
+        .some((command) => String(command.args[0]).startsWith('system:action-health:v1:')),
+    ).toBe(true);
+    expect(
+      writeCommands
+        .filter((command) => command.kind === 'hincrby')
+        .some((command) => String(command.args[0]).startsWith('system:action-health:v2:')),
+    ).toBe(true);
+
+    jest.setSystemTime(new Date('2026-03-30T20:01:01.000Z'));
+    await service.refreshSnapshots(60);
+    expect(service.getSnapshot(60)).toEqual({
+      windowSec: 60,
+      total: 3,
+      success: 2,
+      failure: 1,
+      critical: 0,
+      errorRate: 1 / 3,
+      criticalRate: 0,
+    });
 
     await service.onModuleDestroy();
   });

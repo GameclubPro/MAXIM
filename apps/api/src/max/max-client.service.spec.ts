@@ -6446,11 +6446,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
       request: jest.fn().mockReturnValueOnce(throwError(() => error)),
     };
     const service = createService(httpService);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
     const actionHealthService = (
       service as unknown as {
         actionHealthService: {
           recordSuccess: jest.Mock;
           recordFailure: jest.Mock;
+          recordSuccessForLane: jest.Mock;
+          recordFailureForLane: jest.Mock;
         };
       }
     ).actionHealthService;
@@ -6463,6 +6466,125 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
     expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
+    expect(actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
+    expect(actionHealthService.recordSuccessForLane).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('logs privacy-safe unignored user-facing failures at most once per bot per 30 seconds', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-01T01:00:00.000Z'));
+    const error = Object.assign(new Error('request failed for chat-private user-private'), {
+      response: {
+        status: 503,
+        data: {
+          code: 'service.unavailable',
+          message: 'request failed for chat-private user-private',
+        },
+      },
+    });
+    const httpService = {
+      request: jest.fn().mockReturnValue(throwError(() => error)),
+    };
+    const service = createService(httpService);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    const actionHealthService = (
+      service as unknown as {
+        actionHealthService: {
+          recordFailureForLane: jest.Mock;
+        };
+      }
+    ).actionHealthService;
+    const requestOptions = {
+      bypassCache: true,
+      trafficClass: 'critical' as const,
+      actionHealthLane: 'interactive' as const,
+      sourceTag: 'Required Subscription Membership',
+    };
+
+    await expect(service.getChatSnapshot('chat-private-1', requestOptions)).rejects.toBe(error);
+    await expect(service.getChatSnapshot('chat-private-2', requestOptions)).rejects.toBe(error);
+    jest.advanceTimersByTime(29_999);
+    await expect(service.getChatSnapshot('chat-private-3', requestOptions)).rejects.toBe(error);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenLastCalledWith(
+      {
+        statusCode: 503,
+        errorCode: 'service.unavailable',
+        trafficClass: 'critical',
+        lane: 'interactive',
+        sourceTag: 'required_subscription_membership',
+        botId: '777000_bot',
+      },
+      'Recorded unignored user-facing MAX API action failure',
+    );
+
+    jest.advanceTimersByTime(1);
+    await expect(service.getChatSnapshot('chat-private-4', requestOptions)).rejects.toBe(error);
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(actionHealthService.recordFailureForLane).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('chat-private');
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('user-private');
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not log action failure diagnostics for background traffic or lanes', async () => {
+    const backgroundTrafficError = Object.assign(new Error('background failed'), {
+      response: { status: 503, data: { code: 'service.unavailable' } },
+    });
+    const backgroundLaneError = Object.assign(new Error('background lane denied'), {
+      response: { status: 403, data: { code: 'chat.denied' } },
+    });
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(throwError(() => backgroundTrafficError))
+        .mockReturnValueOnce(throwError(() => backgroundLaneError)),
+    };
+    const service = createService(httpService);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    const actionHealthService = (
+      service as unknown as {
+        actionHealthService: {
+          recordFailureForLane: jest.Mock;
+        };
+      }
+    ).actionHealthService;
+
+    await expect(
+      service.getChatSnapshot('chat-background-traffic', {
+        bypassCache: true,
+        trafficClass: 'background',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_refresh',
+      }),
+    ).rejects.toBe(backgroundTrafficError);
+    await expect(
+      service.getChatSnapshot('chat-background-lane', {
+        bypassCache: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+      }),
+    ).rejects.toBe(backgroundLaneError);
+
+    expect(actionHealthService.recordFailureForLane).toHaveBeenNthCalledWith(
+      1,
+      'interactive',
+      true,
+      '777000_bot',
+    );
+    expect(actionHealthService.recordFailureForLane).toHaveBeenNthCalledWith(
+      2,
+      'background',
+      false,
+      '777000_bot',
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

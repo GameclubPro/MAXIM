@@ -423,6 +423,8 @@ describe('MaxMembershipLookupService', () => {
       expect.objectContaining({
         trafficClass: 'critical',
         timeoutMs: 1500,
+        sourceTag: 'required_subscription_membership',
+        ignoreFailureMetricStatuses: [403, 404],
       }),
     );
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
@@ -460,7 +462,12 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       'channel-1',
       ['user-1', 'user-2', 'user-3'],
-      { trafficClass: 'critical', timeoutMs: 1_500 },
+      {
+        trafficClass: 'critical',
+        timeoutMs: 1_500,
+        sourceTag: 'required_subscription_membership',
+        ignoreFailureMetricStatuses: [403, 404],
+      },
     );
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
@@ -493,6 +500,8 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('channel-1', ['user-1'], {
       trafficClass: 'critical',
       timeoutMs: 1_500,
+      sourceTag: 'required_subscription_membership',
+      ignoreFailureMetricStatuses: [403, 404],
       botId: 'id613002203036_4_bot',
     });
   });
@@ -543,6 +552,8 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('channel-2', ['user-7', 'user-8'], {
       trafficClass: 'critical',
       timeoutMs: 1_500,
+      sourceTag: 'required_subscription_membership',
+      ignoreFailureMetricStatuses: [403, 404],
     });
   });
 
@@ -713,6 +724,18 @@ describe('MaxMembershipLookupService', () => {
         ['user-1', null],
         ['user-2', null],
       ]),
+    );
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'channel-denied',
+      ['user-1', 'user-2'],
+      {
+        trafficClass: 'critical',
+        timeoutMs: 1_500,
+        sourceTag: 'required_subscription_membership',
+        ignoreFailureMetricStatuses: [403, 404],
+        botId: 'bot-1',
+      },
     );
 
     await expect(

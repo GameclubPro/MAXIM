@@ -73,6 +73,7 @@ type MembershipLookupPolicyConfig = {
   trafficClass: MaxApiTrafficClass;
   allowStaleOnError: boolean;
   sourceTag?: string;
+  ignoreFailureMetricStatuses?: readonly number[];
 };
 
 type PendingSingleLookup = {
@@ -100,6 +101,8 @@ const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLo
       backoffMs: 15_000,
       trafficClass: 'critical',
       allowStaleOnError: false,
+      sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_MEMBERSHIP,
+      ignoreFailureMetricStatuses: [403, 404],
     },
     giveaway_interactive: {
       positiveFreshTtlSec: 15,
@@ -646,6 +649,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             trafficClass: batch.policy.trafficClass,
             timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
             ...(batch.policy.sourceTag ? { sourceTag: batch.policy.sourceTag } : {}),
+            ...(batch.policy.ignoreFailureMetricStatuses
+              ? { ignoreFailureMetricStatuses: batch.policy.ignoreFailureMetricStatuses }
+              : {}),
             ...(batch.botId ? { botId: batch.botId } : {}),
           }),
         {
@@ -757,6 +763,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
               trafficClass: policy.trafficClass,
               timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
               ...(policy.sourceTag ? { sourceTag: policy.sourceTag } : {}),
+              ...(policy.ignoreFailureMetricStatuses
+                ? { ignoreFailureMetricStatuses: policy.ignoreFailureMetricStatuses }
+                : {}),
               ...(botId ? { botId } : {}),
             }),
           {

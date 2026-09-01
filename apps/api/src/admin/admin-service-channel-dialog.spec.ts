@@ -2171,6 +2171,37 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(adminSuggestionDeliveryQueue.add).not.toHaveBeenCalled();
   });
 
+  it.each(['waiting', 'delayed', 'active'])(
+    'does not count an already %s suggestion delivery job as recovered',
+    async (state) => {
+      const prisma = createPrismaMock();
+      prisma.$queryRaw.mockResolvedValue([{ id: 'suggestion-already-scheduled-1' }]);
+      const existingJob = {
+        getState: jest.fn().mockResolvedValue(state),
+        retry: jest.fn(),
+      };
+      const adminSuggestionDeliveryQueue = {
+        getJob: jest.fn().mockResolvedValue(existingJob),
+        add: jest.fn(),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        { getChatAdminIds: jest.fn() } as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        adminSuggestionDeliveryQueue as never,
+      );
+
+      await expect(service.recoverStaleChannelSuggestionDeliveries()).resolves.toBe(0);
+      expect(existingJob.retry).not.toHaveBeenCalled();
+      expect(adminSuggestionDeliveryQueue.add).not.toHaveBeenCalled();
+    },
+  );
+
   it('includes recoverable attempted delivery failures in stale suggestion recovery', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw

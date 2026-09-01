@@ -29,12 +29,6 @@ type BackgroundPressureSnapshot = {
   stackLoad: BackgroundStackLoadSnapshot;
   botLoad: BackgroundBotLoadSnapshot;
   criticalLimiter: BackgroundCriticalLimiterSnapshot | null;
-  topSources: Array<{
-    sourceTag: string;
-    totalRequests: number;
-    avgRps: number;
-    peakRps: number;
-  }>;
   workerSkew: {
     groupName: string | null;
     pressure: number;
@@ -158,6 +152,9 @@ export class BackgroundRuntimeGovernorService {
   private cachedCriticalLimiterSnapshot: BackgroundCriticalLimiterSnapshot | null = null;
   private cachedCriticalLimiterSnapshotAtMs = 0;
   private pendingCriticalLimiterSnapshot: Promise<BackgroundCriticalLimiterSnapshot> | null = null;
+  private cachedTopSources: BackgroundRuntimeBudgetSummary['topSources'] | null = null;
+  private cachedTopSourcesAtMs = 0;
+  private pendingTopSources: Promise<BackgroundRuntimeBudgetSummary['topSources']> | null = null;
   private lastCpuStatSample: CpuStatSample | null = null;
 
   constructor(
@@ -290,19 +287,58 @@ export class BackgroundRuntimeGovernorService {
 
   async getDashboardBudgetSummary(): Promise<BackgroundRuntimeBudgetSummary> {
     const snapshot = await this.getPressureSnapshot();
-    const [pauseReasons, sharedBotLoad] = await Promise.all([
+    const [pauseReasons, sharedBotLoad, topSources] = await Promise.all([
       this.runtimeDiagnosticsService?.getBackgroundDecisionSummary(),
       this.buildBotLoadSnapshot(snapshot.queues, 'shared'),
+      this.getTopSources(),
     ]);
 
     return {
       windowSec: this.sourceWindowSec,
       backgroundShare: Number(snapshot.backgroundShare.toFixed(3)),
-      topSources: snapshot.topSources,
+      topSources,
       pauseReasons: pauseReasons?.pauseReasons ?? [],
       stackLoad: snapshot.stackLoad,
       botLoad: sharedBotLoad,
     };
+  }
+
+  private async getTopSources(): Promise<BackgroundRuntimeBudgetSummary['topSources']> {
+    if (this.cachedTopSources && Date.now() - this.cachedTopSourcesAtMs <= this.cacheTtlMs) {
+      return this.cachedTopSources;
+    }
+
+    if (!this.pendingTopSources) {
+      this.pendingTopSources = this.maxApiMetricsService
+        .getSourceTrafficSnapshot({ windowSec: this.sourceWindowSec })
+        .then((sourceTraffic) =>
+          Object.entries(sourceTraffic.sources)
+            .map(([sourceTag, stats]) => ({
+              sourceTag,
+              totalRequests: stats.trafficClasses.background.totalRequests,
+              avgRps: stats.trafficClasses.background.avgRps,
+              peakRps: stats.trafficClasses.background.peakRps,
+            }))
+            .filter((item) => item.totalRequests > 0)
+            .sort(
+              (left, right) =>
+                right.totalRequests - left.totalRequests ||
+                right.peakRps - left.peakRps ||
+                left.sourceTag.localeCompare(right.sourceTag),
+            )
+            .slice(0, 6),
+        )
+        .then((topSources) => {
+          this.cachedTopSources = topSources;
+          this.cachedTopSourcesAtMs = Date.now();
+          return topSources;
+        })
+        .finally(() => {
+          this.pendingTopSources = null;
+        });
+    }
+
+    return this.pendingTopSources;
   }
 
   async getCriticalLimiterSnapshot(): Promise<BackgroundCriticalLimiterSnapshot> {
@@ -375,24 +411,33 @@ export class BackgroundRuntimeGovernorService {
 
   private async buildPressureSnapshot(): Promise<BackgroundPressureSnapshot> {
     const rateLimitWindowSec = Math.min(60, this.sourceWindowSec);
-    const [mode, queues, maxApi, stackRateLimit, criticalLimiter, systemPressure] =
-      await Promise.all([
-        this.systemModeService.getEffectiveSnapshot(),
-        this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
-        this.maxApiMetricsService.getSourceTrafficSnapshot({ windowSec: this.sourceWindowSec }),
-        this.maxApiMetricsService.getStackRateLimitSnapshot({
-          windowSec: rateLimitWindowSec,
-          capacityScope: 'service',
-        }),
-        this.maxApiMetricsService.getStackCriticalLimiterSnapshot({
-          windowSec: CRITICAL_LIMITER_ALERT_WINDOW_SEC,
-        }),
-        this.buildSystemPressureSnapshot(),
-      ]);
-    const totalRequests = maxApi.overall.totalRequests;
-    const backgroundRequests = maxApi.overall.trafficClasses.background.totalRequests;
+    const [
+      mode,
+      queues,
+      sharedStackRateLimit,
+      serviceStackRateLimit,
+      criticalLimiter,
+      systemPressure,
+    ] = await Promise.all([
+      this.systemModeService.getEffectiveSnapshot(),
+      this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
+      this.maxApiMetricsService.getStackRateLimitSnapshot({
+        windowSec: this.sourceWindowSec,
+        capacityScope: 'shared',
+      }),
+      this.maxApiMetricsService.getStackRateLimitSnapshot({
+        windowSec: rateLimitWindowSec,
+        capacityScope: 'service',
+      }),
+      this.maxApiMetricsService.getStackCriticalLimiterSnapshot({
+        windowSec: CRITICAL_LIMITER_ALERT_WINDOW_SEC,
+      }),
+      this.buildSystemPressureSnapshot(),
+    ]);
+    const totalRequests = sharedStackRateLimit.totalRequests;
+    const backgroundRequests = sharedStackRateLimit.trafficClasses.background.totalRequests;
     const backgroundShare = totalRequests > 0 ? backgroundRequests / totalRequests : 0;
-    const stackLoad = this.buildStackLoadSnapshot(stackRateLimit);
+    const stackLoad = this.buildStackLoadSnapshot(serviceStackRateLimit);
     const botLoad = await this.buildBotLoadSnapshot(queues, 'service');
     const workerGroups = Object.entries(queues.webhookDefaultWorkerGroups ?? {}).map(
       ([groupName, metrics]) => ({
@@ -406,22 +451,6 @@ export class BackgroundRuntimeGovernorService {
       { groupName: null as string | null, pressure: 0 },
     );
 
-    const topSources = Object.entries(maxApi.sources)
-      .map(([sourceTag, stats]) => ({
-        sourceTag,
-        totalRequests: stats.trafficClasses.background.totalRequests,
-        avgRps: stats.trafficClasses.background.avgRps,
-        peakRps: stats.trafficClasses.background.peakRps,
-      }))
-      .filter((item) => item.totalRequests > 0)
-      .sort(
-        (left, right) =>
-          right.totalRequests - left.totalRequests ||
-          right.peakRps - left.peakRps ||
-          left.sourceTag.localeCompare(right.sourceTag),
-      )
-      .slice(0, 6);
-
     return {
       generatedAt: new Date().toISOString(),
       mode,
@@ -431,7 +460,6 @@ export class BackgroundRuntimeGovernorService {
       stackLoad,
       botLoad,
       criticalLimiter,
-      topSources,
       workerSkew: {
         groupName: primary.groupName,
         pressure: primary.pressure,

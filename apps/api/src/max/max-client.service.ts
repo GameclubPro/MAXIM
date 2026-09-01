@@ -645,6 +645,7 @@ const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
 const MAX_API_SERVICE_CAPACITY_METRICS_TTL_SEC = 2 * 60;
 const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
 const MAX_API_RATE_LIMIT_LOG_COALESCE_MS = 60_000;
+const MAX_API_ACTION_FAILURE_LOG_COALESCE_MS = 30_000;
 const MAX_API_CIRCUIT_KEY_PREFIX = 'maxapi:circuit:v1';
 const DEFAULT_MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC = 60;
 const MAX_API_CRITICAL_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
@@ -862,6 +863,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly rateLimitLogAtMsByKey = new Map<string, number>();
+  private readonly actionFailureLogAtMsByBot = new Map<string, number>();
   private readonly registeredSourceMetricDimensions = new Set<string>();
   private readonly listBotChatsInFlight = new Map<string, Promise<MaxBotChat[]>>();
   private readonly currentChatMemberAccessInFlight = new Map<
@@ -6269,6 +6271,12 @@ export class MaxClientService implements OnModuleDestroy {
       await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
       if (trafficClass === 'critical' && error instanceof MaxApiInternalRateLimitError) {
         this.actionHealthService.recordFailureForLane(actionHealthLane, true, bot.id);
+        this.logUserFacingActionFailure(error, {
+          botId: bot.id,
+          trafficClass,
+          lane: actionHealthLane,
+          sourceTag,
+        });
       }
       throw error;
     }
@@ -6297,6 +6305,12 @@ export class MaxClientService implements OnModuleDestroy {
         (typeof status === 'number' && status >= 500) ||
         this.isCriticalNetworkFailure(error);
       this.actionHealthService.recordFailureForLane(actionHealthLane, isCritical, bot.id);
+      this.logUserFacingActionFailure(error, {
+        botId: bot.id,
+        trafficClass,
+        lane: actionHealthLane,
+        sourceTag,
+      });
       if (isCritical) {
         await this.registerCriticalFailure(bot.id, circuitPermit);
       } else {
@@ -6435,6 +6449,43 @@ export class MaxClientService implements OnModuleDestroy {
 
     const message = this.extractErrorMessage(error);
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+  }
+
+  private logUserFacingActionFailure(
+    error: unknown,
+    params: {
+      botId: string;
+      trafficClass: MaxApiTrafficClass;
+      lane: ActionHealthLane;
+      sourceTag: string | null;
+    },
+  ): void {
+    if (params.trafficClass === 'background' || params.lane === 'background') {
+      return;
+    }
+
+    const nowMs = Date.now();
+    for (const [botId, loggedAtMs] of this.actionFailureLogAtMsByBot) {
+      if (nowMs - loggedAtMs >= MAX_API_ACTION_FAILURE_LOG_COALESCE_MS) {
+        this.actionFailureLogAtMsByBot.delete(botId);
+      }
+    }
+    if (this.actionFailureLogAtMsByBot.has(params.botId)) {
+      return;
+    }
+    this.actionFailureLogAtMsByBot.set(params.botId, nowMs);
+
+    this.logger.warn(
+      {
+        statusCode: this.extractStatusCode(error),
+        errorCode: this.extractActionFailureErrorCode(error),
+        trafficClass: params.trafficClass,
+        lane: params.lane,
+        sourceTag: params.sourceTag,
+        botId: params.botId,
+      },
+      'Recorded unignored user-facing MAX API action failure',
+    );
   }
 
   private buildQueuedActionMutationOptions(
@@ -7942,6 +7993,25 @@ export class MaxClientService implements OnModuleDestroy {
   private extractErrorCode(error: unknown): string | null {
     const value = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
     return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
+  }
+
+  private extractActionFailureErrorCode(error: unknown): string | null {
+    const responseCode = this.extractErrorCode(error);
+    const directCode = (error as { code?: unknown })?.code;
+    const normalized =
+      responseCode ??
+      (typeof directCode === 'string' && directCode.trim().length > 0
+        ? directCode.trim().toLowerCase()
+        : null);
+    if (!normalized) {
+      return null;
+    }
+
+    const sanitized = normalized
+      .replace(/[^a-z0-9._-]+/g, '_')
+      .replace(/_+/g, '_')
+      .slice(0, 96);
+    return sanitized.length > 0 ? sanitized : null;
   }
 
   private extractErrorMessage(error: unknown): string {

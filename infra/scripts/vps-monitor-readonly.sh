@@ -16,6 +16,7 @@ LOG_FILE="${MAXIM_MONITOR_LOG:-/tmp/maxim-vps-readonly-monitor-$(date +%Y%m%d%H%
 PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
 ADMIN_PUBLIC_URL="${MAXIM_ADMIN_PUBLIC_URL:-https://admin.major-maksimov.ru}"
 SIGNAL_WINDOW_MIN="${MAXIM_MONITOR_SIGNAL_WINDOW_MIN:-30}"
+MONITOR_LOCK_FILE="${MAXIM_MONITOR_LOCK_FILE:-${TMPDIR:-/tmp}/maxim-vps-monitor-readonly-${UID}.lock}"
 SUCCESSFUL_ACCESS_LOG_PATTERN='" (2[0-9][0-9]|3[0-9][0-9]) [0-9]+'
 PUBLIC_URL="${PUBLIC_URL%/}"
 ADMIN_PUBLIC_URL="${ADMIN_PUBLIC_URL%/}"
@@ -46,6 +47,18 @@ fi
 if ! is_positive_integer "$SIGNAL_WINDOW_MIN" || ((SIGNAL_WINDOW_MIN > 1440)); then
   echo "MAXIM_MONITOR_SIGNAL_WINDOW_MIN must be an integer between 1 and 1440, got: $SIGNAL_WINDOW_MIN" >&2
   exit 2
+fi
+
+if ! command -v flock >/dev/null 2>&1; then
+  echo "flock is required to serialize readonly production monitoring" >&2
+  exit 2
+fi
+
+# FLAG: Multiple full-fleet monitors amplify diagnostic load and can distort the system observed.
+exec {MONITOR_LOCK_FD}>>"$MONITOR_LOCK_FILE"
+if ! flock -n "$MONITOR_LOCK_FD"; then
+  echo "Another readonly VPS monitor already holds $MONITOR_LOCK_FILE" >&2
+  exit 3
 fi
 
 run_step() {

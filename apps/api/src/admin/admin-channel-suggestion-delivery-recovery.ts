@@ -334,7 +334,6 @@ export async function recoverChannelSuggestionAdminDeliveriesAfterBotStarted(par
               )
             )
           )
-        )
         AND (
           (
             LOWER(COALESCE(delivery.last_error_code, '')) NOT LIKE 'suggestion.delivery.%'

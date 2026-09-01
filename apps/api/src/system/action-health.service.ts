@@ -15,6 +15,17 @@ type TimedCountersByBotLane = Map<string, TimedCountersByLane>;
 type ActionCounterField = 'success' | 'failure' | 'critical';
 export type ActionHealthLane = 'critical' | 'interactive' | 'background';
 
+type SharedWindowField = {
+  bucketMinute: number;
+  field: ActionCounterField;
+  name: string;
+};
+
+type ActionHealthSharedStoragePhase =
+  | 'bridge_v1_read_dual_write'
+  | 'switch_v2_read_dual_write'
+  | 'contract_v2_only';
+
 type CachedSnapshot = {
   snapshot: ActionHealthSnapshot;
   updatedAtMs: number;
@@ -40,6 +51,13 @@ const ACTION_COUNTER_FIELDS = [
   'failure',
   'critical',
 ] as const satisfies readonly ActionCounterField[];
+const ACTION_HEALTH_SHARED_BUCKET_TTL_MS = 180_000;
+
+// FLAG: Advance only bridge -> switch -> contract across separate full API releases. Never skip a
+// phase: adjacent phases are deliberately read/write compatible during rollout and rollback.
+function resolveActionHealthSharedStoragePhase(): ActionHealthSharedStoragePhase {
+  return 'bridge_v1_read_dual_write';
+}
 
 @Injectable()
 export class ActionHealthService implements OnModuleDestroy {
@@ -55,6 +73,7 @@ export class ActionHealthService implements OnModuleDestroy {
   private readonly countersByBotLane: TimedCountersByBotLane = new Map();
   private readonly sharedSnapshotCache = new Map<string, CachedSnapshot>();
   private readonly sharedSnapshotMaxAgeMs: number;
+  private readonly sharedStoragePhase = resolveActionHealthSharedStoragePhase();
   private sharedRefreshPromise: Promise<void> | null = null;
   private sharedRefreshWindowSec: number | null = null;
   private sharedWriteWarnAtMs = 0;
@@ -230,28 +249,61 @@ export class ActionHealthService implements OnModuleDestroy {
   ): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1_000);
     const windowFields = this.buildWindowFields(windowSec, nowSec);
-    const pipeline = this.redis.pipeline();
-    for (const target of refreshTargets) {
-      pipeline.hmget(
-        this.buildSharedKey(target.botId, target.lane),
-        ...windowFields.map((field) => field.name),
-      );
+    const fieldsByBucketMinute = new Map<number, SharedWindowField[]>();
+    for (const field of windowFields) {
+      const bucketFields = fieldsByBucketMinute.get(field.bucketMinute) ?? [];
+      bucketFields.push(field);
+      fieldsByBucketMinute.set(field.bucketMinute, bucketFields);
     }
+    const pipeline = this.redis.pipeline();
+    const readCommands: Array<{
+      fields: readonly SharedWindowField[];
+      targetIndex: number;
+    }> = [];
+    refreshTargets.forEach((target, targetIndex) => {
+      if (this.sharedStoragePhase === 'bridge_v1_read_dual_write') {
+        pipeline.hmget(
+          this.buildLegacySharedKey(target.botId, target.lane),
+          ...windowFields.map((field) => field.name),
+        );
+        readCommands.push({ fields: windowFields, targetIndex });
+      } else {
+        for (const [bucketMinute, bucketFields] of fieldsByBucketMinute) {
+          pipeline.hmget(
+            this.buildSharedBucketKey(target.botId, target.lane, bucketMinute),
+            ...bucketFields.map((field) => field.name),
+          );
+          readCommands.push({ fields: bucketFields, targetIndex });
+        }
+      }
+    });
 
     try {
       const results = await pipeline.exec();
       if (!results) {
         return;
       }
+      const commandError = results.find(([error]) => error)?.[0];
+      if (commandError) {
+        throw commandError;
+      }
 
-      refreshTargets.forEach((target, index) => {
+      const snapshots = refreshTargets.map(() => this.buildEmptySnapshot(windowSec));
+      readCommands.forEach((command, index) => {
         const payload = results[index]?.[1];
-        this.sharedSnapshotCache.set(this.buildCacheKey(windowSec, target.botId, target.lane), {
-          snapshot: this.buildSnapshotFromSharedValues(
+        snapshots[command.targetIndex] = this.sumSnapshots(
+          snapshots[command.targetIndex]!,
+          this.buildSnapshotFromSharedValues(
             Array.isArray(payload) ? payload : [],
             windowSec,
-            windowFields,
+            command.fields,
           ),
+        );
+      });
+
+      refreshTargets.forEach((target, index) => {
+        this.sharedSnapshotCache.set(this.buildCacheKey(windowSec, target.botId, target.lane), {
+          snapshot: snapshots[index]!,
           updatedAtMs: Date.now(),
         });
       });
@@ -342,36 +394,68 @@ export class ActionHealthService implements OnModuleDestroy {
   ) {
     const bucketSec = Math.floor(nowMs / 1_000);
     const fieldName = `${field}:${bucketSec}`;
-    const keys = [this.buildSharedKey(null, null), this.buildSharedKey(null, lane)];
+    const bucketMinute = Math.floor(bucketSec / 60);
+    const keys = [
+      this.buildSharedBucketKey(null, null, bucketMinute),
+      this.buildSharedBucketKey(null, lane, bucketMinute),
+    ];
+    if (this.sharedStoragePhase !== 'contract_v2_only') {
+      keys.push(this.buildLegacySharedKey(null, null), this.buildLegacySharedKey(null, lane));
+    }
     const normalizedBotId = this.normalizeBotId(botId);
     if (normalizedBotId) {
       keys.push(
-        this.buildSharedKey(normalizedBotId, null),
-        this.buildSharedKey(normalizedBotId, lane),
+        this.buildSharedBucketKey(normalizedBotId, null, bucketMinute),
+        this.buildSharedBucketKey(normalizedBotId, lane, bucketMinute),
       );
+      if (this.sharedStoragePhase !== 'contract_v2_only') {
+        keys.push(
+          this.buildLegacySharedKey(normalizedBotId, null),
+          this.buildLegacySharedKey(normalizedBotId, lane),
+        );
+      }
     }
 
     const pipeline = this.redis.pipeline();
     for (const key of keys) {
       pipeline.hincrby(key, fieldName, 1);
-      pipeline.pexpire(key, 180_000);
+      pipeline.pexpire(key, ACTION_HEALTH_SHARED_BUCKET_TTL_MS);
     }
 
-    void pipeline.exec().catch((error: unknown) => {
-      const now = Date.now();
-      if (now - this.sharedWriteWarnAtMs >= 60_000) {
-        this.sharedWriteWarnAtMs = now;
-        this.logger.warn(
-          { err: error instanceof Error ? error.message : String(error) },
-          'Failed to persist shared action health counters',
-        );
-      }
-    });
+    void pipeline
+      .exec()
+      .then((results) => {
+        const commandError = results?.find(([error]) => error)?.[0];
+        if (commandError) {
+          throw commandError;
+        }
+      })
+      .catch((error: unknown) => {
+        const now = Date.now();
+        if (now - this.sharedWriteWarnAtMs >= 60_000) {
+          this.sharedWriteWarnAtMs = now;
+          this.logger.warn(
+            { err: error instanceof Error ? error.message : String(error) },
+            'Failed to persist shared action health counters',
+          );
+        }
+      });
   }
 
-  private buildSharedKey(botId: string | null, lane: ActionHealthLane | null): string {
+  private buildLegacySharedKey(botId: string | null, lane: ActionHealthLane | null): string {
     const base = botId ? `system:action-health:v1:bot:${botId}` : 'system:action-health:v1:global';
     return lane ? `${base}:lane:${lane}` : base;
+  }
+
+  private buildSharedBucketKey(
+    botId: string | null,
+    lane: ActionHealthLane | null,
+    bucketMinute: number,
+  ): string {
+    // FLAG: Time partitioning bounds every hash even when traffic continuously renews its TTL.
+    const base = botId ? `system:action-health:v2:bot:${botId}` : 'system:action-health:v2:global';
+    const scope = lane ? `${base}:lane:${lane}` : base;
+    return `${scope}:minute:${bucketMinute}`;
   }
 
   private buildCacheKey(
@@ -427,6 +511,18 @@ export class ActionHealthService implements OnModuleDestroy {
     };
   }
 
+  private buildEmptySnapshot(windowSec: number): ActionHealthSnapshot {
+    return {
+      windowSec,
+      total: 0,
+      success: 0,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    };
+  }
+
   private sumSnapshots(
     left: ActionHealthSnapshot,
     right: ActionHealthSnapshot,
@@ -447,16 +543,14 @@ export class ActionHealthService implements OnModuleDestroy {
     };
   }
 
-  private buildWindowFields(
-    windowSec: number,
-    nowSec: number,
-  ): Array<{ field: ActionCounterField; name: string }> {
+  private buildWindowFields(windowSec: number, nowSec: number): SharedWindowField[] {
     const windowStartSec = nowSec - windowSec + 1;
-    const fields: Array<{ field: ActionCounterField; name: string }> = [];
+    const fields: SharedWindowField[] = [];
 
     for (let bucketSec = windowStartSec; bucketSec <= nowSec; bucketSec += 1) {
       ACTION_COUNTER_FIELDS.forEach((field) => {
         fields.push({
+          bucketMinute: Math.floor(bucketSec / 60),
           field,
           name: `${field}:${bucketSec}`,
         });
@@ -469,7 +563,7 @@ export class ActionHealthService implements OnModuleDestroy {
   private buildSnapshotFromSharedValues(
     values: readonly unknown[],
     windowSec: number,
-    windowFields: readonly { field: ActionCounterField }[],
+    windowFields: readonly Pick<SharedWindowField, 'field'>[],
   ): ActionHealthSnapshot {
     let success = 0;
     let failure = 0;
