@@ -1,6 +1,11 @@
 import { ConfigService } from '@nestjs/config';
 
 import { Prisma } from '../prisma/prisma-client';
+import {
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON,
+} from './bot-message-explicit-operator-cleanup.constants';
 import { buildMessageScopedModerationActionClaimKey } from './moderation-message-action-claim';
 import {
   buildCommercialOcrDeleteBinding,
@@ -10,6 +15,8 @@ import {
 } from './commercial-ocr/commercial-ocr-delete-guard.service';
 import {
   BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_INTENT_AUDIT_ACTION,
+  BotMessageAutoDeleteExplicitCleanupPolicyConflictError,
   ModerationDeleteIntentService,
   PhotoDuplicateDeleteIntentGuardRejectedError,
 } from './moderation-delete-intent.service';
@@ -398,6 +405,55 @@ function botMessageAutoDeleteRepairIntentInput(
   };
 }
 
+function explicitOperatorCleanupIntentInput(): EnsureModerationDeleteIntentInput {
+  return botMessageAutoDeleteRepairIntentInput({
+    event: {
+      userId: 'bot-user-1',
+      eventType: 'MESSAGE',
+      metadata: {
+        reason: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON,
+        repairSource: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+        evidenceSource: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+        evidenceVersion: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
+        sourceSendAutoDeleteDelayMs: null,
+      },
+    },
+  });
+}
+
+function explicitOperatorCleanupExpectedSend() {
+  return {
+    ledgerId: 'send-ledger-1',
+    jobId: 'send-job-1',
+    chatId: 'chat-1',
+    messageId: 'message-1',
+    dispatchBotId: 'bot-1',
+    trafficClass: 'background',
+    actionHealthLane: 'background',
+    enqueuedAt: new Date('2026-08-31T11:59:59.200Z'),
+    completedAt: new Date('2026-08-31T12:00:00.000Z'),
+    createdAt: new Date('2026-08-31T11:59:59.100Z'),
+    updatedAt: new Date('2026-08-31T12:00:01.000Z'),
+    jobCreatedAt: new Date('2026-08-31T11:59:59.000Z'),
+  };
+}
+
+function explicitOperatorCleanupSendRow() {
+  const send = explicitOperatorCleanupExpectedSend();
+  return {
+    ...send,
+    actionType: 'SEND_MESSAGE',
+    remoteMessageId: send.messageId,
+    sourceTag: 'moderation_notice',
+    status: 'SUCCEEDED',
+    ambiguous: false,
+    terminal: true,
+    hasAutoDeleteDelayMs: true,
+    autoDeleteDelayType: 'null',
+    jobCreatedAt: send.jobCreatedAt.toISOString(),
+  };
+}
+
 describe('ModerationDeleteIntentService', () => {
   afterEach(() => {
     jest.useRealTimers();
@@ -495,6 +551,296 @@ describe('ModerationDeleteIntentService', () => {
         }),
       },
     });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('atomically fences current policy and audits an explicit operator cleanup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-31T12:01:00.000Z'));
+    const input = explicitOperatorCleanupIntentInput();
+    const persisted = {
+      ...baseIntent,
+      id: 'explicit-cleanup-intent-1',
+      chatId: input.chatId,
+      messageId: input.messageId,
+      subjectUserId: input.subjectUserId,
+      sourceMessageAt: input.sourceMessageAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'bot',
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_only',
+      status: 'PENDING' as const,
+      executeAt: input.executeAt as Date,
+      nextAttemptAt: input.executeAt as Date,
+      retryUntilAt: input.retryUntilAt as Date,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const verified = {
+      ...persisted,
+      botMessageAutoDeleteReason: true,
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+      replacementCleanup: false,
+      commercialOcrDeleteReason: false,
+      nonCommercialOcrDeleteReason: true,
+    };
+    const policy = {
+      settingsId: 'settings-1',
+      chatId: 'chat-1',
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 2,
+      createdAt: new Date('2026-08-31T11:00:00.000Z'),
+      updatedAt: new Date('2026-08-31T12:00:30.000Z'),
+    };
+    const expectedPolicy = {
+      ...policy,
+      deleteBotMessagesEnabled: true as const,
+      sendJobCreatedAt: new Date('2026-08-31T11:59:59.000Z'),
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([policy])
+      .mockResolvedValueOnce([explicitOperatorCleanupSendRow()])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([persisted])
+      .mockResolvedValueOnce([verified]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const auditCreate = jest.fn().mockResolvedValue({ id: 'audit-1' });
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $queryRaw: txQueryRaw,
+        $executeRaw: txExecuteRaw,
+        auditLog: { create: auditCreate },
+      }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(input, {
+        kind: 'explicit_operator_cleanup',
+        actorUserId: ' operator-1 ',
+        operatorReason: ' user-complaint-retroactive-cleanup ',
+        expectedPolicy,
+        expectedSend: explicitOperatorCleanupExpectedSend(),
+        auditPayload: {
+          evidenceSource: 'caller-cannot-override',
+          evidenceVersion: 99,
+          sendLedgerAutoDeleteDelayMs: 120_000,
+          sendLedgerId: 'send-ledger-1',
+        },
+      }),
+    ).resolves.toEqual({
+      created: true,
+      intentId: 'explicit-cleanup-intent-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+
+    const policyQuery = txQueryRaw.mock.calls[0]?.[0] as { strings?: readonly string[] };
+    expect(policyQuery.strings?.join('?')).toContain('FROM "chat_settings"');
+    expect(policyQuery.strings?.join('?')).toContain('FOR UPDATE');
+    expect(txQueryRaw).toHaveBeenCalledTimes(6);
+    expect(txQueryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      txExecuteRaw.mock.invocationCallOrder[0],
+    );
+    expect(auditCreate).toHaveBeenCalledWith({
+      data: {
+        chatId: 'chat-1',
+        actorUserId: 'operator-1',
+        action: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_INTENT_AUDIT_ACTION,
+        payload: expect.objectContaining({
+          repairVersion: 1,
+          repairKind: 'explicit_operator_cleanup',
+          evidenceSource: 'explicit_operator_cleanup',
+          evidenceVersion: 5,
+          operatorReason: 'user-complaint-retroactive-cleanup',
+          policySettingsId: 'settings-1',
+          policyEnabled: true,
+          policyDelayMinutes: 2,
+          policyCreatedAt: '2026-08-31T11:00:00.000Z',
+          policyUpdatedAt: '2026-08-31T12:00:30.000Z',
+          sendJobCreatedAt: '2026-08-31T11:59:59.000Z',
+          sendLedgerId: 'send-ledger-1',
+          sendLedgerJobId: 'send-job-1',
+          sendLedgerStatus: 'SUCCEEDED',
+          sendLedgerSourceTag: 'moderation_notice',
+          sendLedgerDispatchBotId: 'bot-1',
+          sendLedgerAutoDeleteDelayMs: null,
+          intentId: 'explicit-cleanup-intent-1',
+        }),
+      },
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicit cleanup policy CAS mismatch before intent persistence or audit', async () => {
+    const input = explicitOperatorCleanupIntentInput();
+    const expectedPolicy = {
+      settingsId: 'settings-1',
+      chatId: 'chat-1',
+      deleteBotMessagesEnabled: true as const,
+      deleteBotMessagesDelayMinutes: 2,
+      createdAt: new Date('2026-08-31T11:00:00.000Z'),
+      updatedAt: new Date('2026-08-31T12:00:30.000Z'),
+      sendJobCreatedAt: new Date('2026-08-31T11:59:59.000Z'),
+    };
+    const txQueryRaw = jest.fn().mockResolvedValueOnce([
+      {
+        ...expectedPolicy,
+        deleteBotMessagesEnabled: false,
+      },
+    ]);
+    const txExecuteRaw = jest.fn();
+    const auditCreate = jest.fn();
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $queryRaw: txQueryRaw,
+        $executeRaw: txExecuteRaw,
+        auditLog: { create: auditCreate },
+      }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(input, {
+        kind: 'explicit_operator_cleanup',
+        actorUserId: 'operator-1',
+        operatorReason: 'user-complaint-retroactive-cleanup',
+        expectedPolicy,
+        expectedSend: explicitOperatorCleanupExpectedSend(),
+        auditPayload: { sendLedgerId: 'send-ledger-1' },
+      }),
+    ).rejects.toBeInstanceOf(BotMessageAutoDeleteExplicitCleanupPolicyConflictError);
+
+    expect(txQueryRaw).toHaveBeenCalledTimes(1);
+    expect(txExecuteRaw).not.toHaveBeenCalled();
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects a DELETE ledger owner that appears after explicit-cleanup preflight', async () => {
+    const input = explicitOperatorCleanupIntentInput();
+    const expectedPolicy = {
+      settingsId: 'settings-1',
+      chatId: 'chat-1',
+      deleteBotMessagesEnabled: true as const,
+      deleteBotMessagesDelayMinutes: 2,
+      createdAt: new Date('2026-08-31T11:00:00.000Z'),
+      updatedAt: new Date('2026-08-31T12:00:30.000Z'),
+      sendJobCreatedAt: new Date('2026-08-31T11:59:59.000Z'),
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([expectedPolicy])
+      .mockResolvedValueOnce([explicitOperatorCleanupSendRow()])
+      .mockResolvedValueOnce([{ id: 'concurrent-delete-ledger-1' }]);
+    const txExecuteRaw = jest.fn();
+    const auditCreate = jest.fn();
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $queryRaw: txQueryRaw,
+        $executeRaw: txExecuteRaw,
+        auditLog: { create: auditCreate },
+      }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(input, {
+        kind: 'explicit_operator_cleanup',
+        actorUserId: 'operator-1',
+        operatorReason: 'user-complaint-retroactive-cleanup',
+        expectedPolicy,
+        expectedSend: explicitOperatorCleanupExpectedSend(),
+        auditPayload: { sendLedgerId: 'send-ledger-1' },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_operator_cleanup_conflict' });
+
+    expect(txQueryRaw).toHaveBeenCalledTimes(3);
+    expect(txExecuteRaw).not.toHaveBeenCalled();
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects misleading explicit-cleanup reason metadata before starting a transaction', async () => {
+    const transaction = jest.fn();
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(
+        botMessageAutoDeleteRepairIntentInput(),
+        {
+          kind: 'explicit_operator_cleanup',
+          actorUserId: 'operator-1',
+          operatorReason: 'user-complaint-retroactive-cleanup',
+          expectedPolicy: {
+            settingsId: 'settings-1',
+            chatId: 'chat-1',
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+            createdAt: new Date('2026-08-31T11:00:00.000Z'),
+            updatedAt: new Date('2026-08-31T12:00:30.000Z'),
+            sendJobCreatedAt: new Date('2026-08-31T11:59:59.000Z'),
+          },
+          expectedSend: explicitOperatorCleanupExpectedSend(),
+          auditPayload: { sendLedgerId: 'send-ledger-1' },
+        },
+      ),
+    ).rejects.toThrow('exact durable explicit-cleanup reason metadata');
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects an intent that appears after explicit-cleanup preflight without reconciling it', async () => {
+    const input = explicitOperatorCleanupIntentInput();
+    const expectedPolicy = {
+      settingsId: 'settings-1',
+      chatId: 'chat-1',
+      deleteBotMessagesEnabled: true as const,
+      deleteBotMessagesDelayMinutes: 2,
+      createdAt: new Date('2026-08-31T11:00:00.000Z'),
+      updatedAt: new Date('2026-08-31T12:00:30.000Z'),
+      sendJobCreatedAt: new Date('2026-08-31T11:59:59.000Z'),
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          ...expectedPolicy,
+          deleteBotMessagesEnabled: true,
+        },
+      ])
+      .mockResolvedValueOnce([explicitOperatorCleanupSendRow()])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'concurrent-intent-1' }]);
+    const txExecuteRaw = jest.fn();
+    const auditCreate = jest.fn();
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $queryRaw: txQueryRaw,
+        $executeRaw: txExecuteRaw,
+        auditLog: { create: auditCreate },
+      }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureBotMessageAutoDeleteRepairIntentWithAudit(input, {
+        kind: 'explicit_operator_cleanup',
+        actorUserId: 'operator-1',
+        operatorReason: 'user-complaint-retroactive-cleanup',
+        expectedPolicy,
+        expectedSend: explicitOperatorCleanupExpectedSend(),
+        auditPayload: { sendLedgerId: 'send-ledger-1' },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_operator_cleanup_conflict' });
+
+    expect(txQueryRaw).toHaveBeenCalledTimes(4);
+    expect(txExecuteRaw).not.toHaveBeenCalled();
+    expect(auditCreate).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });
 

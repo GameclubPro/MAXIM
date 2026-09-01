@@ -8,12 +8,24 @@ import { resolve } from 'node:path';
 import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { canExecuteActionsForBotState } from '../max/max-bot-state.util';
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import {
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON_MAX_LENGTH,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON_MIN_LENGTH,
+  isValidBotMessageExplicitOperatorCleanupReason,
+} from '../moderation/bot-message-explicit-operator-cleanup.constants';
 import { parseLinkHistoryListedMessage } from '../moderation/link-history-recovery.util';
 import {
   buildMessageScopedModerationActionClaimKey,
   buildModerationMessageViolationProcessingClaimKey,
 } from '../moderation/moderation-message-action-claim';
-import type { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
+import type {
+  BotMessageAutoDeleteExplicitOperatorCleanupPolicy,
+  BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence,
+  ModerationDeleteIntentService,
+} from '../moderation/moderation-delete-intent.service';
 import { Prisma, type ModerationDeleteIntentStatus } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { SCHEDULED_BOT_DELETE_REASON } from './repair-missed-moderation-deletes.util';
@@ -192,6 +204,9 @@ export type BotAutoDeletePresenceRepairOptions = {
   help: boolean;
   json: boolean;
   actorUserId: string | null;
+  allowExplicitOperatorCleanup: boolean;
+  operatorReason: string | null;
+  requiredRepairKind?: 'explicit_operator_cleanup';
   targets: BotAutoDeletePresenceRepairTarget[];
 };
 
@@ -218,6 +233,7 @@ type IneligibleReason =
   | 'legacy_outbound_delete_schedule_missing'
   | 'legacy_outbound_chat_policy_missing'
   | 'legacy_outbound_chat_policy_disabled'
+  | 'legacy_outbound_chat_policy_timestamps_invalid'
   | 'legacy_outbound_chat_policy_newer_than_send'
   | 'legacy_outbound_chat_policy_delay_invalid'
   | 'legacy_outbound_chat_policy_conflicts_with_send'
@@ -246,11 +262,13 @@ export type BotAutoDeletePresenceRepairOutcome = BotAutoDeletePresenceRepairTarg
   reason: IneligibleReason | null;
   previousStatus: ModerationDeleteIntentStatus | null;
   presenceBotId: string | null;
+  repairKind?: 'explicit_operator_cleanup';
   error?: string;
 };
 
 export type BotAutoDeletePresenceRepairSummary = {
   apply: boolean;
+  explicitCleanupPreflightBlocked?: true;
   requested: number;
   wouldReopen: number;
   reopened: number;
@@ -281,11 +299,20 @@ type IntentEligibility =
   | { eligible: false; reason: IneligibleReason };
 
 type MissingIntentEvidence = {
-  source: 'legacy_claim' | 'outbound_send_ledger' | 'outbound_delete_ledger';
+  source:
+    | 'legacy_claim'
+    | 'outbound_send_ledger'
+    | 'outbound_delete_ledger'
+    | 'explicit_operator_cleanup';
   originBotId: string;
   expectedUserId: string | null;
   expectedMessageAt: Date;
   auditPayload: Prisma.InputJsonObject;
+  explicitCleanup?: {
+    operatorReason: string;
+    expectedPolicy: BotMessageAutoDeleteExplicitOperatorCleanupPolicy;
+    expectedSend: BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence;
+  };
 };
 
 const MISSING_INTENT_EVIDENCE_DETAILS = {
@@ -301,16 +328,22 @@ const MISSING_INTENT_EVIDENCE_DETAILS = {
     version: 3,
     repairSource: 'exact_outbound_scheduled_delete_ledger',
   },
+  [BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE]: {
+    version: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
+    repairSource: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+  },
 } as const;
 
 export const BOT_AUTO_DELETE_PRESENCE_REPAIR_USAGE = [
   'Usage:',
   '  --target <chatId> <messageId> [--target <chatId> <messageId> ...] [--dry-run] [--json]',
   '  --apply --actor-user-id <id> --target <chatId> <messageId> [--target ...] [--json]',
+  '  --allow-explicit-operator-cleanup --operator-reason <reason> --target <chatId> <messageId> [--dry-run|--apply]',
   '',
   `Dry-run is the default. Between 1 and ${MAX_TARGETS} unique exact target pairs are required.`,
   'Both dry-run and apply perform an exact live MAX presence lookup with the original bot.',
   'Apply is restricted to APP_ROLE=admin and BOT_MESSAGE_AUTO_DELETE-only repairable intents.',
+  'Explicit operator cleanup is non-retroactive policy repair and is allowed only when the current enabled policy is newer than the original SEND job.',
 ].join('\n');
 
 function readRequiredValue(argv: readonly string[], index: number, option: string): string {
@@ -335,6 +368,10 @@ export function readBotAutoDeletePresenceRepairOptions(
   let help = false;
   let json = false;
   let actorUserId: string | null = null;
+  let allowExplicitOperatorCleanup = false;
+  let operatorReason: string | null = null;
+  let explicitOperatorCleanupSeen = false;
+  let operatorReasonSeen = false;
   const targets: BotAutoDeletePresenceRepairTarget[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -360,6 +397,23 @@ export function readBotAutoDeletePresenceRepairOptions(
       index += 1;
       continue;
     }
+    if (arg === '--allow-explicit-operator-cleanup') {
+      if (explicitOperatorCleanupSeen) {
+        throw new Error('--allow-explicit-operator-cleanup may be provided only once');
+      }
+      explicitOperatorCleanupSeen = true;
+      allowExplicitOperatorCleanup = true;
+      continue;
+    }
+    if (arg === '--operator-reason') {
+      if (operatorReasonSeen) {
+        throw new Error('--operator-reason may be provided only once');
+      }
+      operatorReasonSeen = true;
+      operatorReason = readRequiredValue(argv, index + 1, arg);
+      index += 1;
+      continue;
+    }
     if (arg === '--target') {
       const chatId = readRequiredValue(argv, index + 1, `${arg} chatId`);
       const messageId = readRequiredValue(argv, index + 2, `${arg} messageId`);
@@ -371,7 +425,15 @@ export function readBotAutoDeletePresenceRepairOptions(
   }
 
   if (help) {
-    return { apply, help, json, actorUserId, targets };
+    return {
+      apply,
+      help,
+      json,
+      actorUserId,
+      allowExplicitOperatorCleanup,
+      operatorReason,
+      targets,
+    };
   }
   if (apply && explicitDryRun) {
     throw new Error('--apply cannot be combined with --dry-run');
@@ -388,8 +450,27 @@ export function readBotAutoDeletePresenceRepairOptions(
   if (apply && !actorUserId) {
     throw new Error('--apply requires --actor-user-id');
   }
+  if (allowExplicitOperatorCleanup && !operatorReason) {
+    throw new Error('--allow-explicit-operator-cleanup requires --operator-reason');
+  }
+  if (!allowExplicitOperatorCleanup && operatorReason) {
+    throw new Error('--operator-reason requires --allow-explicit-operator-cleanup');
+  }
+  if (operatorReason && !isValidBotMessageExplicitOperatorCleanupReason(operatorReason)) {
+    throw new Error(
+      `--operator-reason must be ${BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON_MIN_LENGTH}..${BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON_MAX_LENGTH} printable characters`,
+    );
+  }
 
-  return { apply, help, json, actorUserId, targets };
+  return {
+    apply,
+    help,
+    json,
+    actorUserId,
+    allowExplicitOperatorCleanup,
+    operatorReason,
+    targets,
+  };
 }
 
 export function classifyBotAutoDeletePresenceRepairIntent(
@@ -531,6 +612,30 @@ async function repairMissingIntentFromEvidence(
 ): Promise<BotAutoDeletePresenceRepairOutcome> {
   const { originBotId } = evidence;
   const evidenceDetails = MISSING_INTENT_EVIDENCE_DETAILS[evidence.source];
+  const explicitCleanup =
+    evidence.source === BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE
+      ? evidence.explicitCleanup
+      : null;
+  if (
+    evidence.source === BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE &&
+    !explicitCleanup
+  ) {
+    throw new Error('Explicit operator cleanup evidence is missing its authorization context');
+  }
+  const repairKindFields = explicitCleanup
+    ? ({ repairKind: 'explicit_operator_cleanup' } as const)
+    : {};
+  if (options.requiredRepairKind === 'explicit_operator_cleanup' && !explicitCleanup) {
+    return {
+      ...target,
+      intentId: null,
+      result: 'cas_conflict',
+      reason: null,
+      previousStatus: null,
+      presenceBotId: originBotId,
+      repairKind: 'explicit_operator_cleanup',
+    };
+  }
   const originBot = dependencies.botRegistry.getBotById(originBotId);
   if (!originBot || !canExecuteActionsForBotState(originBot.state)) {
     return legacyIneligibleOutcome(target, 'legacy_origin_bot_not_executable', originBotId);
@@ -584,6 +689,7 @@ async function repairMissingIntentFromEvidence(
       reason: null,
       previousStatus: null,
       presenceBotId: originBotId,
+      ...repairKindFields,
       error: `Exact live message lookup failed: ${normalizeError(error)}`,
     };
   }
@@ -595,6 +701,7 @@ async function repairMissingIntentFromEvidence(
       reason: null,
       previousStatus: null,
       presenceBotId: originBotId,
+      ...repairKindFields,
     };
   }
 
@@ -628,6 +735,7 @@ async function repairMissingIntentFromEvidence(
       reason: null,
       previousStatus: null,
       presenceBotId: originBotId,
+      ...repairKindFields,
     };
   }
 
@@ -657,27 +765,72 @@ async function repairMissingIntentFromEvidence(
           maskedExcerpt: null,
           score: 0.5,
           metadata: {
-            reason: SCHEDULED_BOT_DELETE_REASON,
+            reason: explicitCleanup
+              ? BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON
+              : SCHEDULED_BOT_DELETE_REASON,
             repairSource: evidenceDetails.repairSource,
+            ...(explicitCleanup
+              ? {
+                  evidenceSource: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+                  evidenceVersion: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
+                  sourceSendAutoDeleteDelayMs: null,
+                }
+              : {}),
           },
         },
       },
-      {
-        actorUserId: options.actorUserId!,
-        auditPayload: {
-          repairVersion: 1,
-          evidenceVersion: evidenceDetails.version,
-          evidenceSource: evidence.source,
-          ...evidence.auditPayload,
-          liveMessageId: liveMessage.messageId,
-          liveSenderId,
-          liveMessageAt: liveMessageAt.toISOString(),
-          presenceCheckedAt: presenceCheckedAt.toISOString(),
-          originBotId,
-        },
-      },
+      explicitCleanup
+        ? {
+            kind: 'explicit_operator_cleanup',
+            actorUserId: options.actorUserId!,
+            operatorReason: explicitCleanup.operatorReason,
+            expectedPolicy: explicitCleanup.expectedPolicy,
+            expectedSend: explicitCleanup.expectedSend,
+            auditPayload: {
+              repairVersion: 1,
+              evidenceVersion: evidenceDetails.version,
+              evidenceSource: evidence.source,
+              ...evidence.auditPayload,
+              liveMessageId: liveMessage.messageId,
+              liveSenderId,
+              liveMessageAt: liveMessageAt.toISOString(),
+              presenceCheckedAt: presenceCheckedAt.toISOString(),
+              originBotId,
+            },
+          }
+        : {
+            actorUserId: options.actorUserId!,
+            auditPayload: {
+              repairVersion: 1,
+              evidenceVersion: evidenceDetails.version,
+              evidenceSource: evidence.source,
+              ...evidence.auditPayload,
+              liveMessageId: liveMessage.messageId,
+              liveSenderId,
+              liveMessageAt: liveMessageAt.toISOString(),
+              presenceCheckedAt: presenceCheckedAt.toISOString(),
+              originBotId,
+            },
+          },
     );
   } catch (error: unknown) {
+    if (
+      explicitCleanup &&
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'explicit_operator_cleanup_conflict'
+    ) {
+      return {
+        ...target,
+        intentId: null,
+        result: 'cas_conflict',
+        reason: null,
+        previousStatus: null,
+        presenceBotId: originBotId,
+        ...repairKindFields,
+      };
+    }
     return {
       ...target,
       intentId: null,
@@ -685,6 +838,7 @@ async function repairMissingIntentFromEvidence(
       reason: null,
       previousStatus: null,
       presenceBotId: originBotId,
+      ...repairKindFields,
       error: `Atomic missing-intent create failed: ${normalizeError(error)}`,
     };
   }
@@ -699,6 +853,7 @@ async function repairMissingIntentFromEvidence(
       reason: null,
       previousStatus: null,
       presenceBotId: originBotId,
+      ...repairKindFields,
       error: normalizeError(error),
     };
   }
@@ -710,12 +865,15 @@ async function repairMissingIntentFromEvidence(
     reason: null,
     previousStatus: null,
     presenceBotId: originBotId,
+    ...repairKindFields,
   };
 }
 
 async function repairMissingOutboundChatPolicyIntent(
   dependencies: RepairDependencies,
+  options: BotAutoDeletePresenceRepairOptions,
   target: BotAutoDeletePresenceRepairTarget,
+  now: () => Date,
   send: BotAutoDeletePresenceRepairLegacyOutboundSend,
   sendCompletedAt: Date,
   originBotId: string,
@@ -750,14 +908,10 @@ async function repairMissingOutboundChatPolicyIntent(
   if (!settings.deleteBotMessagesEnabled) {
     return legacyIneligibleOutcome(target, 'legacy_outbound_chat_policy_disabled', originBotId);
   }
-  if (
-    settings.createdAt > settings.updatedAt ||
-    settings.createdAt > sendJobCreatedAt ||
-    settings.updatedAt > sendJobCreatedAt
-  ) {
+  if (settings.createdAt > settings.updatedAt) {
     return legacyIneligibleOutcome(
       target,
-      'legacy_outbound_chat_policy_newer_than_send',
+      'legacy_outbound_chat_policy_timestamps_invalid',
       originBotId,
     );
   }
@@ -767,6 +921,62 @@ async function repairMissingOutboundChatPolicyIntent(
       'legacy_outbound_chat_policy_delay_invalid',
       originBotId,
     );
+  }
+  if (settings.createdAt > sendJobCreatedAt || settings.updatedAt > sendJobCreatedAt) {
+    if (!options.allowExplicitOperatorCleanup) {
+      return legacyIneligibleOutcome(
+        target,
+        'legacy_outbound_chat_policy_newer_than_send',
+        originBotId,
+      );
+    }
+    return repairMissingIntentFromEvidence(dependencies, options, target, now, {
+      source: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+      originBotId,
+      expectedUserId: null,
+      expectedMessageAt: sendCompletedAt,
+      explicitCleanup: {
+        operatorReason: options.operatorReason!,
+        expectedPolicy: {
+          settingsId: settings.id,
+          chatId: settings.chatId,
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+          createdAt: settings.createdAt,
+          updatedAt: settings.updatedAt,
+          sendJobCreatedAt,
+        },
+        expectedSend: {
+          ledgerId: send.id,
+          jobId: send.jobId,
+          chatId: send.chatId,
+          messageId: target.messageId,
+          dispatchBotId: originBotId,
+          trafficClass: send.trafficClass,
+          actionHealthLane: send.actionHealthLane,
+          enqueuedAt: sendEnqueuedAt,
+          completedAt: sendCompletedAt,
+          createdAt: send.createdAt,
+          updatedAt: send.updatedAt,
+          jobCreatedAt: sendJobCreatedAt,
+        },
+      },
+      auditPayload: {
+        sendLedgerId: send.id,
+        sendLedgerJobId: send.jobId,
+        sendLedgerStatus: send.status,
+        sendLedgerSourceTag: send.sourceTag,
+        sendLedgerCompletedAt: sendCompletedAt.toISOString(),
+        sendLedgerUpdatedAt: send.updatedAt.toISOString(),
+        sendLedgerAutoDeleteDelayMs: null,
+        policySettingsId: settings.id,
+        policyEnabled: true,
+        policyDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+        policyCreatedAt: settings.createdAt.toISOString(),
+        policyUpdatedAt: settings.updatedAt.toISOString(),
+        sendJobCreatedAt: sendJobCreatedAt.toISOString(),
+      },
+    });
   }
   return legacyIneligibleOutcome(
     target,
@@ -792,7 +1002,6 @@ async function repairMissingOutboundDeleteIntent(
         chatId: target.chatId,
         actionType: 'DELETE_MESSAGE',
         messageId: target.messageId,
-        status: 'SUCCEEDED',
         updatedAt: {
           gte: lookupStartAt,
           lte: lookupEndAt,
@@ -805,7 +1014,9 @@ async function repairMissingOutboundDeleteIntent(
   if (rows.length === 0) {
     return repairMissingOutboundChatPolicyIntent(
       dependencies,
+      options,
       target,
+      now,
       send,
       sendCompletedAt,
       originBotId,
@@ -1177,6 +1388,17 @@ async function repairOne(
     },
     select: INTENT_SELECT,
   });
+  if (storedIntent && options.requiredRepairKind === 'explicit_operator_cleanup') {
+    return {
+      ...target,
+      intentId: storedIntent.id,
+      result: 'cas_conflict',
+      reason: null,
+      previousStatus: storedIntent.status,
+      presenceBotId: storedIntent.originBotId?.trim() || null,
+      repairKind: 'explicit_operator_cleanup',
+    };
+  }
   if (!storedIntent) {
     return repairMissingLegacyIntent(dependencies, options, target, now);
   }
@@ -1299,11 +1521,11 @@ async function repairOne(
   };
 }
 
-export async function runBotAutoDeletePresenceRepair(
+async function runBotAutoDeletePresenceRepairPass(
   dependencies: RepairDependencies,
   options: BotAutoDeletePresenceRepairOptions,
-  now: () => Date = () => new Date(),
-): Promise<BotAutoDeletePresenceRepairSummary> {
+  now: () => Date,
+): Promise<BotAutoDeletePresenceRepairOutcome[]> {
   const outcomes: BotAutoDeletePresenceRepairOutcome[] = [];
   for (const target of options.targets) {
     try {
@@ -1320,9 +1542,17 @@ export async function runBotAutoDeletePresenceRepair(
       });
     }
   }
+  return outcomes;
+}
 
+function summarizeBotAutoDeletePresenceRepair(
+  apply: boolean,
+  outcomes: BotAutoDeletePresenceRepairOutcome[],
+  explicitCleanupPreflightBlocked = false,
+): BotAutoDeletePresenceRepairSummary {
   return {
-    apply: options.apply,
+    apply,
+    ...(explicitCleanupPreflightBlocked ? { explicitCleanupPreflightBlocked: true as const } : {}),
     requested: outcomes.length,
     wouldReopen: outcomes.filter((outcome) => outcome.result === 'would_reopen').length,
     reopened: outcomes.filter((outcome) => outcome.result === 'reopened').length,
@@ -1340,11 +1570,45 @@ export async function runBotAutoDeletePresenceRepair(
   };
 }
 
+export async function runBotAutoDeletePresenceRepair(
+  dependencies: RepairDependencies,
+  options: BotAutoDeletePresenceRepairOptions,
+  now: () => Date = () => new Date(),
+): Promise<BotAutoDeletePresenceRepairSummary> {
+  if (options.apply && options.allowExplicitOperatorCleanup) {
+    const preflightOutcomes = await runBotAutoDeletePresenceRepairPass(
+      dependencies,
+      { ...options, apply: false },
+      now,
+    );
+    const allTargetsAuthorized = preflightOutcomes.every(
+      (outcome) =>
+        outcome.repairKind === 'explicit_operator_cleanup' &&
+        (outcome.result === 'would_create' || outcome.result === 'already_absent'),
+    );
+    if (!allTargetsAuthorized) {
+      return summarizeBotAutoDeletePresenceRepair(true, preflightOutcomes, true);
+    }
+  }
+
+  const outcomes = await runBotAutoDeletePresenceRepairPass(
+    dependencies,
+    options.apply && options.allowExplicitOperatorCleanup
+      ? { ...options, requiredRepairKind: 'explicit_operator_cleanup' }
+      : options,
+    now,
+  );
+  return summarizeBotAutoDeletePresenceRepair(options.apply, outcomes);
+}
+
 export function botAutoDeletePresenceRepairHasFailures(
   summary: BotAutoDeletePresenceRepairSummary,
 ): boolean {
   return (
-    summary.errors > 0 || summary.casConflicts > 0 || (summary.apply && summary.ineligible > 0)
+    summary.explicitCleanupPreflightBlocked === true ||
+    summary.errors > 0 ||
+    summary.casConflicts > 0 ||
+    (summary.apply && summary.ineligible > 0)
   );
 }
 
@@ -1378,7 +1642,9 @@ function writeSummary(summary: BotAutoDeletePresenceRepairSummary, json: boolean
     );
   }
   process.stdout.write(
-    `${summary.apply ? 'Apply' : 'Dry-run'}: requested=${summary.requested} wouldReopen=${
+    `${summary.apply ? 'Apply' : 'Dry-run'}: requested=${summary.requested}${
+      summary.explicitCleanupPreflightBlocked ? ' explicitCleanupPreflightBlocked=true' : ''
+    } wouldReopen=${
       summary.wouldReopen
     } reopened=${summary.reopened} wouldCreate=${summary.wouldCreate} created=${
       summary.created

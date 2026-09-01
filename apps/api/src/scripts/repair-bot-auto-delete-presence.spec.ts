@@ -183,6 +183,8 @@ function options(
     help: false,
     json: false,
     actorUserId: null,
+    allowExplicitOperatorCleanup: false,
+    operatorReason: null,
     targets: [{ chatId: 'chat-1', messageId: 'message-1' }],
     ...overrides,
   };
@@ -317,6 +319,8 @@ describe('bot auto-delete exact-presence repair', () => {
       help: false,
       json: false,
       actorUserId: null,
+      allowExplicitOperatorCleanup: false,
+      operatorReason: null,
       targets: [
         { chatId: 'chat-1', messageId: 'message-1' },
         { chatId: 'chat-2', messageId: 'message-2' },
@@ -357,6 +361,51 @@ describe('bot auto-delete exact-presence repair', () => {
       targets: [],
     });
     expect(BOT_AUTO_DELETE_PRESENCE_REPAIR_USAGE).toContain('Dry-run is the default');
+  });
+
+  it('requires an explicit bounded reason for operator cleanup', () => {
+    expect(
+      readBotAutoDeletePresenceRepairOptions([
+        '--allow-explicit-operator-cleanup',
+        '--operator-reason',
+        'user-complaint-retroactive-cleanup',
+        '--target',
+        'chat-1',
+        'message-1',
+      ]),
+    ).toMatchObject({
+      apply: false,
+      allowExplicitOperatorCleanup: true,
+      operatorReason: 'user-complaint-retroactive-cleanup',
+    });
+    expect(() =>
+      readBotAutoDeletePresenceRepairOptions([
+        '--allow-explicit-operator-cleanup',
+        '--target',
+        'chat-1',
+        'message-1',
+      ]),
+    ).toThrow('requires --operator-reason');
+    expect(() =>
+      readBotAutoDeletePresenceRepairOptions([
+        '--operator-reason',
+        'user-complaint-retroactive-cleanup',
+        '--target',
+        'chat-1',
+        'message-1',
+      ]),
+    ).toThrow('requires --allow-explicit-operator-cleanup');
+    expect(() =>
+      readBotAutoDeletePresenceRepairOptions([
+        '--allow-explicit-operator-cleanup',
+        '--operator-reason',
+        'bad\nreason',
+        '--target',
+        'chat-1',
+        'message-1',
+      ]),
+    ).toThrow('printable characters');
+    expect(BOT_AUTO_DELETE_PRESENCE_REPAIR_USAGE).toContain('--allow-explicit-operator-cleanup');
   });
 
   it('bounds the explicit target count', () => {
@@ -457,6 +506,14 @@ describe('bot auto-delete exact-presence repair', () => {
         alreadyAbsent: 1,
       }),
     ).toBe(false);
+    expect(
+      botAutoDeletePresenceRepairHasFailures({
+        ...summary,
+        ineligible: 0,
+        wouldCreate: 1,
+        explicitCleanupPreflightBlocked: true,
+      }),
+    ).toBe(true);
   });
 
   it('fails closed before live presence or CAS when execution rollout is disabled', async () => {
@@ -792,6 +849,17 @@ describe('bot auto-delete exact-presence repair', () => {
       'legacy_outbound_delete_identity_mismatch',
     ],
     [
+      'in-progress delete owner',
+      [
+        legacyOutboundDelete({
+          status: 'IN_PROGRESS',
+          terminal: false,
+          completedAt: null,
+        }),
+      ],
+      'legacy_outbound_delete_identity_mismatch',
+    ],
+    [
       'missing delayed schedule',
       [legacyOutboundDelete({ metadata: { createdAt: '2026-08-31T15:04:00.000Z' } })],
       'legacy_outbound_delete_schedule_missing',
@@ -849,7 +917,6 @@ describe('bot auto-delete exact-presence repair', () => {
         chatId: 'chat-1',
         actionType: 'DELETE_MESSAGE',
         messageId: 'message-1',
-        status: 'SUCCEEDED',
         updatedAt: {
           gte: new Date('2026-08-24T18:00:00.000Z'),
           lte: new Date('2026-08-31T18:05:00.000Z'),
@@ -958,6 +1025,14 @@ describe('bot auto-delete exact-presence repair', () => {
       legacyChatSettings({ deleteBotMessagesDelayMinutes: 0.75 }),
       'legacy_outbound_chat_policy_delay_invalid',
     ],
+    [
+      'invalid policy timestamps',
+      legacyChatSettings({
+        createdAt: new Date('2026-08-31T15:03:59.000Z'),
+        updatedAt: new Date('2026-08-31T15:03:58.000Z'),
+      }),
+      'legacy_outbound_chat_policy_timestamps_invalid',
+    ],
   ])('rejects outbound historical chat evidence with %s', async (_label, chatSettings, reason) => {
     const { dependencies, maxClient, intentService } = fixture({
       storedIntent: null,
@@ -979,6 +1054,277 @@ describe('bot auto-delete exact-presence repair', () => {
 
     expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
     expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+  });
+
+  it('previews an explicit cleanup only for an enabled policy newer than the SEND job', async () => {
+    const newerPolicy = legacyChatSettings({
+      updatedAt: new Date('2026-08-31T15:03:57.500Z'),
+    });
+    const { dependencies, maxClient, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      chatSettings: newerPolicy,
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({
+          allowExplicitOperatorCleanup: true,
+          operatorReason: 'user-complaint-retroactive-cleanup',
+        }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      apply: false,
+      wouldCreate: 1,
+      created: 0,
+      ineligible: 0,
+      outcomes: [
+        expect.objectContaining({
+          result: 'would_create',
+          repairKind: 'explicit_operator_cleanup',
+          presenceBotId: 'bot-1',
+        }),
+      ],
+    });
+
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+    expect(intentService.enqueueCurrentIntentWakeupStrict).not.toHaveBeenCalled();
+  });
+
+  it('creates an explicitly audited cleanup intent after a full read-only preflight', async () => {
+    const newerPolicy = legacyChatSettings({
+      updatedAt: new Date('2026-08-31T15:03:57.500Z'),
+    });
+    const { dependencies, maxClient, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      chatSettings: newerPolicy,
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({
+          apply: true,
+          actorUserId: 'operator-1',
+          allowExplicitOperatorCleanup: true,
+          operatorReason: 'user-complaint-retroactive-cleanup',
+        }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      created: 1,
+      ineligible: 0,
+      errors: 0,
+      outcomes: [
+        expect.objectContaining({
+          result: 'created',
+          repairKind: 'explicit_operator_cleanup',
+        }),
+      ],
+    });
+
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledTimes(2);
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).toHaveBeenCalledTimes(1);
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        originBotId: 'bot-1',
+        routingPolicy: 'origin_only',
+        event: expect.objectContaining({
+          metadata: expect.objectContaining({
+            reason: 'Explicit operator cleanup of a live bot-authored message',
+            repairSource: 'explicit_operator_cleanup',
+            evidenceSource: 'explicit_operator_cleanup',
+            evidenceVersion: 5,
+            sourceSendAutoDeleteDelayMs: null,
+          }),
+        }),
+      }),
+      {
+        kind: 'explicit_operator_cleanup',
+        actorUserId: 'operator-1',
+        operatorReason: 'user-complaint-retroactive-cleanup',
+        expectedPolicy: {
+          settingsId: 'settings-1',
+          chatId: 'chat-1',
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 2,
+          createdAt: newerPolicy.createdAt,
+          updatedAt: newerPolicy.updatedAt,
+          sendJobCreatedAt: new Date('2026-08-31T15:03:57.000Z'),
+        },
+        expectedSend: {
+          ledgerId: 'send-ledger-1',
+          jobId: 'send-job-1',
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          dispatchBotId: 'bot-1',
+          trafficClass: 'background',
+          actionHealthLane: 'background',
+          enqueuedAt: new Date('2026-08-31T15:03:57.200Z'),
+          completedAt: LEGACY_MESSAGE_AT,
+          createdAt: new Date('2026-08-31T15:03:57.100Z'),
+          updatedAt: new Date('2026-08-31T15:04:01.000Z'),
+          jobCreatedAt: new Date('2026-08-31T15:03:57.000Z'),
+        },
+        auditPayload: expect.objectContaining({
+          evidenceSource: 'explicit_operator_cleanup',
+          evidenceVersion: 5,
+          sendLedgerId: 'send-ledger-1',
+          sendLedgerAutoDeleteDelayMs: null,
+          policySettingsId: 'settings-1',
+          policyEnabled: true,
+          policyDelayMinutes: 2,
+          liveMessageId: 'message-1',
+          liveSenderId: 'bot-user-1',
+        }),
+      },
+    );
+    expect(intentService.enqueueCurrentIntentWakeupStrict).toHaveBeenCalledWith('intent-created-1');
+  });
+
+  it('maps an atomic explicit-cleanup policy mismatch to a CAS conflict', async () => {
+    const { dependencies, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      chatSettings: legacyChatSettings({
+        updatedAt: new Date('2026-08-31T15:03:57.500Z'),
+      }),
+    });
+    intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit.mockRejectedValueOnce({
+      code: 'explicit_operator_cleanup_conflict',
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({
+          apply: true,
+          actorUserId: 'operator-1',
+          allowExplicitOperatorCleanup: true,
+          operatorReason: 'user-complaint-retroactive-cleanup',
+        }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      created: 0,
+      casConflicts: 1,
+      outcomes: [
+        expect.objectContaining({
+          result: 'cas_conflict',
+          repairKind: 'explicit_operator_cleanup',
+        }),
+      ],
+    });
+    expect(intentService.enqueueCurrentIntentWakeupStrict).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an intent appears between explicit preflight and apply', async () => {
+    const { dependencies, prisma, maxClient, transaction, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      chatSettings: legacyChatSettings({
+        updatedAt: new Date('2026-08-31T15:03:57.500Z'),
+      }),
+    });
+    prisma.moderationDeleteIntent.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(intent());
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({
+          apply: true,
+          actorUserId: 'operator-1',
+          allowExplicitOperatorCleanup: true,
+          operatorReason: 'user-complaint-retroactive-cleanup',
+        }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      created: 0,
+      reopened: 0,
+      casConflicts: 1,
+      outcomes: [
+        expect.objectContaining({
+          intentId: 'intent-1',
+          result: 'cas_conflict',
+          repairKind: 'explicit_operator_cleanup',
+        }),
+      ],
+    });
+
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+    expect(intentService.enqueueCurrentIntentWakeupStrict).not.toHaveBeenCalled();
+  });
+
+  it('does not write any explicit cleanup when one target fails the shared preflight', async () => {
+    const { dependencies, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: [
+        legacyOutboundSend({
+          metadata: { createdAt: '2026-08-31T15:03:57.000Z', autoDeleteDelayMs: null },
+        }),
+      ],
+      chatSettings: legacyChatSettings({
+        updatedAt: new Date('2026-08-31T15:03:57.500Z'),
+      }),
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({
+          apply: true,
+          actorUserId: 'operator-1',
+          allowExplicitOperatorCleanup: true,
+          operatorReason: 'user-complaint-retroactive-cleanup',
+          targets: [
+            { chatId: 'chat-1', messageId: 'message-1' },
+            { chatId: 'chat-1', messageId: 'message-2' },
+          ],
+        }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      apply: true,
+      explicitCleanupPreflightBlocked: true,
+      requested: 2,
+      wouldCreate: 1,
+      ineligible: 1,
+    });
+
+    expect(intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit).not.toHaveBeenCalled();
+    expect(intentService.enqueueCurrentIntentWakeupStrict).not.toHaveBeenCalled();
   });
 
   it('reports stable enabled chat policy as conflicting diagnostic evidence only', async () => {

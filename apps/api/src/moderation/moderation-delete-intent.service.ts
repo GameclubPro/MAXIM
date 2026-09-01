@@ -1,3 +1,4 @@
+import { isValidDeleteBotMessagesDelayMinutes } from '@maxim/contracts/settings';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -41,6 +42,12 @@ import type {
   ModerationDeleteIntentSnapshot,
   ModerationDeleteIntentStatus,
 } from './moderation-delete-intent.types';
+import {
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
+  BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON,
+  isValidBotMessageExplicitOperatorCleanupReason,
+} from './bot-message-explicit-operator-cleanup.constants';
 import { NIGHT_MODE_TRANSITION_NOTICE_RULE_CODES } from './night-mode-transition-notice-persistence-error';
 import {
   NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
@@ -92,6 +99,8 @@ const BOT_MESSAGE_AUTO_DELETE_SUCCESS_STILL_PRESENT_ERROR_CODE =
   'bot_message_auto_delete_success_still_present';
 export const BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION =
   'OPERATOR_CREATE_MISSING_BOT_MESSAGE_AUTO_DELETE_INTENT';
+export const BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_INTENT_AUDIT_ACTION =
+  'OPERATOR_CREATE_EXPLICIT_BOT_MESSAGE_CLEANUP_INTENT';
 const NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE = 'night_mode_close_notice_cleanup_stale';
 const DELETE_QUEUE_PRIORITY_INTERACTIVE = 1;
 const DELETE_QUEUE_PRIORITY_BACKGROUND = 10;
@@ -215,10 +224,48 @@ type BotMessageAutoDeleteRepairActiveStatus = Extract<
   'PENDING' | 'RETRYABLE' | 'WAITING_CAPABILITY' | 'AMBIGUOUS'
 >;
 
-export type BotMessageAutoDeleteRepairIntentAuditOptions = {
+type BotMessageAutoDeleteRepairIntentAuditBaseOptions = {
   actorUserId: string;
   auditPayload: Prisma.InputJsonObject;
 };
+
+export type BotMessageAutoDeleteExplicitOperatorCleanupPolicy = {
+  settingsId: string;
+  chatId: string;
+  deleteBotMessagesEnabled: true;
+  deleteBotMessagesDelayMinutes: number;
+  createdAt: Date;
+  updatedAt: Date;
+  sendJobCreatedAt: Date;
+};
+
+export type BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence = {
+  ledgerId: string;
+  jobId: string;
+  chatId: string;
+  messageId: string;
+  dispatchBotId: string;
+  trafficClass: string | null;
+  actionHealthLane: string | null;
+  enqueuedAt: Date;
+  completedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  jobCreatedAt: Date;
+};
+
+export type BotMessageAutoDeleteRepairIntentAuditOptions =
+  | (BotMessageAutoDeleteRepairIntentAuditBaseOptions & {
+      kind?: 'legacy_missing_intent';
+      operatorReason?: never;
+      expectedPolicy?: never;
+    })
+  | (BotMessageAutoDeleteRepairIntentAuditBaseOptions & {
+      kind: 'explicit_operator_cleanup';
+      operatorReason: string;
+      expectedPolicy: BotMessageAutoDeleteExplicitOperatorCleanupPolicy;
+      expectedSend: BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence;
+    });
 
 export type EnsureBotMessageAutoDeleteRepairIntentResult = {
   created: boolean;
@@ -231,6 +278,22 @@ export type ModerationDeleteIntentAttemptOptions = {
   /** Fences this inline attempt only; the persisted intent remains the durable recovery owner. */
   beforeDeleteMutation?: () => Promise<void>;
 };
+
+export class BotMessageAutoDeleteExplicitCleanupConflictError extends Error {
+  readonly code = 'explicit_operator_cleanup_conflict';
+
+  constructor(message = 'Explicit bot-message cleanup authorization changed before commit') {
+    super(message);
+    this.name = 'BotMessageAutoDeleteExplicitCleanupConflictError';
+  }
+}
+
+export class BotMessageAutoDeleteExplicitCleanupPolicyConflictError extends BotMessageAutoDeleteExplicitCleanupConflictError {
+  constructor() {
+    super('Current bot-message cleanup policy no longer matches the authorized snapshot');
+    this.name = 'BotMessageAutoDeleteExplicitCleanupPolicyConflictError';
+  }
+}
 
 class ModerationDeleteIntentLeaseLostError extends Error {
   constructor() {
@@ -529,6 +592,7 @@ export class ModerationDeleteIntentService {
   ): Promise<EnsureBotMessageAutoDeleteRepairIntentResult> {
     const normalized = this.normalizeInput(input);
     const actorUserId = options.actorUserId.trim();
+    const repairKind = options.kind ?? 'legacy_missing_intent';
     if (!actorUserId) {
       throw new Error('actorUserId is required for bot-message auto-delete intent repair');
     }
@@ -538,6 +602,9 @@ export class ModerationDeleteIntentService {
       Array.isArray(options.auditPayload)
     ) {
       throw new Error('auditPayload must be a JSON object for bot-message auto-delete repair');
+    }
+    if (repairKind !== 'legacy_missing_intent' && repairKind !== 'explicit_operator_cleanup') {
+      throw new Error('Unsupported bot-message auto-delete repair kind');
     }
     if (
       normalized.reasonKey !== BOT_MESSAGE_AUTO_DELETE_RULE_CODE ||
@@ -557,10 +624,206 @@ export class ModerationDeleteIntentService {
       );
     }
     const expectedSourceMessageAt = normalized.sourceMessageAt;
+    const explicitCleanup =
+      options.kind === 'explicit_operator_cleanup'
+        ? {
+            operatorReason: options.operatorReason.trim(),
+            expectedPolicy: options.expectedPolicy,
+            expectedSend: options.expectedSend,
+          }
+        : null;
+    if (explicitCleanup) {
+      const policy = explicitCleanup.expectedPolicy;
+      const send = explicitCleanup.expectedSend;
+      const metadata =
+        input.event?.metadata &&
+        typeof input.event.metadata === 'object' &&
+        !Array.isArray(input.event.metadata)
+          ? (input.event.metadata as Record<string, unknown>)
+          : null;
+      if (!isValidBotMessageExplicitOperatorCleanupReason(explicitCleanup.operatorReason)) {
+        throw new Error('Explicit operator cleanup reason must be 8..256 printable characters');
+      }
+      if (
+        !policy.settingsId.trim() ||
+        policy.chatId !== normalized.chatId ||
+        policy.deleteBotMessagesEnabled !== true ||
+        !isValidDeleteBotMessagesDelayMinutes(policy.deleteBotMessagesDelayMinutes) ||
+        !Number.isFinite(policy.createdAt.getTime()) ||
+        !Number.isFinite(policy.updatedAt.getTime()) ||
+        !Number.isFinite(policy.sendJobCreatedAt.getTime()) ||
+        policy.createdAt > policy.updatedAt ||
+        (policy.createdAt <= policy.sendJobCreatedAt && policy.updatedAt <= policy.sendJobCreatedAt)
+      ) {
+        throw new Error('Explicit operator cleanup requires a valid newer enabled policy snapshot');
+      }
+      if (
+        !send.ledgerId.trim() ||
+        !send.jobId.trim() ||
+        send.chatId !== normalized.chatId ||
+        send.messageId !== normalized.messageId ||
+        send.dispatchBotId !== normalized.originBotId ||
+        !Number.isFinite(send.enqueuedAt.getTime()) ||
+        !Number.isFinite(send.completedAt.getTime()) ||
+        !Number.isFinite(send.createdAt.getTime()) ||
+        !Number.isFinite(send.updatedAt.getTime()) ||
+        !Number.isFinite(send.jobCreatedAt.getTime()) ||
+        send.jobCreatedAt.getTime() !== policy.sendJobCreatedAt.getTime() ||
+        Math.abs(send.jobCreatedAt.getTime() - send.createdAt.getTime()) > 60_000 ||
+        send.enqueuedAt.getTime() + 60_000 < send.jobCreatedAt.getTime() ||
+        send.enqueuedAt > send.completedAt
+      ) {
+        throw new Error('Explicit operator cleanup requires valid exact SEND ledger evidence');
+      }
+      if (
+        !metadata ||
+        metadata.reason !== BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON ||
+        metadata.repairSource !== BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE ||
+        metadata.evidenceSource !== BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE ||
+        metadata.evidenceVersion !== BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION ||
+        metadata.sourceSendAutoDeleteDelayMs !== null
+      ) {
+        throw new Error(
+          'Explicit operator cleanup requires exact durable explicit-cleanup reason metadata',
+        );
+      }
+    }
 
-    // FLAG: Only exact legacy repair evidence may create deletion ownership; intent persistence,
-    // persisted classifier verification, and the creation audit must remain one atomic transaction.
+    // FLAG: Only exact legacy evidence or an explicit operator-authorized cleanup may create
+    // deletion ownership. Policy fencing, persistence, classifier verification, and audit must
+    // remain one atomic transaction.
     return this.runSerializableTransaction(async (tx) => {
+      if (explicitCleanup) {
+        const expectedPolicy = explicitCleanup.expectedPolicy;
+        const policyRows = await tx.$queryRaw<
+          Array<{
+            settingsId: string;
+            chatId: string;
+            deleteBotMessagesEnabled: boolean;
+            deleteBotMessagesDelayMinutes: number;
+            createdAt: Date;
+            updatedAt: Date;
+          }>
+        >(Prisma.sql`
+          SELECT
+            settings."id" AS "settingsId",
+            settings."chat_id" AS "chatId",
+            settings."delete_bot_messages_enabled" AS "deleteBotMessagesEnabled",
+            settings."delete_bot_messages_delay_minutes" AS "deleteBotMessagesDelayMinutes",
+            settings."created_at" AS "createdAt",
+            settings."updated_at" AS "updatedAt"
+          FROM "chat_settings" settings
+          WHERE settings."chat_id" = ${normalized.chatId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const currentPolicy = policyRows[0];
+        if (
+          !currentPolicy ||
+          currentPolicy.settingsId !== expectedPolicy.settingsId ||
+          currentPolicy.chatId !== expectedPolicy.chatId ||
+          currentPolicy.deleteBotMessagesEnabled !== true ||
+          currentPolicy.deleteBotMessagesDelayMinutes !==
+            expectedPolicy.deleteBotMessagesDelayMinutes ||
+          currentPolicy.createdAt.getTime() !== expectedPolicy.createdAt.getTime() ||
+          currentPolicy.updatedAt.getTime() !== expectedPolicy.updatedAt.getTime()
+        ) {
+          throw new BotMessageAutoDeleteExplicitCleanupPolicyConflictError();
+        }
+
+        const expectedSend = explicitCleanup.expectedSend;
+        const sendRows = await tx.$queryRaw<
+          Array<{
+            ledgerId: string;
+            jobId: string;
+            actionType: string;
+            chatId: string;
+            remoteMessageId: string | null;
+            sourceTag: string | null;
+            trafficClass: string | null;
+            actionHealthLane: string | null;
+            status: string;
+            ambiguous: boolean;
+            terminal: boolean;
+            dispatchBotId: string | null;
+            enqueuedAt: Date | null;
+            completedAt: Date | null;
+            createdAt: Date;
+            updatedAt: Date;
+            hasAutoDeleteDelayMs: boolean;
+            autoDeleteDelayType: string | null;
+            jobCreatedAt: string | null;
+          }>
+        >(Prisma.sql`
+          SELECT
+            send."id" AS "ledgerId",
+            send."job_id" AS "jobId",
+            send."action_type" AS "actionType",
+            send."chat_id" AS "chatId",
+            send."remote_message_id" AS "remoteMessageId",
+            send."source_tag" AS "sourceTag",
+            send."traffic_class" AS "trafficClass",
+            send."action_health_lane" AS "actionHealthLane",
+            send."status"::text AS "status",
+            send."ambiguous" AS "ambiguous",
+            send."terminal" AS "terminal",
+            send."dispatch_bot_id" AS "dispatchBotId",
+            send."enqueued_at" AS "enqueuedAt",
+            send."completed_at" AS "completedAt",
+            send."created_at" AS "createdAt",
+            send."updated_at" AS "updatedAt",
+            send."metadata" ? 'autoDeleteDelayMs' AS "hasAutoDeleteDelayMs",
+            jsonb_typeof(send."metadata"->'autoDeleteDelayMs') AS "autoDeleteDelayType",
+            send."metadata"->>'createdAt' AS "jobCreatedAt"
+          FROM "max_action_ledger" send
+          WHERE send."id" = ${expectedSend.ledgerId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        const currentSend = sendRows[0];
+        if (
+          !currentSend ||
+          currentSend.ledgerId !== expectedSend.ledgerId ||
+          currentSend.jobId !== expectedSend.jobId ||
+          currentSend.actionType !== 'SEND_MESSAGE' ||
+          currentSend.chatId !== expectedSend.chatId ||
+          currentSend.remoteMessageId !== expectedSend.messageId ||
+          currentSend.sourceTag !== MAX_API_SOURCE_TAGS.MODERATION_NOTICE ||
+          currentSend.trafficClass !== expectedSend.trafficClass ||
+          currentSend.actionHealthLane !== expectedSend.actionHealthLane ||
+          currentSend.status !== 'SUCCEEDED' ||
+          currentSend.ambiguous ||
+          !currentSend.terminal ||
+          currentSend.dispatchBotId !== expectedSend.dispatchBotId ||
+          currentSend.enqueuedAt?.getTime() !== expectedSend.enqueuedAt.getTime() ||
+          currentSend.completedAt?.getTime() !== expectedSend.completedAt.getTime() ||
+          currentSend.createdAt.getTime() !== expectedSend.createdAt.getTime() ||
+          currentSend.updatedAt.getTime() !== expectedSend.updatedAt.getTime() ||
+          currentSend.hasAutoDeleteDelayMs !== true ||
+          currentSend.autoDeleteDelayType !== 'null' ||
+          currentSend.jobCreatedAt !== expectedSend.jobCreatedAt.toISOString()
+        ) {
+          throw new BotMessageAutoDeleteExplicitCleanupConflictError(
+            'Exact SEND ledger evidence changed after explicit-cleanup preflight',
+          );
+        }
+
+        const deleteOwners = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT deletion."id"
+          FROM "max_action_ledger" deletion
+          WHERE deletion."chat_id" = ${normalized.chatId}
+            AND deletion."action_type" = 'DELETE_MESSAGE'
+            AND deletion."message_id" = ${normalized.messageId}
+          LIMIT 1
+          FOR UPDATE
+        `);
+        if (deleteOwners[0]) {
+          throw new BotMessageAutoDeleteExplicitCleanupConflictError(
+            'A DELETE ledger owner appeared after explicit-cleanup preflight',
+          );
+        }
+      }
+
       const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT intent."id"
         FROM "moderation_delete_intents" intent
@@ -569,6 +832,11 @@ export class ModerationDeleteIntentService {
         LIMIT 1
       `);
       const existingIntentId = existingRows[0]?.id ?? null;
+      if (explicitCleanup && existingIntentId) {
+        throw new BotMessageAutoDeleteExplicitCleanupConflictError(
+          'A moderation delete intent appeared after explicit-cleanup preflight',
+        );
+      }
       const ensured = await this.persistIntent(input, false, tx);
       if (!ensured.intentId) {
         throw new Error('Bot-message auto-delete repair did not persist an intent');
@@ -619,11 +887,40 @@ export class ModerationDeleteIntentService {
           data: {
             chatId: current.chatId,
             actorUserId,
-            action: BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
+            action:
+              repairKind === 'explicit_operator_cleanup'
+                ? BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_INTENT_AUDIT_ACTION
+                : BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
             payload: {
               ...options.auditPayload,
               repairVersion: 1,
-              repairKind: 'legacy_missing_intent',
+              ...(explicitCleanup
+                ? {
+                    evidenceVersion: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
+                    evidenceSource: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
+                    sendLedgerId: explicitCleanup.expectedSend.ledgerId,
+                    sendLedgerJobId: explicitCleanup.expectedSend.jobId,
+                    sendLedgerStatus: 'SUCCEEDED',
+                    sendLedgerSourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+                    sendLedgerDispatchBotId: explicitCleanup.expectedSend.dispatchBotId,
+                    sendLedgerTrafficClass: explicitCleanup.expectedSend.trafficClass,
+                    sendLedgerActionHealthLane: explicitCleanup.expectedSend.actionHealthLane,
+                    sendLedgerEnqueuedAt: explicitCleanup.expectedSend.enqueuedAt.toISOString(),
+                    sendLedgerCompletedAt: explicitCleanup.expectedSend.completedAt.toISOString(),
+                    sendLedgerCreatedAt: explicitCleanup.expectedSend.createdAt.toISOString(),
+                    sendLedgerUpdatedAt: explicitCleanup.expectedSend.updatedAt.toISOString(),
+                    sendLedgerAutoDeleteDelayMs: null,
+                    operatorReason: explicitCleanup.operatorReason,
+                    policySettingsId: explicitCleanup.expectedPolicy.settingsId,
+                    policyEnabled: true,
+                    policyDelayMinutes:
+                      explicitCleanup.expectedPolicy.deleteBotMessagesDelayMinutes,
+                    policyCreatedAt: explicitCleanup.expectedPolicy.createdAt.toISOString(),
+                    policyUpdatedAt: explicitCleanup.expectedPolicy.updatedAt.toISOString(),
+                    sendJobCreatedAt: explicitCleanup.expectedPolicy.sendJobCreatedAt.toISOString(),
+                  }
+                : {}),
+              repairKind,
               intentId: current.id,
               messageId: current.messageId,
               ruleCode: BOT_MESSAGE_AUTO_DELETE_RULE_CODE,
