@@ -42,6 +42,7 @@ type PublisherSettingsRow = {
 type PublisherBindingRow = {
   publisherBotId: string;
   status: ChatBotMembershipStatus;
+  lastWebhookAt: Date | null;
   permissionsSnapshot: unknown;
   botAccessState: ChatBotAccessState;
   botAccessCheckedAt: Date | null;

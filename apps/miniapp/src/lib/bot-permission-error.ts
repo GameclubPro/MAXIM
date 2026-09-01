@@ -12,6 +12,8 @@ const MAX_BLOCKER_ITEM_LENGTH = 160;
 export type BotPermissionBlocker = {
   code: 'BOT_PERMISSIONS_REQUIRED' | 'BOT_CAPABILITY_REQUIRED' | 'PUBLISHER_SETUP_REQUIRED';
   missingPermissions: readonly string[];
+  blockerCode: string | null;
+  checkedAt: string | null;
   stale: boolean;
   canRecheck: boolean;
   features: readonly string[];
@@ -86,12 +88,24 @@ export function parseBotPermissionBlocker(error: unknown): BotPermissionBlocker 
 
   const code = error.code as BotPermissionBlocker['code'];
   const missingPermissions = normalizeStringList(error.payload?.missingPermissions);
+  const blockerCode =
+    typeof error.payload?.blockerCode === 'string' && error.payload.blockerCode.length <= 160
+      ? error.payload.blockerCode
+      : null;
+  const checkedAt =
+    typeof error.payload?.checkedAt === 'string' &&
+    error.payload.checkedAt.length <= 64 &&
+    Number.isFinite(Date.parse(error.payload.checkedAt))
+      ? error.payload.checkedAt
+      : null;
   return Object.freeze({
     code,
     missingPermissions:
       missingPermissions.length > 0
         ? missingPermissions
         : resolvePublisherBlockerPermissions(error.payload?.blockerCode),
+    blockerCode,
+    checkedAt,
     stale: error.payload?.stale === true,
     canRecheck: error.payload?.canRecheck !== false,
     features: normalizeStringList(

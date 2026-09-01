@@ -36,6 +36,7 @@ describe('PublisherBindingRefreshService', () => {
       | { isAdmin: boolean; isOwner: boolean; permissions: string[]; permissionsKnown: boolean }
       | Error,
     dispatchEnabled = true,
+    publikEnabled: boolean | null = null,
   ) {
     const bindingState = {
       botAccessCheckedAt: null as Date | null,
@@ -58,7 +59,7 @@ describe('PublisherBindingRefreshService', () => {
           }> => ({
             id: 'chat-1',
             entityType: ChatEntityType.CHAT,
-            publicationPolicy: null,
+            publicationPolicy: publikEnabled === null ? null : { publikEnabled },
             publisherBinding: {
               publisherBotId: 'publik_bot',
               status: ChatBotMembershipStatus.ACTIVE,
@@ -328,6 +329,132 @@ describe('PublisherBindingRefreshService', () => {
       'chat-1',
       expect.objectContaining({ trafficClass: 'interactive' }),
     );
+  });
+
+  it('refreshes only an evidenced binding for policy enablement while Publik is disabled', async () => {
+    const { service, prisma, maxClient, dispatchHealth } = createHarness(
+      {
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      },
+      true,
+      false,
+    );
+
+    await service.refresh({ ...job, reason: 'policy_enablement_recheck' });
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        botId: 'publik_bot',
+        bypassCache: true,
+        trafficClass: 'interactive',
+      }),
+    );
+    expect(prisma.publisherEntityBinding.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          botAccessSource: 'publisher_refresh_policy_enablement_recheck',
+        }),
+      }),
+    );
+    expect(dispatchHealth.recordAuthenticatedSuccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('keeps ordinary refresh jobs idle while the Publik policy is disabled', async () => {
+    const { service, maxClient } = createHarness(
+      {
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      },
+      true,
+      false,
+    );
+
+    await service.refresh({ ...job, reason: 'manual_recheck' });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('does not let a policy enablement recheck bypass missing Publisher evidence', async () => {
+    const { service, prisma, maxClient } = createHarness(
+      {
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      },
+      true,
+      false,
+    );
+    prisma.chat.findUnique.mockResolvedValueOnce({
+      id: 'chat-1',
+      entityType: ChatEntityType.CHAT,
+      publicationPolicy: { publikEnabled: false },
+      publisherBinding: {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.UNKNOWN,
+        botAccessSource: null,
+        botAccessCheckedAt: null,
+        lifecycleEventAt: null,
+        lastSeenAt: null,
+        lastWebhookAt: null,
+      },
+    });
+
+    await service.refresh({ ...job, reason: 'policy_enablement_recheck' });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('does not lose a policy enablement probe when dispatch changes after dequeue', async () => {
+    const { service, maxClient, runtimeBoundary, dispatchHealth } = createHarness(
+      {
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      },
+      false,
+      false,
+    );
+
+    await expect(service.refresh({ ...job, reason: 'policy_enablement_recheck' })).rejects.toThrow(
+      'publisher disabled',
+    );
+    expect(runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(1);
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('propagates a dispatch pause that races with a policy enablement probe', async () => {
+    const { service, maxClient, dispatchHealth } = createHarness(
+      {
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      },
+      true,
+      false,
+    );
+    const paused = new Error('publisher dispatch paused');
+    dispatchHealth.assertDispatchAllowed.mockRejectedValueOnce(paused);
+
+    await expect(service.refresh({ ...job, reason: 'policy_enablement_recheck' })).rejects.toBe(
+      paused,
+    );
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
   it('maps a targeted 403 probe to LOST without retrying through a main bot', async () => {

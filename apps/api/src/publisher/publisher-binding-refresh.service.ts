@@ -101,8 +101,10 @@ export class PublisherBindingRefreshService {
   async refresh(job: PublisherBindingRefreshJob): Promise<void> {
     const candidateUserId = job.candidateUserId?.trim() ?? '';
     const candidateJob = candidateUserId.length > 0;
+    const policyEnablementRecheckRequested = job.reason === 'policy_enablement_recheck';
+    const durableInteractiveRefresh = candidateJob || policyEnablementRecheckRequested;
     if (!this.runtimeBoundary.dispatchEnabled) {
-      if (candidateJob) {
+      if (durableInteractiveRefresh) {
         this.runtimeBoundary.assertDispatchEnabled();
       }
       return;
@@ -121,7 +123,7 @@ export class PublisherBindingRefreshService {
       throw new Error('Publisher actor verification reply is missing its candidate user');
     }
     await this.identityAttestation.assertAttested();
-    if (candidateJob) {
+    if (durableInteractiveRefresh) {
       await this.dispatchHealth.assertDispatchAllowed();
     } else if (await this.dispatchHealth.isGloballyPaused()) {
       return;
@@ -176,11 +178,16 @@ export class PublisherBindingRefreshService {
       candidateEdge.sourceVersion === job.candidateVersion,
     );
     const forwardedCandidateFlow = hasExactStagedForwardedCandidate;
+    const disabledPolicyEnablementRecheck = Boolean(
+      policyEnablementRecheckRequested &&
+      !candidateJob &&
+      candidate?.publicationPolicy?.publikEnabled === false,
+    );
     // FLAG: Only an exact Publisher-staged forwarded candidate may establish a binding;
-    // all routine refresh jobs require authenticated Publisher evidence already.
+    // a policy enablement recheck may bypass disabled policy, never missing Publisher evidence.
     if (
       !candidate ||
-      candidate.publicationPolicy?.publikEnabled === false ||
+      (candidate.publicationPolicy?.publikEnabled === false && !disabledPolicyEnablementRecheck) ||
       (!bindingHasRefreshEvidence && !hasExactStagedForwardedCandidate)
     ) {
       if (candidateJob) {
@@ -208,7 +215,10 @@ export class PublisherBindingRefreshService {
     try {
       botAccess = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         botId: this.publisherBotId,
-        trafficClass: job.reason === 'manual_recheck' ? 'interactive' : 'background',
+        trafficClass:
+          job.reason === 'manual_recheck' || job.reason === 'policy_enablement_recheck'
+            ? 'interactive'
+            : 'background',
         sourceTag: 'publisher_readiness',
         bypassCache: true,
         timeoutMs: 5_000,
@@ -284,6 +294,12 @@ export class PublisherBindingRefreshService {
         return;
       }
       throw error;
+    }
+
+    // FLAG: A disabled-policy probe refreshes only the exact binding snapshot. Catalog and
+    // user-access refresh remain disabled until the Major-owned policy is enabled.
+    if (disabledPolicyEnablementRecheck) {
+      return;
     }
 
     if (

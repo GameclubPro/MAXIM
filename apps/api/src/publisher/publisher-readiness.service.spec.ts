@@ -48,6 +48,7 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
     publisherBinding: {
       publisherBotId: 'publik-bot',
       status: ChatBotMembershipStatus.ACTIVE,
+      lastWebhookAt: new Date(now - 1_000),
       permissionsSnapshot: {
         checkedAt: new Date(now - 1_000).toISOString(),
         isAdmin: true,

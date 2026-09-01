@@ -26,6 +26,37 @@ describe('PublisherBindingRefreshQueueService', () => {
     );
   });
 
+  it('prioritizes and independently deduplicates disabled-policy enablement rechecks', async () => {
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+
+    await service.enqueue({
+      chatId: 'channel-1',
+      publisherBotId: 'publik-bot',
+      reason: 'policy_enablement_recheck',
+      requestedAt: new Date('2026-08-31T20:24:29.000Z'),
+    });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'refresh',
+      {
+        version: 1,
+        chatId: 'channel-1',
+        publisherBotId: 'publik-bot',
+        reason: 'policy_enablement_recheck',
+        requestedAt: '2026-08-31T20:24:29.000Z',
+      },
+      expect.objectContaining({
+        jobId: expect.stringContaining('-policy_enablement_recheck-1788207869000'),
+        priority: 1,
+        deduplication: {
+          id: expect.stringMatching(/^publisher-binding-refresh-policy-enablement-[a-f0-9]{24}$/u),
+          ttl: 5_000,
+        },
+      }),
+    );
+  });
+
   it('keeps background scans bucketed and behind lifecycle refresh work', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
     const service = new PublisherBindingRefreshQueueService(queue as never);
@@ -173,9 +204,9 @@ describe('PublisherBindingRefreshQueueService', () => {
       },
     ];
     const queue = {
-      getJobs: jest.fn().mockImplementation(async ([state]: string[]) =>
-        state === 'prioritized' ? jobs : [],
-      ),
+      getJobs: jest
+        .fn()
+        .mockImplementation(async ([state]: string[]) => (state === 'prioritized' ? jobs : [])),
     };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
@@ -223,9 +254,9 @@ describe('PublisherBindingRefreshQueueService', () => {
       }),
     }));
     const queue = {
-      getJobs: jest.fn().mockImplementation(async ([state]: string[]) =>
-        state === 'prioritized' ? jobs : [],
-      ),
+      getJobs: jest
+        .fn()
+        .mockImplementation(async ([state]: string[]) => (state === 'prioritized' ? jobs : [])),
     };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 

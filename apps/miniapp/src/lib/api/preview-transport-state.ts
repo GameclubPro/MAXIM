@@ -125,7 +125,7 @@ export type PreviewState = {
   accessDiagnostics: ManagedEntityAccessDiagnostics | null;
   settingsScreenError: 'auth-expired' | 'access-denied' | null;
   publisherEntitiesVariant: 'mixed' | 'channel-only' | 'large' | 'empty' | 'error';
-  publisherPolicyVariant: 'normal' | 'setup' | 'error';
+  publisherPolicyVariant: 'normal' | 'setup' | 'permission' | 'error';
   publisherSuggestionsVariant: 'empty' | 'mixed' | 'large';
   publisherPostImportVariant: 'none' | PublisherPostImportStatus;
   publisherPostImportSession: PublisherPostImportSession | null;
@@ -950,7 +950,9 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
         ? publisherState
         : 'mixed',
     publisherPolicyVariant:
-      publisherPolicyState === 'setup' || publisherPolicyState === 'error'
+      publisherPolicyState === 'setup' ||
+      publisherPolicyState === 'permission' ||
+      publisherPolicyState === 'error'
         ? publisherPolicyState
         : 'normal',
     publisherSuggestionsVariant:

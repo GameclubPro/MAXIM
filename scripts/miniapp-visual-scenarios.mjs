@@ -63,11 +63,12 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/app.tsx',
     'apps/miniapp/src/components/shell.tsx',
     'apps/miniapp/src/components/publisher-policy-card.*',
+    'apps/miniapp/src/components/bot-permission-required-dialog.*',
     'apps/miniapp/src/features/publications/publication-hub-header.*',
     'apps/miniapp/src/features/publications/*publisher*.*',
     'apps/miniapp/src/features/publications/publication-target-*.*',
     'apps/miniapp/src/features/publications/use-initial-publication-target-route.ts',
-    'apps/miniapp/src/lib/publisher-readiness*.ts',
+    'apps/miniapp/src/lib/publisher-*.ts',
     'apps/miniapp/src/lib/api/publisher-client.ts',
     'apps/miniapp/src/lib/api/preview-transport-state.ts',
     'apps/miniapp/src/lib/api/preview-transport-publisher.ts',
@@ -747,6 +748,10 @@ const baseScenarios = [
   ...defineRouteScenarios('channel-settings', [
     'channel-settings',
     ['channel-settings-publisher-policy', { features: ['publisher'] }],
+    [
+      'channel-settings-publisher-policy-permission',
+      { searchParams: { publisherPolicyState: 'permission' }, features: ['publisher'] },
+    ],
     [
       'channel-settings-auth-expired',
       { searchParams: { settingsError: 'auth-expired' }, readySelector: '.status-state' },

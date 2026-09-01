@@ -19,12 +19,14 @@ export function BotPermissionRequiredDialog({
   onRecheck,
 }: BotPermissionRequiredDialogProps) {
   const permissionLabels = blocker ? getBotPermissionBlockerLabels(blocker) : [];
+  const title = blocker?.stale ? 'Нужно проверить доступ бота' : 'Боту не хватает прав';
   let summary = 'Выдайте боту необходимые права в MAX, затем запустите проверку ещё раз.';
-  if (blocker?.canRecheck === false) {
-    summary = 'Выполните указанные действия в MAX, затем повторите включение функции.';
+  if (blocker?.stale && blocker.canRecheck) {
+    summary = 'MAX обновляет сведения о правах. Подождите немного и проверьте снова.';
   } else if (blocker?.stale) {
-    summary =
-      'Сведения о правах устарели. Запустите проверку, чтобы получить актуальный статус из MAX.';
+    summary = 'Сведения о правах пока не подтверждены. Повторите включение функции позже.';
+  } else if (blocker?.canRecheck === false) {
+    summary = 'Выполните указанные действия в MAX, затем повторите включение функции.';
   } else if (blocker?.code === 'PUBLISHER_SETUP_REQUIRED') {
     summary = 'Проверьте подключение Публика и выдайте боту необходимые права в MAX.';
   }
@@ -34,7 +36,7 @@ export function BotPermissionRequiredDialog({
       id={id}
       open={blocker !== null}
       role="alertdialog"
-      title="Боту не хватает прав"
+      title={title}
       summary={summary}
       previewTitle={
         <div className="bot-permission-required-dialog__details">

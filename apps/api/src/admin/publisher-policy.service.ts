@@ -24,6 +24,7 @@ import {
   ConflictException,
   Injectable,
   HttpStatus,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -37,6 +38,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { PublisherBindingRefreshQueueService } from '../publisher/publisher-binding-refresh.queue';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import {
   hasPublisherRefreshEvidence,
@@ -81,6 +83,7 @@ type PublisherRefreshCandidateRow = {
 
 @Injectable()
 export class PublisherPolicyService {
+  private readonly logger = new Logger(PublisherPolicyService.name);
   private readonly cursorStore = new PublisherEntitiesCursorStore();
 
   constructor(
@@ -88,6 +91,7 @@ export class PublisherPolicyService {
     private readonly botRegistry: MaxBotRegistryService,
     private readonly readinessService: PublisherReadinessService,
     private readonly managedEntitiesService: ManagedEntitiesService,
+    private readonly publisherBindingRefreshQueue: PublisherBindingRefreshQueueService,
   ) {}
 
   async listEntities(user: AuthUser, query?: unknown): Promise<PublisherEntitiesResponse> {
@@ -208,11 +212,9 @@ export class PublisherPolicyService {
     if (!source || source.entityType !== expectedEntityType) {
       throw new BadRequestException('Managed entity type does not match');
     }
-    await this.assertPublisherBotCapabilityForEnablement(
-      { id: entityId, ...source },
-      featureKeys,
-      options.canRecheck ?? true,
-    );
+    await this.assertPublisherBotCapabilityForEnablement({ id: entityId, ...source }, featureKeys, {
+      canRecheck: options.canRecheck ?? true,
+    });
   }
 
   async getPolicyForModeration(
@@ -590,7 +592,7 @@ export class PublisherPolicyService {
       await this.assertPublisherBotCapabilityForEnablement(
         { id: entityId, ...existingChat },
         ['publikEnabled'],
-        false,
+        { canRecheck: false, enqueuePolicyEnablementRecheck: true },
       );
     }
 
@@ -690,7 +692,7 @@ export class PublisherPolicyService {
       await this.assertPublisherBotCapabilityForEnablement(
         { id: entityId, ...existingChat },
         enablementFeatureKeys,
-        true,
+        { canRecheck: true },
       );
     }
 
@@ -1227,7 +1229,7 @@ export class PublisherPolicyService {
   private async assertPublisherBotCapabilityForEnablement(
     source: Parameters<PublisherReadinessService['resolveReadiness']>[0],
     featureKeys: readonly string[],
-    canRecheck: boolean,
+    options: { canRecheck: boolean; enqueuePolicyEnablementRecheck?: boolean },
   ): Promise<void> {
     let runtimeAvailable: boolean;
     try {
@@ -1237,7 +1239,7 @@ export class PublisherPolicyService {
         featureKeys,
         source.publisherBinding?.botAccessCheckedAt?.toISOString() ?? null,
         'publisher_runtime_unavailable',
-        canRecheck,
+        options.canRecheck,
       );
     }
     const readiness = this.readinessService.resolveReadiness(source, {
@@ -1256,8 +1258,35 @@ export class PublisherPolicyService {
         featureKeys,
         readiness.checkedAt,
         readiness.blockerCode,
-        canRecheck,
+        options.canRecheck,
       );
+    }
+
+    let canRecheck = options.canRecheck;
+    const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
+    if (
+      options.enqueuePolicyEnablementRecheck === true &&
+      hasPublisherRefreshEvidence(source.publisherBinding, publisherBotId)
+    ) {
+      try {
+        await this.publisherBindingRefreshQueue.enqueue({
+          chatId: source.id,
+          publisherBotId,
+          reason: 'policy_enablement_recheck',
+        });
+        canRecheck = true;
+      } catch {
+        this.logger.warn(
+          { chatId: source.id },
+          'Failed to enqueue Publisher policy enablement recheck',
+        );
+        throw this.publisherCapabilityCheckUnavailable(
+          featureKeys,
+          readiness.checkedAt,
+          'publisher_recheck_unavailable',
+          false,
+        );
+      }
     }
 
     const missingPermissions: BotCapabilityPermission[] =
@@ -1283,7 +1312,10 @@ export class PublisherPolicyService {
   private publisherCapabilityCheckUnavailable(
     featureKeys: readonly string[],
     checkedAt: string | null,
-    blockerCode: 'publisher_runtime_unavailable' | 'route_quarantined',
+    blockerCode:
+      | 'publisher_runtime_unavailable'
+      | 'publisher_recheck_unavailable'
+      | 'route_quarantined',
     canRecheck: boolean,
   ): ServiceUnavailableException {
     return new ServiceUnavailableException({

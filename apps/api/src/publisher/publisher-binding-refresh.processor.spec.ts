@@ -17,6 +17,13 @@ describe('PublisherBindingRefreshProcessor', () => {
     reason: 'bot_added',
     requestedAt: '2026-08-26T12:00:00.000Z',
   };
+  const policyEnablementJob: PublisherBindingRefreshJob = {
+    version: 1,
+    chatId: 'channel-1',
+    publisherBotId: 'publik_bot',
+    reason: 'policy_enablement_recheck',
+    requestedAt: '2026-08-31T20:24:29.000Z',
+  };
 
   beforeEach(() => {
     process.env.APP_ROLE = 'publisher';
@@ -82,6 +89,54 @@ describe('PublisherBindingRefreshProcessor', () => {
     expect(runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(1);
     expect(refresh).toHaveBeenCalledWith(candidateJob);
     expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('durably delays a policy enablement recheck without requiring a candidate user', async () => {
+    const refresh = jest.fn();
+    const runtimeBoundary = {
+      assertDispatchEnabled: jest.fn(() => {
+        throw new PublisherDispatchDisabledError();
+      }),
+    };
+    const processor = new PublisherBindingRefreshProcessor(
+      { refresh } as never,
+      runtimeBoundary as never,
+      { assertDispatchAllowed: jest.fn() } as never,
+    );
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: policyEnablementJob,
+      attemptsMade: 0,
+      opts: { attempts: 6 },
+      moveToDelayed,
+    } as unknown as Job<PublisherBindingRefreshJob>;
+
+    await expect(processor.process(job, 'worker-token')).rejects.toBeInstanceOf(DelayedError);
+
+    expect(runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(1);
+    expect(moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'worker-token');
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('passes an enabled policy recheck to the exact Publisher refresh service', async () => {
+    const refresh = jest.fn().mockResolvedValue(undefined);
+    const runtimeBoundary = { assertDispatchEnabled: jest.fn() };
+    const dispatchHealth = { assertDispatchAllowed: jest.fn().mockResolvedValue(undefined) };
+    const processor = new PublisherBindingRefreshProcessor(
+      { refresh } as never,
+      runtimeBoundary as never,
+      dispatchHealth as never,
+    );
+    const job = {
+      data: policyEnablementJob,
+      moveToDelayed: jest.fn(),
+    } as unknown as Job<PublisherBindingRefreshJob>;
+
+    await processor.process(job, 'worker-token');
+
+    expect(runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(1);
+    expect(dispatchHealth.assertDispatchAllowed).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledWith(policyEnablementJob);
   });
 
   it('completes a superseded candidate refresh as a terminal no-op', async () => {

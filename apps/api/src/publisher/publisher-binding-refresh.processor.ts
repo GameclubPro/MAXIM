@@ -30,8 +30,8 @@ export class PublisherBindingRefreshProcessor extends WorkerHost {
     if (!roleRunsPublisher(getAppRole()) || process.env.APP_SERVICE_NAME !== 'api-publisher') {
       throw new Error('Publisher binding refresh claimed outside api-publisher');
     }
-    // Candidate identity exists only in this job, so preserve it across a disabled rollout.
-    if (job.data.candidateUserId?.trim()) {
+    // Candidate identity and policy enablement probes must survive a disabled/paused rollout.
+    if (job.data.candidateUserId?.trim() || job.data.reason === 'policy_enablement_recheck') {
       await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
       await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
     }

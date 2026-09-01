@@ -14,6 +14,7 @@ export type PublisherBindingRefreshReason =
   | 'stale_access'
   | 'stale_user_access'
   | 'manual_recheck'
+  | 'policy_enablement_recheck'
   | 'send_access_lost';
 
 export type PublisherBindingRefreshJob = {
@@ -54,6 +55,7 @@ export type PublisherScheduledBacklogCompactionResult = {
 function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
   switch (reason) {
     case 'manual_recheck':
+    case 'policy_enablement_recheck':
       return 1;
     case 'bot_added':
     case 'webhook_observed':
@@ -177,10 +179,11 @@ export class PublisherBindingRefreshQueueService {
     const candidateUserId = params.candidateUserId?.trim() || null;
     const candidateVersion = params.candidateVersion?.trim() || null;
     const replyChatId = params.replyChatId?.trim() || null;
-    const manualRecheck = params.reason === 'manual_recheck';
+    const interactiveRecheck =
+      params.reason === 'manual_recheck' || params.reason === 'policy_enablement_recheck';
     const coalescedWebhookObservation =
       params.reason === 'webhook_observed' && candidateUserId === null;
-    const discriminator = manualRecheck
+    const discriminator = interactiveRecheck
       ? requestedAt.getTime()
       : coalescedWebhookObservation
         ? Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS)
@@ -227,10 +230,13 @@ export class PublisherBindingRefreshQueueService {
       {
         jobId,
         priority: resolveRefreshPriority(params.reason),
-        ...(manualRecheck
+        ...(interactiveRecheck
           ? {
               deduplication: {
-                id: `publisher-binding-refresh-manual-${entityHash}${candidateScope}`,
+                id:
+                  params.reason === 'manual_recheck'
+                    ? `publisher-binding-refresh-manual-${entityHash}${candidateScope}`
+                    : `publisher-binding-refresh-policy-enablement-${entityHash}`,
                 ttl: PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS,
               },
             }

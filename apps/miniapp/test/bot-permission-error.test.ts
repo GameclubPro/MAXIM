@@ -26,6 +26,8 @@ test('parses the canonical bot capability blocker without exposing unrelated pay
   assert.deepEqual(parseBotPermissionBlocker(error), {
     code: 'BOT_CAPABILITY_REQUIRED',
     missingPermissions: ['write', 'add_remove_members'],
+    blockerCode: null,
+    checkedAt: '2026-08-30T12:00:00.000Z',
     stale: false,
     canRecheck: true,
     features: ['antiSpamEnabled'],

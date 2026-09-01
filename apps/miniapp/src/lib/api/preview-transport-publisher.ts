@@ -290,7 +290,7 @@ function buildPreviewPublisherEntity(
   const policy =
     getPreviewPublisherPolicies(state)[`${entityType}:${entityId}`] ??
     managedEntityPublicationPolicySchema.parse({
-      publikEnabled: true,
+      publikEnabled: state.publisherPolicyVariant !== 'permission',
       revision: 0,
       updatedAt: null,
     });
@@ -859,6 +859,22 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
   }
   if (segments[4] === 'policy' && method === 'PATCH') {
     const request = updateManagedEntityPublicationPolicyRequestSchema.parse(parseJsonBody(init));
+    if (state.publisherPolicyVariant === 'permission' && request.publikEnabled === true) {
+      throw new ApiRequestError(
+        409,
+        JSON.stringify({
+          statusCode: 409,
+          code: 'BOT_CAPABILITY_REQUIRED',
+          missingPermissions: [],
+          featureKeys: ['publikEnabled'],
+          checkedAt: null,
+          blockerCode: 'bot_access_unconfirmed',
+          stale: true,
+          canRecheck: true,
+        }),
+        'Права Публика пока не подтверждены.',
+      );
+    }
     const policy = managedEntityPublicationPolicySchema.parse({
       ...entity.policy,
       ...(request.publikEnabled !== undefined ? { publikEnabled: request.publikEnabled } : {}),

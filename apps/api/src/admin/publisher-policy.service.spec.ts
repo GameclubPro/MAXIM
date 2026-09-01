@@ -57,6 +57,12 @@ function createBotRegistry() {
   };
 }
 
+function createBindingRefreshQueue() {
+  return {
+    enqueue: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
 const user = {
   userId: 'user-1',
   username: null,
@@ -214,6 +220,7 @@ function createListFixture(
     createBotRegistry() as never,
     readiness as never,
     {} as never,
+    createBindingRefreshQueue() as never,
   );
   return {
     catalogFindFirst,
@@ -295,14 +302,17 @@ function createPolicyMutationFixture(
   const managedEntities = {
     assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
   };
+  const bindingRefreshQueue = createBindingRefreshQueue();
   const service = new PublisherPolicyService(
     prisma as never,
     createBotRegistry() as never,
     readiness as never,
     managedEntities as never,
+    bindingRefreshQueue as never,
   );
 
   return {
+    bindingRefreshQueue,
     managedEntities,
     prisma,
     readiness,
@@ -356,6 +366,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       readiness as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
 
     const response = await service.listEntities({
@@ -586,6 +597,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
 
     await expect(service.listRefreshableEntityIds(user, 500, ['already-queued'])).resolves.toEqual([
@@ -709,6 +721,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
 
     await expect(service.listRefreshableEntityIds(user, 3)).resolves.toEqual(
@@ -793,6 +806,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
 
     await expect(service.listRefreshableEntityIds(user, 2)).resolves.toEqual([
@@ -870,6 +884,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
 
     const response = await service.listEntities(user);
@@ -1007,6 +1022,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
 
     const response = await service.listEntities(user);
@@ -1341,6 +1357,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
     const body = { targets: [{ id: foreignChat.id, entityType: 'chat' }] };
 
@@ -1485,6 +1502,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createBindingRefreshQueue() as never,
     );
 
     await expect(
@@ -1580,6 +1598,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       { assertManagedEntityAdminAccess } as never,
+      createBindingRefreshQueue() as never,
     );
     await expect(
       service.updatePolicy('chat', 'chat-foreign', user, {
@@ -1848,12 +1867,17 @@ describe('PublisherPolicyService', () => {
       checkedAt: '2026-08-30T10:00:00.000Z',
       blockerCode: 'write_permission_missing',
       stale: false,
-      canRecheck: false,
+      canRecheck: true,
     });
     expect(fixture.readiness.resolveReadiness).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'channel-1' }),
       { runtimeAvailable: true, assumePolicyEnabled: true },
     );
+    expect(fixture.bindingRefreshQueue.enqueue).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      publisherBotId: 'publik-bot',
+      reason: 'policy_enablement_recheck',
+    });
     expect(fixture.transaction).not.toHaveBeenCalled();
   });
 
@@ -1883,7 +1907,92 @@ describe('PublisherPolicyService', () => {
       missingPermissions: [],
       blockerCode: 'bot_access_expired',
       stale: true,
-      canRecheck: false,
+      canRecheck: true,
+    });
+    expect(fixture.bindingRefreshQueue.enqueue).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      publisherBotId: 'publik-bot',
+      reason: 'policy_enablement_recheck',
+    });
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it('refreshes an unconfirmed disabled binding before enabling it on retry', async () => {
+    const fixture = createPolicyMutationFixture({
+      publicationPolicy: { revision: 2, publikEnabled: false },
+    });
+    fixture.readiness.resolveReadiness.mockReturnValueOnce({
+      state: 'setup_required',
+      canPublish: false,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: 'bot_access_unconfirmed',
+      checkedAt: null,
+      retryAt: null,
+    });
+
+    const firstAttempt = fixture.service.updatePolicy('channel', 'channel-1', user, {
+      expectedRevision: 2,
+      publikEnabled: true,
+    });
+
+    await expect(firstAttempt).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BOT_CAPABILITY_REQUIRED',
+        blockerCode: 'bot_access_unconfirmed',
+        stale: true,
+        canRecheck: true,
+      }),
+    });
+    expect(fixture.bindingRefreshQueue.enqueue).toHaveBeenCalledTimes(1);
+    expect(fixture.transaction).not.toHaveBeenCalled();
+
+    fixture.readiness.resolveReadiness.mockReturnValue({
+      state: 'ready',
+      canPublish: true,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: null,
+      checkedAt: '2026-08-30T10:00:01.000Z',
+      retryAt: null,
+    });
+
+    await expect(
+      fixture.service.updatePolicy('channel', 'channel-1', user, {
+        expectedRevision: 2,
+        publikEnabled: true,
+      }),
+    ).resolves.toMatchObject({ publikEnabled: true });
+    expect(fixture.bindingRefreshQueue.enqueue).toHaveBeenCalledTimes(1);
+    expect(fixture.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when the disabled-policy recheck cannot be queued', async () => {
+    const fixture = createPolicyMutationFixture({
+      publicationPolicy: { revision: 2, publikEnabled: false },
+    });
+    fixture.readiness.resolveReadiness.mockReturnValue({
+      state: 'setup_required',
+      canPublish: false,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: 'bot_access_unconfirmed',
+      checkedAt: null,
+      retryAt: null,
+    });
+    fixture.bindingRefreshQueue.enqueue.mockRejectedValueOnce(new Error('redis unavailable'));
+
+    await expect(
+      fixture.service.updatePolicy('channel', 'channel-1', user, {
+        expectedRevision: 2,
+        publikEnabled: true,
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BOT_CAPABILITY_CHECK_UNAVAILABLE',
+        blockerCode: 'publisher_recheck_unavailable',
+        canRecheck: false,
+      }),
     });
     expect(fixture.transaction).not.toHaveBeenCalled();
   });

@@ -178,14 +178,22 @@ test('publisher entity client encodes ids and validates policy update payloads',
   };
 
   await getPublisherEntity(api as never, 'channel', entity.id);
-  const policy = await updatePublisherPolicy(api as never, 'channel', entity.id, {
-    expectedRevision: 4,
-    publikEnabled: false,
-  });
+  const signal = new AbortController().signal;
+  const policy = await updatePublisherPolicy(
+    api as never,
+    'channel',
+    entity.id,
+    {
+      expectedRevision: 4,
+      publikEnabled: false,
+    },
+    { signal },
+  );
 
   assert.equal(calls[0]?.path, '/publisher/entities/channel/channel%2Fwith%3Fsymbols');
   assert.equal(calls[1]?.path, '/publisher/entities/channel/channel%2Fwith%3Fsymbols/policy');
   assert.equal(calls[1]?.init?.method, 'PATCH');
+  assert.equal(calls[1]?.init?.signal, signal);
   assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
     expectedRevision: 4,
     publikEnabled: false,
@@ -378,6 +386,23 @@ test('preview publisher list includes ready, setup, temporary, empty, and error 
       createPreviewApiTransport({ search: '?profile=publisher&publisherState=error' }),
     ),
     /unavailable/u,
+  );
+});
+
+test('preview exposes the disabled-policy permission blocker used by visual validation', async () => {
+  const api = createPreviewApiTransport({ search: '?publisherPolicyState=permission' });
+
+  await assert.rejects(
+    updatePublisherPolicy(api, 'channel', 'preview-channel', {
+      expectedRevision: 0,
+      publikEnabled: true,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'BOT_CAPABILITY_REQUIRED' &&
+      'payload' in error &&
+      (error.payload as { blockerCode?: unknown })?.blockerCode === 'bot_access_unconfirmed',
   );
 });
 

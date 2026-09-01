@@ -2917,7 +2917,7 @@
 
   .action-confirm-sheet__panel--accent .action-confirm-sheet__preview {
     border-radius: 12px;
-    background: #f8fafb;
+    background: var(--color-surface-muted);
   }
 
   @media (min-width: 860px) {

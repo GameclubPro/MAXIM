@@ -76,6 +76,13 @@ test('Publisher enable switches surface structured blockers without optimistic e
   assert.match(publisherPolicySource, /const blocker = parseBotPermissionBlocker\(error\)/u);
   assert.match(publisherPolicySource, /checked=\{policy\?\.publikEnabled \?\? false\}/u);
   assert.match(publisherPolicySource, /<LazyBotPermissionRequiredDialog/u);
+  assert.match(publisherPolicySource, /retryPublisherPolicyEnablement/u);
+  assert.match(publisherPolicySource, /retryPublisherPolicyEnablement\(\{/u);
+  assert.match(publisherPolicySource, /recheckMutation\.mutate\(\)/u);
+  assert.doesNotMatch(
+    publisherPolicySource,
+    /onRecheck=\{\(\) => \{\s*setPermissionBlocker\(null\)/u,
+  );
   assert.match(publisherModulesSource, /const blocker = parseBotPermissionBlocker\(error\)/u);
   assert.match(publisherModulesSource, /<LazyBotPermissionRequiredDialog/u);
 });

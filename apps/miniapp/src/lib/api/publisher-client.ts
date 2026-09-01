@@ -166,11 +166,12 @@ export async function updatePublisherPolicy(
   entityType: ManagedEntityType,
   entityId: string,
   payload: UpdateManagedEntityPublicationPolicyRequest,
+  options: { signal?: AbortSignal } = {},
 ): Promise<ManagedEntityPublicationPolicy> {
   const body = updateManagedEntityPublicationPolicyRequestSchema.parse(payload);
   const response = await api.request(
     `/publisher/entities/${entityType}/${encodeURIComponent(entityId)}/policy`,
-    { method: 'PATCH', body: JSON.stringify(body) },
+    { method: 'PATCH', body: JSON.stringify(body), signal: options.signal },
   );
   return managedEntityPublicationPolicySchema.parse(response);
 }

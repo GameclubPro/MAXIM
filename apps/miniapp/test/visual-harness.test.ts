@@ -259,6 +259,9 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   });
   assert.equal(scenarios.get('channel-settings-publisher-policy')?.routeId, 'channel-settings');
   assert.ok(scenarios.get('channel-settings-publisher-policy')?.features.includes('publisher'));
+  assert.deepEqual(scenarios.get('channel-settings-publisher-policy-permission')?.searchParams, {
+    publisherPolicyState: 'permission',
+  });
 });
 
 test('publisher publication buttons cover direct empty, filled, error, and keyboard states', () => {

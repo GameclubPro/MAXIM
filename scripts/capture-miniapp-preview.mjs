@@ -1122,6 +1122,21 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'channel-settings-publisher-policy-permission',
+    beforeShot: async (page) => {
+      const card = page.locator('.publisher-policy-card');
+      await card.waitFor({ state: 'visible' });
+      await card.scrollIntoViewIfNeeded();
+      await card.getByRole('checkbox', { name: 'Включить Публик для канала' }).click();
+      const dialog = page.getByRole('alertdialog', { name: 'Нужно проверить доступ бота' });
+      await dialog.waitFor({ state: 'visible' });
+      await dialog.getByText('Актуальная проверка доступа', { exact: true }).waitFor({
+        state: 'visible',
+      });
+      await dialog.getByRole('button', { name: 'Проверить снова' }).waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'publications-actions',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });
