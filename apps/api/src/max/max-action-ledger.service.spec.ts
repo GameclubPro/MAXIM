@@ -11,7 +11,11 @@ import {
   MaxActionLedgerStatus,
   Prisma,
 } from '../prisma/prisma-client';
-import type { MaxActionJob } from './max-client.service';
+import {
+  MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
+  MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+  type MaxActionJob,
+} from './max-client.service';
 import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
@@ -316,7 +320,7 @@ describe('MaxActionLedgerService', () => {
     await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(true);
   });
 
-  it('does not trust a marked auto-delete success without an exact-absence receipt', async () => {
+  it('does not trust a marked auto-delete success without a confirmation receipt', async () => {
     const { service } = createService({
       id: 'delete-job-1',
       metadata: {
@@ -333,7 +337,26 @@ describe('MaxActionLedgerService', () => {
     await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
   });
 
-  it('trusts a marked auto-delete success only with its exact-absence receipt', async () => {
+  it('trusts a v2 documented DELETE success receipt', async () => {
+    const { service } = createService({
+      id: 'delete-job-1',
+      metadata: {
+        sendAutoDelete: {
+          version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+          sourceSendJobId: 'send-job-1',
+          sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+          requestedDelayMs: 60_000,
+          originBotId: 'bot-1',
+          confirmedAt: '2026-08-31T12:01:00.000Z',
+          confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
+        },
+      },
+    });
+
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(true);
+  });
+
+  it('trusts a legacy v1 post-delete receipt derived from documented DELETE success', async () => {
     const { service } = createService({
       id: 'delete-job-1',
       metadata: {
@@ -350,6 +373,25 @@ describe('MaxActionLedgerService', () => {
     });
 
     await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(true);
+  });
+
+  it('does not trust a legacy v1 preflight receipt that may come from access-masked 404', async () => {
+    const { service } = createService({
+      id: 'delete-job-1',
+      metadata: {
+        sendAutoDelete: {
+          version: 1,
+          sourceSendJobId: 'send-job-1',
+          sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
+          requestedDelayMs: 60_000,
+          originBotId: 'bot-1',
+          exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
+          exactAbsenceVerificationPhase: 'preflight',
+        },
+      },
+    });
+
+    await expect(service.hasSucceededDelete('chat-1', 'message-1')).resolves.toBe(false);
   });
 
   it('finds an older verified receipt behind a newer unverified legacy row', async () => {
@@ -381,13 +423,13 @@ describe('MaxActionLedgerService', () => {
 
   it('reconciles only the exact persisted verified auto-delete success', async () => {
     const sendAutoDelete = {
-      version: 1 as const,
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
       sourceSendJobId: 'send-job-1',
       sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
       requestedDelayMs: 60_000,
       originBotId: 'bot-1',
-      exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
-      exactAbsenceVerificationPhase: 'post_delete' as const,
+      confirmedAt: '2026-08-31T12:01:00.000Z',
+      confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
     };
     const { service, prisma } = createService({
       actionType: 'DELETE_MESSAGE',
@@ -423,7 +465,7 @@ describe('MaxActionLedgerService', () => {
     await expect(
       service.hasRecordedVerifiedSendAutoDeleteSuccess({
         ...job,
-        sendAutoDelete: { ...sendAutoDelete, sourceSendJobId: 'other-send' },
+        sendAutoDelete: { ...sendAutoDelete, confirmedAt: '2026-08-31T12:01:01.000Z' },
       }),
     ).resolves.toBe(false);
   });
@@ -893,7 +935,7 @@ describe('MaxActionLedgerService', () => {
   it('persists send-side auto-delete provenance in ledger metadata', async () => {
     const { service, prisma } = createService();
     const sendAutoDelete = {
-      version: 1 as const,
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
       sourceSendJobId: 'source-send-1',
       sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
       requestedDelayMs: 60_000,
@@ -921,14 +963,14 @@ describe('MaxActionLedgerService', () => {
     });
   });
 
-  it('refuses to mark a send-side auto-delete succeeded without an exact-absence receipt', async () => {
+  it('refuses to mark a send-side auto-delete succeeded without a confirmation receipt', async () => {
     const { service, prisma } = createService();
     const job = createJob({
       actionType: 'DELETE_MESSAGE',
       text: undefined,
       messageId: 'mid-auto-delete-unverified-1',
       sendAutoDelete: {
-        version: 1,
+        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
         sourceSendJobId: 'source-send-1',
         sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
         requestedDelayMs: 60_000,
@@ -942,16 +984,16 @@ describe('MaxActionLedgerService', () => {
     expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
   });
 
-  it('persists the exact-absence receipt when a marked auto-delete succeeds', async () => {
+  it('persists the documented DELETE success receipt when a marked auto-delete succeeds', async () => {
     const { service, prisma } = createService();
     const sendAutoDelete = {
-      version: 1 as const,
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
       sourceSendJobId: 'source-send-1',
       sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
       requestedDelayMs: 60_000,
       originBotId: 'bot-1',
-      exactAbsenceVerifiedAt: '2026-08-31T12:01:01.000Z',
-      exactAbsenceVerificationPhase: 'post_delete' as const,
+      confirmedAt: '2026-08-31T12:01:01.000Z',
+      confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
     };
 
     await service.recordSucceeded(

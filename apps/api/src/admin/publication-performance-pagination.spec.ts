@@ -13,6 +13,10 @@ import {
 } from '../prisma/prisma-client';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationService } from './publication.service';
+import {
+  LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
+  LEGACY_PUBLICATION_EXACT_ABSENCE_ERROR,
+} from './publication-legacy-automated-absence';
 
 const EMPTY_DELIVERY_STATS: PublicationDeliveryStats = {
   total: 0,
@@ -427,6 +431,15 @@ describe('Publication performance and pagination', () => {
     expect(result.items[1]?.lifecycle).toBe('ERROR');
     expect(result.items[1]?.schedule?.lastError).toBe('Расписание не содержит будущих запусков.');
     expect(queryRaw).toHaveBeenCalledTimes(3);
+    const aggregateSql = queryRaw.mock.calls.map(([query]) => extractSqlText(query)).join(' ');
+    const aggregateValues = queryRaw.mock.calls.flatMap(([query]) => [...extractSqlValues(query)]);
+    expect(aggregateSql).toContain('delivery."last_error" = ?');
+    expect(aggregateValues).toEqual(
+      expect.arrayContaining([
+        LEGACY_PUBLICATION_EXACT_ABSENCE_ERROR,
+        LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
+      ]),
+    );
     const selectorSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
     expect(selectorSql).toContain('occurrence."schedule_revision" = schedule."revision"');
     expect(selectorSql).toContain(
@@ -561,6 +574,26 @@ describe('Publication performance and pagination', () => {
         publication: { canonicalContentRevisionId: 'content-current' },
       },
     });
+    const legacyAbsenceRow = {
+      ...deliveryRow('delivery-legacy-absence', 'chat-1'),
+      status: ManagedBroadcastDeliveryStatus.FAILED,
+      remoteMessageId: 'remote-message',
+      remoteMessageVerifiedAt: null,
+      remoteMessageVerificationAttemptCount: 3,
+      remoteMessageVerificationAbsentCount: 3,
+      remoteMessageVerificationPresentCount: 0,
+      remoteMessageVerificationAttemptedAt: new Date('2026-07-10T09:05:00.000Z'),
+      remoteMessageVerificationNextAt: null,
+      remoteMessageVerificationLastError: LEGACY_PUBLICATION_EXACT_ABSENCE_ERROR,
+      remoteMessageVerificationSource: null,
+      legacySentWithoutRemoteId: false,
+      lastErrorCode: null,
+      lastError: LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
+      sentAt: new Date('2026-07-10T09:00:00.000Z'),
+      lockedAt: null,
+      lockToken: null,
+      publicationOccurrenceId: 'occurrence-1',
+    };
     const findMany = jest
       .fn()
       .mockResolvedValueOnce([
@@ -568,7 +601,8 @@ describe('Publication performance and pagination', () => {
         deliveryRow('delivery-2', 'chat-2', 'content-old', 1),
         deliveryRow('delivery-1', 'chat-1'),
       ])
-      .mockResolvedValueOnce([deliveryRow('delivery-1', 'chat-1')]);
+      .mockResolvedValueOnce([deliveryRow('delivery-1', 'chat-1')])
+      .mockResolvedValueOnce([legacyAbsenceRow]);
     const prisma = {
       publication: {
         findFirst: jest.fn().mockResolvedValue({
@@ -610,12 +644,12 @@ describe('Publication performance and pagination', () => {
     expect(findMany).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        where: {
+        where: expect.objectContaining({
           publicationOccurrence: {
             is: { publicationId: 'publication-1', id: 'occurrence-1' },
           },
-          status: { not: ManagedBroadcastDeliveryStatus.AMBIGUOUS },
-        },
+          OR: expect.any(Array),
+        }),
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: 3,
         include: {
@@ -649,6 +683,32 @@ describe('Publication performance and pagination', () => {
         skip: 1,
       }),
     );
+
+    const ambiguousPage = await service.listDeliveries('publication-1', user, {
+      occurrenceId: 'occurrence-1',
+      status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+      limit: 2,
+    });
+    expect(ambiguousPage.items).toEqual([
+      expect.objectContaining({
+        id: 'delivery-legacy-absence',
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+      }),
+    ]);
+    expect(findMany).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            { status: ManagedBroadcastDeliveryStatus.AMBIGUOUS },
+            expect.objectContaining({
+              status: ManagedBroadcastDeliveryStatus.FAILED,
+              remoteMessageVerificationAbsentCount: { gte: 3 },
+            }),
+          ]),
+        }),
+      }),
+    );
   });
 
   it('loads occurrence delivery counts as grouped aggregates without nested delivery rows', async () => {
@@ -663,16 +723,15 @@ describe('Publication performance and pagination', () => {
       occurrences: [occurrence],
     });
     const occurrenceFindMany = jest.fn().mockResolvedValue([occurrence]);
-    const groupBy = jest
+    const queryRaw = jest
       .fn()
-      .mockResolvedValueOnce([
-        { status: ManagedBroadcastDeliveryStatus.FAILED, _count: { _all: 2 } },
-      ])
+      .mockResolvedValueOnce([{ status: ManagedBroadcastDeliveryStatus.AMBIGUOUS, count: 2n }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         {
           publicationOccurrenceId: 'occurrence-1',
-          status: ManagedBroadcastDeliveryStatus.FAILED,
-          _count: { _all: 2 },
+          status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+          count: 2n,
         },
       ]);
     const prisma = {
@@ -681,8 +740,8 @@ describe('Publication performance and pagination', () => {
         findFirst: jest.fn().mockResolvedValue(null),
         findMany: occurrenceFindMany,
       },
-      managedBroadcastDelivery: { groupBy },
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      managedBroadcastDelivery: { groupBy: jest.fn() },
+      $queryRaw: queryRaw,
     };
     const presenter = new PublicationPresenterService(prisma as never);
 
@@ -696,17 +755,13 @@ describe('Publication performance and pagination', () => {
       contentRevision: { select: { revision: true } },
       _count: { select: { legacyBroadcasts: true } },
     });
-    expect(groupBy).toHaveBeenCalledTimes(2);
-    expect(groupBy).toHaveBeenNthCalledWith(2, {
-      by: ['publicationOccurrenceId', 'status'],
-      where: { publicationOccurrenceId: { in: ['occurrence-1'] } },
-      _count: { _all: true },
-    });
-    expect(row?.deliveryStats).toEqual({ ...EMPTY_DELIVERY_STATS, total: 2, failed: 2 });
+    expect(queryRaw).toHaveBeenCalledTimes(3);
+    expect(row?.deliveryStats).toEqual({ ...EMPTY_DELIVERY_STATS, total: 2, ambiguous: 2 });
     expect(row?.occurrences[0]?.deliveryStats).toEqual({
       ...EMPTY_DELIVERY_STATS,
       total: 2,
-      failed: 2,
+      ambiguous: 2,
     });
+    expect(row?.occurrences[0]?.status).toBe(PublicationOccurrenceStatus.AMBIGUOUS);
   });
 });

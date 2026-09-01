@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 
+import { MAX_SEND_FENCE_STALE_MS } from '../max/max-send-ambiguity.util';
 import { Prisma } from '../prisma/prisma-client';
 import {
   BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
@@ -81,6 +82,13 @@ type ServiceInternals = {
   hasDeleteDispatchMarker(intent: Record<string, unknown>): boolean;
   hasDeleteMutationEvidence(intent: Record<string, unknown>): boolean;
   isBotMessageAutoDeleteRetryLimitApplicable(intent: Record<string, unknown>): boolean;
+  findManagedBotMessageOwner(intent: {
+    chatId: string;
+    messageId: string;
+    sourceMessageAt: Date | null;
+    entityType: 'CHAT' | 'CHANNEL' | null;
+    originBotId: string | null;
+  }): Promise<{ id: string; kind: string } | null>;
 };
 
 const ownedHeartbeat = {
@@ -2622,6 +2630,130 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
+  it('blocks BOT_MESSAGE_AUTO_DELETE for a fresh matching publication send fence', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      entityType: 'CHAT' as const,
+      originBotId: 'publisher-bot-1',
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+    };
+    const blockedIntent = {
+      ...autoDeleteIntent,
+      status: 'FAILED_TERMINAL' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      lastErrorCode: 'managed_output_auto_delete_blocked',
+      lastError: 'Managed publication send is still in flight',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([autoDeleteIntent])
+      .mockResolvedValueOnce([blockedIntent]);
+    const findFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'delivery-in-flight-1', remoteMessageId: null });
+    const deleteMessage = jest.fn();
+    const resolveDeleteMessageBotRoute = jest.fn();
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        managedBroadcastDelivery: { findFirst },
+      },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(findFirst).toHaveBeenNthCalledWith(1, {
+      where: { targetChatId: 'chat-1', remoteMessageId: 'message-1' },
+      select: { id: true },
+    });
+    expect(findFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        targetChatId: 'chat-1',
+        OR: [
+          { remoteMessageId: 'message-1' },
+          {
+            botId: 'publisher-bot-1',
+            remoteMessageId: null,
+            broadcast: { is: { entityType: 'CHAT' } },
+            OR: [
+              {
+                status: 'SENDING',
+                lockedAt: { gt: expect.any(Date) },
+              },
+              {
+                status: 'AMBIGUOUS',
+                updatedAt: {
+                  gte: expect.any(Date),
+                  lte: expect.any(Date),
+                },
+              },
+            ],
+          },
+        ],
+      },
+      select: { id: true, remoteMessageId: true },
+    });
+    expect(resolveDeleteMessageBotRoute).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('uses a strict freshness window for the durable publication send fence', async () => {
+    const nowMs = Date.parse('2026-09-01T09:00:00.000Z');
+    const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const { service } = createService({}, { managedBroadcastDelivery: { findFirst } });
+
+    let owner: { id: string; kind: string } | null;
+    try {
+      owner = await (service as unknown as ServiceInternals).findManagedBotMessageOwner({
+        chatId: 'chat-1',
+        messageId: 'ordinary-bot-message-1',
+        sourceMessageAt: new Date(nowMs),
+        entityType: 'CHAT',
+        originBotId: 'publisher-bot-1',
+      });
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+
+    expect(owner).toBeNull();
+    expect(findFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  lockedAt: { gt: new Date(nowMs - MAX_SEND_FENCE_STALE_MS) },
+                }),
+                expect.objectContaining({
+                  status: 'AMBIGUOUS',
+                  updatedAt: {
+                    gte: new Date(nowMs - MAX_SEND_FENCE_STALE_MS),
+                    lte: new Date(nowMs + MAX_SEND_FENCE_STALE_MS),
+                  },
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
   it('blocks a transition notice that becomes protected inside the final MAX delete guard', async () => {
     const autoDeleteIntent = {
       ...baseIntent,
@@ -2712,7 +2844,7 @@ describe('ModerationDeleteIntentService', () => {
     const result = await service.executeLeasedIntent('intent-1', 'lease-1');
 
     expect(result).toMatchObject({ kind: 'ambiguous', confirmed: false, status: 'AMBIGUOUS' });
-    expect(prisma.managedBroadcastDelivery.findFirst).toHaveBeenCalledTimes(2);
+    expect(prisma.managedBroadcastDelivery.findFirst).toHaveBeenCalledTimes(4);
     expect(prisma.managedGiveaway.findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.vkParsingPost.findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.chatRules.findUnique).toHaveBeenCalledTimes(2);

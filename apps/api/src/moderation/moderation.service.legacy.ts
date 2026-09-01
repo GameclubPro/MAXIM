@@ -126,6 +126,7 @@ import { ChatContextCacheService } from '../chat-context/chat-context-cache.serv
 import * as rulesFence from './chat-rules-own-bot-message-classifier';
 import * as protectedEventFence from './own-bot-protected-event-classifier';
 import { ModerationExecutionService } from './moderation-execution.service';
+import { buildManagedPublicationAutoDeleteFenceWhere } from './managed-publication-auto-delete-fence';
 import {
   createDuplicateDeleteAuthorizationGuard,
   createDuplicateSanctionAuthorization,
@@ -7317,8 +7318,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const skipReason = await this.resolveOwnBotAutoDeleteSkipReason({
       chatId,
+      userId,
       messageId,
       text,
+      createdAt,
       settings,
       raw,
     });
@@ -7384,8 +7387,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async resolveOwnBotAutoDeleteSkipReason(params: {
     chatId: string;
+    userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
     settings: ChatSettings;
     raw?: unknown;
   }) {
@@ -7449,6 +7454,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
     if (managedBroadcastDelivery) {
       return 'managed_broadcast';
+    }
+
+    const originBotId =
+      this.maxBotLinkService?.resolveBotIdFromUserId(params.userId) ??
+      this.maxBotContextService?.getActiveBotId() ??
+      null;
+    if (originBotId) {
+      // FLAG: A managed publication webhook can beat persistence of its remote message id.
+      // Recheck the exact id in the fallback query so state transitions have no protection gap.
+      const managedBroadcastSendFence = await this.prisma.managedBroadcastDelivery?.findFirst?.({
+        where: buildManagedPublicationAutoDeleteFenceWhere({
+          targetChatId: params.chatId,
+          messageId: params.messageId,
+          originBotId,
+          entityType: ChatEntityType.CHAT,
+          sourceMessageAt: params.createdAt,
+        }),
+        select: {
+          id: true,
+          remoteMessageId: true,
+        },
+      });
+      if (managedBroadcastSendFence) {
+        return managedBroadcastSendFence.remoteMessageId === params.messageId
+          ? 'managed_broadcast'
+          : 'managed_broadcast_in_flight';
+      }
     }
 
     const chatAutoCommentAttachMarker = await this.prisma.chatAutoCommentAttachMarker?.findFirst?.({

@@ -78,6 +78,7 @@
     "admin-contact:repair-stale": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-stale-admin-contact.js ]; then exec node dist/apps/api/src/scripts/repair-stale-admin-contact.js \"$@\"; else exec tsx src/scripts/repair-stale-admin-contact.ts \"$@\"; fi' --",
     "vk-parsing:diagnose": "sh -c 'if [ -f dist/apps/api/src/scripts/diagnose-vk-parsing.js ]; then exec node dist/apps/api/src/scripts/diagnose-vk-parsing.js \"$@\"; else exec tsx src/scripts/diagnose-vk-parsing.ts \"$@\"; fi' --",
     "publication:audit-delivery-verification": "sh -c 'if [ -f dist/apps/api/src/scripts/audit-publication-delivery-verification.js ]; then exec node dist/apps/api/src/scripts/audit-publication-delivery-verification.js \"$@\"; else exec tsx src/scripts/audit-publication-delivery-verification.ts \"$@\"; fi' --",
+    "publication:normalize-legacy-absence": "sh -c 'if [ -f dist/apps/api/src/scripts/normalize-legacy-publication-absence.js ]; then exec node dist/apps/api/src/scripts/normalize-legacy-publication-absence.js \"$@\"; else exec tsx src/scripts/normalize-legacy-publication-absence.ts \"$@\"; fi' --",
     "publication:recover-send-route": "sh -c 'if [ -f dist/apps/api/src/scripts/recover-publication-send-route.js ]; then exec node dist/apps/api/src/scripts/recover-publication-send-route.js \"$@\"; else exec tsx src/scripts/recover-publication-send-route.ts \"$@\"; fi' --",
     "publisher:attest-identity": "node dist/apps/api/src/scripts/attest-publisher-identity.js"
   },

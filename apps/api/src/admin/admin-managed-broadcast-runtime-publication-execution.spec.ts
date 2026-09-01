@@ -378,7 +378,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     );
   });
 
-  it('fails a delivery after repeated stable exact absence and quarantines its route', async () => {
+  it('marks repeated stable exact absence ambiguous without quarantining its route', async () => {
     const delivery = {
       id: 'delivery-verify',
       targetChatId: 'chat-1',
@@ -393,6 +393,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     };
     const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const routeUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const transaction = jest.fn(async (callback) => callback(prisma));
     const prisma: any = {
       managedBroadcastDelivery: {
         findMany: jest.fn().mockResolvedValue([delivery]),
@@ -401,7 +402,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       chatBotMembership: { updateMany: routeUpdateMany },
       $executeRaw: jest.fn().mockResolvedValue(1),
     };
-    prisma.$transaction = jest.fn(async (callback) => callback(prisma));
+    prisma.$transaction = transaction;
     const verification = new AdminManagedBroadcastPublicationVerification({
       prisma,
       maxClient: {
@@ -432,26 +433,22 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
           remoteMessageVerificationLastError: null,
         }),
         data: expect.objectContaining({
-          status: ManagedBroadcastDeliveryStatus.FAILED,
+          status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
           remoteMessageVerificationAttemptCount: 3,
           remoteMessageVerificationAbsentCount: 3,
           remoteMessageVerificationNextAt: null,
+          lastError: expect.stringContaining('Нужна ручная проверка'),
         }),
       }),
     );
-    expect(routeUpdateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ chatId: 'chat-1', botId: 'bot-1' }),
-        data: expect.objectContaining({
-          sendRouteFailureCount: { increment: 1 },
-          sendRouteQuarantinedUntil: expect.any(Date),
-          sendRouteLastFailureAt: delivery.sentAt,
-        }),
-      }),
-    );
+    const terminalData = deliveryUpdateMany.mock.calls[0]?.[0]?.data;
+    expect(terminalData).not.toHaveProperty('remoteMessageId');
+    expect(terminalData).not.toHaveProperty('sentAt');
+    expect(transaction).not.toHaveBeenCalled();
+    expect(routeUpdateMany).not.toHaveBeenCalled();
   });
 
-  it('rolls back a terminal delivery transition when route-health persistence fails', async () => {
+  it('rolls back a stable verification transition when route-health persistence fails', async () => {
     const delivery = {
       id: 'delivery-verify',
       targetChatId: 'chat-1',
@@ -460,9 +457,9 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       sentAt: new Date('2026-07-25T08:00:00.000Z'),
       remoteMessageId: 'mid-verify',
       remoteMessageVerifiedAt: null,
-      remoteMessageVerificationAttemptCount: 2,
-      remoteMessageVerificationAbsentCount: 2,
-      remoteMessageVerificationPresentCount: 0,
+      remoteMessageVerificationAttemptCount: 1,
+      remoteMessageVerificationAbsentCount: 0,
+      remoteMessageVerificationPresentCount: 1,
     };
     const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const persistenceError = new Error('route-health write failed');
@@ -492,7 +489,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       maxClient: {
         getExactMessagePresences: jest
           .fn()
-          .mockResolvedValue([{ chatId: 'chat-1', messageId: 'mid-verify', presence: 'absent' }]),
+          .mockResolvedValue([{ chatId: 'chat-1', messageId: 'mid-verify', presence: 'present' }]),
       },
       logger,
     } as never);

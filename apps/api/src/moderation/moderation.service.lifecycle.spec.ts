@@ -40,6 +40,7 @@ import {
   createOldUpdate,
   type MaxUpdate,
 } from './moderation.service.spec-support';
+import { MAX_SEND_FENCE_STALE_MS } from '../max/max-send-ambiguity.util';
 import { WebhookParser } from '../webhook/webhook.parser';
 
 function userMentionHtml(displayName: string, userId: string): string {
@@ -2017,6 +2018,139 @@ describe('ModerationService', () => {
       },
     });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not schedule webhook auto-delete while the matching publication send is in flight', async () => {
+    const findFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'delivery-in-flight-1', remoteMessageId: null });
+    const prisma = {
+      chatRules: { findUnique: jest.fn().mockResolvedValue(null) },
+      moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
+      managedBroadcastDelivery: { findFirst },
+      chatAutoCommentAttachMarker: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
+    (service as any).maxBotLinkService = {
+      resolveBotIdFromUserId: jest.fn().mockReturnValue('publisher-bot-1'),
+    };
+    const scheduleAutoDelete = jest.fn();
+    (service as any).handleBotMessageAutoDelete = scheduleAutoDelete;
+
+    await (service as any).handleOwnBotMessageAutoDelete({
+      chatId: 'chat-1',
+      userId: 'publisher-user-1',
+      messageId: 'message-before-persistence-1',
+      text: 'managed publication',
+      createdAt: '2026-09-01T08:30:00.000Z',
+      settings: createSettings({
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 2,
+      }),
+    });
+
+    expect(findFirst).toHaveBeenNthCalledWith(1, {
+      where: {
+        targetChatId: 'chat-1',
+        remoteMessageId: 'message-before-persistence-1',
+      },
+      select: { id: true },
+    });
+    expect(findFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        targetChatId: 'chat-1',
+        OR: [
+          { remoteMessageId: 'message-before-persistence-1' },
+          {
+            botId: 'publisher-bot-1',
+            remoteMessageId: null,
+            broadcast: { is: { entityType: 'CHAT' } },
+            OR: [
+              {
+                status: 'SENDING',
+                lockedAt: { gt: expect.any(Date) },
+              },
+              {
+                status: 'AMBIGUOUS',
+                updatedAt: {
+                  gte: new Date('2026-09-01T08:20:00.000Z'),
+                  lte: new Date('2026-09-01T08:40:00.000Z'),
+                },
+              },
+            ],
+          },
+        ],
+      },
+      select: { id: true, remoteMessageId: true },
+    });
+    expect(scheduleAutoDelete).not.toHaveBeenCalled();
+  });
+
+  it('does not let a stale publication send fence suppress webhook auto-delete', async () => {
+    const nowMs = Date.parse('2026-09-01T09:00:00.000Z');
+    const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const prisma = {
+      chatRules: { findUnique: jest.fn().mockResolvedValue(null) },
+      moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
+      managedBroadcastDelivery: { findFirst },
+      chatAutoCommentAttachMarker: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
+    (service as any).maxBotLinkService = {
+      resolveBotIdFromUserId: jest.fn().mockReturnValue('publisher-bot-1'),
+    };
+    const scheduleAutoDelete = jest.fn();
+    (service as any).handleBotMessageAutoDelete = scheduleAutoDelete;
+
+    try {
+      await (service as any).handleOwnBotMessageAutoDelete({
+        chatId: 'chat-1',
+        userId: 'publisher-user-1',
+        messageId: 'ordinary-bot-message-1',
+        text: 'temporary bot notice',
+        createdAt: '2026-09-01T09:00:00.000Z',
+        settings: createSettings({
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 2,
+        }),
+      });
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+
+    expect(findFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  lockedAt: { gt: new Date(nowMs - MAX_SEND_FENCE_STALE_MS) },
+                }),
+                expect.objectContaining({
+                  status: 'AMBIGUOUS',
+                  updatedAt: {
+                    gte: new Date(nowMs - MAX_SEND_FENCE_STALE_MS),
+                    lte: new Date(nowMs + MAX_SEND_FENCE_STALE_MS),
+                  },
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(scheduleAutoDelete).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'publisher-user-1',
+      messageId: 'ordinary-bot-message-1',
+      text: 'temporary bot notice',
+      createdAt: '2026-09-01T09:00:00.000Z',
+      delayMinutes: 2,
+    });
   });
 
   it('does not auto-delete a bot output that carries chat comments', async () => {

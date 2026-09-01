@@ -23,6 +23,7 @@ import {
   type ModerationMessageActionClaimData,
   type ModerationMessageActionClaimModel,
 } from './moderation-message-action-claim';
+import { buildManagedPublicationAutoDeleteFenceWhere } from './managed-publication-auto-delete-fence';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 import {
   MODERATION_DELETE_INTENT_QUEUE,
@@ -186,6 +187,7 @@ type ManagedBotMessageOwner = {
   id: string;
   kind:
     | 'managed_publication'
+    | 'managed_publication_in_flight'
     | 'managed_giveaway_publication'
     | 'managed_giveaway_results'
     | 'vk_parsing_post'
@@ -4208,7 +4210,7 @@ export class ModerationDeleteIntentService {
       return null;
     }
 
-    const owner = await this.findManagedBotMessageOwner(intent.chatId, intent.messageId);
+    const owner = await this.findManagedBotMessageOwner(intent);
     if (!owner) {
       return null;
     }
@@ -4255,9 +4257,12 @@ export class ModerationDeleteIntentService {
   }
 
   private async findManagedBotMessageOwner(
-    chatId: string,
-    messageId: string,
+    intent: Pick<
+      IntentRow,
+      'chatId' | 'messageId' | 'sourceMessageAt' | 'entityType' | 'originBotId'
+    >,
   ): Promise<ManagedBotMessageOwner | null> {
+    const { chatId, messageId } = intent;
     const delivery = await this.prisma.managedBroadcastDelivery.findFirst({
       where: {
         targetChatId: chatId,
@@ -4267,6 +4272,36 @@ export class ModerationDeleteIntentService {
     });
     if (delivery) {
       return { id: delivery.id, kind: 'managed_publication' };
+    }
+
+    const originBotId = intent.originBotId?.trim() ?? '';
+    const entityType = intent.entityType;
+    if (originBotId && entityType) {
+      // FLAG: Keep this final destructive-action fence exact-first, then cover the brief window
+      // before a managed publication persists its remote message id. The exact-id recheck and
+      // source-time bound close SENDING/SENT/AMBIGUOUS transitions without a generic stale fence.
+      const sendFence = await this.prisma.managedBroadcastDelivery.findFirst({
+        where: buildManagedPublicationAutoDeleteFenceWhere({
+          targetChatId: chatId,
+          messageId,
+          originBotId,
+          entityType,
+          sourceMessageAt: intent.sourceMessageAt,
+        }),
+        select: {
+          id: true,
+          remoteMessageId: true,
+        },
+      });
+      if (sendFence) {
+        return {
+          id: sendFence.id,
+          kind:
+            sendFence.remoteMessageId === messageId
+              ? 'managed_publication'
+              : 'managed_publication_in_flight',
+        };
+      }
     }
 
     const giveaway = await this.prisma.managedGiveaway.findFirst({

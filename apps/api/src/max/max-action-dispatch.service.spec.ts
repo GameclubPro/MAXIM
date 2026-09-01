@@ -7,7 +7,12 @@ import {
   MaxActionRouteQuarantinedError,
 } from './max-action-dispatch.service';
 import { markMaxPreDispatchGuardRejected } from './max-action-pre-dispatch-guard';
-import { MaxApiCircuitOpenError, type MaxActionJob } from './max-client.service';
+import {
+  MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
+  MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+  MaxApiCircuitOpenError,
+  type MaxActionJob,
+} from './max-client.service';
 import type { RecordManagedEntityAccessLostFromErrorResult } from './managed-entity-access-loss.service';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
@@ -307,10 +312,16 @@ describe('MaxActionDispatchService', () => {
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
   });
 
-  it('retries a verified send-side auto-delete when its durable receipt cannot be recorded', async () => {
+  it('retries a DELETE-confirmed auto-delete when its durable v2 receipt cannot be recorded', async () => {
     const ledgerError = new Error('ledger write failed');
     const maxClient = {
-      executeActionJob: jest.fn().mockResolvedValue(undefined),
+      executeActionJob: jest.fn().mockImplementation(async (attemptJob: MaxActionJob) => {
+        Object.assign(attemptJob.sendAutoDelete!, {
+          version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+          confirmedAt: '2026-08-31T12:01:00.000Z',
+          confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
+        });
+      }),
     };
     const actionLedgerService = {
       recordStarted: jest.fn().mockResolvedValue(undefined),
@@ -329,13 +340,11 @@ describe('MaxActionDispatchService', () => {
       botId: 'bot-1',
       messageId: 'message-1',
       sendAutoDelete: {
-        version: 1,
+        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
         sourceSendJobId: 'send-job-1',
         sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
         requestedDelayMs: 60_000,
         originBotId: 'bot-1',
-        exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
-        exactAbsenceVerificationPhase: 'post_delete',
       },
       attempt: 1,
       idempotencyKey: 'job-auto-delete-ledger-fail',
@@ -345,6 +354,11 @@ describe('MaxActionDispatchService', () => {
     await expect(service.execute(job)).rejects.toBe(ledgerError);
 
     expect(actionLedgerService.hasRecordedVerifiedSendAutoDeleteSuccess).toHaveBeenCalledWith(job);
+    expect(job.sendAutoDelete).toMatchObject({
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+      confirmedAt: '2026-08-31T12:01:00.000Z',
+      confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
+    });
     expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, ledgerError, {
       exhausted: false,
     });
@@ -371,13 +385,13 @@ describe('MaxActionDispatchService', () => {
       botId: 'bot-1',
       messageId: 'message-1',
       sendAutoDelete: {
-        version: 1,
+        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
         sourceSendJobId: 'send-job-1',
         sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
         requestedDelayMs: 60_000,
         originBotId: 'bot-1',
-        exactAbsenceVerifiedAt: '2026-08-31T12:01:00.000Z',
-        exactAbsenceVerificationPhase: 'preflight',
+        confirmedAt: '2026-08-31T12:01:00.000Z',
+        confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.EXACT_ABSENCE_PREFLIGHT,
       },
       attempt: 1,
       idempotencyKey: 'job-auto-delete-ledger-reconciled',

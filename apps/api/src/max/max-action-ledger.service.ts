@@ -16,6 +16,7 @@ import {
   hasMaxInsufficientRightsMessage,
   wasMaxMemberMutationAttempted,
 } from './max-member-error.util';
+import { readMaxSendAutoDeleteConfirmation } from './max-send-auto-delete-marker';
 
 const IRREVERSIBLE_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
   'SEND_MESSAGE',
@@ -322,13 +323,9 @@ export class MaxActionLedgerService {
 
   async hasRecordedVerifiedSendAutoDeleteSuccess(job: MaxActionJob): Promise<boolean> {
     const expected = job.sendAutoDelete;
+    const expectedConfirmation = readMaxSendAutoDeleteConfirmation(expected);
     const messageId = this.nullableString(job.messageId);
-    if (
-      job.actionType !== 'DELETE_MESSAGE' ||
-      !messageId ||
-      !expected ||
-      !this.isVerifiedSendAutoDeleteMarker(expected)
-    ) {
+    if (job.actionType !== 'DELETE_MESSAGE' || !messageId || !expected || !expectedConfirmation) {
       return false;
     }
 
@@ -357,15 +354,17 @@ export class MaxActionLedgerService {
     }
 
     const stored = this.readVerifiedSendAutoDeleteMarker(row.metadata);
+    const storedConfirmation = readMaxSendAutoDeleteConfirmation(stored);
     return Boolean(
       stored &&
+      storedConfirmation &&
       stored.version === expected.version &&
       stored.sourceSendJobId === expected.sourceSendJobId &&
       stored.sourceSendCompletedAt === expected.sourceSendCompletedAt &&
       stored.requestedDelayMs === expected.requestedDelayMs &&
       stored.originBotId === expected.originBotId &&
-      stored.exactAbsenceVerifiedAt === expected.exactAbsenceVerifiedAt &&
-      stored.exactAbsenceVerificationPhase === expected.exactAbsenceVerificationPhase,
+      storedConfirmation.confirmedAt === expectedConfirmation.confirmedAt &&
+      storedConfirmation.kind === expectedConfirmation.kind,
     );
   }
 
@@ -1469,28 +1468,7 @@ export class MaxActionLedgerService {
   }
 
   private isVerifiedSendAutoDeleteMarker(value: unknown): boolean {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return false;
-    }
-    const marker = value as Record<string, unknown>;
-    const sourceSendCompletedAt = marker.sourceSendCompletedAt;
-    return (
-      marker.version === 1 &&
-      typeof marker.sourceSendJobId === 'string' &&
-      marker.sourceSendJobId.trim().length > 0 &&
-      (sourceSendCompletedAt === null ||
-        (typeof sourceSendCompletedAt === 'string' &&
-          Number.isFinite(Date.parse(sourceSendCompletedAt)))) &&
-      typeof marker.requestedDelayMs === 'number' &&
-      Number.isFinite(marker.requestedDelayMs) &&
-      marker.requestedDelayMs > 0 &&
-      typeof marker.originBotId === 'string' &&
-      marker.originBotId.trim().length > 0 &&
-      typeof marker.exactAbsenceVerifiedAt === 'string' &&
-      Number.isFinite(Date.parse(marker.exactAbsenceVerifiedAt)) &&
-      (marker.exactAbsenceVerificationPhase === 'preflight' ||
-        marker.exactAbsenceVerificationPhase === 'post_delete')
-    );
+    return readMaxSendAutoDeleteConfirmation(value) !== null;
   }
 
   private async updateStartedRowPreservingFirstAttempt(

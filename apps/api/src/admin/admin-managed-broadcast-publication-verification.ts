@@ -13,7 +13,6 @@ import {
 import type { MaxExactMessagePresenceResult, MaxPublishedMessage } from '../max/max-client.service';
 import {
   MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
-  recordMaxSendRouteDisappearance,
   recordMaxSendRouteStableSuccess,
 } from '../max/max-send-route-health';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
@@ -391,8 +390,7 @@ export class AdminManagedBroadcastPublicationVerification {
             continue;
           }
 
-          await this.persistVerificationRouteOutcome({
-            outcome: 'stable_success',
+          await this.persistStableVerificationRouteOutcome({
             delivery,
             where: verificationWhere,
             data: verificationData,
@@ -461,9 +459,7 @@ export class AdminManagedBroadcastPublicationVerification {
 
         const terminalWhere = buildVerificationCasWhere(delivery, remoteMessageId);
         const terminalData = {
-          status: disappearanceConfirmed
-            ? ManagedBroadcastDeliveryStatus.FAILED
-            : ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+          status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
           remoteMessageVerificationAttemptCount: nextAttemptCount,
           remoteMessageVerificationAbsentCount: nextAbsentCount,
           remoteMessageVerificationPresentCount: 0,
@@ -472,23 +468,16 @@ export class AdminManagedBroadcastPublicationVerification {
           remoteMessageVerificationLastError: verificationErrorMessage,
           remoteMessageVerificationSource: null,
           lastError: disappearanceConfirmed
-            ? 'MAX несколько раз подтвердил, что сообщение исчезло после отправки. Проверьте публикацию вручную.'
+            ? 'MAX несколько раз не нашёл сообщение после принятой отправки. Нужна ручная проверка.'
             : 'Не удалось устойчиво подтвердить публикацию в MAX. Проверьте сообщение вручную.',
         };
-        const updated = disappearanceConfirmed
-          ? await this.persistVerificationRouteOutcome({
-              outcome: 'disappearance',
-              delivery,
+        const updated =
+          (
+            await this.context.prisma.managedBroadcastDelivery.updateMany({
               where: terminalWhere,
               data: terminalData,
-              observedAt: attemptedAt,
             })
-          : (
-              await this.context.prisma.managedBroadcastDelivery.updateMany({
-                where: terminalWhere,
-                data: terminalData,
-              })
-            ).count > 0;
+          ).count > 0;
         if (!updated) {
           continue;
         }
@@ -503,12 +492,10 @@ export class AdminManagedBroadcastPublicationVerification {
             messageId: remoteMessageId,
             verificationAttemptCount: nextAttemptCount,
             verificationAbsentCount: nextAbsentCount,
-            verificationStatus: disappearanceConfirmed
-              ? ManagedBroadcastDeliveryStatus.FAILED
-              : ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+            verificationStatus: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
           },
           disappearanceConfirmed
-            ? 'Managed publication disappeared after MAX accepted the send'
+            ? 'Managed publication requires manual review after repeated exact absence'
             : 'Managed publication verification reached its bounded attempt limit',
         );
       }
@@ -565,8 +552,7 @@ export class AdminManagedBroadcastPublicationVerification {
     });
   }
 
-  private async persistVerificationRouteOutcome(params: {
-    outcome: 'stable_success' | 'disappearance';
+  private async persistStableVerificationRouteOutcome(params: {
     delivery: Pick<ManagedBroadcastDelivery, 'targetChatId' | 'botId' | 'sentAt'>;
     where: Prisma.ManagedBroadcastDeliveryWhereInput;
     data: Prisma.ManagedBroadcastDeliveryUpdateManyMutationInput;
@@ -599,11 +585,8 @@ export class AdminManagedBroadcastPublicationVerification {
         sentAt,
         observedAt: params.observedAt,
       };
-      const routeHealthChanged =
-        params.outcome === 'disappearance'
-          ? await recordMaxSendRouteDisappearance(tx, observation)
-          : await recordMaxSendRouteStableSuccess(tx, observation);
-      if (params.outcome === 'stable_success' && routeHealthChanged) {
+      const routeHealthChanged = await recordMaxSendRouteStableSuccess(tx, observation);
+      if (routeHealthChanged) {
         // FLAG: A successful exact canary must wake the same target's deferred Publication
         // backlog in this transaction. Otherwise the six-hour claim lease remains reflected in
         // broadcast.nextSendAt even though the route circuit has already closed.

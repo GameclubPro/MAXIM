@@ -91,6 +91,7 @@ type PageCounters = {
   listed: number;
   structuredCandidates: number;
   exactLookups: number;
+  exactLookupUnknown: number;
   policyViolations: number;
   runtimeBotImmune: number;
   adminImmune: number;
@@ -385,16 +386,28 @@ export class LinkHistoryRecoveryService implements OnModuleInit, OnModuleDestroy
       }
       counters.structuredCandidates += 1;
       await this.renewLease(lease);
-      const exactRow = await this.maxClient.getExactMessageRow(
-        lease.chatId,
-        item.metadata.messageId,
-        {
-          trafficClass: 'background',
-          sourceTag: LINK_HISTORY_RECOVERY_SOURCE_TAG,
-          botId: scanBotId,
-          bypassCache: true,
-        },
-      );
+      let exactRow: Record<string, unknown> | null;
+      try {
+        exactRow = await this.maxClient.getExactMessageRow(
+          lease.chatId,
+          item.metadata.messageId,
+          {
+            trafficClass: 'background',
+            sourceTag: LINK_HISTORY_RECOVERY_SOURCE_TAG,
+            botId: scanBotId,
+            bypassCache: true,
+          },
+        );
+      } catch (error: unknown) {
+        counters.exactLookups += 1;
+        if (readHttpStatus(error) !== 404) {
+          throw error;
+        }
+        // MAX uses the same 404 for a missing message and lost bot access. Skip this candidate
+        // without deleting it, but advance the bounded history cursor so one row cannot starve it.
+        counters.exactLookupUnknown += 1;
+        continue;
+      }
       counters.exactLookups += 1;
       if (!exactRow) {
         continue;
@@ -1103,6 +1116,7 @@ function emptyPageCounters(): PageCounters {
     listed: 0,
     structuredCandidates: 0,
     exactLookups: 0,
+    exactLookupUnknown: 0,
     policyViolations: 0,
     runtimeBotImmune: 0,
     adminImmune: 0,
@@ -1110,4 +1124,9 @@ function emptyPageCounters(): PageCounters {
     actionableCandidates: 0,
     intentsEnsured: 0,
   };
+}
+
+function readHttpStatus(error: unknown): number | null {
+  const status = (error as { response?: { status?: unknown } } | null)?.response?.status;
+  return typeof status === 'number' ? status : null;
 }

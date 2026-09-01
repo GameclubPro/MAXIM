@@ -84,6 +84,12 @@ import {
   syncPublicationBroadcastAfterDeliveryResolution,
 } from './publication-execution-recovery';
 import { PublicationPresenterService } from './publication-presenter.service';
+import {
+  buildEffectiveDeliveryListWhere,
+  buildManualReviewDeliveryWhere,
+  buildRetryableFailedPublicationDeliveryWhere,
+  resolveEffectivePublicationDeliveryStatus,
+} from './publication-legacy-automated-absence';
 import { expandPublicationSchedule } from './publication-recurrence';
 import { normalizePublicationSchedule } from './publication-schedule-normalization';
 
@@ -1188,11 +1194,7 @@ export class PublicationService {
             ...(parsed.data.occurrenceId ? { id: parsed.data.occurrenceId } : {}),
           },
         },
-        ...(parsed.data.status
-          ? { status: parsed.data.status }
-          : parsed.data.excludeStatus
-            ? { status: { not: parsed.data.excludeStatus } }
-            : {}),
+        ...buildEffectiveDeliveryListWhere(parsed.data),
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: parsed.data.limit + 1,
@@ -1241,7 +1243,7 @@ export class PublicationService {
           publication.dispatchProfile,
           publisherTargetPresentations,
         ),
-        status: row.status,
+        status: resolveEffectivePublicationDeliveryStatus(row),
         ...this.publicationPresenterService.mapDeliveryContentRevision(row),
         attemptCount: row.attemptCount,
         remoteMessageId: row.remoteMessageId,
@@ -1302,10 +1304,11 @@ export class PublicationService {
     ) {
       throw new ConflictException('Этот запуск больше нельзя повторить. Обновите экран.');
     }
+    const retryableFailedDeliveryWhere = buildRetryableFailedPublicationDeliveryWhere();
     const failedCount = await this.prisma.managedBroadcastDelivery.count({
       where: {
         publicationOccurrenceId: occurrenceId,
-        status: ManagedBroadcastDeliveryStatus.FAILED,
+        ...retryableFailedDeliveryWhere,
       },
     });
     const retryWithoutExecutionEnvelope =
@@ -1378,7 +1381,7 @@ export class PublicationService {
               deliveries: {
                 some: {
                   publicationOccurrenceId: occurrenceId,
-                  status: ManagedBroadcastDeliveryStatus.FAILED,
+                  ...retryableFailedDeliveryWhere,
                 },
               },
             },
@@ -1399,7 +1402,7 @@ export class PublicationService {
               deliveries: {
                 some: {
                   publicationOccurrenceId: occurrenceId,
-                  status: ManagedBroadcastDeliveryStatus.FAILED,
+                  ...retryableFailedDeliveryWhere,
                 },
                 none: {
                   publicationOccurrenceId: occurrenceId,
@@ -1501,7 +1504,7 @@ export class PublicationService {
           where: {
             publicationOccurrenceId: occurrenceId,
             broadcastId: { in: retryableBroadcastIds },
-            status: ManagedBroadcastDeliveryStatus.FAILED,
+            ...retryableFailedDeliveryWhere,
           },
           data: {
             status: ManagedBroadcastDeliveryStatus.PENDING,
@@ -1622,7 +1625,8 @@ export class PublicationService {
     if (!delivery) {
       throw new NotFoundException('Доставка не найдена.');
     }
-    if (delivery.status !== ManagedBroadcastDeliveryStatus.AMBIGUOUS) {
+    const manualReviewWhere = buildManualReviewDeliveryWhere(delivery);
+    if (!manualReviewWhere) {
       throw new ConflictException('Эта доставка больше не требует ручной проверки.');
     }
     const resolutionAt = new Date();
@@ -1630,7 +1634,7 @@ export class PublicationService {
     try {
       await this.prisma.$transaction(async (tx: any) => {
         const resolved = await tx.managedBroadcastDelivery.updateMany({
-          where: { id: delivery.id, status: ManagedBroadcastDeliveryStatus.AMBIGUOUS },
+          where: manualReviewWhere,
           data:
             parsed.data.resolution === 'mark_sent'
               ? {

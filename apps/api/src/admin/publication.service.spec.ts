@@ -34,6 +34,10 @@ import {
 } from './publication-publisher-routing.service';
 import { PublicationService } from './publication.service';
 import {
+  LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
+  LEGACY_PUBLICATION_EXACT_ABSENCE_ERROR,
+} from './publication-legacy-automated-absence';
+import {
   PUBLICATION_MAX_VIDEO_BYTES,
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
@@ -2679,18 +2683,16 @@ describe('PublicationService', () => {
 
   it('aggregates grouped delivery counts without expanding them into rows', async () => {
     const { presenter } = createService({
-      managedBroadcastDelivery: {
-        groupBy: jest.fn().mockResolvedValue([
-          {
-            status: ManagedBroadcastDeliveryStatus.SENT,
-            _count: { _all: 1_000_000 },
-          },
-          {
-            status: ManagedBroadcastDeliveryStatus.SENDING,
-            _count: { _all: 7 },
-          },
-        ]),
-      },
+      $queryRaw: jest.fn().mockResolvedValue([
+        {
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          count: 1_000_000n,
+        },
+        {
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          count: 7n,
+        },
+      ]),
     });
 
     await expect(presenter.loadDeliveryStats('publication-1')).resolves.toEqual({
@@ -3423,6 +3425,17 @@ describe('PublicationService', () => {
       ),
     ).rejects.toThrow('Нет доставок, которые можно безопасно повторить');
 
+    expect(failedDeliveryCount).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        publicationOccurrenceId: 'occurrence-1',
+        status: ManagedBroadcastDeliveryStatus.FAILED,
+        OR: expect.arrayContaining([
+          { remoteMessageVerificationLastError: null },
+          { lastError: null },
+          { lastError: { not: LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR } },
+        ]),
+      }),
+    });
     expect(transaction).not.toHaveBeenCalled();
   });
 
@@ -3627,10 +3640,11 @@ describe('PublicationService', () => {
       where: {
         publicationOccurrenceId: 'occurrence-1',
         deliveries: {
-          some: {
+          some: expect.objectContaining({
             publicationOccurrenceId: 'occurrence-1',
             status: ManagedBroadcastDeliveryStatus.FAILED,
-          },
+            OR: expect.any(Array),
+          }),
         },
       },
       select: { id: true },
@@ -3767,7 +3781,6 @@ describe('PublicationService', () => {
   it.each([
     PublicationOccurrenceStatus.CANCELED,
     PublicationOccurrenceStatus.SENT,
-    PublicationOccurrenceStatus.AMBIGUOUS,
     PublicationOccurrenceStatus.IN_PROGRESS,
   ])('rejects a %s occurrence before starting a retry transaction', async (status) => {
     const tx = { $executeRaw: jest.fn() };
@@ -3779,6 +3792,26 @@ describe('PublicationService', () => {
         'occurrence-1',
         { userId: 'user-1', username: null, displayName: null },
         { requestId: `retry-invalid-${status.toLowerCase()}` },
+      ),
+    ).rejects.toThrow('Этот запуск больше нельзя повторить');
+
+    expect(failedDeliveryCount).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects retry for an ambiguous post-send occurrence before counting failed deliveries', async () => {
+    const tx = { $executeRaw: jest.fn() };
+    const { service, transaction, failedDeliveryCount } = createOriginalRetryService(
+      tx,
+      PublicationOccurrenceStatus.AMBIGUOUS,
+    );
+
+    await expect(
+      service.retryOccurrence(
+        'publication-1',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: 'retry-ambiguous-post-send' },
       ),
     ).rejects.toThrow('Этот запуск больше нельзя повторить');
 
@@ -4074,6 +4107,153 @@ describe('PublicationService', () => {
     expect(rollupLifecycle.mock.invocationCallOrder[0]).toBeLessThan(
       get.mock.invocationCallOrder[0],
     );
+  });
+
+  it('allows manual resolution of a legacy automated-absence FAILED delivery', async () => {
+    const tx = {
+      managedBroadcastDelivery: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findMany: jest.fn().mockResolvedValue([{ status: ManagedBroadcastDeliveryStatus.SENT }]),
+      },
+      managedBroadcast: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      managedBroadcastCalendarReservation: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastOccurrence: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationMutationRecord: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-1',
+          version: 2,
+          lifecycle: PublicationLifecycle.ERROR,
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+        }),
+      },
+      managedBroadcastDelivery: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'delivery-legacy-absence',
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          status: ManagedBroadcastDeliveryStatus.FAILED,
+          remoteMessageId: 'remote-message',
+          remoteMessageVerifiedAt: null,
+          remoteMessageVerificationAttemptCount: 3,
+          remoteMessageVerificationAbsentCount: 3,
+          remoteMessageVerificationPresentCount: 0,
+          remoteMessageVerificationAttemptedAt: new Date('2026-07-25T08:05:00.000Z'),
+          remoteMessageVerificationNextAt: null,
+          remoteMessageVerificationLastError: LEGACY_PUBLICATION_EXACT_ABSENCE_ERROR,
+          remoteMessageVerificationSource: null,
+          legacySentWithoutRemoteId: false,
+          lastErrorCode: null,
+          lastError: LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
+          sentAt: new Date('2026-07-25T08:00:00.000Z'),
+          lockedAt: null,
+          lockToken: null,
+          publicationOccurrenceId: 'occurrence-1',
+        }),
+      },
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
+    jest.spyOn(service as any, 'rollupOccurrence').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'rollupPublicationLifecycle').mockResolvedValue(undefined);
+    jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-1' } as never);
+
+    await service.resolveAmbiguousDelivery(
+      'publication-1',
+      'occurrence-1',
+      { userId: 'user-1', username: null, displayName: null },
+      {
+        requestId: 'resolve-legacy-absence',
+        deliveryId: 'delivery-legacy-absence',
+        resolution: 'mark_sent',
+      },
+    );
+
+    expect(tx.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'delivery-legacy-absence',
+          status: ManagedBroadcastDeliveryStatus.FAILED,
+          remoteMessageVerificationAbsentCount: { gte: 3 },
+          lastError: LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
+        }),
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          remoteMessageVerificationSource: PublicationDeliveryVerificationSource.MANUAL_CONFIRMED,
+        }),
+      }),
+    );
+  });
+
+  it('marks an ambiguous post-send delivery failed only after explicit resolution', async () => {
+    const tx = {
+      managedBroadcastDelivery: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findMany: jest.fn().mockResolvedValue([{ status: ManagedBroadcastDeliveryStatus.FAILED }]),
+      },
+      managedBroadcast: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationMutationRecord: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const sentAt = new Date('2026-07-25T08:00:00.000Z');
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-1',
+          version: 2,
+          lifecycle: PublicationLifecycle.ERROR,
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+        }),
+      },
+      managedBroadcastDelivery: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'delivery-1',
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+          sentAt,
+          remoteMessageId: 'mid-manual-rejected',
+        }),
+      },
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
+    const rollupOccurrence = jest
+      .spyOn(service as any, 'rollupOccurrence')
+      .mockResolvedValue(undefined);
+    const rollupLifecycle = jest
+      .spyOn(service as any, 'rollupPublicationLifecycle')
+      .mockResolvedValue(undefined);
+    jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-1' } as never);
+
+    await service.resolveAmbiguousDelivery(
+      'publication-1',
+      'occurrence-1',
+      { userId: 'user-1', username: null, displayName: null },
+      { requestId: 'resolve-mark-failed', deliveryId: 'delivery-1', resolution: 'mark_failed' },
+    );
+
+    expect(tx.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith({
+      where: { id: 'delivery-1', status: ManagedBroadcastDeliveryStatus.AMBIGUOUS },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.FAILED,
+        lastErrorCode: null,
+        lastError: 'Администратор подтвердил, что сообщение не было опубликовано.',
+      },
+    });
+    const resolutionData = tx.managedBroadcastDelivery.updateMany.mock.calls[0]?.[0]?.data;
+    expect(resolutionData).not.toHaveProperty('remoteMessageId');
+    expect(resolutionData).not.toHaveProperty('sentAt');
+    expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: ManagedBroadcastStatus.FAILED }),
+      }),
+    );
+    expect(rollupOccurrence).toHaveBeenCalledWith('occurrence-1');
+    expect(rollupLifecycle).toHaveBeenCalledWith('publication-1');
   });
 
   it('rejects ambiguous-delivery resolution before reading or mutating delivery state', async () => {

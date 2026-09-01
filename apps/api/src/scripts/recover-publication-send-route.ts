@@ -11,15 +11,10 @@ import {
   ChatBotMembershipStatus,
   ChatEntityType,
   ChatRoutingState,
-  ManagedBroadcastDeliveryStatus,
-  ManagedBroadcastStatus,
   Prisma,
-  PublicationLifecycle,
-  PublicationOccurrenceStatus,
-  PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
-import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from '../admin/publication-delivery-verification-state';
+import { releasePublicationRouteQuarantineBacklog } from '../admin/publication-route-quarantine-backlog';
 
 const MAX_ROUTE_PAIRS = 5;
 const RECOVERY_AUDIT_ACTION = 'PUBLICATION_SEND_ROUTE_CONTROLLED_RECOVERY';
@@ -302,61 +297,8 @@ async function applyControlledHalfOpenRecovery(
         };
       }
 
-      const publicationBacklogWhere = {
-        publicationOccurrenceId: { not: null },
-        status: ManagedBroadcastStatus.ACTIVE,
-        lockToken: null,
-        publicationOccurrence: {
-          is: {
-            status: {
-              in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
-            },
-            publication: { lifecycle: PublicationLifecycle.ACTIVE },
-            schedule: { status: PublicationScheduleStatus.ACTIVE },
-          },
-        },
-        deliveries: {
-          some: {
-            targetChatId: membership.chatId,
-            status: ManagedBroadcastDeliveryStatus.PENDING,
-            lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
-          },
-        },
-      } satisfies Prisma.ManagedBroadcastWhereInput;
-      const wokenBroadcasts = await tx.managedBroadcast.updateMany({
-        where: {
-          ...publicationBacklogWhere,
-          OR: [{ nextSendAt: null }, { nextSendAt: { gt: applyAt } }],
-        },
-        data: { nextSendAt: applyAt },
-      });
-      const releasedDeliveries = await tx.managedBroadcastDelivery.updateMany({
-        where: {
-          targetChatId: membership.chatId,
-          status: ManagedBroadcastDeliveryStatus.PENDING,
-          lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
-          broadcast: {
-            is: {
-              publicationOccurrenceId: { not: null },
-              status: ManagedBroadcastStatus.ACTIVE,
-              lockToken: null,
-              publicationOccurrence: {
-                is: {
-                  status: {
-                    in: [
-                      PublicationOccurrenceStatus.SCHEDULED,
-                      PublicationOccurrenceStatus.IN_PROGRESS,
-                    ],
-                  },
-                  publication: { lifecycle: PublicationLifecycle.ACTIVE },
-                  schedule: { status: PublicationScheduleStatus.ACTIVE },
-                },
-              },
-            },
-          },
-        },
-        data: { lastErrorCode: null, lastError: null },
-      });
+      const { wokenBroadcastCount, releasedDeliveryCount } =
+        await releasePublicationRouteQuarantineBacklog(tx, membership.chatId, applyAt);
 
       await tx.auditLog.create({
         data: {
@@ -388,15 +330,15 @@ async function applyControlledHalfOpenRecovery(
               entityType: membership.chat.entityType,
               routingState: membership.chat.routingState,
             },
-            wokenBroadcastCount: wokenBroadcasts.count,
-            releasedDeliveryCount: releasedDeliveries.count,
+            wokenBroadcastCount,
+            releasedDeliveryCount,
           },
         },
       });
       return {
         applied: true as const,
-        wokenBroadcastCount: wokenBroadcasts.count,
-        releasedDeliveryCount: releasedDeliveries.count,
+        wokenBroadcastCount,
+        releasedDeliveryCount,
       };
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

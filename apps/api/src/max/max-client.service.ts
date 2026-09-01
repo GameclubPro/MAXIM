@@ -86,6 +86,20 @@ import {
   MAX_ACTION_LEGACY_QUEUE,
   resolveMaxActionQueueName,
 } from './max-action.queue';
+import {
+  isMaxSendAutoDeleteMarker,
+  MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
+  MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+  type MaxSendAutoDeleteConfirmationKind,
+  type MaxSendAutoDeleteMarker,
+} from './max-send-auto-delete-marker';
+
+export {
+  MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
+  MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+  type MaxSendAutoDeleteConfirmationKind,
+  type MaxSendAutoDeleteMarker,
+} from './max-send-auto-delete-marker';
 
 export type MaxBotChat = {
   chatId: string;
@@ -122,6 +136,8 @@ export type MaxChannelMessageSnapshot = {
   reactions: MaxChannelMessageReaction[];
 };
 
+// `absent` is reserved for an independently proven absence. MAX's direct-message 404 is
+// ambiguous with access loss and must surface as an error instead.
 export type MaxExactMessagePresence = 'present' | 'absent';
 
 export type MaxExactMessagePresenceRequest = {
@@ -453,21 +469,8 @@ export type MaxActionLedgerContext = {
   [key: string]: MaxActionLedgerContextValue;
 };
 
-export const MAX_SEND_AUTO_DELETE_MARKER_VERSION = 1 as const;
-export const MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE =
-  'send_auto_delete_exact_verification_present';
 export const MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE =
   'send_auto_delete_exact_verification_unknown';
-
-export type MaxSendAutoDeleteMarker = {
-  version: typeof MAX_SEND_AUTO_DELETE_MARKER_VERSION;
-  sourceSendJobId: string;
-  sourceSendCompletedAt: string | null;
-  requestedDelayMs: number;
-  originBotId: string;
-  exactAbsenceVerifiedAt?: string;
-  exactAbsenceVerificationPhase?: 'preflight' | 'post_delete';
-};
 
 export type MaxActionJob = QueueJobEnvelope<
   {
@@ -1691,15 +1694,7 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('chatId and messageId are required for exact MAX message lookup');
     }
 
-    let message: Record<string, unknown> | null;
-    try {
-      message = await this.getMessageById(normalizedMessageId, options);
-    } catch (error: unknown) {
-      if (this.isExactMessageNotFoundError(error, normalizedMessageId)) {
-        return null;
-      }
-      throw error;
-    }
+    const message = await this.getMessageById(normalizedMessageId, options);
     if (!message) {
       return null;
     }
@@ -1748,15 +1743,7 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('chatId and messageId are required for channel dialog button lookup');
     }
 
-    let message: Record<string, unknown> | null;
-    try {
-      message = await this.getMessageById(normalizedMessageId, options);
-    } catch (error: unknown) {
-      if (this.isExactMessageNotFoundError(error, normalizedMessageId)) {
-        return null;
-      }
-      throw error;
-    }
+    const message = await this.getMessageById(normalizedMessageId, options);
     const nestedMessage = this.asRecord(message?.message);
     const exactMessage = [message, nestedMessage].find(
       (candidate) =>
@@ -1968,12 +1955,9 @@ export class MaxClientService implements OnModuleDestroy {
                 presence: 'present',
               });
             } catch (error: unknown) {
-              resultsByRequest.set(
-                this.buildExactMessagePresenceRequestKey(request),
-                this.isExactMessageNotFoundError(error, request.messageId)
-                  ? { presence: 'absent' }
-                  : { error },
-              );
+              // MAX documents this endpoint's 404 as either missing or inaccessible.
+              // Preserve the original error so callers cannot infer absence from access loss.
+              resultsByRequest.set(this.buildExactMessagePresenceRequestKey(request), { error });
             }
           }
         },
@@ -2744,7 +2728,10 @@ export class MaxClientService implements OnModuleDestroy {
               mutationOptions,
             )) === 'absent'
           ) {
-            this.markSendAutoDeleteExactAbsenceVerified(sendAutoDeleteMarker, 'preflight');
+            this.markSendAutoDeleteConfirmed(
+              sendAutoDeleteMarker,
+              MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.EXACT_ABSENCE_PREFLIGHT,
+            );
             return;
           }
           await this.executeMessageMutation(
@@ -2766,12 +2753,9 @@ export class MaxClientService implements OnModuleDestroy {
             mutationOptions,
           );
           if (sendAutoDeleteMarker) {
-            await this.verifySendAutoDeleteExactAbsence(
-              action,
-              deleteMessageId,
+            this.markSendAutoDeleteConfirmed(
               sendAutoDeleteMarker,
-              bot.id,
-              mutationOptions,
+              MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
             );
           }
           return;
@@ -6537,21 +6521,18 @@ export class MaxClientService implements OnModuleDestroy {
     if (
       action.actionType !== 'DELETE_MESSAGE' ||
       !action.messageId?.trim() ||
-      marker.version !== MAX_SEND_AUTO_DELETE_MARKER_VERSION ||
-      !marker.sourceSendJobId?.trim() ||
-      (marker.sourceSendCompletedAt !== null &&
-        !Number.isFinite(Date.parse(marker.sourceSendCompletedAt))) ||
-      !Number.isFinite(marker.requestedDelayMs) ||
-      marker.requestedDelayMs <= 0 ||
-      !marker.originBotId?.trim() ||
+      !isMaxSendAutoDeleteMarker(marker) ||
       marker.originBotId !== boundBotId
     ) {
       throw new UnrecoverableError(
         `Invalid send-side auto-delete verification marker for ${action.idempotencyKey}`,
       );
     }
-    delete marker.exactAbsenceVerifiedAt;
-    delete marker.exactAbsenceVerificationPhase;
+    const markerRecord = marker as unknown as Record<string, unknown>;
+    delete markerRecord.confirmedAt;
+    delete markerRecord.confirmationKind;
+    delete markerRecord.exactAbsenceVerifiedAt;
+    delete markerRecord.exactAbsenceVerificationPhase;
     return marker;
   }
 
@@ -6577,38 +6558,16 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  private async verifySendAutoDeleteExactAbsence(
-    action: MaxActionJob,
-    messageId: string,
+  private markSendAutoDeleteConfirmed(
     marker: MaxSendAutoDeleteMarker,
-    boundBotId: string,
-    requestOptions: MaxApiRequestOptions,
-  ): Promise<void> {
-    const presence = await this.readSendAutoDeleteExactPresence(
-      action,
-      messageId,
-      boundBotId,
-      requestOptions,
-    );
-    if (presence === 'absent') {
-      this.markSendAutoDeleteExactAbsenceVerified(marker, 'post_delete');
-      return;
-    }
-
-    const error = new Error(
-      `MAX still returns sent bot message ${messageId} after DELETE success`,
-    ) as Error & { code: string };
-    error.name = 'MaxSendAutoDeleteVerificationError';
-    error.code = MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE;
-    throw error;
-  }
-
-  private markSendAutoDeleteExactAbsenceVerified(
-    marker: MaxSendAutoDeleteMarker,
-    phase: 'preflight' | 'post_delete',
+    confirmationKind: MaxSendAutoDeleteConfirmationKind,
   ): void {
-    marker.exactAbsenceVerifiedAt = new Date().toISOString();
-    marker.exactAbsenceVerificationPhase = phase;
+    const markerRecord = marker as unknown as Record<string, unknown>;
+    markerRecord.version = MAX_SEND_AUTO_DELETE_MARKER_VERSION;
+    markerRecord.confirmedAt = new Date().toISOString();
+    markerRecord.confirmationKind = confirmationKind;
+    delete markerRecord.exactAbsenceVerifiedAt;
+    delete markerRecord.exactAbsenceVerificationPhase;
   }
 
   private async executeQueuedSendMessage(
@@ -7954,40 +7913,6 @@ export class MaxClientService implements OnModuleDestroy {
       message.includes('already in the chat') ||
       message.includes('уже состоит')
     );
-  }
-
-  private isExactMessageNotFoundError(error: unknown, requestedMessageId: string): boolean {
-    if (this.extractStatusCode(error) !== 404) {
-      return false;
-    }
-
-    const code = this.extractErrorCode(error);
-    if (code === 'message.not.found') {
-      return true;
-    }
-    if (code !== 'not.found') {
-      return false;
-    }
-
-    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response
-      ?.data?.message;
-    if (typeof responseMessage !== 'string' || !requestedMessageId) {
-      return false;
-    }
-
-    const isMessageIdCharacter = (value: string | undefined) =>
-      value !== undefined && /[A-Za-z0-9._-]/u.test(value);
-    let matchIndex = responseMessage.indexOf(requestedMessageId);
-    while (matchIndex >= 0) {
-      const precedingCharacter = responseMessage[matchIndex - 1];
-      const followingCharacter = responseMessage[matchIndex + requestedMessageId.length];
-      if (!isMessageIdCharacter(precedingCharacter) && !isMessageIdCharacter(followingCharacter)) {
-        return true;
-      }
-      matchIndex = responseMessage.indexOf(requestedMessageId, matchIndex + 1);
-    }
-
-    return false;
   }
 
   private extractErrorCode(error: unknown): string | null {

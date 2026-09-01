@@ -143,7 +143,13 @@ test('uses successful remote cursors and reports bounded log saturation', () => 
   );
 });
 
-test('adds privacy-safe Publisher and media-analysis readiness to every sample', () => {
+test('adds privacy-safe semantic, Publisher, and media-analysis readiness to every sample', () => {
+  assert.match(monitor, /run_step semantic-health summarize_local_ready_health/u);
+  const semanticHealth = readFunction('summarize_local_ready_health');
+  assert.match(semanticHealth, /vps-connect\.sh exec 'node -'/u);
+  assert.match(semanticHealth, /< "\$ROOT_DIR\/infra\/scripts\/monitor-ready-status\.cjs"/u);
+  assert.doesNotMatch(semanticHealth, /node infra\/scripts\/monitor-ready-status\.cjs/u);
+  assert.doesNotMatch(semanticHealth, /curl -f/u);
   assert.match(monitor, /run_step publisher-runtime summarize_publisher_runtime/u);
   assert.match(monitor, /monitor-publisher-status\.cjs/u);
   assert.match(monitor, /read_expected api-admin/u);

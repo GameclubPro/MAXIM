@@ -1,7 +1,7 @@
 import {
   MAX_API_SOURCE_TAGS,
+  MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
   MAX_SEND_AUTO_DELETE_MARKER_VERSION,
-  MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE,
   MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE,
   MaxApiCircuitOpenError,
   MaxApiRequestRejectedError,
@@ -788,21 +788,19 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
     expect(httpService.request).not.toHaveBeenCalled();
     expect(job.sendAutoDelete).toMatchObject({
-      exactAbsenceVerifiedAt: expect.any(String),
-      exactAbsenceVerificationPhase: 'preflight',
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+      confirmedAt: expect.any(String),
+      confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.EXACT_ABSENCE_PREFLIGHT,
     });
     await service.onModuleDestroy();
   });
 
-  it('requires exact post-delete absence when marked auto-delete preflight is present', async () => {
+  it('accepts documented DELETE success without a post-delete exact-message lookup', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
     };
     const service = createService(httpService);
-    const presence = jest
-      .spyOn(service, 'getExactMessagePresence')
-      .mockResolvedValueOnce('present')
-      .mockResolvedValueOnce('absent');
+    const presence = jest.spyOn(service, 'getExactMessagePresence').mockResolvedValue('present');
     const job = {
       actionType: 'DELETE_MESSAGE' as const,
       chatId: 'chat-1',
@@ -822,7 +820,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await expect(service.executeActionJob(job)).resolves.toBeUndefined();
 
-    expect(presence).toHaveBeenCalledTimes(2);
+    expect(presence).toHaveBeenCalledTimes(1);
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'delete',
@@ -830,48 +828,55 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
     );
     expect(job.sendAutoDelete).toMatchObject({
-      exactAbsenceVerifiedAt: expect.any(String),
-      exactAbsenceVerificationPhase: 'post_delete',
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+      confirmedAt: expect.any(String),
+      confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
     });
     await service.onModuleDestroy();
   });
 
-  it('keeps a marked send-side auto-delete retryable while the exact message is present', async () => {
+  it('upgrades a queued v1 marker after documented DELETE success', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
     };
     const service = createService(httpService);
-    jest
-      .spyOn(service, 'getExactMessagePresence')
-      .mockResolvedValueOnce('present')
-      .mockResolvedValueOnce('present');
-    const deletion = service.executeActionJob({
-      actionType: 'DELETE_MESSAGE',
+    const presence = jest.spyOn(service, 'getExactMessagePresence').mockResolvedValue('present');
+    const job = {
+      actionType: 'DELETE_MESSAGE' as const,
       chatId: 'chat-1',
       botId: '777000_bot',
-      messageId: 'mid-auto-delete-present-1',
+      messageId: 'mid-auto-delete-v1-1',
       sendAutoDelete: {
-        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+        version: 1 as const,
         sourceSendJobId: 'send-job-1',
         sourceSendCompletedAt: '2026-08-31T12:00:00.000Z',
         requestedDelayMs: 60_000,
         originBotId: '777000_bot',
       },
       attempt: 1,
-      idempotencyKey: 'delete-auto-delete-present-1',
+      idempotencyKey: 'delete-auto-delete-v1-1',
       createdAt: '2026-08-31T12:01:00.000Z',
-    });
+    };
 
-    await expect(deletion).rejects.toMatchObject({
-      name: 'MaxSendAutoDeleteVerificationError',
-      code: MAX_SEND_AUTO_DELETE_STILL_PRESENT_ERROR_CODE,
-    });
+    await expect(service.executeActionJob(job)).resolves.toBeUndefined();
+
+    expect(presence).toHaveBeenCalledTimes(1);
     expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(job.sendAutoDelete).toMatchObject({
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+      confirmedAt: expect.any(String),
+      confirmationKind: MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS.DOCUMENTED_DELETE_SUCCESS,
+    });
     await service.onModuleDestroy();
   });
 
-  it('wraps unknown marked auto-delete preflight without issuing DELETE', async () => {
-    const lookupError = new Error('MAX exact lookup timed out');
+  it('keeps an access-masked preflight 404 unknown without issuing DELETE', async () => {
+    const lookupError = Object.assign(new Error('MAX message unavailable'), {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message mid-auto-delete-unknown-1 not found' },
+      },
+    });
     const httpService = {
       request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
     };
@@ -8163,9 +8168,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
         .mockReturnValueOnce(of({ data: { messages: [] } }))
         .mockReturnValueOnce(throwError(() => exactNotFound)),
     });
-    await expect(
-      absentService.getExactMessageRow('chat-1', 'mid-exact-absent'),
-    ).resolves.toBeNull();
+    await expect(absentService.getExactMessageRow('chat-1', 'mid-exact-absent')).rejects.toBe(
+      exactNotFound,
+    );
     await absentService.onModuleDestroy();
   });
 
@@ -8250,7 +8255,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('distinguishes an existing message without owned buttons from confirmed absence', async () => {
+  it('distinguishes an existing message without owned buttons from an ambiguous 404', async () => {
     const presentHttpService = {
       request: jest.fn().mockReturnValueOnce(
         of({
@@ -8298,7 +8303,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const absentService = createService(absentHttpService);
     await expect(
       absentService.getExactChannelDialogButtonIdentities('channel-1', 'mid-absent-dialog'),
-    ).resolves.toBeNull();
+    ).rejects.toBe(notFoundError);
     expect(absentHttpService.request).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -8484,7 +8489,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('reports absence only for an exact message-not-found response', async () => {
+  it('keeps a documented message-not-found response ambiguous because it may mean no access', async () => {
     const exactNotFound = {
       response: {
         status: 404,
@@ -8501,7 +8506,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await expect(
       service.getExactMessagePresence('chat-1', 'mid-absent', { botId: '777000_bot' }),
-    ).resolves.toBe('absent');
+    ).rejects.toBe(exactNotFound);
     expect(httpService.request).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -8513,7 +8518,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('reports absence for a direct not-found response that names the exact requested message', async () => {
+  it('keeps a direct not-found response ambiguous even when it names the requested message', async () => {
     const exactNotFound = {
       response: {
         status: 404,
@@ -8535,7 +8540,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       service.getExactMessagePresence('chat-1', 'mid-live-absent', {
         botId: '777000_bot',
       }),
-    ).resolves.toBe('absent');
+    ).rejects.toBe(exactNotFound);
 
     await service.onModuleDestroy();
   });
@@ -8679,7 +8684,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ),
     ).resolves.toEqual([
       { chatId: 'chat-1', messageId: 'mid-present', presence: 'present' },
-      { chatId: 'chat-2', messageId: 'mid-absent', presence: 'absent' },
+      { chatId: 'chat-2', messageId: 'mid-absent', error: directNotFound },
     ]);
     expect(httpService.request).toHaveBeenNthCalledWith(
       1,

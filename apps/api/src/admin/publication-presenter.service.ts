@@ -24,6 +24,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { readStoredPublicationButtons } from './publication-buttons';
+import { buildEffectivePublicationDeliveryStatusSql } from './publication-legacy-automated-absence';
 
 const PUBLICATION_LIST_PREVIEW_TARGETS = 6;
 const PUBLICATION_OCCURRENCE_HISTORY_LIMIT = 50;
@@ -36,6 +37,15 @@ const PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES: PublicationOccurrenceStatus[] 
   PublicationOccurrenceStatus.PARTIAL,
   PublicationOccurrenceStatus.AMBIGUOUS,
 ];
+
+const resolveEffectiveOccurrenceStatus = (
+  status: PublicationOccurrenceStatus,
+  delivery: PublicationDeliveryStats,
+): PublicationOccurrenceStatus =>
+  delivery.ambiguous > 0 &&
+  (status === PublicationOccurrenceStatus.FAILED || status === PublicationOccurrenceStatus.PARTIAL)
+    ? PublicationOccurrenceStatus.AMBIGUOUS
+    : status;
 
 type PublicationTargetRow = {
   targetChatId: string;
@@ -139,10 +149,14 @@ export class PublicationPresenterService {
     const occurrenceDeliveryStats = await this.loadOccurrenceDeliveryStats(
       orderedOccurrences.map((occurrence) => occurrence.id),
     );
-    const occurrences = orderedOccurrences.map((occurrence) => ({
-      ...occurrence,
-      deliveryStats: occurrenceDeliveryStats.get(occurrence.id) ?? this.emptyDeliveryStats(),
-    }));
+    const occurrences = orderedOccurrences.map((occurrence) => {
+      const deliveryStats = occurrenceDeliveryStats.get(occurrence.id) ?? this.emptyDeliveryStats();
+      return {
+        ...occurrence,
+        status: resolveEffectiveOccurrenceStatus(occurrence.status, deliveryStats),
+        deliveryStats,
+      };
+    });
     return {
       ...row,
       occurrences,
@@ -252,6 +266,10 @@ export class PublicationPresenterService {
       occurrences: row.occurrences.map((occurrence: any) => {
         const delivery =
           occurrence.deliveryStats ?? this.buildDeliveryStats(occurrence.deliveries ?? []);
+        const effectiveOccurrenceStatus = resolveEffectiveOccurrenceStatus(
+          occurrence.status,
+          delivery,
+        );
         const usesLatestContent =
           typeof row.canonicalContentRevisionId === 'string' &&
           occurrence.contentRevisionId === row.canonicalContentRevisionId;
@@ -259,7 +277,7 @@ export class PublicationPresenterService {
           delivery.total === 0 &&
           occurrence.legacyBroadcastId === null &&
           occurrence._count?.legacyBroadcasts === 0 &&
-          occurrence.status === PublicationOccurrenceStatus.FAILED;
+          effectiveOccurrenceStatus === PublicationOccurrenceStatus.FAILED;
         const canRetry =
           (delivery.failed > 0 || hasRetryableMissingEnvelope) &&
           (row.lifecycle === PublicationLifecycle.ACTIVE ||
@@ -268,12 +286,12 @@ export class PublicationPresenterService {
             row.schedule?.status === PublicationScheduleStatus.ERROR) &&
           occurrence.scheduleId === row.schedule?.id &&
           occurrence.scheduleRevision === row.schedule?.revision &&
-          (occurrence.status === PublicationOccurrenceStatus.FAILED ||
-            occurrence.status === PublicationOccurrenceStatus.PARTIAL);
+          (effectiveOccurrenceStatus === PublicationOccurrenceStatus.FAILED ||
+            effectiveOccurrenceStatus === PublicationOccurrenceStatus.PARTIAL);
         return publicationOccurrenceSummarySchema.parse({
           id: occurrence.id,
           scheduledAt: occurrence.scheduledAt.toISOString(),
-          status: occurrence.status,
+          status: effectiveOccurrenceStatus,
           delivery,
           canRetry,
           contentRevision: occurrence.contentRevision?.revision,
@@ -311,6 +329,7 @@ export class PublicationPresenterService {
       return statsByPublicationId;
     }
 
+    const effectiveStatusSql = buildEffectivePublicationDeliveryStatusSql();
     const grouped = await this.prisma.$queryRaw<
       Array<{
         publicationId: string;
@@ -320,13 +339,13 @@ export class PublicationPresenterService {
     >(Prisma.sql`
       SELECT
         occurrence."publication_id" AS "publicationId",
-        delivery."status" AS "status",
+        ${effectiveStatusSql} AS "status",
         COUNT(*)::bigint AS "count"
       FROM "managed_broadcast_deliveries" AS delivery
       INNER JOIN "publication_occurrences" AS occurrence
         ON occurrence."id" = delivery."publication_occurrence_id"
       WHERE occurrence."publication_id" IN (${Prisma.join(uniquePublicationIds)})
-      GROUP BY occurrence."publication_id", delivery."status"
+      GROUP BY occurrence."publication_id", 2
     `);
 
     for (const group of grouped) {
@@ -339,14 +358,22 @@ export class PublicationPresenterService {
   }
 
   async loadDeliveryStats(publicationId: string): Promise<PublicationDeliveryStats> {
-    const grouped = await this.prisma.managedBroadcastDelivery.groupBy({
-      by: ['status'],
-      where: { publicationOccurrence: { is: { publicationId } } },
-      _count: { _all: true },
-    });
+    const effectiveStatusSql = buildEffectivePublicationDeliveryStatusSql();
+    const grouped = await this.prisma.$queryRaw<
+      Array<{ status: ManagedBroadcastDeliveryStatus; count: bigint }>
+    >(Prisma.sql`
+      SELECT
+        ${effectiveStatusSql} AS "status",
+        COUNT(*)::bigint AS "count"
+      FROM "managed_broadcast_deliveries" AS delivery
+      INNER JOIN "publication_occurrences" AS occurrence
+        ON occurrence."id" = delivery."publication_occurrence_id"
+      WHERE occurrence."publication_id" = ${publicationId}
+      GROUP BY 1
+    `);
     const stats = this.emptyDeliveryStats();
     for (const group of grouped) {
-      this.addDeliveryCount(stats, group.status, group._count._all);
+      this.addDeliveryCount(stats, group.status, Number(group.count));
     }
     return stats;
   }
@@ -362,6 +389,7 @@ export class PublicationPresenterService {
       return statsByPublicationId;
     }
 
+    const effectiveStatusSql = buildEffectivePublicationDeliveryStatusSql();
     const grouped = await this.prisma.$queryRaw<
       Array<{
         publicationId: string;
@@ -371,7 +399,7 @@ export class PublicationPresenterService {
     >(Prisma.sql`
       SELECT
         occurrence."publication_id" AS "publicationId",
-        delivery."status" AS "status",
+        ${effectiveStatusSql} AS "status",
         COUNT(*)::bigint AS "count"
       FROM "managed_broadcast_deliveries" AS delivery
       INNER JOIN "publication_occurrences" AS occurrence
@@ -381,7 +409,7 @@ export class PublicationPresenterService {
         AND schedule."publication_id" = occurrence."publication_id"
         AND schedule."revision" = occurrence."schedule_revision"
       WHERE occurrence."publication_id" IN (${Prisma.join(uniquePublicationIds)})
-      GROUP BY occurrence."publication_id", delivery."status"
+      GROUP BY occurrence."publication_id", 2
     `);
 
     for (const group of grouped) {
@@ -404,18 +432,26 @@ export class PublicationPresenterService {
       return statsByOccurrenceId;
     }
 
-    const grouped = await this.prisma.managedBroadcastDelivery.groupBy({
-      by: ['publicationOccurrenceId', 'status'],
-      where: { publicationOccurrenceId: { in: uniqueOccurrenceIds } },
-      _count: { _all: true },
-    });
+    const effectiveStatusSql = buildEffectivePublicationDeliveryStatusSql();
+    const grouped = await this.prisma.$queryRaw<
+      Array<{
+        publicationOccurrenceId: string;
+        status: ManagedBroadcastDeliveryStatus;
+        count: bigint;
+      }>
+    >(Prisma.sql`
+      SELECT
+        delivery."publication_occurrence_id" AS "publicationOccurrenceId",
+        ${effectiveStatusSql} AS "status",
+        COUNT(*)::bigint AS "count"
+      FROM "managed_broadcast_deliveries" AS delivery
+      WHERE delivery."publication_occurrence_id" IN (${Prisma.join(uniqueOccurrenceIds)})
+      GROUP BY delivery."publication_occurrence_id", 2
+    `);
     for (const group of grouped) {
-      if (!group.publicationOccurrenceId) {
-        continue;
-      }
       const stats = statsByOccurrenceId.get(group.publicationOccurrenceId);
       if (stats) {
-        this.addDeliveryCount(stats, group.status, group._count._all);
+        this.addDeliveryCount(stats, group.status, Number(group.count));
       }
     }
     return statsByOccurrenceId;

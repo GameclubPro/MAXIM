@@ -169,6 +169,36 @@ describe('LinkHistoryRecoveryService', () => {
     expect(harness.deleteIntents.ensureIntent).not.toHaveBeenCalled();
   });
 
+  it('advances past an ambiguous exact-message 404 without creating a delete intent', async () => {
+    const now = Date.now();
+    const row = buildLinkedMessage(now - 60_000);
+    const exactLookupError = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const harness = buildHarness({
+      now,
+      listRows: [row],
+      exactLookupError,
+      deleteEnabled: true,
+    });
+
+    await expect(harness.service.runOnce()).resolves.toBe(true);
+
+    expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+    expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(harness.deleteIntents.ensureIntent).not.toHaveBeenCalled();
+    expect(
+      harness.prisma.$executeRaw.mock.calls.some(([query]) =>
+        ((query as { strings?: readonly string[] }).strings?.join('?') ?? '').includes(
+          '"last_successful_scan_at" = CURRENT_TIMESTAMP',
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('does not retroactively delete a message sent before a scheduled allowlist expiry', async () => {
     const now = Date.now();
     const scheduledAt = new Date(now - 10 * 60_000);
@@ -430,6 +460,7 @@ function buildHarness(options: {
   deleteEnabled?: boolean;
   listRows?: Record<string, unknown>[];
   exactRow?: Record<string, unknown> | null;
+  exactLookupError?: unknown;
   adminUserIds?: string[];
   knownBot?: boolean;
   remoteAccess?: Record<string, unknown> | null;
@@ -481,9 +512,12 @@ function buildHarness(options: {
       }),
     },
   };
+  const getExactMessageRow = options.exactLookupError
+    ? jest.fn().mockRejectedValue(options.exactLookupError)
+    : jest.fn().mockResolvedValue(options.exactRow ?? null);
   const maxClient = {
     listMessages: jest.fn().mockResolvedValue(options.listRows ?? []),
-    getExactMessageRow: jest.fn().mockResolvedValue(options.exactRow ?? null),
+    getExactMessageRow,
     getChatMemberAccess: jest.fn().mockResolvedValue(
       options.remoteAccess === undefined
         ? {
