@@ -1,8 +1,9 @@
 import type { BroadcastLinkButton, ManagedEntityType } from '@maxim/contracts';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import type { MaxMessageButton } from '../max/max-client.service';
+import { buildChannelPostActionRows } from '../common/channel-post-actions';
+import { MAX_API_SOURCE_TAGS, type MaxMessageButton } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
 import {
@@ -13,6 +14,7 @@ import {
   readManagedBroadcastLedgerCommentDialogContext,
   type ManagedBroadcastCommentDialogReference,
 } from './admin-managed-broadcast-ledger';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 
 export type PublisherPreparedDialogContext = {
   version: 1;
@@ -72,6 +74,7 @@ export class PublisherDialogContextService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly dialogLinks: PublisherDialogLinkService,
+    @Optional() private readonly postSignature?: ChannelPostSignatureService,
   ) {}
 
   async prepare(params: {
@@ -82,7 +85,7 @@ export class PublisherDialogContextService {
     includeManagedDialogs?: boolean;
   }): Promise<PublisherPreparedDialogContext> {
     const customButtons = normalizeManagedBroadcastButtons(params.customButtons);
-    const buttons = buildManagedBroadcastLinkButtonRows(
+    let buttons = buildManagedBroadcastLinkButtonRows(
       customButtons,
       params.entityType === 'channel' ? { buttonsPerRow: 1 } : undefined,
     );
@@ -119,6 +122,12 @@ export class PublisherDialogContextService {
           suggestionEntryMode: null,
           botId: null,
           dialogBotId: params.dialogBotId,
+          buttonRows: buttons.map((row) => row.map((button) => ({ ...button }))),
+          commentsButton: {
+            rowIndex: buttons.length - 1,
+            columnIndex: 0,
+            baseText: '💬 Комментарии',
+          },
         };
       }
     } else {
@@ -126,29 +135,56 @@ export class PublisherDialogContextService {
         where: { chatId: params.chatId },
         create: { chatId: params.chatId },
         update: {},
-        select: { channelSuggestionsEnabled: true },
+        select: { channelCommentsEnabled: true, channelSuggestionsEnabled: true },
       });
-      const suggestText = '📰 Предложить пост';
-      if (settings.channelSuggestionsEnabled) {
-        buttons.push([
-          this.dialogLinks.buildChannelDialogButton(
+      const commentsText = '💬 Комментарии';
+      const suggestText = '✍️ Предложить объявление';
+      const commentsButton = settings.channelCommentsEnabled
+        ? this.dialogLinks.buildChannelDialogButton(
+            params.chatId,
+            'comments',
+            threadId,
+            formatCommentsButtonText(commentsText, 0),
+            'MINIAPP',
+          )
+        : null;
+      const suggestButton = settings.channelSuggestionsEnabled
+        ? this.dialogLinks.buildChannelDialogButton(
             params.chatId,
             'suggest',
             threadId,
             suggestText,
             'MINIAPP',
-          ),
-        ]);
+          )
+        : null;
+      const ctaButton =
+        (await this.postSignature?.buildPostButton(params.chatId, {
+          entityType: 'channel',
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+        })) ?? null;
+      const customButtonRows = buttons;
+      buttons = buildChannelPostActionRows({
+        commentsButton,
+        suggestButton,
+        ctaButton,
+        customButtonRows,
+      });
+      if (settings.channelCommentsEnabled || settings.channelSuggestionsEnabled) {
         reference = {
           entityType: 'channel',
           threadId,
-          includeCommentsButton: false,
-          includeSuggestButton: true,
-          suggestButtonText: suggestText,
+          includeCommentsButton: settings.channelCommentsEnabled,
+          includeSuggestButton: settings.channelSuggestionsEnabled,
+          suggestButtonText: settings.channelSuggestionsEnabled ? suggestText : null,
           customButtons,
-          suggestionEntryMode: 'MINIAPP',
+          suggestionEntryMode: settings.channelSuggestionsEnabled ? 'MINIAPP' : null,
           botId: null,
           dialogBotId: params.dialogBotId,
+          buttonRows: buttons.map((row) => row.map((button) => ({ ...button }))),
+          commentsButton: settings.channelCommentsEnabled
+            ? { rowIndex: 0, columnIndex: 0, baseText: commentsText }
+            : null,
         };
       }
     }

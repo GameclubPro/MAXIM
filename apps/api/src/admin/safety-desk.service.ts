@@ -30,7 +30,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ChatEntityType, Prisma, VkParsingOwnerProfile } from '../prisma/prisma-client';
+import {
+  ChannelPostSignaturePresentation,
+  ChatEntityType,
+  Prisma,
+  VkParsingOwnerProfile,
+} from '../prisma/prisma-client';
 import {
   isFreshMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
@@ -81,6 +86,7 @@ type ReviewPostRow = Prisma.VkParsingPostGetPayload<{
         channelSettings: {
           select: {
             postSignatureEnabled: true;
+            postSignaturePresentation: true;
             postSignatureText: true;
             postSignatureUrl: true;
           };
@@ -1418,6 +1424,7 @@ export class SafetyDeskService {
             channelSettings: {
               select: {
                 postSignatureEnabled: true,
+                postSignaturePresentation: true,
                 postSignatureText: true,
                 postSignatureUrl: true,
               },
@@ -1454,6 +1461,7 @@ export class SafetyDeskService {
             channelSettings: {
               select: {
                 postSignatureEnabled: true,
+                postSignaturePresentation: true,
                 postSignatureText: true,
                 postSignatureUrl: true,
               },
@@ -1743,6 +1751,8 @@ export class SafetyDeskService {
     const signatureHtml =
       post.chat.entityType === ChatEntityType.CHANNEL &&
       post.chat.channelSettings?.postSignatureEnabled &&
+      post.chat.channelSettings.postSignaturePresentation !==
+        ChannelPostSignaturePresentation.BUTTON &&
       linkText
         ? `<p><u>${escapeSafetyDeskHtml(linkText)}</u></p>`
         : '';

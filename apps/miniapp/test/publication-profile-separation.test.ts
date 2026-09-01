@@ -8,6 +8,10 @@ const publicationsSource = readFileSync(
   new URL('../src/pages/publications-page.tsx', import.meta.url),
   'utf8',
 );
+const contentEditorSource = readFileSync(
+  new URL('../src/features/publications/publication-content-editor-section.tsx', import.meta.url),
+  'utf8',
+);
 const targetSourcesSource = readFileSync(
   new URL('../src/features/publications/use-publication-target-sources.ts', import.meta.url),
   'utf8',
@@ -47,6 +51,10 @@ test('publication route binds an explicit workspace profile', () => {
     /moderationProfile \? \([\s\S]*?path="\/publications"[\s\S]*?profile="moderation"[\s\S]*?profile="publisher"/u,
   );
   assert.doesNotMatch(appSource, /LazyPublicationsPage api=\{apiClient\} profile=\{me\.profile\}/u);
+  assert.equal(
+    appSource.match(/<LazyPublicationsPage[\s\S]*?userId=\{me\.userId\}[\s\S]*?\/>/gu)?.length,
+    2,
+  );
 });
 
 test('Major keeps legacy-routed management but cannot enter the publication editor', () => {
@@ -88,15 +96,18 @@ test('Major never hydrates drafts or publication targets', () => {
     /usePublicationComposer\([\s\S]*?persistenceEnabled,[\s\S]*?isPublisherProfile/u,
   );
   assert.match(publicationsSource, /usePublicationTargetSources\(api, isPublisherProfile\)/u);
-  assert.match(composerSource, /if \(!enabled\) \{[\s\S]*?setHydrated\(true\)/u);
+  assert.match(
+    composerSource,
+    /if \(!enabled \|\| !normalizedUserId\) \{[\s\S]*?setHydrated\(true\)/u,
+  );
   assert.match(targetSourcesSource, /enabled,[\s\S]*?staleTime: 15_000/u);
   assert.doesNotMatch(targetSourcesSource, /root-client|getChats|getChannels/u);
 });
 
 test('publication editor and details preserve the server text format', () => {
-  assert.match(publicationsSource, /sourceFormat=\{draft\.textFormat\}/u);
+  assert.match(contentEditorSource, /sourceFormat=\{draft\.textFormat\}/u);
   assert.match(
-    publicationsSource,
+    contentEditorSource,
     /setDraft\(\(current\) => \(\{ \.\.\.current, text, textFormat: 'markdown' \}\)\)/u,
   );
   assert.match(detailsSource, /sourceFormat=\{details\.content\.textFormat\}/u);

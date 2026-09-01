@@ -589,6 +589,50 @@ describe('PublisherChatCommentDeliveryService', () => {
     );
   });
 
+  it('rechecks the base route so an existing channel thread survives module disablement', async () => {
+    const harness = createHarness();
+    harness.readiness.assertEntityReady.mockResolvedValue({
+      chatId: 'channel-1',
+      entityType: 'channel',
+      requiredBotId: 'publik-bot',
+      policyRevision: 3,
+    });
+    const job: PublisherCommentKeyboardEditJob = {
+      ...buildKeyboardJob(),
+      entityType: 'channel',
+      readinessFeature: 'publication',
+      chatId: 'channel-1',
+      idempotencyKey: 'channel:channel-1:publisher-message-1:thread-1',
+    };
+
+    await harness.service.process(job, {
+      final: false,
+      attemptsMade: 1,
+      maxAttempts: 8,
+    });
+
+    expect(harness.readiness.assertEntityReady).toHaveBeenCalledTimes(3);
+    expect(harness.readiness.assertEntityReady).toHaveBeenNthCalledWith(
+      1,
+      'channel-1',
+      'publication',
+    );
+    expect(harness.readiness.assertEntityReady).toHaveBeenNthCalledWith(
+      3,
+      'channel-1',
+      'publication',
+    );
+    expect(harness.maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'publisher-message-1',
+      null,
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: 'Comments · 9' })]],
+      }),
+      expect.objectContaining({ botId: 'publik-bot' }),
+    );
+  });
+
   it('rejects a keyboard edit whose immutable origin differs from readiness', async () => {
     const harness = createHarness();
     const job = { ...buildKeyboardJob(), requiredBotId: 'another-bot' };

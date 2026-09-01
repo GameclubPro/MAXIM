@@ -101,6 +101,11 @@ export type ChannelDialogAttachmentInput = z.infer<typeof channelDialogAttachmen
 export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
   .object({
     token: z.string().trim().min(16).max(256),
+    requestId: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{8,128}$/u)
+      .optional(),
     text: z.string().trim().max(2_000).default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
     replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),

@@ -61,11 +61,11 @@ test('channel suggestions confirm terminal actions and page both server views in
   assert.match(suggestionsSource, /if \(!enabled\) \{\s*return null;/u);
   assert.match(suggestionsSource, /<LazyActionConfirmSheet/u);
   assert.match(suggestionsSource, /await import\('\.\.\/components\/ui\/action-confirm-sheet'\)/u);
-  assert.match(suggestionsSource, /'Опубликовать предложку\?'/u);
+  assert.match(suggestionsSource, /'Открыть предложку в редакторе\?'/u);
   assert.match(suggestionsSource, /'Отклонить предложку\?'/u);
   assert.match(
     suggestionsSource,
-    /setConfirmation\(\{ suggestionId: suggestion\.id, action: 'publish' \}\)/u,
+    /setConfirmation\(\{ suggestionId: suggestion\.id, action: 'draft' \}\)/u,
   );
   assert.match(
     suggestionsSource,
@@ -74,7 +74,7 @@ test('channel suggestions confirm terminal actions and page both server views in
   assert.match(suggestionsSource, /Отменить это действие нельзя\./u);
   assert.match(
     suggestionsSource,
-    /tone=\{confirmation\.action === 'publish' \? 'accent' : 'danger'\}/u,
+    /tone=\{confirmation\.action === 'draft' \? 'accent' : 'danger'\}/u,
   );
   assert.match(suggestionsSource, /isBusy=\{reviewMutation\.isPending\}/u);
   assert.match(suggestionsSource, /onClose=\{\(\) => setConfirmation\(null\)\}/u);
@@ -92,7 +92,16 @@ test('channel suggestions confirm terminal actions and page both server views in
   assert.match(suggestionsSource, /queryClient\.invalidateQueries\(\{ queryKey: queryRoot \}\)/u);
   assert.match(suggestionsSource, /containsPublishingSuggestion/u);
   assert.match(suggestionsSource, /view === 'pending'/u);
-  assert.match(suggestionsSource, /Предложка принята в публикацию/u);
+  assert.match(suggestionsSource, /\/publications\?draft=/u);
+  assert.match(suggestionsSource, /suggestion\.imageCount > 0/u);
+  assert.match(
+    suggestionsSource,
+    /suggestion\.reviewStatus === 'drafted'[\s\S]*?Открыть черновик/u,
+  );
+  assert.doesNotMatch(
+    suggestionsSource,
+    /setConfirmation\(\{ suggestionId: suggestion\.id, action: 'publish' \}\)/u,
+  );
   assert.match(suggestionsSource, /<MaxMarkdownPreview/u);
   assert.match(suggestionsSource, /sourceFormat=\{suggestion\.textFormat\}/u);
   assert.match(suggestionsSource, /sourceFormat=\{confirmationSuggestion\.textFormat\}/u);

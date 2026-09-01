@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getMe } from '../src/lib/api/me-client';
+import { getPublication } from '../src/lib/api/publication-client';
 import {
   getPublisherEntity,
   getPublisherPolicy,
   listPublisherEntities,
-  listPublisherSuggestions,
   refreshPublisherEntities,
   refreshPublisherEntity,
-  reviewPublisherSuggestion,
   resolvePublisherEntities,
   updatePublisherPolicy,
   updatePublisherModules,
 } from '../src/lib/api/publisher-client';
+import {
+  listPublisherSuggestions,
+  reviewPublisherSuggestion,
+} from '../src/lib/api/publisher-suggestions-client';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { createInitialState } from '../src/lib/api/preview-transport-state';
 import { systemPreviewClock } from '../src/lib/api/preview-transport-runtime';
@@ -474,7 +477,9 @@ test('preview publisher suggestions paginate pending and history independently',
   assert.ok(
     history.items.every(
       (suggestion) =>
-        suggestion.reviewStatus === 'published' || suggestion.reviewStatus === 'cancelled',
+        suggestion.reviewStatus === 'published' ||
+        suggestion.reviewStatus === 'drafted' ||
+        suggestion.reviewStatus === 'cancelled',
     ),
   );
   await assert.rejects(
@@ -507,13 +512,28 @@ test('preview publisher review exposes asynchronous publishing and updates serve
   await reviewPublisherSuggestion(api, 'preview-channel', cancelTarget.id, {
     action: 'cancel',
   });
+  const draftTarget = before.items.find(
+    (suggestion) =>
+      suggestion.reviewStatus === 'pending' &&
+      suggestion.id !== publishTarget.id &&
+      suggestion.id !== cancelTarget.id,
+  );
+  assert.ok(draftTarget);
+  const drafted = await reviewPublisherSuggestion(api, 'preview-channel', draftTarget.id, {
+    action: 'draft',
+  });
+  assert.equal(drafted.suggestion.reviewStatus, 'drafted');
+  assert.ok(drafted.suggestion.publicationId);
+  const draftPublication = await getPublication(api, drafted.suggestion.publicationId);
+  assert.equal(draftPublication.lifecycle, 'DRAFT');
+  assert.equal(draftPublication.content.text, draftTarget.text);
   const pendingAfter = await listPublisherSuggestions(api, 'preview-channel');
   const historyAfter = await listPublisherSuggestions(api, 'preview-channel', {
     view: 'history',
   });
 
-  assert.equal(pendingAfter.total, before.total - 1);
-  assert.equal(historyAfter.total, 5);
+  assert.equal(pendingAfter.total, before.total - 2);
+  assert.equal(historyAfter.total, 6);
   assert.equal(
     pendingAfter.items.find((suggestion) => suggestion.id === publishTarget.id)?.reviewStatus,
     'publishing',
@@ -521,6 +541,10 @@ test('preview publisher review exposes asynchronous publishing and updates serve
   assert.equal(
     historyAfter.items.find((suggestion) => suggestion.id === cancelTarget.id)?.reviewStatus,
     'cancelled',
+  );
+  assert.equal(
+    historyAfter.items.find((suggestion) => suggestion.id === draftTarget.id)?.reviewStatus,
+    'drafted',
   );
 });
 
@@ -561,4 +585,37 @@ test('preview persists Publik-owned chat comment module settings', async () => {
   assert.deepEqual(after.moduleSettings.chatComments, chatComments);
   assert.equal(Object.hasOwn(after, 'settingsHandoffUrl'), false);
   assert.equal(Object.hasOwn(after, 'channelOverview'), false);
+});
+
+test('preview keeps Publisher channel comments independent and exposes channel CTA metadata', async () => {
+  const api = createPreviewApiTransport({
+    search: '?profile=publisher&channelPostSignature=button',
+  });
+  const listed = await listPublisherEntities(api);
+  const channel = listed.items.find(
+    (entity) => entity.entityType === 'channel' && entity.readiness.canPublish,
+  );
+  assert.ok(channel);
+
+  await updatePublisherModules(api, 'channel', channel.id, {
+    expectedRevision: channel.moduleSettings.revision,
+    channelCommentsEnabled: false,
+  });
+  const disabled = await getPublisherEntity(api, 'channel', channel.id);
+  assert.equal(disabled.moduleSettings.channelCommentsEnabled, false);
+  assert.equal(disabled.readiness.canUseChannelComments, false);
+  assert.deepEqual(disabled.channelPostSignature, {
+    enabled: true,
+    presentation: 'button',
+    text: '📞 Заказать рекламу',
+    url: 'https://example.test/advertising',
+  });
+
+  await updatePublisherModules(api, 'channel', channel.id, {
+    expectedRevision: disabled.moduleSettings.revision,
+    channelCommentsEnabled: true,
+  });
+  const enabled = await getPublisherEntity(api, 'channel', channel.id);
+  assert.equal(enabled.moduleSettings.channelCommentsEnabled, true);
+  assert.equal(enabled.readiness.canUseChannelComments, true);
 });

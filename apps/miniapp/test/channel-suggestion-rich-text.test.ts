@@ -38,7 +38,10 @@ test('pasted images use the suggestion attachment preparation pipeline', () => {
     suggestionPageSource,
     /<MaxRichTextEditor[\s\S]*?onPasteFiles=\{canUploadImages \? prepareDraftImagesFromFiles : undefined\}[\s\S]*?\/>/u,
   );
-  assert.match(suggestionPageSource, /const canUploadImages = profile === 'moderation'/u);
+  assert.match(
+    suggestionPageSource,
+    /const \{ canUploadSuggestionImages: canUploadImages \} =\s*resolveChannelDialogProfileCapabilities\(profile\)/u,
+  );
 });
 
 test('overlapping pasted images share an immediate preparation and submit guard', () => {

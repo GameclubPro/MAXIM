@@ -1,5 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
-import { ChatEntityType, VkParsingOwnerProfile } from '../prisma/prisma-client';
+import {
+  ChannelPostSignaturePresentation,
+  ChatEntityType,
+  VkParsingOwnerProfile,
+} from '../prisma/prisma-client';
 import { SafetyDeskService } from './safety-desk.service';
 
 function createReviewPost(overrides: Record<string, unknown> = {}) {
@@ -990,6 +994,7 @@ describe('SafetyDeskService', () => {
           ],
           channelSettings: {
             postSignatureEnabled: true,
+            postSignaturePresentation: ChannelPostSignaturePresentation.SIGNATURE,
             postSignatureText: 'Наш канал',
             postSignatureUrl: 'https://ads.partner.example/contact',
           },
@@ -1013,6 +1018,37 @@ describe('SafetyDeskService', () => {
     expect(queue.items[0]?.previewHtml).toBe(
       '<p><strong>Новость</strong> <u>витрина</u> <u>Профиль</u></p><p><u>https://fallback.example/a_b</u></p><p><u>Наш канал</u></p>',
     );
+  });
+
+  it('reviews a channel CTA URL without rendering it as a text signature', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValue([
+      createReviewPost({
+        text: 'Новость',
+        photoUrls: [],
+        videoUrls: [],
+        linkUrls: [],
+        chat: {
+          title: 'Канал администраторов',
+          entityType: ChatEntityType.CHANNEL,
+          vkParsingSettings: [],
+          channelSettings: {
+            postSignatureEnabled: true,
+            postSignaturePresentation: ChannelPostSignaturePresentation.BUTTON,
+            postSignatureText: '📞 Заказать рекламу',
+            postSignatureUrl: 'https://ads.partner.example/contact',
+          },
+        },
+      }),
+    ]);
+
+    const queue = await service.getQueue();
+
+    expect(queue.items[0]).toMatchObject({
+      domains: ['ads.partner.example'],
+      linkUrls: ['https://ads.partner.example/contact'],
+      previewHtml: '<p>Новость</p>',
+    });
   });
 
   it('renders and approves untouched imported VK strong markup as markdown', async () => {

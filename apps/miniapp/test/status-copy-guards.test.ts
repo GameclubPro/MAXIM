@@ -65,7 +65,7 @@ test('publication previews include saved channel system buttons', () => {
     publicationsSource,
     /const systemButtons = buildPublicationSystemButtons\(draft\.targets\)/u,
   );
-  assert.match(publicationsSource, /systemButtons=\{isPublisherProfile \? \[\] : systemButtons\}/u);
+  assert.match(publicationsSource, /systemButtons=\{systemButtons\}/u);
   assert.match(publicationsSource, /`Автокнопки · \$\{systemButtons\.length\}`/u);
   assert.match(
     publicationsSource,

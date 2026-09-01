@@ -94,6 +94,19 @@ test('publisher target selection is a full-screen sheet with stable virtual rows
     pickerCss,
     /\.publications-page\.is-editor:has\(\.publication-target-picker__editor\)[\s\S]*?\.publications-publish-bar \{[\s\S]*?visibility: hidden;[\s\S]*?pointer-events: none;/u,
   );
+  assert.match(pickerSource, /TARGET_LIST_AUTO_LOAD_THRESHOLD = TARGET_ROW_HEIGHT \* 2/u);
+  assert.match(pickerSource, /onScroll=\{handleTargetListScroll\}/u);
+  assert.match(pickerSource, /loadMoreRequestRef\.current/u);
+  assert.match(pickerSource, /remoteSourceRef\.current\?\.onLoadMore\(\)/u);
+  assert.match(pickerSource, /remoteSource\.fetchNextPageError \|\|/u);
+  assert.match(
+    pickerSource,
+    /className=\{cn\('publication-target-picker__list'[\s\S]*?publication-target-picker__pagination[\s\S]*?publication-target-picker__load-more/u,
+  );
+  assert.match(
+    pickerCss,
+    /\.publication-target-picker__editor\.is-sheet \.publication-target-picker__list \{[\s\S]*?min-height: 0;[\s\S]*?overflow-y: auto;[\s\S]*?touch-action: pan-y;[\s\S]*?-webkit-overflow-scrolling: touch;/u,
+  );
 });
 
 test('publisher editor keeps its header visible and its dock action within 320px', () => {

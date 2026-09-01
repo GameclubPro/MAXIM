@@ -193,7 +193,9 @@ export function PostCard({
             selectedVideoUrls={selectedVideoUrls}
             selectedLinkUrls={selectedLinkUrls}
             stripLinksEnabled={settings.stripLinksEnabled}
-            appendChannelLinkEnabled={postSignature.enabled}
+            appendChannelLinkEnabled={
+              postSignature.enabled && postSignature.presentation === 'signature'
+            }
             channelLinkText={postSignature.text}
             channelLinkUrl={channelLinkUrl}
             customChannelLinkUrl={postSignature.url}

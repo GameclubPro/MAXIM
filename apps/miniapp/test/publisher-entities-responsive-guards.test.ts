@@ -37,8 +37,15 @@ test('publisher virtual list uses the same stable row height in TypeScript and C
   assert.match(pageCss, /overflow-y: auto;[\s\S]*?touch-action: pan-y;/u);
   const listBlock = pageCss.match(/\.publisher-entities-page__list \{[\s\S]*?\n {2}\}/u)?.[0] ?? '';
   assert.match(listBlock, /max-height: clamp\(/u);
-  assert.match(listBlock, /scroll-padding-bottom: 12px;/u);
-  assert.doesNotMatch(listBlock, /(?:^|\n)\s*(?:height|padding-bottom):/u);
+  assert.match(
+    listBlock,
+    /padding-bottom: calc\([\s\S]*?var\(--bottom-nav-height\)[\s\S]*?var\(--bottom-nav-content-inset\)[\s\S]*?var\(--bottom-nav-offset\)/u,
+  );
+  assert.match(
+    listBlock,
+    /scroll-padding-bottom: calc\([\s\S]*?var\(--bottom-nav-height\)[\s\S]*?var\(--bottom-nav-content-inset\)[\s\S]*?var\(--bottom-nav-offset\)/u,
+  );
+  assert.doesNotMatch(listBlock, /(?:^|\n)\s*height:/u);
   assert.match(pageCss, /\.publisher-entities-page__list\.is-virtual \{\s*height: clamp\(/u);
 });
 
@@ -71,12 +78,19 @@ test('publisher searches hide stale rows and next-page retries preserve loaded p
   assert.doesNotMatch(pageSource, /setQueriesData/u);
 });
 
-test('publisher entity pagination is reachable by list scroll and clears the bottom navigation', () => {
+test('publisher entity pagination stays inside the only list scroll owner', () => {
   const scrollHandlerStart = pageSource.indexOf('function handleEntityListScroll');
   const scrollHandlerEnd = pageSource.indexOf('function renderEntity', scrollHandlerStart);
   const scrollHandlerSource = pageSource.slice(scrollHandlerStart, scrollHandlerEnd);
+  const listStart = pageSource.indexOf('ref={listRef}');
+  const paginationStart = pageSource.indexOf(
+    'className="publisher-entities-page__pagination"',
+    listStart,
+  );
+  const listEnd = pageSource.indexOf('\n        </div>\n      )}', paginationStart);
 
   assert.ok(scrollHandlerStart >= 0 && scrollHandlerEnd > scrollHandlerStart);
+  assert.ok(listStart >= 0 && paginationStart > listStart && listEnd > paginationStart);
   assert.match(pageSource, /PUBLISHER_ENTITY_AUTO_LOAD_THRESHOLD/u);
   assert.match(pageSource, /shouldLoadPublisherEntitiesNextPage\(\{/u);
   assert.match(pageSource, /onScroll=\{handleEntityListScroll\}/u);
@@ -86,10 +100,10 @@ test('publisher entity pagination is reachable by list scroll and clears the bot
   assert.match(scrollHandlerSource, /setListScrollTop\(list\.scrollTop\)/u);
   assert.match(scrollHandlerSource, /setListViewportHeight\(list\.clientHeight\)/u);
   assert.doesNotMatch(scrollHandlerSource, /if \(shouldVirtualize\)/u);
-  assert.match(
-    pageCss,
-    /\.publisher-entities-page__pagination \{[\s\S]*?padding-bottom: calc\([\s\S]*?var\(--bottom-nav-height\)[\s\S]*?var\(--bottom-nav-offset\)/u,
-  );
+  const paginationBlock =
+    pageCss.match(/\.publisher-entities-page__pagination \{[\s\S]*?\n {2}\}/u)?.[0] ?? '';
+  assert.match(paginationBlock, /padding: 12px;/u);
+  assert.doesNotMatch(paginationBlock, /bottom-nav|position:\s*(?:fixed|sticky)/u);
 });
 
 test('expanded target picker removes the fixed publish dock from mobile hit testing', () => {

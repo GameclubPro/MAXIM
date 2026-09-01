@@ -156,6 +156,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   const publisherPolicyState = searchParams.get('publisherPolicyState');
   const publisherSuggestionsState = searchParams.get('publisherSuggestions');
   const publisherPostImportState = searchParams.get('publisherImport');
+  const channelPostSignatureState = searchParams.get('channelPostSignature');
   const publisherPostImportVariant: PreviewState['publisherPostImportVariant'] =
     publisherPostImportState === 'waiting' ||
     publisherPostImportState === 'processing' ||
@@ -380,9 +381,10 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     engagementMessageText: 'Есть идея или обратная связь? Выберите действие ниже.',
   });
   const channelPostSignature: ChannelPostSignatureSettings = {
-    enabled: false,
-    text: 'Подписаться на канал',
-    url: '',
+    enabled: channelPostSignatureState === 'button',
+    presentation: channelPostSignatureState === 'button' ? 'button' : 'signature',
+    text: channelPostSignatureState === 'button' ? '📞 Заказать рекламу' : 'Подписаться на канал',
+    url: channelPostSignatureState === 'button' ? 'https://example.test/advertising' : '',
   };
   const channelPolls = [
     managedPollDetailsSchema.parse({

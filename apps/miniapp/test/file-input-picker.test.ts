@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { openFileInputPicker, resolveFileInputActivationMode } from '../src/lib/file-input-picker';
+import {
+  captureFilePickerReturnState,
+  openFileInputPicker,
+  resolveFileInputActivationMode,
+  restoreFilePickerReturnState,
+} from '../src/lib/file-input-picker';
 
 test('resolveFileInputActivationMode keeps direct native tap for Android webviews', () => {
   assert.equal(resolveFileInputActivationMode('android'), 'native-tap');
@@ -56,4 +61,53 @@ test('openFileInputPicker returns noop for disabled inputs', () => {
 
   assert.equal(result, 'noop');
   assert.deepEqual(calls, []);
+});
+
+test('restores picker focus only to the previously active editable control without scrolling it', () => {
+  const focusOptions: FocusOptions[] = [];
+  const editor = {
+    tagName: 'DIV',
+    isContentEditable: true,
+    isConnected: true,
+    focus: (options: FocusOptions) => focusOptions.push(options),
+  } as unknown as HTMLElement;
+  const scrollCalls: ScrollToOptions[] = [];
+  const containerScrollCalls: ScrollToOptions[] = [];
+  const scrollContainer = {
+    isConnected: true,
+    scrollLeft: 8,
+    scrollTop: 210,
+    scrollTo: (options: ScrollToOptions) => containerScrollCalls.push(options),
+  };
+  const scrollTarget = {
+    scrollX: 14,
+    scrollY: 320,
+    scrollTo: (options: ScrollToOptions) => scrollCalls.push(options),
+  };
+  const state = captureFilePickerReturnState(editor, scrollTarget, scrollContainer);
+
+  assert.equal(restoreFilePickerReturnState(state, scrollTarget), true);
+  assert.deepEqual(focusOptions, [{ preventScroll: true }]);
+  assert.deepEqual(containerScrollCalls, [{ left: 8, top: 210, behavior: 'auto' }]);
+  assert.deepEqual(scrollCalls, [{ left: 14, top: 320, behavior: 'auto' }]);
+});
+
+test('does not autofocus a non-editable control after returning from the picker', () => {
+  const button = {
+    tagName: 'BUTTON',
+    isContentEditable: false,
+    isConnected: true,
+    focus: () => assert.fail('button focus must not be forced'),
+  } as unknown as HTMLElement;
+  const scrollCalls: ScrollToOptions[] = [];
+  const scrollTarget = {
+    scrollX: 0,
+    scrollY: 88,
+    scrollTo: (options: ScrollToOptions) => scrollCalls.push(options),
+  };
+  const state = captureFilePickerReturnState(button, scrollTarget);
+
+  assert.equal(state.focusTarget, null);
+  assert.equal(restoreFilePickerReturnState(state, scrollTarget), false);
+  assert.deepEqual(scrollCalls, [{ left: 0, top: 88, behavior: 'auto' }]);
 });

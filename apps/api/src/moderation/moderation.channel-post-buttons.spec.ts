@@ -424,6 +424,9 @@ describe('ModerationService channel auto post buttons', () => {
         }),
       }),
     );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
+      'appendNewInlineKeyboardRows',
+    );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
 
     const manualAdminPost = createRuntimeBotChannelPostUpdate();
@@ -1918,17 +1921,15 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      getCurrentChatMemberAccess: jest.fn(
-        async (_chatId: string, options: { botId: string }) => ({
-          userId: options.botId,
-          isAdmin: true,
-          isOwner: false,
-          permissions:
-            options.botId === 'writable-delete-bot'
-              ? ['write', 'delete_message']
-              : ['delete_message'],
-        }),
-      ),
+      getCurrentChatMemberAccess: jest.fn(async (_chatId: string, options: { botId: string }) => ({
+        userId: options.botId,
+        isAdmin: true,
+        isOwner: false,
+        permissions:
+          options.botId === 'writable-delete-bot'
+            ? ['write', 'delete_message']
+            : ['delete_message'],
+      })),
       sendMessageCopyWithInlineKeyboard: jest.fn(
         async (
           _chatId: string,
@@ -2053,14 +2054,12 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      getCurrentChatMemberAccess: jest.fn(
-        async (_chatId: string, options: { botId: string }) => ({
-          userId: options.botId,
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['delete_message'],
-        }),
-      ),
+      getCurrentChatMemberAccess: jest.fn(async (_chatId: string, options: { botId: string }) => ({
+        userId: options.botId,
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['delete_message'],
+      })),
       sendMessageCopyWithInlineKeyboard: jest.fn(),
       deleteMessage: jest.fn(),
     };
@@ -2456,7 +2455,7 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('applies the signature and engagement buttons in one bot-authored edit', async () => {
+  it('adds the channel CTA after comments and freezes the managed keyboard for counters', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       auditLog: {
@@ -2470,9 +2469,14 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const channelPostSignatureService = {
       preparePostText: jest.fn().mockResolvedValue({
-        text: '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        text: '<b>Пост</b>',
         textFormat: 'html',
-        signatureApplied: true,
+        signatureApplied: false,
+      }),
+      buildPostButton: jest.fn().mockResolvedValue({
+        type: 'link',
+        text: '📞 Заказать рекламу',
+        url: 'https://ads.example/contact',
       }),
     };
     const service = new ModerationService(
@@ -2514,9 +2518,18 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-combined-1',
-      '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      '<b>Пост</b>',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [
+            {
+              type: 'link',
+              text: '📞 Заказать рекламу',
+              url: 'https://ads.example/contact',
+            },
+          ],
+        ],
         textFormat: 'html',
       }),
       expectChannelAutoPostOptions(),
@@ -2524,6 +2537,29 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
       'preserveExistingInlineKeyboard',
     );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
+          buttonRows: [
+            [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+            [
+              {
+                type: 'link',
+                text: '📞 Заказать рекламу',
+                url: 'https://ads.example/contact',
+              },
+            ],
+          ],
+          commentsButton: {
+            rowIndex: 0,
+            columnIndex: 0,
+            baseText: '💬 Комментарии',
+          },
+          signatureApplied: false,
+        }),
+      }),
+    });
   });
 
   it('does not duplicate a signature after an ambiguous successful edit is retried', async () => {
@@ -2879,6 +2915,12 @@ describe('ModerationService channel auto post buttons', () => {
           [
             expect.objectContaining({
               type: 'link',
+              text: '💬 Комментарии · 0',
+            }),
+          ],
+          [
+            expect.objectContaining({
+              type: 'link',
               text: 'Прислать новость',
               url: expect.stringContaining(
                 'https://max.ru/scan-bot-2?start=cds-channel-1-existing-thread',
@@ -2892,6 +2934,9 @@ describe('ModerationService channel auto post buttons', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
       }),
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
+      'appendNewInlineKeyboardRows',
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3298,12 +3343,17 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-channel-replacement-edit-1',
       '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '📰 Предложить пост' })]],
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [expect.objectContaining({ text: '📰 Предложить пост' })],
+        ],
         textFormat: 'html',
-        appendNewInlineKeyboardRows: true,
         mergeExistingInlineKeyboard: true,
       }),
       expectChannelAutoPostOptions(),
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
+      'appendNewInlineKeyboardRows',
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
       2,
@@ -3413,9 +3463,11 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
     expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).toEqual(
       expect.objectContaining({
-        appendNewInlineKeyboardRows: true,
         mergeExistingInlineKeyboard: true,
       }),
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
+      'appendNewInlineKeyboardRows',
     );
     const replacementOptions = maxClient.editMessageInlineKeyboard.mock.calls[1]?.[3];
     expect(replacementOptions).not.toHaveProperty('appendNewInlineKeyboardRows');

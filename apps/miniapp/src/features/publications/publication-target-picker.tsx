@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type UIEvent,
 } from 'react';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
 import { cn } from '../../lib/cn';
@@ -61,6 +62,7 @@ const TARGET_ROW_HEIGHT = 58;
 const TARGET_LIST_INITIAL_VIEWPORT_HEIGHT = 266;
 const TARGET_LIST_VIRTUALIZATION_THRESHOLD = 60;
 const TARGET_LIST_OVERSCAN = 3;
+const TARGET_LIST_AUTO_LOAD_THRESHOLD = TARGET_ROW_HEIGHT * 2;
 
 export function PublicationTargetPicker({
   choices,
@@ -84,6 +86,10 @@ export function PublicationTargetPicker({
   const editorRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const autoLoadArmedRef = useRef(true);
+  const loadMoreRequestRef = useRef(false);
+  const remoteSourceRef = useRef(remoteSource);
+  remoteSourceRef.current = remoteSource;
   const editorId = useId();
   const editorTitleId = useId();
   const errorId = useId();
@@ -240,9 +246,42 @@ export function PublicationTargetPicker({
   }, [sheetOpen]);
 
   useEffect(() => {
+    autoLoadArmedRef.current = true;
+    loadMoreRequestRef.current = false;
     setListScrollTop(0);
     listRef.current?.scrollTo({ top: 0 });
   }, [deferredQuery, filter]);
+
+  useEffect(() => {
+    if (remoteSource?.fetchingNextPage) {
+      return;
+    }
+
+    loadMoreRequestRef.current = false;
+    autoLoadArmedRef.current = true;
+    const list = listRef.current;
+    if (
+      !expanded ||
+      !list ||
+      !remoteSource?.hasNextPage ||
+      remoteSource.settling ||
+      remoteSource.fetchNextPageError ||
+      list.scrollHeight - list.scrollTop - list.clientHeight > TARGET_LIST_AUTO_LOAD_THRESHOLD
+    ) {
+      return;
+    }
+
+    autoLoadArmedRef.current = false;
+    loadMoreRequestRef.current = true;
+    remoteSourceRef.current?.onLoadMore();
+  }, [
+    expanded,
+    filteredChoices.length,
+    remoteSource?.fetchNextPageError,
+    remoteSource?.fetchingNextPage,
+    remoteSource?.hasNextPage,
+    remoteSource?.settling,
+  ]);
 
   function toggleTarget(target: PublicationTarget) {
     const result = togglePublicationTargetSelection(value, target, maxTargets);
@@ -283,9 +322,45 @@ export function PublicationTargetPicker({
     setLocalFilter(nextFilter);
   }
 
-  function renderChoice(choice: PublicationTarget) {
+  function loadMoreTargets(): void {
+    if (
+      !remoteSource ||
+      remoteSource.settling ||
+      !remoteSource.hasNextPage ||
+      remoteSource.fetchingNextPage ||
+      loadMoreRequestRef.current
+    ) {
+      return;
+    }
+
+    loadMoreRequestRef.current = true;
+    remoteSource.onLoadMore();
+  }
+
+  function handleTargetListScroll(event: UIEvent<HTMLDivElement>): void {
+    const list = event.currentTarget;
+    if (shouldVirtualize) {
+      setListScrollTop(list.scrollTop);
+    }
+
+    const nearEnd =
+      list.scrollHeight - list.scrollTop - list.clientHeight <= TARGET_LIST_AUTO_LOAD_THRESHOLD;
+    if (!nearEnd) {
+      autoLoadArmedRef.current = true;
+      return;
+    }
+    if (autoLoadArmedRef.current) {
+      autoLoadArmedRef.current = false;
+      loadMoreTargets();
+    }
+  }
+
+  function renderChoice(choice: PublicationTarget, renderedIndex: number) {
     const selected = selectedKeys.has(getPublicationTargetKey(choice));
     const unavailable = Boolean(choice.readiness && !choice.readiness.canPublish);
+    const absoluteIndex = shouldVirtualize
+      ? virtualRange.startIndex + renderedIndex
+      : renderedIndex;
     const readinessLabel = choice.readiness
       ? getPublisherReadinessLabel(choice.readiness)
       : choice.entityType === 'channel'
@@ -302,6 +377,7 @@ export function PublicationTargetPicker({
         )}
         aria-pressed={selected}
         aria-disabled={disabled || (unavailable && !selected)}
+        data-target-position={absoluteIndex + 1}
         aria-label={
           unavailable && !selected
             ? `${choice.title}, ${readinessLabel}`
@@ -481,11 +557,7 @@ export function PublicationTargetPicker({
             className={cn('publication-target-picker__list', shouldVirtualize && 'is-virtual')}
             role="group"
             aria-label="Получатели"
-            onScroll={
-              shouldVirtualize
-                ? (event) => setListScrollTop(event.currentTarget.scrollTop)
-                : undefined
-            }
+            onScroll={handleTargetListScroll}
           >
             {filteredChoices.length > 0 ? (
               shouldVirtualize ? (
@@ -512,28 +584,32 @@ export function PublicationTargetPicker({
                 Ничего не найдено
               </span>
             )}
+            {remoteSource && !remoteSource.settling ? (
+              <div className="publication-target-picker__pagination">
+                {remoteSource.filteredTotal !== null ? (
+                  <span className="publication-target-picker__loaded" role="status">
+                    {filteredChoices.length === remoteSource.filteredTotal
+                      ? `Получателей: ${remoteSource.filteredTotal}`
+                      : `${filteredChoices.length} из ${remoteSource.filteredTotal}`}
+                  </span>
+                ) : null}
+                {remoteSource.hasNextPage ? (
+                  <button
+                    type="button"
+                    className="publication-target-picker__load-more"
+                    onClick={loadMoreTargets}
+                    disabled={disabled || remoteSource.fetchingNextPage}
+                  >
+                    {remoteSource.fetchingNextPage
+                      ? 'Загрузка...'
+                      : remoteSource.fetchNextPageError
+                        ? 'Повторить'
+                        : 'Показать ещё'}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
-          {remoteSource && !remoteSource.settling && remoteSource.filteredTotal !== null ? (
-            <span className="publication-target-picker__loaded" role="status">
-              {filteredChoices.length === remoteSource.filteredTotal
-                ? `Получателей: ${remoteSource.filteredTotal}`
-                : `${filteredChoices.length} из ${remoteSource.filteredTotal}`}
-            </span>
-          ) : null}
-          {remoteSource?.hasNextPage && !remoteSource.settling ? (
-            <button
-              type="button"
-              className="publication-target-picker__load-more"
-              onClick={remoteSource.onLoadMore}
-              disabled={disabled || remoteSource.fetchingNextPage}
-            >
-              {remoteSource.fetchingNextPage
-                ? 'Загрузка...'
-                : remoteSource.fetchNextPageError
-                  ? 'Повторить'
-                  : 'Показать ещё'}
-            </button>
-          ) : null}
         </div>
       ) : null}
 

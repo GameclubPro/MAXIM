@@ -758,24 +758,24 @@ export function PublisherEntitiesPage({
           ) : (
             renderedEntities.map(renderEntity)
           )}
+          {!searchSettling && entitiesQuery.hasNextPage ? (
+            <div className="publisher-entities-page__pagination">
+              <button
+                type="button"
+                className="publisher-entities-page__load-more"
+                onClick={() => void handleLoadMoreEntities()}
+                disabled={entitiesQuery.isFetchingNextPage}
+              >
+                {entitiesQuery.isFetchingNextPage
+                  ? 'Загрузка...'
+                  : entitiesQuery.isFetchNextPageError
+                    ? 'Повторить'
+                    : 'Показать ещё'}
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
-      {!searchSettling && entities.length > 0 && entitiesQuery.hasNextPage ? (
-        <div className="publisher-entities-page__pagination">
-          <button
-            type="button"
-            className="publisher-entities-page__load-more"
-            onClick={() => void handleLoadMoreEntities()}
-            disabled={entitiesQuery.isFetchingNextPage}
-          >
-            {entitiesQuery.isFetchingNextPage
-              ? 'Загрузка...'
-              : entitiesQuery.isFetchNextPageError
-                ? 'Повторить'
-                : 'Показать ещё'}
-          </button>
-        </div>
-      ) : null}
     </section>
   );
 }

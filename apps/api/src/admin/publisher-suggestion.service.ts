@@ -6,8 +6,10 @@ import {
   reviewPublisherSuggestionResponseSchema,
   type PublisherSuggestion,
   type PublisherSuggestionsResponse,
+  type ReviewPublisherSuggestionRequest,
   type ReviewPublisherSuggestionResponse,
 } from '@maxim/contracts/publisher';
+import type { PublicationMediaInput } from '@maxim/contracts/publication';
 import {
   BadRequestException,
   ConflictException,
@@ -20,7 +22,12 @@ import { randomUUID } from 'node:crypto';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PublicationDispatchProfile, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  loadStoredChannelSuggestionImages,
+  readLegacyChannelSuggestionImages,
+} from './admin-channel-suggestion-image-storage';
 import { PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST } from './admin.service.support';
+import type { ChannelSuggestionImageAsset } from './admin.service.support';
 import { PublicationService } from './publication.service';
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
@@ -45,7 +52,10 @@ type PublisherSuggestionStoredRow = PublisherSuggestionRow & {
   chatId: string;
 };
 
-type LegacyPublisherSuggestion = Omit<PublisherSuggestion, 'textFormat' | 'reviewError'>;
+type LegacyPublisherSuggestion = Omit<
+  PublisherSuggestion,
+  'textFormat' | 'imageCount' | 'reviewError'
+>;
 type LegacyPublisherSuggestionsResponse = { items: LegacyPublisherSuggestion[] };
 type LegacyReviewPublisherSuggestionResponse = { suggestion: LegacyPublisherSuggestion };
 
@@ -92,8 +102,8 @@ export class PublisherSuggestionService {
       : null;
     const statusPredicate =
       view === 'pending'
-        ? Prisma.sql`COALESCE(NULLIF(LOWER(payload->>'reviewStatus'), ''), 'pending') NOT IN ('published', 'cancelled')`
-        : Prisma.sql`COALESCE(NULLIF(LOWER(payload->>'reviewStatus'), ''), 'pending') IN ('published', 'cancelled')`;
+        ? Prisma.sql`COALESCE(NULLIF(LOWER(payload->>'reviewStatus'), ''), 'pending') NOT IN ('published', 'drafted', 'cancelled')`
+        : Prisma.sql`COALESCE(NULLIF(LOWER(payload->>'reviewStatus'), ''), 'pending') IN ('published', 'drafted', 'cancelled')`;
     const cursorPredicate = cursor
       ? Prisma.sql`AND (
           created_at < ${new Date(cursor.createdAt)}
@@ -152,6 +162,7 @@ export class PublisherSuggestionService {
       throw new BadRequestException(parsed.error.format());
     }
     const responseVersion = parsed.data.responseVersion === 2 ? 2 : 1;
+    const reviewAction = parsed.data.action;
     let row = await this.findRow(suggestionId.trim(), entityId);
     if (!row) {
       throw new BadRequestException('Предложка не найдена.');
@@ -171,50 +182,75 @@ export class PublisherSuggestionService {
     if (currentStatus === 'pending' && durableClaim) {
       currentStatus = 'publishing';
     }
-    if (currentStatus === 'published' || currentStatus === 'cancelled') {
-      const expectedStatus = parsed.data.action === 'publish' ? 'published' : 'cancelled';
+    if (
+      currentStatus === 'published' ||
+      currentStatus === 'drafted' ||
+      currentStatus === 'cancelled'
+    ) {
+      await this.cleanupStoredImagesBestEffort(row.id, currentStatus);
+      const expectedStatus = this.terminalStatusForAction(reviewAction);
       if (currentStatus === expectedStatus) {
         return this.reviewResponse(row, responseVersion);
       }
-      throw new ConflictException(
-        currentStatus === 'published'
-          ? 'Предложка уже принята в публикацию.'
-          : 'Предложка уже отклонена.',
-      );
+      throw this.terminalStatusConflict(currentStatus);
     }
 
-    if (parsed.data.action === 'cancel') {
+    if (reviewAction === 'cancel') {
       if (currentStatus === 'publishing') {
         throw new ConflictException('Предложка уже публикуется и не может быть отклонена.');
       }
       const cancelled = await this.cancelPending(row.id, entityId, user);
       if (cancelled) {
+        await this.cleanupStoredImagesBestEffort(cancelled.id, 'cancelled');
         return this.reviewResponse(cancelled, responseVersion);
       }
       const latest = await this.requireRow(row.id, entityId);
       if (this.readStatus(this.readPayload(latest.payload).reviewStatus) !== 'cancelled') {
         throw new ConflictException('Состояние предложки изменилось до отмены.');
       }
+      await this.cleanupStoredImagesBestEffort(latest.id, 'cancelled');
       return this.reviewResponse(latest, responseVersion);
     }
 
     if (currentStatus === 'publishing') {
       if (durableClaim) {
+        this.assertMatchingReviewAction(durableClaim, reviewAction);
+        if (reviewAction === 'draft') {
+          return this.completeDraftClaim(row, durableClaim, responseVersion);
+        }
         await this.enqueueClaim(row.id, durableClaim.claimToken);
       }
       return this.reviewResponse(row, responseVersion);
     }
 
     const text = this.readString(payload.text);
-    if (!text) {
-      throw new BadRequestException('В предложке нет текста.');
+    if (!text && this.readImageCount(payload) === 0) {
+      throw new BadRequestException('В предложке нет текста или фото.');
     }
-    const claimed = await this.claimPending(row.id, entityId, user);
+    const claimed = await this.claimPending(row.id, entityId, user, reviewAction);
     if (!claimed) {
       const latest = await this.requireRow(row.id, entityId);
-      const latestStatus = this.readStatus(this.readPayload(latest.payload).reviewStatus);
+      const latestPayload = this.readPayload(latest.payload);
+      const latestStatus = this.readStatus(latestPayload.reviewStatus);
       if (latestStatus === 'cancelled') {
         throw new ConflictException('Предложка уже отклонена.');
+      }
+      if (latestStatus === 'published' || latestStatus === 'drafted') {
+        if (latestStatus === this.terminalStatusForAction(reviewAction)) {
+          return this.reviewResponse(latest, responseVersion);
+        }
+        throw this.terminalStatusConflict(latestStatus);
+      }
+      const latestClaim = readPublisherSuggestionReviewClaim(latestPayload, row.id, {
+        allowPending: true,
+      });
+      if (latestClaim) {
+        this.assertMatchingReviewAction(latestClaim, reviewAction);
+        if (reviewAction === 'draft') {
+          return this.completeDraftClaim(latest, latestClaim, responseVersion);
+        }
+        await this.enqueueClaim(latest.id, latestClaim.claimToken);
+        return this.reviewResponse(latest, responseVersion);
       }
       if (latestStatus === 'pending') {
         throw new ConflictException('Не удалось зафиксировать заявку на публикацию.');
@@ -224,6 +260,10 @@ export class PublisherSuggestionService {
     const claim = readPublisherSuggestionReviewClaim(this.readPayload(claimed.payload), row.id);
     if (!claim) {
       throw new ConflictException('Не удалось подтвердить заявку на публикацию.');
+    }
+    this.assertMatchingReviewAction(claim, reviewAction);
+    if (reviewAction === 'draft') {
+      return this.completeDraftClaim(claimed, claim, responseVersion);
     }
     await this.enqueueClaim(row.id, claim.claimToken);
     return this.reviewResponse(claimed, responseVersion);
@@ -245,13 +285,19 @@ export class PublisherSuggestionService {
     const claim = readPublisherSuggestionReviewClaim(payload, row.id, { allowPending: true });
     if (!claim || claim.claimToken !== expectedClaimToken.trim()) return true;
 
-    const text = this.readString(payload.text);
-    if (!text) {
-      await this.releaseTerminalClaim(row, claim, 'В предложке нет текста.');
-      return true;
-    }
-
     try {
+      const images = await loadStoredChannelSuggestionImages({
+        auditLogId: row.id,
+        payload,
+        legacyImages: readLegacyChannelSuggestionImages(payload),
+        repository: this.prisma.channelSuggestionImageAsset,
+        logger: this.logger,
+      });
+      const text = this.readString(payload.text) ?? '';
+      if (!text && images.length === 0) {
+        await this.releaseTerminalClaim(row, claim, 'В предложке нет текста или фото.');
+        return true;
+      }
       const publication = await this.publications.create(
         claim.user,
         {
@@ -261,21 +307,28 @@ export class PublisherSuggestionService {
             text,
             textFormat: this.readString(payload.textFormat) === 'markdown' ? 'markdown' : 'plain',
             buttons: [],
-            media: [],
+            media: this.buildPublicationImageMedia(images),
           },
           audience: {
             selection: 'SELECTED',
             mode: 'SNAPSHOT',
             targets: [{ chatId: row.chatId, entityType: 'channel' }],
           },
-          schedule: { mode: 'now', timezone: 'Europe/Moscow' },
-          intent: 'publish',
+          schedule: claim.action === 'draft' ? null : { mode: 'now', timezone: 'Europe/Moscow' },
+          intent: claim.action,
         },
         PublicationDispatchProfile.PUBLIK_V1,
       );
       await this.finalizeClaimOrThrow(row, claim, publication.id);
+      await this.cleanupStoredImagesBestEffort(
+        row.id,
+        claim.action === 'draft' ? 'drafted' : 'published',
+      );
       return true;
     } catch (error: unknown) {
+      if (await this.reconcileAlreadyTerminalClaim(row, claim)) {
+        return true;
+      }
       // A failed lookup throws and keeps the claim until exact mutation absence is proven.
       const mutationExists = await this.hasClaimMutationRecord(claim);
       if (mutationExists) {
@@ -345,11 +398,12 @@ export class PublisherSuggestionService {
     suggestionId: string,
     entityId: string,
     user: AuthUser,
+    action: PublisherSuggestionReviewClaim['action'],
   ): Promise<PublisherSuggestionStoredRow | null> {
     const claimToken = randomUUID();
     const claimPatch = {
       reviewStatus: 'publishing',
-      reviewAction: 'publish',
+      reviewAction: action,
       reviewDispatchProfile: PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
       reviewPublicationProtocol: PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
       reviewPublicationRequestId: buildPublisherSuggestionPublicationRequestId(
@@ -424,11 +478,13 @@ export class PublisherSuggestionService {
     claim: PublisherSuggestionReviewClaim,
     publicationId: string,
   ): Promise<PublisherSuggestionStoredRow | null> {
+    const reviewStatus = claim.action === 'draft' ? 'drafted' : 'published';
+    const finalizedAt = new Date().toISOString();
     const patch = {
-      reviewStatus: 'published',
+      reviewStatus,
       publicationId,
-      publishedAt: new Date().toISOString(),
-      reviewedAt: new Date().toISOString(),
+      ...(claim.action === 'draft' ? { draftedAt: finalizedAt } : { publishedAt: finalizedAt }),
+      reviewedAt: finalizedAt,
       reviewedByUserId: claim.user.userId,
       reviewError: null,
     } satisfies Prisma.InputJsonObject;
@@ -451,6 +507,7 @@ export class PublisherSuggestionService {
         AND payload->>'reviewPublicationProtocol' = ${PUBLISHER_SUGGESTION_REVIEW_PROTOCOL}::text
         AND payload->>'reviewPublicationRequestId' = ${claim.requestId}::text
         AND payload->>'reviewClaimToken' = ${claim.claimToken}::text
+        AND payload->>'reviewAction' = ${claim.action}::text
         AND payload->>'reviewClaimedByUserId' = ${claim.user.userId}::text
       RETURNING id, chat_id AS "chatId", payload, created_at AS "createdAt"
     `);
@@ -468,7 +525,8 @@ export class PublisherSuggestionService {
     const latest = await this.requireRow(row.id, row.chatId);
     const latestPayload = this.readPayload(latest.payload);
     if (
-      this.readStatus(latestPayload.reviewStatus) === 'published' &&
+      this.readStatus(latestPayload.reviewStatus) ===
+        (claim.action === 'draft' ? 'drafted' : 'published') &&
       this.readString(latestPayload.publicationId) === publicationId
     ) {
       return;
@@ -511,6 +569,7 @@ export class PublisherSuggestionService {
         AND payload->>'reviewPublicationProtocol' = ${PUBLISHER_SUGGESTION_REVIEW_PROTOCOL}::text
         AND payload->>'reviewPublicationRequestId' = ${claim.requestId}::text
         AND payload->>'reviewClaimToken' = ${claim.claimToken}::text
+        AND payload->>'reviewAction' = ${claim.action}::text
         AND payload->>'reviewClaimedByUserId' = ${claim.user.userId}::text
     `);
   }
@@ -528,6 +587,24 @@ export class PublisherSuggestionService {
     return Boolean(record);
   }
 
+  private async reconcileAlreadyTerminalClaim(
+    row: PublisherSuggestionStoredRow,
+    claim: PublisherSuggestionReviewClaim,
+  ): Promise<boolean> {
+    const latest = await this.findRow(row.id, row.chatId);
+    if (!latest) return false;
+    const payload = this.readPayload(latest.payload);
+    const expectedStatus = claim.action === 'draft' ? 'drafted' : 'published';
+    if (
+      this.readStatus(payload.reviewStatus) !== expectedStatus ||
+      !this.readString(payload.publicationId)
+    ) {
+      return false;
+    }
+    await this.cleanupStoredImagesBestEffort(row.id, expectedStatus);
+    return true;
+  }
+
   private async enqueueClaim(suggestionId: string, claimToken: string): Promise<void> {
     try {
       await this.publicationQueue.enqueue(suggestionId, claimToken, { recycleCompleted: true });
@@ -540,6 +617,83 @@ export class PublisherSuggestionService {
         'Publik suggestion claim persisted but immediate queue enqueue failed; recovery will retry',
       );
     }
+  }
+
+  private async cleanupStoredImagesBestEffort(
+    suggestionId: string,
+    terminalStatus: 'published' | 'drafted' | 'cancelled',
+  ): Promise<void> {
+    try {
+      await this.prisma.channelSuggestionImageAsset.deleteMany({
+        where: { auditLogId: suggestionId },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          suggestionId,
+          terminalStatus,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to clean terminal Publisher suggestion image assets; bounded recovery will retry',
+      );
+    }
+  }
+
+  private async completeDraftClaim(
+    row: PublisherSuggestionStoredRow,
+    claim: PublisherSuggestionReviewClaim,
+    responseVersion: 1 | 2,
+  ): Promise<ReviewPublisherSuggestionResponse | LegacyReviewPublisherSuggestionResponse> {
+    await this.enqueueClaim(row.id, claim.claimToken);
+    await this.processPublicationJob(row.id, claim.claimToken);
+    const latest = await this.requireRow(row.id, row.chatId);
+    const payload = this.readPayload(latest.payload);
+    const status = this.readStatus(payload.reviewStatus);
+    if (status === 'drafted' && this.readString(payload.publicationId)) {
+      return this.reviewResponse(latest, responseVersion);
+    }
+    if (status === 'pending') {
+      throw new BadRequestException(
+        this.readString(payload.reviewError) ?? 'Не удалось создать черновик публикации.',
+      );
+    }
+    if (status === 'published' || status === 'cancelled') {
+      throw this.terminalStatusConflict(status);
+    }
+    throw new ConflictException(
+      'Создание черновика ещё не завершено. Повторите запрос с тем же действием.',
+    );
+  }
+
+  private assertMatchingReviewAction(
+    claim: PublisherSuggestionReviewClaim,
+    action: PublisherSuggestionReviewClaim['action'],
+  ): void {
+    if (claim.action !== action) {
+      throw new ConflictException(
+        claim.action === 'draft'
+          ? 'Предложка уже переносится в черновик.'
+          : 'Предложка уже публикуется.',
+      );
+    }
+  }
+
+  private terminalStatusForAction(
+    action: ReviewPublisherSuggestionRequest['action'],
+  ): Extract<PublisherSuggestion['reviewStatus'], 'published' | 'drafted' | 'cancelled'> {
+    return action === 'publish' ? 'published' : action === 'draft' ? 'drafted' : 'cancelled';
+  }
+
+  private terminalStatusConflict(
+    status: Extract<PublisherSuggestion['reviewStatus'], 'published' | 'drafted' | 'cancelled'>,
+  ): ConflictException {
+    return new ConflictException(
+      status === 'published'
+        ? 'Предложка уже принята в публикацию.'
+        : status === 'drafted'
+          ? 'Предложка уже перенесена в черновик.'
+          : 'Предложка уже отклонена.',
+    );
   }
 
   private requireRow(id: string, chatId: string): Promise<PublisherSuggestionStoredRow> {
@@ -576,6 +730,7 @@ export class PublisherSuggestionService {
       createdAt: row.createdAt.toISOString(),
       reviewStatus: this.readStatus(payload.reviewStatus),
       publicationId: this.readString(payload.publicationId),
+      imageCount: this.readImageCount(payload),
       reviewError: this.readString(payload.reviewError),
     });
   }
@@ -643,8 +798,38 @@ export class PublisherSuggestionService {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
 
+  private readImageCount(payload: Record<string, unknown>): number {
+    const declared = payload.imageCount;
+    if (typeof declared === 'number' && Number.isSafeInteger(declared) && declared >= 0) {
+      return Math.min(10, declared);
+    }
+    const legacyCount = readLegacyChannelSuggestionImages(payload).length;
+    return legacyCount > 0 ? legacyCount : payload.hasImage === true ? 1 : 0;
+  }
+
+  private buildPublicationImageMedia(
+    images: ChannelSuggestionImageAsset[],
+  ): PublicationMediaInput[] {
+    return images.map((image) => {
+      const base64 = this.readString(image.base64);
+      const mimeType = this.readString(image.mimeType)?.toLowerCase();
+      if (!base64 || !mimeType?.startsWith('image/')) {
+        throw new BadRequestException('Сохранённое фото предложки повреждено.');
+      }
+      return {
+        type: 'image',
+        base64,
+        mimeType,
+        fileName: this.readString(image.fileName) ?? '',
+      };
+    });
+  }
+
   private readStatus(value: unknown): PublisherSuggestion['reviewStatus'] {
-    return value === 'publishing' || value === 'published' || value === 'cancelled'
+    return value === 'publishing' ||
+      value === 'published' ||
+      value === 'drafted' ||
+      value === 'cancelled'
       ? value
       : 'pending';
   }

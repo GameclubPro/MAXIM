@@ -70,7 +70,14 @@ test('suggestion dialog state is remounted for every chat and token pair', () =>
   );
   assert.match(
     appSource,
-    /path="\/channel\/:chatId\/dialog\/suggest"[\s\S]*?element=\{<KeyedChannelSuggestDialogPage api=\{apiClient\} profile=\{me\.profile\} \/>\}/u,
+    /path="\/channel\/:chatId\/dialog\/suggest"[\s\S]*?<KeyedChannelSuggestDialogPage[\s\S]*?api=\{apiClient\}[\s\S]*?profile=\{me\.profile\}[\s\S]*?userId=\{me\.userId\}/u,
+  );
+});
+
+test('channel comments route follows the authenticated Major or Publik profile', () => {
+  assert.match(
+    appSource,
+    /path="\/channel\/:chatId\/dialog\/comments"[\s\S]*?profile=\{me\.profile\}/u,
   );
 });
 

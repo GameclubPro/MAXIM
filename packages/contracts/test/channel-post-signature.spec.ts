@@ -11,9 +11,35 @@ describe('channel post signature contracts', () => {
   it('keeps a fail-safe disabled default with stable link text', () => {
     expect(channelPostSignatureSettingsSchema.parse({})).toEqual({
       enabled: false,
+      presentation: 'signature',
       text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
       url: '',
     });
+  });
+
+  it('supports a bounded full-width channel button presentation', () => {
+    expect(
+      channelPostSignatureSettingsSchema.parse({
+        enabled: true,
+        presentation: 'button',
+        text: '📞 Заказать рекламу',
+        url: 'https://example.test/ads',
+      }),
+    ).toEqual({
+      enabled: true,
+      presentation: 'button',
+      text: '📞 Заказать рекламу',
+      url: 'https://example.test/ads',
+    });
+
+    expect(() =>
+      channelPostSignatureSettingsSchema.parse({
+        enabled: true,
+        presentation: 'button',
+        text: 'x'.repeat(33),
+        url: 'https://example.test/ads',
+      }),
+    ).toThrow();
   });
 
   it('trims saved text and rejects empty or oversized labels', () => {

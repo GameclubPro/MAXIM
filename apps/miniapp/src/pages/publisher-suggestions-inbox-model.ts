@@ -2,7 +2,7 @@ import type {
   PublisherSuggestionsResponse,
   PublisherSuggestionsView,
 } from '@maxim/contracts/publisher';
-import { listPublisherSuggestions } from '../lib/api/publisher-client';
+import { listPublisherSuggestions } from '../lib/api/publisher-suggestions-client';
 import type { ApiTransport } from '../lib/api/transport';
 
 export const PUBLISHER_SUGGESTIONS_PAGE_SIZE = 25;

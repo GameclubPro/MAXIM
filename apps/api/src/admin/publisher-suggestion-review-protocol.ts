@@ -6,6 +6,7 @@ export const PUBLISHER_SUGGESTION_DISPATCH_PROFILE = 'PUBLIK_V1';
 export const PUBLISHER_SUGGESTION_LEGACY_INLINE_STALE_MS = 15 * 60_000;
 
 export type PublisherSuggestionReviewClaim = {
+  action: 'publish' | 'draft';
   claimToken: string;
   claimedAt: string;
   requestId: string;
@@ -72,10 +73,14 @@ export function readPublisherSuggestionReviewClaim(
   if (
     (reviewStatus !== 'publishing' &&
       !(options.allowPending === true && reviewStatus === 'pending')) ||
-    readString(payload.reviewAction)?.toLowerCase() !== 'publish' ||
     payload.reviewDispatchProfile !== PUBLISHER_SUGGESTION_DISPATCH_PROFILE ||
     !isPublisherSuggestionReviewProtocol(payload)
   ) {
+    return null;
+  }
+
+  const action = readString(payload.reviewAction)?.toLowerCase();
+  if (action !== 'publish' && action !== 'draft') {
     return null;
   }
 
@@ -102,6 +107,7 @@ export function readPublisherSuggestionReviewClaim(
   }
 
   return {
+    action,
     claimToken,
     claimedAt,
     requestId,

@@ -7,8 +7,9 @@ import {
 } from '../src/lib/use-normalized-markdown-source';
 
 test('keeps the original markdown intact while the multiline normalizer loads', async () => {
-  let finishLoad: ((module: { normalizeLegacyMultilineMarkdown: (source: string) => string }) => void) |
-    null = null;
+  let finishLoad:
+    | ((module: { normalizeLegacyMultilineMarkdown: (source: string) => string }) => void)
+    | null = null;
   const resource = createMarkdownNormalizerResource(
     () =>
       new Promise((resolve) => {
@@ -98,8 +99,11 @@ test('composer keeps the normalization retry independent from disabled outer too
     'utf8',
   );
 
-  assert.match(composerSource, /const editorDisabled = disabled \|\| isPreparingImage;/u);
-  assert.match(composerSource, /const isBusy = editorDisabled \|\| !normalizationReady;/u);
+  assert.match(composerSource, /const editorDisabled = disabled;/u);
+  assert.match(
+    composerSource,
+    /const isBusy = disabled \|\| isPreparingImage \|\| !normalizationReady;/u,
+  );
   assert.match(
     composerSource,
     /<MaxRichTextEditor[\s\S]*?disabled=\{editorDisabled\}[\s\S]*?onNormalizationReadyChange/u,

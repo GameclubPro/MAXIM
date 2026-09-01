@@ -1,5 +1,5 @@
 export type BroadcastSystemButtonPreview = {
-  kind: 'comments' | 'suggest';
+  kind: 'comments' | 'suggest' | 'cta';
   text: string;
 };
 
@@ -23,6 +23,8 @@ export function buildChannelBroadcastSystemButtons(options: {
   commentsEnabled?: boolean;
   postSuggestionsEnabled?: boolean;
   postSuggestionsButtonText?: string | null;
+  ctaButtonEnabled?: boolean;
+  ctaButtonText?: string | null;
 }): BroadcastSystemButtonPreview[] {
   const buttons: BroadcastSystemButtonPreview[] = [];
 
@@ -37,6 +39,13 @@ export function buildChannelBroadcastSystemButtons(options: {
     buttons.push({
       text: options.postSuggestionsButtonText?.trim() || '📰 Предложить пост',
       kind: 'suggest',
+    });
+  }
+
+  if (options.ctaButtonEnabled && options.ctaButtonText?.trim()) {
+    buttons.push({
+      text: options.ctaButtonText.trim(),
+      kind: 'cta',
     });
   }
 

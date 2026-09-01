@@ -303,6 +303,32 @@
     justify-self: end;
   }
 
+  .channel-suggest-composer__restore-warning {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--color-warning) 34%, var(--color-border));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-warning) 9%, var(--color-surface));
+    color: var(--color-ink);
+    font-size: 0.75rem;
+    line-height: 1.35;
+  }
+
+  .channel-suggest-composer__restore-warning button {
+    min-height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 7px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    font-weight: 760;
+  }
+
   .channel-suggest-composer__media-row {
     grid-template-columns: auto minmax(0, 1fr);
     min-height: 42px;
@@ -781,6 +807,11 @@
     border-color: rgba(42, 167, 189, 0.3);
     background: rgba(42, 167, 189, 0.12);
     color: rgba(24, 96, 111, 0.94);
+  }
+
+  .channel-suggest-composer__tool:focus-within {
+    outline: 2px solid color-mix(in srgb, var(--accent) 56%, transparent);
+    outline-offset: 2px;
   }
 
   .channel-suggest-composer__tool.is-disabled,
@@ -1336,7 +1367,7 @@
   .channel-suggest-card,
   .channel-suggest-empty {
     border-color: rgba(59, 94, 112, 0.1);
-    background: rgba(255, 255, 255, 0.9);
+    background: var(--color-surface-raised);
     box-shadow: 0 8px 20px var(--suggest-shadow);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -1358,7 +1389,7 @@
   }
 
   .channel-suggest-card.is-cancelled::before {
-    background: #d9556a;
+    background: var(--color-danger);
   }
 
   .channel-suggest-status,
@@ -1423,7 +1454,7 @@
       overflow-x: auto;
       overflow-y: hidden;
       padding-right: 4px;
-      mask-image: linear-gradient(90deg, #000 0 calc(100% - 10px), transparent 100%);
+      mask-image: var(--suggest-polish-toolbar-mask);
     }
 
     .channel-suggest-composer__tool,

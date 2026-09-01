@@ -13,12 +13,25 @@ const pageCss = readFileSync(
 
 test('Publik module workspace owns its settings and never imports Major presentation state', () => {
   assert.match(pageSource, /chatComments: updatePublisherChatCommentSetting/u);
+  assert.match(pageSource, /channelCommentsEnabled/u);
   assert.match(pageSource, /channelSuggestionsEnabled/u);
   assert.match(pageSource, /updatePublisherModules/u);
   assert.doesNotMatch(
     pageSource,
     /channelOverview|settingsHandoff|postSignature|getChats|getChannels/u,
   );
+});
+
+test('Publik channels expose comments independently from suggestions', () => {
+  assert.match(
+    pageSource,
+    /checked=\{entity\.moduleSettings\.channelCommentsEnabled === true\}/u,
+  );
+  assert.match(
+    pageSource,
+    /mutation\.mutate\(\{ channelCommentsEnabled \}\)/u,
+  );
+  assert.match(pageSource, /<small>Посты Публика<\/small>/u);
 });
 
 test('VK module is capability-gated, lazy, and inactive while its workspace is closed', () => {

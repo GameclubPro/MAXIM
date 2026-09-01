@@ -11,10 +11,10 @@ const settingsSectionToggleSource = readFileSync(
   'utf8',
 );
 
-test('post signature stays compact on the overview and opens in a drilldown', () => {
+test('channel post action stays compact on the overview and opens in a drilldown', () => {
   assert.match(
     channelSettingsSource,
-    /<SettingsSectionToggle[\s\S]*?title="Подпись публикаций"[\s\S]*?controls="channel-settings-post-signature"/u,
+    /<SettingsSectionToggle[\s\S]*?title="Действие под публикацией"[\s\S]*?controls="channel-settings-post-signature"/u,
   );
   assert.match(
     channelSettingsSource,
@@ -26,16 +26,24 @@ test('post signature stays compact on the overview and opens in a drilldown', ()
   );
 });
 
-test('closing the signature drilldown flushes a valid dirty draft', () => {
+test('closing the post action drilldown blocks invalid fields and flushes a valid dirty draft', () => {
   assert.match(
     channelSettingsSource,
-    /function closePostSignatureSection\(\)[\s\S]*?isPostSignatureDirty && postSignatureUrlError[\s\S]*?savePostSignature\(postSignature\);[\s\S]*?closeSection\('postSignature'\);/u,
+    /function closePostSignatureSection\(\)[\s\S]*?isPostSignatureDirty && \(postSignatureUrlError \|\| postSignatureTextError\)[\s\S]*?savePostSignature\(postSignature\);[\s\S]*?closeSection\('postSignature'\);/u,
   );
 });
 
-test('settings search includes post signature terminology', () => {
+test('post action offers signature and button modes with a real button preview', () => {
+  assert.match(
+    channelSettingsSource,
+    /value=\{postSignature\.presentation\}[\s\S]*?value: 'signature'[\s\S]*?value: 'button'/u,
+  );
+  assert.match(channelSettingsSource, /className="channel-post-signature__message-button"/u);
+});
+
+test('settings search includes post action terminology', () => {
   assert.match(
     settingsSectionToggleSource,
-    /'Подпись публикаций': 'подпись ссылка адрес посты публикации канал'/u,
+    /'Действие под публикацией': 'подпись кнопка ссылка адрес реклама посты публикации канал'/u,
   );
 });

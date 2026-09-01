@@ -89,6 +89,8 @@ export type ChannelPublicationEngagementContext = {
   includeSuggestButton: boolean;
   suggestButtonText: string | null;
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
+  buttonRows?: MaxMessageButton[][];
+  commentsButton?: { rowIndex: number; columnIndex: number; baseText: string | null } | null;
 };
 
 export const DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS = 6;

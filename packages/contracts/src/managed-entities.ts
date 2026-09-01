@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { botSpeechPersonaSchema } from './bot-speech.js';
+import { managedEntityTypeSchema } from './managed-entity-type.js';
+export { managedEntityTypeSchema, type ManagedEntityType } from './managed-entity-type.js';
 
-export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
 export const managedEntityBotRoleSchema = z.enum(['primary', 'standby']);
 export const managedEntityBotMembershipStatusSchema = z.enum(['active', 'removed']);
 export const managedEntityBotLifecycleStateSchema = z.enum([
@@ -58,7 +59,6 @@ export const managedEntityFavoriteLabelOverridesSchema = z
     service: managedEntityFavoriteLabelSchema.optional(),
   })
   .strict();
-export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 export type ManagedEntityBotRole = z.infer<typeof managedEntityBotRoleSchema>;
 export type ManagedEntityBotMembershipStatus = z.infer<
   typeof managedEntityBotMembershipStatusSchema

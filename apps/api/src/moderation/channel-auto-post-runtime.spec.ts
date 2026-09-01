@@ -1,5 +1,6 @@
 import {
   ChannelAutoPostScanManager,
+  buildChannelAutoPostButtons,
   extractChannelAutoPostMessageLinkType,
   isChannelAutoPostMessage,
   parseChannelAutoPostListedMessage,
@@ -25,6 +26,24 @@ function createScanManager(now: () => number, states = new Map()) {
 }
 
 describe('channel auto-post runtime', () => {
+  it('builds comments, suggestion, and channel CTA as full-width rows', () => {
+    expect(
+      buildChannelAutoPostButtons(
+        {
+          postSuggestionsButtonText: '✍️ Предложить объявление',
+          postSuggestionsEntryMode: 'MINIAPP',
+        },
+        { includeCommentsButton: true, includeSuggestButton: true },
+        (type, text) => ({ type: 'link', text, url: `https://max.ru/${type}` }),
+        { type: 'link', text: '📞 Заказать рекламу', url: 'https://example.test/ads' },
+      ),
+    ).toEqual([
+      [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+      [expect.objectContaining({ text: '✍️ Предложить объявление' })],
+      [expect.objectContaining({ text: '📞 Заказать рекламу' })],
+    ]);
+  });
+
   it('renders direct and forwarded MAX markup without losing the original text', () => {
     expect(
       resolveChannelAutoPostMessageText(

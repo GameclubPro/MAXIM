@@ -130,6 +130,10 @@ export class AdminManagedBroadcastMessageRuntime {
       ...(reference.botId ? { botId: reference.botId } : {}),
       ...(reference.dialogBotId ? { dialogBotId: reference.dialogBotId } : {}),
       ...(reference.customButtons.length > 0 ? { customButtons: reference.customButtons } : {}),
+      ...(reference.buttonRows ? { buttonRows: reference.buttonRows } : {}),
+      ...(reference.commentsButton !== undefined
+        ? { commentsButton: reference.commentsButton }
+        : {}),
     };
     const payload =
       reference.entityType === 'channel'

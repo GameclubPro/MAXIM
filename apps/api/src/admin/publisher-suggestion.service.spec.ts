@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PublicationDispatchProfile } from '../prisma/prisma-client';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
 import {
@@ -75,6 +79,10 @@ function createFixture(payloadOverrides: Record<string, unknown> = {}) {
   };
   const prisma = {
     auditLog,
+    channelSuggestionImageAsset: {
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
     $queryRaw: jest.fn(),
     $executeRaw: jest.fn().mockResolvedValue(1),
@@ -130,7 +138,7 @@ describe('PublisherSuggestionService', () => {
     expect(result.total).toBe(126);
     expect(result.nextCursor).toEqual(expect.any(String));
     const pageSql = sqlText(fixture.prisma.$queryRaw.mock.calls[0]?.[0]);
-    expect(pageSql).toContain("NOT IN ('published', 'cancelled')");
+    expect(pageSql).toContain("NOT IN ('published', 'drafted', 'cancelled')");
     expect(pageSql).toContain('ORDER BY created_at DESC, id DESC');
     expect(pageSql).toContain('LIMIT ?');
   });
@@ -170,6 +178,23 @@ describe('PublisherSuggestionService', () => {
     const result = await fixture.service.list('channel-1', user, { view: 'pending' });
 
     expect(result.items[0]).toHaveProperty('textFormat', 'plain');
+  });
+
+  it('returns a bounded media summary without returning filenames or image bytes', async () => {
+    const fixture = createFixture({
+      imageCount: 2,
+      imageStorageVersion: 1,
+      images: [{ base64: 'must-not-leak', fileName: 'private-name.png' }],
+    });
+    fixture.prisma.$queryRaw.mockImplementation(async (query: { strings?: readonly string[] }) =>
+      sqlText(query).includes('COUNT(*)') ? [{ total: 1 }] : [fixture.row()],
+    );
+
+    const result = await fixture.service.list('channel-1', user, { view: 'pending' });
+
+    expect(result.items[0]).toEqual(expect.objectContaining({ imageCount: 2 }));
+    expect(result.items[0]).not.toHaveProperty('images');
+    expect(result.items[0]).not.toHaveProperty('imageFileNames');
   });
 
   it('keeps the old strict response shape for cached pre-pagination miniapps', async () => {
@@ -213,6 +238,67 @@ describe('PublisherSuggestionService', () => {
       recycleCompleted: true,
     });
     expect(fixture.publications.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a recoverable Publication draft and returns its id from the review action', async () => {
+    const fixture = createFixture();
+    const claimedPayload = createClaimedPayload({ reviewAction: 'draft' });
+    const claimPending = jest
+      .spyOn(fixture.service as any, 'claimPending')
+      .mockImplementation(async () => {
+        fixture.setPayload(claimedPayload);
+        return fixture.row();
+      });
+    const process = jest
+      .spyOn(fixture.service, 'processPublicationJob')
+      .mockImplementation(async () => {
+        fixture.setPayload({
+          ...claimedPayload,
+          reviewStatus: 'drafted',
+          publicationId: 'publication-draft-1',
+        });
+        return true;
+      });
+
+    const result = await fixture.service.review('channel-1', 'suggestion-1', user, {
+      action: 'draft',
+      responseVersion: 2,
+    });
+
+    expect(result.suggestion).toEqual(
+      expect.objectContaining({
+        reviewStatus: 'drafted',
+        publicationId: 'publication-draft-1',
+      }),
+    );
+    expect(claimPending).toHaveBeenCalledWith('suggestion-1', 'channel-1', user, 'draft');
+    expect(fixture.publicationQueue.enqueue).toHaveBeenCalledWith('suggestion-1', 'claim-1', {
+      recycleCompleted: true,
+    });
+    expect(process).toHaveBeenCalledWith('suggestion-1', 'claim-1');
+  });
+
+  it('allows an image-only suggestion to enter the same durable publication claim flow', async () => {
+    const fixture = createFixture({ text: '', imageCount: 1, imageStorageVersion: 1 });
+    const claimedPayload = createClaimedPayload({
+      text: '',
+      imageCount: 1,
+      imageStorageVersion: 1,
+    });
+    jest.spyOn(fixture.service as any, 'claimPending').mockImplementation(async () => {
+      fixture.setPayload(claimedPayload);
+      return fixture.row();
+    });
+
+    await expect(
+      fixture.service.review('channel-1', 'suggestion-1', user, {
+        action: 'publish',
+        responseVersion: 2,
+      }),
+    ).resolves.toEqual({ suggestion: expect.objectContaining({ reviewStatus: 'publishing' }) });
+    expect(fixture.publicationQueue.enqueue).toHaveBeenCalledWith('suggestion-1', 'claim-1', {
+      recycleCompleted: true,
+    });
   });
 
   it('does not lose a durable claim when immediate queue enqueue fails', async () => {
@@ -260,6 +346,24 @@ describe('PublisherSuggestionService', () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
+  it('cleans stored photos only after cancellation becomes terminal', async () => {
+    const fixture = createFixture({ imageCount: 1, imageStorageVersion: 1 });
+    const cancelled = {
+      ...fixture.row(),
+      payload: { ...fixture.row().payload, reviewStatus: 'cancelled' },
+    };
+    jest.spyOn(fixture.service as any, 'cancelPending').mockResolvedValue(cancelled as never);
+
+    await expect(
+      fixture.service.review('channel-1', 'suggestion-1', user, { action: 'cancel' }),
+    ).resolves.toEqual({ suggestion: expect.objectContaining({ reviewStatus: 'cancelled' }) });
+
+    expect(fixture.prisma.channelSuggestionImageAsset.deleteMany).toHaveBeenCalledWith({
+      where: { auditLogId: 'suggestion-1' },
+    });
+    expect(fixture.publications.create).not.toHaveBeenCalled();
+  });
+
   it('returns a conflict when cancel wins while a concurrent publish is claiming', async () => {
     const fixture = createFixture();
     jest.spyOn(fixture.service as any, 'claimPending').mockImplementation(async () => {
@@ -284,6 +388,31 @@ describe('PublisherSuggestionService', () => {
     await expect(
       published.service.review('channel-1', 'suggestion-1', user, { action: 'cancel' }),
     ).rejects.toBeInstanceOf(ConflictException);
+
+    const drafted = createFixture({
+      reviewStatus: 'drafted',
+      publicationId: 'publication-draft-1',
+    });
+    await expect(
+      drafted.service.review('channel-1', 'suggestion-1', user, { action: 'draft' }),
+    ).resolves.toEqual({
+      suggestion: expect.objectContaining({
+        reviewStatus: 'drafted',
+        publicationId: 'publication-draft-1',
+      }),
+    });
+    await expect(
+      drafted.service.review('channel-1', 'suggestion-1', user, { action: 'publish' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('does not change an in-flight draft claim into an immediate publish', async () => {
+    const fixture = createFixture(createClaimedPayload({ reviewAction: 'draft' }));
+
+    await expect(
+      fixture.service.review('channel-1', 'suggestion-1', user, { action: 'publish' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(fixture.publications.create).not.toHaveBeenCalled();
   });
 
   it('keeps cached review clients on the legacy strict suggestion shape', async () => {
@@ -336,7 +465,7 @@ describe('PublisherSuggestionService', () => {
     const fixture = createFixture();
     fixture.prisma.$queryRaw.mockResolvedValue([]);
 
-    await (fixture.service as any).claimPending('suggestion-1', 'channel-1', user);
+    await (fixture.service as any).claimPending('suggestion-1', 'channel-1', user, 'publish');
 
     const sql = sqlText(fixture.prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(sql).toContain(
@@ -377,6 +506,290 @@ describe('PublisherSuggestionService', () => {
       expect.objectContaining({ claimToken: 'claim-1' }),
       'publication-1',
     );
+  });
+
+  it('moves compact ordered suggestion photos into the idempotent Publication request', async () => {
+    const fixture = createFixture(
+      createClaimedPayload({ text: '', imageCount: 2, imageStorageVersion: 1 }),
+    );
+    const first = Buffer.from('first-image');
+    const second = Buffer.from('second-image');
+    fixture.prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
+      {
+        position: 0,
+        bytes: first,
+        durablePayload: null,
+        mimeType: 'image/png',
+        fileName: 'first.png',
+        sizeBytes: first.length,
+      },
+      {
+        position: 1,
+        bytes: second,
+        durablePayload: null,
+        mimeType: 'image/jpeg',
+        fileName: 'second.jpg',
+        sizeBytes: second.length,
+      },
+    ]);
+    jest.spyOn(fixture.service as any, 'finalizeClaim').mockResolvedValue(fixture.row() as never);
+
+    await fixture.service.processPublicationJob('suggestion-1', 'claim-1');
+
+    expect(fixture.publications.create).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: user.userId }),
+      expect.objectContaining({
+        requestId: buildPublisherSuggestionPublicationRequestId('suggestion-1', 'claim-1'),
+        content: {
+          text: '',
+          textFormat: 'markdown',
+          buttons: [],
+          media: [
+            {
+              type: 'image',
+              base64: first.toString('base64'),
+              mimeType: 'image/png',
+              fileName: 'first.png',
+            },
+            {
+              type: 'image',
+              base64: second.toString('base64'),
+              mimeType: 'image/jpeg',
+              fileName: 'second.jpg',
+            },
+          ],
+        },
+      }),
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+    expect(fixture.prisma.channelSuggestionImageAsset.deleteMany).toHaveBeenCalledWith({
+      where: { auditLogId: 'suggestion-1' },
+    });
+  });
+
+  it('creates an unscheduled draft with the exact ordered stored photos', async () => {
+    const fixture = createFixture(
+      createClaimedPayload({
+        reviewAction: 'draft',
+        text: '',
+        imageCount: 2,
+        imageStorageVersion: 1,
+      }),
+    );
+    const first = Buffer.from('draft-first-image');
+    const second = Buffer.from('draft-second-image');
+    fixture.prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
+      {
+        position: 0,
+        bytes: first,
+        durablePayload: null,
+        mimeType: 'image/png',
+        fileName: 'first.png',
+        sizeBytes: first.length,
+      },
+      {
+        position: 1,
+        bytes: second,
+        durablePayload: null,
+        mimeType: 'image/jpeg',
+        fileName: 'second.jpg',
+        sizeBytes: second.length,
+      },
+    ]);
+    const finalize = jest
+      .spyOn(fixture.service as any, 'finalizeClaim')
+      .mockResolvedValue(fixture.row() as never);
+
+    await fixture.service.processPublicationJob('suggestion-1', 'claim-1');
+
+    expect(fixture.publications.create).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: user.userId }),
+      expect.objectContaining({
+        requestId: buildPublisherSuggestionPublicationRequestId('suggestion-1', 'claim-1'),
+        intent: 'draft',
+        schedule: null,
+        audience: {
+          selection: 'SELECTED',
+          mode: 'SNAPSHOT',
+          targets: [{ chatId: 'channel-1', entityType: 'channel' }],
+        },
+        content: expect.objectContaining({
+          text: '',
+          media: [
+            expect.objectContaining({
+              base64: first.toString('base64'),
+              fileName: 'first.png',
+            }),
+            expect.objectContaining({
+              base64: second.toString('base64'),
+              fileName: 'second.jpg',
+            }),
+          ],
+        }),
+      }),
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+    expect(finalize).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'draft', claimToken: 'claim-1' }),
+      'publication-1',
+    );
+    expect(fixture.prisma.channelSuggestionImageAsset.deleteMany).toHaveBeenCalledWith({
+      where: { auditLogId: 'suggestion-1' },
+    });
+  });
+
+  it('finalizes only the exact draft claim into the drafted terminal status', async () => {
+    const fixture = createFixture(createClaimedPayload({ reviewAction: 'draft' }));
+    fixture.prisma.$queryRaw.mockResolvedValue([fixture.row()]);
+    const claim = {
+      action: 'draft' as const,
+      claimToken: 'claim-1',
+      claimedAt: '2026-08-27T10:05:00.000Z',
+      requestId: buildPublisherSuggestionPublicationRequestId('suggestion-1', 'claim-1'),
+      user,
+    };
+
+    await (fixture.service as any).finalizeClaim(fixture.row(), claim, 'publication-draft-1');
+
+    const query = fixture.prisma.$queryRaw.mock.calls[0]?.[0] as {
+      strings?: readonly string[];
+      values?: unknown[];
+    };
+    const patchValue = query.values?.find(
+      (value): value is string =>
+        typeof value === 'string' && value.includes('"reviewStatus":"drafted"'),
+    );
+    expect(JSON.parse(patchValue ?? '{}')).toEqual(
+      expect.objectContaining({
+        reviewStatus: 'drafted',
+        publicationId: 'publication-draft-1',
+        draftedAt: expect.any(String),
+      }),
+    );
+    expect(sqlText(query)).toContain("payload->>'reviewAction' = ?::text");
+    expect(query.values).toContain('draft');
+  });
+
+  it('recovers an ambiguous draft response with the same Publication request', async () => {
+    const claimedPayload = createClaimedPayload({ reviewAction: 'draft' });
+    const fixture = createFixture(claimedPayload);
+    fixture.publications.create.mockResolvedValue({ id: 'publication-draft-existing' });
+    fixture.prisma.publicationMutationRecord.findUnique.mockResolvedValue({
+      publicationId: 'publication-draft-existing',
+    });
+    let finalizeAttempt = 0;
+    jest.spyOn(fixture.service as any, 'finalizeClaim').mockImplementation(async () => {
+      finalizeAttempt += 1;
+      if (finalizeAttempt === 1) {
+        return null;
+      }
+      fixture.setPayload({
+        ...claimedPayload,
+        reviewStatus: 'drafted',
+        publicationId: 'publication-draft-existing',
+      });
+      return fixture.row();
+    });
+
+    await expect(
+      fixture.service.review('channel-1', 'suggestion-1', user, { action: 'draft' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    const recovered = await fixture.service.review('channel-1', 'suggestion-1', user, {
+      action: 'draft',
+      responseVersion: 2,
+    });
+
+    expect(recovered.suggestion).toEqual(
+      expect.objectContaining({
+        reviewStatus: 'drafted',
+        publicationId: 'publication-draft-existing',
+      }),
+    );
+    expect(fixture.publications.create).toHaveBeenCalledTimes(2);
+    expect(fixture.publications.create.mock.calls[1]).toEqual(
+      fixture.publications.create.mock.calls[0],
+    );
+    expect(fixture.publicationQueue.enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('rebuilds the exact same photo request when a worker retries after publication creation', async () => {
+    const fixture = createFixture(createClaimedPayload({ imageCount: 1, imageStorageVersion: 1 }));
+    const image = Buffer.from('stable-image');
+    fixture.prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
+      {
+        position: 0,
+        bytes: image,
+        durablePayload: null,
+        mimeType: 'image/png',
+        fileName: 'stable.png',
+        sizeBytes: image.length,
+      },
+    ]);
+    fixture.publications.create.mockResolvedValue({ id: 'publication-existing' });
+    jest.spyOn(fixture.service as any, 'finalizeClaim').mockResolvedValue(fixture.row() as never);
+
+    await fixture.service.processPublicationJob('suggestion-1', 'claim-1');
+    await fixture.service.processPublicationJob('suggestion-1', 'claim-1');
+
+    expect(fixture.publications.create).toHaveBeenCalledTimes(2);
+    expect(fixture.publications.create.mock.calls[1]).toEqual(
+      fixture.publications.create.mock.calls[0],
+    );
+    expect(fixture.publications.create.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        requestId: buildPublisherSuggestionPublicationRequestId('suggestion-1', 'claim-1'),
+        content: expect.objectContaining({
+          media: [
+            {
+              type: 'image',
+              base64: image.toString('base64'),
+              mimeType: 'image/png',
+              fileName: 'stable.png',
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it('keeps the exact claim retryable when compact photo rows are unavailable', async () => {
+    const fixture = createFixture(
+      createClaimedPayload({ text: '', imageCount: 1, imageStorageVersion: 1 }),
+    );
+    const release = jest.spyOn(fixture.service as any, 'releaseTerminalClaim');
+
+    await expect(
+      fixture.service.processPublicationJob('suggestion-1', 'claim-1'),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(fixture.publications.create).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it('accepts a concurrent terminal finalize that cleaned source photos first', async () => {
+    const claimedPayload = createClaimedPayload({
+      text: '',
+      imageCount: 1,
+      imageStorageVersion: 1,
+    });
+    const fixture = createFixture(claimedPayload);
+    fixture.prisma.channelSuggestionImageAsset.findMany.mockImplementation(async () => {
+      fixture.setPayload({
+        ...claimedPayload,
+        reviewStatus: 'published',
+        publicationId: 'publication-existing',
+      });
+      return [];
+    });
+
+    await expect(fixture.service.processPublicationJob('suggestion-1', 'claim-1')).resolves.toBe(
+      true,
+    );
+
+    expect(fixture.publications.create).not.toHaveBeenCalled();
+    expect(fixture.prisma.channelSuggestionImageAsset.deleteMany).toHaveBeenCalledWith({
+      where: { auditLogId: 'suggestion-1' },
+    });
   });
 
   it('recovers a crash after publication creation without creating a duplicate', async () => {
@@ -443,6 +856,7 @@ describe('PublisherSuggestionService', () => {
       expect.objectContaining({ claimToken: 'claim-1' }),
       'invalid content',
     );
+    expect(fixture.prisma.channelSuggestionImageAsset.deleteMany).not.toHaveBeenCalled();
   });
 
   it('clears a terminal exact claim from the pending recovery state', async () => {

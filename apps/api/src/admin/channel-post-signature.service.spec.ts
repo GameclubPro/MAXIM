@@ -10,6 +10,7 @@ function createFixture() {
     channelSettings: {
       findUnique: jest.fn().mockResolvedValue({
         postSignatureEnabled: true,
+        postSignaturePresentation: 'SIGNATURE',
         postSignatureText: 'Читать канал',
         postSignatureUrl: '',
       }),
@@ -115,6 +116,7 @@ describe('ChannelPostSignatureService', () => {
     const { maxClient, prisma, service } = createFixture();
     prisma.channelSettings.findUnique.mockResolvedValue({
       postSignatureEnabled: true,
+      postSignaturePresentation: 'SIGNATURE',
       postSignatureText: 'Заказать рекламу',
       postSignatureUrl: 'https://ads.example/contact?source=(channel)',
     });
@@ -134,6 +136,36 @@ describe('ChannelPostSignatureService', () => {
     });
     expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
     expect(prisma.managedBotChatCatalog.findFirst).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns a button without appending the action to the post text', async () => {
+    const { maxClient, prisma, service } = createFixture();
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSignatureEnabled: true,
+      postSignaturePresentation: 'BUTTON',
+      postSignatureText: '📞 Заказать рекламу',
+      postSignatureUrl: 'https://ads.example/contact',
+    });
+
+    await expect(
+      service.preparePostText(
+        'channel-1',
+        { text: 'Новость', textFormat: 'markdown' },
+        { entityType: 'channel' },
+      ),
+    ).resolves.toEqual({
+      text: 'Новость',
+      textFormat: 'markdown',
+      signatureApplied: false,
+    });
+    await expect(
+      service.buildPostButton('channel-1', { entityType: 'channel' }),
+    ).resolves.toEqual({
+      type: 'link',
+      text: '📞 Заказать рекламу',
+      url: 'https://ads.example/contact',
+    });
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
   });
 
@@ -207,11 +239,13 @@ describe('ChannelPostSignatureService', () => {
     await expect(
       service.updateSettings('channel-1', 'admin-1', {
         enabled: true,
+        presentation: 'button',
         text: '  Новый текст  ',
         url: ' https://max.ru/advertising ',
       }),
     ).resolves.toEqual({
       enabled: true,
+      presentation: 'button',
       text: 'Новый текст',
       url: 'https://max.ru/advertising',
     });
@@ -221,11 +255,13 @@ describe('ChannelPostSignatureService', () => {
       create: {
         chatId: 'channel-1',
         postSignatureEnabled: true,
+        postSignaturePresentation: 'BUTTON',
         postSignatureText: 'Новый текст',
         postSignatureUrl: 'https://max.ru/advertising',
       },
       update: {
         postSignatureEnabled: true,
+        postSignaturePresentation: 'BUTTON',
         postSignatureText: 'Новый текст',
         postSignatureUrl: 'https://max.ru/advertising',
       },
@@ -239,6 +275,7 @@ describe('ChannelPostSignatureService', () => {
         payload: {
           changed: {
             enabled: true,
+            presentation: 'button',
             text: 'Новый текст',
             url: 'https://max.ru/advertising',
           },

@@ -15178,9 +15178,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const threadId = params.existingDialogThreadId?.trim() || randomUUID();
+    const ctaButton =
+      postSignatureEnabled && this.channelPostSignatureService
+        ? ((await this.channelPostSignatureService.buildPostButton?.(chatId, {
+            entityType: 'channel',
+            trafficClass: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+          })) ?? null)
+        : null;
     const buttons = buildChannelAutoPostButtons(
       managedChannel.channelSettings,
-      { includeCommentsButton, includeSuggestButton },
+      buttonVisibility,
       (type, buttonText, suggestionEntryMode) =>
         this.buildChannelDialogButton(
           chatId,
@@ -15190,6 +15198,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           autoAttachBotId,
           suggestionEntryMode,
         ),
+      ctaButton,
     );
     let deliveryMode: 'edit_message' | 'replace_with_bot_message' = 'edit_message';
     let replacementMessageId: string | null = null;
@@ -15341,7 +15350,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             preparedText.text,
             {
               buttons,
-              appendNewInlineKeyboardRows: true,
               mergeExistingInlineKeyboard: true,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
@@ -15381,6 +15389,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 autoAttachBotId,
                 suggestionEntryMode,
               ),
+            ctaButton,
           );
           this.logger.warn(
             {
@@ -15574,6 +15583,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const auditIncludesCommentsButton =
       includeCommentsButton || existingButtonKinds.has('comments');
     const auditIncludesSuggestButton = includeSuggestButton || existingButtonKinds.has('suggest');
+    const frozenButtonRows = buildChannelAutoPostButtons(
+      managedChannel.channelSettings,
+      {
+        includeCommentsButton: auditIncludesCommentsButton,
+        includeSuggestButton: auditIncludesSuggestButton,
+      },
+      (type, buttonText, suggestionEntryMode) =>
+        this.buildChannelDialogButton(
+          chatId,
+          type,
+          threadId,
+          buttonText,
+          autoAttachBotId,
+          suggestionEntryMode,
+        ),
+      ctaButton,
+    );
     try {
       await this.prisma.auditLog.create({
         data: {
@@ -15585,6 +15611,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             threadId,
             includeCommentsButton: auditIncludesCommentsButton,
             includeSuggestButton: auditIncludesSuggestButton,
+            buttonRows: frozenButtonRows,
+            commentsButton: auditIncludesCommentsButton
+              ? { rowIndex: 0, columnIndex: 0, baseText: '💬 Комментарии' }
+              : null,
             suggestButtonText:
               managedChannel.channelSettings.postSuggestionsButtonText.trim() ||
               '📰 Предложить пост',

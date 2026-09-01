@@ -46,6 +46,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
+import { buildChannelPostActionRows } from '../common/channel-post-actions';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import {
   buildManagedGiveawayDrawRank,
@@ -631,8 +632,12 @@ export class ManagedGiveawayService {
             sourceTag: sendOptions.sourceTag,
             timeoutMs: sendOptions.timeoutMs,
             prepareAttempt: async ({ botId }) => {
-              const [publicationButton, imagePayload] = await Promise.all([
-                this.buildGiveawayEntryButton(giveaway, botId),
+              const [buttonRows, imagePayload] = await Promise.all([
+                this.buildGiveawayPostActionRows(
+                  giveaway,
+                  this.buildGiveawayEntryButton(giveaway, botId),
+                  source,
+                ),
                 this.uploadGiveawayImage(giveaway, botId, source, false),
               ]);
               return {
@@ -640,7 +645,7 @@ export class ManagedGiveawayService {
                   ...(publicationTextPayload.textFormat
                     ? { textFormat: publicationTextPayload.textFormat }
                     : {}),
-                  ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
+                  ...(buttonRows ? { buttons: buttonRows } : {}),
                   ...(imagePayload ? { imagePayload } : {}),
                 },
               };
@@ -651,15 +656,19 @@ export class ManagedGiveawayService {
             },
           })
         : await (async () => {
-            const [publicationButton, imagePayload] = await Promise.all([
-              this.buildGiveawayEntryButton(giveaway, publicationBotId),
+            const [buttonRows, imagePayload] = await Promise.all([
+              this.buildGiveawayPostActionRows(
+                giveaway,
+                this.buildGiveawayEntryButton(giveaway, publicationBotId),
+                source,
+              ),
               this.uploadGiveawayImage(giveaway, publicationBotId, source),
             ]);
             const publicationOptions = {
               ...(publicationTextPayload.textFormat
                 ? { textFormat: publicationTextPayload.textFormat }
                 : {}),
-              ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
+              ...(buttonRows ? { buttons: buttonRows } : {}),
               ...(imagePayload ? { imagePayload } : {}),
             } satisfies MaxSendMessageOptions;
             maxSendAttempted = true;
@@ -2433,16 +2442,21 @@ export class ManagedGiveawayService {
   private async buildGiveawayResultsMessageOptions(
     giveaway: PersistedGiveawayWithRelations,
     botId?: string | null,
+    source: GiveawayActionSource = 'miniapp',
   ): Promise<MaxSendMessageOptions | undefined> {
-    const button = await this.buildGiveawayResultsButton(giveaway, botId);
+    const buttonRows = await this.buildGiveawayPostActionRows(
+      giveaway,
+      this.buildGiveawayResultsButton(giveaway, botId),
+      source,
+    );
     const publicationMessageId = giveaway.publicationMessageId?.trim() ?? '';
 
-    if (!button && !publicationMessageId) {
+    if (!buttonRows && !publicationMessageId) {
       return undefined;
     }
 
     return {
-      ...(button ? { buttons: [[button]] } : {}),
+      ...(buttonRows ? { buttons: buttonRows } : {}),
       ...(publicationMessageId
         ? {
             messageLink: {
@@ -2452,6 +2466,27 @@ export class ManagedGiveawayService {
           }
         : {}),
     };
+  }
+
+  private async buildGiveawayPostActionRows(
+    giveaway: PersistedGiveawayWithRelations,
+    actionButton: Promise<MaxMessageButton | null>,
+    source: GiveawayActionSource,
+  ): Promise<MaxMessageButton[][] | undefined> {
+    const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
+    const [resolvedActionButton, ctaButton] = await Promise.all([
+      actionButton,
+      this.channelPostSignatureService?.buildPostButton?.(giveaway.sourceChatId, {
+        entityType: this.fromPrismaEntityType(giveaway.entityType),
+        trafficClass: sendOptions.trafficClass,
+        sourceTag: sendOptions.sourceTag,
+      }) ?? Promise.resolve(null),
+    ]);
+    const rows = buildChannelPostActionRows({
+      ctaButton,
+      customButtonRows: resolvedActionButton ? [[resolvedActionButton]] : [],
+    });
+    return rows.length > 0 ? rows : undefined;
   }
 
   private mergeMessageOptionsWithTextFormat(
@@ -3003,8 +3038,12 @@ export class ManagedGiveawayService {
         this.normalizeNonEmptyString(giveaway.publicationBotId) ??
         (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId));
       if (status === ManagedGiveawayStatus.CANCELED) {
-        const button = await this.buildGiveawayOpenButton(giveaway);
-        const options = button ? { buttons: [[button]] } : undefined;
+        const buttons = await this.buildGiveawayPostActionRows(
+          giveaway,
+          this.buildGiveawayOpenButton(giveaway),
+          source,
+        );
+        const options = buttons ? { buttons } : undefined;
         editAttemptStartedAt = new Date();
         if (publicationBotId) {
           await this.maxClient.editMessageInlineKeyboard(
@@ -3027,8 +3066,12 @@ export class ManagedGiveawayService {
       }
 
       if (status === ManagedGiveawayStatus.ACTIVE) {
-        const button = await this.buildGiveawayEntryButton(giveaway);
-        const options = button ? { buttons: [[button]] } : undefined;
+        const buttons = await this.buildGiveawayPostActionRows(
+          giveaway,
+          this.buildGiveawayEntryButton(giveaway),
+          source,
+        );
+        const options = buttons ? { buttons } : undefined;
         editAttemptStartedAt = new Date();
         if (publicationBotId) {
           await this.maxClient.editMessageInlineKeyboard(
@@ -3050,8 +3093,12 @@ export class ManagedGiveawayService {
         return;
       }
 
-      const button = await this.buildGiveawayOpenButton(giveaway);
-      const options = button ? { buttons: [[button]] } : undefined;
+      const buttons = await this.buildGiveawayPostActionRows(
+        giveaway,
+        this.buildGiveawayOpenButton(giveaway),
+        source,
+      );
+      const options = buttons ? { buttons } : undefined;
       editAttemptStartedAt = new Date();
       if (publicationBotId) {
         await this.maxClient.editMessageInlineKeyboard(
@@ -3399,7 +3446,7 @@ export class ManagedGiveawayService {
               timeoutMs: sendOptions.timeoutMs,
               prepareAttempt: async ({ botId }) => {
                 const options = this.mergeMessageOptionsWithTextFormat(
-                  await this.buildGiveawayResultsMessageOptions(giveaway, botId),
+                  await this.buildGiveawayResultsMessageOptions(giveaway, botId, source),
                   resultsTextPayload.textFormat,
                 );
                 return options ? { options } : {};
@@ -3412,7 +3459,7 @@ export class ManagedGiveawayService {
             })
           : await (async () => {
               const resultOptions = this.mergeMessageOptionsWithTextFormat(
-                await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
+                await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId, source),
                 resultsTextPayload.textFormat,
               );
               maxSendAttemptStartedAt = new Date();
@@ -3529,7 +3576,7 @@ export class ManagedGiveawayService {
         resultsBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
       }
       const resultOptions = this.mergeMessageOptionsWithTextFormat(
-        await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
+        await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId, source),
         resultsTextPayload.textFormat,
       );
       editAttemptStartedAt = new Date();

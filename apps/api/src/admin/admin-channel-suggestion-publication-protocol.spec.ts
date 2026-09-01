@@ -230,6 +230,37 @@ describe('channel suggestion publication protocol', () => {
     ).toEqual({ kind: 'manual', reason: 'ledger_mismatch' });
   });
 
+  it('round-trips a CTA-only keyboard without requiring a dialog thread', () => {
+    const context = withChannelSuggestionPublicationContextDigest({
+      protocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+      preparedAt: '2026-08-20T10:01:00.000Z',
+      messageDigest: 'b'.repeat(64),
+      botId: 'bot-1',
+      threadId: null,
+      buttons: [
+        [{ type: 'link', text: '📞 Заказать рекламу', url: 'https://example.test/ads' }],
+      ],
+      includeCommentsButton: false,
+      includeSuggestButton: false,
+      includeCtaButton: true,
+      suggestButtonText: null,
+      suggestionEntryMode: 'BOT',
+      authorAttribution: {
+        userId: actorUserId,
+        displayName: 'Автор',
+        mentionDisplayName: 'Автор',
+        username: null,
+        profileUrl: null,
+      },
+    });
+
+    expect(
+      readChannelSuggestionPublicationContextV1(
+        createPayload({ reviewPublicationContext: context }),
+      ),
+    ).toEqual(context);
+  });
+
   it('rejects malformed persisted button context', () => {
     expect(
       readChannelSuggestionPublicationContextV1(

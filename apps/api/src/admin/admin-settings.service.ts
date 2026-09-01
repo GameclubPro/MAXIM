@@ -574,6 +574,12 @@ export class AdminSettingsService {
                 trafficClass: 'interactive',
                 sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
               }),
+            buildCtaButton: () =>
+              channelPostSignatureService.buildPostButton(chatId, {
+                entityType: 'channel',
+                trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+              }),
           }
         : {}),
     });

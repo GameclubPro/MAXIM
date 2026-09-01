@@ -34,7 +34,12 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     }>;
   };
   const channelSettings = (await api.request('/channels/preview-channel/settings-screen')) as {
-    postSignature: { enabled: boolean; text: string; url: string };
+    postSignature: {
+      enabled: boolean;
+      presentation: 'signature' | 'button';
+      text: string;
+      url: string;
+    };
     managedBroadcasts: Array<{
       id: string;
       targetMode: string;
@@ -67,6 +72,7 @@ test('preview settings include schema-complete managed broadcast summaries', asy
   assert.equal(channelSettings.managedBroadcasts[0]?.targetMode, 'current');
   assert.deepEqual(channelSettings.postSignature, {
     enabled: false,
+    presentation: 'signature',
     text: 'Подписаться на канал',
     url: '',
   });
@@ -88,22 +94,30 @@ test('preview channel signature update is isolated from settings and Publik VK i
     method: 'PATCH',
     body: JSON.stringify({
       enabled: true,
+      presentation: 'button',
       text: 'Заказать рекламу',
       url: 'https://max.ru/advertising-manager',
     }),
   });
   const signature = (await api.request('/channels/preview-channel/post-signature')) as {
     enabled: boolean;
+    presentation: 'signature' | 'button';
     text: string;
     url: string;
   };
   const screen = (await api.request('/channels/preview-channel/settings-screen')) as {
-    postSignature: { enabled: boolean; text: string; url: string };
+    postSignature: {
+      enabled: boolean;
+      presentation: 'signature' | 'button';
+      text: string;
+      url: string;
+    };
   };
   const vkAfter = (await api.request(publisherVkPath)) as VkParsingFeed;
 
   assert.deepEqual(signature, {
     enabled: true,
+    presentation: 'button',
     text: 'Заказать рекламу',
     url: 'https://max.ru/advertising-manager',
   });

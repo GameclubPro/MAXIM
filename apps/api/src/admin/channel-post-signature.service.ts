@@ -16,10 +16,11 @@ import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxApiTrafficClass,
+  type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
-import { ChatEntityType } from '../prisma/prisma-client';
+import { ChannelPostSignaturePresentation, ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export const CHANNEL_POST_MAX_TEXT_LENGTH = 4_000;
@@ -45,12 +46,17 @@ export class ChannelPostSignatureService {
       where: { chatId },
       select: {
         postSignatureEnabled: true,
+        postSignaturePresentation: true,
         postSignatureText: true,
         postSignatureUrl: true,
       },
     });
     return channelPostSignatureSettingsSchema.parse({
       enabled: settings?.postSignatureEnabled ?? false,
+      presentation:
+        settings?.postSignaturePresentation === ChannelPostSignaturePresentation.BUTTON
+          ? 'button'
+          : 'signature',
       text: settings?.postSignatureText ?? CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
       url: settings?.postSignatureUrl ?? '',
     });
@@ -78,11 +84,19 @@ export class ChannelPostSignatureService {
         create: {
           chatId,
           postSignatureEnabled: next.enabled,
+          postSignaturePresentation:
+            next.presentation === 'button'
+              ? ChannelPostSignaturePresentation.BUTTON
+              : ChannelPostSignaturePresentation.SIGNATURE,
           postSignatureText: next.text,
           postSignatureUrl: next.url,
         },
         update: {
           postSignatureEnabled: next.enabled,
+          postSignaturePresentation:
+            next.presentation === 'button'
+              ? ChannelPostSignaturePresentation.BUTTON
+              : ChannelPostSignaturePresentation.SIGNATURE,
           postSignatureText: next.text,
           postSignatureUrl: next.url,
         },
@@ -114,7 +128,7 @@ export class ChannelPostSignatureService {
       return { ...input, signatureApplied: false };
     }
     const settings = await this.getSettings(chatId);
-    if (!settings.enabled) {
+    if (!settings.enabled || settings.presentation === 'button') {
       return { ...input, signatureApplied: false };
     }
     await this.assertChannel(chatId);
@@ -160,6 +174,36 @@ export class ChannelPostSignatureService {
       .filter(Boolean)
       .join('\n\n');
     return { text, textFormat: 'html', engagementText, signatureApplied: true };
+  }
+
+  async buildPostButton(
+    chatId: string,
+    options: {
+      entityType?: 'chat' | 'channel';
+      trafficClass?: MaxApiTrafficClass;
+      sourceTag?: string;
+    } = {},
+  ): Promise<MaxMessageButton | null> {
+    if (options.entityType === 'chat') {
+      return null;
+    }
+    const settings = await this.getSettings(chatId);
+    if (!settings.enabled || settings.presentation !== 'button') {
+      return null;
+    }
+    await this.assertChannel(chatId);
+    const url =
+      settings.url ||
+      (await this.resolveChannelLink(
+        chatId,
+        options.trafficClass ?? 'background',
+        options.sourceTag,
+      ));
+    return {
+      type: 'link',
+      text: settings.text,
+      url,
+    };
   }
 
   async assertChannelLinkAvailable(

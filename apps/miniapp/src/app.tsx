@@ -430,9 +430,11 @@ function RouteLoadingFallback() {
 function KeyedChannelSuggestDialogPage({
   api,
   profile,
+  userId,
 }: {
   api: ReturnType<typeof createApiTransport>;
   profile: MiniappProfile;
+  userId: string;
 }) {
   const location = useLocation();
   return (
@@ -440,6 +442,7 @@ function KeyedChannelSuggestDialogPage({
       key={location.pathname + location.search}
       api={api}
       profile={profile}
+      userId={userId}
     />
   );
 }
@@ -522,12 +525,16 @@ function AppRoutes({
           {moderationProfile ? (
             <Route
               path="/publications"
-              element={<LazyPublicationsPage api={apiClient} profile="moderation" />}
+              element={
+                <LazyPublicationsPage api={apiClient} profile="moderation" userId={me.userId} />
+              }
             />
           ) : (
             <Route
               path="/publications"
-              element={<LazyPublicationsPage api={apiClient} profile="publisher" />}
+              element={
+                <LazyPublicationsPage api={apiClient} profile="publisher" userId={me.userId} />
+              }
             />
           )}
           {moderationProfile ? (
@@ -539,19 +546,23 @@ function AppRoutes({
               element={<LazyPublisherEntityModulesPage api={apiClient} />}
             />
           ) : null}
-          {moderationProfile ? (
-            <Route
-              path="/channel/:chatId/dialog/comments"
-              element={<LazyChannelDialogPage api={apiClient} profile="moderation" />}
-            />
-          ) : null}
+          <Route
+            path="/channel/:chatId/dialog/comments"
+            element={<LazyChannelDialogPage api={apiClient} profile={me.profile} />}
+          />
           <Route
             path="/chat/:chatId/dialog/comments"
             element={<LazyChannelDialogPage api={apiClient} profile={me.profile} />}
           />
           <Route
             path="/channel/:chatId/dialog/suggest"
-            element={<KeyedChannelSuggestDialogPage api={apiClient} profile={me.profile} />}
+            element={
+              <KeyedChannelSuggestDialogPage
+                api={apiClient}
+                profile={me.profile}
+                userId={me.userId}
+              />
+            }
           />
           {moderationProfile ? (
             <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />

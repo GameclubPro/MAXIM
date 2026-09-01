@@ -82,6 +82,7 @@ describe('publisher contracts', () => {
         revision: 0,
         chatComments: null,
         autoRepliesEnabled: null,
+        channelCommentsEnabled: null,
         channelSuggestionsEnabled: null,
       },
     });
@@ -100,8 +101,12 @@ describe('publisher contracts', () => {
     });
 
     expect(suggestion.textFormat).toBe('markdown');
+    expect(suggestion.imageCount).toBe(0);
     expect(suggestion.reviewError).toBe('Маршрут Публика временно недоступен.');
     expect(publisherSuggestionSchema.safeParse({ ...suggestion, textFormat: 'html' }).success).toBe(
+      false,
+    );
+    expect(publisherSuggestionSchema.safeParse({ ...suggestion, imageCount: 11 }).success).toBe(
       false,
     );
   });
@@ -113,6 +118,31 @@ describe('publisher contracts', () => {
     expect(
       reviewPublisherSuggestionRequestSchema.parse({ action: 'publish', responseVersion: 2 }),
     ).toEqual({ action: 'publish', responseVersion: 2 });
+    expect(
+      reviewPublisherSuggestionRequestSchema.parse({ action: 'draft', responseVersion: 2 }),
+    ).toEqual({ action: 'draft', responseVersion: 2 });
+    expect(reviewPublisherSuggestionRequestSchema.safeParse({ action: 'send' }).success).toBe(
+      false,
+    );
+  });
+
+  it('keeps drafted suggestions in an explicit terminal state with their Publication id', () => {
+    expect(
+      publisherSuggestionSchema.parse({
+        id: 'suggestion-drafted',
+        text: 'Материал для редактора',
+        textFormat: 'plain',
+        authorDisplayName: 'Читатель',
+        createdAt: '2026-09-01T10:00:00.000Z',
+        reviewStatus: 'drafted',
+        publicationId: 'publication-draft-1',
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        reviewStatus: 'drafted',
+        publicationId: 'publication-draft-1',
+      }),
+    );
   });
 
   it('defaults publisher suggestions to a bounded pending page', () => {
@@ -179,12 +209,14 @@ describe('publisher contracts', () => {
           commentsChatBroadcastsEnabled: true,
         },
         autoRepliesEnabled: true,
+        channelCommentsEnabled: null,
         channelSuggestionsEnabled: null,
       },
       readiness: {
         state: 'ready',
         canPublish: true,
         canUseChatComments: true,
+        canUseChannelComments: false,
         canPublishSuggestions: false,
         blockerCode: null,
         checkedAt: null,
@@ -330,6 +362,7 @@ describe('publisher contracts', () => {
     ).toEqual({ expectedRevision: 2, publikEnabled: false });
     expect(
       updatePublisherEntityModuleSettingsRequestSchema.parse({
+        channelCommentsEnabled: true,
         expectedRevision: 4,
         chatComments: {
           commentsEnabled: true,
@@ -338,6 +371,7 @@ describe('publisher contracts', () => {
         },
       }),
     ).toEqual({
+      channelCommentsEnabled: true,
       expectedRevision: 4,
       chatComments: {
         commentsEnabled: true,

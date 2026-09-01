@@ -105,6 +105,7 @@ describe('PublisherChatCommentQueueService', () => {
     expect(first?.[1]).toEqual(
       expect.objectContaining({
         kind: 'edit_comment_keyboard',
+        readinessFeature: 'publication',
         requiredBotId: 'publik-bot',
         dialogBotId: 'main-bot',
         countSnapshot: 4,

@@ -22,7 +22,8 @@ export function orderPublisherSuggestions(
     pending: 0,
     publishing: 1,
     published: 2,
-    cancelled: 3,
+    drafted: 3,
+    cancelled: 4,
   };
 
   return [...suggestions].sort((left, right) => {
@@ -68,7 +69,10 @@ export function getPublisherSuggestionStatusLabel(
     return 'Публикация создана';
   }
   if (status === 'publishing') {
-    return 'Публикуется';
+    return 'Готовится';
+  }
+  if (status === 'drafted') {
+    return 'Черновик создан';
   }
   return status === 'cancelled' ? 'Отклонено' : 'Ожидает решения';
 }

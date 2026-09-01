@@ -459,6 +459,50 @@ async function scrollSettingsDrilldownToBottom(page) {
   }
 }
 
+async function scrollPaginatedListToStatus(page, options) {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const deadline = Date.now() + timeoutMs;
+  const status = page.locator(options.statusSelector).last();
+  await options.list.hover();
+
+  let statusText = (await status.textContent())?.trim() ?? '';
+  while (statusText !== options.expectedStatus && Date.now() < deadline) {
+    const previousStatus = statusText;
+    await page.mouse.wheel(0, 1_200);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+
+    await page
+      .waitForFunction(
+        ({ loadMoreSelector, statusSelector, previous }) => {
+          const statuses = Array.from(document.querySelectorAll(statusSelector));
+          const current = statuses.at(-1)?.textContent?.trim() ?? '';
+          const loadMore = document.querySelector(loadMoreSelector);
+          return (
+            current !== previous ||
+            (loadMore instanceof HTMLButtonElement && !loadMore.disabled)
+          );
+        },
+        {
+          loadMoreSelector: options.loadMoreSelector,
+          statusSelector: options.statusSelector,
+          previous: previousStatus,
+        },
+        { timeout: Math.min(2_000, remainingMs) },
+      )
+      .catch(() => undefined);
+    statusText = (await status.textContent())?.trim() ?? '';
+  }
+
+  if (statusText !== options.expectedStatus) {
+    throw new Error(
+      `${options.label} stopped before the final page: ${statusText || 'missing status'}`,
+    );
+  }
+}
+
 const scenarioBehaviors = [
   {
     name: 'home',
@@ -635,8 +679,8 @@ const scenarioBehaviors = [
     name: 'publisher-channel-suggestions-confirm',
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByRole('button', { name: 'Опубликовать', exact: true }).first().click();
-      const dialog = page.getByRole('dialog', { name: 'Опубликовать предложку?' });
+      await page.getByRole('button', { name: 'Открыть в редакторе', exact: true }).first().click();
+      const dialog = page.getByRole('dialog', { name: 'Открыть предложку в редакторе?' });
       await dialog.waitFor({ state: 'visible' });
       const preview = dialog.locator('.publisher-suggestion-confirm__text');
       if (/\*\*|\+\+|~~/u.test((await preview.textContent()) ?? '')) {
@@ -677,59 +721,51 @@ const scenarioBehaviors = [
   {
     name: 'publisher-entities-large',
     beforeShot: async (page) => {
-      const loadMore = page.locator('.publisher-entities-page__load-more');
-      await loadMore.waitFor({ state: 'visible' });
+      const list = page.locator('.publisher-entities-page__list');
+      await list.waitFor({ state: 'visible' });
       await page.waitForFunction(
         () =>
           document.querySelector('.publisher-entities-page__filter-row > span')?.textContent ===
           '30 из 200',
       );
-      await loadMore.scrollIntoViewIfNeeded();
-      await page.waitForFunction(() => {
-        const button = document.querySelector('.publisher-entities-page__load-more');
-        if (!(button instanceof HTMLButtonElement)) {
-          return false;
-        }
-        const rect = button.getBoundingClientRect();
-        const hitTarget = document.elementFromPoint(
-          rect.left + rect.width / 2,
-          rect.top + rect.height / 2,
-        );
-        return hitTarget === button || (hitTarget !== null && button.contains(hitTarget));
+      await scrollPaginatedListToStatus(page, {
+        list,
+        statusSelector: '.publisher-entities-page__filter-row > span',
+        expectedStatus: '200 получателей',
+        loadMoreSelector: '.publisher-entities-page__load-more',
+        label: 'Publisher catalog scroll',
       });
-      await loadMore.click();
-      await page.waitForFunction(
-        () =>
-          document.querySelector('.publisher-entities-page__filter-row > span')?.textContent ===
-          '60 из 200',
-      );
-      const list = page.locator('.publisher-entities-page__list');
-      await list.evaluate((element) => {
-        element.scrollTop = element.scrollHeight;
-        element.dispatchEvent(new Event('scroll'));
-      });
-      await page.waitForFunction(
-        () =>
-          document.querySelector('.publisher-entities-page__filter-row > span')?.textContent ===
-          '90 из 200',
-      );
       await page.locator('.publisher-entities-page__list.is-virtual').waitFor({ state: 'visible' });
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await page.mouse.wheel(0, 1_200);
+        await page.waitForTimeout(50);
+      }
       await page.waitForFunction(() => {
         const list = document.querySelector('.publisher-entities-page__list.is-virtual');
-        if (!(list instanceof HTMLElement) || list.scrollTop <= 0) {
+        const lastRow = list?.querySelector('.publisher-entity-row[aria-posinset="200"]');
+        const bottomNav = document.querySelector('.bottom-nav');
+        if (
+          !(list instanceof HTMLElement) ||
+          !(lastRow instanceof HTMLElement) ||
+          !(bottomNav instanceof HTMLElement)
+        ) {
           return false;
         }
         const listRect = list.getBoundingClientRect();
-        return Array.from(list.querySelectorAll('.publisher-entity-row')).some((row) => {
-          if (!(row instanceof HTMLElement)) {
-            return false;
-          }
-          const position = Number(row.getAttribute('aria-posinset'));
-          const rect = row.getBoundingClientRect();
-          return position > 30 && rect.bottom > listRect.top && rect.top < listRect.bottom;
-        });
+        const rowRect = lastRow.getBoundingClientRect();
+        const navRect = bottomNav.getBoundingClientRect();
+        const hitTarget = document.elementFromPoint(
+          rowRect.left + rowRect.width / 2,
+          rowRect.top + rowRect.height / 2,
+        );
+        return (
+          list.scrollTop > 0 &&
+          rowRect.top >= listRect.top &&
+          rowRect.bottom <= Math.min(listRect.bottom, navRect.top) &&
+          hitTarget !== null &&
+          lastRow.contains(hitTarget)
+        );
       });
-      await loadMore.scrollIntoViewIfNeeded();
       await page.waitForTimeout(120);
     },
   },
@@ -1021,19 +1057,41 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.locator('.publications-editor').waitFor({ state: 'visible' });
       await page.locator('.publication-target-picker__summary').click();
-      const loadMore = page.locator('.publication-target-picker__load-more');
-      await loadMore.waitFor({ state: 'visible' });
-      await loadMore.click();
-      await page.getByText('60 из 200', { exact: true }).waitFor({ state: 'visible' });
-      await loadMore.click();
-      await page.getByText('90 из 200', { exact: true }).waitFor({ state: 'visible' });
-      const list = page.locator('.publication-target-picker__list.is-virtual');
+      const list = page.locator('.publication-target-picker__list');
       await list.waitFor({ state: 'visible' });
-      await list.evaluate((element) => {
-        element.scrollTop = element.scrollHeight;
-        element.dispatchEvent(new Event('scroll'));
+      await page.getByText('30 из 200', { exact: true }).waitFor({ state: 'visible' });
+      await scrollPaginatedListToStatus(page, {
+        list,
+        statusSelector: '.publication-target-picker__loaded',
+        expectedStatus: 'Получателей: 200',
+        loadMoreSelector: '.publication-target-picker__load-more',
+        label: 'Publisher recipient scroll',
       });
-      await page.locator('.publication-target-row').last().waitFor({ state: 'visible' });
+      await page.locator('.publication-target-picker__list.is-virtual').waitFor({ state: 'visible' });
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await page.mouse.wheel(0, 1_200);
+        await page.waitForTimeout(50);
+      }
+      await page.waitForFunction(() => {
+        const list = document.querySelector('.publication-target-picker__list.is-virtual');
+        const lastRow = list?.querySelector('.publication-target-row[data-target-position="200"]');
+        if (!(list instanceof HTMLElement) || !(lastRow instanceof HTMLElement)) {
+          return false;
+        }
+        const listRect = list.getBoundingClientRect();
+        const rowRect = lastRow.getBoundingClientRect();
+        const hitTarget = document.elementFromPoint(
+          rowRect.left + rowRect.width / 2,
+          rowRect.top + rowRect.height / 2,
+        );
+        return (
+          list.scrollTop > 0 &&
+          rowRect.top >= listRect.top &&
+          rowRect.bottom <= listRect.bottom &&
+          hitTarget !== null &&
+          lastRow.contains(hitTarget)
+        );
+      });
     },
   },
   {
@@ -1041,9 +1099,23 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       const summary = page.locator('.publication-target-picker__summary');
       await summary.click();
-      await page.locator('.publication-target-row').first().click();
+      await page
+        .locator('.publication-target-row')
+        .filter({ hasText: 'Новости Южного' })
+        .first()
+        .click();
       await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
-      await summary.getByText('Садоводы Южного', { exact: true }).waitFor({ state: 'visible' });
+      await summary.getByText('Новости Южного', { exact: true }).waitFor({ state: 'visible' });
+      await page
+        .locator('.publication-content-composer .max-rich-text-editor__surface')
+        .fill('Анонс события для жителей района.');
+      const systemButtonLabels = await page
+        .locator('.publication-content-composer .broadcast-message-card__button')
+        .allTextContents();
+      const expectedLabels = ['💬 Комментарии', '✍️ Предложить объявление', '📞 Заказать рекламу'];
+      if (JSON.stringify(systemButtonLabels) !== JSON.stringify(expectedLabels)) {
+        throw new Error(`Publisher system buttons differ: ${JSON.stringify(systemButtonLabels)}`);
+      }
     },
   },
   {

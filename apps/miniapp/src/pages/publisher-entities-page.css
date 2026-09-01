@@ -226,11 +226,16 @@
     min-width: 0;
     max-height: clamp(280px, calc(var(--app-viewport-height) - 250px), 620px);
     overflow-y: auto;
+    padding-bottom: calc(
+      var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
+    );
     border: 1px solid var(--color-border);
     border-radius: 8px;
     background: var(--color-surface);
     overscroll-behavior: contain;
-    scroll-padding-bottom: 12px;
+    scroll-padding-bottom: calc(
+      var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
+    );
     touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
   }
@@ -466,9 +471,8 @@
     min-width: 0;
     display: grid;
     justify-items: center;
-    padding-bottom: calc(
-      var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
-    );
+    padding: 12px;
+    background: var(--color-surface-muted);
   }
 
   .publisher-entities-page__load-more {

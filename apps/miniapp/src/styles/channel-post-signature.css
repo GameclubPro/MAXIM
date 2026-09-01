@@ -133,6 +133,29 @@
     gap: 12px;
   }
 
+  .channel-post-signature__presentation {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+
+  .channel-post-signature__presentation > span {
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+    font-weight: 720;
+    line-height: 1.2;
+  }
+
+  .channel-post-signature__presentation .segmented-control {
+    width: 100%;
+  }
+
   .channel-post-signature__fields {
     min-width: 0;
     display: grid;
@@ -308,6 +331,32 @@
     text-underline-offset: 2px;
   }
 
+  .channel-post-signature__message-button {
+    width: 100%;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 12px;
+    overflow: hidden;
+    border: 1px solid var(--channel-post-signature-accent-border);
+    border-radius: 7px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.82rem;
+    font-weight: 780;
+    line-height: 1.2;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .channel-post-signature__message-button:disabled {
+    border-color: var(--border-subtle);
+    background: var(--surface-card);
+    color: var(--text-secondary);
+  }
+
   .channel-post-signature__preview-url {
     min-width: 0;
     overflow: hidden;
@@ -361,6 +410,11 @@
   }
 
   @media (max-width: 680px) {
+    .channel-post-signature__presentation {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+
     .channel-post-signature__workspace {
       grid-template-columns: minmax(0, 1fr);
     }

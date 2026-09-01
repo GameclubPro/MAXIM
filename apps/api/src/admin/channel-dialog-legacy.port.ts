@@ -12,6 +12,7 @@ export type ChannelDialogLegacyPort = Pick<
   | 'getChannelDialog'
   | 'getChatDialog'
   | 'getPublicChannelSettingsForDialog'
+  | 'getPublicPublisherChannelCommentSettingsForDialog'
   | 'getPublicChatCommentSettingsForDialog'
   | 'getPublicPublisherChatCommentSettingsForDialog'
   | 'processChannelSuggestionDeliveryJob'

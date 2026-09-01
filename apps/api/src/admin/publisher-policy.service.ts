@@ -19,6 +19,7 @@ import {
   type PublisherEntityModuleSettings,
   type ResolvePublisherEntitiesResponse,
 } from '@maxim/contracts/publisher';
+import { CHANNEL_POST_SIGNATURE_DEFAULT_TEXT } from '@maxim/contracts/channel-post-signature';
 import {
   BadRequestException,
   ConflictException,
@@ -31,6 +32,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
+  ChannelPostSignaturePresentation,
   ChatEntityType,
   ManagedEntityAccessRole,
   ManagedEntityAccessState,
@@ -146,6 +148,14 @@ export class PublisherPolicyService {
               id: true,
               entityType: true,
               publisherSettings: true,
+              channelSettings: {
+                select: {
+                  postSignatureEnabled: true,
+                  postSignaturePresentation: true,
+                  postSignatureText: true,
+                  postSignatureUrl: true,
+                },
+              },
               publicationPolicy: true,
               publisherBinding: true,
             },
@@ -472,6 +482,14 @@ export class PublisherPolicyService {
             id: true,
             entityType: true,
             publisherSettings: true,
+            channelSettings: {
+              select: {
+                postSignatureEnabled: true,
+                postSignaturePresentation: true,
+                postSignatureText: true,
+                postSignatureUrl: true,
+              },
+            },
             publicationPolicy: true,
             publisherBinding: true,
           },
@@ -659,8 +677,14 @@ export class PublisherPolicyService {
       throw new BadRequestException(parsed.error.format());
     }
     const request = parsed.data;
-    if (entityType === 'chat' && request.channelSuggestionsEnabled !== undefined) {
-      throw new BadRequestException('Предложки Публика доступны только для каналов');
+    if (
+      entityType === 'chat' &&
+      (request.channelCommentsEnabled !== undefined ||
+        request.channelSuggestionsEnabled !== undefined)
+    ) {
+      throw new BadRequestException(
+        'Комментарии канала и предложки Публика доступны только для каналов',
+      );
     }
     if (
       entityType === 'channel' &&
@@ -716,6 +740,9 @@ export class PublisherPolicyService {
               ...(request.channelSuggestionsEnabled !== undefined
                 ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
                 : {}),
+              ...(request.channelCommentsEnabled !== undefined
+                ? { channelCommentsEnabled: request.channelCommentsEnabled }
+                : {}),
               ...(request.autoRepliesEnabled !== undefined
                 ? { autoRepliesEnabled: request.autoRepliesEnabled }
                 : {}),
@@ -735,6 +762,9 @@ export class PublisherPolicyService {
                 : {}),
               ...(request.channelSuggestionsEnabled !== undefined
                 ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
+                : {}),
+              ...(request.channelCommentsEnabled !== undefined
+                ? { channelCommentsEnabled: request.channelCommentsEnabled }
                 : {}),
               ...(request.autoRepliesEnabled !== undefined
                 ? { autoRepliesEnabled: request.autoRepliesEnabled }
@@ -759,6 +789,9 @@ export class PublisherPolicyService {
               changed: {
                 ...(request.channelSuggestionsEnabled !== undefined
                   ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
+                  : {}),
+                ...(request.channelCommentsEnabled !== undefined
+                  ? { channelCommentsEnabled: request.channelCommentsEnabled }
                   : {}),
                 ...(request.chatComments ? { chatComments: request.chatComments } : {}),
                 ...(request.autoRepliesEnabled !== undefined
@@ -787,6 +820,7 @@ export class PublisherPolicyService {
       chatCommentsEnabled: boolean;
       chatCommentsAdminsEnabled: boolean;
       chatCommentsPostsEnabled: boolean;
+      channelCommentsEnabled: boolean;
       channelSuggestionsEnabled: boolean;
       autoRepliesEnabled: boolean;
     } | null,
@@ -803,6 +837,8 @@ export class PublisherPolicyService {
           : null,
       autoRepliesEnabled:
         entityType === ChatEntityType.CHAT ? (settings?.autoRepliesEnabled ?? false) : null,
+      channelCommentsEnabled:
+        entityType === ChatEntityType.CHANNEL ? (settings?.channelCommentsEnabled ?? false) : null,
       channelSuggestionsEnabled:
         entityType === ChatEntityType.CHANNEL
           ? (settings?.channelSuggestionsEnabled ?? false)
@@ -819,8 +855,15 @@ export class PublisherPolicyService {
         chatCommentsEnabled: boolean;
         chatCommentsAdminsEnabled: boolean;
         chatCommentsPostsEnabled: boolean;
+        channelCommentsEnabled: boolean;
         channelSuggestionsEnabled: boolean;
         autoRepliesEnabled: boolean;
+      } | null;
+      channelSettings: {
+        postSignatureEnabled: boolean;
+        postSignaturePresentation: ChannelPostSignaturePresentation;
+        postSignatureText: string;
+        postSignatureUrl: string;
       } | null;
       publicationPolicy: Parameters<PublisherReadinessService['resolvePolicy']>[0];
       publisherBinding: Parameters<
@@ -839,6 +882,20 @@ export class PublisherPolicyService {
       avatarUrl: catalogPresentation.avatarUrl,
       entityUrl: catalogPresentation.entityUrl,
       policy: this.readinessService.resolvePolicy(source.publicationPolicy),
+      channelPostSignature:
+        effectiveEntityType === ChatEntityType.CHANNEL
+          ? {
+              enabled: source.channelSettings?.postSignatureEnabled ?? false,
+              presentation:
+                source.channelSettings?.postSignaturePresentation ===
+                ChannelPostSignaturePresentation.BUTTON
+                  ? 'button'
+                  : 'signature',
+              text:
+                source.channelSettings?.postSignatureText ?? CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+              url: source.channelSettings?.postSignatureUrl ?? '',
+            }
+          : null,
       moduleSettings: this.presentModuleSettings(effectiveEntityType, source.publisherSettings),
       readiness: this.readinessService.resolveReadiness(
         { ...source, entityType: effectiveEntityType },
@@ -1186,6 +1243,7 @@ export class PublisherPolicyService {
         commentsAdminsEnabled: boolean;
         commentsChatBroadcastsEnabled: boolean;
       };
+      channelCommentsEnabled?: boolean;
       channelSuggestionsEnabled?: boolean;
       autoRepliesEnabled?: boolean;
     },
@@ -1193,6 +1251,7 @@ export class PublisherPolicyService {
       chatCommentsEnabled: boolean;
       chatCommentsAdminsEnabled: boolean;
       chatCommentsPostsEnabled: boolean;
+      channelCommentsEnabled: boolean;
       channelSuggestionsEnabled: boolean;
       autoRepliesEnabled: boolean;
     } | null,
@@ -1222,6 +1281,9 @@ export class PublisherPolicyService {
     }
     if (request.channelSuggestionsEnabled && current?.channelSuggestionsEnabled !== true) {
       featureKeys.push('channelSuggestionsEnabled');
+    }
+    if (request.channelCommentsEnabled && current?.channelCommentsEnabled !== true) {
+      featureKeys.push('channelCommentsEnabled');
     }
     return featureKeys;
   }

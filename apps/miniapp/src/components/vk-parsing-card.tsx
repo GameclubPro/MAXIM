@@ -174,6 +174,7 @@ export function VkParsingCard({
   const autopostStatus = feed ? buildAutopostStatus(settings, sources) : null;
   const effectivePostSignature = postSignature ?? {
     enabled: settings.appendChannelLinkEnabled,
+    presentation: 'signature' as const,
     text: settings.channelLinkText || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
     url: '',
   };

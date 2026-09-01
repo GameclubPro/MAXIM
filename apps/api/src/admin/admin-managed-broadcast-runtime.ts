@@ -398,6 +398,7 @@ import {
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
 import {
   cancelPublicationDeliveryBeforeStoppedDispatch,
+  buildCapacityDeferredPublicationOccurrenceResult,
   deferManagedBroadcastWithFreshDeliveryLocks,
   deferPublicationDeliveryAfterPreDispatchThrottle,
   deferPublicationDeliveryAfterRouteQuarantine,
@@ -3168,9 +3169,7 @@ export class AdminManagedBroadcastRuntime {
 
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
     const isPublikExecution = rowDispatchProfile === PrismaPublicationDispatchProfile.PUBLIK_V1;
-    const requiredPublisherBotId = isPublikExecution
-      ? (row.requiredBotId?.trim() ?? null)
-      : null;
+    const requiredPublisherBotId = isPublikExecution ? (row.requiredBotId?.trim() ?? null) : null;
     if (isPublikExecution && !requiredPublisherBotId) {
       throw new ServiceUnavailableException({
         code: PUBLISHER_SETUP_REQUIRED_CODE,
@@ -3903,18 +3902,27 @@ export class AdminManagedBroadcastRuntime {
             pendingNotBefore = resolveEarlierDate(pendingNotBefore, routeQuarantineDeferredUntil);
             continue;
           }
-          if (
-            await deferPublicationDeliveryAfterPreDispatchThrottle({
+          const capacityDeferredUntil = await deferPublicationDeliveryAfterPreDispatchThrottle({
+            context: this.context,
+            row,
+            delivery,
+            reason,
+            occurrenceIndex: currentOccurrence,
+            broadcastLockToken: activeLease.lockToken,
+            deliveryLockToken,
+            error,
+          });
+          if (capacityDeferredUntil) {
+            return buildCapacityDeferredPublicationOccurrenceResult({
               context: this.context,
-              row,
-              delivery,
-              reason,
+              broadcastId: row.id,
               occurrenceIndex: currentOccurrence,
-              deliveryLockToken,
-              error,
-            })
-          ) {
-            break;
+              deliveryCandidates,
+              sentChatIds,
+              failedChatIds,
+              firstSendError,
+              nextSendAt: capacityDeferredUntil,
+            });
           }
           let effectiveError = error;
           let deliveryFailureMessage =

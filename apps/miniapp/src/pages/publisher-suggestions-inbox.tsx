@@ -4,11 +4,12 @@ import type {
   PublisherSuggestionsView,
 } from '@maxim/contracts/publisher';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle, NavArrowDown, Refresh, Xmark } from 'iconoir-react';
+import { EditPencil, MediaImage, NavArrowDown, Refresh, Xmark } from 'iconoir-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { useToast } from '../components/ui/toast';
-import { reviewPublisherSuggestion } from '../lib/api/publisher-client';
+import { reviewPublisherSuggestion } from '../lib/api/publisher-suggestions-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { describeUserFacingError } from '../lib/user-facing-error';
@@ -25,7 +26,7 @@ const LazyActionConfirmSheet = lazy(async () => {
 
 type PublisherSuggestionConfirmation = {
   suggestionId: string;
-  action: 'publish' | 'cancel';
+  action: 'draft' | 'cancel';
 };
 
 const PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS = 4_000;
@@ -62,6 +63,7 @@ export function PublisherSuggestionsInbox({
   entityId: string;
 }) {
   const { pushToast } = useToast();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [view, setView] = useState<PublisherSuggestionsView>('pending');
   const [confirmation, setConfirmation] = useState<PublisherSuggestionConfirmation | null>(null);
@@ -137,13 +139,8 @@ export function PublisherSuggestionsInbox({
       suggestion.id === confirmation?.suggestionId && suggestion.reviewStatus === 'pending',
   );
   const reviewMutation = useMutation({
-    mutationFn: ({
-      suggestionId,
-      action,
-    }: {
-      suggestionId: string;
-      action: 'publish' | 'cancel';
-    }) => reviewPublisherSuggestion(api, entityId, suggestionId, { action }),
+    mutationFn: ({ suggestionId, action }: { suggestionId: string; action: 'draft' | 'cancel' }) =>
+      reviewPublisherSuggestion(api, entityId, suggestionId, { action }),
     onSuccess: async (response, variables) => {
       setConfirmation(null);
       await Promise.all([
@@ -153,12 +150,15 @@ export function PublisherSuggestionsInbox({
       pushToast({
         tone: 'success',
         title:
-          variables.action === 'publish'
-            ? response.suggestion.reviewStatus === 'published'
-              ? 'Публикация создана'
-              : 'Предложка принята в публикацию'
+          variables.action === 'draft'
+            ? response.suggestion.reviewStatus === 'drafted'
+              ? 'Черновик готов'
+              : 'Готовим черновик'
             : 'Предложка отклонена',
       });
+      if (variables.action === 'draft' && response.suggestion.publicationId) {
+        navigate(`/publications?draft=${encodeURIComponent(response.suggestion.publicationId)}`);
+      }
     },
     onError: (error) => {
       pushToast({
@@ -176,6 +176,10 @@ export function PublisherSuggestionsInbox({
   if (!enabled) {
     return null;
   }
+
+  const openPublicationDraft = (publicationId: string) => {
+    navigate(`/publications?draft=${encodeURIComponent(publicationId)}`);
+  };
 
   return (
     <>
@@ -241,6 +245,12 @@ export function PublisherSuggestionsInbox({
                   className="publisher-suggestion-row__text"
                   fallback="Предложка без текста"
                 />
+                {suggestion.imageCount > 0 ? (
+                  <span className="publisher-suggestion-row__media">
+                    <MediaImage aria-hidden />
+                    {suggestion.imageCount} фото
+                  </span>
+                ) : null}
                 {suggestion.reviewError ? (
                   <p className="publisher-suggestion-row__error" role="status">
                     Не удалось создать публикацию: {suggestion.reviewError}
@@ -252,11 +262,11 @@ export function PublisherSuggestionsInbox({
                       type="button"
                       disabled={reviewMutation.isPending}
                       onClick={() =>
-                        setConfirmation({ suggestionId: suggestion.id, action: 'publish' })
+                        setConfirmation({ suggestionId: suggestion.id, action: 'draft' })
                       }
                     >
-                      <CheckCircle aria-hidden />
-                      <span>Опубликовать</span>
+                      <EditPencil aria-hidden />
+                      <span>Открыть в редакторе</span>
                     </button>
                     <button
                       type="button"
@@ -271,14 +281,26 @@ export function PublisherSuggestionsInbox({
                     </button>
                   </div>
                 ) : (
-                  <span
-                    className={cn(
-                      'publisher-suggestion-row__status',
-                      `is-${suggestion.reviewStatus}`,
-                    )}
-                  >
-                    {getPublisherSuggestionStatusLabel(suggestion.reviewStatus)}
-                  </span>
+                  <div className="publisher-suggestion-row__outcome">
+                    <span
+                      className={cn(
+                        'publisher-suggestion-row__status',
+                        `is-${suggestion.reviewStatus}`,
+                      )}
+                    >
+                      {getPublisherSuggestionStatusLabel(suggestion.reviewStatus)}
+                    </span>
+                    {suggestion.reviewStatus === 'drafted' && suggestion.publicationId ? (
+                      <button
+                        type="button"
+                        className="publisher-suggestion-row__draft-link"
+                        onClick={() => openPublicationDraft(suggestion.publicationId!)}
+                      >
+                        <EditPencil aria-hidden />
+                        <span>Открыть черновик</span>
+                      </button>
+                    ) : null}
+                  </div>
                 )}
               </article>
             ))}
@@ -320,28 +342,38 @@ export function PublisherSuggestionsInbox({
             id={`publisher-suggestion-${confirmation.action}-confirm`}
             open
             title={
-              confirmation.action === 'publish' ? 'Опубликовать предложку?' : 'Отклонить предложку?'
+              confirmation.action === 'draft'
+                ? 'Открыть предложку в редакторе?'
+                : 'Отклонить предложку?'
             }
             summary={
-              confirmation.action === 'publish'
-                ? 'Будет создана публикация с отправкой в канал сразу.'
+              confirmation.action === 'draft'
+                ? 'Создадим черновик с исходным текстом и фото. В редакторе можно проверить пост и выбрать время.'
                 : 'Предложка будет отклонена и перемещена в историю. Отменить это действие нельзя.'
             }
             previewTitle={confirmationSuggestion.authorDisplayName || 'Пользователь'}
             previewMeta={
-              <MaxMarkdownPreview
-                value={confirmationSuggestion.text}
-                sourceFormat={confirmationSuggestion.textFormat}
-                className="publisher-suggestion-confirm__text"
-                fallback="Предложка без текста"
-              />
+              <>
+                <MaxMarkdownPreview
+                  value={confirmationSuggestion.text}
+                  sourceFormat={confirmationSuggestion.textFormat}
+                  className="publisher-suggestion-confirm__text"
+                  fallback="Предложка без текста"
+                />
+                {confirmationSuggestion.imageCount > 0 ? (
+                  <span className="publisher-suggestion-row__media">
+                    <MediaImage aria-hidden />
+                    {confirmationSuggestion.imageCount} фото
+                  </span>
+                ) : null}
+              </>
             }
             confirmLabel={
-              confirmation.action === 'publish' ? 'Опубликовать сейчас' : 'Отклонить предложку'
+              confirmation.action === 'draft' ? 'Открыть редактор' : 'Отклонить предложку'
             }
-            confirmBusyLabel={confirmation.action === 'publish' ? 'Публикую...' : 'Отклоняю...'}
+            confirmBusyLabel={confirmation.action === 'draft' ? 'Готовлю...' : 'Отклоняю...'}
             cancelLabel="Отмена"
-            tone={confirmation.action === 'publish' ? 'accent' : 'danger'}
+            tone={confirmation.action === 'draft' ? 'accent' : 'danger'}
             isBusy={reviewMutation.isPending}
             onClose={() => setConfirmation(null)}
             onConfirm={() =>

@@ -198,6 +198,7 @@ function createService(
     botSpeechPreviewProfile?: { persona: 'male' | 'female' | 'neutral'; characterName: string };
     currentSettings?: Record<string, unknown> | null;
     channelPostSignatureService?: {
+      buildPostButton: jest.Mock;
       getSettings: jest.Mock;
       preparePostText: jest.Mock;
       updateSettings: jest.Mock;
@@ -413,8 +414,10 @@ function createService(
     reconcileChats: jest.fn().mockResolvedValue(undefined),
   };
   const channelPostSignatureService = options.channelPostSignatureService ?? {
+    buildPostButton: jest.fn().mockResolvedValue(null),
     getSettings: jest.fn().mockResolvedValue({
       enabled: false,
+      presentation: 'signature',
       text: 'Подписаться на канал',
       url: '',
     }),
@@ -425,6 +428,7 @@ function createService(
       ),
     updateSettings: jest.fn().mockResolvedValue({
       enabled: true,
+      presentation: 'signature',
       text: 'Читать канал',
       url: 'https://max.ru/contact',
     }),
@@ -1348,6 +1352,7 @@ describe('AdminSettingsService chat rules', () => {
     expect(result.settings.commentsEnabled).toBe(true);
     expect(result.postSignature).toEqual({
       enabled: false,
+      presentation: 'signature',
       text: 'Подписаться на канал',
       url: '',
     });
@@ -1382,6 +1387,7 @@ describe('AdminSettingsService chat rules', () => {
 
     await expect(service.getChannelPostSignature('channel-1', user as never)).resolves.toEqual({
       enabled: false,
+      presentation: 'signature',
       text: 'Подписаться на канал',
       url: '',
     });
@@ -1393,6 +1399,7 @@ describe('AdminSettingsService chat rules', () => {
       }),
     ).resolves.toEqual({
       enabled: true,
+      presentation: 'signature',
       text: 'Читать канал',
       url: 'https://max.ru/contact',
     });
@@ -1502,6 +1509,11 @@ describe('AdminSettingsService chat rules', () => {
           postSuggestionsEntryMode: 'BOT',
         }),
       });
+    channelPostSignatureService.buildPostButton.mockResolvedValue({
+      type: 'link',
+      text: '📞 Заказать рекламу',
+      url: 'https://ads.example/contact',
+    });
 
     const result = await service.publishChannelEngagementMessage('channel-1', user as never, {
       text: 'Нажмите кнопку ниже.',
@@ -1535,6 +1547,11 @@ describe('AdminSettingsService chat rules', () => {
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
       },
     );
+    expect(channelPostSignatureService.buildPostButton).toHaveBeenCalledWith('channel-1', {
+      entityType: 'channel',
+      trafficClass: 'interactive',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+    });
     expect(legacyAdminService.resolveChannelEngagementActionBotId).toHaveBeenCalledWith(
       'channel-1',
     );
@@ -1563,6 +1580,13 @@ describe('AdminSettingsService chat rules', () => {
               type: 'link',
               text: 'Предложить',
               url: `https://max.ru/777000_bot?start=cds-channel-1-${threadId}`,
+            },
+          ],
+          [
+            {
+              type: 'link',
+              text: '📞 Заказать рекламу',
+              url: 'https://ads.example/contact',
             },
           ],
         ],
@@ -1613,6 +1637,16 @@ describe('AdminSettingsService chat rules', () => {
           suggestButtonText: 'Предложить',
           includeCommentsButton: true,
           includeSuggestButton: true,
+          buttonRows: [
+            [expect.objectContaining({ text: 'Комментарии · 0' })],
+            [expect.objectContaining({ text: 'Предложить' })],
+            [expect.objectContaining({ text: '📞 Заказать рекламу' })],
+          ],
+          commentsButton: {
+            rowIndex: 0,
+            columnIndex: 0,
+            baseText: 'Комментарии',
+          },
           threadId,
           updatedExisting: false,
           recreatedFromMessageId: null,

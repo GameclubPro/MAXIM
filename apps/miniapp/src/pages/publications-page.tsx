@@ -11,7 +11,6 @@ import type { MiniappProfile, PublisherPostImportOmission } from '@maxim/contrac
 import { FilterList, NavArrowLeft, Plus, Refresh, Search, Trash, Xmark } from 'iconoir-react';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { BroadcastContentComposer } from '../components/broadcast-content-composer';
 import {
   BroadcastPublishBar,
   type BroadcastPublishIssueAction,
@@ -45,8 +44,6 @@ import {
 import { PublicationFeedCard } from '../features/publications/publication-feed-card';
 import { PublicationCreateSheet } from '../features/publications/publication-create-sheet';
 import { PublicationButtonsSheet } from '../features/publications/publication-buttons-sheet';
-import { PublicationImportButtonsNotice } from '../features/publications/publication-import-buttons-notice';
-import { PublicationRetainedMedia } from '../features/publications/publication-retained-media';
 import { PublicationRecurrenceIntervalField } from '../features/publications/publication-recurrence-interval-field';
 import {
   buildCreatePublicationRequest,
@@ -105,7 +102,6 @@ import { PublicationRetrySheet } from '../features/publications/publication-retr
 import { PublisherPostImportStatus } from '../features/publications/publisher-post-import-status';
 import { PublicationTargetNotices } from '../features/publications/publication-target-notices';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
-import { PublicationVideoTool } from '../features/publications/publication-video-tool';
 import { usePublicationEditorAutofocus } from '../features/publications/use-publication-editor-autofocus';
 import { useInitialPublicationTargetRoute } from '../features/publications/use-initial-publication-target-route';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
@@ -155,6 +151,11 @@ import '../features/publications/publication-workbench.css';
 const LazyPublicationDetailsSheet = lazy(() =>
   import('../features/publications/publication-details-sheet').then((module) => ({
     default: module.PublicationDetailsSheet,
+  })),
+);
+const LazyPublicationContentEditorSection = lazy(() =>
+  import('../features/publications/publication-content-editor-section').then((module) => ({
+    default: module.PublicationContentEditorSection,
   })),
 );
 const LazyBroadcastSchedulePlanner = lazy(() =>
@@ -248,9 +249,11 @@ const MAX_PUBLICATION_VIDEO_FILE_BYTES = 24_000_000;
 export function PublicationsPage({
   api,
   profile = 'moderation',
+  userId,
 }: {
   api: ApiTransport;
   profile?: MiniappProfile;
+  userId: string;
 }) {
   const isPublisherProfile = profile === 'publisher';
   const queryClient = useQueryClient();
@@ -258,15 +261,29 @@ export function PublicationsPage({
   const requestIds = usePublicationRequestIds();
   const [searchParams, setSearchParams] = useSearchParams();
   const [editorContext, setEditorContext] = useState<PublicationEditorContext | null>(null);
+  const [mediaPreparing, setMediaPreparing] = useState(false);
+  const [editorClosePending, setEditorClosePending] = useState(false);
   const isEditor = isPublisherProfile && editorContext !== null;
   const isEditorKeyboardOpen = useKeyboardOpen(96, isEditor);
   const legacyRouteRequested = searchParams.get('legacy') === '1';
   const isLegacyView = !isPublisherProfile && legacyRouteRequested && !isEditor;
   const persistenceEnabled = shouldPersistPublicationDraft(editorContext?.kind ?? null);
-  const { draft, setDraft, hydrated, hasSavedDraft, clearDraft } = usePublicationComposer(
+  const {
+    draft,
+    setDraft,
+    hydrated,
+    hasSavedDraft,
+    imagesNeedReselection,
+    clearDraft,
+    discardMissingImages,
+    resolveMissingImages,
+    flushDraft,
+  } = usePublicationComposer(
     isEditor,
     persistenceEnabled,
     isPublisherProfile,
+    mediaPreparing,
+    userId,
   );
   const savedCreateDraftRef = useRef<PublicationDraft | null>(null);
   const isolatedDraftBaselineRef = useRef<PublicationDraft | null>(null);
@@ -627,7 +644,7 @@ export function PublicationsPage({
       if (isIsolatedPublicationEditor(editorContext?.kind ?? null)) {
         restoreCreateDraftAndClose();
       } else {
-        void clearDraft();
+        await clearDraft();
         closeEditor(false);
       }
     },
@@ -912,7 +929,7 @@ export function PublicationsPage({
       targets.filter((target) => target.readiness?.canPublish === true).length) > 0;
   const publisherCanCreate =
     isPublisherProfile && sourcesReady && !sourcesHaveError && publisherHasReadyTarget;
-  const isBusy =
+  const operationBusy =
     saveMutation.isPending ||
     testMutation.isPending ||
     openPublicationMutation.isPending ||
@@ -921,13 +938,21 @@ export function PublicationsPage({
     refreshEditedPublicationMutation.isPending ||
     initialTargetRoute.pending ||
     publisherDraftHydration.isPending ||
-    videoPreparing;
+    videoPreparing ||
+    editorClosePending;
+  const isBusy = operationBusy || mediaPreparing;
   const anyBusy = isBusy || resolveAmbiguousMutation.isPending;
   const recurrenceError = getRecurrenceError(draft);
   const explicitSlotsLimitFeedback = getPublicationExplicitSlotsLimitFeedback(draft);
   const validationIssues = useMemo<BroadcastPublishIssueAction[]>(() => {
     const issues: BroadcastPublishIssueAction[] = [];
-    if (videoNeedsReselection) {
+    if (imagesNeedReselection) {
+      issues.push({
+        label: 'Фото',
+        onClick: () =>
+          focusEditorSection('content', 'Добавьте фото снова или выберите «Без фото».'),
+      });
+    } else if (videoNeedsReselection) {
       issues.push({
         label: 'Видео',
         onClick: () => focusEditorSection('content', 'Выберите видео снова.'),
@@ -1001,10 +1026,17 @@ export function PublicationsPage({
     explicitSlotsLimitFeedback,
     hasButtonErrors,
     hasContent,
+    imagesNeedReselection,
     recurrenceError,
     selectedPublisherTargetUnavailable,
     videoNeedsReselection,
   ]);
+
+  useEffect(() => {
+    if (!isEditor) {
+      setMediaPreparing(false);
+    }
+  }, [isEditor]);
 
   useEffect(() => {
     document.body.classList.toggle('publications-editor-open', isEditor);
@@ -1361,16 +1393,21 @@ export function PublicationsPage({
     if (isBusy) {
       return;
     }
-    const baseline = isolatedDraftBaselineRef.current;
-    if (
-      isIsolatedPublicationEditor(editorContext?.kind ?? null) &&
-      baseline &&
-      hasPublicationDraftChanges(baseline, draft)
-    ) {
-      setPendingEditorClose(true);
-      return;
-    }
-    closeEditor(preserveDraft);
+    setEditorClosePending(true);
+    void flushDraft()
+      .then(() => {
+        const baseline = isolatedDraftBaselineRef.current;
+        if (
+          isIsolatedPublicationEditor(editorContext?.kind ?? null) &&
+          baseline &&
+          hasPublicationDraftChanges(baseline, draft)
+        ) {
+          setPendingEditorClose(true);
+          return;
+        }
+        closeEditor(preserveDraft);
+      })
+      .finally(() => setEditorClosePending(false));
   }
 
   function closeEditor(preserveDraft: boolean) {
@@ -1419,6 +1456,14 @@ export function PublicationsPage({
   function validateDraft(options: { ignoreSchedule?: boolean } = {}): boolean {
     setValidationStarted(true);
     const nextButtonErrors = validateBroadcastLinkButtons(draft.buttons);
+    if (mediaPreparing) {
+      setFieldError('Дождитесь завершения подготовки фото.');
+      return false;
+    }
+    if (imagesNeedReselection) {
+      setFieldError('Добавьте фото снова или выберите «Без фото».');
+      return false;
+    }
     if (videoNeedsReselection) {
       setFieldError('Выберите видео снова.');
       return false;
@@ -1486,6 +1531,9 @@ export function PublicationsPage({
   }
 
   function submitPublication(replaceConflicts: boolean) {
+    if (mediaPreparing) {
+      return;
+    }
     if (reportExplicitSlotsLimit()) {
       return;
     }
@@ -1493,6 +1541,9 @@ export function PublicationsPage({
   }
 
   function handlePrimaryAction() {
+    if (mediaPreparing) {
+      return;
+    }
     if (validateDraft()) {
       setPendingReview(true);
       return;
@@ -1501,7 +1552,7 @@ export function PublicationsPage({
   }
 
   function handleTest() {
-    if (testMutation.isPending) {
+    if (testMutation.isPending || mediaPreparing) {
       return;
     }
 
@@ -2440,6 +2491,7 @@ export function PublicationsPage({
         mediaMimeType,
         mediaFileName: file.name.trim().slice(0, 128),
       }));
+      discardMissingImages();
       setFieldError('');
     } catch (error) {
       pushToast({
@@ -2452,6 +2504,9 @@ export function PublicationsPage({
   }
 
   function confirmDraftClear() {
+    if (isBusy) {
+      return;
+    }
     setPendingDraftClear(false);
     setFieldError('');
     setValidationStarted(false);
@@ -2492,6 +2547,7 @@ export function PublicationsPage({
           <button
             type="button"
             onClick={() => requestCloseEditor(true)}
+            disabled={isBusy}
             aria-label="Назад"
             title="Назад"
           >
@@ -2571,110 +2627,48 @@ export function PublicationsPage({
             />
           </section>
 
-          <section
-            ref={contentSectionRef}
-            className="publication-editor-section publication-editor-section--content"
+          <Suspense
+            fallback={
+              <section
+                ref={contentSectionRef}
+                className="publication-editor-section publication-editor-section--content"
+                aria-busy="true"
+              >
+                <div className="publication-editor-section__head">
+                  <strong>Пост</strong>
+                  <small>Загрузка...</small>
+                </div>
+              </section>
+            }
           >
-            <div className="publication-editor-section__head">
-              <strong>Пост</strong>
-              <small>
-                {draft.text.length}/{PUBLICATION_TEXT_MAX_LENGTH}
-              </small>
-            </div>
-            {draft.timingMode === 'schedule' ? (
-              <input
-                className="publication-title-input"
-                value={draft.title}
-                maxLength={120}
-                placeholder="Название расписания"
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, title: event.currentTarget.value }))
-                }
-                disabled={isBusy}
-              />
-            ) : null}
-            <PublicationImportButtonsNotice
-              omissions={editorContext?.kind === 'import' ? importOmissions : []}
+            <LazyPublicationContentEditorSection
+              sectionRef={contentSectionRef}
+              draft={draft}
+              setDraft={setDraft}
+              importing={editorContext?.kind === 'import'}
+              importOmissions={importOmissions}
+              importedAssetPreviews={importedAssetPreviews}
+              customButtons={visibleCustomButtons}
+              systemButtons={systemButtons}
               customButtonCount={visibleCustomButtonCount}
-              disabled={isBusy}
-              onAdd={() => setButtonsOpen(true)}
-            />
-            <PublicationRetainedMedia
-              assets={draft.retainedAssets}
-              previews={importedAssetPreviews}
-              disabled={isBusy}
-              onClear={() => setDraft((current) => ({ ...current, retainedAssets: [] }))}
-            />
-            <BroadcastContentComposer
-              className="publication-content-composer"
-              text={draft.text}
-              sourceFormat={draft.textFormat}
-              maxLength={PUBLICATION_TEXT_MAX_LENGTH}
-              images={draft.images}
-              buttons={visibleCustomButtons}
-              systemButtons={isPublisherProfile ? [] : systemButtons}
-              buttonsPerRow={1}
-              buttonsStatusLabel="Кнопка"
-              buttonsActive={visibleCustomButtonCount > 0}
-              buttonsError={hasButtonErrors}
+              hasButtonErrors={hasButtonErrors}
               showButtonsLabel={isPublisherProfile}
-              additionalMediaAction={
-                <PublicationVideoTool
-                  active={draft.mediaType === 'video'}
-                  disabled={isBusy || videoPreparing}
-                  preparing={videoPreparing}
-                  needsReselection={videoNeedsReselection}
-                  onFile={handlePublicationVideoFile}
-                />
-              }
-              videoLabel={
-                draft.mediaType === 'video'
-                  ? draft.mediaFileName || 'Видео'
-                  : retainedVideo
-                    ? 'Видео'
-                    : null
-              }
-              disabled={isBusy}
-              textError={
-                fieldError.includes('текст') ||
-                fieldError.includes('фото') ||
-                fieldError.includes('видео')
-                  ? fieldError
-                  : ''
-              }
-              textPlaceholder="Текст публикации"
-              messageAriaLabel="Текст публикации"
-              onTextChange={(text) => {
-                setDraft((current) => ({ ...current, text, textFormat: 'markdown' }));
-                setFieldError('');
-              }}
-              onImagesChange={(images) =>
-                setDraft((current) => ({
-                  ...current,
-                  images,
-                  retainedAssets: [],
-                  mediaType: current.mediaType === 'video' ? null : current.mediaType,
-                  mediaPayload: current.mediaType === 'video' ? null : current.mediaPayload,
-                  mediaBase64: current.mediaType === 'video' ? '' : current.mediaBase64,
-                  mediaMimeType: current.mediaType === 'video' ? '' : current.mediaMimeType,
-                  mediaFileName: current.mediaType === 'video' ? '' : current.mediaFileName,
-                }))
-              }
+              isBusy={isBusy}
+              operationBusy={operationBusy}
+              imagesNeedReselection={imagesNeedReselection}
+              retainedVideo={Boolean(retainedVideo)}
+              videoPreparing={videoPreparing}
+              videoNeedsReselection={videoNeedsReselection}
+              fieldError={fieldError}
+              onDiscardMissingImages={discardMissingImages}
+              onResolveMissingImages={resolveMissingImages}
               onOpenButtons={() => setButtonsOpen(true)}
-              onClearVideo={() =>
-                setDraft((current) => ({
-                  ...current,
-                  retainedAssets: current.retainedAssets.filter((asset) => asset.type !== 'video'),
-                  mediaType: null,
-                  mediaPayload: null,
-                  mediaBase64: '',
-                  mediaMimeType: '',
-                  mediaFileName: '',
-                }))
-              }
-              onError={(message) => pushToast({ tone: 'info', title: message })}
+              onVideoFile={handlePublicationVideoFile}
+              onImagePreparationChange={setMediaPreparing}
+              onFieldError={setFieldError}
+              onInfo={(message) => pushToast({ tone: 'info', title: message })}
             />
-          </section>
+          </Suspense>
 
           {renderTiming()}
 
@@ -2759,14 +2753,18 @@ export function PublicationsPage({
           ].filter((item): item is string => Boolean(item))}
           confirmLabel={primaryLabel}
           confirmBusyLabel="Сохраняем..."
-          isBusy={saveMutation.isPending}
+          isBusy={isBusy}
           showExtraAction={!isPublisherProfile}
           extraActionBusy={testMutation.isPending}
           extraActionDisabled={
-            !hasContent || videoNeedsReselection || draft.targets.length === 0 || hasButtonErrors
+            isBusy ||
+            !hasContent ||
+            videoNeedsReselection ||
+            draft.targets.length === 0 ||
+            hasButtonErrors
           }
           onExtraAction={handleTest}
-          onClose={() => !saveMutation.isPending && setPendingReview(false)}
+          onClose={() => !isBusy && setPendingReview(false)}
           onConfirm={() => {
             setPendingReview(false);
             submitPublication(false);
@@ -2808,6 +2806,7 @@ export function PublicationsPage({
         confirmLabel="Закрыть"
         cancelLabel="Остаться"
         tone="danger"
+        isBusy={isBusy}
         onClose={() => setPendingEditorClose(false)}
         onConfirm={() => {
           setPendingEditorClose(false);
@@ -2822,6 +2821,7 @@ export function PublicationsPage({
         confirmLabel="Очистить"
         cancelLabel="Оставить"
         tone="danger"
+        isBusy={isBusy}
         onClose={() => setPendingDraftClear(false)}
         onConfirm={confirmDraftClear}
       />

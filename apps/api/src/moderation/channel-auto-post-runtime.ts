@@ -5,6 +5,7 @@ import {
   type InternalChannelDialogButtonIdentity,
 } from '../common/channel-dialog-button-identity.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
+import { buildChannelPostActionRows } from '../common/channel-post-actions';
 import {
   isMaxTextMarkupType,
   normalizeMaxUserMentionLink,
@@ -416,21 +417,19 @@ export function buildChannelAutoPostButtons(
   >,
   visibility: ReturnType<typeof resolveChannelAutoPostButtonVisibility>,
   buildButton: ChannelDialogButtonBuilder,
+  ctaButton: MaxMessageButton | null = null,
 ): MaxMessageButton[][] {
-  const rows: MaxMessageButton[][] = [];
-  if (visibility.includeCommentsButton) {
-    rows.push([buildButton('comments', formatCommentsButtonText('💬 Комментарии', 0))]);
-  }
-  if (visibility.includeSuggestButton) {
-    rows.push([
-      buildButton(
+  const commentsButton = visibility.includeCommentsButton
+    ? buildButton('comments', formatCommentsButtonText('💬 Комментарии', 0))
+    : null;
+  const suggestButton = visibility.includeSuggestButton
+    ? buildButton(
         'suggest',
         settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
         settings.postSuggestionsEntryMode,
-      ),
-    ]);
-  }
-  return rows;
+      )
+    : null;
+  return buildChannelPostActionRows({ commentsButton, suggestButton, ctaButton });
 }
 
 type ChannelPostSignaturePreparer = {

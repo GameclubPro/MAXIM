@@ -26,6 +26,10 @@ const pageSource = readFileSync(
   new URL('../src/pages/publications-page.tsx', import.meta.url),
   'utf8',
 );
+const contentEditorSource = readFileSync(
+  new URL('../src/features/publications/publication-content-editor-section.tsx', import.meta.url),
+  'utf8',
+);
 const createSheetSource = readFileSync(
   new URL('../src/features/publications/publication-create-sheet.tsx', import.meta.url),
   'utf8',
@@ -234,7 +238,7 @@ test('publication import stays isolated and reloadable without replacing the man
     controllerSource,
     /resolvePublisherPostImportDraftContext\(session, publicationId\)/u,
   );
-  assert.match(pageSource, /PublicationImportButtonsNotice/u);
+  assert.match(contentEditorSource, /PublicationImportButtonsNotice/u);
   assert.match(importButtonsNoticeSource, /publication-import-buttons-notice/u);
   assert.match(importButtonsNoticeSource, /shouldOfferPublisherButtonRecovery\(omissions/u);
   assert.match(pageSource, /restoreCreateDraftAndClose/u);

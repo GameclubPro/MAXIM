@@ -25,9 +25,14 @@ export function publisherEntityToPublicationTarget(source: PublisherEntity): Pub
       source.entityType === 'chat' &&
       source.moduleSettings.chatComments?.commentsEnabled === true &&
       source.moduleSettings.chatComments.commentsChatBroadcastsEnabled === true,
-    publisherChannelSuggestionsEnabled:
+    publisherChannelCommentsEnabled:
       source.entityType === 'channel' &&
-      source.moduleSettings.channelSuggestionsEnabled === true,
+      source.moduleSettings.channelCommentsEnabled === true &&
+      source.readiness.canUseChannelComments === true,
+    publisherChannelSuggestionsEnabled:
+      source.entityType === 'channel' && source.moduleSettings.channelSuggestionsEnabled === true,
+    publisherChannelPostSignature:
+      source.entityType === 'channel' ? (source.channelPostSignature ?? null) : null,
     readiness: source.readiness,
   };
 }

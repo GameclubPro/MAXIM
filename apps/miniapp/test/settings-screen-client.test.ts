@@ -175,6 +175,7 @@ test('channel post signature client preserves a custom URL across GET and PATCH'
   const calls: ApiCall[] = [];
   const signature = {
     enabled: true,
+    presentation: 'button' as const,
     text: 'Заказать рекламу',
     url: 'https://max.ru/advertising-manager',
   };

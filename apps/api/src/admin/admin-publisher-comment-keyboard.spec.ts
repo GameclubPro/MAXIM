@@ -38,6 +38,13 @@ function createService(rows: Array<{ id: string; action: string; payload: unknow
         url: 'https://max.ru/publik-bot?startapp=publisher-signed',
       }),
     ),
+    buildChannelDialogButton: jest.fn(
+      (_chatId: string, _type: string, _threadId: string, text: string) => ({
+        type: 'link' as const,
+        text,
+        url: 'https://max.ru/publik-bot?startapp=publisher-channel-signed',
+      }),
+    ),
   };
   const service = new AdminService(
     prisma as never,
@@ -75,7 +82,7 @@ function createService(rows: Array<{ id: string; action: string; payload: unknow
 }
 
 describe('AdminService publisher-origin comment keyboard routing', () => {
-  it('queues an exact Publik edit for a chat reply while rebuilding its link for the main bot', async () => {
+  it('queues an exact Publik edit for a chat reply with its Publisher-signed link', async () => {
     const harness = createService([
       {
         id: 'audit-1',
@@ -86,7 +93,7 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
           deliveryMode: 'reply_message',
           replyMessageId: 'publik-reply-1',
           botId: 'publik-bot',
-          dialogBotId: 'main-bot',
+          dialogBotId: 'publik-bot',
         },
       },
     ]);
@@ -99,7 +106,7 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
         readinessFeature: 'chat_comments',
         messageId: 'publik-reply-1',
         requiredBotId: 'publik-bot',
-        dialogBotId: 'main-bot',
+        dialogBotId: 'publik-bot',
         countSnapshot: 7,
         buttons: [[expect.objectContaining({ text: '💬 Комментарии · 7' })]],
       }),
@@ -117,7 +124,7 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
           deliveryMode: 'reply_message',
           replyMessageId: 'major-reply',
           botId: 'main-bot',
-          dialogBotId: 'main-bot',
+          dialogBotId: 'publik-bot',
         },
       },
       {
@@ -190,7 +197,7 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
           threadId: 'thread-2',
           messageId: 'publik-channel-post-1',
           botId: 'publik-bot',
-          dialogBotId: 'main-bot',
+          dialogBotId: 'publik-bot',
           includeCommentsButton: true,
           commentsButtonText: 'Обсуждение',
           includeSuggestButton: false,
@@ -199,7 +206,12 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
       },
     ]);
 
-    await (harness.service as any).syncChannelCommentsButtonCount('channel-1', 'thread-2', 12);
+    await (harness.service as any).syncChannelCommentsButtonCount(
+      'channel-1',
+      'thread-2',
+      12,
+      'publisher',
+    );
 
     expect(harness.queue.enqueueKeyboardEdit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -207,12 +219,152 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
         readinessFeature: 'publication',
         messageId: 'publik-channel-post-1',
         requiredBotId: 'publik-bot',
-        dialogBotId: 'main-bot',
+        dialogBotId: 'publik-bot',
         countSnapshot: 12,
         commentsButton: expect.objectContaining({ baseText: 'Обсуждение' }),
+        buttons: [
+          [
+            expect.objectContaining({
+              url: 'https://max.ru/publik-bot?startapp=publisher-channel-signed',
+            }),
+          ],
+        ],
+      }),
+    );
+    expect(harness.publisherDialogLinkService.buildChannelDialogButton).toHaveBeenCalledWith(
+      'channel-1',
+      'comments',
+      'thread-2',
+      'Обсуждение · 12',
+      'MINIAPP',
+    );
+    expect(harness.maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+  });
+
+  it('patches only the frozen comments slot and preserves the original CTA', async () => {
+    const buttonRows = [
+      [
+        {
+          type: 'link' as const,
+          text: '💬 Комментарии · 0',
+          url: 'https://max.ru/publik-bot?startapp=comments-original',
+        },
+      ],
+      [
+        {
+          type: 'link' as const,
+          text: '✍️ Предложить объявление',
+          url: 'https://max.ru/publik-bot?startapp=suggest-original',
+        },
+      ],
+      [
+        {
+          type: 'link' as const,
+          text: '📞 Заказать рекламу',
+          url: 'https://ads.example/original',
+        },
+      ],
+    ];
+    const harness = createService([
+      {
+        id: 'audit-frozen',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: {
+          threadId: 'thread-frozen',
+          messageId: 'publik-channel-frozen',
+          botId: 'publik-bot',
+          dialogBotId: 'publik-bot',
+          includeCommentsButton: true,
+          includeSuggestButton: true,
+          buttonRows,
+          commentsButton: { rowIndex: 0, columnIndex: 0, baseText: '💬 Комментарии' },
+        },
+      },
+    ]);
+
+    await (harness.service as any).syncChannelCommentsButtonCount(
+      'channel-1',
+      'thread-frozen',
+      14,
+      'publisher',
+    );
+
+    expect(harness.queue.enqueueKeyboardEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'publik-channel-frozen',
+        commentsButton: { rowIndex: 0, columnIndex: 0, baseText: '💬 Комментарии' },
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 14' })],
+          [expect.objectContaining({ url: 'https://max.ru/publik-bot?startapp=suggest-original' })],
+          [expect.objectContaining({ url: 'https://ads.example/original' })],
+        ],
+      }),
+    );
+    expect(harness.publisherDialogLinkService.buildChannelDialogButton).not.toHaveBeenCalled();
+  });
+
+  it('keeps same-thread Major and Publisher channel counters on their owning posts', async () => {
+    const harness = createService([
+      {
+        id: 'major-channel-audit',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: {
+          threadId: 'shared-channel-thread',
+          messageId: 'major-channel-post',
+          botId: 'main-bot',
+          dialogBotId: 'main-bot',
+          includeCommentsButton: true,
+          includeSuggestButton: false,
+        },
+      },
+      {
+        id: 'publisher-channel-audit',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: {
+          threadId: 'shared-channel-thread',
+          messageId: 'publisher-channel-post',
+          botId: 'publik-bot',
+          dialogBotId: 'publik-bot',
+          includeCommentsButton: true,
+          includeSuggestButton: false,
+        },
+      },
+    ]);
+
+    await (harness.service as any).syncChannelCommentsButtonCount(
+      'channel-1',
+      'shared-channel-thread',
+      9,
+      'publisher',
+    );
+
+    expect(harness.queue.enqueueKeyboardEdit).toHaveBeenCalledTimes(1);
+    expect(harness.queue.enqueueKeyboardEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'publisher-channel-post',
+        countSnapshot: 9,
       }),
     );
     expect(harness.maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+
+    await (harness.service as any).syncChannelCommentsButtonCount(
+      'channel-1',
+      'shared-channel-thread',
+      4,
+      'moderation',
+    );
+
+    expect(harness.queue.enqueueKeyboardEdit).toHaveBeenCalledTimes(1);
+    expect(harness.maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(harness.maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'major-channel-post',
+      null,
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 4' })]],
+      }),
+      { botId: 'main-bot' },
+    );
   });
 
   it('treats explicitly disabled publisher keyboard admission as a clean handled skip', async () => {

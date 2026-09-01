@@ -30,6 +30,10 @@ type ProfiledRoutedPageProps = RoutedPageProps & {
   profile: MiniappProfile;
 };
 
+type SuggestionRoutedPageProps = ProfiledRoutedPageProps & {
+  userId: string;
+};
+
 function LazyPageLoadFailure() {
   return createElement(
     'button',
@@ -80,7 +84,7 @@ export const LazyChannelDialogPage = lazyPage<ProfiledRoutedPageProps>(
   preloadChannelDialogPage,
   'ChannelDialogPage',
 );
-export const LazyChannelSuggestDialogPage = lazyPage<ProfiledRoutedPageProps>(
+export const LazyChannelSuggestDialogPage = lazyPage<SuggestionRoutedPageProps>(
   preloadChannelSuggestDialogPage,
   'ChannelSuggestDialogPage',
 );

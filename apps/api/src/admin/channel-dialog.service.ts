@@ -90,21 +90,55 @@ export class ChannelDialogService {
   }
 
   updateChannelDialogNotifications(
-    ...args: Parameters<ChannelDialogLegacyPort['updateChannelDialogNotifications']>
+    chatId: string,
+    user: AuthUser,
+    dialogType: string,
+    body: unknown,
+    profile: MiniappProfile = 'moderation',
   ): ReturnType<ChannelDialogLegacyPort['updateChannelDialogNotifications']> {
-    return this.legacyAdminService.updateChannelDialogNotifications(...args);
+    return this.legacyAdminService.updateChannelDialogNotifications(
+      chatId,
+      user,
+      dialogType,
+      body,
+      profile,
+    );
   }
 
   updateChannelDialogMessage(
-    ...args: Parameters<ChannelDialogLegacyPort['updateChannelDialogMessage']>
+    chatId: string,
+    user: AuthUser,
+    dialogType: string,
+    messageId: string,
+    body: unknown,
+    profile: MiniappProfile = 'moderation',
   ): ReturnType<ChannelDialogLegacyPort['updateChannelDialogMessage']> {
-    return this.legacyAdminService.updateChannelDialogMessage(...args);
+    return this.legacyAdminService.updateChannelDialogMessage(
+      chatId,
+      user,
+      dialogType,
+      messageId,
+      body,
+      profile,
+    );
   }
 
   deleteChannelDialogMessage(
-    ...args: Parameters<ChannelDialogLegacyPort['deleteChannelDialogMessage']>
+    chatId: string,
+    user: AuthUser,
+    dialogType: string,
+    messageId: string,
+    body: unknown,
+    profile: MiniappProfile = 'moderation',
   ): ReturnType<ChannelDialogLegacyPort['deleteChannelDialogMessage']> {
-    return this.legacyAdminService.deleteChannelDialogMessage(...args);
+    return this.legacyAdminService.deleteChannelDialogMessage(
+      chatId,
+      user,
+      dialogType,
+      messageId,
+      body,
+      profile,
+    );
   }
 
   toggleChannelDialogReaction(
@@ -113,6 +147,7 @@ export class ChannelDialogService {
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
+    profile: MiniappProfile = 'moderation',
   ): ReturnType<ChannelDialogLegacyPort['toggleEntityDialogReactionForDialog']> {
     return toggleDialogReactionValue({
       chatId,
@@ -121,8 +156,11 @@ export class ChannelDialogService {
       dialogTypeRaw,
       messageId,
       body,
+      dialogProfile: profile,
       loadCommentSettings: (channelId) =>
-        this.legacyAdminService.getPublicChannelSettingsForDialog(channelId),
+        profile === 'publisher'
+          ? this.legacyAdminService.getPublicPublisherChannelCommentSettingsForDialog(channelId)
+          : this.legacyAdminService.getPublicChannelSettingsForDialog(channelId),
       toggleReaction: (options) =>
         this.legacyAdminService.toggleEntityDialogReactionForDialog(options),
     });
@@ -145,13 +183,7 @@ export class ChannelDialogService {
     body: unknown,
     profile: MiniappProfile = 'moderation',
   ): ReturnType<ChannelDialogLegacyPort['createChatDialogMessage']> {
-    return this.legacyAdminService.createChatDialogMessage(
-      chatId,
-      user,
-      dialogType,
-      body,
-      profile,
-    );
+    return this.legacyAdminService.createChatDialogMessage(chatId, user, dialogType, body, profile);
   }
 
   updateChatDialogNotifications(

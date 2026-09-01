@@ -41,6 +41,8 @@ export type ManagedBroadcastButtonContextResult = {
     suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
     botId: string | null;
     dialogBotId?: string | null;
+    buttonRows?: MaxMessageButton[][];
+    commentsButton?: { rowIndex: number; columnIndex: number; baseText: string | null } | null;
   } | null;
 };
 

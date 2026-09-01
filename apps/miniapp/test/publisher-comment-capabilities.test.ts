@@ -17,10 +17,12 @@ test('comment capabilities keep Major-routed controls out of Publisher', () => {
   assert.deepEqual(resolveChannelDialogProfileCapabilities('publisher'), {
     canManageCommentNotifications: false,
     canUploadCommentAttachments: false,
+    canUploadSuggestionImages: true,
   });
   assert.deepEqual(resolveChannelDialogProfileCapabilities('moderation'), {
     canManageCommentNotifications: true,
     canUploadCommentAttachments: true,
+    canUploadSuggestionImages: true,
   });
 });
 
@@ -28,7 +30,7 @@ test('comment routes pass their authenticated profile into the lazy page', () =>
   assert.match(lazyPagesSource, /ProfiledRoutedPageProps[\s\S]*?profile: MiniappProfile/u);
   assert.match(
     appSource,
-    /path="\/channel\/:chatId\/dialog\/comments"[\s\S]*?profile="moderation"/u,
+    /path="\/channel\/:chatId\/dialog\/comments"[\s\S]*?profile=\{me\.profile\}/u,
   );
   assert.match(
     appSource,

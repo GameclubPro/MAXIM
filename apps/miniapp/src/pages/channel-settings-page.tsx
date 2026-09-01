@@ -1,4 +1,5 @@
 import {
+  CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH,
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH,
   CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH,
@@ -188,6 +189,7 @@ function normalizePostSignatureSettings(
   const parsedUrl = parseChannelPostSignatureUrl(value.url);
   return {
     enabled: value.enabled,
+    presentation: value.presentation,
     text: value.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
     url: parsedUrl.error ? value.url.trim() : parsedUrl.url,
   };
@@ -2359,6 +2361,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   const postSignature = postSignatureDraft ?? {
     enabled: false,
+    presentation: 'signature' as const,
     text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
     url: '',
   };
@@ -2368,12 +2371,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   );
   const fallbackPostSignatureUrl = parseChannelPostSignatureUrl(resolvedChannelLink).url;
   const postSignatureUrlError = resolvedPostSignaturePreviewUrl.error;
+  const postSignatureTextError =
+    postSignature.presentation === 'button' &&
+    postSignature.text.trim().length > CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH
+      ? `До ${CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH} символов для кнопки.`
+      : '';
   const effectivePostSignatureUrl = resolvedPostSignaturePreviewUrl.url;
 
   function closePostSignatureSection() {
-    if (isPostSignatureDirty && postSignatureUrlError) {
+    if (isPostSignatureDirty && (postSignatureUrlError || postSignatureTextError)) {
       document
-        .querySelector<HTMLInputElement>('#channel-post-signature-url')
+        .querySelector<HTMLInputElement>(
+          postSignatureTextError ? '#channel-post-signature-text' : '#channel-post-signature-url',
+        )
         ?.focus({ preventScroll: true });
       return;
     }
@@ -2390,6 +2400,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     commentsEnabled: draft.commentsEnabled,
     postSuggestionsEnabled: draft.postSuggestionsEnabled,
     postSuggestionsButtonText: draft.postSuggestionsButtonText,
+    ctaButtonEnabled: postSignature.enabled && postSignature.presentation === 'button',
+    ctaButtonText: postSignature.text,
   });
   const broadcastHasButton = normalizedBroadcastButtons.length > 0;
   const broadcastVisibleButtons = [...normalizedBroadcastButtons, ...broadcastSystemButtons];
@@ -2604,8 +2616,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : 'Вкл';
   const postSignatureLabel = postSignature.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT;
   const postSignatureCardSummary = postSignature.enabled
-    ? postSignatureLabel
-    : 'Ссылка в конце публикаций';
+    ? `${postSignature.presentation === 'button' ? 'Кнопка' : 'Ссылка'} · ${postSignatureLabel}`
+    : 'Выключено';
   const postSignatureCardStatus =
     postSignatureSaveState === 'saving'
       ? 'Сохраняем'
@@ -2620,7 +2632,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     postSignatureSaveState === 'error'
       ? 'Не сохранено'
       : postSignature.enabled
-        ? postSignatureLabel
+        ? `${postSignature.presentation === 'button' ? 'Кнопка' : 'Ссылка'} · ${postSignatureLabel}`
         : 'Выключена';
   const postSuggestionsEntryLabel =
     draft.postSuggestionsEntryMode === 'MINIAPP' ? 'Приложение' : 'Бот';
@@ -3302,7 +3314,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       >
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Подпись публикаций"
+            title="Действие под публикацией"
             summary={postSignatureCardSummary}
             status={postSignatureCardStatus}
             icon="links"
@@ -3316,7 +3328,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <SettingsDrilldownPanel
           id="channel-settings-post-signature"
           open={expandedSections.postSignature}
-          title="Подпись публикаций"
+          title="Действие под публикацией"
           summary={postSignaturePanelSummary}
           tone="sky"
           className="settings-drilldown__panel--signature"
@@ -3337,14 +3349,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     <IconoirLink />
                   </span>
                   <span className="channel-post-signature__activation-copy">
-                    <strong>Добавлять подпись</strong>
-                    <small>{postSignature.enabled ? 'В конце публикаций' : 'Выключено'}</small>
+                    <strong>Добавлять действие</strong>
+                    <small>
+                      {postSignature.enabled
+                        ? postSignature.presentation === 'button'
+                          ? 'Кнопкой под публикацией'
+                          : 'Ссылкой в конце текста'
+                        : 'Выключено'}
+                    </small>
                   </span>
                   <label className="settings-native-switch channel-post-signature__switch">
                     <input
                       type="checkbox"
                       checked={postSignature.enabled}
-                      aria-label="Подпись публикаций"
+                      aria-label="Действие под публикацией"
                       onChange={(event) =>
                         savePostSignature({ ...postSignature, enabled: event.target.checked })
                       }
@@ -3355,14 +3373,46 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   </label>
                 </div>
 
+                <div className="channel-post-signature__presentation">
+                  <span>Отображение</span>
+                  <SegmentedControl
+                    value={postSignature.presentation}
+                    options={[
+                      { value: 'signature', label: 'Ссылка в тексте' },
+                      { value: 'button', label: 'Кнопка' },
+                    ]}
+                    ariaLabel="Формат действия под публикацией"
+                    onChange={(presentation) => {
+                      const next = { ...postSignature, presentation };
+                      latestPostSignatureRef.current = next;
+                      latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
+                      setPostSignatureDraft(next);
+                      if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
+                        setPostSignatureSaveState('idle');
+                      }
+                    }}
+                  />
+                </div>
+
                 <div className="channel-post-signature__workspace">
                   <div className="channel-post-signature__fields">
-                    <label className="field channel-post-signature__field">
-                      <span>Текст ссылки</span>
+                    <label
+                      className={cn(
+                        'field channel-post-signature__field',
+                        postSignatureTextError && 'field--error',
+                      )}
+                    >
+                      <span>{postSignature.presentation === 'button' ? 'Текст кнопки' : 'Текст ссылки'}</span>
                       <input
+                        id="channel-post-signature-text"
                         type="text"
                         value={postSignature.text}
-                        maxLength={CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH}
+                        maxLength={
+                          postSignature.presentation === 'button'
+                            ? CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH
+                            : CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH
+                        }
+                        aria-invalid={Boolean(postSignatureTextError)}
                         onChange={(event) => {
                           const next = { ...postSignature, text: event.target.value };
                           latestPostSignatureRef.current = next;
@@ -3379,6 +3429,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           }
                         }}
                       />
+                      {postSignatureTextError ? (
+                        <small className="field__hint" role="alert">
+                          {postSignatureTextError}
+                        </small>
+                      ) : null}
                     </label>
 
                     <label
@@ -3432,29 +3487,46 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   >
                     <div className="channel-post-signature__preview-head">
                       <span>Предпросмотр</span>
-                      <small>{postSignature.enabled ? 'Включена' : 'Выключена'}</small>
+                      <small>
+                        {postSignature.enabled
+                          ? postSignature.presentation === 'button'
+                            ? 'Кнопка'
+                            : 'Ссылка'
+                          : 'Выключено'}
+                      </small>
                     </div>
                     <div className="channel-post-signature__message-preview">
                       <span className="channel-post-signature__message-lines" aria-hidden>
                         <i />
                         <i />
                       </span>
-                      <span className="channel-post-signature__message-signature">
-                        <IconoirLink aria-hidden />
-                        {effectivePostSignatureUrl ? (
-                          <a
-                            href={effectivePostSignatureUrl}
-                            onClick={(event) => {
-                              event.preventDefault();
-                              openLink(effectivePostSignatureUrl);
-                            }}
-                          >
-                            {postSignatureLabel}
-                          </a>
-                        ) : (
-                          <strong>{postSignatureLabel}</strong>
-                        )}
-                      </span>
+                      {postSignature.presentation === 'button' ? (
+                        <button
+                          type="button"
+                          className="channel-post-signature__message-button"
+                          disabled={!postSignature.enabled || !effectivePostSignatureUrl}
+                          onClick={() => effectivePostSignatureUrl && openLink(effectivePostSignatureUrl)}
+                        >
+                          {postSignatureLabel}
+                        </button>
+                      ) : (
+                        <span className="channel-post-signature__message-signature">
+                          <IconoirLink aria-hidden />
+                          {effectivePostSignatureUrl ? (
+                            <a
+                              href={effectivePostSignatureUrl}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                openLink(effectivePostSignatureUrl);
+                              }}
+                            >
+                              {postSignatureLabel}
+                            </a>
+                          ) : (
+                            <strong>{postSignatureLabel}</strong>
+                          )}
+                        </span>
+                      )}
                     </div>
                     <small
                       className={cn(

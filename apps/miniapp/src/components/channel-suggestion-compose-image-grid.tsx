@@ -51,6 +51,7 @@ export default function ChannelSuggestionComposeImageGrid({
             <button
               type="button"
               className="channel-suggest-composer__image-remove"
+              disabled={busy}
               onClick={() => onRemove(attachmentIndex)}
               aria-label={`Убрать ${fileName}`}
             >

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
+import { buildChannelPostActionRows } from '../common/channel-post-actions';
 import {
   MAX_API_SOURCE_TAGS,
   type MaxAttachmentPayload,
@@ -105,6 +106,7 @@ type SuggestionButtonContext = {
   threadId: string | null;
   includeCommentsButton: boolean;
   includeSuggestButton: boolean;
+  includeCtaButton: boolean;
   suggestButtonText: string | null;
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
 };
@@ -135,6 +137,14 @@ export type AdminChannelSuggestionPublicationRuntimeContext = {
         sourceTag: string;
       },
     ): Promise<{ text: string; textFormat: MaxSendMessageOptions['textFormat'] }>;
+    buildPostButton?(
+      chatId: string,
+      options: {
+        entityType: 'channel';
+        trafficClass: 'interactive';
+        sourceTag: string;
+      },
+    ): Promise<MaxMessageButton | null>;
   };
   assertChatAdmin(chatId: string, userId: string, expectedType: 'channel'): Promise<unknown>;
   ensureEntityType(chatId: string, userId: string, expectedType: 'channel'): Promise<unknown>;
@@ -1110,6 +1120,10 @@ export class AdminChannelSuggestionPublicationRuntime {
           ...(params.context.suggestButtonText
             ? { suggestButtonText: params.context.suggestButtonText }
             : {}),
+          buttonRows: params.context.buttons,
+          commentsButton: params.context.includeCommentsButton
+            ? { rowIndex: 0, columnIndex: 0, baseText: '💬 Комментарии' }
+            : null,
         },
       },
     });
@@ -1393,6 +1407,7 @@ export class AdminChannelSuggestionPublicationRuntime {
         buttons: buttonContext.buttons,
         includeCommentsButton: buttonContext.includeCommentsButton,
         includeSuggestButton: buttonContext.includeSuggestButton,
+        ...(buttonContext.includeCtaButton ? { includeCtaButton: true } : {}),
         suggestButtonText: buttonContext.suggestButtonText,
         suggestionEntryMode: buttonContext.suggestionEntryMode,
         authorAttribution,
@@ -1408,48 +1423,55 @@ export class AdminChannelSuggestionPublicationRuntime {
     const settings = await this.context.getPublicChannelSettings(chatId);
     const includeCommentsButton = settings.commentsEnabled;
     const includeSuggestButton = settings.postSuggestionsEnabled;
-    if (!includeCommentsButton && !includeSuggestButton) {
+    const ctaButton =
+      (await this.context.channelPostSignatureService?.buildPostButton?.(chatId, {
+        entityType: 'channel',
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+      })) ?? null;
+    const includeCtaButton = ctaButton !== null;
+    if (!includeCommentsButton && !includeSuggestButton && !includeCtaButton) {
       return {
         buttons: [],
         threadId: null,
         includeCommentsButton,
         includeSuggestButton,
+        includeCtaButton,
         suggestButtonText: null,
         suggestionEntryMode: settings.postSuggestionsEntryMode,
       };
     }
 
-    const threadId = randomUUID();
+    const threadId = includeCommentsButton || includeSuggestButton ? randomUUID() : null;
     const suggestButtonText = settings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
-    const buttons: MaxMessageButton[][] = [];
-    if (includeCommentsButton) {
-      buttons.push([
-        this.context.buildChannelDialogButton(
+    const commentsButton =
+      includeCommentsButton && threadId
+        ? this.context.buildChannelDialogButton(
           chatId,
           'comments',
           threadId,
           formatCommentsButtonText('💬 Комментарии', 0),
           botId,
-        ),
-      ]);
-    }
-    if (includeSuggestButton) {
-      buttons.push([
-        this.context.buildChannelDialogButton(
+        )
+        : null;
+    const suggestButton =
+      includeSuggestButton && threadId
+        ? this.context.buildChannelDialogButton(
           chatId,
           'suggest',
           threadId,
           suggestButtonText,
           botId,
           settings.postSuggestionsEntryMode,
-        ),
-      ]);
-    }
+        )
+        : null;
+    const buttons = buildChannelPostActionRows({ commentsButton, suggestButton, ctaButton });
     return {
       buttons,
       threadId,
       includeCommentsButton,
       includeSuggestButton,
+      includeCtaButton,
       suggestButtonText: includeSuggestButton ? suggestButtonText : null,
       suggestionEntryMode: settings.postSuggestionsEntryMode,
     };
@@ -1460,14 +1482,15 @@ export class AdminChannelSuggestionPublicationRuntime {
   ): SuggestionButtonContext {
     const reference = context.reference;
     if (!reference) {
-      if (context.buttons.length > 0) {
+      if (context.buttons.length > 1) {
         throw new ServiceUnavailableException('Сохранённый контекст кнопок Публика повреждён.');
       }
       return {
-        buttons: [],
+        buttons: context.buttons,
         threadId: null,
         includeCommentsButton: false,
         includeSuggestButton: false,
+        includeCtaButton: context.buttons.length === 1,
         suggestButtonText: null,
         suggestionEntryMode: 'BOT',
       };
@@ -1480,6 +1503,9 @@ export class AdminChannelSuggestionPublicationRuntime {
       threadId: reference.threadId,
       includeCommentsButton: reference.includeCommentsButton,
       includeSuggestButton: reference.includeSuggestButton,
+      includeCtaButton:
+        context.buttons.length >
+        Number(reference.includeCommentsButton) + Number(reference.includeSuggestButton),
       suggestButtonText: reference.suggestButtonText,
       suggestionEntryMode: reference.suggestionEntryMode ?? 'BOT',
     };

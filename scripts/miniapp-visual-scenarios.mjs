@@ -589,7 +589,12 @@ const baseScenarios = [
     [
       'publications-publisher-compose-selected',
       {
-        searchParams: { profile: 'publisher', compose: '1' },
+        searchParams: {
+          profile: 'publisher',
+          compose: '1',
+          publisherSuggestions: 'mixed',
+          channelPostSignature: 'button',
+        },
         features: ['publisher', 'broadcast'],
       },
     ],
@@ -742,8 +747,16 @@ const baseScenarios = [
   defineScenario('channel-comments', 'channel-dialog-comments', {
     searchParams: { token: 'preview-comments-token-0001' },
   }),
+  defineScenario('channel-comments', 'channel-dialog-comments-publisher', {
+    searchParams: { token: 'preview-comments-token-0001', profile: 'publisher' },
+    features: ['publisher'],
+  }),
   defineScenario('channel-suggest', 'channel-dialog-suggest', {
     searchParams: { token: 'preview-suggest-token-0001' },
+  }),
+  defineScenario('channel-suggest', 'channel-dialog-suggest-publisher', {
+    searchParams: { token: 'preview-suggest-token-0001', profile: 'publisher' },
+    features: ['publisher'],
   }),
   ...defineRouteScenarios('channel-settings', [
     'channel-settings',

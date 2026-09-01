@@ -42,6 +42,7 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
     publicationPolicy: null,
     publisherSettings: {
       chatCommentsEnabled: true,
+      channelCommentsEnabled: false,
       channelSuggestionsEnabled: false,
       autoRepliesEnabled: true,
     },
@@ -209,6 +210,7 @@ describe('PublisherReadinessService', () => {
       },
       publisherSettings: {
         chatCommentsEnabled: false,
+        channelCommentsEnabled: true,
         channelSuggestionsEnabled: true,
         autoRepliesEnabled: false,
       },
@@ -216,6 +218,7 @@ describe('PublisherReadinessService', () => {
     expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
       canPublish: true,
       canUseChatComments: false,
+      canUseChannelComments: true,
       canPublishSuggestions: true,
     });
   });
@@ -259,6 +262,7 @@ describe('PublisherReadinessService', () => {
       readySource({
         publisherSettings: {
           chatCommentsEnabled: false,
+          channelCommentsEnabled: false,
           channelSuggestionsEnabled: false,
           autoRepliesEnabled: false,
         },
@@ -270,6 +274,7 @@ describe('PublisherReadinessService', () => {
       readySource({
         publisherSettings: {
           chatCommentsEnabled: false,
+          channelCommentsEnabled: false,
           channelSuggestionsEnabled: false,
           autoRepliesEnabled: false,
         },
@@ -282,7 +287,21 @@ describe('PublisherReadinessService', () => {
         entityType: ChatEntityType.CHANNEL,
         publisherSettings: {
           chatCommentsEnabled: false,
+          channelCommentsEnabled: false,
           channelSuggestionsEnabled: false,
+          autoRepliesEnabled: false,
+        },
+      }),
+    ],
+    [
+      'channel comments',
+      'channel_comments' as const,
+      readySource({
+        entityType: ChatEntityType.CHANNEL,
+        publisherSettings: {
+          chatCommentsEnabled: false,
+          channelCommentsEnabled: false,
+          channelSuggestionsEnabled: true,
           autoRepliesEnabled: false,
         },
       }),
@@ -299,6 +318,10 @@ describe('PublisherReadinessService', () => {
         code: 'PUBLISHER_SETUP_REQUIRED',
         blockerCode: 'module_disabled',
       }),
+    });
+    await expect(service.assertEntityReady(source.id, 'publication')).resolves.toMatchObject({
+      chatId: source.id,
+      requiredBotId: 'publik-bot',
     });
   });
 });

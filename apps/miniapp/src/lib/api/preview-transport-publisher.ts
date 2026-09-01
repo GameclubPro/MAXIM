@@ -46,6 +46,7 @@ import {
 import { PREVIEW_CHAT_ID } from '../design-preview';
 import { ApiRequestError } from '../api-request-error';
 import { PREVIEW_NOT_HANDLED, type PreviewRequestHandler } from './preview-transport-runtime';
+import { replacePreviewPublication } from './preview-transport-publications';
 import { parseJsonBody } from './preview-transport-shared';
 import type { PreviewState } from './preview-transport-state';
 
@@ -89,6 +90,14 @@ function getPreviewPublisherChannelSuggestions(state: PreviewState): Record<stri
   };
   extended.publisherChannelSuggestions ??= {};
   return extended.publisherChannelSuggestions;
+}
+
+function getPreviewPublisherChannelComments(state: PreviewState): Record<string, boolean> {
+  const extended = state as PreviewState & {
+    publisherChannelComments?: Record<string, boolean>;
+  };
+  extended.publisherChannelComments ??= {};
+  return extended.publisherChannelComments;
 }
 
 function getPreviewPublisherAutoRepliesEnabled(state: PreviewState): Record<string, boolean> {
@@ -185,6 +194,14 @@ function getPreviewPublisherSuggestionReviews(
   return extended.publisherSuggestionReviews;
 }
 
+function getPreviewPublisherSuggestionPublicationIds(state: PreviewState): Record<string, string> {
+  const extended = state as PreviewState & {
+    publisherSuggestionPublicationIds?: Record<string, string>;
+  };
+  extended.publisherSuggestionPublicationIds ??= {};
+  return extended.publisherSuggestionPublicationIds;
+}
+
 function listPreviewPublisherSuggestions(
   state: PreviewState,
   entityId: string,
@@ -218,7 +235,10 @@ function listPreviewPublisherSuggestions(
       authorDisplayName: index % 4 === 0 ? null : `Автор ${index + 1}`,
       createdAt: new Date(state.clock.now().getTime() - index * 12 * 60_000).toISOString(),
       reviewStatus,
-      publicationId: reviewStatus === 'published' ? `preview-publication-${index + 1}` : null,
+      publicationId:
+        getPreviewPublisherSuggestionPublicationIds(state)[id] ??
+        (reviewStatus === 'published' ? `preview-publication-${index + 1}` : null),
+      imageCount: index % 3,
     });
   });
 }
@@ -308,11 +328,15 @@ function buildPreviewPublisherEntity(
     entityType === 'channel' &&
     (getPreviewPublisherChannelSuggestions(state)[entityId] ??
       state.publisherSuggestionsVariant !== 'empty');
+  const channelCommentsEnabled =
+    entityType === 'channel' &&
+    (getPreviewPublisherChannelComments(state)[entityId] ?? state.channelSettings.commentsEnabled);
   const readiness = !policy.publikEnabled
     ? {
         state: 'disabled' as const,
         canPublish: false,
         canUseChatComments: false,
+        canUseChannelComments: false,
         canPublishSuggestions: false,
         blockerCode: 'policy_disabled' as const,
         checkedAt,
@@ -323,6 +347,7 @@ function buildPreviewPublisherEntity(
           state: 'setup_required' as const,
           canPublish: false,
           canUseChatComments: false,
+          canUseChannelComments: false,
           canPublishSuggestions: false,
           blockerCode: setupBlocker,
           checkedAt: null,
@@ -333,6 +358,7 @@ function buildPreviewPublisherEntity(
             state: 'temporarily_unavailable' as const,
             canPublish: false,
             canUseChatComments: false,
+            canUseChannelComments: false,
             canPublishSuggestions: false,
             blockerCode: 'publisher_runtime_unavailable' as const,
             checkedAt,
@@ -344,6 +370,7 @@ function buildPreviewPublisherEntity(
             canUseChatComments:
               entityType === 'chat' &&
               getPreviewPublisherChatComments(state)[entityId]?.commentsEnabled === true,
+            canUseChannelComments: channelCommentsEnabled,
             canPublishSuggestions: channelSuggestionsEnabled,
             blockerCode: null,
             checkedAt,
@@ -356,6 +383,7 @@ function buildPreviewPublisherEntity(
     avatarUrl: source.avatarUrl ?? null,
     entityUrl: `https://max.ru/join/${encodeURIComponent(source.id)}`,
     policy,
+    channelPostSignature: entityType === 'channel' ? state.channelPostSignature : null,
     moduleSettings: {
       revision: getPreviewPublisherModuleRevisions(state)[entityKey] ?? 0,
       chatComments:
@@ -370,6 +398,7 @@ function buildPreviewPublisherEntity(
         entityType === 'chat'
           ? (getPreviewPublisherAutoRepliesEnabled(state)[entityId] ?? true)
           : null,
+      channelCommentsEnabled: entityType === 'channel' ? channelCommentsEnabled : null,
       channelSuggestionsEnabled: entityType === 'channel' ? channelSuggestionsEnabled : null,
     },
     readiness,
@@ -847,13 +876,39 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     if (!suggestion) {
       throw new ApiRequestError(404, '', 'Preview publisher suggestion not found');
     }
-    const reviewStatus = request.action === 'publish' ? 'publishing' : 'cancelled';
+    let publicationId: string | null = null;
+    const reviewStatus =
+      request.action === 'publish'
+        ? 'publishing'
+        : request.action === 'draft'
+          ? 'drafted'
+          : 'cancelled';
+    if (request.action === 'draft') {
+      const publication = replacePreviewPublication(state, null, {
+        title: 'Предложка',
+        content: {
+          text: suggestion.text,
+          textFormat: suggestion.textFormat,
+          buttons: [],
+          media: [],
+        },
+        audience: {
+          selection: 'SELECTED',
+          mode: 'SNAPSHOT',
+          targets: [{ chatId: entityId, entityType: 'channel' }],
+        },
+        schedule: null,
+        intent: 'draft',
+      });
+      publicationId = publication.id;
+      getPreviewPublisherSuggestionPublicationIds(state)[suggestionId] = publication.id;
+    }
     getPreviewPublisherSuggestionReviews(state)[suggestionId] = reviewStatus;
     return reviewPublisherSuggestionResponseSchema.parse({
       suggestion: {
         ...suggestion,
         reviewStatus,
-        publicationId: null,
+        publicationId,
       },
     });
   }
@@ -892,6 +947,9 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     if (entityType === 'channel' && request.channelSuggestionsEnabled !== undefined) {
       getPreviewPublisherChannelSuggestions(state)[entityId] = request.channelSuggestionsEnabled;
     }
+    if (entityType === 'channel' && request.channelCommentsEnabled !== undefined) {
+      getPreviewPublisherChannelComments(state)[entityId] = request.channelCommentsEnabled;
+    }
     if (entityType === 'chat' && request.autoRepliesEnabled !== undefined) {
       getPreviewPublisherAutoRepliesEnabled(state)[entityId] = request.autoRepliesEnabled;
     }
@@ -907,6 +965,10 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
         entityType === 'chat'
           ? (getPreviewPublisherAutoRepliesEnabled(state)[entityId] ??
             entity.moduleSettings.autoRepliesEnabled)
+          : null,
+      channelCommentsEnabled:
+        entityType === 'channel'
+          ? (getPreviewPublisherChannelComments(state)[entityId] ?? false)
           : null,
       channelSuggestionsEnabled:
         entityType === 'channel'

@@ -3,7 +3,12 @@ import {
   buildChannelSuggestionPublicationLedgerJobId,
   CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
 } from './admin-channel-suggestion-publication-protocol';
-import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
+import {
+  buildPublisherSuggestionAdmissionCleanupQuery,
+  buildPublisherSuggestionPendingCleanupQuery,
+  buildPublisherSuggestionTerminalImageCleanupQuery,
+  PublisherSuggestionPublicationQueueService,
+} from './publisher-suggestion-publication-queue.service';
 import {
   buildPublisherSuggestionPublicationRequestId,
   PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
@@ -57,6 +62,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     };
     const prisma = {
       $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(0),
     };
     const dispatchHealth = {
       isGloballyPaused: jest.fn().mockResolvedValue(globallyPaused),
@@ -130,7 +136,44 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     expect(scanSql.match(/UNION ALL/gu)).toHaveLength(2);
     expect(scanSql).not.toMatch(/\bOR\b/gu);
     expect(scanSql).not.toContain('action IN');
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(3);
     service.onModuleDestroy();
+  });
+
+  it('uses separately limited terminal branches and bounded retention deletes', () => {
+    const terminalSql = sqlText(buildPublisherSuggestionTerminalImageCleanupQuery());
+    expect(terminalSql.match(/FROM audit_logs/gu)).toHaveLength(3);
+    expect(terminalSql.match(/UNION ALL/gu)).toHaveLength(2);
+    expect(terminalSql.match(/LIMIT \?/gu)).toHaveLength(4);
+    expect(terminalSql).toContain("payload->>'reviewStatus' = 'published'");
+    expect(terminalSql).toContain("payload->>'reviewStatus' = 'drafted'");
+    expect(terminalSql).toContain("payload->>'reviewStatus' = 'cancelled'");
+    expect(terminalSql).not.toContain("reviewStatus' IN");
+    expect(terminalSql).not.toMatch(/\bOR\b/gu);
+    expect(terminalSql).toContain('DELETE FROM channel_suggestion_image_assets');
+
+    const cutoff = new Date('2026-08-01T00:00:00.000Z');
+    const pendingQuery = buildPublisherSuggestionPendingCleanupQuery(cutoff);
+    const pendingSql = sqlText(pendingQuery);
+    expect(pendingSql).toContain("action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'");
+    expect(pendingSql).toContain("payload->>'reviewStatus' = 'pending'");
+    expect(pendingSql).toContain("payload->>'reviewClaimToken' IS NULL");
+    expect(pendingSql).toContain('created_at < ?');
+    expect(pendingSql).toContain('ORDER BY created_at ASC, id ASC');
+    expect(pendingSql).toContain('LIMIT ?');
+    expect(pendingSql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(pendingSql).toContain('DELETE FROM audit_logs');
+    expect(pendingSql).not.toMatch(/\b(?:IN|OR)\b/gu);
+    expect(pendingQuery.values).toContain(cutoff);
+
+    const admissionQuery = buildPublisherSuggestionAdmissionCleanupQuery(cutoff);
+    const admissionSql = sqlText(admissionQuery);
+    expect(admissionSql).toContain("action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION_ADMISSION'");
+    expect(admissionSql).toContain('created_at < ?');
+    expect(admissionSql).toContain('LIMIT ?');
+    expect(admissionSql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(admissionSql).toContain('DELETE FROM audit_logs');
+    expect(admissionQuery.values).toContain(cutoff);
   });
 
   it('keeps enabled recovery timers idle before DB or queue work while globally paused', async () => {
@@ -141,6 +184,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     await jest.advanceTimersByTimeAsync(60_000);
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(6);
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
 
@@ -161,6 +205,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     await Promise.resolve();
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(3);
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
     service.onModuleDestroy();

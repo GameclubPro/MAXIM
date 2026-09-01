@@ -36,6 +36,13 @@ import { PublicDialogUnavailableState } from '../components/public-dialog-unavai
 import type { MaxRichTextEditorHandle } from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import {
+  buildChannelSuggestionThreadScope,
+  clearChannelSuggestionDraft,
+  flushChannelSuggestionDraftStorage,
+  loadChannelSuggestionDraft,
+  saveChannelSuggestionDraft,
+} from '../features/channel-suggestions/channel-suggestion-draft-storage';
 import type { ApiTransport } from '../lib/api/transport';
 import {
   resolveSuggestionKeyboardLayout,
@@ -46,10 +53,16 @@ import {
   type ChannelSuggestionImagePreparationGuard,
 } from '../lib/channel-suggestion-image-preparation';
 import { cn } from '../lib/cn';
+import {
+  advanceContentBoundRequestIdentity,
+  createContentBoundRequestIdentity,
+  resolveContentBoundRequestIdentity,
+} from '../lib/client-request-id';
+import { resolveChannelDialogProfileCapabilities } from '../lib/channel-dialog-profile-capabilities';
 import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/dialog-api-error';
 import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
-import { maxSelectionChanged } from '../lib/max-bridge';
+import { maxSelectionChanged, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import '../styles/channel-dialog-suggest.css';
 
@@ -132,6 +145,7 @@ type TerminalDialogErrorState = readonly [chatId: string, token: string, message
 
 type CreateChannelSuggestMessagePayload = {
   token: string;
+  requestId: string;
   text: string;
   textFormat: 'markdown';
   images: Array<{
@@ -273,16 +287,22 @@ function SuggestionRequirements({ text }: { text: string }) {
 export function ChannelSuggestDialogPage({
   api,
   profile,
+  userId,
 }: {
   api: ApiTransport;
   profile: MiniappProfile;
+  userId: string;
 }) {
   const { chatId = '' } = useParams();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
+  const draftThreadScope = buildChannelSuggestionThreadScope(token) ?? '';
   const [draft, setDraft] = useState('');
   const [editorReady, setEditorReady] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<SuggestDraftAttachment[]>([]);
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [draftImagesNeedReselection, setDraftImagesNeedReselection] = useState(false);
+  const [missingDraftImageCount, setMissingDraftImageCount] = useState(0);
   const [preparingImageState, setPreparingImageState] = useState<PreparingImageState | null>(null);
   const [terminalDialogErrorState, setTerminalDialogErrorState] =
     useState<TerminalDialogErrorState | null>(null);
@@ -292,6 +312,10 @@ export function ChannelSuggestDialogPage({
   const suggestBarRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
+  const requestIdentityRef = useRef(createContentBoundRequestIdentity());
+  const draftValueRef = useRef(draft);
+  const draftAttachmentsRef = useRef(draftAttachments);
+  const draftSaveTimerRef = useRef<number | null>(null);
   const suggestionKeyboardBaselineRef = useRef<SuggestionKeyboardViewportBaseline | null>(null);
   const imagePreparationGuardRef = useRef<ChannelSuggestionImagePreparationGuard | null>(null);
   imagePreparationGuardRef.current ??= createChannelSuggestionImagePreparationGuard();
@@ -303,7 +327,8 @@ export function ChannelSuggestDialogPage({
   );
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const canUploadImages = profile === 'moderation';
+  const { canUploadSuggestionImages: canUploadImages } =
+    resolveChannelDialogProfileCapabilities(profile);
   const fileInputActivationMode = resolveFileInputActivationMode(
     typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
   );
@@ -353,6 +378,7 @@ export function ChannelSuggestDialogPage({
   const isPreparingImage = preparingImageState !== null;
   const canSubmitMessage =
     !isPreparingImage &&
+    !draftImagesNeedReselection &&
     draftLength <= SUGGEST_DRAFT_MAX_LENGTH &&
     (draftLength > 0 || (canUploadImages && draftAttachments.length > 0));
   const suggestPreparingImageSlots = preparingImageState?.total ?? 0;
@@ -373,6 +399,19 @@ export function ChannelSuggestDialogPage({
     }
   };
 
+  const markDraftContentChanged = () => {
+    requestIdentityRef.current = advanceContentBoundRequestIdentity(requestIdentityRef.current);
+  };
+
+  const handleDraftTextChange = (value: string) => {
+    if (draftValueRef.current === value) {
+      return;
+    }
+    draftValueRef.current = value;
+    markDraftContentChanged();
+    setDraft(value);
+  };
+
   useEffect(
     () => () => {
       imagePreparationGuard.cancel();
@@ -386,8 +425,16 @@ export function ChannelSuggestDialogPage({
       return;
     }
     imagePreparationGuard.cancel();
-    setDraftAttachments([]);
+    setDraftAttachments((current) => {
+      if (current.length > 0) {
+        draftAttachmentsRef.current = [];
+        markDraftContentChanged();
+      }
+      return [];
+    });
     setPreparingImageState(null);
+    setDraftImagesNeedReselection(false);
+    setMissingDraftImageCount(0);
     resetAttachmentPicker();
   }, [canUploadImages, imagePreparationGuard]);
 
@@ -637,8 +684,18 @@ export function ChannelSuggestDialogPage({
       let totalBase64Length = calculateDraftAttachmentsBase64Length(current);
       let rejectedByCount = 0;
       let rejectedBySize = 0;
+      let rejectedAsDuplicate = 0;
 
       for (const attachment of nextAttachments) {
+        if (
+          accepted.some(
+            (existing) =>
+              existing.mimeType === attachment.mimeType && existing.base64 === attachment.base64,
+          )
+        ) {
+          rejectedAsDuplicate += 1;
+          continue;
+        }
         if (accepted.length >= MAX_SUGGEST_IMAGES) {
           rejectedByCount += 1;
           continue;
@@ -663,7 +720,12 @@ export function ChannelSuggestDialogPage({
       if (addedCount === 0) {
         pushToast({
           tone: 'danger',
-          title: rejectedBySize > 0 ? 'Фото слишком тяжёлые' : 'Слишком много фото',
+          title:
+            rejectedAsDuplicate > 0 && rejectedBySize === 0 && rejectedByCount === 0
+              ? 'Это фото уже добавлено'
+              : rejectedBySize > 0
+                ? 'Фото слишком тяжёлые'
+                : 'Слишком много фото',
           description:
             rejectedByCount > 0
               ? `Можно добавить до ${MAX_SUGGEST_IMAGES} фото.`
@@ -672,18 +734,24 @@ export function ChannelSuggestDialogPage({
         return current;
       }
 
-      if (rejectedByCount > 0 || rejectedBySize > 0) {
+      if (rejectedByCount > 0 || rejectedBySize > 0 || rejectedAsDuplicate > 0) {
         pushToast({
           tone: 'info',
           title: `Добавили ${addedCount} из ${nextAttachments.length}`,
           description:
             rejectedByCount > 0
               ? `Лимит предложки — ${MAX_SUGGEST_IMAGES} фото. Остальные не добавили.`
-              : 'Часть фото не добавили, потому что суммарный размер получился слишком большим.',
+              : rejectedBySize > 0
+                ? 'Часть фото не добавили, потому что суммарный размер получился слишком большим.'
+                : 'Повторяющиеся фото не добавили.',
         });
       }
 
       maxSelectionChanged();
+      markDraftContentChanged();
+      setDraftImagesNeedReselection(false);
+      setMissingDraftImageCount(0);
+      draftAttachmentsRef.current = accepted;
       return accepted;
     });
   };
@@ -895,17 +963,36 @@ export function ChannelSuggestDialogPage({
   };
 
   const handleDraftAttachmentRemove = (index: number) => {
-    setDraftAttachments((current) =>
-      current.filter((_, attachmentIndex) => attachmentIndex !== index),
-    );
+    setDraftAttachments((current) => {
+      const next = current.filter((_, attachmentIndex) => attachmentIndex !== index);
+      if (next.length !== current.length) {
+        markDraftContentChanged();
+        draftAttachmentsRef.current = next;
+      }
+      return next;
+    });
     maxSelectionChanged();
     resetAttachmentPicker();
   };
 
+  const handleDiscardMissingDraftImages = () => {
+    if (!draftImagesNeedReselection) {
+      return;
+    }
+    markDraftContentChanged();
+    setDraftImagesNeedReselection(false);
+    setMissingDraftImageCount(0);
+  };
+
   const sendMutation = useMutation({
-    mutationFn: (payload: { text: string; attachments: SuggestDraftAttachment[] }) =>
+    mutationFn: (payload: {
+      requestId: string;
+      text: string;
+      attachments: SuggestDraftAttachment[];
+    }) =>
       createChannelSuggestDialogMessage(api, chatId, {
         token,
+        requestId: payload.requestId,
         text: payload.text,
         textFormat: 'markdown',
         images: (canUploadImages ? payload.attachments : []).map((attachment) => ({
@@ -924,7 +1011,18 @@ export function ChannelSuggestDialogPage({
         description: 'Предложка сохранена.',
       });
       setDraft('');
+      draftValueRef.current = '';
       setDraftAttachments([]);
+      draftAttachmentsRef.current = [];
+      setDraftImagesNeedReselection(false);
+      setMissingDraftImageCount(0);
+      requestIdentityRef.current = createContentBoundRequestIdentity();
+      void clearChannelSuggestionDraft({
+        userId,
+        chatId,
+        profile,
+        threadScope: draftThreadScope,
+      });
       resetAttachmentPicker();
       void loadChannelSuggestionHistory()
         .catch(() => undefined)
@@ -963,6 +1061,163 @@ export function ChannelSuggestDialogPage({
   const isComposerBusy = isSubmitPending || isPreparingImage || !editorReady;
   const submitDisabled = !canSubmitMessage || isSubmitPending || !editorReady;
 
+  useEffect(() => {
+    setDraftHydrated(false);
+    if (!dialogQuery.isSuccess || !userId.trim() || !chatId.trim()) {
+      return undefined;
+    }
+    let cancelled = false;
+    const initialRevision = requestIdentityRef.current.draftRevision;
+    void loadChannelSuggestionDraft({
+      userId,
+      chatId,
+      profile,
+      threadScope: draftThreadScope,
+    })
+      .then((stored) => {
+        if (cancelled) {
+          return;
+        }
+        if (
+          stored &&
+          requestIdentityRef.current.draftRevision === initialRevision &&
+          draftValueRef.current.length === 0 &&
+          draftAttachmentsRef.current.length === 0
+        ) {
+          draftValueRef.current = stored.text;
+          draftAttachmentsRef.current = stored.attachments;
+          requestIdentityRef.current = stored.requestIdentity;
+          setDraft(stored.text);
+          setDraftAttachments(stored.attachments);
+          setDraftImagesNeedReselection(stored.imagesNeedReselection);
+          setMissingDraftImageCount(stored.imagesNeedReselection ? stored.imageCount : 0);
+        }
+        setDraftHydrated(true);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDraftHydrated(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, dialogQuery.isSuccess, draftThreadScope, profile, userId]);
+
+  useEffect(() => {
+    if (!draftHydrated || !userId.trim()) {
+      return undefined;
+    }
+    if (draftSaveTimerRef.current !== null) {
+      window.clearTimeout(draftSaveTimerRef.current);
+    }
+    draftSaveTimerRef.current = window.setTimeout(() => {
+      draftSaveTimerRef.current = null;
+      if (
+        !draftValueRef.current.trim() &&
+        draftAttachmentsRef.current.length === 0 &&
+        !draftImagesNeedReselection
+      ) {
+        void clearChannelSuggestionDraft({
+          userId,
+          chatId,
+          profile,
+          threadScope: draftThreadScope,
+        });
+        return;
+      }
+      void saveChannelSuggestionDraft(
+        { userId, chatId, profile, threadScope: draftThreadScope },
+        {
+          text: draftValueRef.current,
+          attachments: draftAttachmentsRef.current,
+          requestIdentity: requestIdentityRef.current,
+          imagesNeedReselection: draftImagesNeedReselection,
+          imageCount: draftImagesNeedReselection
+            ? missingDraftImageCount
+            : draftAttachmentsRef.current.length,
+        },
+      );
+    }, 250);
+    return () => {
+      if (draftSaveTimerRef.current !== null) {
+        window.clearTimeout(draftSaveTimerRef.current);
+      }
+    };
+  }, [
+    chatId,
+    draft,
+    draftAttachments,
+    draftHydrated,
+    draftImagesNeedReselection,
+    draftThreadScope,
+    missingDraftImageCount,
+    profile,
+    userId,
+  ]);
+
+  const shouldProtectClose =
+    isSubmitPending ||
+    isPreparingImage ||
+    draftImagesNeedReselection ||
+    Boolean(draft.trim()) ||
+    draftAttachments.length > 0;
+  useEffect(() => {
+    setMaxClosingConfirmation(shouldProtectClose);
+    const persistLatestDraft = () => {
+      if (!draftHydrated || !userId.trim()) {
+        return;
+      }
+      void saveChannelSuggestionDraft(
+        { userId, chatId, profile, threadScope: draftThreadScope },
+        {
+          text: draftValueRef.current,
+          attachments: draftAttachmentsRef.current,
+          requestIdentity: requestIdentityRef.current,
+          imagesNeedReselection: draftImagesNeedReselection,
+          imageCount: draftImagesNeedReselection
+            ? missingDraftImageCount
+            : draftAttachmentsRef.current.length,
+        },
+      ).then(() =>
+        flushChannelSuggestionDraftStorage({
+          userId,
+          chatId,
+          profile,
+          threadScope: draftThreadScope,
+        }),
+      );
+    };
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!shouldProtectClose) {
+        return;
+      }
+      persistLatestDraft();
+      event.preventDefault();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && shouldProtectClose) {
+        persistLatestDraft();
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      setMaxClosingConfirmation(false);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    chatId,
+    draftHydrated,
+    draftImagesNeedReselection,
+    draftThreadScope,
+    missingDraftImageCount,
+    profile,
+    shouldProtectClose,
+    userId,
+  ]);
+
   const applySuggestTextModifier = (tool: MaxMarkdownTool) => {
     if (isComposerBusy) {
       return;
@@ -977,6 +1232,7 @@ export function ChannelSuggestDialogPage({
     if (
       imagePreparationGuard.isActive() ||
       isSubmitPending ||
+      draftImagesNeedReselection ||
       !chatId ||
       !token ||
       draftLength > SUGGEST_DRAFT_MAX_LENGTH ||
@@ -986,7 +1242,23 @@ export function ChannelSuggestDialogPage({
     }
 
     void loadChannelSuggestionHistory().catch(() => undefined);
+    const resolvedRequest = resolveContentBoundRequestIdentity(
+      requestIdentityRef.current,
+      'publisher-suggestion',
+    );
+    requestIdentityRef.current = resolvedRequest.identity;
+    void saveChannelSuggestionDraft(
+      { userId, chatId, profile, threadScope: draftThreadScope },
+      {
+        text,
+        attachments: canUploadImages ? draftAttachments : [],
+        requestIdentity: resolvedRequest.identity,
+        imagesNeedReselection: draftImagesNeedReselection,
+        imageCount: draftImagesNeedReselection ? missingDraftImageCount : draftAttachments.length,
+      },
+    );
     sendMutation.mutate({
+      requestId: resolvedRequest.requestId,
       text,
       attachments: canUploadImages ? draftAttachments : [],
     });
@@ -1037,7 +1309,6 @@ export function ChannelSuggestDialogPage({
           aria-label={`Добавить до ${MAX_SUGGEST_IMAGES} фото`}
           aria-disabled={isComposerBusy}
           role="button"
-          tabIndex={isComposerBusy ? -1 : 0}
           onClick={() => {
             blurSuggestComposerFocus();
             armImageInputWatcher();
@@ -1059,11 +1330,12 @@ export function ChannelSuggestDialogPage({
             accept="image/*"
             multiple
             disabled={isComposerBusy}
+            aria-label={`Добавить до ${MAX_SUGGEST_IMAGES} фото`}
             onChange={handleDraftImagesChange}
             onInput={handleDraftImagesInput}
             onClickCapture={armImageInputWatcher}
             onPointerDownCapture={armImageInputWatcher}
-            tabIndex={-1}
+            tabIndex={isComposerBusy ? -1 : 0}
           />
           <IconoirAttachment aria-hidden focusable="false" />
         </label>
@@ -1222,12 +1494,29 @@ export function ChannelSuggestDialogPage({
                       canSubmitMessage ? 'is-ready' : 'is-empty',
                     )}
                   >
-                    {canSubmitMessage ? 'Готов' : 'Пусто'}
+                    {draftImagesNeedReselection
+                      ? 'Нужно фото'
+                      : canSubmitMessage
+                        ? 'Готов'
+                        : 'Пусто'}
                   </span>
                   <span className="channel-suggest-composer__counter">
                     {draftLength}/{SUGGEST_DRAFT_MAX_LENGTH}
                   </span>
                 </div>
+
+                {draftImagesNeedReselection ? (
+                  <div className="channel-suggest-composer__restore-warning" role="alert">
+                    <span>
+                      {missingDraftImageCount > 1
+                        ? `Не удалось восстановить ${missingDraftImageCount} фото. Добавьте их снова.`
+                        : 'Не удалось восстановить фото. Добавьте его снова.'}
+                    </span>
+                    <button type="button" onClick={handleDiscardMissingDraftImages}>
+                      Без фото
+                    </button>
+                  </div>
+                ) : null}
 
                 <div
                   className={cn(
@@ -1293,7 +1582,7 @@ export function ChannelSuggestDialogPage({
                         <LazyMaxRichTextEditor
                           ref={richTextEditorRef}
                           value={draft}
-                          onChange={setDraft}
+                          onChange={handleDraftTextChange}
                           placeholder="Текст идеи или подпись к фото"
                           maxLength={SUGGEST_DRAFT_MAX_LENGTH}
                           disabled={isSubmitPending}

@@ -1,5 +1,5 @@
 import type { BroadcastLinkButton, ChannelSettings, ManagedEntityType } from '@maxim/contracts';
-import type { MaxActionLedgerContext } from '../max/max-client.service';
+import type { MaxActionLedgerContext, MaxMessageButton } from '../max/max-client.service';
 import { normalizeManagedBroadcastButtons } from './admin-managed-broadcast-buttons';
 
 export type ManagedBroadcastCommentDialogReference = {
@@ -12,6 +12,8 @@ export type ManagedBroadcastCommentDialogReference = {
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
   botId: string | null;
   dialogBotId?: string | null;
+  buttonRows?: MaxMessageButton[][];
+  commentsButton?: { rowIndex: number; columnIndex: number; baseText: string | null } | null;
 };
 
 export function buildManagedBroadcastLedgerContext(
@@ -30,6 +32,10 @@ export function buildManagedBroadcastLedgerContext(
             suggestionEntryMode: reference.suggestionEntryMode,
             botId: reference.botId,
             dialogBotId: reference.dialogBotId ?? reference.botId,
+            ...(reference.buttonRows ? { buttonRows: reference.buttonRows } : {}),
+            ...(reference.commentsButton !== undefined
+              ? { commentsButton: reference.commentsButton }
+              : {}),
           }
         : null,
     },
@@ -65,6 +71,17 @@ export function readManagedBroadcastLedgerCommentDialogContext(value: unknown): 
   ) {
     return { found: false, reference: null };
   }
+  const buttonRows = readManagedBroadcastButtonRows(reference.buttonRows);
+  const commentsButton = readManagedBroadcastCommentsButtonPosition(
+    reference.commentsButton,
+    buttonRows,
+  );
+  if (
+    (reference.buttonRows !== undefined && !buttonRows) ||
+    (reference.commentsButton !== undefined && reference.commentsButton !== null && !commentsButton)
+  ) {
+    return { found: false, reference: null };
+  }
 
   return {
     found: true,
@@ -81,7 +98,66 @@ export function readManagedBroadcastLedgerCommentDialogContext(value: unknown): 
           : null,
       botId: readTrimmedString(reference.botId),
       dialogBotId: readTrimmedString(reference.dialogBotId) ?? readTrimmedString(reference.botId),
+      ...(buttonRows ? { buttonRows } : {}),
+      ...(reference.commentsButton !== undefined ? { commentsButton } : {}),
     },
+  };
+}
+
+export function readManagedBroadcastButtonRows(value: unknown): MaxMessageButton[][] | null {
+  if (!Array.isArray(value) || value.length > 30) {
+    return null;
+  }
+  const rows: MaxMessageButton[][] = [];
+  let totalButtons = 0;
+  for (const row of value) {
+    if (!Array.isArray(row) || row.length === 0 || row.length > 7) {
+      return null;
+    }
+    const buttons: MaxMessageButton[] = [];
+    for (const button of row) {
+      if (!button || typeof button !== 'object' || Array.isArray(button)) {
+        return null;
+      }
+      totalButtons += 1;
+      if (totalButtons > 210) {
+        return null;
+      }
+      buttons.push({ ...(button as MaxMessageButton) });
+    }
+    rows.push(buttons);
+  }
+  return rows;
+}
+
+export function readManagedBroadcastCommentsButtonPosition(
+  value: unknown,
+  rows: MaxMessageButton[][] | null,
+): ManagedBroadcastCommentDialogReference['commentsButton'] {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const position = readObjectPayloadOrNull(value);
+  const rowIndex = position?.rowIndex;
+  const columnIndex = position?.columnIndex;
+  const baseText = position?.baseText;
+  if (
+    !rows ||
+    typeof rowIndex !== 'number' ||
+    !Number.isInteger(rowIndex) ||
+    rowIndex < 0 ||
+    typeof columnIndex !== 'number' ||
+    !Number.isInteger(columnIndex) ||
+    columnIndex < 0 ||
+    !rows[rowIndex]?.[columnIndex] ||
+    (baseText !== null && baseText !== undefined && typeof baseText !== 'string')
+  ) {
+    return null;
+  }
+  return {
+    rowIndex,
+    columnIndex,
+    baseText: typeof baseText === 'string' && baseText.trim() ? baseText.trim() : null,
   };
 }
 

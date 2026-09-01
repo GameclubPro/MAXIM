@@ -1384,8 +1384,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-engagement-99',
       null,
       expect.objectContaining({
-        appendNewInlineKeyboardRows: true,
         buttons: [
+          [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
+          [expect.objectContaining({ text: 'Предложить пост' })],
           [
             {
               type: 'link',
@@ -1393,12 +1394,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
               url: 'https://max.ru/advertiser',
             },
           ],
-          [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
-          [expect.objectContaining({ text: 'Предложить пост' })],
         ],
         mergeExistingInlineKeyboard: true,
       }),
       { botId: 'channel-bot-2' },
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
+      'appendNewInlineKeyboardRows',
     );
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
     expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
@@ -1406,7 +1408,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     const [, , , keyboardOptions] = maxClient.editMessageInlineKeyboard.mock.calls[0] ?? [];
-    const commentsButton = keyboardOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
+    const commentsButton = keyboardOptions?.buttons?.[0]?.[0] as { url?: string } | undefined;
     expect(commentsButton).toMatchObject({
       url: expect.stringContaining('https://max.ru/entry-bot?startapp='),
     });
@@ -1489,14 +1491,16 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-auto-suggest-99',
       null,
       expect.objectContaining({
-        appendNewInlineKeyboardRows: true,
         buttons: [
+          [expect.objectContaining({ text: 'Предложить пост' })],
           [{ type: 'link', text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
           [{ type: 'link', text: 'Прайс', url: 'https://max.ru/pricelist' }],
-          [expect.objectContaining({ text: 'Предложить пост' })],
         ],
         mergeExistingInlineKeyboard: true,
       }),
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
+      'appendNewInlineKeyboardRows',
     );
   });
 

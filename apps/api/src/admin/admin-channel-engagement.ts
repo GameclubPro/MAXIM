@@ -7,6 +7,7 @@ import {
 import { BadRequestException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
+import { buildChannelPostActionRows } from '../common/channel-post-actions';
 import {
   MAX_API_SOURCE_TAGS,
   type MaxClientService,
@@ -63,6 +64,7 @@ export async function publishChannelEngagementMessage(params: {
     params: BuildChannelEngagementDialogArtifactsParams,
   ) => ChannelEngagementDialogArtifacts;
   prepareText?: (payload: ChannelEngagementTextPayload) => Promise<ChannelEngagementTextPayload>;
+  buildCtaButton?: () => Promise<MaxMessageButton | null>;
   generateThreadId?: () => string;
 }): Promise<PublishChannelEngagementResult> {
   const parsed = publishChannelEngagementRequestSchema.safeParse(params.body);
@@ -97,6 +99,7 @@ export async function publishChannelEngagementMessage(params: {
       'Включите комментарии или предложения постов в настройках канала.',
     );
   }
+  const ctaButton = (await params.buildCtaButton?.()) ?? null;
   let sendBotIdResolved = false;
   let resolvedSendBotId: string | undefined;
   const resolveSendBotId = async () => {
@@ -132,13 +135,11 @@ export async function publishChannelEngagementMessage(params: {
       botId,
       suggestionEntryMode,
     });
-    const buttons: MaxMessageButton[][] = [];
-    if (includeCommentsButton) {
-      buttons.push([artifacts.commentsButton]);
-    }
-    if (includeSuggestButton) {
-      buttons.push([artifacts.suggestButton]);
-    }
+    const buttons = buildChannelPostActionRows({
+      commentsButton: includeCommentsButton ? artifacts.commentsButton : null,
+      suggestButton: includeSuggestButton ? artifacts.suggestButton : null,
+      ctaButton,
+    });
     return { ...artifacts, buttons };
   };
 
@@ -232,6 +233,10 @@ export async function publishChannelEngagementMessage(params: {
         suggestButtonText: parsed.data.suggestButtonText,
         includeCommentsButton,
         includeSuggestButton,
+        buttonRows: buttons.map((row) => row.map((button) => ({ ...button }))),
+        commentsButton: includeCommentsButton
+          ? { rowIndex: 0, columnIndex: 0, baseText: parsed.data.commentsButtonText }
+          : null,
         threadId,
         updatedExisting,
         recreatedFromMessageId,

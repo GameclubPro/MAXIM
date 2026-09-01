@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { broadcastTextFormatSchema } from './broadcast-common.js';
-import { managedEntityTypeSchema } from './managed-entities.js';
-export type { ManagedEntityType } from './managed-entities.js';
+import { channelPostSignatureSettingsSchema } from './channel-post-signature.js';
+import { managedEntityTypeSchema } from './managed-entity-type.js';
+export type { ManagedEntityType } from './managed-entity-type.js';
 
 export const miniappProfileSchema = z.enum(['moderation', 'publisher']);
 export type MiniappProfile = z.infer<typeof miniappProfileSchema>;
@@ -62,6 +63,7 @@ export const publisherEntityModuleSettingsSchema = z
     revision: z.number().int().min(0),
     chatComments: publisherChatCommentSettingsSchema.nullable(),
     autoRepliesEnabled: z.boolean().nullable(),
+    channelCommentsEnabled: z.boolean().nullable().default(null),
     channelSuggestionsEnabled: z.boolean().nullable(),
   })
   .strict();
@@ -71,6 +73,7 @@ export const publisherEntityReadinessSchema = z.object({
   state: publisherReadinessStateSchema,
   canPublish: z.boolean(),
   canUseChatComments: z.boolean(),
+  canUseChannelComments: z.boolean().default(false),
   canPublishSuggestions: z.boolean(),
   blockerCode: publisherReadinessBlockerCodeSchema.nullable(),
   checkedAt: z.string().datetime().nullable(),
@@ -86,10 +89,12 @@ export const publisherEntitySchema = z
     avatarUrl: z.string().trim().url().nullable().default(null),
     entityUrl: z.string().trim().url().nullable().default(null),
     policy: managedEntityPublicationPolicySchema,
+    channelPostSignature: channelPostSignatureSettingsSchema.nullable().optional(),
     moduleSettings: publisherEntityModuleSettingsSchema.default({
       revision: 0,
       chatComments: null,
       autoRepliesEnabled: null,
+      channelCommentsEnabled: null,
       channelSuggestionsEnabled: null,
     }),
     readiness: publisherEntityReadinessSchema,
@@ -258,6 +263,7 @@ export const publisherSuggestionReviewStatusSchema = z.enum([
   'pending',
   'publishing',
   'published',
+  'drafted',
   'cancelled',
 ]);
 export type PublisherSuggestionReviewStatus = z.infer<typeof publisherSuggestionReviewStatusSchema>;
@@ -271,6 +277,7 @@ export const publisherSuggestionSchema = z
     createdAt: z.string().datetime(),
     reviewStatus: publisherSuggestionReviewStatusSchema,
     publicationId: z.string().trim().min(1).nullable(),
+    imageCount: z.number().int().min(0).max(10).default(0),
     reviewError: z.string().trim().min(1).max(300).nullable().optional(),
   })
   .strict();
@@ -301,7 +308,7 @@ export type PublisherSuggestionsResponse = z.infer<typeof publisherSuggestionsRe
 
 export const reviewPublisherSuggestionRequestSchema = z
   .object({
-    action: z.enum(['publish', 'cancel']),
+    action: z.enum(['publish', 'draft', 'cancel']),
     responseVersion: z.literal(2).optional(),
   })
   .strict();
@@ -319,6 +326,7 @@ export type ReviewPublisherSuggestionResponse = z.infer<
 export const updatePublisherEntityModuleSettingsRequestSchema = z
   .object({
     expectedRevision: z.number().int().min(0),
+    channelCommentsEnabled: z.boolean().optional(),
     channelSuggestionsEnabled: z.boolean().optional(),
     chatComments: publisherChatCommentSettingsSchema.optional(),
     autoRepliesEnabled: z.boolean().optional(),
@@ -326,6 +334,7 @@ export const updatePublisherEntityModuleSettingsRequestSchema = z
   .strict()
   .refine(
     (value) =>
+      value.channelCommentsEnabled !== undefined ||
       value.channelSuggestionsEnabled !== undefined ||
       value.chatComments !== undefined ||
       value.autoRepliesEnabled !== undefined,

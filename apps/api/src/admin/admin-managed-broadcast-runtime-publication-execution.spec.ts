@@ -37,6 +37,10 @@ const createPublicationEnvelopeRow = () => ({
 });
 
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('persists a structured access-loss code for the current and future target deliveries', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = { managedBroadcastDelivery: { updateMany } };
@@ -2122,6 +2126,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   });
 
   it('defers a deadline delivery when MAX capacity rejects it before dispatch', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-12T10:00:30.000Z'));
     const nextSendAt = new Date('2026-07-12T10:00:00.000Z');
     const row = {
       id: 'broadcast-deadline',
@@ -2158,19 +2163,34 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       publicationOccurrenceId: 'occurrence-1',
       publicationContentRevisionId: 'content-1',
     };
-    const deliveries = ['chat-1', 'chat-2'].map((targetChatId, index) => ({
-      id: `delivery-${index + 1}`,
-      broadcastId: row.id,
-      occurrenceIndex: 1,
-      targetChatId,
-      status: ManagedBroadcastDeliveryStatus.PENDING,
-      attemptCount: 0,
-      remoteMessageId: null,
-      lastError: null,
-      sentAt: null,
-      lockedAt: null,
-      lockToken: null,
-    }));
+    const deliveries = [
+      ...['chat-1', 'chat-2'].map((targetChatId, index) => ({
+        id: `delivery-${index + 1}`,
+        broadcastId: row.id,
+        occurrenceIndex: 1,
+        targetChatId,
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        attemptCount: 0,
+        remoteMessageId: null,
+        lastError: null,
+        sentAt: null,
+        lockedAt: null,
+        lockToken: null,
+      })),
+      {
+        id: 'delivery-3',
+        broadcastId: row.id,
+        occurrenceIndex: 1,
+        targetChatId: 'chat-3',
+        status: ManagedBroadcastDeliveryStatus.CANCELED,
+        attemptCount: 0,
+        remoteMessageId: null,
+        lastError: 'Target was removed before this retry.',
+        sentAt: null,
+        lockedAt: null,
+        lockToken: null,
+      },
+    ];
     const capacityError = Object.assign(new Error('MAX API background rate limit exceeded'), {
       code: 'MAX_API_INTERNAL_RATE_LIMIT',
       preDispatch: true,
@@ -2182,14 +2202,22 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     });
     const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const transaction = jest.fn(async (callback) =>
+      callback({
+        managedBroadcast: { updateMany: broadcastUpdateMany },
+        managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+      }),
+    );
+    const deliveryFindMany = jest.fn().mockResolvedValue(deliveries);
     const runtime = new AdminManagedBroadcastRuntime({
       prisma: {
+        $transaction: transaction,
         managedBroadcast: {
           updateMany: broadcastUpdateMany,
           findUnique: jest.fn().mockResolvedValue(row),
         },
         managedBroadcastDelivery: {
-          findMany: jest.fn().mockResolvedValue(deliveries),
+          findMany: deliveryFindMany,
           updateMany: deliveryUpdateMany,
         },
         managedBroadcastOccurrence: {
@@ -2217,13 +2245,14 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     jest
       .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
       .mockResolvedValue({});
-    jest
+    const verifyAfterSend = jest
       .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
       .mockResolvedValue(new Set());
     jest
       .spyOn(runtime as any, 'heartbeatManagedBroadcastProcessingLock')
       .mockResolvedValue(undefined);
     jest.spyOn(runtime as any, 'resolveManagedBroadcastSendRetryDelayMs').mockReturnValue(null);
+    const finalizeSpy = jest.spyOn(runtime as any, 'finalizeManagedBroadcastOccurrence');
 
     const result = await (runtime as any).processManagedBroadcastOccurrence(
       row.id,
@@ -2264,24 +2293,37 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.FAILED,
       ),
     ).toBe(false);
-    expect(broadcastUpdateMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          status: ManagedBroadcastStatus.ACTIVE,
-          lastError: null,
-          lockedAt: null,
-          lockToken: null,
-        }),
-      }),
-    );
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(broadcastUpdateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: 'broadcast-deadline',
+        publicationOccurrenceId: 'occurrence-1',
+        status: ManagedBroadcastStatus.ACTIVE,
+        lockToken: expect.any(String),
+      },
+      data: {
+        nextSendAt: new Date('2026-07-12T10:01:00.000Z'),
+        lockedAt: null,
+        lockToken: null,
+      },
+    });
+    expect(verifyAfterSend).toHaveBeenCalledTimes(1);
+    expect(finalizeSpy).not.toHaveBeenCalled();
+    expect(deliveryFindMany).toHaveBeenLastCalledWith({
+      where: { broadcastId: 'broadcast-deadline', occurrenceIndex: 1 },
+      select: { status: true, targetChatId: true },
+      orderBy: [{ targetChatId: 'asc' }],
+    });
     expect(result).toEqual(
       expect.objectContaining({
         status: ManagedBroadcastStatus.ACTIVE,
-        failedChatIds: [],
+        failedChatIds: ['chat-3'],
         pendingChatIds: ['chat-1', 'chat-2'],
         canRetry: false,
+        nextSendAt: new Date('2026-07-12T10:01:00.000Z'),
       }),
     );
+    jest.useRealTimers();
   });
 
   it('sends PUBLIK_V1 directly through its persisted exact bot without routed failover', async () => {

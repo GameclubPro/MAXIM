@@ -24,6 +24,7 @@ export type PublisherFeature =
   | 'publication'
   | 'vk_publish'
   | 'chat_comments'
+  | 'channel_comments'
   | 'auto_replies'
   | 'suggestion_publish';
 
@@ -35,6 +36,7 @@ type PublicationPolicyRow = {
 
 type PublisherSettingsRow = {
   chatCommentsEnabled: boolean;
+  channelCommentsEnabled: boolean;
   channelSuggestionsEnabled: boolean;
   autoRepliesEnabled: boolean;
 } | null;
@@ -111,6 +113,7 @@ export class PublisherReadinessService {
     const base = {
       canPublish: false,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       checkedAt,
       retryAt: null,
@@ -224,6 +227,7 @@ export class PublisherReadinessService {
       state: 'ready',
       canPublish: true,
       canUseChatComments: isChat && source.publisherSettings?.chatCommentsEnabled === true,
+      canUseChannelComments: !isChat && source.publisherSettings?.channelCommentsEnabled === true,
       canPublishSuggestions:
         !isChat && source.publisherSettings?.channelSuggestionsEnabled === true,
       blockerCode: null,
@@ -331,13 +335,15 @@ export class PublisherReadinessService {
     const allowed =
       feature === 'chat_comments'
         ? readiness.canUseChatComments
-        : feature === 'auto_replies'
-          ? readiness.state === 'ready' &&
-            source.entityType === ChatEntityType.CHAT &&
-            source.publisherSettings?.autoRepliesEnabled === true
-          : feature === 'suggestion_publish'
-            ? readiness.canPublishSuggestions
-            : readiness.canPublish;
+        : feature === 'channel_comments'
+          ? readiness.canUseChannelComments
+          : feature === 'auto_replies'
+            ? readiness.state === 'ready' &&
+              source.entityType === ChatEntityType.CHAT &&
+              source.publisherSettings?.autoRepliesEnabled === true
+            : feature === 'suggestion_publish'
+              ? readiness.canPublishSuggestions
+              : readiness.canPublish;
     if (!allowed) {
       throw new PublisherSetupRequiredException(
         [source.id],

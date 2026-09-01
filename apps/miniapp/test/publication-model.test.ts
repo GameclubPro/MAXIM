@@ -567,12 +567,20 @@ test('previews Publisher-owned channel suggestions without importing Major chann
       revision: 3,
       chatComments: null,
       autoRepliesEnabled: null,
+      channelCommentsEnabled: true,
       channelSuggestionsEnabled: true,
+    },
+    channelPostSignature: {
+      enabled: true,
+      presentation: 'button',
+      text: '📞 Заказать рекламу',
+      url: 'https://example.test/ads',
     },
     readiness: {
       state: 'ready',
       canPublish: true,
       canUseChatComments: false,
+      canUseChannelComments: true,
       canPublishSuggestions: true,
       blockerCode: null,
       checkedAt: '2026-08-27T10:00:00.000Z',
@@ -581,9 +589,12 @@ test('previews Publisher-owned channel suggestions without importing Major chann
   } as never);
 
   assert.equal(target.channelOverview, null);
+  assert.equal(target.publisherChannelCommentsEnabled, true);
   assert.equal(target.publisherChannelSuggestionsEnabled, true);
   assert.deepEqual(buildPublicationSystemButtons([target]), [
-    { kind: 'suggest', text: '📰 Предложить пост' },
+    { kind: 'comments', text: '💬 Комментарии' },
+    { kind: 'suggest', text: '✍️ Предложить объявление' },
+    { kind: 'cta', text: '📞 Заказать рекламу' },
   ]);
 });
 
@@ -820,6 +831,7 @@ test('restores publisher readiness with an autosaved off-page target', () => {
     state: 'ready' as const,
     canPublish: true,
     canUseChatComments: true,
+    canUseChannelComments: false,
     canPublishSuggestions: false,
     blockerCode: null,
     checkedAt: '2026-08-27T10:00:00.000Z',
@@ -839,7 +851,12 @@ test('restores publisher readiness with an autosaved off-page target', () => {
 test('restores Publisher-owned system button metadata from an autosaved draft', () => {
   const draft = createEmptyPublicationDraft([
     { ...chatTarget, publisherChatCommentsEnabled: true },
-    { ...channelTarget, channelOverview: null, publisherChannelSuggestionsEnabled: true },
+    {
+      ...channelTarget,
+      channelOverview: null,
+      publisherChannelCommentsEnabled: true,
+      publisherChannelSuggestionsEnabled: true,
+    },
   ]);
 
   const restored = parsePublicationDraftEnvelope({
@@ -849,10 +866,11 @@ test('restores Publisher-owned system button metadata from an autosaved draft', 
   });
 
   assert.equal(restored?.targets[0]?.publisherChatCommentsEnabled, true);
+  assert.equal(restored?.targets[1]?.publisherChannelCommentsEnabled, true);
   assert.equal(restored?.targets[1]?.publisherChannelSuggestionsEnabled, true);
   assert.deepEqual(buildPublicationSystemButtons(restored?.targets ?? []), [
     { kind: 'comments', text: '💬 Комментарии' },
-    { kind: 'suggest', text: '📰 Предложить пост' },
+    { kind: 'suggest', text: '✍️ Предложить объявление' },
   ]);
 });
 

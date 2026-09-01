@@ -195,20 +195,27 @@ describe('PublicationPublisherRoutingService', () => {
 
 describe('PublisherDialogContextService', () => {
   it.each([
-    [true, 1],
-    [false, 0],
+    [true, true, ['comments', 'suggest']],
+    [true, false, ['comments']],
+    [false, true, ['suggest']],
+    [false, false, []],
   ] as const)(
-    'applies the Publisher channel suggestion toggle (%s)',
-    async (channelSuggestionsEnabled, expectedButtonCount) => {
-      const buildChannelDialogButton = jest.fn().mockReturnValue({
-        type: 'link',
-        text: '📰 Предложить пост',
-        url: 'https://max.ru/publik_bot?start=suggestion',
-      });
+    'applies independent Publisher channel comments (%s) and suggestions (%s)',
+    async (channelCommentsEnabled, channelSuggestionsEnabled, expectedTypes) => {
+      const buildChannelDialogButton = jest.fn(
+        (_chatId: string, type: string, _threadId: string, text: string) => ({
+          type: 'link',
+          text,
+          url: `https://max.ru/publik_bot?start=${type}`,
+        }),
+      );
       const service = new PublisherDialogContextService(
         {
           publisherEntitySettings: {
-            upsert: jest.fn().mockResolvedValue({ channelSuggestionsEnabled }),
+            upsert: jest.fn().mockResolvedValue({
+              channelCommentsEnabled,
+              channelSuggestionsEnabled,
+            }),
           },
         } as never,
         { buildChannelDialogButton } as never,
@@ -222,17 +229,19 @@ describe('PublisherDialogContextService', () => {
         includeManagedDialogs: true,
       });
 
-      expect(context.buttons).toHaveLength(expectedButtonCount);
-      if (channelSuggestionsEnabled) {
+      expect(buildChannelDialogButton.mock.calls.map((call) => call[1])).toEqual(expectedTypes);
+      expect(context.buttons).toHaveLength(expectedTypes.length);
+      if (expectedTypes.length > 0) {
         expect(context.reference).toMatchObject({
           entityType: 'channel',
-          includeSuggestButton: true,
+          includeCommentsButton: channelCommentsEnabled,
+          includeSuggestButton: channelSuggestionsEnabled,
           dialogBotId: 'publisher-bot',
         });
       } else {
         expect(context.reference).toBeNull();
       }
-      expect(buildChannelDialogButton).toHaveBeenCalledTimes(expectedButtonCount);
+      expect(buildChannelDialogButton).toHaveBeenCalledTimes(expectedTypes.length);
     },
   );
 

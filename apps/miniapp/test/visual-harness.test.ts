@@ -394,7 +394,7 @@ test('publisher auto replies cover cold list, create sheet, editor bottom, and k
   assert.match(captureSource, /fill\('Открыть каталог'\)/u);
 });
 
-test('large publisher catalog scenario covers pointer and scroll pagination without interception', () => {
+test('large publisher catalog scenario reaches the final row through real scroll input', () => {
   const captureSource = readFileSync(
     new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
     'utf8',
@@ -404,14 +404,38 @@ test('large publisher catalog scenario covers pointer and scroll pagination with
   const scenarioSource = captureSource.slice(scenarioStart, scenarioEnd);
 
   assert.ok(scenarioStart >= 0 && scenarioEnd > scenarioStart);
-  assert.equal(scenarioSource.match(/loadMore\.click\(\)/gu)?.length, 1);
-  assert.doesNotMatch(scenarioSource, /loadMore\.press\(/u);
-  assert.match(scenarioSource, /element\.scrollTop = element\.scrollHeight/u);
+  assert.match(scenarioSource, /scrollPaginatedListToStatus\(page/u);
+  assert.doesNotMatch(scenarioSource, /scrollIntoViewIfNeeded|\.scrollTop\s*=/u);
   assert.match(scenarioSource, /document\.elementFromPoint/u);
-  assert.match(scenarioSource, /position > 30/u);
+  assert.match(scenarioSource, /aria-posinset="200"/u);
+  assert.match(scenarioSource, /rowRect\.bottom <= Math\.min\(listRect\.bottom, navRect\.top\)/u);
   assert.match(scenarioSource, /'30 из 200'/u);
-  assert.match(scenarioSource, /'60 из 200'/u);
-  assert.match(scenarioSource, /'90 из 200'/u);
+  assert.match(scenarioSource, /'200 получателей'/u);
+});
+
+test('large publisher recipient picker reaches every target through real scroll input', () => {
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const scenarioStart = captureSource.indexOf("name: 'publications-publisher-compose-large'");
+  const scenarioEnd = captureSource.indexOf(
+    "name: 'publications-publisher-compose-selected'",
+    scenarioStart,
+  );
+  const scenarioSource = captureSource.slice(scenarioStart, scenarioEnd);
+
+  assert.ok(scenarioStart >= 0 && scenarioEnd > scenarioStart);
+  assert.match(scenarioSource, /scrollPaginatedListToStatus\(page/u);
+  assert.doesNotMatch(scenarioSource, /scrollIntoViewIfNeeded|\.scrollTop\s*=/u);
+  assert.match(scenarioSource, /data-target-position="200"/u);
+  assert.match(scenarioSource, /document\.elementFromPoint/u);
+  assert.match(scenarioSource, /'30 из 200'/u);
+  assert.match(scenarioSource, /'Получателей: 200'/u);
+  assert.match(
+    captureSource,
+    /async function scrollPaginatedListToStatus[\s\S]*?Date\.now\(\) \+ timeoutMs[\s\S]*?page\.mouse\.wheel\(0, 1_200\)[\s\S]*?waitForFunction/u,
+  );
 });
 
 test('Publik entry route and publisher source files select workspace visual scenarios', () => {

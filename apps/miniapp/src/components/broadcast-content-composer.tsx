@@ -4,25 +4,28 @@ import {
   type BroadcastTextFormat,
 } from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
-import { useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import './broadcast-content-composer.css';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
 import { cn } from '../lib/cn';
-import { prepareBroadcastImage } from '../lib/broadcast-image';
 import {
-  appendComposerBroadcastImages,
-  BROADCAST_IMAGES_TOTAL_BASE64_MAX,
-  getBroadcastImagesBase64Length,
   normalizeComposerBroadcastImages,
   resolveBroadcastImageMaxCount,
 } from '../lib/broadcast-image-list';
+import { prepareComposerImageFiles } from '../lib/broadcast-image-preparation';
 import {
   buildBroadcastPreviewButtonRows,
   formatBroadcastButtonsPreview,
 } from '../lib/broadcast-link-buttons';
 import type { BroadcastSystemButtonPreview } from '../lib/broadcast-system-buttons';
-import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
+import {
+  captureFilePickerReturnState,
+  openFileInputPicker,
+  resolveFileInputActivationMode,
+  restoreFilePickerReturnState,
+  type FilePickerReturnState,
+} from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
   enabled: boolean;
@@ -110,7 +113,13 @@ export function BroadcastContentComposer({
   onError,
 }: BroadcastContentComposerProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const composerRootRef = useRef<HTMLDivElement | null>(null);
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
+  const preparationRunIdRef = useRef(0);
+  const preparationAbortRef = useRef<AbortController | null>(null);
+  const pickerReturnStateRef = useRef<FilePickerReturnState | null>(null);
+  const pickerRestoreFrameRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
   const textErrorId = useId();
   const [formatToolsOpen, setFormatToolsOpen] = useState(false);
   const [normalizationReady, setNormalizationReady] = useState(true);
@@ -121,27 +130,35 @@ export function BroadcastContentComposer({
   const maxImageCount = resolveBroadcastImageMaxCount(
     maxImages ?? (images || onImagesChange ? undefined : 1),
   );
-  const currentImages = normalizeComposerBroadcastImages(
-    images ??
-      (image?.enabled && image.base64 && image.mimeType
-        ? [
-            {
-              base64: image.base64,
-              mimeType: image.mimeType,
-              fileName: image.fileName,
-            },
-          ]
-        : []),
-    maxImageCount,
+  const currentImages = useMemo(
+    () =>
+      normalizeComposerBroadcastImages(
+        images ??
+          (image?.enabled && image.base64 && image.mimeType
+            ? [
+                {
+                  base64: image.base64,
+                  mimeType: image.mimeType,
+                  fileName: image.fileName,
+                },
+              ]
+            : []),
+        maxImageCount,
+      ),
+    [image?.base64, image?.enabled, image?.fileName, image?.mimeType, images, maxImageCount],
   );
-  const imagePreviewItems = currentImages
-    .filter((item) => item.base64 && item.mimeType)
-    .slice(0, maxImageCount)
-    .map((item, index) => ({
-      ...item,
-      index,
-      url: `data:${item.mimeType};base64,${item.base64}`,
-    }));
+  const imagePreviewItems = useMemo(
+    () =>
+      currentImages
+        .filter((item) => item.base64 && item.mimeType)
+        .slice(0, maxImageCount)
+        .map((item, index) => ({
+          ...item,
+          index,
+          url: `data:${item.mimeType};base64,${item.base64}`,
+        })),
+    [currentImages, maxImageCount],
+  );
   const pendingImageSlots = Math.max(0, preparingImages.total - preparingImages.done);
   const normalizedText = text.trim();
   const previewButtons = buttons.filter((button) => button.text.trim());
@@ -168,12 +185,25 @@ export function BroadcastContentComposer({
     remainingLength >= 0 && remainingLength <= Math.min(120, maxLength * 0.08);
   const showTextCounter = text.length > 0 && (isNearTextLimit || remainingLength < 0);
   const isPreparingImage = pendingImageSlots > 0;
-  const editorDisabled = disabled || isPreparingImage;
-  const isBusy = editorDisabled || !normalizationReady;
+  const editorDisabled = disabled;
+  const isBusy = disabled || isPreparingImage || !normalizationReady;
   const useNativeTapFileInput =
     resolveFileInputActivationMode(
       typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
     ) === 'native-tap';
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      preparationRunIdRef.current += 1;
+      preparationAbortRef.current?.abort();
+      preparationAbortRef.current = null;
+      if (pickerRestoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(pickerRestoreFrameRef.current);
+      }
+    };
+  }, []);
 
   function emitImages(nextImages: BroadcastImage[]) {
     const normalizedImages = nextImages
@@ -190,11 +220,57 @@ export function BroadcastContentComposer({
   }
 
   function updatePreparingImages(nextState: PreparingImagesState) {
+    if (!mountedRef.current) {
+      return;
+    }
     setPreparingImages(nextState);
     onImagePreparationChange?.(nextState.total > nextState.done);
   }
 
+  function rememberImagePickerReturn() {
+    if (!pickerReturnStateRef.current) {
+      pickerReturnStateRef.current = captureFilePickerReturnState(
+        undefined,
+        undefined,
+        composerRootRef.current?.closest<HTMLElement>('.publications-editor') ?? null,
+      );
+    }
+  }
+
+  function restoreImagePickerReturn() {
+    const returnState = pickerReturnStateRef.current;
+    pickerReturnStateRef.current = null;
+    if (!returnState) {
+      return;
+    }
+    if (pickerRestoreFrameRef.current !== null) {
+      window.cancelAnimationFrame(pickerRestoreFrameRef.current);
+    }
+    pickerRestoreFrameRef.current = window.requestAnimationFrame(() => {
+      pickerRestoreFrameRef.current = null;
+      if (mountedRef.current) {
+        restoreFilePickerReturnState(returnState);
+      }
+    });
+  }
+
+  function openImagePicker() {
+    rememberImagePickerReturn();
+    openFileInputPicker(imageInputRef.current);
+  }
+
+  useEffect(() => {
+    const input = imageInputRef.current;
+    if (!input) {
+      return undefined;
+    }
+    const handlePickerCancel = () => restoreImagePickerReturn();
+    input.addEventListener('cancel', handlePickerCancel);
+    return () => input.removeEventListener('cancel', handlePickerCancel);
+  }, [useNativeTapFileInput]);
+
   async function handleImageFiles(files: FileList | File[] | null) {
+    restoreImagePickerReturn();
     if (!allowImages) {
       onError?.('Сначала уберите одно из добавленных фото.');
       return;
@@ -202,6 +278,11 @@ export function BroadcastContentComposer({
 
     const selectedFiles = Array.from(files ?? []);
     if (selectedFiles.length === 0) {
+      return;
+    }
+
+    if (preparationAbortRef.current && !preparationAbortRef.current.signal.aborted) {
+      onError?.('Дождитесь завершения подготовки выбранных фото.');
       return;
     }
 
@@ -219,44 +300,37 @@ export function BroadcastContentComposer({
       onError?.(`Можно добавить до ${maxImageCount} фото.`);
     }
 
+    const controller = new AbortController();
+    const runId = preparationRunIdRef.current + 1;
+    preparationRunIdRef.current = runId;
+    preparationAbortRef.current = controller;
+    const isCurrentRun = () =>
+      mountedRef.current &&
+      preparationRunIdRef.current === runId &&
+      preparationAbortRef.current === controller &&
+      !controller.signal.aborted;
+
     updatePreparingImages({ done: 0, total: filesToPrepare.length });
     try {
-      const preparedImages: BroadcastImage[] = [];
-      let estimatedImages = currentImages.slice(0, maxImageCount);
-      for (const [index, file] of filesToPrepare.entries()) {
-        const remainingBase64Budget =
-          BROADCAST_IMAGES_TOTAL_BASE64_MAX - getBroadcastImagesBase64Length(estimatedImages);
-        if (remainingBase64Budget <= 0) {
-          throw new Error('Суммарный размер фото слишком большой.');
-        }
-
-        const remainingFileCount = Math.max(1, filesToPrepare.length - index);
-        const maxBytes = Math.floor((remainingBase64Budget * 3) / (4 * remainingFileCount));
-        const prepared = await prepareBroadcastImage(file, { maxBytes });
-        const preparedImage = {
-          base64: prepared.base64,
-          mimeType: prepared.mimeType,
-          fileName: prepared.fileName,
-        };
-        const appendPreview = appendComposerBroadcastImages(estimatedImages, [preparedImage], {
-          maxImageCount,
-          totalBase64Limit: BROADCAST_IMAGES_TOTAL_BASE64_MAX,
-        });
-        if (appendPreview.oversizedCount > 0) {
-          throw new Error('Суммарный размер фото слишком большой.');
-        }
-        preparedImages.push(preparedImage);
-        estimatedImages = appendPreview.images;
-
-        updatePreparingImages({ done: index + 1, total: filesToPrepare.length });
-      }
-
-      const result = appendComposerBroadcastImages(currentImages, preparedImages, {
+      const result = await prepareComposerImageFiles({
+        files: filesToPrepare,
+        currentImages,
         maxImageCount,
-        totalBase64Limit: BROADCAST_IMAGES_TOTAL_BASE64_MAX,
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (isCurrentRun()) {
+            updatePreparingImages(progress);
+          }
+        },
+        onImagesReady: (nextImages) => {
+          if (isCurrentRun()) {
+            emitImages(nextImages);
+          }
+        },
       });
-      if (result.addedCount > 0) {
-        emitImages(result.images);
+
+      if (!isCurrentRun() || result.aborted) {
+        return;
       }
       if (result.duplicateCount > 0 && result.addedCount === 0) {
         onError?.('Это фото уже добавлено.');
@@ -269,12 +343,26 @@ export function BroadcastContentComposer({
       if (result.oversizedCount > 0) {
         onError?.('Суммарный размер фото слишком большой.');
       }
+      if (result.failedMessages.length > 0) {
+        if (result.addedCount > 0) {
+          onError?.(
+            `Не удалось подготовить ${result.failedMessages.length} фото. Остальные добавлены.`,
+          );
+        } else {
+          onError?.(result.failedMessages[0] ?? 'Не удалось подготовить фото.');
+        }
+      }
     } catch (error) {
-      onError?.(error instanceof Error ? error.message : 'Не удалось подготовить фото.');
+      if (isCurrentRun()) {
+        onError?.(error instanceof Error ? error.message : 'Не удалось подготовить фото.');
+      }
     } finally {
-      updatePreparingImages({ done: 0, total: 0 });
-      if (imageInputRef.current) {
-        imageInputRef.current.value = '';
+      if (isCurrentRun()) {
+        preparationAbortRef.current = null;
+        updatePreparingImages({ done: 0, total: 0 });
+        if (imageInputRef.current) {
+          imageInputRef.current.value = '';
+        }
       }
     }
   }
@@ -289,6 +377,7 @@ export function BroadcastContentComposer({
 
   return (
     <div
+      ref={composerRootRef}
       className={cn(
         'broadcast-content-composer',
         className,
@@ -476,6 +565,7 @@ export function BroadcastContentComposer({
                   aria-disabled={
                     !allowImages || isBusy || imagePreviewItems.length >= maxImageCount
                   }
+                  onPointerDown={rememberImagePickerReturn}
                 >
                   <IconoirCamera aria-hidden focusable="false" />
                   {showToolLabels ? (
@@ -501,7 +591,8 @@ export function BroadcastContentComposer({
                       showToolLabels && 'has-label',
                       imagePreviewItems.length > 0 && 'is-active',
                     )}
-                    onClick={() => openFileInputPicker(imageInputRef.current)}
+                    onPointerDown={rememberImagePickerReturn}
+                    onClick={openImagePicker}
                     disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
                     aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                     title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}

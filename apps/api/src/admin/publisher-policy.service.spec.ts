@@ -7,6 +7,7 @@ import {
 import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
+  ChannelPostSignaturePresentation,
   ChatEntityType,
   ManagedEntityAccessRole,
   ManagedEntityAccessState,
@@ -40,6 +41,7 @@ function createReadiness(readyEntityIds: readonly string[] = []) {
           state: ready ? 'ready' : 'setup_required',
           canPublish: ready,
           canUseChatComments: ready && source.entityType === ChatEntityType.CHAT,
+          canUseChannelComments: ready && source.entityType === ChatEntityType.CHANNEL,
           canPublishSuggestions: false,
           blockerCode: ready ? null : 'bot_not_connected',
           checkedAt: null as string | null,
@@ -102,6 +104,7 @@ function createListEntity(
     chatCommentsEnabled: boolean;
     chatCommentsAdminsEnabled: boolean;
     chatCommentsPostsEnabled: boolean;
+    channelCommentsEnabled: boolean;
     channelSuggestionsEnabled: boolean;
     autoRepliesEnabled: boolean;
   } | null;
@@ -252,6 +255,7 @@ function createPolicyMutationFixture(
     chatCommentsEnabled: true,
     chatCommentsAdminsEnabled: false,
     chatCommentsPostsEnabled: true,
+    channelCommentsEnabled: true,
     channelSuggestionsEnabled: true,
     autoRepliesEnabled: false,
     revision: 1,
@@ -964,6 +968,12 @@ describe('PublisherPolicyService', () => {
       title: 'Канал',
       entityType: ChatEntityType.CHANNEL,
       publisherSettings: null,
+      channelSettings: {
+        postSignatureEnabled: true,
+        postSignaturePresentation: ChannelPostSignaturePresentation.BUTTON,
+        postSignatureText: '📞 Заказать рекламу',
+        postSignatureUrl: 'https://example.test/ads',
+      },
       publicationPolicy: null,
       publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
@@ -1041,16 +1051,24 @@ describe('PublisherPolicyService', () => {
               commentsChatBroadcastsEnabled: true,
             },
             autoRepliesEnabled: true,
+            channelCommentsEnabled: null,
             channelSuggestionsEnabled: null,
           },
         }),
         expect.objectContaining({
           id: channel.id,
           entityType: 'channel',
+          channelPostSignature: {
+            enabled: true,
+            presentation: 'button',
+            text: '📞 Заказать рекламу',
+            url: 'https://example.test/ads',
+          },
           moduleSettings: {
             revision: 0,
             chatComments: null,
             autoRepliesEnabled: null,
+            channelCommentsEnabled: false,
             channelSuggestionsEnabled: false,
           },
         }),
@@ -1620,12 +1638,14 @@ describe('PublisherPolicyService', () => {
     await expect(
       fixture.service.updateModuleSettings('channel', 'channel-1', user, {
         expectedRevision: 0,
+        channelCommentsEnabled: true,
         channelSuggestionsEnabled: true,
       }),
     ).resolves.toEqual({
       revision: 1,
       chatComments: null,
       autoRepliesEnabled: null,
+      channelCommentsEnabled: true,
       channelSuggestionsEnabled: true,
     });
 
@@ -1635,6 +1655,7 @@ describe('PublisherPolicyService', () => {
     expect(fixture.tx.publisherEntitySettings.create).toHaveBeenCalledWith({
       data: {
         chatId: 'channel-1',
+        channelCommentsEnabled: true,
         channelSuggestionsEnabled: true,
         updatedByUserId: user.userId,
       },
@@ -1645,7 +1666,7 @@ describe('PublisherPolicyService', () => {
         actorUserId: user.userId,
         action: 'UPDATE_PUBLISHER_MODULE_SETTINGS',
         payload: {
-          changed: { channelSuggestionsEnabled: true },
+          changed: { channelCommentsEnabled: true, channelSuggestionsEnabled: true },
           revision: 1,
         },
       },
@@ -1676,6 +1697,7 @@ describe('PublisherPolicyService', () => {
       revision: 5,
       chatComments,
       autoRepliesEnabled: false,
+      channelCommentsEnabled: null,
       channelSuggestionsEnabled: null,
     });
 
@@ -1715,6 +1737,7 @@ describe('PublisherPolicyService', () => {
       chatCommentsEnabled: true,
       chatCommentsAdminsEnabled: false,
       chatCommentsPostsEnabled: true,
+      channelCommentsEnabled: false,
       channelSuggestionsEnabled: true,
       autoRepliesEnabled: true,
     });
@@ -1733,6 +1756,7 @@ describe('PublisherPolicyService', () => {
         commentsChatBroadcastsEnabled: true,
       },
       autoRepliesEnabled: true,
+      channelCommentsEnabled: null,
       channelSuggestionsEnabled: null,
     });
 
@@ -1844,6 +1868,7 @@ describe('PublisherPolicyService', () => {
       state: 'setup_required',
       canPublish: false,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       blockerCode: 'write_permission_missing',
       checkedAt: '2026-08-30T10:00:00.000Z',
@@ -1889,6 +1914,7 @@ describe('PublisherPolicyService', () => {
       state: 'setup_required',
       canPublish: false,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       blockerCode: 'bot_access_expired',
       checkedAt: '2026-08-29T10:00:00.000Z',
@@ -1925,6 +1951,7 @@ describe('PublisherPolicyService', () => {
       state: 'setup_required',
       canPublish: false,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       blockerCode: 'bot_access_unconfirmed',
       checkedAt: null,
@@ -1951,6 +1978,7 @@ describe('PublisherPolicyService', () => {
       state: 'ready',
       canPublish: true,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       blockerCode: null,
       checkedAt: '2026-08-30T10:00:01.000Z',
@@ -1975,6 +2003,7 @@ describe('PublisherPolicyService', () => {
       state: 'setup_required',
       canPublish: false,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       blockerCode: 'bot_access_unconfirmed',
       checkedAt: null,
@@ -2013,6 +2042,7 @@ describe('PublisherPolicyService', () => {
       state: 'setup_required',
       canPublish: false,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       blockerCode: 'bot_not_admin',
       checkedAt: '2026-08-30T10:00:00.000Z',
@@ -2109,6 +2139,7 @@ describe('PublisherPolicyService', () => {
       state: 'temporarily_unavailable',
       canPublish: false,
       canUseChatComments: false,
+      canUseChannelComments: false,
       canPublishSuggestions: false,
       blockerCode: 'publisher_runtime_unavailable',
       checkedAt: null,

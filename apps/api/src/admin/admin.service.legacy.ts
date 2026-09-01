@@ -376,6 +376,11 @@ import {
   PublisherCommentKeyboardRouting,
 } from './publisher-comment-keyboard-routing';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
+import { buildChannelPostActionRows } from '../common/channel-post-actions';
+import {
+  buildChannelCommentCountKeyboard,
+  prepareStoredChannelCommentsKeyboard,
+} from './admin-channel-comment-keyboard';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
   isManagedBroadcastSlotConflictError as isManagedBroadcastSlotConflictErrorValue,
@@ -7003,6 +7008,12 @@ export class AdminService implements OnModuleDestroy {
                 trafficClass: 'interactive',
                 sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
               }),
+            buildCtaButton: () =>
+              channelPostSignatureService.buildPostButton(chatId, {
+                entityType: 'channel',
+                trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+              }),
           }
         : {}),
     });
@@ -7017,7 +7028,7 @@ export class AdminService implements OnModuleDestroy {
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     if (dialogProfile === 'publisher') {
-      return this.publisherDialogProfileRuntime.getChannelSuggestionDialog({
+      return this.publisherDialogProfileRuntime.getChannelDialog({
         chatId,
         user,
         dialogTypeRaw,
@@ -7175,6 +7186,12 @@ export class AdminService implements OnModuleDestroy {
     return this.publisherDialogProfileRuntime.readChatCommentSettings(chatId);
   }
 
+  getPublicPublisherChannelCommentSettingsForDialog(
+    _chatId: string,
+  ): Promise<{ commentsEnabled: boolean }> {
+    return Promise.resolve({ commentsEnabled: true });
+  }
+
   async toggleEntityDialogReactionForDialog(params: {
     chatId: string;
     entityType: ManagedEntityType;
@@ -7186,7 +7203,11 @@ export class AdminService implements OnModuleDestroy {
     dialogProfile?: MiniappProfile;
   }): Promise<ToggleChannelDialogReactionResponse> {
     if (params.dialogProfile === 'publisher') {
-      await this.publisherDialogProfileRuntime.assertChatReady(params.chatId);
+      if (params.entityType === 'channel') {
+        await this.publisherDialogProfileRuntime.assertChannelCommentThreadReady(params.chatId);
+      } else {
+        await this.publisherDialogProfileRuntime.assertChatReady(params.chatId);
+      }
     }
     return this.toggleEntityDialogReaction(params);
   }
@@ -7246,7 +7267,7 @@ export class AdminService implements OnModuleDestroy {
     source: ChannelDialogMessageSource,
     dialogProfile: MiniappProfile = 'moderation',
   ) {
-    if (dialogProfile === 'publisher') {
+    if (dialogProfile === 'publisher' && dialogType === 'suggest') {
       return this.publisherDialogProfileRuntime.createChannelSuggestion({
         chatId,
         user,
@@ -7260,11 +7281,15 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const threadId = this.dialogLinkHelper.resolveChannelDialogThreadId(
-      chatId,
-      dialogType,
-      parsed.data.token,
-    );
+    const threadId =
+      dialogProfile === 'publisher'
+        ? this.publisherDialogProfileRuntime.resolveRequiredPublisherThreadId(
+            chatId,
+            'channel',
+            dialogType,
+            parsed.data.token,
+          )
+        : this.dialogLinkHelper.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
     const normalizedAttachments = this.normalizeChannelDialogCommentInputAttachments(
       parsed.data.attachments,
@@ -7286,6 +7311,9 @@ export class AdminService implements OnModuleDestroy {
     const fileAttachments = normalizedAttachments.filter(
       (attachment) => attachment.kind === 'file',
     );
+    if (dialogProfile === 'publisher' && normalizedAttachments.length > 0) {
+      throw new BadRequestException('В комментариях Публика пока доступен только текст.');
+    }
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -7294,8 +7322,12 @@ export class AdminService implements OnModuleDestroy {
       dialogType,
       threadId,
       replyToMessageId: parsed.data.replyToMessageId ?? null,
+      dialogProfile,
     });
-    const channelSettings = await this.getPublicChannelSettings(chatId);
+    const channelSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChannelCommentThreadSettings(chatId)
+        : await this.getPublicChannelSettings(chatId);
 
     if (dialogType === 'comments' && !channelSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
@@ -7321,7 +7353,11 @@ export class AdminService implements OnModuleDestroy {
       await this.assertChannelSuggestionDailyLimit(chatId, user.userId, channelSettings);
     }
 
-    if (dialogType === 'comments' && channelSettings.commentsModerationEnabled) {
+    if (
+      dialogProfile !== 'publisher' &&
+      dialogType === 'comments' &&
+      channelSettings.commentsModerationEnabled
+    ) {
       await this.assertChannelCommentAllowed({
         chatId,
         threadId,
@@ -7358,6 +7394,7 @@ export class AdminService implements OnModuleDestroy {
       source,
       authorDisplayName,
       authorAvatarUrl,
+      dialogProfile,
     });
   }
 
@@ -7452,11 +7489,18 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     dialogTypeRaw: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
-    const channelSettings = await this.getPublicChannelSettings(chatId);
+    const channelSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChannelCommentThreadSettings(chatId)
+        : await this.getPublicChannelSettings(chatId);
     if (dialogType !== 'comments') {
       throw new BadRequestException('Уведомления доступны только в комментариях.');
+    }
+    if (dialogProfile === 'publisher') {
+      throw new BadRequestException('Уведомления для комментариев Публика пока недоступны.');
     }
     if (!channelSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
@@ -7637,7 +7681,10 @@ export class AdminService implements OnModuleDestroy {
       authorUserId: params.user.userId,
       authorDisplayName: params.authorDisplayName ?? null,
       isAdmin: (params.dialogProfile === 'publisher'
-        ? await this.publisherDialogProfileRuntime.readAdminUserIds(params.chatId)
+        ? await this.publisherDialogProfileRuntime.readAdminUserIds(
+            params.chatId,
+            params.entityType,
+          )
         : await this.dialogAdminAccessRuntime.readRemoteOrPersisted(params.chatId)
       ).has(params.user.userId),
       avatarUrl: params.authorAvatarUrl ?? null,
@@ -7746,6 +7793,7 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     const parsed = updateChannelDialogMessageRequestSchema.safeParse(body);
@@ -7753,7 +7801,10 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const channelSettings = await this.getPublicChannelSettings(chatId);
+    const channelSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChannelCommentThreadSettings(chatId)
+        : await this.getPublicChannelSettings(chatId);
     if (!channelSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
@@ -7766,6 +7817,7 @@ export class AdminService implements OnModuleDestroy {
       messageId,
       token: parsed.data.token,
       text: parsed.data.text,
+      dialogProfile,
     });
   }
 
@@ -7775,6 +7827,7 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     const parsed = deleteChannelDialogMessageRequestSchema.safeParse(body);
@@ -7782,7 +7835,10 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const channelSettings = await this.getPublicChannelSettings(chatId);
+    const channelSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChannelCommentThreadSettings(chatId)
+        : await this.getPublicChannelSettings(chatId);
     if (!channelSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
@@ -7794,6 +7850,7 @@ export class AdminService implements OnModuleDestroy {
       dialogType,
       messageId,
       token: parsed.data.token,
+      dialogProfile,
     });
   }
 
@@ -8421,8 +8478,13 @@ export class AdminService implements OnModuleDestroy {
     const settings = await this.getPublicChannelSettings(chatId);
     const includeCommentsButton = settings.commentsEnabled;
     const includeSuggestButton = settings.postSuggestionsEnabled;
+    const ctaButton = await this.channelPostSignatureService?.buildPostButton(chatId, {
+      entityType: 'channel',
+      trafficClass: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+    });
 
-    if (!includeCommentsButton && !includeSuggestButton) {
+    if (!includeCommentsButton && !includeSuggestButton && !ctaButton) {
       return {
         buttons: [],
         threadId: null,
@@ -8433,34 +8495,30 @@ export class AdminService implements OnModuleDestroy {
       };
     }
 
-    const threadId = randomUUID();
+    const threadId = includeCommentsButton || includeSuggestButton ? randomUUID() : null;
     const suggestButtonText = settings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
-    const buttons: MaxMessageButton[][] = [];
-
-    if (includeCommentsButton) {
-      buttons.push([
-        this.buildChannelDialogButton(
-          chatId,
-          'comments',
-          threadId,
-          formatCommentsButtonText('💬 Комментарии', 0),
-          botId,
-        ),
-      ]);
-    }
-
-    if (includeSuggestButton) {
-      buttons.push([
-        this.buildChannelDialogButton(
-          chatId,
-          'suggest',
-          threadId,
-          suggestButtonText,
-          botId,
-          settings.postSuggestionsEntryMode,
-        ),
-      ]);
-    }
+    const commentsButton =
+      includeCommentsButton && threadId
+        ? this.buildChannelDialogButton(
+            chatId,
+            'comments',
+            threadId,
+            formatCommentsButtonText('💬 Комментарии', 0),
+            botId,
+          )
+        : null;
+    const suggestButton =
+      includeSuggestButton && threadId
+        ? this.buildChannelDialogButton(
+            chatId,
+            'suggest',
+            threadId,
+            suggestButtonText,
+            botId,
+            settings.postSuggestionsEntryMode,
+          )
+        : null;
+    const buttons = buildChannelPostActionRows({ commentsButton, suggestButton, ctaButton });
 
     return {
       buttons,
@@ -8469,6 +8527,10 @@ export class AdminService implements OnModuleDestroy {
       includeSuggestButton,
       suggestButtonText: includeSuggestButton ? suggestButtonText : null,
       suggestionEntryMode: settings.postSuggestionsEntryMode,
+      buttonRows: buttons.map((row) => row.map((button) => ({ ...button }))),
+      commentsButton: includeCommentsButton
+        ? { rowIndex: 0, columnIndex: 0, baseText: '💬 Комментарии' }
+        : null,
     };
   }
 
@@ -8507,6 +8569,10 @@ export class AdminService implements OnModuleDestroy {
           ...(publishedUrl ? { publishedUrl } : {}),
           ...(botId ? { botId } : {}),
           ...(context.suggestButtonText ? { suggestButtonText: context.suggestButtonText } : {}),
+          ...(context.buttonRows ? { buttonRows: context.buttonRows } : {}),
+          ...(context.commentsButton !== undefined
+            ? { commentsButton: context.commentsButton }
+            : {}),
         },
       },
     });
@@ -8553,6 +8619,8 @@ export class AdminService implements OnModuleDestroy {
       customButtons: BroadcastLinkButton[];
       suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
       botId: string | null;
+      buttonRows?: MaxMessageButton[][];
+      commentsButton?: { rowIndex: number; columnIndex: number; baseText: string | null } | null;
     } | null;
   }> {
     const customButtons = this.normalizeManagedBroadcastButtons(options.customButtons, {
@@ -8560,7 +8628,7 @@ export class AdminService implements OnModuleDestroy {
       buttonUrl: options.customButtonUrl,
       buttonText: options.customButtonText,
     });
-    const rows = this.buildBroadcastLinkButtonRows(
+    const customButtonRows = this.buildBroadcastLinkButtonRows(
       customButtons,
       entityType === 'channel' ? { buttonsPerRow: 1 } : undefined,
     );
@@ -8590,7 +8658,7 @@ export class AdminService implements OnModuleDestroy {
       } | null = null;
 
       if (this.shouldIncludeChatCommentsButton(chatSettings)) {
-        rows.push([
+        customButtonRows.push([
           this.dialogLinkHelper.buildChatDialogButton(
             chatId,
             'comments',
@@ -8612,14 +8680,14 @@ export class AdminService implements OnModuleDestroy {
       }
 
       return {
-        buttons: rows,
+        buttons: customButtonRows,
         commentDialogReference,
       };
     }
 
     if (entityType !== 'channel') {
       return {
-        buttons: rows,
+        buttons: customButtonRows,
         commentDialogReference: null,
       };
     }
@@ -8644,30 +8712,36 @@ export class AdminService implements OnModuleDestroy {
     const suggestButtonText =
       channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
 
-    if (includeCommentsButton) {
-      rows.push([
-        this.buildChannelDialogButton(
+    const commentsButton = includeCommentsButton
+      ? this.buildChannelDialogButton(
           chatId,
           'comments',
           threadId,
           formatCommentsButtonText('💬 Комментарии', 0),
           botId,
-        ),
-      ]);
-    }
-
-    if (includeSuggestButton) {
-      rows.push([
-        this.buildChannelDialogButton(
+        )
+      : null;
+    const suggestButton = includeSuggestButton
+      ? this.buildChannelDialogButton(
           chatId,
           'suggest',
           threadId,
           suggestButtonText,
           botId,
           channelSettings.postSuggestionsEntryMode,
-        ),
-      ]);
-    }
+        )
+      : null;
+    const ctaButton = await this.channelPostSignatureService?.buildPostButton(chatId, {
+      entityType: 'channel',
+      trafficClass: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+    });
+    const rows = buildChannelPostActionRows({
+      commentsButton,
+      suggestButton,
+      ctaButton,
+      customButtonRows,
+    });
 
     return {
       buttons: rows,
@@ -8682,6 +8756,10 @@ export class AdminService implements OnModuleDestroy {
               customButtons,
               suggestionEntryMode: channelSettings.postSuggestionsEntryMode,
               botId: botId ?? null,
+              buttonRows: rows.map((row) => row.map((button) => ({ ...button }))),
+              commentsButton: includeCommentsButton
+                ? { rowIndex: 0, columnIndex: 0, baseText: '💬 Комментарии' }
+                : null,
             }
           : null,
     };
@@ -15417,17 +15495,31 @@ export class AdminService implements OnModuleDestroy {
   }> {
     const threadId =
       params.entityType === 'channel'
-        ? this.dialogLinkHelper.resolveChannelDialogThreadId(
-            params.chatId,
-            params.dialogType,
-            params.token,
-          )
-        : this.publisherDialogProfileRuntime.resolveChatThreadId(
-            params.chatId,
-            params.dialogType,
-            params.token,
-            params.dialogProfile ?? 'moderation',
-          );
+        ? params.dialogProfile === 'publisher'
+          ? this.publisherDialogProfileRuntime.resolveRequiredPublisherThreadId(
+              params.chatId,
+              params.entityType,
+              params.dialogType,
+              params.token,
+            )
+          : this.dialogLinkHelper.resolveChannelDialogThreadId(
+              params.chatId,
+              params.dialogType,
+              params.token,
+            )
+        : params.dialogProfile === 'publisher'
+          ? this.publisherDialogProfileRuntime.resolveRequiredPublisherThreadId(
+              params.chatId,
+              params.entityType,
+              params.dialogType,
+              params.token,
+            )
+          : this.publisherDialogProfileRuntime.resolveChatThreadId(
+              params.chatId,
+              params.dialogType,
+              params.token,
+              'moderation',
+            );
     const messageId = this.readTrimmedString(params.messageId);
     if (!messageId) {
       throw new BadRequestException('Комментарий не найден.');
@@ -15488,11 +15580,11 @@ export class AdminService implements OnModuleDestroy {
       userId: params.userId,
       text: params.text,
       resolvePublisherThreadId: () =>
-        this.publisherDialogProfileRuntime.resolveChatThreadId(
+        this.publisherDialogProfileRuntime.resolveRequiredPublisherThreadId(
           params.chatId,
+          params.entityType,
           params.dialogType,
           params.token,
-          'publisher',
         ),
       resolveLegacyTarget: () => this.resolveEntityDialogMessageTarget(params),
       hasAttachments: (value) => this.readChannelDialogAttachmentAssets(value).length > 0,
@@ -15502,7 +15594,10 @@ export class AdminService implements OnModuleDestroy {
     }
     const adminUserIds =
       params.dialogProfile === 'publisher'
-        ? await this.publisherDialogProfileRuntime.readAdminUserIds(params.chatId)
+        ? await this.publisherDialogProfileRuntime.readAdminUserIds(
+            params.chatId,
+            params.entityType,
+          )
         : await this.dialogAdminAccessRuntime.readRemoteOrPersisted(params.chatId);
 
     return updateChannelDialogMessageResponseSchema.parse({
@@ -15532,7 +15627,11 @@ export class AdminService implements OnModuleDestroy {
     const target = await this.resolveEntityDialogMessageTarget(params);
     if (target.row.actorUserId !== params.userId) {
       if (params.dialogProfile === 'publisher') {
-        await this.publisherDialogProfileRuntime.assertAdminAccess(params.chatId, params.userId);
+        await this.publisherDialogProfileRuntime.assertAdminAccess(
+          params.chatId,
+          params.userId,
+          params.entityType,
+        );
       } else {
         await this.assertChatAdmin(params.chatId, params.userId, params.entityType);
         await this.ensureEntityType(params.chatId, params.userId, params.entityType);
@@ -15582,11 +15681,11 @@ export class AdminService implements OnModuleDestroy {
       userId: params.userId,
       emoji: params.emoji,
       resolvePublisherThreadId: () =>
-        this.publisherDialogProfileRuntime.resolveChatThreadId(
+        this.publisherDialogProfileRuntime.resolveRequiredPublisherThreadId(
           params.chatId,
+          params.entityType,
           params.dialogType,
           params.token,
-          'publisher',
         ),
       resolveLegacyTarget: () => this.resolveEntityDialogMessageTarget(params),
       toggleReactions: (value, emoji, userId) =>
@@ -15596,11 +15695,12 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарий не найден.');
     }
     const adminUserIds =
-      params.dialogType !== 'comments'
-        ? new Set<string>()
-        : params.dialogProfile === 'publisher'
-          ? await this.publisherDialogProfileRuntime.readAdminUserIds(params.chatId)
-          : await this.dialogAdminAccessRuntime.readRemoteOrPersisted(params.chatId);
+      params.dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readAdminUserIds(
+            params.chatId,
+            params.entityType,
+          )
+        : await this.dialogAdminAccessRuntime.readRemoteOrPersisted(params.chatId);
 
     return toggleChannelDialogReactionResponseSchema.parse({
       ok: true,
@@ -17056,7 +17156,7 @@ export class AdminService implements OnModuleDestroy {
             });
 
       if (entityType === 'channel') {
-        await this.syncChannelCommentsButtonCount(chatId, threadId, count);
+        await this.syncChannelCommentsButtonCount(chatId, threadId, count, params.dialogProfile);
         return;
       }
 
@@ -17078,6 +17178,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     threadId: string,
     count: number,
+    dialogProfile: MiniappProfile = 'moderation',
   ): Promise<void> {
     const rows = await this.prisma.auditLog.findMany({
       where: {
@@ -17102,9 +17203,14 @@ export class AdminService implements OnModuleDestroy {
 
     for (const row of rows) {
       const payload = this.readObjectPayload(row.payload);
+      const botId = this.readTrimmedString(payload.botId);
+      const publisherBotId = this.maxBotRegistry?.getPublisherBotDescriptor().id ?? null;
+      const publisherOrigin = Boolean(publisherBotId && botId === publisherBotId);
+      if ((dialogProfile === 'publisher') !== publisherOrigin) {
+        continue;
+      }
       if (row.action === CHANNEL_DIALOG_ACTION_PUBLISH) {
         const messageId = this.readTrimmedString(payload.messageId);
-        const botId = this.readTrimmedString(payload.botId);
         const dialogBotId = this.readTrimmedString(payload.dialogBotId) ?? botId;
         const includeCommentsButton = payload.includeCommentsButton !== false;
         const includeSuggestButton = payload.includeSuggestButton === true;
@@ -17115,38 +17221,72 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        const buttons = this.buildBroadcastLinkButtonRows(
+        const storedKeyboard = prepareStoredChannelCommentsKeyboard(payload, count);
+        if (storedKeyboard) {
+          if (
+            await this.publisherCommentKeyboardRouting.tryEnqueue({
+              chatId,
+              messageId,
+              threadId,
+              entityType: 'channel',
+              botId,
+              dialogBotId,
+              buttons: storedKeyboard.buttons,
+              commentsButton: storedKeyboard.commentsButton,
+              count,
+            })
+          ) {
+            continue;
+          }
+          await this.safeUpdateCommentsButton(
+            chatId,
+            messageId,
+            storedKeyboard.buttons,
+            'channel',
+            botId,
+          );
+          continue;
+        }
+
+        const customButtonRows = this.buildBroadcastLinkButtonRows(
           this.normalizeManagedBroadcastButtons(payload.customButtons),
           { buttonsPerRow: 1 },
         );
-        let commentsButtonPosition: ReturnType<typeof createCommentsButtonPosition> | null = null;
-
-        if (includeCommentsButton) {
-          const baseText = this.readTrimmedString(payload.commentsButtonText);
-          commentsButtonPosition = createCommentsButtonPosition(buttons, baseText);
-          buttons.push([
-            this.buildChannelDialogButton(
-              chatId,
-              'comments',
-              threadId,
-              formatCommentsButtonText(baseText, count),
-              dialogBotId,
-            ),
-          ]);
-        }
-
-        if (includeSuggestButton) {
-          buttons.push([
-            this.buildChannelDialogButton(
-              chatId,
-              'suggest',
-              threadId,
-              this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
-              dialogBotId,
-              suggestionEntryMode,
-            ),
-          ]);
-        }
+        const ctaButton = await this.channelPostSignatureService?.buildPostButton(chatId, {
+          entityType: 'channel',
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+        });
+        const keyboard = buildChannelCommentCountKeyboard({
+          includeCommentsButton,
+          includeSuggestButton,
+          commentsButtonText: this.readTrimmedString(payload.commentsButtonText),
+          suggestButtonText:
+            this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
+          suggestionEntryMode,
+          count,
+          ctaButton,
+          customButtonRows,
+          buildDialogButton: (type, text, entryMode) =>
+            (publisherOrigin
+              ? this.publisherDialogLinkService?.buildChannelDialogButton(
+                  chatId,
+                  type,
+                  threadId,
+                  text,
+                  type === 'suggest' ? entryMode : 'MINIAPP',
+                )
+              : this.buildChannelDialogButton(
+                  chatId,
+                  type,
+                  threadId,
+                  text,
+                  dialogBotId,
+                  entryMode,
+                )) ?? null,
+        });
+        if (!keyboard) continue;
+        const { buttons, commentsButton: commentsButtonPosition } = keyboard;
 
         if (
           await this.publisherCommentKeyboardRouting.tryEnqueue({
@@ -17172,7 +17312,6 @@ export class AdminService implements OnModuleDestroy {
       }
 
       const messageId = resolveDialogCommentsTargetMessageId(payload);
-      const botId = this.readTrimmedString(payload.botId);
       const dialogBotId = this.readTrimmedString(payload.dialogBotId) ?? botId;
       const includeCommentsButton = payload.includeCommentsButton !== false;
       const includeSuggestButton = payload.includeSuggestButton === true;
@@ -17181,38 +17320,72 @@ export class AdminService implements OnModuleDestroy {
         continue;
       }
 
-      const buttons = this.buildBroadcastLinkButtonRows(
+      const storedKeyboard = prepareStoredChannelCommentsKeyboard(payload, count);
+      if (storedKeyboard) {
+        if (
+          await this.publisherCommentKeyboardRouting.tryEnqueue({
+            chatId,
+            messageId,
+            threadId,
+            entityType: 'channel',
+            botId,
+            dialogBotId,
+            buttons: storedKeyboard.buttons,
+            commentsButton: storedKeyboard.commentsButton,
+            count,
+          })
+        ) {
+          continue;
+        }
+        await this.safeUpdateCommentsButton(
+          chatId,
+          messageId,
+          storedKeyboard.buttons,
+          'channel',
+          botId,
+        );
+        continue;
+      }
+
+      const customButtonRows = this.buildBroadcastLinkButtonRows(
         this.normalizeManagedBroadcastButtons(payload.customButtons),
         { buttonsPerRow: 1 },
       );
-      let commentsButtonPosition: ReturnType<typeof createCommentsButtonPosition> | null = null;
-
-      if (includeCommentsButton) {
-        const baseText = '💬 Комментарии';
-        commentsButtonPosition = createCommentsButtonPosition(buttons, baseText);
-        buttons.push([
-          this.buildChannelDialogButton(
-            chatId,
-            'comments',
-            threadId,
-            formatCommentsButtonText(baseText, count),
-            dialogBotId,
-          ),
-        ]);
-      }
-
-      if (includeSuggestButton) {
-        buttons.push([
-          this.buildChannelDialogButton(
-            chatId,
-            'suggest',
-            threadId,
-            this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
-            dialogBotId,
-            suggestionEntryMode,
-          ),
-        ]);
-      }
+      const ctaButton = await this.channelPostSignatureService?.buildPostButton(chatId, {
+        entityType: 'channel',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+      });
+      const keyboard = buildChannelCommentCountKeyboard({
+        includeCommentsButton,
+        includeSuggestButton,
+        commentsButtonText: '💬 Комментарии',
+        suggestButtonText:
+          this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
+        suggestionEntryMode,
+        count,
+        ctaButton,
+        customButtonRows,
+        buildDialogButton: (type, text, entryMode) =>
+          (publisherOrigin
+            ? this.publisherDialogLinkService?.buildChannelDialogButton(
+                chatId,
+                type,
+                threadId,
+                text,
+                type === 'suggest' ? entryMode : 'MINIAPP',
+              )
+            : this.buildChannelDialogButton(
+                chatId,
+                type,
+                threadId,
+                text,
+                dialogBotId,
+                entryMode,
+              )) ?? null,
+      });
+      if (!keyboard) continue;
+      const { buttons, commentsButton: commentsButtonPosition } = keyboard;
 
       if (
         await this.publisherCommentKeyboardRouting.tryEnqueue({
@@ -17349,7 +17522,7 @@ export class AdminService implements OnModuleDestroy {
           null,
           {
             buttons,
-            appendNewInlineKeyboardRows: true,
+            ...(entityType === 'chat' ? { appendNewInlineKeyboardRows: true } : {}),
             mergeExistingInlineKeyboard: true,
           },
           { botId: resolvedBotId },
@@ -17357,7 +17530,7 @@ export class AdminService implements OnModuleDestroy {
       } else {
         await this.maxClient.editMessageInlineKeyboard(chatId, messageId, null, {
           buttons,
-          appendNewInlineKeyboardRows: true,
+          ...(entityType === 'chat' ? { appendNewInlineKeyboardRows: true } : {}),
           mergeExistingInlineKeyboard: true,
         });
       }

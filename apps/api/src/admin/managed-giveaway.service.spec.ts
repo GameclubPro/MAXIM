@@ -1490,6 +1490,62 @@ describe('ManagedGiveawayService', () => {
     });
   });
 
+  it('keeps the channel CTA before the results action on send and edit', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const signatureService = {
+      preparePostText: jest.fn(async (_chatId: string, payload: Record<string, unknown>) => ({
+        ...payload,
+        signatureApplied: false,
+      })),
+      buildPostButton: jest.fn().mockResolvedValue({
+        type: 'link',
+        text: '📞 Заказать рекламу',
+        url: 'https://ads.example/contact',
+      }),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      signatureService as never,
+    );
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'results-with-cta',
+      url: null,
+    });
+
+    await (service as any).republishGiveawayResults(giveaway);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[2]?.buttons).toEqual([
+      [expect.objectContaining({ text: '📞 Заказать рекламу' })],
+      [expect.objectContaining({ text: 'Проверить результаты' })],
+    ]);
+
+    maxClient.editMessageInlineKeyboard.mockResolvedValue(undefined);
+    await (service as any).republishGiveawayResults({
+      ...giveaway,
+      resultsMessageId: 'results-with-cta',
+    });
+    expect(maxClient.editMessageInlineKeyboard.mock.calls.at(-1)?.[3]?.buttons).toEqual([
+      [expect.objectContaining({ text: '📞 Заказать рекламу' })],
+      [expect.objectContaining({ text: 'Проверить результаты' })],
+    ]);
+  });
+
   it('stores and uses the persisted publication bot when publishing giveaway results', async () => {
     const prisma = createPrismaMock();
     const maxClient = createMaxClientMock();
@@ -2341,6 +2397,73 @@ describe('ManagedGiveawayService', () => {
       }),
       expectManagedGiveawaySendOptions(),
     );
+  });
+
+  it('keeps the channel CTA before giveaway actions on publish and every status refresh', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const signatureService = {
+      preparePostText: jest.fn(async (_chatId: string, payload: Record<string, unknown>) => ({
+        ...payload,
+        signatureApplied: false,
+      })),
+      buildPostButton: jest.fn().mockResolvedValue({
+        type: 'link',
+        text: '📞 Заказать рекламу',
+        url: 'https://ads.example/contact',
+      }),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      { getChannelSettings: jest.fn(), getSettings: jest.fn() } as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      signatureService as never,
+    );
+    const draft = createGiveaway({
+      status: ManagedGiveawayStatus.DRAFT,
+      description: 'Текст публикации',
+    });
+    const published = createGiveaway({
+      ...draft,
+      status: ManagedGiveawayStatus.ACTIVE,
+      publicationMessageId: 'publication-with-cta',
+      publishedAt: new Date('2026-03-21T12:30:00.000Z'),
+    });
+    prisma.managedGiveaway.findFirst.mockResolvedValueOnce(draft).mockResolvedValueOnce(null);
+    prisma.managedGiveaway.update.mockResolvedValue(published);
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'publication-with-cta',
+      url: null,
+    });
+
+    await service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[2]?.buttons).toEqual([
+      [expect.objectContaining({ text: '📞 Заказать рекламу' })],
+      [expect.objectContaining({ text: 'Участвовать · 0' })],
+    ]);
+
+    maxClient.editMessageInlineKeyboard.mockResolvedValue(undefined);
+    for (const status of [
+      ManagedGiveawayStatus.ACTIVE,
+      ManagedGiveawayStatus.CANCELED,
+      ManagedGiveawayStatus.COMPLETED,
+    ]) {
+      await (service as any).editGiveawayPublicationIfNeeded({ ...published, status }, status);
+      const options = maxClient.editMessageInlineKeyboard.mock.calls.at(-1)?.[3];
+      expect(options?.buttons).toEqual([
+        [expect.objectContaining({ text: '📞 Заказать рекламу' })],
+        [expect.objectContaining({ type: 'link' })],
+      ]);
+    }
   });
 
   it('uses the entry bot for giveaway mini app deep links and the source bot for publication', async () => {

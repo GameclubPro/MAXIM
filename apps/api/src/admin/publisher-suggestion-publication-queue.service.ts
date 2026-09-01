@@ -33,10 +33,17 @@ import {
   PUBLISHER_SUGGESTION_PUBLICATION_RETRY_POLICY,
   type PublisherSuggestionPublicationJob,
 } from './publisher-suggestion-publication.queue';
+import {
+  PUBLISHER_SUGGESTION_ADMISSION_RETENTION_MS,
+  PUBLISHER_SUGGESTION_PENDING_RETENTION_MS,
+} from './publisher-suggestion-submission-admission';
 
 const PUBLISHER_SUGGESTION_RECOVERY_PAGE_SIZE = 100;
 const PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES = 2;
 const PUBLISHER_SUGGESTION_LEGACY_MIGRATION_BATCH_SIZE = 25;
+const PUBLISHER_SUGGESTION_TERMINAL_IMAGE_CLEANUP_BATCH_SIZE = 250;
+const PUBLISHER_SUGGESTION_ADMISSION_CLEANUP_BATCH_SIZE = 100;
+const PUBLISHER_SUGGESTION_PENDING_CLEANUP_BATCH_SIZE = 100;
 
 type PublisherSuggestionRecoveryCursor = {
   createdAt: Date;
@@ -105,6 +112,104 @@ export function buildPublisherSuggestionRecoveryQuery(
     ) AS publisher_suggestion_recovery_candidates
     ORDER BY created_at ASC, id ASC
     LIMIT 100
+  `;
+}
+
+// FLAG: Publisher terminal status is persisted only after Publication owns durable copies of all
+// suggestion images. Keep this predicate terminal-only so retryable claims retain their source.
+export function buildPublisherSuggestionTerminalImageCleanupQuery(): Prisma.Sql {
+  return Prisma.sql`
+    WITH cleanup_candidates AS (
+      SELECT id
+      FROM (
+        (
+          SELECT asset.id, audit.created_at, audit.id AS audit_id, asset.position
+          FROM audit_logs audit
+          INNER JOIN channel_suggestion_image_assets asset
+            ON asset.audit_log_id = audit.id
+          WHERE audit.action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+            AND audit.payload->>'type' = 'suggest'
+            AND audit.payload->>'reviewStatus' = 'published'
+          ORDER BY audit.created_at ASC, audit.id ASC, asset.position ASC
+          LIMIT ${PUBLISHER_SUGGESTION_TERMINAL_IMAGE_CLEANUP_BATCH_SIZE}
+        )
+        UNION ALL
+        (
+          SELECT asset.id, audit.created_at, audit.id AS audit_id, asset.position
+          FROM audit_logs audit
+          INNER JOIN channel_suggestion_image_assets asset
+            ON asset.audit_log_id = audit.id
+          WHERE audit.action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+            AND audit.payload->>'type' = 'suggest'
+            AND audit.payload->>'reviewStatus' = 'drafted'
+          ORDER BY audit.created_at ASC, audit.id ASC, asset.position ASC
+          LIMIT ${PUBLISHER_SUGGESTION_TERMINAL_IMAGE_CLEANUP_BATCH_SIZE}
+        )
+        UNION ALL
+        (
+          SELECT asset.id, audit.created_at, audit.id AS audit_id, asset.position
+          FROM audit_logs audit
+          INNER JOIN channel_suggestion_image_assets asset
+            ON asset.audit_log_id = audit.id
+          WHERE audit.action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+            AND audit.payload->>'type' = 'suggest'
+            AND audit.payload->>'reviewStatus' = 'cancelled'
+          ORDER BY audit.created_at ASC, audit.id ASC, asset.position ASC
+          LIMIT ${PUBLISHER_SUGGESTION_TERMINAL_IMAGE_CLEANUP_BATCH_SIZE}
+        )
+      ) terminal_assets
+      ORDER BY created_at ASC, audit_id ASC, position ASC
+      LIMIT ${PUBLISHER_SUGGESTION_TERMINAL_IMAGE_CLEANUP_BATCH_SIZE}
+    )
+    DELETE FROM channel_suggestion_image_assets asset
+    USING cleanup_candidates candidate
+    WHERE asset.id = candidate.id
+  `;
+}
+
+export function buildPublisherSuggestionAdmissionCleanupQuery(cutoff: Date): Prisma.Sql {
+  return Prisma.sql`
+    WITH cleanup_candidates AS (
+      SELECT id
+      FROM audit_logs
+      WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION_ADMISSION'
+        AND created_at < ${cutoff}
+      ORDER BY created_at ASC, id ASC
+      LIMIT ${PUBLISHER_SUGGESTION_ADMISSION_CLEANUP_BATCH_SIZE}
+      FOR UPDATE SKIP LOCKED
+    )
+    DELETE FROM audit_logs audit
+    USING cleanup_candidates candidate
+    WHERE audit.id = candidate.id
+      AND audit.action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION_ADMISSION'
+      AND audit.created_at < ${cutoff}
+  `;
+}
+
+// FLAG: Unreviewed Publisher suggestions retain source media for 30 days. Never delete a row that
+// owns a review claim; publication recovery must resolve that claim before retention can apply.
+export function buildPublisherSuggestionPendingCleanupQuery(cutoff: Date): Prisma.Sql {
+  return Prisma.sql`
+    WITH cleanup_candidates AS (
+      SELECT id
+      FROM audit_logs
+      WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+        AND payload->>'type' = 'suggest'
+        AND payload->>'reviewStatus' = 'pending'
+        AND payload->>'reviewClaimToken' IS NULL
+        AND created_at < ${cutoff}
+      ORDER BY created_at ASC, id ASC
+      LIMIT ${PUBLISHER_SUGGESTION_PENDING_CLEANUP_BATCH_SIZE}
+      FOR UPDATE SKIP LOCKED
+    )
+    DELETE FROM audit_logs audit
+    USING cleanup_candidates candidate
+    WHERE audit.id = candidate.id
+      AND audit.action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+      AND audit.payload->>'type' = 'suggest'
+      AND audit.payload->>'reviewStatus' = 'pending'
+      AND audit.payload->>'reviewClaimToken' IS NULL
+      AND audit.created_at < ${cutoff}
   `;
 }
 
@@ -207,6 +312,7 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
 
   private async recoverExclusive(): Promise<void> {
     try {
+      await this.cleanupTerminalArtifacts();
       if (await this.dispatchHealth.isGloballyPaused()) {
         return;
       }
@@ -265,6 +371,40 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
         { err: error instanceof Error ? error.message : String(error) },
         'Failed to recover queued Publik suggestion publications',
       );
+    }
+  }
+
+  private async cleanupTerminalArtifacts(): Promise<void> {
+    const operations = [
+      {
+        name: 'terminal image assets',
+        query: buildPublisherSuggestionTerminalImageCleanupQuery(),
+      },
+      {
+        name: 'expired submission admissions',
+        query: buildPublisherSuggestionAdmissionCleanupQuery(
+          new Date(Date.now() - PUBLISHER_SUGGESTION_ADMISSION_RETENTION_MS),
+        ),
+      },
+      {
+        name: 'expired unreviewed suggestions',
+        query: buildPublisherSuggestionPendingCleanupQuery(
+          new Date(Date.now() - PUBLISHER_SUGGESTION_PENDING_RETENTION_MS),
+        ),
+      },
+    ];
+    for (const operation of operations) {
+      try {
+        await this.prisma.$executeRaw(operation.query);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            cleanup: operation.name,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed bounded Publisher suggestion artifact cleanup',
+        );
+      }
     }
   }
 

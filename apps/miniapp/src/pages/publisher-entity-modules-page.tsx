@@ -469,6 +469,26 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         ) : null}
 
         {entity.entityType === 'channel' ? (
+          <article className="publisher-entity-module is-settings">
+            <div className="publisher-entity-module__heading">
+              <span className="publisher-entity-module__icon is-comments" aria-hidden>
+                <ChatBubble />
+              </span>
+              <span className="publisher-entity-module__copy">
+                <strong>Комментарии</strong>
+                <small>Посты Публика</small>
+              </span>
+              <ModuleSwitch
+                checked={entity.moduleSettings.channelCommentsEnabled === true}
+                disabled={mutation.isPending}
+                label={`${entity.moduleSettings.channelCommentsEnabled ? 'Выключить' : 'Включить'} комментарии под постами Публика`}
+                onChange={(channelCommentsEnabled) => mutation.mutate({ channelCommentsEnabled })}
+              />
+            </div>
+          </article>
+        ) : null}
+
+        {entity.entityType === 'channel' ? (
           <section className="publisher-suggestions-module">
             <article className="publisher-entity-module">
               <span className="publisher-entity-module__icon is-suggestions" aria-hidden>

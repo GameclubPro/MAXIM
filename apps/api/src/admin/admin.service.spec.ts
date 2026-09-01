@@ -6487,7 +6487,6 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
-
   it('processes queued primary group permanent mute commands outside the webhook hot path', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -7319,7 +7318,6 @@ describe('AdminService.applyManualSystemBan', () => {
       }),
     );
   });
-
 
   it('processes queued local manual ban cleanup without running cross-chat fanout', async () => {
     const prisma = createPrismaMock();
@@ -29168,8 +29166,8 @@ describe('AdminService.sendChannelBroadcast', () => {
       'Пост с обсуждением',
       expect.objectContaining({
         buttons: [
-          [{ type: 'link', text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [{ type: 'link', text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
         ],
       }),
       expect.objectContaining({

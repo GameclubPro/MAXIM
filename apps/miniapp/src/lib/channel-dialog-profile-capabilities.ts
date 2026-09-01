@@ -3,6 +3,7 @@ import type { MiniappProfile } from '@maxim/contracts/publisher';
 export type ChannelDialogProfileCapabilities = {
   canManageCommentNotifications: boolean;
   canUploadCommentAttachments: boolean;
+  canUploadSuggestionImages: boolean;
 };
 
 export function resolveChannelDialogProfileCapabilities(
@@ -12,5 +13,6 @@ export function resolveChannelDialogProfileCapabilities(
   return {
     canManageCommentNotifications: majorRoutedControls,
     canUploadCommentAttachments: majorRoutedControls,
+    canUploadSuggestionImages: true,
   };
 }

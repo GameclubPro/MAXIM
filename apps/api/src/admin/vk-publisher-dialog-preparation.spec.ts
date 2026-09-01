@@ -46,7 +46,10 @@ describe('VK Publisher dialog preparation on api-action', () => {
     const contextService = new PublisherDialogContextService(
       {
         publisherEntitySettings: {
-          upsert: jest.fn().mockResolvedValue({ channelSuggestionsEnabled: true }),
+          upsert: jest.fn().mockResolvedValue({
+            channelCommentsEnabled: true,
+            channelSuggestionsEnabled: true,
+          }),
         },
       } as never,
       dialogLinks,
@@ -62,25 +65,51 @@ describe('VK Publisher dialog preparation on api-action', () => {
     expect(context.reference).toEqual(
       expect.objectContaining({
         entityType: 'channel',
-        includeCommentsButton: false,
+        includeCommentsButton: true,
         includeSuggestButton: true,
         dialogBotId: 'publisher-bot',
       }),
     );
-    const button = context.buttons[0]?.[0];
-    expect(button).toEqual(
+    const commentsButton = context.buttons[0]?.[0];
+    const suggestButton = context.buttons[1]?.[0];
+    expect(commentsButton).toEqual(
+      expect.objectContaining({
+        type: 'link',
+        url: expect.stringMatching(/^https:\/\/max\.ru\/publisher-bot\?startapp=/u),
+      }),
+    );
+    expect(suggestButton).toEqual(
       expect.objectContaining({
         type: 'link',
         url: expect.stringMatching(/^https:\/\/max\.ru\/publisher-bot\?startapp=/u),
       }),
     );
 
-    const startParam = new URL((button as { url: string }).url).searchParams.get('startapp')!;
-    const payload = JSON.parse(
-      Buffer.from(startParam.slice('cd-'.length), 'base64url').toString('utf8'),
+    const commentsStartParam = new URL((commentsButton as { url: string }).url).searchParams.get(
+      'startapp',
+    )!;
+    const commentsPayload = JSON.parse(
+      Buffer.from(commentsStartParam.slice('cd-'.length), 'base64url').toString('utf8'),
     ) as { t: string };
     expect(
-      dialogLinks.resolveChannelDialogThreadId('channel-publisher-only', 'suggest', payload.t),
+      dialogLinks.resolveChannelDialogThreadId(
+        'channel-publisher-only',
+        'comments',
+        commentsPayload.t,
+      ),
+    ).toBe(context.reference?.threadId);
+    const suggestStartParam = new URL((suggestButton as { url: string }).url).searchParams.get(
+      'startapp',
+    )!;
+    const suggestPayload = JSON.parse(
+      Buffer.from(suggestStartParam.slice('cd-'.length), 'base64url').toString('utf8'),
+    ) as { t: string };
+    expect(
+      dialogLinks.resolveChannelDialogThreadId(
+        'channel-publisher-only',
+        'suggest',
+        suggestPayload.t,
+      ),
     ).toBe(context.reference?.threadId);
   });
 });

@@ -2,6 +2,7 @@ import type {
   BroadcastImage,
   BroadcastLinkButton,
   BroadcastTextFormat,
+  ChannelPostSignatureSettings,
   ChannelOverview,
   ChatSummary,
   ManagedEntityType,
@@ -126,7 +127,9 @@ export type PublicationTarget = {
   avatarUrl: string | null;
   channelOverview: Pick<ChannelOverview, 'commentsEnabled' | 'postSuggestionsEnabled'> | null;
   publisherChatCommentsEnabled?: boolean;
+  publisherChannelCommentsEnabled?: boolean;
   publisherChannelSuggestionsEnabled?: boolean;
+  publisherChannelPostSignature?: ChannelPostSignatureSettings | null;
   readiness?: PublisherEntityReadiness | null;
 };
 
@@ -557,6 +560,8 @@ export function buildPublicationSystemButtons(
     PublicationTarget,
     | 'channelOverview'
     | 'entityType'
+    | 'publisherChannelCommentsEnabled'
+    | 'publisherChannelPostSignature'
     | 'publisherChannelSuggestionsEnabled'
     | 'publisherChatCommentsEnabled'
   >[],
@@ -565,7 +570,9 @@ export function buildPublicationSystemButtons(
     commentsEnabled: targets.some(
       (target) =>
         (target.entityType === 'chat' && target.publisherChatCommentsEnabled === true) ||
-        (target.entityType === 'channel' && target.channelOverview?.commentsEnabled),
+        (target.entityType === 'channel' &&
+          (target.publisherChannelCommentsEnabled === true ||
+            target.channelOverview?.commentsEnabled)),
     ),
     postSuggestionsEnabled: targets.some(
       (target) =>
@@ -573,6 +580,25 @@ export function buildPublicationSystemButtons(
         (target.publisherChannelSuggestionsEnabled === true ||
           target.channelOverview?.postSuggestionsEnabled),
     ),
+    postSuggestionsButtonText: targets.some(
+      (target) =>
+        target.entityType === 'channel' && target.publisherChannelSuggestionsEnabled === true,
+    )
+      ? '✍️ Предложить объявление'
+      : null,
+    ctaButtonEnabled: targets.some(
+      (target) =>
+        target.entityType === 'channel' &&
+        target.publisherChannelPostSignature?.enabled === true &&
+        target.publisherChannelPostSignature.presentation === 'button',
+    ),
+    ctaButtonText:
+      targets.find(
+        (target) =>
+          target.entityType === 'channel' &&
+          target.publisherChannelPostSignature?.enabled === true &&
+          target.publisherChannelPostSignature.presentation === 'button',
+      )?.publisherChannelPostSignature?.text ?? null,
   });
 }
 
@@ -594,13 +620,20 @@ export function hasSamePublicationTargetMetadata(
     left.channelOverview?.commentsEnabled === right.channelOverview?.commentsEnabled &&
     left.channelOverview?.postSuggestionsEnabled ===
       right.channelOverview?.postSuggestionsEnabled &&
-    Boolean(left.publisherChatCommentsEnabled) ===
-      Boolean(right.publisherChatCommentsEnabled) &&
+    Boolean(left.publisherChatCommentsEnabled) === Boolean(right.publisherChatCommentsEnabled) &&
+    Boolean(left.publisherChannelCommentsEnabled) ===
+      Boolean(right.publisherChannelCommentsEnabled) &&
     Boolean(left.publisherChannelSuggestionsEnabled) ===
       Boolean(right.publisherChannelSuggestionsEnabled) &&
+    left.publisherChannelPostSignature?.enabled === right.publisherChannelPostSignature?.enabled &&
+    left.publisherChannelPostSignature?.presentation ===
+      right.publisherChannelPostSignature?.presentation &&
+    left.publisherChannelPostSignature?.text === right.publisherChannelPostSignature?.text &&
+    left.publisherChannelPostSignature?.url === right.publisherChannelPostSignature?.url &&
     leftReadiness?.state === rightReadiness?.state &&
     leftReadiness?.canPublish === rightReadiness?.canPublish &&
     leftReadiness?.canUseChatComments === rightReadiness?.canUseChatComments &&
+    leftReadiness?.canUseChannelComments === rightReadiness?.canUseChannelComments &&
     leftReadiness?.canPublishSuggestions === rightReadiness?.canPublishSuggestions &&
     leftReadiness?.blockerCode === rightReadiness?.blockerCode &&
     leftReadiness?.checkedAt === rightReadiness?.checkedAt &&

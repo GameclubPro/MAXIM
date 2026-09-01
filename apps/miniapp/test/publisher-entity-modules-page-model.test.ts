@@ -122,6 +122,15 @@ test('publisher suggestions put actionable rows first and split history explicit
       publicationId: null,
     },
     {
+      id: 'drafted',
+      text: 'Drafted',
+      textFormat: 'plain' as const,
+      authorDisplayName: null,
+      createdAt: '2026-08-27T11:30:00.000Z',
+      reviewStatus: 'drafted' as const,
+      publicationId: 'publication-draft',
+    },
+    {
       id: 'cancelled',
       text: 'Cancelled',
       textFormat: 'plain' as const,
@@ -138,9 +147,9 @@ test('publisher suggestions put actionable rows first and split history explicit
   );
   assert.deepEqual(
     filterPublisherSuggestions(suggestions, 'history').map((suggestion) => suggestion.id),
-    ['published-new', 'cancelled'],
+    ['published-new', 'drafted', 'cancelled'],
   );
-  assert.deepEqual(countPublisherSuggestions(suggestions), { pending: 2, history: 2 });
+  assert.deepEqual(countPublisherSuggestions(suggestions), { pending: 2, history: 3 });
 });
 
 test('publisher suggestions progressively expose all one hundred returned rows', () => {
@@ -157,6 +166,7 @@ test('publisher suggestions progressively expose all one hundred returned rows',
 
 test('publisher suggestion labels describe the resulting action accurately', () => {
   assert.equal(getPublisherSuggestionStatusLabel('published'), 'Публикация создана');
-  assert.equal(getPublisherSuggestionStatusLabel('publishing'), 'Публикуется');
+  assert.equal(getPublisherSuggestionStatusLabel('publishing'), 'Готовится');
+  assert.equal(getPublisherSuggestionStatusLabel('drafted'), 'Черновик создан');
   assert.equal(getPublisherSuggestionStatusLabel('cancelled'), 'Отклонено');
 });

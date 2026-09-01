@@ -10,12 +10,17 @@ import {
 
 describe('publication execution recovery', () => {
   function createOptions(error: unknown) {
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      managedBroadcast: { updateMany: broadcastUpdateMany },
+      managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+    };
     return {
       context: {
         prisma: {
-          managedBroadcastDelivery: {
-            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-          },
+          ...tx,
+          $transaction: jest.fn(async (callback) => callback(tx)),
         },
         logger: { warn: jest.fn() },
       },
@@ -23,6 +28,7 @@ describe('publication execution recovery', () => {
       delivery: { id: 'delivery-1', targetChatId: 'chat-1' },
       reason: 'deadline' as const,
       occurrenceIndex: 1,
+      broadcastLockToken: 'broadcast-lock-1',
       deliveryLockToken: 'delivery-lock-1',
       error,
     };
@@ -73,48 +79,149 @@ describe('publication execution recovery', () => {
   });
 
   it('returns a deadline delivery to pending when capacity rejected it before dispatch', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:30.000Z'));
+    try {
+      const options = createOptions(
+        Object.assign(new Error('MAX API background rate limit exceeded'), {
+          code: 'MAX_API_INTERNAL_RATE_LIMIT',
+          managedBroadcastSendStarted: false,
+          retryAfterMs: 250,
+        }),
+      );
+
+      await expect(
+        deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
+      ).resolves.toEqual(new Date('2026-07-27T12:01:00.000Z'));
+      expect(options.context.prisma.managedBroadcast.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'broadcast-1',
+          publicationOccurrenceId: 'occurrence-1',
+          status: expect.any(String),
+          lockToken: 'broadcast-lock-1',
+        },
+        data: {
+          nextSendAt: new Date('2026-07-27T12:01:00.000Z'),
+          lockedAt: null,
+          lockToken: null,
+        },
+      });
+      expect(options.context.prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          id: 'delivery-1',
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          lockToken: 'delivery-lock-1',
+        }),
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          attemptCount: { decrement: 1 },
+          botId: null,
+          lockedAt: null,
+          lockToken: null,
+          lastError: null,
+        }),
+      });
+      expect(options.context.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ retryAt: '2026-07-27T12:01:00.000Z' }),
+        expect.any(String),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('honors a longer Retry-After on an exact external HTTP 429 rejection', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:30.000Z'));
+    try {
+      const options = createOptions(
+        Object.assign(new Error('Too many requests'), {
+          managedBroadcastSendStarted: true,
+          response: { status: 429, headers: { 'retry-after': '125' } },
+        }),
+      );
+
+      await expect(
+        deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
+      ).resolves.toEqual(new Date('2026-07-27T12:03:00.000Z'));
+      expect(options.context.prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            nextSendAt: new Date('2026-07-27T12:03:00.000Z'),
+            lockedAt: null,
+            lockToken: null,
+          }),
+        }),
+      );
+      expect(options.context.prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      label: 'internal limiter after dispatch started',
+      error: Object.assign(new Error('MAX API background rate limit exceeded'), {
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        managedBroadcastSendStarted: true,
+      }),
+      publicationOccurrenceId: 'occurrence-1',
+    },
+    {
+      label: 'message-only rate-limit error',
+      error: Object.assign(new Error('rate limit exceeded'), {
+        managedBroadcastSendStarted: false,
+      }),
+      publicationOccurrenceId: 'occurrence-1',
+    },
+    {
+      label: 'timeout before dispatch marker',
+      error: Object.assign(new Error('timeout'), {
+        code: 'ECONNABORTED',
+        managedBroadcastSendStarted: false,
+      }),
+      publicationOccurrenceId: 'occurrence-1',
+    },
+    {
+      label: 'HTTP 503',
+      error: Object.assign(new Error('service unavailable'), {
+        managedBroadcastSendStarted: true,
+        response: { status: 503 },
+      }),
+      publicationOccurrenceId: 'occurrence-1',
+    },
+    {
+      label: 'not a Publication envelope',
+      error: Object.assign(new Error('MAX API background rate limit exceeded'), {
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        managedBroadcastSendStarted: false,
+      }),
+      publicationOccurrenceId: null,
+    },
+  ])('does not defer $label', async ({ error, publicationOccurrenceId }) => {
+    const options = createOptions(error);
+    options.row.publicationOccurrenceId = publicationOccurrenceId;
+
+    await expect(
+      deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
+    ).resolves.toBeNull();
+    expect(options.context.prisma.$transaction).not.toHaveBeenCalled();
+    expect(options.context.prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not split the envelope and delivery updates when the broadcast lease was lost', async () => {
     const options = createOptions(
       Object.assign(new Error('MAX API background rate limit exceeded'), {
         code: 'MAX_API_INTERNAL_RATE_LIMIT',
         managedBroadcastSendStarted: false,
       }),
     );
+    options.context.prisma.managedBroadcast.updateMany.mockResolvedValue({ count: 0 });
 
-    await expect(deferPublicationDeliveryAfterPreDispatchThrottle(options as never)).resolves.toBe(
-      true,
-    );
-    expect(options.context.prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith({
-      where: expect.objectContaining({
-        id: 'delivery-1',
-        status: ManagedBroadcastDeliveryStatus.SENDING,
-        lockToken: 'delivery-lock-1',
-      }),
-      data: expect.objectContaining({
-        status: ManagedBroadcastDeliveryStatus.PENDING,
-        attemptCount: { decrement: 1 },
-        botId: null,
-        lockedAt: null,
-        lockToken: null,
-        lastError: null,
-      }),
-    });
-  });
-
-  it.each([
-    { label: 'dispatch started', marker: true, publicationOccurrenceId: 'occurrence-1' },
-    { label: 'not a Publication envelope', marker: false, publicationOccurrenceId: null },
-  ])('does not defer when $label', async ({ marker, publicationOccurrenceId }) => {
-    const options = createOptions(
-      Object.assign(new Error('MAX API background rate limit exceeded'), {
-        managedBroadcastSendStarted: marker,
-      }),
-    );
-    options.row.publicationOccurrenceId = publicationOccurrenceId;
-
-    await expect(deferPublicationDeliveryAfterPreDispatchThrottle(options as never)).resolves.toBe(
-      false,
-    );
+    await expect(
+      deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
+    ).resolves.toBeNull();
     expect(options.context.prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    expect(options.context.logger.warn).not.toHaveBeenCalled();
   });
 
   it('returns a quarantined route to pending and serializes its next recovery slot', async () => {

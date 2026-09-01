@@ -38,6 +38,7 @@ export type ChannelSuggestionPublicationContextV1 = {
   buttons: MaxMessageButton[][];
   includeCommentsButton: boolean;
   includeSuggestButton: boolean;
+  includeCtaButton?: boolean;
   suggestButtonText: string | null;
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
   authorAttribution: ChannelSuggestionAuthorAttribution;
@@ -183,10 +184,14 @@ export function readChannelSuggestionPublicationContextV1(
   }
   const threadId = readNullableString(raw.threadId);
   const suggestButtonText = readNullableString(raw.suggestButtonText);
-  const expectedButtonRows = Number(raw.includeCommentsButton) + Number(raw.includeSuggestButton);
+  const includeCtaButton = raw.includeCtaButton === true;
+  const hasThreadActions = raw.includeCommentsButton === true || raw.includeSuggestButton === true;
+  const expectedButtonRows =
+    Number(raw.includeCommentsButton) + Number(raw.includeSuggestButton) + Number(includeCtaButton);
   if (
-    (expectedButtonRows > 0 && (!threadId || buttons.length !== expectedButtonRows)) ||
-    (expectedButtonRows === 0 && (threadId !== null || buttons.length !== 0)) ||
+    (hasThreadActions && !threadId) ||
+    (!hasThreadActions && threadId !== null) ||
+    buttons.length !== expectedButtonRows ||
     (raw.includeSuggestButton === true && !suggestButtonText) ||
     (raw.includeSuggestButton === false && suggestButtonText !== null)
   ) {
@@ -203,6 +208,7 @@ export function readChannelSuggestionPublicationContextV1(
     buttons,
     includeCommentsButton: raw.includeCommentsButton,
     includeSuggestButton: raw.includeSuggestButton,
+    ...(includeCtaButton ? { includeCtaButton: true } : {}),
     suggestButtonText,
     suggestionEntryMode,
     authorAttribution: {
@@ -241,6 +247,7 @@ export function buildChannelSuggestionPublicationContextDigest(
     buttons: context.buttons,
     includeCommentsButton: context.includeCommentsButton,
     includeSuggestButton: context.includeSuggestButton,
+    ...(context.includeCtaButton ? { includeCtaButton: true } : {}),
     suggestButtonText: context.suggestButtonText,
     suggestionEntryMode: context.suggestionEntryMode,
     authorAttribution: {

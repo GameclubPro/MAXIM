@@ -1926,6 +1926,10 @@ export class VkPublishService {
       botId: params.dispatchBotId,
       dialogBotId: params.context.dialogBotId,
       ...(reference.customButtons.length > 0 ? { customButtons: reference.customButtons } : {}),
+      ...(reference.buttonRows ? { buttonRows: reference.buttonRows } : {}),
+      ...(reference.commentsButton !== undefined
+        ? { commentsButton: reference.commentsButton }
+        : {}),
     };
     const payload =
       reference.entityType === 'channel'

@@ -1,7 +1,7 @@
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
+import { channelPostSignatureSettingsSchema } from '@maxim/contracts/channel-post-signature';
 import { publisherEntityReadinessSchema } from '@maxim/contracts/publisher';
 import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
-import { getInitDataUserId } from '../../lib/init-data';
 import {
   createEmptyPublicationDraft,
   getPublicationTargetTitle,
@@ -10,18 +10,55 @@ import {
   PublicationTimingMode,
 } from './publication-model';
 
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 3;
+const LEGACY_STORAGE_VERSIONS = new Set([1, 2]);
 const STORAGE_KEY_PREFIX = 'maxim:publications-composer:v1';
 const LEGACY_STORAGE_KEY = STORAGE_KEY_PREFIX;
 const ANONYMOUS_STORAGE_SCOPE = 'anonymous';
 const DB_NAME = 'maxim-publications-composer';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'drafts';
+const MEDIA_STORE_NAME = 'media';
+const MAX_FUTURE_SAVED_AT_SKEW_MS = 5 * 60_000;
+
+export const PUBLICATION_DRAFT_TTL_MS = 14 * 24 * 60 * 60_000;
 
 type DraftEnvelope = {
-  version: 1;
+  version: 3;
   savedAt: string;
   draft: PublicationDraft;
+  hasImages: boolean;
+  imageCount: number;
+};
+
+type DraftMediaEnvelope = {
+  version: 1;
+  images: BroadcastImage[];
+};
+
+type DraftMediaCacheEntry = {
+  images: readonly BroadcastImage[];
+  stored: boolean;
+};
+
+const draftMediaCache = new Map<string, DraftMediaCacheEntry>();
+const draftStorageQueues = new Map<string, Promise<void>>();
+
+export type PublicationDraftLoadState = {
+  draft: PublicationDraft | null;
+  imagesNeedReselection: boolean;
+  savedAt: string | null;
+  source: 'indexed' | 'local' | null;
+};
+
+type PublicationDraftCandidate = Exclude<PublicationDraftLoadState, { draft: null }> & {
+  draft: PublicationDraft;
+  savedAtMs: number;
+};
+
+export type PublicationDraftLoadResolution = PublicationDraftLoadState & {
+  discardIndexed: boolean;
+  discardLocal: boolean;
 };
 
 export function preparePublicationDraftForPersistence(draft: PublicationDraft): PublicationDraft {
@@ -36,11 +73,30 @@ export function preparePublicationDraftForPersistence(draft: PublicationDraft): 
   };
 }
 
+export function preparePublicationDraftForIndexedPersistence(draft: PublicationDraft): {
+  draft: PublicationDraft;
+  images: readonly BroadcastImage[];
+  hasImages: boolean;
+} {
+  const persistedDraft = preparePublicationDraftForPersistence(draft);
+  return {
+    draft: { ...persistedDraft, images: [] },
+    images: persistedDraft.images,
+    hasImages: persistedDraft.images.length > 0,
+  };
+}
+
 export function buildPublicationDraftStorageKey(userId?: string | null): string {
-  const resolvedUserId =
-    userId === undefined && typeof window !== 'undefined' ? getInitDataUserId() : userId;
-  const scope = resolvedUserId?.trim() || ANONYMOUS_STORAGE_SCOPE;
+  const scope = userId?.trim() || ANONYMOUS_STORAGE_SCOPE;
   return `${STORAGE_KEY_PREFIX}:${encodeURIComponent(scope)}`;
+}
+
+function requirePublicationDraftUserId(userId: string): string {
+  const normalized = userId.trim();
+  if (!normalized) {
+    throw new Error('Publication draft persistence requires an authenticated user.');
+  }
+  return normalized;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -71,6 +127,13 @@ function readPublisherReadiness(value: unknown): PublicationTarget['readiness'] 
   return parsed.success ? parsed.data : null;
 }
 
+function readPublisherChannelPostSignature(
+  value: unknown,
+): PublicationTarget['publisherChannelPostSignature'] {
+  const parsed = channelPostSignatureSettingsSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 function readTargets(value: unknown): PublicationTarget[] {
   if (!Array.isArray(value)) {
     return [];
@@ -95,8 +158,14 @@ function readTargets(value: unknown): PublicationTarget[] {
           entityType === 'channel' ? readChannelOverview(item.channelOverview) : null,
         publisherChatCommentsEnabled:
           entityType === 'chat' && item.publisherChatCommentsEnabled === true,
+        publisherChannelCommentsEnabled:
+          entityType === 'channel' && item.publisherChannelCommentsEnabled === true,
         publisherChannelSuggestionsEnabled:
           entityType === 'channel' && item.publisherChannelSuggestionsEnabled === true,
+        publisherChannelPostSignature:
+          entityType === 'channel'
+            ? readPublisherChannelPostSignature(item.publisherChannelPostSignature)
+            : null,
         readiness: readPublisherReadiness(item.readiness),
       },
     ];
@@ -160,7 +229,12 @@ function readRecurrence(value: unknown): PublicationDraft['recurrence'] {
 }
 
 export function parsePublicationDraftEnvelope(value: unknown): PublicationDraft | null {
-  if (!isObject(value) || value.version !== STORAGE_VERSION || !isObject(value.draft)) {
+  if (
+    !isObject(value) ||
+    (value.version !== STORAGE_VERSION &&
+      !(typeof value.version === 'number' && LEGACY_STORAGE_VERSIONS.has(value.version))) ||
+    !isObject(value.draft)
+  ) {
     return null;
   }
   const draft = value.draft;
@@ -218,114 +292,375 @@ function openDraftDb(): Promise<IDBDatabase | null> {
     return Promise.resolve(null);
   }
   return new Promise((resolve) => {
-    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    let request: IDBOpenDBRequest;
+    try {
+      request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    } catch {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) {
+        db?.close();
+        return;
+      }
+      settled = true;
+      resolve(db);
+    };
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
         request.result.createObjectStore(STORE_NAME);
       }
+      if (!request.result.objectStoreNames.contains(MEDIA_STORE_NAME)) {
+        request.result.createObjectStore(MEDIA_STORE_NAME);
+      }
     };
-    request.onerror = () => resolve(null);
-    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => finish(null);
+    request.onblocked = () => finish(null);
+    request.onsuccess = () => finish(request.result);
   });
 }
 
-async function readIndexedDraft(storageKey: string): Promise<PublicationDraft | null> {
+async function readIndexedState(
+  storageKey: string,
+): Promise<{ envelope: unknown; mediaEnvelope: unknown }> {
   const db = await openDraftDb();
   if (!db) {
-    return null;
+    return { envelope: null, mediaEnvelope: null };
   }
-  return new Promise((resolve) => {
-    const transaction = db.transaction(STORE_NAME, 'readonly');
-    const request = transaction.objectStore(STORE_NAME).get(storageKey);
-    request.onerror = () => resolve(null);
-    request.onsuccess = () => resolve(parsePublicationDraftEnvelope(request.result));
-    transaction.oncomplete = () => db.close();
-    transaction.onerror = () => db.close();
-  });
+  try {
+    return await new Promise((resolve) => {
+      const transaction = db.transaction([STORE_NAME, MEDIA_STORE_NAME], 'readonly');
+      const draftRequest = transaction.objectStore(STORE_NAME).get(storageKey);
+      const mediaRequest = transaction.objectStore(MEDIA_STORE_NAME).get(storageKey);
+      let envelope: unknown = null;
+      let mediaEnvelope: unknown = null;
+      draftRequest.onsuccess = () => {
+        envelope = draftRequest.result;
+      };
+      mediaRequest.onsuccess = () => {
+        mediaEnvelope = mediaRequest.result;
+      };
+      const finish = () => {
+        db.close();
+        resolve({ envelope, mediaEnvelope });
+      };
+      transaction.oncomplete = finish;
+      transaction.onerror = finish;
+      transaction.onabort = finish;
+    });
+  } catch {
+    db.close();
+    return { envelope: null, mediaEnvelope: null };
+  }
 }
 
-async function writeIndexedDraft(
+function readDraftMediaEnvelope(value: unknown): BroadcastImage[] {
+  if (!isObject(value) || value.version !== 1) {
+    return [];
+  }
+  return readImages(value.images);
+}
+
+function readEnvelopeCandidate(params: {
+  envelope: unknown;
+  mediaEnvelope?: unknown;
+  source: 'indexed' | 'local';
+  nowMs: number;
+}): { candidate: PublicationDraftCandidate | null; discard: boolean } {
+  if (params.envelope === null || params.envelope === undefined) {
+    return { candidate: null, discard: false };
+  }
+  if (!isObject(params.envelope)) {
+    return { candidate: null, discard: true };
+  }
+
+  const draft = parsePublicationDraftEnvelope(params.envelope);
+  const savedAt = readString(params.envelope.savedAt);
+  const savedAtMs = Date.parse(savedAt);
+  if (
+    !draft ||
+    !Number.isFinite(savedAtMs) ||
+    savedAtMs > params.nowMs + MAX_FUTURE_SAVED_AT_SKEW_MS ||
+    params.nowMs - savedAtMs > PUBLICATION_DRAFT_TTL_MS
+  ) {
+    return { candidate: null, discard: true };
+  }
+
+  const usesSeparateMedia = params.envelope.version === 2 || params.envelope.version === 3;
+  let images = draft.images;
+  let imagesNeedReselection = false;
+  if (usesSeparateMedia) {
+    const declaredImageCount =
+      typeof params.envelope.imageCount === 'number' &&
+      Number.isInteger(params.envelope.imageCount) &&
+      params.envelope.imageCount >= 0
+        ? params.envelope.imageCount
+        : null;
+    const hasImages = params.envelope.hasImages === true || (declaredImageCount ?? 0) > 0;
+    images =
+      params.source === 'indexed' && hasImages ? readDraftMediaEnvelope(params.mediaEnvelope) : [];
+    imagesNeedReselection =
+      hasImages &&
+      (images.length === 0 ||
+        (declaredImageCount !== null && images.length !== declaredImageCount));
+    if (imagesNeedReselection) {
+      images = [];
+    }
+  }
+
+  return {
+    candidate: {
+      draft: { ...draft, images },
+      imagesNeedReselection,
+      savedAt,
+      savedAtMs,
+      source: params.source,
+    },
+    discard: false,
+  };
+}
+
+export function resolvePublicationDraftLoadState(params: {
+  indexedEnvelope: unknown;
+  indexedMediaEnvelope?: unknown;
+  localEnvelope: unknown;
+  nowMs?: number;
+}): PublicationDraftLoadResolution {
+  const nowMs = params.nowMs ?? Date.now();
+  const indexed = readEnvelopeCandidate({
+    envelope: params.indexedEnvelope,
+    mediaEnvelope: params.indexedMediaEnvelope,
+    source: 'indexed',
+    nowMs,
+  });
+  const local = readEnvelopeCandidate({
+    envelope: params.localEnvelope,
+    source: 'local',
+    nowMs,
+  });
+  const candidates = [indexed.candidate, local.candidate].filter(
+    (candidate): candidate is PublicationDraftCandidate => candidate !== null,
+  );
+  candidates.sort((left, right) => {
+    const savedAtDiff = right.savedAtMs - left.savedAtMs;
+    if (savedAtDiff !== 0) {
+      return savedAtDiff;
+    }
+    if (left.imagesNeedReselection !== right.imagesNeedReselection) {
+      return Number(left.imagesNeedReselection) - Number(right.imagesNeedReselection);
+    }
+    return left.source === 'indexed' ? -1 : 1;
+  });
+  const selected = candidates[0] ?? null;
+
+  return {
+    draft: selected?.draft ?? null,
+    imagesNeedReselection: selected?.imagesNeedReselection ?? false,
+    savedAt: selected?.savedAt ?? null,
+    source: selected?.source ?? null,
+    discardIndexed:
+      indexed.discard ||
+      Boolean(
+        selected?.source === 'local' &&
+        indexed.candidate &&
+        indexed.candidate.savedAtMs < selected.savedAtMs,
+      ),
+    discardLocal:
+      local.discard ||
+      Boolean(
+        selected?.source === 'indexed' &&
+        local.candidate &&
+        local.candidate.savedAtMs < selected.savedAtMs,
+      ),
+  };
+}
+
+async function writeIndexedState(
   storageKey: string,
   envelope: DraftEnvelope | null,
-): Promise<void> {
+  mediaUpdate?: readonly BroadcastImage[] | null,
+): Promise<boolean> {
   const db = await openDraftDb();
   if (!db) {
-    return;
+    return false;
   }
-  await new Promise<void>((resolve) => {
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    if (envelope) {
-      store.put(envelope, storageKey);
-    } else {
-      store.delete(storageKey);
-    }
-    transaction.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      db.close();
-      resolve();
-    };
-  });
-}
-
-async function clearLegacyPublicationDraft(): Promise<void> {
-  await writeIndexedDraft(LEGACY_STORAGE_KEY, null);
   try {
-    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    return await new Promise<boolean>((resolve) => {
+      const transaction = db.transaction([STORE_NAME, MEDIA_STORE_NAME], 'readwrite');
+      const draftStore = transaction.objectStore(STORE_NAME);
+      const mediaStore = transaction.objectStore(MEDIA_STORE_NAME);
+      let settled = false;
+      const finish = (success: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        db.close();
+        resolve(success);
+      };
+
+      if (envelope) {
+        draftStore.put(envelope, storageKey);
+      } else {
+        draftStore.delete(storageKey);
+        mediaStore.delete(storageKey);
+      }
+      if (envelope && mediaUpdate !== undefined) {
+        if (mediaUpdate && mediaUpdate.length > 0) {
+          const mediaEnvelope: DraftMediaEnvelope = {
+            version: 1,
+            images: [...mediaUpdate],
+          };
+          mediaStore.put(mediaEnvelope, storageKey);
+        } else {
+          mediaStore.delete(storageKey);
+        }
+      }
+      transaction.oncomplete = () => finish(true);
+      transaction.onerror = () => finish(false);
+      transaction.onabort = () => finish(false);
+    });
   } catch {
-    // Storage can be unavailable inside a WebView.
+    db.close();
+    return false;
   }
 }
 
-export async function loadPublicationDraft(): Promise<PublicationDraft | null> {
-  const storageKey = buildPublicationDraftStorageKey();
-  await clearLegacyPublicationDraft();
-  const indexedDraft = await readIndexedDraft(storageKey);
-  if (indexedDraft) {
-    return indexedDraft;
-  }
+function enqueueDraftStorageMutation(
+  storageKey: string,
+  mutation: () => Promise<void>,
+): Promise<void> {
+  const previous = draftStorageQueues.get(storageKey) ?? Promise.resolve();
+  const queued = previous.then(mutation, mutation);
+  draftStorageQueues.set(storageKey, queued);
+  const clearQueue = () => {
+    if (draftStorageQueues.get(storageKey) === queued) {
+      draftStorageQueues.delete(storageKey);
+    }
+  };
+  void queued.then(clearQueue, clearQueue);
+  return queued;
+}
+
+function readLocalEnvelope(storageKey: string): unknown {
   try {
     const value = window.localStorage.getItem(storageKey);
-    return value ? parsePublicationDraftEnvelope(JSON.parse(value)) : null;
+    return value ? JSON.parse(value) : null;
   } catch {
     return null;
   }
 }
 
-export async function savePublicationDraft(draft: PublicationDraft): Promise<void> {
-  const storageKey = buildPublicationDraftStorageKey();
-  const persistedDraft = preparePublicationDraftForPersistence(draft);
-  const envelope: DraftEnvelope = {
-    version: STORAGE_VERSION,
-    savedAt: new Date().toISOString(),
-    draft: persistedDraft,
-  };
-  await clearLegacyPublicationDraft();
-  await writeIndexedDraft(storageKey, envelope);
+function writeLocalEnvelope(storageKey: string, envelope: DraftEnvelope): void {
   try {
-    const localDraft = {
-      ...persistedDraft,
-      images: [],
-      mediaPayload: null,
-      mediaBase64: '',
-      retainedAssets: [],
-    };
-    window.localStorage.setItem(storageKey, JSON.stringify({ ...envelope, draft: localDraft }));
+    window.localStorage.setItem(storageKey, JSON.stringify(envelope));
   } catch {
     // IndexedDB remains the primary storage in quota-limited WebViews.
   }
 }
 
-export async function clearPublicationDraft(): Promise<void> {
-  const storageKey = buildPublicationDraftStorageKey();
-  await clearLegacyPublicationDraft();
-  await writeIndexedDraft(storageKey, null);
+function removeLocalEnvelope(storageKey: string): void {
   try {
     window.localStorage.removeItem(storageKey);
   } catch {
     // Storage can be unavailable inside a WebView.
   }
+}
+
+async function clearUnscopedPublicationDrafts(): Promise<void> {
+  const anonymousStorageKey = buildPublicationDraftStorageKey(null);
+  removeLocalEnvelope(LEGACY_STORAGE_KEY);
+  removeLocalEnvelope(anonymousStorageKey);
+  await Promise.all([
+    writeIndexedState(LEGACY_STORAGE_KEY, null),
+    writeIndexedState(anonymousStorageKey, null),
+  ]);
+  draftMediaCache.delete(LEGACY_STORAGE_KEY);
+  draftMediaCache.delete(anonymousStorageKey);
+}
+
+export async function loadPublicationDraft(userId: string): Promise<PublicationDraftLoadState> {
+  const storageKey = buildPublicationDraftStorageKey(requirePublicationDraftUserId(userId));
+  await draftStorageQueues.get(storageKey);
+  await clearUnscopedPublicationDrafts();
+  const [indexedState, localEnvelope] = await Promise.all([
+    readIndexedState(storageKey),
+    Promise.resolve(readLocalEnvelope(storageKey)),
+  ]);
+  const resolved = resolvePublicationDraftLoadState({
+    indexedEnvelope: indexedState.envelope,
+    indexedMediaEnvelope: indexedState.mediaEnvelope,
+    localEnvelope,
+  });
+
+  if (resolved.discardIndexed) {
+    await writeIndexedState(storageKey, null);
+  }
+  if (resolved.discardLocal) {
+    removeLocalEnvelope(storageKey);
+  }
+  if (resolved.source === 'indexed' && resolved.draft && !resolved.imagesNeedReselection) {
+    draftMediaCache.set(storageKey, { images: resolved.draft.images, stored: true });
+  } else {
+    draftMediaCache.delete(storageKey);
+  }
+
+  return {
+    draft: resolved.draft,
+    imagesNeedReselection: resolved.imagesNeedReselection,
+    savedAt: resolved.savedAt,
+    source: resolved.source,
+  };
+}
+
+export async function savePublicationDraft(
+  draft: PublicationDraft,
+  userId: string,
+  options: { imagesNeedReselection?: boolean; nowMs?: number } = {},
+): Promise<void> {
+  const storageKey = buildPublicationDraftStorageKey(requirePublicationDraftUserId(userId));
+  const persisted = preparePublicationDraftForIndexedPersistence(draft);
+  const imagesNeedReselection = options.imagesNeedReselection === true;
+  const hasImages = persisted.hasImages || imagesNeedReselection;
+  const envelope: DraftEnvelope = {
+    version: STORAGE_VERSION,
+    savedAt: new Date(options.nowMs ?? Date.now()).toISOString(),
+    draft: persisted.draft,
+    hasImages,
+    imageCount: persisted.images.length || (imagesNeedReselection ? 1 : 0),
+  };
+  writeLocalEnvelope(storageKey, envelope);
+
+  await enqueueDraftStorageMutation(storageKey, async () => {
+    const cachedMedia = draftMediaCache.get(storageKey);
+    const mediaChanged =
+      imagesNeedReselection || !cachedMedia?.stored || cachedMedia.images !== persisted.images;
+    const indexedWriteSucceeded = await writeIndexedState(
+      storageKey,
+      envelope,
+      mediaChanged ? persisted.images : undefined,
+    );
+    if (indexedWriteSucceeded) {
+      draftMediaCache.set(storageKey, { images: persisted.images, stored: true });
+    }
+    if (!indexedWriteSucceeded) {
+      draftMediaCache.delete(storageKey);
+    }
+  });
+}
+
+export async function clearPublicationDraft(userId: string): Promise<void> {
+  const storageKey = buildPublicationDraftStorageKey(requirePublicationDraftUserId(userId));
+  removeLocalEnvelope(storageKey);
+  await enqueueDraftStorageMutation(storageKey, async () => {
+    await writeIndexedState(storageKey, null);
+    draftMediaCache.delete(storageKey);
+  });
+}
+
+export async function flushPublicationDraftStorage(userId: string): Promise<void> {
+  const storageKey = buildPublicationDraftStorageKey(requirePublicationDraftUserId(userId));
+  await draftStorageQueues.get(storageKey);
 }

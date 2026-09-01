@@ -188,6 +188,7 @@ describe('ChannelDialogService reactions', () => {
     expect(legacyAdminService.toggleEntityDialogReactionForDialog).toHaveBeenCalledWith({
       chatId: 'channel-1',
       entityType: 'channel',
+      dialogProfile: 'moderation',
       userId: 'admin-1',
       dialogType: 'comments',
       messageId: 'message-1',
