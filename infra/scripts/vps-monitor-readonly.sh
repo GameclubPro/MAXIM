@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Trap handlers and run_step callbacks are referenced indirectly.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 set -euo pipefail
 umask 077
 
