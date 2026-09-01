@@ -193,6 +193,10 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   },
   {
     method: 'POST',
+    pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}/targets/refresh$`),
+  },
+  {
+    method: 'POST',
     pattern: new RegExp(
       `^/publications/${ENTITY_ID_SEGMENT}/occurrences/${ENTITY_ID_SEGMENT}/(retry|resolve-ambiguous)$`,
     ),

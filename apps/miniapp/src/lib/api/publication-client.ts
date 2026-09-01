@@ -10,6 +10,7 @@ import {
   publicationCalendarAvailabilityRequestSchema,
   publicationCalendarAvailabilityResponseSchema,
   publicationDetailsSchema,
+  publicationTargetsRefreshResponseSchema,
   retryPublicationOccurrenceRequestSchema,
   resolvePublicationAmbiguousDeliveryRequestSchema,
   testPublicationRequestSchema,
@@ -25,6 +26,7 @@ import {
   type PublicationCalendarAvailabilityRequest,
   type PublicationCalendarAvailabilityResponse,
   type PublicationDetails,
+  type PublicationTargetsRefreshResponse,
   type RetryPublicationOccurrenceRequest,
   type ResolvePublicationAmbiguousDeliveryRequest,
   type TestPublicationRequest,
@@ -121,6 +123,17 @@ export async function getPublication(
     () => api.request(`/publications/${encodeURIComponent(publicationId)}`),
     (response) => publicationDetailsSchema.parse(response),
   );
+}
+
+export async function refreshPublicationTargets(
+  api: ApiTransport,
+  publicationId: string,
+): Promise<PublicationTargetsRefreshResponse> {
+  const response = await api.request(
+    `/publications/${encodeURIComponent(publicationId)}/targets/refresh`,
+    { method: 'POST' },
+  );
+  return publicationTargetsRefreshResponseSchema.parse(response);
 }
 
 export async function createPublication(

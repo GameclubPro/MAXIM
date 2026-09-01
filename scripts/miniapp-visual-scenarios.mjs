@@ -49,6 +49,7 @@ const FEATURE_SOURCE_GLOBS = {
   publications: [
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/features/publications/publication-buttons-sheet.*',
+    'apps/miniapp/src/features/publications/publication-details-sheet.*',
     'apps/miniapp/src/features/publications/publication-import-buttons-notice.*',
     'apps/miniapp/src/features/publications/publication-target-picker.*',
     'apps/miniapp/src/features/publications/publication-video-tool.*',
@@ -511,6 +512,10 @@ const baseScenarios = [
   ...defineRouteScenarios('publications', [
     'publications',
     ['publications-publisher', { searchParams: { profile: 'publisher' }, features: ['publisher'] }],
+    [
+      'publications-publisher-access-required',
+      { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },
+    ],
     [
       'publications-publisher-create',
       {

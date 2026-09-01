@@ -12,7 +12,10 @@ import {
   filterFuturePublicationSlots,
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
+  getPublicationDetailsPollingInterval,
+  getPublicationDispatchIssuePresentation,
   getPublicationExplicitSlotsLimitFeedback,
+  getPublicationFeedStatusLabel,
   getPublicationListPollingInterval,
   getPublicationPrimaryActionLabel,
   getPublicationRecurrenceIntervalNotice,
@@ -31,10 +34,13 @@ import {
   normalizePublicationView,
   publicationDraftNeedsVideoReselection,
   rebasePublicationDraft,
+  resolvePublicationDetailsDispatchIssue,
   shouldReviewPublicationScheduleConflict,
+  shouldPollPublicationDeliveries,
   shouldPersistPublicationDraft,
   toPublicationTarget,
 } from '../src/features/publications/publication-model';
+import { getLifecycleTone } from '../src/features/publications/publication-page-formatters';
 import {
   buildPublicationDraftStorageKey,
   parsePublicationDraftEnvelope,
@@ -130,6 +136,54 @@ test('labels publisher actions from validation and timing state', () => {
       timingMode: 'schedule',
     }),
     'Сохранить расписание',
+  );
+});
+
+test('presents deferred publisher access without internal blocker copy', () => {
+  assert.deepEqual(getPublicationDispatchIssuePresentation('actor_access_required'), {
+    canRecheck: true,
+    description: 'Проверьте права администратора.',
+    label: 'Ожидает доступа',
+    title: 'Нужен доступ',
+  });
+  assert.deepEqual(getPublicationDispatchIssuePresentation('temporarily_unavailable'), {
+    canRecheck: false,
+    description: 'Повторим автоматически.',
+    label: 'Ожидает отправки',
+    title: 'Отправка временно приостановлена',
+  });
+  assert.deepEqual(getPublicationDispatchIssuePresentation('target_setup_required'), {
+    canRecheck: true,
+    description: 'Проверьте подключение Публика.',
+    label: 'Нужна настройка',
+    title: 'Нужна настройка',
+  });
+
+  const publication = {
+    lifecycle: 'ACTIVE',
+    dispatchIssue: 'actor_access_required',
+    delivery: { total: 1, pending: 1, sent: 0, failed: 0, ambiguous: 0, canceled: 0 },
+  } as Parameters<typeof getPublicationFeedStatusLabel>[0];
+  assert.equal(getPublicationFeedStatusLabel(publication), 'Ожидает доступа');
+  assert.equal(
+    getPublicationFeedStatusLabel({ ...publication, lifecycle: 'CANCELED' }),
+    'Отменено',
+  );
+  assert.equal(getLifecycleTone({ ...publication, lifecycle: 'CANCELED' }), 'muted');
+  assert.equal(getPublicationFeedStatusLabel({ ...publication, lifecycle: 'PAUSED' }), 'Пауза');
+  assert.equal(getPublicationDispatchIssuePresentation(null), null);
+  assert.equal(
+    resolvePublicationDetailsDispatchIssue(
+      { dispatchIssue: null },
+      { dispatchIssue: 'actor_access_required' },
+    ),
+    null,
+  );
+  assert.equal(
+    resolvePublicationDetailsDispatchIssue(undefined, {
+      dispatchIssue: 'actor_access_required',
+    }),
+    'actor_access_required',
   );
 });
 
@@ -396,6 +450,42 @@ test('polls publication lists only while delivery or an active schedule can chan
   assert.equal(getPublicationListPollingInterval('history', [activeSchedule], nowMs), false);
   assert.equal(
     getPublicationListPollingInterval(
+      'current',
+      [{ ...activeSchedule, dispatchIssue: 'actor_access_required' }],
+      nowMs,
+    ),
+    30_000,
+  );
+  assert.equal(
+    getPublicationListPollingInterval(
+      'current',
+      [
+        { ...activeSchedule, dispatchIssue: 'actor_access_required' },
+        {
+          ...activeSchedule,
+          delivery: { ...activeSchedule.delivery, total: 1, pending: 1 },
+        },
+      ],
+      nowMs,
+    ),
+    5_000,
+  );
+  assert.equal(
+    getPublicationListPollingInterval(
+      'current',
+      [
+        {
+          ...activeSchedule,
+          dispatchIssue: 'actor_access_required',
+          delivery: { ...activeSchedule.delivery, total: 1, pending: 1 },
+        },
+      ],
+      nowMs,
+    ),
+    30_000,
+  );
+  assert.equal(
+    getPublicationListPollingInterval(
       'schedules',
       [{ ...activeSchedule, lifecycle: 'PAUSED' }],
       nowMs,
@@ -439,6 +529,41 @@ test('polls publication lists only while delivery or an active schedule can chan
       ],
       nowMs,
     ),
+    5_000,
+  );
+});
+
+test('keeps mixed Publisher delivery rows fresh while an issue is unresolved', () => {
+  const delivery = {
+    total: 1,
+    pending: 1,
+    sent: 0,
+    failed: 0,
+    ambiguous: 0,
+    canceled: 0,
+  };
+  const publication = {
+    dispatchIssue: 'actor_access_required',
+    lifecycle: 'ACTIVE',
+    schedule: { mode: 'now' },
+  } as Parameters<typeof shouldPollPublicationDeliveries>[0];
+
+  assert.equal(shouldPollPublicationDeliveries(publication, delivery), true);
+  assert.equal(getPublicationDetailsPollingInterval(publication, delivery), 30_000);
+  assert.equal(
+    shouldPollPublicationDeliveries(publication, { ...delivery, total: 0, pending: 0 }),
+    false,
+  );
+  assert.equal(
+    getPublicationDetailsPollingInterval(publication, { ...delivery, total: 0, pending: 0 }),
+    30_000,
+  );
+  assert.equal(
+    shouldPollPublicationDeliveries({ ...publication, dispatchIssue: null }, delivery),
+    true,
+  );
+  assert.equal(
+    getPublicationDetailsPollingInterval({ ...publication, dispatchIssue: null }, delivery),
     5_000,
   );
 });

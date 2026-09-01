@@ -15,6 +15,7 @@ import {
   publicationCalendarAvailabilityRequestSchema,
   publicationCalendarAvailabilityResponseSchema,
   publicationDetailsSchema,
+  publicationTargetsRefreshResponseSchema,
   resolvePublicationAmbiguousDeliveryRequestSchema,
   retryPublicationOccurrenceRequestSchema,
   testPublicationRequestSchema,
@@ -498,6 +499,29 @@ export function createPreviewPublications(
     },
   ];
 
+  if (state.me.profile === 'publisher') {
+    fixtures.splice(2, 0, {
+      id: 'publication-access-required',
+      createdAt: addDays(now, -1).toISOString(),
+      request: {
+        title: 'Объявление для канала',
+        content: {
+          text: 'Важная информация для подписчиков.',
+          textFormat: 'markdown',
+          buttons: [],
+          media: [],
+        },
+        audience: {
+          selection: 'SELECTED',
+          mode: 'SNAPSHOT',
+          targets: [{ chatId: PREVIEW_CHANNEL_ID, entityType: 'channel' }],
+        },
+        schedule: { mode: 'now', timezone: 'Europe/Moscow' },
+        intent: 'publish',
+      },
+    });
+  }
+
   const built = fixtures.map((fixture) =>
     buildPreviewPublicationDetails(state, fixture.request, {
       id: fixture.id,
@@ -506,6 +530,24 @@ export function createPreviewPublications(
       updatedAt: fixture.createdAt,
     }),
   );
+  const accessRequiredFixture = built.find(
+    ({ publication }) => publication.id === 'publication-access-required',
+  );
+  if (accessRequiredFixture) {
+    const accessRequired = accessRequiredFixture.publication;
+    const emptyDelivery = createEmptyPublicationDeliveryStats();
+    accessRequiredFixture.deliveries.length = 0;
+    accessRequired.dispatchIssue = 'actor_access_required';
+    accessRequired.delivery = emptyDelivery;
+    accessRequired.actionableDelivery = emptyDelivery;
+    const occurrence = accessRequired.occurrences[0];
+    if (occurrence) {
+      occurrence.status = 'IN_PROGRESS';
+      occurrence.dispatchIssue = 'actor_access_required';
+      occurrence.delivery = emptyDelivery;
+    }
+  }
+
   const publications = built.map((item) => item.publication);
   const deliveries = built.flatMap((item) => item.deliveries);
 
@@ -1069,6 +1111,23 @@ export function handlePublicationsRequest(
 
   if (segments.length === 2 && method === 'GET') {
     return cloneJson(syncPreviewPublication(state, publicationId));
+  }
+
+  if (
+    segments.length === 4 &&
+    segments[2] === 'targets' &&
+    segments[3] === 'refresh' &&
+    method === 'POST'
+  ) {
+    publication.dispatchIssue = null;
+    publication.occurrences = publication.occurrences.map((occurrence) => ({
+      ...occurrence,
+      dispatchIssue: null,
+    }));
+    return publicationTargetsRefreshResponseSchema.parse({
+      accepted: true,
+      queuedCount: publication.targets.length,
+    });
   }
 
   if (segments.length === 2 && method === 'PUT') {

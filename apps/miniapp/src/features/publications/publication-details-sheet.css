@@ -1,0 +1,89 @@
+@layer pages {
+  .publication-details-dispatch-notice {
+    min-height: 60px;
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 12px;
+    padding: 6px 0 11px;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--publication-warning-ink);
+  }
+
+  .publication-details-dispatch-notice:not(:has(button)) {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .publication-details-dispatch-notice > svg {
+    width: 21px;
+    height: 21px;
+    justify-self: center;
+  }
+
+  .publication-details-dispatch-notice > span {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .publication-details-dispatch-notice strong {
+    color: var(--color-ink);
+    font-size: 0.78rem;
+    font-weight: 850;
+  }
+
+  .publication-details-dispatch-notice small {
+    color: var(--color-ink-muted);
+    font-size: 0.7rem;
+    line-height: 1.35;
+  }
+
+  .publication-details-dispatch-notice > button {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--publication-warning-ink);
+    place-items: center;
+  }
+
+  .publication-details-dispatch-notice > button:focus-visible {
+    outline: 2px solid var(--publication-warning-accent);
+    outline-offset: 2px;
+  }
+
+  .publication-details-dispatch-notice > button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  .publication-details-dispatch-notice > button svg {
+    width: 19px;
+    height: 19px;
+  }
+
+  .publication-details-dispatch-notice > button.is-refreshing svg {
+    animation: publication-details-dispatch-spin 0.9s linear infinite;
+  }
+
+  .publication-occurrences > .has-dispatch-issue .publication-occurrences__status {
+    background: var(--publication-warning-bg);
+    color: var(--publication-warning-ink);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .publication-details-dispatch-notice > button.is-refreshing svg {
+      animation: none;
+    }
+  }
+
+  @keyframes publication-details-dispatch-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}

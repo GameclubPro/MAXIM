@@ -49,6 +49,11 @@ export const publicationOccurrenceStatusSchema = z.enum([
   'AMBIGUOUS',
   'CANCELED',
 ]);
+export const publicationDispatchIssueSchema = z.enum([
+  'actor_access_required',
+  'target_setup_required',
+  'temporarily_unavailable',
+]);
 export const publicationDeliveryStatusSchema = z.enum([
   'PENDING',
   'SENDING',
@@ -65,6 +70,7 @@ export type PublicationEntityType = z.infer<typeof publicationEntityTypeSchema>;
 export type PublicationTextFormat = z.infer<typeof publicationTextFormatSchema>;
 export type PublicationIntent = z.infer<typeof publicationIntentSchema>;
 export type PublicationOccurrenceStatus = z.infer<typeof publicationOccurrenceStatusSchema>;
+export type PublicationDispatchIssue = z.infer<typeof publicationDispatchIssueSchema>;
 export type PublicationDeliveryStatus = z.infer<typeof publicationDeliveryStatusSchema>;
 
 function isValidPublicationButtonUrl(value: string): boolean {
@@ -441,6 +447,7 @@ export const publicationOccurrenceSummarySchema = z.object({
   id: z.string(),
   scheduledAt: publicationDateTimeSchema,
   status: publicationOccurrenceStatusSchema,
+  dispatchIssue: publicationDispatchIssueSchema.nullable().optional().default(null),
   delivery: publicationDeliveryStatsSchema,
   canRetry: z.boolean(),
   contentRevision: z.number().int().min(1).optional(),
@@ -463,6 +470,7 @@ export const publicationSummarySchema = z.object({
   mediaCount: z.number().int().min(0),
   hasVideo: z.boolean(),
   schedule: publicationScheduleSchema.nullable(),
+  dispatchIssue: publicationDispatchIssueSchema.nullable().optional().default(null),
   delivery: publicationDeliveryStatsSchema,
   actionableDelivery: publicationDeliveryStatsSchema.optional(),
   createdAt: publicationDateTimeSchema,
@@ -476,6 +484,16 @@ export const publicationDetailsSchema = publicationSummarySchema.extend({
   occurrences: z.array(publicationOccurrenceSummarySchema),
 });
 export type PublicationDetails = z.infer<typeof publicationDetailsSchema>;
+
+export const publicationTargetsRefreshResponseSchema = z
+  .object({
+    accepted: z.literal(true),
+    queuedCount: z.number().int().min(0).max(MAX_PUBLICATION_TARGETS),
+  })
+  .strict();
+export type PublicationTargetsRefreshResponse = z.infer<
+  typeof publicationTargetsRefreshResponseSchema
+>;
 
 export const publicationListViewSchema = z.enum([
   'current',

@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   Put,
@@ -18,6 +20,7 @@ import { PublicationDispatchProfile } from '../prisma/prisma-client';
 import { PublisherFeatureV2RequiredException } from '../publisher/publisher-errors';
 import { PublicationLegacyService } from './publication-legacy.service';
 import { PublicationMetricsInterceptor } from './publication-metrics.interceptor';
+import { PublicationPublisherTargetRefreshService } from './publication-publisher-target-refresh.service';
 import { PublicationService } from './publication.service';
 
 @Controller('v1/publications')
@@ -27,6 +30,7 @@ export class PublicationController {
   constructor(
     private readonly publicationService: PublicationService,
     private readonly publicationLegacyService: PublicationLegacyService,
+    private readonly publisherTargetRefresh: PublicationPublisherTargetRefreshService,
   ) {}
 
   @Get()
@@ -90,6 +94,13 @@ export class PublicationController {
     @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     return this.publicationService.get(publicationId, user, this.toDispatchProfile(profile));
+  }
+
+  @Post(':publicationId/targets/refresh')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @MiniappProfiles('publisher')
+  refreshTargets(@Param('publicationId') publicationId: string, @CurrentUser() user: AuthUser) {
+    return this.publisherTargetRefresh.request(publicationId, user);
   }
 
   @Put(':publicationId')

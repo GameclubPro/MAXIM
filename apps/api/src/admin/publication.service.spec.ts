@@ -1955,9 +1955,21 @@ describe('PublicationService', () => {
         }),
       }),
     );
-    expect(tx.managedBroadcastDelivery.createMany).toHaveBeenCalledWith({
+    expect(tx.managedBroadcastDelivery.createMany).toHaveBeenCalledTimes(2);
+    expect(tx.managedBroadcastDelivery.createMany).toHaveBeenNthCalledWith(1, {
       data: [
         expect.objectContaining({
+          broadcastId: 'broadcast-chat',
+          targetChatId: 'chat-1',
+          publicationOccurrenceId: 'occurrence-1',
+        }),
+      ],
+    });
+    expect(tx.managedBroadcastDelivery.createMany).toHaveBeenNthCalledWith(2, {
+      data: [
+        expect.objectContaining({
+          broadcastId: 'broadcast-channel',
+          targetChatId: 'channel-1',
           publicationOccurrenceId: 'occurrence-1',
           occurrenceIndex: 1,
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
@@ -2770,6 +2782,7 @@ describe('PublicationService', () => {
     await expect(presenter.loadPublicationDetailsRow('publication-1', 'user-1')).resolves.toEqual({
       ...detailsRow,
       nextOccurrenceAt: new Date('2026-07-10T09:00:00.000Z'),
+      dispatchIssue: null,
       deliveryStats: {
         total: 0,
         pending: 0,
@@ -2868,7 +2881,14 @@ describe('PublicationService', () => {
         },
       },
       orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
-      include: {
+      select: {
+        id: true,
+        scheduleId: true,
+        scheduleRevision: true,
+        contentRevisionId: true,
+        legacyBroadcastId: true,
+        scheduledAt: true,
+        status: true,
         contentRevision: { select: { revision: true } },
         _count: { select: { legacyBroadcasts: true } },
       },

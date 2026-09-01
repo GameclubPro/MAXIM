@@ -1324,6 +1324,34 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-access-required',
+    beforeShot: async (page) => {
+      const card = page.locator(
+        '.publication-feed-card[data-publication-id="publication-access-required"]',
+      );
+      await card.waitFor({ state: 'visible' });
+      await card.getByText('Ожидает доступа', { exact: true }).waitFor({ state: 'visible' });
+      await card.locator('.publication-feed-card__surface').click();
+
+      const details = page.getByRole('dialog', { name: 'Объявление для канала' });
+      await details.waitFor({ state: 'visible' });
+      const notice = details.locator('.publication-details-dispatch-notice');
+      await notice.getByText('Нужен доступ', { exact: true }).waitFor({
+        state: 'visible',
+      });
+      await notice.getByRole('button', { name: 'Проверить подключения' }).waitFor({
+        state: 'visible',
+      });
+      const detailsText = (await details.textContent()) ?? '';
+      if (detailsText.includes('PUBLISHER_')) {
+        throw new Error('Publication details exposed an internal Publisher blocker code.');
+      }
+      if (detailsText.includes('Отправлено 0/0')) {
+        throw new Error('Publication details exposed an empty delivery counter.');
+      }
+    },
+  },
+  {
     name: 'publications-actions',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });

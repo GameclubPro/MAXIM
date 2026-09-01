@@ -24,6 +24,14 @@ const detailsSource = readFileSync(
   new URL('../src/features/publications/publication-details-sheet.tsx', import.meta.url),
   'utf8',
 );
+const publicationModelSource = readFileSync(
+  new URL('../src/features/publications/publication-model.ts', import.meta.url),
+  'utf8',
+);
+const publicationTargetRecheckSource = readFileSync(
+  new URL('../src/features/publications/publication-target-recheck.ts', import.meta.url),
+  'utf8',
+);
 const feedCardSource = readFileSync(
   new URL('../src/features/publications/publication-feed-card.tsx', import.meta.url),
   'utf8',
@@ -123,6 +131,28 @@ test('publication editor and details preserve the server text format', () => {
     publicationsSource,
     /sourceFormat=\{actionTarget\.publication\.contentPreviewFormat\}/u,
   );
+});
+
+test('publisher delivery blockers render only sanitized recovery guidance', () => {
+  assert.match(publicationModelSource, /Нужен доступ/u);
+  assert.match(detailsSource, /Проверить подключения/u);
+  assert.match(detailsSource, /Проверяю подключения/u);
+  assert.match(detailsSource, /aria-atomic="true"/u);
+  assert.doesNotMatch(detailsSource, /aria-busy=\{publisherAccessRechecking/u);
+  assert.match(
+    detailsSource,
+    /busy \|\| publisherAccessRecheckBusy \|\| publisherAccessRechecking/u,
+  );
+  assert.match(detailsSource, /onRecheckPublisherAccess/u);
+  assert.match(publicationsSource, /const recheckPublisherTargets =/u);
+  assert.match(publicationsSource, /onRefresh=\{recheckPublisherTargets\}/u);
+  assert.match(
+    publicationsSource,
+    /onRecheckPublisherAccess=\{isPublisherProfile \? scopedTargetRecheck\.recheck/u,
+  );
+  assert.match(publicationsSource, /publisherAccessRecheckBusy=\{scopedTargetRecheck\.isBusy\}/u);
+  assert.match(publicationTargetRecheckSource, /refreshPublicationTargets\(api, publicationId\)/u);
+  assert.doesNotMatch(`${detailsSource}\n${publicationModelSource}`, /PUBLISHER_[A-Z_]+/u);
 });
 
 test('Major settings open legacy schedules without a dead compose handoff', () => {

@@ -660,6 +660,17 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     for (const entity of entities) {
       refreshes[`${entity.entityType}:${entity.id}`] = refreshedAt;
     }
+    for (const publication of state.publications) {
+      if (publication.dispatchIssue !== 'actor_access_required') {
+        continue;
+      }
+      publication.dispatchIssue = null;
+      publication.occurrences = publication.occurrences.map((occurrence) => ({
+        ...occurrence,
+        dispatchIssue:
+          occurrence.dispatchIssue === 'actor_access_required' ? null : occurrence.dispatchIssue,
+      }));
+    }
     return publisherEntitiesRefreshResponseSchema.parse({
       accepted: true,
       queuedCount: entities.length,

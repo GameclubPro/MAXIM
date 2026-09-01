@@ -20,6 +20,12 @@ describe('PublicationController', () => {
       ),
     ).toEqual(['publisher']);
     expect(
+      Reflect.getMetadata(
+        MINIAPP_PROFILES_METADATA,
+        PublicationController.prototype.refreshTargets,
+      ),
+    ).toEqual(['publisher']);
+    expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublicationController.prototype.listLegacy),
     ).toEqual(['moderation']);
 
@@ -58,9 +64,11 @@ describe('PublicationController', () => {
       sendTest: jest.fn(),
     };
     const publicationLegacyService = { list: jest.fn() };
+    const publisherTargetRefresh = { request: jest.fn() };
     const controller = new PublicationController(
       publicationService as never,
       publicationLegacyService as never,
+      publisherTargetRefresh as never,
     );
     const query = { view: 'plan' };
     const body = { requestId: 'request-1' };
@@ -68,6 +76,7 @@ describe('PublicationController', () => {
     controller.list(user, query, 'publisher');
     controller.create(user, body, 'publisher');
     controller.calendarAvailability(user, body, 'publisher');
+    controller.refreshTargets('publication-1', user);
     controller.get('publication-1', user, 'moderation');
     controller.update('publication-1', user, body, 'publisher');
     controller.pause('publication-1', user, body, 'moderation');
@@ -93,6 +102,7 @@ describe('PublicationController', () => {
       body,
       PublicationDispatchProfile.PUBLIK_V1,
     );
+    expect(publisherTargetRefresh.request).toHaveBeenCalledWith('publication-1', user);
     expect(publicationService.get).toHaveBeenCalledWith(
       'publication-1',
       user,
@@ -154,7 +164,11 @@ describe('PublicationController', () => {
 
   it('does not expose the legacy test sender to the publisher profile', () => {
     const publicationService = { sendTest: jest.fn() };
-    const controller = new PublicationController(publicationService as never, {} as never);
+    const controller = new PublicationController(
+      publicationService as never,
+      {} as never,
+      {} as never,
+    );
 
     expect(() => controller.test(user, {}, 'publisher')).toThrow();
     expect(publicationService.sendTest).not.toHaveBeenCalled();

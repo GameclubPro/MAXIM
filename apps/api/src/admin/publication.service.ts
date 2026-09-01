@@ -359,27 +359,20 @@ export class PublicationService {
 
     const hasMore = rows.length > parsed.data.limit;
     const page = hasMore ? rows.slice(0, parsed.data.limit) : rows;
-    const publicationIds = page.map((row) => row.id);
-    const [deliveryStats, actionableDeliveryStats, publisherTargetPresentations] =
-      await Promise.all([
-        this.publicationPresenterService.loadDeliveryStatsByPublicationIds(publicationIds),
-        this.publicationPresenterService.loadActionableDeliveryStatsByPublicationIds(
-          publicationIds,
-        ),
-        publisherBotId
-          ? this.publicationPresenterService.loadPublisherTargetPresentations(
-              page.flatMap((row) => row.targets),
-              publisherBotId,
-            )
-          : Promise.resolve(undefined),
-      ]);
+    const presentation = await this.publicationPresenterService.loadPublicationListPresentation({
+      rows: page,
+      actorUserId: user.userId,
+      dispatchProfile,
+      publisherBotId,
+    });
     const items: PublicationSummary[] = await Promise.all(
       page.map((row) =>
         this.publicationPresenterService.mapPublicationSummary(
           row,
-          deliveryStats.get(row.id),
-          actionableDeliveryStats.get(row.id),
-          publisherTargetPresentations,
+          presentation.deliveryStats.get(row.id),
+          presentation.actionableDeliveryStats.get(row.id),
+          presentation.publisherTargetPresentations,
+          presentation.dispatchIssues.byPublicationId.get(row.id) ?? null,
         ),
       ),
     );
@@ -551,6 +544,7 @@ export class PublicationService {
     const row = await this.publicationPresenterService.loadPublicationDetailsRow(
       publicationId,
       user.userId,
+      dispatchProfile,
     );
     if (!row || (dispatchProfile && row.dispatchProfile !== dispatchProfile)) {
       throw new NotFoundException('Публикация не найдена.');

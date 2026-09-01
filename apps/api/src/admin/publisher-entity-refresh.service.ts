@@ -6,10 +6,16 @@ import {
   type PublisherEntitiesRefreshResponse,
   type PublisherEntityRefreshResponse,
 } from '@maxim/contracts/publisher';
+import {
+  MAX_PUBLICATION_TARGETS,
+  publicationTargetsRefreshResponseSchema,
+  type PublicationTargetsRefreshResponse,
+} from '@maxim/contracts/publication';
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { PublisherBindingRefreshQueueService } from '../publisher/publisher-binding-refresh.queue';
+import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import { PublisherPolicyService } from './publisher-policy.service';
 
 const PUBLISHER_MANUAL_REFRESH_USER_WINDOW_MS = 60_000;
@@ -25,7 +31,7 @@ export class PublisherEntityRefreshService {
   private readonly recentRequestsByUser = new Map<string, number[]>();
   private readonly recentBulkRequestsByUser = new Map<string, number[]>();
   private readonly recentBulkEntityIdsByUser = new Map<string, Map<string, number>>();
-  private readonly bulkRunsByUser = new Map<string, Promise<PublisherEntitiesRefreshResponse>>();
+  private readonly bulkRunsByUser = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly policyService: PublisherPolicyService,
@@ -53,14 +59,46 @@ export class PublisherEntityRefreshService {
 
   async requestBulkRefresh(user: AuthUser): Promise<PublisherEntitiesRefreshResponse> {
     this.admitBulkRefresh(user.userId);
-    const previous = this.bulkRunsByUser.get(user.userId) ?? Promise.resolve();
-    const run = previous.catch(() => undefined).then(() => this.executeBulkRefresh(user));
-    const tracked = run.finally(() => {
-      if (this.bulkRunsByUser.get(user.userId) === tracked) {
-        this.bulkRunsByUser.delete(user.userId);
+    return this.serializeBulkRefresh(user.userId, () => this.executeBulkRefresh(user));
+  }
+
+  async requestAuthorizedEntitiesRefresh(
+    entityIds: readonly string[],
+    user: AuthUser,
+  ): Promise<PublicationTargetsRefreshResponse> {
+    this.admitBulkRefresh(user.userId);
+    const uniqueEntityIds = [...new Set(entityIds.map((id) => id.trim()).filter(Boolean))].slice(
+      0,
+      MAX_PUBLICATION_TARGETS,
+    );
+    return this.serializeBulkRefresh(user.userId, async () => {
+      const requestedAt = new Date();
+      const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
+      await mapWithConcurrencyLimit(uniqueEntityIds, 8, (chatId) =>
+        this.refreshQueue.enqueue({
+          chatId,
+          publisherBotId,
+          candidateUserId: user.userId,
+          reason: 'manual_recheck',
+          requestedAt,
+        }),
+      );
+      return publicationTargetsRefreshResponseSchema.parse({
+        accepted: true,
+        queuedCount: uniqueEntityIds.length,
+      });
+    });
+  }
+
+  private serializeBulkRefresh<T>(userId: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.bulkRunsByUser.get(userId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(run);
+    const tracked = current.finally(() => {
+      if (this.bulkRunsByUser.get(userId) === tracked) {
+        this.bulkRunsByUser.delete(userId);
       }
     });
-    this.bulkRunsByUser.set(user.userId, tracked);
+    this.bulkRunsByUser.set(userId, tracked);
     return tracked;
   }
 

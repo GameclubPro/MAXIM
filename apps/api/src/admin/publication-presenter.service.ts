@@ -8,6 +8,7 @@ import {
   type PublicationDelivery,
   type PublicationDeliveryStats,
   type PublicationDetails,
+  type PublicationDispatchIssue,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
 import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
@@ -24,6 +25,12 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { readStoredPublicationButtons } from './publication-buttons';
+import {
+  buildPublicationDispatchIssueIndex,
+  emptyPublicationDispatchIssueIndex,
+  type PublicationDispatchBlockerRow,
+  type PublicationDispatchIssueIndex,
+} from './publication-dispatch-issue';
 import { buildEffectivePublicationDeliveryStatusSql } from './publication-legacy-automated-absence';
 
 const PUBLICATION_LIST_PREVIEW_TARGETS = 6;
@@ -37,6 +44,21 @@ const PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES: PublicationOccurrenceStatus[] 
   PublicationOccurrenceStatus.PARTIAL,
   PublicationOccurrenceStatus.AMBIGUOUS,
 ];
+const PUBLICATION_SUMMARY_OCCURRENCE_SELECT = {
+  scheduledAt: true,
+  status: true,
+} as const;
+const PUBLICATION_DETAILS_OCCURRENCE_SELECT = {
+  id: true,
+  scheduleId: true,
+  scheduleRevision: true,
+  contentRevisionId: true,
+  legacyBroadcastId: true,
+  scheduledAt: true,
+  status: true,
+  contentRevision: { select: { revision: true } },
+  _count: { select: { legacyBroadcasts: true } },
+} as const;
 
 const resolveEffectiveOccurrenceStatus = (
   status: PublicationOccurrenceStatus,
@@ -83,13 +105,22 @@ export class PublicationPresenterService {
         where: { status: PublicationOccurrenceStatus.SCHEDULED },
         orderBy: { scheduledAt: 'asc' },
         take: 1,
+        select: PUBLICATION_SUMMARY_OCCURRENCE_SELECT,
       },
     } as const;
   }
 
-  async loadPublicationDetailsRow(publicationId: string, actorUserId: string) {
+  async loadPublicationDetailsRow(
+    publicationId: string,
+    actorUserId: string,
+    dispatchProfile?: PublicationDispatchProfile,
+  ) {
     const row = await this.prisma.publication.findFirst({
-      where: { id: publicationId, actorUserId },
+      where: {
+        id: publicationId,
+        actorUserId,
+        ...(dispatchProfile ? { dispatchProfile } : {}),
+      },
       include: {
         canonicalContentRevision: {
           include: {
@@ -101,37 +132,43 @@ export class PublicationPresenterService {
         occurrences: {
           orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
           take: PUBLICATION_OCCURRENCE_HISTORY_LIMIT,
-          include: {
-            contentRevision: { select: { revision: true } },
-            _count: { select: { legacyBroadcasts: true } },
-          },
+          select: PUBLICATION_DETAILS_OCCURRENCE_SELECT,
         },
       },
     });
     if (!row) {
       return null;
     }
-    const [nextOccurrence, unresolvedOccurrences, deliveryStats, actionableDeliveryStats] =
-      await Promise.all([
-        this.prisma.publicationOccurrence.findFirst({
-          where: { publicationId, status: PublicationOccurrenceStatus.SCHEDULED },
-          orderBy: { scheduledAt: 'asc' },
-          select: { scheduledAt: true },
-        }),
-        this.prisma.publicationOccurrence.findMany({
-          where: {
-            publicationId,
-            status: { in: PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES },
-          },
-          orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
-          include: {
-            contentRevision: { select: { revision: true } },
-            _count: { select: { legacyBroadcasts: true } },
-          },
-        }),
-        this.loadDeliveryStats(publicationId),
-        this.loadActionableDeliveryStatsByPublicationIds([publicationId]),
-      ]);
+    const [
+      nextOccurrence,
+      unresolvedOccurrences,
+      deliveryStats,
+      actionableDeliveryStats,
+      dispatchIssues,
+    ] = await Promise.all([
+      this.prisma.publicationOccurrence.findFirst({
+        where: { publicationId, status: PublicationOccurrenceStatus.SCHEDULED },
+        orderBy: { scheduledAt: 'asc' },
+        select: { scheduledAt: true },
+      }),
+      this.prisma.publicationOccurrence.findMany({
+        where: {
+          publicationId,
+          status: { in: PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES },
+        },
+        orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
+        select: PUBLICATION_DETAILS_OCCURRENCE_SELECT,
+      }),
+      this.loadDeliveryStats(publicationId),
+      this.loadActionableDeliveryStatsByPublicationIds([publicationId]),
+      row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? this.loadPublicationDispatchIssues(
+            [publicationId],
+            actorUserId,
+            PublicationDispatchProfile.PUBLIK_V1,
+          )
+        : Promise.resolve(emptyPublicationDispatchIssueIndex()),
+    ]);
     const occurrenceById = new Map<string, (typeof row.occurrences)[number]>();
     for (const occurrence of [...row.occurrences, ...unresolvedOccurrences]) {
       occurrenceById.set(occurrence.id, occurrence);
@@ -155,15 +192,48 @@ export class PublicationPresenterService {
         ...occurrence,
         status: resolveEffectiveOccurrenceStatus(occurrence.status, deliveryStats),
         deliveryStats,
+        dispatchIssue: dispatchIssues.byOccurrenceId.get(occurrence.id) ?? null,
       };
     });
     return {
       ...row,
       occurrences,
       nextOccurrenceAt: nextOccurrence?.scheduledAt ?? null,
+      dispatchIssue: dispatchIssues.byPublicationId.get(publicationId) ?? null,
       deliveryStats,
       actionableDeliveryStats:
         actionableDeliveryStats.get(publicationId) ?? this.emptyDeliveryStats(),
+    };
+  }
+
+  async loadPublicationListPresentation(params: {
+    rows: Array<{ id: string; targets: PublicationTargetRow[] }>;
+    actorUserId: string;
+    dispatchProfile?: PublicationDispatchProfile;
+    publisherBotId?: string | null;
+  }) {
+    const publicationIds = params.rows.map((row) => row.id);
+    const [deliveryStats, actionableDeliveryStats, publisherTargetPresentations, dispatchIssues] =
+      await Promise.all([
+        this.loadDeliveryStatsByPublicationIds(publicationIds),
+        this.loadActionableDeliveryStatsByPublicationIds(publicationIds),
+        params.publisherBotId
+          ? this.loadPublisherTargetPresentations(
+              params.rows.flatMap((row) => row.targets),
+              params.publisherBotId,
+            )
+          : Promise.resolve(undefined),
+        this.loadPublicationDispatchIssues(
+          publicationIds,
+          params.actorUserId,
+          params.dispatchProfile,
+        ),
+      ]);
+    return {
+      actionableDeliveryStats,
+      deliveryStats,
+      dispatchIssues,
+      publisherTargetPresentations,
     };
   }
 
@@ -172,6 +242,7 @@ export class PublicationPresenterService {
     preloadedDeliveryStats?: PublicationDeliveryStats,
     preloadedActionableDeliveryStats?: PublicationDeliveryStats,
     publisherTargetPresentations?: PublisherTargetPresentationMap,
+    preloadedDispatchIssue?: PublicationDispatchIssue | null,
   ): Promise<PublicationSummary> {
     const delivery =
       preloadedDeliveryStats ?? row.deliveryStats ?? (await this.loadDeliveryStats(row.id));
@@ -219,6 +290,12 @@ export class PublicationPresenterService {
         row.schedule && !(row.lifecycle === 'DRAFT' && row.schedule.status === 'DRAFT')
           ? this.mapSchedule(row.schedule, nextOccurrenceAt)
           : null,
+      dispatchIssue:
+        row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+          ? preloadedDispatchIssue !== undefined
+            ? preloadedDispatchIssue
+            : (row.dispatchIssue ?? null)
+          : null,
       delivery,
       actionableDelivery:
         preloadedActionableDeliveryStats ?? row.actionableDeliveryStats ?? delivery,
@@ -236,6 +313,7 @@ export class PublicationPresenterService {
       undefined,
       undefined,
       publisherTargetPresentations,
+      row.dispatchIssue ?? null,
     );
     const content = row.canonicalContentRevision;
     if (!content) {
@@ -292,6 +370,10 @@ export class PublicationPresenterService {
           id: occurrence.id,
           scheduledAt: occurrence.scheduledAt.toISOString(),
           status: effectiveOccurrenceStatus,
+          dispatchIssue:
+            row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+              ? (occurrence.dispatchIssue ?? null)
+              : null,
           delivery,
           canRetry,
           contentRevision: occurrence.contentRevision?.revision,
@@ -316,6 +398,88 @@ export class PublicationPresenterService {
         row.contentRevision.id ===
         row.publicationOccurrence?.publication.canonicalContentRevisionId,
     };
+  }
+
+  async loadPublicationDispatchIssues(
+    publicationIds: string[],
+    actorUserId: string,
+    dispatchProfile?: PublicationDispatchProfile,
+  ): Promise<PublicationDispatchIssueIndex> {
+    const uniquePublicationIds = [
+      ...new Set(publicationIds.map((id) => id.trim()).filter(Boolean)),
+    ];
+    const normalizedActorUserId = actorUserId.trim();
+    if (
+      dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+      uniquePublicationIds.length === 0 ||
+      !normalizedActorUserId
+    ) {
+      return emptyPublicationDispatchIssueIndex();
+    }
+
+    // FLAG: Once execution deliveries exist, their pending rows are authoritative. A broadcast
+    // envelope can exist before delivery rows, while the occurrence blocker is still current.
+    const rows = await this.prisma.$queryRaw<PublicationDispatchBlockerRow[]>(Prisma.sql`
+      WITH "currentOccurrences" AS (
+        SELECT
+          occurrence."id" AS "occurrenceId",
+          occurrence."publication_id" AS "publicationId",
+          occurrence."dispatch_blocker_code" AS "occurrenceBlockerCode",
+          EXISTS (
+            SELECT 1
+            FROM "managed_broadcast_deliveries" AS delivery
+            WHERE delivery."publication_occurrence_id" = occurrence."id"
+          ) AS "hasExecutionDeliveries"
+        FROM "publication_occurrences" AS occurrence
+        INNER JOIN "publications" AS publication
+          ON publication."id" = occurrence."publication_id"
+        INNER JOIN "publication_schedules" AS schedule
+          ON schedule."id" = occurrence."schedule_id"
+          AND schedule."publication_id" = occurrence."publication_id"
+          AND schedule."revision" = occurrence."schedule_revision"
+        WHERE occurrence."publication_id" IN (${Prisma.join(uniquePublicationIds)})
+          AND occurrence."status" IN (
+            'SCHEDULED'::"PublicationOccurrenceStatus",
+            'IN_PROGRESS'::"PublicationOccurrenceStatus"
+          )
+          AND occurrence."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
+          AND publication."actor_user_id" = ${normalizedActorUserId}
+          AND publication."dispatch_profile" = CAST(
+            ${dispatchProfile} AS "PublicationDispatchProfile"
+          )
+          AND publication."lifecycle" IN (
+            'ACTIVE'::"PublicationLifecycle",
+            'ERROR'::"PublicationLifecycle"
+          )
+          AND schedule."status" IN (
+            'ACTIVE'::"PublicationScheduleStatus",
+            'ERROR'::"PublicationScheduleStatus"
+          )
+      )
+      SELECT DISTINCT
+        current_occurrence."publicationId",
+        current_occurrence."occurrenceId",
+        current_occurrence."occurrenceBlockerCode" AS "blockerCode"
+      FROM "currentOccurrences" AS current_occurrence
+      WHERE current_occurrence."hasExecutionDeliveries" = FALSE
+        AND current_occurrence."occurrenceBlockerCode" IS NOT NULL
+      UNION ALL
+      SELECT DISTINCT
+        current_occurrence."publicationId",
+        current_occurrence."occurrenceId",
+        delivery."dispatch_blocker_code" AS "blockerCode"
+      FROM "currentOccurrences" AS current_occurrence
+      INNER JOIN "managed_broadcast_deliveries" AS delivery
+        ON delivery."publication_occurrence_id" = current_occurrence."occurrenceId"
+      WHERE current_occurrence."hasExecutionDeliveries" = TRUE
+        AND delivery."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
+        AND delivery."status" IN (
+          'PENDING'::"ManagedBroadcastDeliveryStatus",
+          'SENDING'::"ManagedBroadcastDeliveryStatus"
+        )
+        AND delivery."dispatch_blocker_code" IS NOT NULL
+    `);
+    return buildPublicationDispatchIssueIndex(rows);
   }
 
   async loadDeliveryStatsByPublicationIds(

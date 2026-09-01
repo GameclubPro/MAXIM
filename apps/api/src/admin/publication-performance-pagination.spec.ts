@@ -205,6 +205,68 @@ describe('Publication performance and pagination', () => {
     );
   });
 
+  it('loads sanitized Publisher dispatch issues once for the authorized list page', async () => {
+    const rows = ['publication-publik-1', 'publication-publik-2'].map((id) => ({
+      ...publicationRow(id),
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    }));
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          publicationId: rows[0]!.id,
+          occurrenceId: 'occurrence-publik-1',
+          blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+        },
+        {
+          publicationId: rows[1]!.id,
+          occurrenceId: 'occurrence-publik-2',
+          blockerCode: 'PUBLISHER_RUNTIME_UNAVAILABLE',
+        },
+      ]);
+    const findMany = jest.fn().mockResolvedValue(rows);
+    const { service } = createPublicationService({
+      publication: { findMany },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await service.list(
+      { userId: 'actor-1' } as never,
+      { view: 'plan', limit: 30 },
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    expect(queryRaw).toHaveBeenCalledTimes(3);
+    expect(result.items.map((item) => item.dispatchIssue)).toEqual([
+      'actor_access_required',
+      'temporarily_unavailable',
+    ]);
+    expect(JSON.stringify(result)).not.toContain('PUBLISHER_ACTOR_ACCESS_REQUIRED');
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          actorUserId: 'actor-1',
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        }),
+      }),
+    );
+    const issueSql = extractSqlText(queryRaw.mock.calls[2]?.[0]);
+    expect(issueSql).toContain('publication."actor_user_id" = ?');
+    expect(issueSql).toContain('publication."dispatch_profile" = CAST(');
+    expect(issueSql).toContain('FROM "managed_broadcast_deliveries" AS delivery');
+    expect(issueSql).toContain('current_occurrence."hasExecutionDeliveries" = FALSE');
+    expect(issueSql).toContain('publication."lifecycle" IN (');
+    expect(issueSql).toContain('schedule."status" IN (');
+    expect(extractSqlValues(queryRaw.mock.calls[2]?.[0])).toEqual([
+      'publication-publik-1',
+      'publication-publik-2',
+      'actor-1',
+      PublicationDispatchProfile.PUBLIK_V1,
+    ]);
+  });
+
   it('searches PUBLIK_V1 targets only through the exact active Publisher catalog', async () => {
     const queryRaw = jest
       .fn()
@@ -258,6 +320,28 @@ describe('Publication performance and pagination', () => {
       ),
     ).rejects.toThrow('Публикация не найдена.');
     expect(mapDetails).not.toHaveBeenCalled();
+  });
+
+  it('scopes Publisher details to the authenticated actor and dispatch profile in Prisma', async () => {
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const { service } = createPublicationService({ publication: { findFirst } });
+
+    await expect(
+      service.get(
+        'publication-publik',
+        { userId: 'actor-1' } as never,
+        PublicationDispatchProfile.PUBLIK_V1,
+      ),
+    ).rejects.toThrow('Публикация не найдена.');
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'publication-publik',
+          actorUserId: 'actor-1',
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        },
+      }),
+    );
   });
 
   it('hydrates PUBLIK_V1 details with the exact Publisher catalog presentation', async () => {
@@ -747,11 +831,25 @@ describe('Publication performance and pagination', () => {
 
     const row = await presenter.loadPublicationDetailsRow('publication-1', 'user-1');
 
-    expect(publicationFindFirst.mock.calls[0]?.[0].include.occurrences.include).toEqual({
+    expect(publicationFindFirst.mock.calls[0]?.[0].include.occurrences.select).toEqual({
+      id: true,
+      scheduleId: true,
+      scheduleRevision: true,
+      contentRevisionId: true,
+      legacyBroadcastId: true,
+      scheduledAt: true,
+      status: true,
       contentRevision: { select: { revision: true } },
       _count: { select: { legacyBroadcasts: true } },
     });
-    expect(occurrenceFindMany.mock.calls[0]?.[0].include).toEqual({
+    expect(occurrenceFindMany.mock.calls[0]?.[0].select).toEqual({
+      id: true,
+      scheduleId: true,
+      scheduleRevision: true,
+      contentRevisionId: true,
+      legacyBroadcastId: true,
+      scheduledAt: true,
+      status: true,
       contentRevision: { select: { revision: true } },
       _count: { select: { legacyBroadcasts: true } },
     });

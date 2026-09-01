@@ -96,6 +96,31 @@ describe('PublisherEntityRefreshService', () => {
     ).toBe(1);
   });
 
+  it('queues every exact publication target beyond the global fifty-entity page', async () => {
+    const fixture = createFixture();
+    const targetIds = [
+      ...Array.from({ length: 500 }, (_, index) => `target-${index}`),
+      'target-0',
+      'target-499',
+    ];
+
+    await expect(
+      fixture.service.requestAuthorizedEntitiesRefresh(targetIds, user),
+    ).resolves.toEqual({ accepted: true, queuedCount: 500 });
+
+    expect(fixture.policyService.listRefreshableEntityIds).not.toHaveBeenCalled();
+    expect(fixture.refreshQueue.enqueue).toHaveBeenCalledTimes(500);
+    expect(fixture.refreshQueue.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'target-499', candidateUserId: 'admin-1' }),
+    );
+    expect(
+      new Set(fixture.refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).size,
+    ).toBe(500);
+    expect(
+      new Set(fixture.refreshQueue.enqueue.mock.calls.map(([request]) => request.requestedAt)).size,
+    ).toBe(1);
+  });
+
   it('rotates consecutive bulk requests beyond the first fifty entities', async () => {
     const fixture = createFixture();
     const allEntityIds = Array.from(

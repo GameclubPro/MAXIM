@@ -15,6 +15,7 @@ import {
   type PublicationContentInput,
   type PublicationDeliveryStats,
   type PublicationDetails,
+  type PublicationDispatchIssue,
   type PublicationLifecycle,
   type PublicationOccurrenceSummary,
   type PublicationScheduleInput,
@@ -73,6 +74,7 @@ type PublicationPollingItem = Pick<
   PublicationSummary,
   'lifecycle' | 'delivery' | 'actionableDelivery'
 > & {
+  dispatchIssue?: PublicationSummary['dispatchIssue'];
   schedule: {
     mode: 'now' | 'once' | 'slots' | 'recurrence';
     nextOccurrenceAt: string | null;
@@ -108,6 +110,68 @@ export function getPublicationLifecycleLabel(lifecycle: PublicationLifecycle): s
     ERROR: 'Ошибка',
   };
   return labels[lifecycle];
+}
+
+export type PublicationDispatchIssuePresentation = {
+  canRecheck: boolean;
+  description: string;
+  label: string;
+  title: string;
+};
+
+export const PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS = 30_000;
+
+export function getPublicationDispatchIssuePresentation(
+  issue: PublicationDispatchIssue | null,
+): PublicationDispatchIssuePresentation | null {
+  if (issue === 'actor_access_required') {
+    return {
+      canRecheck: true,
+      description: 'Проверьте права администратора.',
+      label: 'Ожидает доступа',
+      title: 'Нужен доступ',
+    };
+  }
+  if (issue === 'target_setup_required') {
+    return {
+      canRecheck: true,
+      description: 'Проверьте подключение Публика.',
+      label: 'Нужна настройка',
+      title: 'Нужна настройка',
+    };
+  }
+  if (issue === 'temporarily_unavailable') {
+    return {
+      canRecheck: false,
+      description: 'Повторим автоматически.',
+      label: 'Ожидает отправки',
+      title: 'Отправка временно приостановлена',
+    };
+  }
+  return null;
+}
+
+export function resolvePublicationDetailsDispatchIssue(
+  details: Pick<PublicationDetails, 'dispatchIssue'> | undefined,
+  summary: Pick<PublicationSummary, 'dispatchIssue'>,
+): PublicationDispatchIssue | null {
+  return details ? details.dispatchIssue : summary.dispatchIssue;
+}
+
+export function getPublicationFeedStatusLabel(publication: PublicationSummary): string {
+  if (publication.lifecycle === 'ERROR') {
+    return getPublicationLifecycleLabel(publication.lifecycle);
+  }
+  if (getPublicationActionableDelivery(publication).ambiguous > 0) {
+    return 'Нужно проверить';
+  }
+  if (publication.lifecycle !== 'ACTIVE') {
+    return getPublicationLifecycleLabel(publication.lifecycle);
+  }
+  return (
+    getPublicationDispatchIssuePresentation(publication.dispatchIssue)?.label ??
+    getPublicationLifecycleLabel(publication.lifecycle)
+  );
 }
 
 export function getPublicationEditActionLabel(scope: PublicationEditScope | null): string {
@@ -336,6 +400,29 @@ export function getPublicationActionableDelivery(
   return publication.actionableDelivery ?? publication.delivery;
 }
 
+export function shouldPollPublicationDeliveries(
+  publication: Pick<PublicationDetails, 'dispatchIssue' | 'lifecycle' | 'schedule'>,
+  delivery: PublicationDeliveryStats,
+): boolean {
+  return (
+    delivery.pending > 0 ||
+    (publication.dispatchIssue === null &&
+      publication.lifecycle === 'ACTIVE' &&
+      publication.schedule?.mode === 'now' &&
+      delivery.total === 0)
+  );
+}
+
+export function getPublicationDetailsPollingInterval(
+  publication: Pick<PublicationDetails, 'dispatchIssue' | 'lifecycle' | 'schedule'>,
+  delivery: PublicationDeliveryStats,
+): number | false {
+  if (publication.dispatchIssue !== null) {
+    return PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS;
+  }
+  return shouldPollPublicationDeliveries(publication, delivery) ? 5_000 : false;
+}
+
 export function getPublicationListPollingInterval(
   view: PublicationView,
   items: readonly PublicationPollingItem[],
@@ -344,8 +431,17 @@ export function getPublicationListPollingInterval(
   if (view === 'history') {
     return false;
   }
-  if (items.some((item) => getPublicationActionableDelivery(item).pending > 0)) {
+  if (
+    items.some((item) => !item.dispatchIssue && getPublicationActionableDelivery(item).pending > 0)
+  ) {
     return 5_000;
+  }
+  if (
+    items.some(
+      (item) => item.dispatchIssue && (item.lifecycle === 'ACTIVE' || item.lifecycle === 'ERROR'),
+    )
+  ) {
+    return PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS;
   }
   if (view === 'current') {
     return items.some((item) => {

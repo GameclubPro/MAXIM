@@ -14,12 +14,45 @@ import {
   MAX_PUBLICATION_TEXT_LENGTH,
   publicationContentInputSchema,
   publicationDeliverySchema,
+  publicationDispatchIssueSchema,
+  publicationOccurrenceSummarySchema,
   publicationSlotsScheduleSchema,
   publicationSummarySchema,
+  publicationTargetsRefreshResponseSchema,
   retryPublicationOccurrenceRequestSchema,
 } from '@maxim/contracts/publication';
 
 describe('publication contracts', () => {
+  it('defaults additive dispatch issues to null and rejects internal blocker codes', () => {
+    expect(publicationSummarySchema.shape.dispatchIssue.parse(undefined)).toBeNull();
+    expect(publicationOccurrenceSummarySchema.shape.dispatchIssue.parse(undefined)).toBeNull();
+    expect(publicationDispatchIssueSchema.options).toEqual([
+      'actor_access_required',
+      'target_setup_required',
+      'temporarily_unavailable',
+    ]);
+    expect(
+      publicationDispatchIssueSchema.safeParse('PUBLISHER_ACTOR_ACCESS_REQUIRED').success,
+    ).toBe(false);
+  });
+
+  it('bounds publication-scoped target refresh responses without exposing target ids', () => {
+    expect(
+      publicationTargetsRefreshResponseSchema.parse({ accepted: true, queuedCount: 500 }),
+    ).toEqual({ accepted: true, queuedCount: 500 });
+    expect(
+      publicationTargetsRefreshResponseSchema.safeParse({ accepted: true, queuedCount: 501 })
+        .success,
+    ).toBe(false);
+    expect(
+      publicationTargetsRefreshResponseSchema.safeParse({
+        accepted: true,
+        queuedCount: 1,
+        targetIds: ['channel-internal'],
+      }).success,
+    ).toBe(false);
+  });
+
   it('defaults legacy summary previews to plain and preserves explicit markdown', () => {
     expect(publicationSummarySchema.shape.contentPreviewFormat.parse(undefined)).toBe('plain');
     expect(publicationSummarySchema.shape.contentPreviewFormat.parse('markdown')).toBe('markdown');

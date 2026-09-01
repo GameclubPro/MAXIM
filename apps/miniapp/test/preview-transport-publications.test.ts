@@ -13,6 +13,7 @@ import {
   listPublicationDeliveries,
   listPublications,
   pausePublication,
+  refreshPublicationTargets,
   resolvePublicationAmbiguousDelivery,
   resumePublication,
   retryPublicationOccurrence,
@@ -216,6 +217,25 @@ test('preview publications support list, CRUD, actions, and delivery review', as
     requestId: 'cancel_request_001',
   });
   assert.equal(canceled.lifecycle, 'CANCELED');
+});
+
+test('publisher preview exposes and clears the access-required publication state', async () => {
+  const api = createPreviewApiTransport({ search: '?profile=publisher' });
+  const before = await getPublication(api, 'publication-access-required');
+
+  assert.equal(before.dispatchIssue, 'actor_access_required');
+  assert.equal(before.occurrences[0]?.dispatchIssue, 'actor_access_required');
+  assert.equal(before.occurrences[0]?.status, 'IN_PROGRESS');
+  assert.equal(before.delivery.total, 0);
+  assert.equal(before.occurrences[0]?.delivery.total, 0);
+
+  assert.deepEqual(await refreshPublicationTargets(api, before.id), {
+    accepted: true,
+    queuedCount: 1,
+  });
+  const after = await getPublication(api, before.id);
+  assert.equal(after.dispatchIssue, null);
+  assert.equal(after.occurrences[0]?.dispatchIssue, null);
 });
 
 test('preview legacy publications support bound cursors, filters, and history', async () => {

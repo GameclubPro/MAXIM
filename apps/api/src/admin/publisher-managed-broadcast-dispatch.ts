@@ -12,11 +12,11 @@ import {
   type PublisherFailureClassification,
 } from '../publisher/publisher-dispatch-health.service';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 import { publisherConnectedBindingWhere } from '../publisher/publisher-entity-connection.util';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const PUBLISHER_RUNTIME_BLOCKER = 'PUBLISHER_RUNTIME_UNAVAILABLE';
-const PUBLISHER_ACTOR_ACCESS_BLOCKER = 'PUBLISHER_ACTOR_ACCESS_REQUIRED';
 const PUBLISHER_ACCESS_LEGACY_GRACE_MS = 7 * 24 * 60 * 60_000;
 
 type PublisherBroadcastRow = {
@@ -120,7 +120,7 @@ export class PublisherManagedBroadcastDispatch {
     const actorUserId = params.actorUserId.trim();
     const requiredBotId = params.requiredBotId.trim();
     if (targetChatIds.length === 0 || !actorUserId || !requiredBotId) {
-      throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER);
+      throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE);
     }
 
     const now = new Date();
@@ -149,7 +149,7 @@ export class PublisherManagedBroadcastDispatch {
     });
     const authorizedChatIds = new Set(edges.map((edge) => edge.chatId));
     if (targetChatIds.some((chatId) => !authorizedChatIds.has(chatId))) {
-      throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER);
+      throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE);
     }
   }
 
@@ -168,7 +168,7 @@ export class PublisherManagedBroadcastDispatch {
         params.row,
         params.occurrenceIndex,
         params.lease,
-        PUBLISHER_ACTOR_ACCESS_BLOCKER,
+        PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
       );
       if (!cleared) {
         return { ready: false, leaseLost: true, retryAt: null };

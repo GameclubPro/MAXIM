@@ -153,6 +153,9 @@ export function getLifecycleTone(publication: PublicationSummary): PublicationFe
   if (publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED') {
     return 'muted';
   }
+  if (publication.dispatchIssue) {
+    return 'warning';
+  }
   return 'active';
 }
 

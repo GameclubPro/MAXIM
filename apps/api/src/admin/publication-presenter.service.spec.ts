@@ -346,4 +346,204 @@ describe('PublicationPresenterService', () => {
       ]),
     );
   });
+
+  it('uses occurrence blockers until deliveries exist and then trusts pending deliveries', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      {
+        publicationId: 'publication-pre-envelope',
+        occurrenceId: 'occurrence-pre-envelope',
+        blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+      },
+      {
+        publicationId: 'publication-post-envelope',
+        occurrenceId: 'occurrence-post-envelope',
+        blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+      },
+    ]);
+    const presenter = new PublicationPresenterService({ $queryRaw: queryRaw } as never);
+
+    const issues = await presenter.loadPublicationDispatchIssues(
+      ['publication-pre-envelope', 'publication-post-envelope'],
+      'actor-1',
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    expect(issues.byPublicationId).toEqual(
+      new Map([
+        ['publication-pre-envelope', 'actor_access_required'],
+        ['publication-post-envelope', 'actor_access_required'],
+      ]),
+    );
+    const sql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+    const values = extractSqlValues(queryRaw.mock.calls[0]?.[0]);
+    expect(sql).toContain('schedule."revision" = occurrence."schedule_revision"');
+    expect(sql).toContain('FROM "managed_broadcast_deliveries" AS delivery');
+    expect(sql).toContain('current_occurrence."hasExecutionDeliveries" = FALSE');
+    expect(sql).toContain('current_occurrence."occurrenceBlockerCode" AS "blockerCode"');
+    expect(sql).toContain('current_occurrence."hasExecutionDeliveries" = TRUE');
+    expect(sql).toContain('publication."lifecycle" IN (');
+    expect(sql).toContain('schedule."status" IN (');
+    expect(sql).toContain('delivery."status" IN (');
+    expect(sql).toContain('\'PENDING\'::"ManagedBroadcastDeliveryStatus"');
+    expect(sql).toContain('\'SENDING\'::"ManagedBroadcastDeliveryStatus"');
+    expect(values).toEqual([
+      'publication-pre-envelope',
+      'publication-post-envelope',
+      'actor-1',
+      PublicationDispatchProfile.PUBLIK_V1,
+    ]);
+  });
+
+  it('attaches sanitized dispatch issues to authorized Publisher details', async () => {
+    const occurrence = {
+      id: 'occurrence-publik',
+      scheduleId: 'schedule-publik',
+      scheduleRevision: 1,
+      contentRevisionId: 'content-publik',
+      legacyBroadcastId: 'broadcast-publik',
+      scheduledAt: new Date('2026-08-27T10:00:00.000Z'),
+      status: PublicationOccurrenceStatus.IN_PROGRESS,
+      contentRevision: { revision: 1 },
+      _count: { legacyBroadcasts: 1 },
+    };
+    const publicationFindFirst = jest.fn().mockResolvedValue({
+      id: 'publication-publik',
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      occurrences: [occurrence],
+    });
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          publicationId: 'publication-publik',
+          occurrenceId: occurrence.id,
+          blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    const presenter = new PublicationPresenterService({
+      publication: { findFirst: publicationFindFirst },
+      publicationOccurrence: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      $queryRaw: queryRaw,
+    } as never);
+
+    const row = await presenter.loadPublicationDetailsRow(
+      'publication-publik',
+      'actor-1',
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    expect(row?.dispatchIssue).toBe('actor_access_required');
+    expect(row?.occurrences[0]?.dispatchIssue).toBe('actor_access_required');
+    expect(publicationFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'publication-publik',
+          actorUserId: 'actor-1',
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        },
+      }),
+    );
+    expect(JSON.stringify(row)).not.toContain('PUBLISHER_ACTOR_ACCESS_REQUIRED');
+  });
+
+  it('does not query or expose Publisher blockers for Major publications', async () => {
+    const queryRaw = jest.fn();
+    const presenter = new PublicationPresenterService({ $queryRaw: queryRaw } as never);
+
+    const issues = await presenter.loadPublicationDispatchIssues(
+      ['publication-major'],
+      'actor-1',
+      PublicationDispatchProfile.LEGACY_ROUTED,
+    );
+    const summary = await presenter.mapPublicationSummary(
+      {
+        id: 'publication-major',
+        title: 'Major',
+        lifecycle: PublicationLifecycle.ACTIVE,
+        dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+        dispatchIssue: 'actor_access_required',
+        version: 1,
+        canonicalContentRevision: { text: 'Текст', textFormat: 'PLAIN', assets: [] },
+        targets: [],
+        audienceSelection: 'SELECTED',
+        audienceMode: 'SNAPSHOT',
+        schedule: null,
+        occurrences: [],
+        deliveryStats: EMPTY_DELIVERY,
+        actionableDeliveryStats: EMPTY_DELIVERY,
+        createdAt: new Date('2026-08-27T10:00:00.000Z'),
+        updatedAt: new Date('2026-08-27T10:00:00.000Z'),
+      },
+      undefined,
+      undefined,
+      undefined,
+      'actor_access_required',
+    );
+
+    expect(issues.byPublicationId).toEqual(new Map());
+    expect(summary.dispatchIssue).toBeNull();
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('serializes only sanitized publication and occurrence issues', async () => {
+    const presenter = new PublicationPresenterService({} as never);
+    const details = await presenter.mapPublicationDetails({
+      id: 'publication-publik-blocked',
+      title: 'Публикация',
+      lifecycle: PublicationLifecycle.ACTIVE,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot-internal',
+      dispatchIssue: 'actor_access_required',
+      version: 1,
+      canonicalContentRevisionId: 'content-1',
+      canonicalContentRevision: {
+        id: 'content-1',
+        revision: 1,
+        text: 'Текст',
+        textFormat: 'PLAIN',
+        buttons: [],
+        assets: [],
+      },
+      targets: [],
+      audienceSelection: 'SELECTED',
+      audienceMode: 'SNAPSHOT',
+      schedule: {
+        id: 'schedule-1',
+        mode: PublicationScheduleMode.NOW,
+        status: PublicationScheduleStatus.ACTIVE,
+        revision: 1,
+        rule: { mode: 'now', timezone: 'Europe/Moscow' },
+        lastError: null,
+      },
+      occurrences: [
+        {
+          id: 'occurrence-1',
+          scheduleId: 'schedule-1',
+          scheduleRevision: 1,
+          contentRevisionId: 'content-1',
+          contentRevision: { revision: 1 },
+          scheduledAt: new Date('2026-08-27T10:00:00.000Z'),
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          dispatchIssue: 'actor_access_required',
+          dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+          deliveryStats: EMPTY_DELIVERY,
+        },
+      ],
+      deliveryStats: EMPTY_DELIVERY,
+      actionableDeliveryStats: EMPTY_DELIVERY,
+      createdAt: new Date('2026-08-27T09:00:00.000Z'),
+      updatedAt: new Date('2026-08-27T10:00:00.000Z'),
+    });
+
+    expect(details.dispatchIssue).toBe('actor_access_required');
+    expect(details.occurrences[0]?.dispatchIssue).toBe('actor_access_required');
+    expect(JSON.stringify(details)).not.toContain('PUBLISHER_ACTOR_ACCESS_REQUIRED');
+    expect(JSON.stringify(details)).not.toContain('publisher-bot-internal');
+  });
 });

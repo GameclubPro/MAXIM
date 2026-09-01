@@ -409,6 +409,39 @@ test('publisher publication buttons cover direct empty, filled, error, and keybo
   assert.match(captureSource, /assertPublisherButtonsKeyboardFinalLayout/u);
 });
 
+test('publisher access-required publication has a fail-closed visual scenario', () => {
+  const scenario = MINIAPP_VISUAL_SCENARIOS.find(
+    (candidate) => candidate.name === 'publications-publisher-access-required',
+  );
+  assert.equal(scenario?.routeId, 'publications');
+  assert.deepEqual(scenario?.searchParams, { profile: 'publisher' });
+  assert.ok(scenario?.features.includes('publisher'));
+  assert.ok(scenario?.features.includes('publications'));
+
+  const selection = selectMiniappVisualScenarios({
+    changedFiles: ['apps/miniapp/src/features/publications/publication-details-sheet.tsx'],
+  });
+  assert.ok(
+    selection.scenarios.some(
+      (candidate) => candidate.name === 'publications-publisher-access-required',
+    ),
+  );
+
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const behaviorStart = captureSource.indexOf("name: 'publications-publisher-access-required'");
+  const behaviorEnd = captureSource.indexOf("name: 'publications-actions'", behaviorStart);
+  const behaviorSource = captureSource.slice(behaviorStart, behaviorEnd);
+  assert.ok(behaviorStart >= 0 && behaviorEnd > behaviorStart);
+  assert.match(behaviorSource, /Ожидает доступа/u);
+  assert.match(behaviorSource, /Нужен доступ/u);
+  assert.match(behaviorSource, /Проверить подключения/u);
+  assert.match(behaviorSource, /includes\('PUBLISHER_'\)/u);
+  assert.match(behaviorSource, /includes\('Отправлено 0\/0'\)/u);
+});
+
 test('publisher imported draft exposes omitted buttons recovery in the visual harness', () => {
   const scenario = MINIAPP_VISUAL_SCENARIOS.find(
     (candidate) => candidate.name === 'publications-publisher-import-buttons-omitted',

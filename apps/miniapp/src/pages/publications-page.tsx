@@ -58,7 +58,7 @@ import {
   getPublicationActionableDelivery,
   getPublicationEditActionLabel,
   getPublicationExplicitSlotsLimitFeedback,
-  getPublicationLifecycleLabel,
+  getPublicationFeedStatusLabel,
   getPublicationListPollingInterval,
   getPublicationPrimaryActionLabel,
   getPublicationTargetKey,
@@ -102,6 +102,7 @@ import { PublicationRetrySheet } from '../features/publications/publication-retr
 import { PublisherPostImportStatus } from '../features/publications/publisher-post-import-status';
 import { PublicationTargetNotices } from '../features/publications/publication-target-notices';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
+import * as publicationTargetRecheck from '../features/publications/publication-target-recheck';
 import { usePublicationEditorAutofocus } from '../features/publications/use-publication-editor-autofocus';
 import { useInitialPublicationTargetRoute } from '../features/publications/use-initial-publication-target-route';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
@@ -353,6 +354,7 @@ export function PublicationsPage({
   const timingSectionRef = useRef<HTMLElement | null>(null);
 
   const targetSources = usePublicationTargetSources(api, isPublisherProfile);
+  const scopedTargetRecheck = publicationTargetRecheck.usePublicationTargetRecheck(api);
   const importedAssetPreviews = usePublisherPostImportAssetPreviews(
     api,
     editorContext?.kind === 'import' ? editorContext.sessionId : null,
@@ -1837,7 +1839,7 @@ export function PublicationsPage({
               ? 'Фото без текста'
               : null
         }
-        eyebrow={getPublicationLifecycleLabel(publication.lifecycle)}
+        eyebrow={getPublicationFeedStatusLabel(publication)}
         tone={getLifecycleTone(publication)}
         busy={pending}
         meta={[formatPublicationTargets(publication), formatPublicationSchedule(publication)]}
@@ -1935,6 +1937,9 @@ export function PublicationsPage({
     );
   }
 
+  const recheckPublisherTargets = () =>
+    publicationTargetRecheck.runPublicationTargetRecheck(targetSources.recheck, pushToast);
+
   function renderHub() {
     return (
       <>
@@ -1947,14 +1952,7 @@ export function PublicationsPage({
           sourcesFetching={sourcesFetching}
           sourcesHaveError={sourcesHaveError}
           onCreate={requestCreateEditor}
-          onRefresh={() => {
-            void targetSources.recheck().catch((error) =>
-              pushToast({
-                tone: 'danger',
-                title: describeUserFacingError(error, 'Не удалось перепроверить подключения'),
-              }),
-            );
-          }}
+          onRefresh={recheckPublisherTargets}
         />
 
         {isPublisherProfile ? <PublisherPostImportStatus {...postImport.statusProps} /> : null}
@@ -2944,6 +2942,8 @@ export function PublicationsPage({
             allowEdit={isPublisherProfile}
             busy={anyBusy}
             covered={retryChoiceTarget !== null || ambiguousTarget !== null}
+            publisherAccessRecheckBusy={scopedTargetRecheck.isBusy}
+            publisherAccessRechecking={scopedTargetRecheck.isRechecking(detailsTarget.id)}
             onClose={() => setDetailsTarget(null)}
             onCancel={(publication) => {
               setDetailsTarget(null);
@@ -2958,6 +2958,7 @@ export function PublicationsPage({
                 openPublicationEditor(publication, 'edit');
               }
             }}
+            onRecheckPublisherAccess={isPublisherProfile ? scopedTargetRecheck.recheck : undefined}
             onRetry={requestPublicationRetry}
             onResolveAmbiguous={(publicationId, occurrenceId, deliveryId, resolution) =>
               setAmbiguousTarget({ publicationId, occurrenceId, deliveryId, resolution })

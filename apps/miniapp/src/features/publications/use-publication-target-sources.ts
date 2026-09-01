@@ -109,6 +109,7 @@ export function usePublicationTargetSources(api: ApiTransport, enabled: boolean)
     },
     loading: enabled && publisher.isLoading,
     fetching: enabled && (publisher.isFetching || publisherRechecking),
+    rechecking: enabled && publisherRechecking,
     hasError: enabled && publisherInitialError,
     unavailable: enabled && publisherInitialError,
     ready: enabled && (publisher.isSuccess || publisherHasData),
@@ -129,6 +130,8 @@ export function usePublicationTargetSources(api: ApiTransport, enabled: boolean)
             void Promise.all([
               queryClient.resetQueries({ queryKey: publisherQueryKey, exact: true }),
               queryClient.invalidateQueries({ queryKey: ['publisher', 'entity'] }),
+              queryClient.invalidateQueries({ queryKey: ['publications', 'list'] }),
+              queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
             ]).finally(() => setPublisherRechecking(false));
           },
           refresh.queuedCount > 0 ? PUBLISHER_RECHECK_SETTLE_MS : 0,

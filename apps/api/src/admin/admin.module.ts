@@ -53,6 +53,7 @@ import { PublicationContentService } from './publication-content.service';
 import { PublicationLegacyService } from './publication-legacy.service';
 import { PublicationMetricsInterceptor } from './publication-metrics.interceptor';
 import { PublicationPresenterService } from './publication-presenter.service';
+import { PublicationPublisherTargetRefreshService } from './publication-publisher-target-refresh.service';
 import { PublicationRunnerService } from './publication-runner.service';
 import { PublicationService } from './publication.service';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
@@ -169,6 +170,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublicationLegacyService,
     PublicationMetricsInterceptor,
     PublicationPresenterService,
+    PublicationPublisherTargetRefreshService,
     PublicationService,
     PublicationPublisherRoutingService,
     PublisherDialogContextService,

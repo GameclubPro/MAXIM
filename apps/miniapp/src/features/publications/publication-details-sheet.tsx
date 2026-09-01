@@ -7,7 +7,7 @@ import type {
   PublicationOccurrenceStatus,
   PublicationSummary,
 } from '@maxim/contracts/publication';
-import { EditPencil, RefreshDouble, Xmark } from 'iconoir-react';
+import { EditPencil, Refresh, RefreshDouble, WarningCircle, Xmark } from 'iconoir-react';
 import { useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from '../../components/max-markdown-preview';
@@ -24,7 +24,12 @@ import { formatPublicationDeliveryError } from './publication-delivery-error';
 import {
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
+  getPublicationDetailsPollingInterval,
+  getPublicationDispatchIssuePresentation,
   isPublicationOccurrenceContentStale,
+  PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS,
+  resolvePublicationDetailsDispatchIssue,
+  shouldPollPublicationDeliveries,
 } from './publication-model';
 import {
   isAmbiguousDeliveryPhaseComplete,
@@ -32,6 +37,7 @@ import {
   mergePublicationPages,
   shouldPollPublicationDeliveryPages,
 } from './publication-pagination';
+import './publication-details-sheet.css';
 
 type PublicationDetailsSheetProps = {
   api: ApiTransport;
@@ -39,9 +45,12 @@ type PublicationDetailsSheetProps = {
   allowEdit?: boolean;
   busy?: boolean;
   covered?: boolean;
+  publisherAccessRecheckBusy?: boolean;
+  publisherAccessRechecking?: boolean;
   onClose: () => void;
   onCancel: (publication: PublicationSummary) => void;
   onEdit: (publicationId: string) => void;
+  onRecheckPublisherAccess?: (publicationId: string) => void;
   onRetry: (publication: PublicationDetails, occurrence: PublicationOccurrenceSummary) => void;
   onResolveAmbiguous: (
     publicationId: string,
@@ -122,9 +131,12 @@ export function PublicationDetailsSheet({
   allowEdit = true,
   busy = false,
   covered = false,
+  publisherAccessRecheckBusy = false,
+  publisherAccessRechecking = false,
   onClose,
   onCancel,
   onEdit,
+  onRecheckPublisherAccess,
   onRetry,
   onResolveAmbiguous,
 }: PublicationDetailsSheetProps) {
@@ -139,14 +151,10 @@ export function PublicationDetailsSheet({
     refetchInterval: (query) => {
       const details = query.state.data;
       const delivery = details ? getPublicationActionableDelivery(details) : null;
-      return details &&
-        delivery &&
-        (delivery.pending > 0 ||
-          (details.lifecycle === 'ACTIVE' &&
-            details.schedule?.mode === 'now' &&
-            delivery.total === 0))
-        ? 5_000
-        : false;
+      if (!details || !delivery) {
+        return false;
+      }
+      return getPublicationDetailsPollingInterval(details, delivery);
     },
   });
   const actionableDelivery = detailsQuery.data
@@ -157,10 +165,7 @@ export function PublicationDetailsSheet({
   const shouldPollDeliveries = Boolean(
     detailsQuery.data &&
     actionableDelivery &&
-    (actionableDelivery.pending > 0 ||
-      (detailsQuery.data.lifecycle === 'ACTIVE' &&
-        detailsQuery.data.schedule?.mode === 'now' &&
-        actionableDelivery.total === 0)),
+    shouldPollPublicationDeliveries(detailsQuery.data, actionableDelivery),
   );
   const ambiguousCount = actionableDelivery?.ambiguous ?? 0;
   const hasAmbiguous = ambiguousCount > 0;
@@ -177,7 +182,9 @@ export function PublicationDetailsSheet({
     enabled: open && hasAmbiguous,
     refetchInterval: (query) =>
       shouldPollPublicationDeliveryPages(shouldPollDeliveries, query.state.data?.pages)
-        ? 5_000
+        ? detailsQuery.data?.dispatchIssue
+          ? PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS
+          : 5_000
         : false,
   });
   const {
@@ -210,7 +217,9 @@ export function PublicationDetailsSheet({
     enabled: open && ambiguousPhaseComplete,
     refetchInterval: (query) =>
       shouldPollPublicationDeliveryPages(shouldPollDeliveries, query.state.data?.pages)
-        ? 5_000
+        ? detailsQuery.data?.dispatchIssue
+          ? PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS
+          : 5_000
         : false,
   });
 
@@ -294,6 +303,8 @@ export function PublicationDetailsSheet({
   }
 
   const details = detailsQuery.data;
+  const dispatchIssue = resolvePublicationDetailsDispatchIssue(details, publication);
+  const dispatchIssuePresentation = getPublicationDispatchIssuePresentation(dispatchIssue);
   const actionCapabilities = getPublicationActionCapabilities(details ?? publication);
   const editLabel =
     actionCapabilities.editScope === 'future'
@@ -354,6 +365,48 @@ export function PublicationDetailsSheet({
             />
           ) : details ? (
             <>
+              {dispatchIssuePresentation ? (
+                <div
+                  className="publication-details-dispatch-notice"
+                  role="status"
+                  aria-atomic="true"
+                >
+                  <WarningCircle aria-hidden />
+                  <span>
+                    <strong>
+                      {publisherAccessRechecking
+                        ? 'Проверяю подключения'
+                        : dispatchIssuePresentation.title}
+                    </strong>
+                    <small>{dispatchIssuePresentation.description}</small>
+                  </span>
+                  {dispatchIssuePresentation.canRecheck && onRecheckPublisherAccess ? (
+                    <button
+                      type="button"
+                      className={cn(publisherAccessRechecking && 'is-refreshing')}
+                      onClick={() => onRecheckPublisherAccess(publication.id)}
+                      disabled={busy || publisherAccessRecheckBusy || publisherAccessRechecking}
+                      aria-label={
+                        publisherAccessRechecking
+                          ? 'Проверяются подключения'
+                          : publisherAccessRecheckBusy
+                            ? 'Проверка уже выполняется'
+                            : 'Проверить подключения'
+                      }
+                      title={
+                        publisherAccessRechecking
+                          ? 'Проверяются подключения'
+                          : publisherAccessRecheckBusy
+                            ? 'Проверка уже выполняется'
+                            : 'Проверить подключения'
+                      }
+                    >
+                      <Refresh aria-hidden />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="publication-details-sheet__message">
                 {details.content.media.length > 0 ? (
                   <span className="publication-details-sheet__media">
@@ -403,13 +456,18 @@ export function PublicationDetailsSheet({
                       return (
                         <div
                           key={occurrence.id}
-                          className={cn(`is-${occurrence.status.toLowerCase()}`)}
+                          className={cn(
+                            `is-${occurrence.status.toLowerCase()}`,
+                            occurrence.dispatchIssue && 'has-dispatch-issue',
+                          )}
                         >
                           <span className="publication-deliveries__copy">
                             <strong>{formatDateTime(occurrence.scheduledAt)}</strong>
-                            <small>
-                              Отправлено {occurrence.delivery.sent}/{occurrence.delivery.total}
-                            </small>
+                            {occurrence.delivery.total > 0 ? (
+                              <small>
+                                Отправлено {occurrence.delivery.sent}/{occurrence.delivery.total}
+                              </small>
+                            ) : null}
                             {revisionLabel ? (
                               <small
                                 className={cn(
@@ -423,7 +481,8 @@ export function PublicationDetailsSheet({
                           </span>
                           <span className="publication-occurrences__actions">
                             <span className="publication-occurrences__status">
-                              {OCCURRENCE_STATUS_LABELS[occurrence.status]}
+                              {getPublicationDispatchIssuePresentation(occurrence.dispatchIssue)
+                                ?.label ?? OCCURRENCE_STATUS_LABELS[occurrence.status]}
                             </span>
                             {occurrence.canRetry ? (
                               <button
@@ -448,17 +507,19 @@ export function PublicationDetailsSheet({
               <section className="publication-details-section">
                 <div className="publication-details-section__head">
                   <strong>Доставка</strong>
-                  <span
-                    className={cn(
-                      'publication-details-section__total',
-                      ambiguousDeliveries.length > 0 && 'is-danger',
-                    )}
-                  >
-                    Отправлено {details.delivery.sent}/{details.delivery.total}
-                    {ambiguousDeliveries.length > 0
-                      ? ` · проверить ${Math.max(ambiguousCount, ambiguousDeliveries.length)}`
-                      : ''}
-                  </span>
+                  {details.delivery.total > 0 ? (
+                    <span
+                      className={cn(
+                        'publication-details-section__total',
+                        ambiguousDeliveries.length > 0 && 'is-danger',
+                      )}
+                    >
+                      Отправлено {details.delivery.sent}/{details.delivery.total}
+                      {ambiguousDeliveries.length > 0
+                        ? ` · проверить ${Math.max(ambiguousCount, ambiguousDeliveries.length)}`
+                        : ''}
+                    </span>
+                  ) : null}
                 </div>
                 {deliveries.length > 0 ? (
                   <div className="publication-deliveries">

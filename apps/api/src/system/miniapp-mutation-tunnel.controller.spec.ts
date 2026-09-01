@@ -593,6 +593,7 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/publications/publication-1/pause'],
     ['POST', '/publications/publication-1/resume'],
     ['POST', '/publications/publication-1/cancel'],
+    ['POST', '/publications/publication-1/targets/refresh'],
     ['POST', '/publications/publication-1/occurrences/occurrence-1/retry'],
     ['POST', '/publications/publication-1/occurrences/occurrence-1/resolve-ambiguous'],
     ['POST', '/channels/channel-1/polls'],
