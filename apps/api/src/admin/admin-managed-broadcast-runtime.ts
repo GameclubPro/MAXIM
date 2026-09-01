@@ -390,10 +390,8 @@ import {
   shouldAutoRetryManagedBroadcastDeliveryFailure,
 } from './admin-managed-broadcast-reconciliation';
 import {
-  buildManagedBroadcastPendingDeliveryRecoveryUpdates,
-  buildManagedBroadcastLedgerRecoveryActionKeys,
-  classifyManagedBroadcastLedgerRecovery,
-  collectManagedBroadcastLedgerRecoveryActionKeys,
+  PUBLIK_LEDGER_DISPATCH_MARKER,
+  reconcileRoutedManagedBroadcastSendingDeliveries as reconcileRoutedManagedBroadcastSendingDeliveriesValue,
 } from './admin-managed-broadcast-ledger-recovery';
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
 import {
@@ -663,6 +661,13 @@ type ManagedBroadcastLease = {
   lockedAt: Date;
   lockToken: string;
   lastHeartbeatAt: Date;
+};
+
+type ManagedBroadcastPublisherRouteContext = {
+  exactBotId: string;
+  dialogBotId: string;
+  dialogContext: unknown;
+  onAttemptStarted: (startedAt: Date) => void;
 };
 
 class ManagedBroadcastIdempotencyReplay extends Error {
@@ -3518,6 +3523,7 @@ export class AdminManagedBroadcastRuntime {
         deliveryAttemptCount: number,
         deliveryLockToken: string,
         onBotSelected: (botId: string) => void,
+        publisherRoute?: ManagedBroadcastPublisherRouteContext,
       ): Promise<{
         sentMessage: MaxRoutedPublicationResult;
         commentDialogReference: ManagedBroadcastCommentDialogReference | null;
@@ -3557,10 +3563,16 @@ export class AdminManagedBroadcastRuntime {
               trafficClass: maxSendOptions.trafficClass ?? 'interactive',
               actionHealthLane: maxSendOptions.actionHealthLane,
               sourceTag: maxSendOptions.sourceTag ?? MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+              ...(publisherRoute ? { publisherExactBotId: publisherRoute.exactBotId } : {}),
               ...(row.publicationOccurrenceId
                 ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }
                 : {}),
               prepareAttempt: async ({ botId }) => {
+                if (publisherRoute && botId !== publisherRoute.exactBotId) {
+                  throw new ServiceUnavailableException(
+                    'Publisher exact route changed before MAX dispatch',
+                  );
+                }
                 onBotSelected(botId);
                 await this.heartbeatManagedBroadcastProcessingLock(
                   row.id,
@@ -3588,6 +3600,10 @@ export class AdminManagedBroadcastRuntime {
                   request.normalizedSourceText,
                   media,
                   botId,
+                  publisherRoute?.dialogBotId ?? botId,
+                  publisherRoute
+                    ? { value: publisherRoute.dialogContext, required: true }
+                    : undefined,
                 );
                 commentDialogReferencesByBotId.set(botId, message.commentDialogReference);
                 preparedOptions = message.messageOptions;
@@ -3609,7 +3625,31 @@ export class AdminManagedBroadcastRuntime {
                 sendStarted = true;
                 onBotSelected(botId);
                 resolvedBotIdsByChatId.set(delivery.targetChatId, botId);
+                publisherRoute?.onAttemptStarted(new Date());
               },
+              ...(publisherRoute
+                ? {
+                    beforeSendMutation: async ({ botId }: { botId: string }) => {
+                      if (botId !== publisherRoute.exactBotId) {
+                        throw new ServiceUnavailableException(
+                          'Publisher exact route changed before MAX mutation',
+                        );
+                      }
+                      if (
+                        !(await this.ensureManagedBroadcastPublicationExecutionActive(
+                          row,
+                          currentOccurrence,
+                        ))
+                      ) {
+                        throw new ManagedBroadcastPublicationExecutionStopped();
+                      }
+                      await this.publisherDispatch.assertDeliveryReady(
+                        delivery.targetChatId,
+                        publisherRoute.exactBotId,
+                      );
+                    },
+                  }
+                : {}),
             });
             let commentDialogReference =
               commentDialogReferencesByBotId.get(sentMessage.botId) ?? null;
@@ -3731,6 +3771,7 @@ export class AdminManagedBroadcastRuntime {
             lockedAt: activeLease.lockedAt,
             lockToken: deliveryLockToken,
             attemptCount: { increment: 1 },
+            ...(isPublikExecution ? { lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER } : {}),
           },
         });
         if (deliveryClaim.count === 0) {
@@ -3776,19 +3817,21 @@ export class AdminManagedBroadcastRuntime {
                   delivery.targetChatId,
                   requiredPublisherBotId!,
                 );
-                return sendDeliveryWithBot(
-                  delivery.targetChatId,
-                  exactBotId,
-                  (startedAt) => {
-                    directSendAttemptStartedAt = startedAt;
+                return sendDeliveryRouted(
+                  delivery,
+                  deliveryAttemptCount,
+                  deliveryLockToken,
+                  (botId) => {
+                    resolvedBotId = botId;
                   },
-                  dialogBotId,
-                  { value: delivery.publisherDialogContext, required: true },
-                  () =>
-                    this.publisherDispatch.assertDeliveryReady(
-                      delivery.targetChatId,
-                      requiredPublisherBotId!,
-                    ),
+                  {
+                    exactBotId,
+                    dialogBotId,
+                    dialogContext: delivery.publisherDialogContext,
+                    onAttemptStarted: (startedAt) => {
+                      directSendAttemptStartedAt = startedAt;
+                    },
+                  },
                 );
               })()
             : this.maxRoutedPublicationService
@@ -5579,189 +5622,13 @@ export class AdminManagedBroadcastRuntime {
     occurrenceIndex: number,
     extraWhere?: Prisma.ManagedBroadcastDeliveryWhereInput,
   ): Promise<void> {
-    const broadcast = await this.prisma.managedBroadcast.findUnique({
-      where: { id: broadcastId },
+    await reconcileRoutedManagedBroadcastSendingDeliveriesValue({
+      prisma: this.prisma,
+      messageRuntime: this.messageRuntime,
+      broadcastId,
+      occurrenceIndex,
+      extraWhere,
     });
-    if (!broadcast) {
-      return;
-    }
-    const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId,
-        occurrenceIndex,
-        status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-        remoteMessageId: null,
-        ...(extraWhere ?? {}),
-      },
-      select: {
-        id: true,
-        targetChatId: true,
-        botId: true,
-        attemptCount: true,
-        lockedAt: true,
-        lockToken: true,
-      },
-    });
-    if (deliveries.length === 0) {
-      return;
-    }
-
-    const actionKeysByDeliveryId = new Map(
-      deliveries.map((delivery) => [
-        delivery.id,
-        buildManagedBroadcastLedgerRecoveryActionKeys(
-          broadcast,
-          occurrenceIndex,
-          delivery.targetChatId,
-          delivery.attemptCount,
-        ),
-      ]),
-    );
-    const actionKeys = collectManagedBroadcastLedgerRecoveryActionKeys(
-      actionKeysByDeliveryId.values(),
-    );
-    const ledgerRows = await this.prisma.maxActionLedgerEntry.findMany({
-      where: {
-        jobId: { in: actionKeys },
-      },
-      select: {
-        jobId: true,
-        remoteMessageId: true,
-        dispatchToken: true,
-        dispatchStartedAt: true,
-        dispatchBotId: true,
-        lastAttemptAt: true,
-        ambiguous: true,
-        terminal: true,
-        lastError: true,
-        completedAt: true,
-        metadata: true,
-      },
-    });
-    const ledgerByJobId = new Map(ledgerRows.map((ledger) => [ledger.jobId, ledger]));
-    const pendingDeliveries: Array<(typeof deliveries)[number]> = [];
-    const ambiguousDeliveryIds: string[] = [];
-    const failedDeliveries: Array<{
-      deliveryId: string;
-      botId: string | null;
-      lastError: string;
-    }> = [];
-    const completedDeliveries: Array<{
-      delivery: (typeof deliveries)[number];
-      ledger: (typeof ledgerRows)[number];
-    }> = [];
-    for (const delivery of deliveries) {
-      const recovery = classifyManagedBroadcastLedgerRecovery(
-        actionKeysByDeliveryId.get(delivery.id)!,
-        ledgerByJobId,
-        { legacyEligibleAfter: delivery.lockedAt },
-      );
-      if (recovery.kind === 'ambiguous') {
-        ambiguousDeliveryIds.push(delivery.id);
-        continue;
-      }
-      if (recovery.kind === 'completed') {
-        completedDeliveries.push({ delivery, ledger: recovery.ledger });
-        continue;
-      }
-      if (recovery.kind === 'pending') {
-        pendingDeliveries.push(delivery);
-        continue;
-      }
-      failedDeliveries.push({
-        deliveryId: delivery.id,
-        botId: recovery.ledger.dispatchBotId ?? delivery.botId ?? null,
-        lastError:
-          recovery.ledger.lastError?.trim() ||
-          'Отправка завершилась до обращения к MAX и требует ручного повтора.',
-      });
-    }
-
-    for (const { delivery, ledger } of completedDeliveries) {
-      const sentAt = ledger.completedAt ?? new Date();
-      const reconciled = await this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          id: delivery.id,
-          status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-          remoteMessageId: null,
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.SENT,
-          botId: ledger.dispatchBotId ?? delivery.botId ?? null,
-          remoteMessageId: ledger.remoteMessageId,
-          sentAt,
-          ...buildPublicationDeliveryVerificationScheduledData(sentAt),
-          legacySentWithoutRemoteId: false,
-          lockedAt: null,
-          lockToken: null,
-          lastError: null,
-        },
-      });
-      if (reconciled.count === 0) {
-        continue;
-      }
-      const recoveredContext = readManagedBroadcastLedgerCommentDialogContext(ledger.metadata);
-      if (recoveredContext.found) {
-        await this.messageRuntime.recordDialogReference({
-          chatId: delivery.targetChatId,
-          actorUserId: broadcast.actorUserId,
-          messageId: ledger.remoteMessageId,
-          text: broadcast.text,
-          reference: recoveredContext.reference,
-          source: 'ledger_recovery',
-          broadcastId,
-          occurrenceIndex,
-        });
-      }
-    }
-
-    for (const recoveryUpdate of buildManagedBroadcastPendingDeliveryRecoveryUpdates(
-      pendingDeliveries,
-    )) {
-      await this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-          remoteMessageId: null,
-          ...recoveryUpdate.where,
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-          ...recoveryUpdate.data,
-        },
-      });
-    }
-    for (const failedDelivery of failedDeliveries) {
-      await this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          id: failedDelivery.deliveryId,
-          status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-          remoteMessageId: null,
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.FAILED,
-          botId: failedDelivery.botId,
-          lockedAt: null,
-          lockToken: null,
-          lastError: failedDelivery.lastError,
-        },
-      });
-    }
-    if (ambiguousDeliveryIds.length > 0) {
-      await this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          id: { in: ambiguousDeliveryIds },
-          status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-          remoteMessageId: null,
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
-          lockedAt: null,
-          lockToken: null,
-          lastError:
-            'Прошлая попытка была прервана после старта отправки. Проверьте чат вручную перед повтором.',
-        },
-      });
-    }
   }
 
   private async failManagedBroadcastAfterFatalProcessingError(

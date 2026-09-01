@@ -114,7 +114,14 @@ export function resolvePublicationRateLimitRetryAt(error: unknown, now = new Dat
     errorChain.some(
       (current) => (current as { code?: unknown })?.code === 'MAX_API_INTERNAL_RATE_LIMIT',
     );
-  if (!exactExternalRateLimit && !internalPreDispatchRateLimit) {
+  const exactPreDispatchCircuitOpen =
+    (error as { managedBroadcastSendStarted?: unknown })?.managedBroadcastSendStarted === false &&
+    errorChain.some(
+      (current) =>
+        (current as { code?: unknown; preDispatch?: unknown })?.code === 'MAX_API_CIRCUIT_OPEN' &&
+        (current as { preDispatch?: unknown }).preDispatch === true,
+    );
+  if (!exactExternalRateLimit && !internalPreDispatchRateLimit && !exactPreDispatchCircuitOpen) {
     return null;
   }
 
@@ -315,8 +322,8 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
   deliveryLockToken: string;
   error: unknown;
 }): Promise<Date | null> {
-  // FLAG: Recycle only a limiter rejection before HTTP dispatch or an exact HTTP 429, which is a
-  // definitive rejection. Timeouts, 5xx responses, and other attempted sends remain terminal.
+  // FLAG: Recycle only an exact limiter/circuit rejection before HTTP dispatch or an exact HTTP
+  // 429, which is definitive. Timeouts, 5xx responses, and other attempted sends remain terminal.
   const occurrenceId = options.row.publicationOccurrenceId;
   const retryAt = resolvePublicationRateLimitRetryAt(options.error);
   if (!occurrenceId || options.reason !== 'deadline' || !retryAt) {

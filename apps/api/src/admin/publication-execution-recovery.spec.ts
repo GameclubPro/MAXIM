@@ -157,6 +157,36 @@ describe('publication execution recovery', () => {
     }
   });
 
+  it('defers an exact pre-dispatch circuit-open rejection to its retry minute', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:30.000Z'));
+    try {
+      const options = createOptions(
+        Object.assign(new Error('MAX API circuit breaker is open'), {
+          code: 'MAX_API_CIRCUIT_OPEN',
+          preDispatch: true,
+          managedBroadcastSendStarted: false,
+          retryAfterMs: 95_000,
+        }),
+      );
+
+      await expect(
+        deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
+      ).resolves.toEqual(new Date('2026-07-27T12:03:00.000Z'));
+      expect(options.context.prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            nextSendAt: new Date('2026-07-27T12:03:00.000Z'),
+            lockedAt: null,
+            lockToken: null,
+          }),
+        }),
+      );
+      expect(options.context.prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it.each([
     {
       label: 'internal limiter after dispatch started',
@@ -186,6 +216,15 @@ describe('publication execution recovery', () => {
       error: Object.assign(new Error('service unavailable'), {
         managedBroadcastSendStarted: true,
         response: { status: 503 },
+      }),
+      publicationOccurrenceId: 'occurrence-1',
+    },
+    {
+      label: 'circuit-open after dispatch started',
+      error: Object.assign(new Error('MAX API circuit breaker is open'), {
+        code: 'MAX_API_CIRCUIT_OPEN',
+        preDispatch: true,
+        managedBroadcastSendStarted: true,
       }),
       publicationOccurrenceId: 'occurrence-1',
     },

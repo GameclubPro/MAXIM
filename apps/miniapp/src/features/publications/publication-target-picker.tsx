@@ -5,6 +5,7 @@ import {
   useDeferredValue,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -208,6 +209,15 @@ export function PublicationTargetPicker({
     };
   }, [expanded]);
 
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!expanded || !shouldVirtualize || !list) {
+      return;
+    }
+
+    setListScrollTop(list.scrollTop);
+  }, [expanded, filteredChoices.length, shouldVirtualize]);
+
   useEffect(() => {
     if (!sheetOpen) {
       return undefined;
@@ -339,9 +349,7 @@ export function PublicationTargetPicker({
 
   function handleTargetListScroll(event: UIEvent<HTMLDivElement>): void {
     const list = event.currentTarget;
-    if (shouldVirtualize) {
-      setListScrollTop(list.scrollTop);
-    }
+    setListScrollTop(list.scrollTop);
 
     const nearEnd =
       list.scrollHeight - list.scrollTop - list.clientHeight <= TARGET_LIST_AUTO_LOAD_THRESHOLD;

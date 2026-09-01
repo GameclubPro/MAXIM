@@ -1,15 +1,21 @@
-import { ManagedBroadcastDeliveryStatus, type ManagedBroadcast } from '../prisma/prisma-client';
+import {
+  ManagedBroadcastDeliveryStatus,
+  PublicationDispatchProfile,
+  type ManagedBroadcast,
+} from '../prisma/prisma-client';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import {
   buildManagedBroadcastLedgerRecoveryActionKeys,
   classifyManagedBroadcastLedgerRecovery,
   collectManagedBroadcastLedgerRecoveryActionKeys,
+  PUBLIK_LEDGER_DISPATCH_MARKER,
   type ManagedBroadcastLedgerRecoveryRow,
 } from './admin-managed-broadcast-ledger-recovery';
 
 const broadcast = {
   id: 'broadcast-1',
   publicationContentRevisionId: 'revision-7',
+  dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
 } as ManagedBroadcast;
 
 function ledger(
@@ -127,7 +133,7 @@ describe('managed broadcast ledger rollout recovery', () => {
     ).toEqual({ kind: 'ambiguous' });
   });
 
-  it('rolls back a stale pre-dispatch claim so the next worker reuses its action key', async () => {
+  it('keeps a stale LEGACY_ROUTED claim without ledger evidence pending', async () => {
     const lockedAt = new Date('2026-07-26T20:00:00.000Z');
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const runtime = new AdminManagedBroadcastRuntime({
@@ -175,6 +181,7 @@ describe('managed broadcast ledger rollout recovery', () => {
         attemptCount: { decrement: 1 },
         lockedAt: null,
         lockToken: null,
+        lastErrorCode: null,
         lastError: null,
       },
     });
@@ -192,5 +199,198 @@ describe('managed broadcast ledger rollout recovery', () => {
       rolledBackAttemptCount + 1,
     ).currentKey;
     expect(nextClaimKey).toBe(interruptedAttemptKey);
+  });
+
+  async function reconcilePublikDelivery(options: {
+    lastErrorCode: string | null;
+    ledgerOverrides?: Partial<ManagedBroadcastLedgerRecoveryRow>;
+  }) {
+    const lockedAt = new Date('2026-09-01T10:00:00.000Z');
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const publikBroadcast = {
+      ...broadcast,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    } as ManagedBroadcast;
+    const actionKey = buildManagedBroadcastLedgerRecoveryActionKeys(
+      publikBroadcast,
+      1,
+      'chat-9',
+      1,
+    ).currentKey;
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedBroadcast: {
+          findUnique: jest.fn().mockResolvedValue(publikBroadcast),
+        },
+        managedBroadcastDelivery: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'publik-delivery-1',
+              targetChatId: 'chat-9',
+              botId: 'publisher-bot',
+              attemptCount: 1,
+              lockedAt,
+              lockToken: 'stale-publik-lock',
+              lastErrorCode: options.lastErrorCode,
+            },
+          ]),
+          updateMany,
+        },
+        maxActionLedgerEntry: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue(
+              options.ledgerOverrides ? [ledger(actionKey, options.ledgerOverrides)] : [],
+            ),
+        },
+      },
+      maxRoutedPublicationService: {},
+    } as never);
+
+    await (runtime as any).reconcileStaleManagedBroadcastDeliveries(
+      publikBroadcast.id,
+      1,
+      new Date('2026-09-01T10:05:00.000Z'),
+    );
+
+    return { lockedAt, updateMany };
+  }
+
+  it('releases a marked Publik claim with no ledger evidence back to pending', async () => {
+    const { lockedAt, updateMany } = await reconcilePublikDelivery({
+      lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER,
+    });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+        OR: [
+          {
+            id: 'publik-delivery-1',
+            attemptCount: 1,
+            lockedAt,
+            lockToken: 'stale-publik-lock',
+          },
+        ],
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        attemptCount: { decrement: 1 },
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError: null,
+      },
+    });
+  });
+
+  it('quarantines a marked Publik claim whose ledger has a dispatch fence', async () => {
+    const { updateMany } = await reconcilePublikDelivery({
+      lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER,
+      ledgerOverrides: {
+        dispatchToken: 'dispatch-token-1',
+        dispatchStartedAt: new Date('2026-09-01T10:00:01.000Z'),
+        dispatchBotId: 'publisher-bot',
+        lastAttemptAt: new Date('2026-09-01T10:00:00.500Z'),
+      },
+    });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['publik-delivery-1'] },
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError:
+          'Прошлая попытка была прервана после старта отправки. Проверьте чат вручную перед повтором.',
+      },
+    });
+  });
+
+  it('recovers a marked completed Publik ledger result as sent', async () => {
+    const completedAt = new Date('2026-09-01T10:00:02.000Z');
+    const { updateMany } = await reconcilePublikDelivery({
+      lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER,
+      ledgerOverrides: {
+        remoteMessageId: 'mid-publik-1',
+        dispatchToken: 'dispatch-token-1',
+        dispatchStartedAt: new Date('2026-09-01T10:00:01.000Z'),
+        dispatchBotId: 'publisher-bot',
+        lastAttemptAt: new Date('2026-09-01T10:00:00.500Z'),
+        completedAt,
+        terminal: true,
+      },
+    });
+
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'publik-delivery-1' }),
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          botId: 'publisher-bot',
+          remoteMessageId: 'mid-publik-1',
+          sentAt: completedAt,
+          lastErrorCode: null,
+        }),
+      }),
+    );
+  });
+
+  it('clears the rollout marker when a marked pre-dispatch ledger failure is terminal', async () => {
+    const { updateMany } = await reconcilePublikDelivery({
+      lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER,
+      ledgerOverrides: {
+        lastAttemptAt: new Date('2026-09-01T10:00:00.500Z'),
+        terminal: true,
+        lastError: 'MAX rejected the prepared send before dispatch',
+      },
+    });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'publik-delivery-1',
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.FAILED,
+        botId: 'publisher-bot',
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError: 'MAX rejected the prepared send before dispatch',
+      },
+    });
+  });
+
+  it('quarantines an unmarked pre-ledger Publik claim during rollout', async () => {
+    const { updateMany } = await reconcilePublikDelivery({ lastErrorCode: null });
+
+    expect(
+      updateMany.mock.calls.some(
+        ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.PENDING,
+      ),
+    ).toBe(false);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['publik-delivery-1'] },
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError:
+          'Прошлая попытка была прервана после старта отправки. Проверьте чат вручную перед повтором.',
+      },
+    });
   });
 });

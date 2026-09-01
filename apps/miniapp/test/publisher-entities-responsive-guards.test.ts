@@ -106,6 +106,20 @@ test('publisher entity pagination stays inside the only list scroll owner', () =
   assert.doesNotMatch(paginationBlock, /bottom-nav|position:\s*(?:fixed|sticky)/u);
 });
 
+test('publisher target picker preserves scroll position across the virtualization transition', () => {
+  const scrollHandlerStart = pickerSource.indexOf('function handleTargetListScroll');
+  const scrollHandlerEnd = pickerSource.indexOf('function renderChoice', scrollHandlerStart);
+  const scrollHandlerSource = pickerSource.slice(scrollHandlerStart, scrollHandlerEnd);
+
+  assert.ok(scrollHandlerStart >= 0 && scrollHandlerEnd > scrollHandlerStart);
+  assert.match(scrollHandlerSource, /setListScrollTop\(list\.scrollTop\)/u);
+  assert.doesNotMatch(scrollHandlerSource, /if \(shouldVirtualize\)/u);
+  assert.match(
+    pickerSource,
+    /useLayoutEffect\(\(\) => \{[\s\S]*?setListScrollTop\(list\.scrollTop\);[\s\S]*?filteredChoices\.length[\s\S]*?shouldVirtualize/u,
+  );
+});
+
 test('expanded target picker removes the fixed publish dock from mobile hit testing', () => {
   assert.match(
     pickerCss,

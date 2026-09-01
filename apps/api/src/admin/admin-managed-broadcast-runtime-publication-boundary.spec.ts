@@ -603,6 +603,14 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     while (deliveryUpdate.mock.calls.length === 0) await Promise.resolve();
 
     expect(occurrenceUpdate).not.toHaveBeenCalled();
+    expect(deliveryUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          lastErrorCode: null,
+        }),
+      }),
+    );
     releaseDelivery();
     await expect(deferral).resolves.toBeInstanceOf(Date);
     expect(occurrenceUpdate).toHaveBeenCalledTimes(1);

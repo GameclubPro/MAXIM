@@ -13,6 +13,7 @@ import {
 } from '../prisma/prisma-client';
 import { AdminManagedBroadcastPublicationVerification } from './admin-managed-broadcast-publication-verification';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
+import { PUBLIK_LEDGER_DISPATCH_MARKER } from './admin-managed-broadcast-ledger-recovery';
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './publication-access-loss-recovery';
 import { PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE } from './admin.service.support';
@@ -2326,7 +2327,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     jest.useRealTimers();
   });
 
-  it('sends PUBLIK_V1 directly through its persisted exact bot without routed failover', async () => {
+  it('sends PUBLIK_V1 through its ledger-fenced exact bot without routed failover', async () => {
     const nextSendAt = new Date('2026-08-26T10:00:00.000Z');
     const row = {
       id: 'broadcast-publik',
@@ -2365,6 +2366,23 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
     };
+    const commentDialogReference = {
+      entityType: 'chat' as const,
+      threadId: 'thread-publik',
+      includeCommentsButton: true,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      customButtons: [],
+      suggestionEntryMode: null,
+      botId: 'publisher-bot',
+      dialogBotId: 'publisher-bot',
+    };
+    const publisherDialogContext = {
+      version: 1,
+      dialogBotId: 'publisher-bot',
+      buttons: [[{ type: 'link', text: 'Comments', url: 'https://max.ru/app' }]],
+      reference: commentDialogReference,
+    };
     const delivery = {
       id: 'delivery-publik',
       broadcastId: row.id,
@@ -2381,11 +2399,20 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
       dialogBotId: 'publisher-bot',
+      publisherDialogContext,
     };
     const publish = jest.fn();
     const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const managedBroadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const publicationOccurrenceUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const assertEntityReady = jest.fn().mockResolvedValue({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      requiredBotId: 'publisher-bot',
+      policyRevision: 1,
+    });
+    const assertDispatchAllowed = jest.fn().mockResolvedValue(undefined);
+    const recordSendSuccess = jest.fn().mockResolvedValue(undefined);
     const actorAccessFindMany = jest.fn().mockResolvedValue([
       {
         chatId: 'chat-1',
@@ -2419,16 +2446,11 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         maxRoutedPublicationService: { publish },
         publisherRuntimeBoundaryService: { assertDispatchEnabled: jest.fn() },
         publisherReadinessService: {
-          assertEntityReady: jest.fn().mockResolvedValue({
-            chatId: 'chat-1',
-            entityType: 'chat',
-            requiredBotId: 'publisher-bot',
-            policyRevision: 1,
-          }),
+          assertEntityReady,
         },
         publisherDispatchHealthService: {
-          assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
-          recordSendSuccess: jest.fn().mockResolvedValue(undefined),
+          assertDispatchAllowed,
+          recordSendSuccess,
           recordSendFailure: jest.fn().mockResolvedValue('transient'),
         },
         assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
@@ -2436,7 +2458,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       } as never,
       PublicationDispatchProfile.PUBLIK_V1,
     );
-    jest
+    const executionActive = jest
       .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
       .mockResolvedValue(true);
     jest
@@ -2466,11 +2488,13 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     jest
       .spyOn(runtime as any, 'heartbeatManagedBroadcastProcessingLock')
       .mockResolvedValue(undefined);
-    jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
-      messageText: 'Publication',
-      messageOptions: undefined,
-      commentDialogReference: null,
-    });
+    const buildMessage = jest
+      .spyOn((runtime as any).messageRuntime, 'buildMessage')
+      .mockResolvedValue({
+        messageText: 'Publication',
+        messageOptions: undefined,
+        commentDialogReference,
+      });
     const send = jest
       .spyOn(runtime as any, 'sendManagedBroadcastMessageImmediateWithId')
       .mockResolvedValue({ messageId: 'mid-publik', url: null, chatId: 'chat-1' });
@@ -2487,6 +2511,30 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       firstSendError: null,
       nextSendAt: null,
     });
+    let preparedLedgerContext: unknown;
+    let readinessCallsBeforeMutation = 0;
+    let readinessCallsAfterMutation = 0;
+    let executionChecksBeforeMutation = 0;
+    let executionChecksAfterMutation = 0;
+    publish.mockImplementation(async (request: any) => {
+      const context = { botId: 'publisher-bot', job: {} };
+      const prepared = await request.prepareAttempt(context);
+      preparedLedgerContext = prepared.ledgerContext;
+      await request.onDispatchAttempt(context);
+      readinessCallsBeforeMutation = assertEntityReady.mock.calls.length;
+      executionChecksBeforeMutation = executionActive.mock.calls.length;
+      await request.beforeSendMutation(context);
+      readinessCallsAfterMutation = assertEntityReady.mock.calls.length;
+      executionChecksAfterMutation = executionActive.mock.calls.length;
+      return {
+        messageId: 'mid-publik',
+        url: null,
+        chatId: 'chat-1',
+        botId: 'publisher-bot',
+        candidateBotIds: ['publisher-bot'],
+        routingVersion: null,
+      };
+    });
 
     await (runtime as any).processManagedBroadcastOccurrence(
       row.id,
@@ -2495,7 +2543,13 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       [ManagedBroadcastStatus.ACTIVE],
     );
 
-    expect(publish).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publisherExactBotId: 'publisher-bot',
+        logicalIdempotencyKey:
+          'managed-broadcast:send:broadcast-publik:occurrence:1:target:chat-1:content:publication-content-publik',
+      }),
+    );
     expect(actorAccessFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -2512,14 +2566,31 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         }),
       }),
     );
-    expect(send).toHaveBeenCalledWith(
+    expect(send).not.toHaveBeenCalled();
+    expect(buildMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Publication',
-      undefined,
-      'publisher-bot',
+      'chat',
       expect.any(Object),
-      expect.any(Function),
-      expect.any(Function),
+      'Publication',
+      {},
+      'publisher-bot',
+      'publisher-bot',
+      { value: publisherDialogContext, required: true },
+    );
+    expect(preparedLedgerContext).toEqual({
+      managedBroadcast: { commentDialogReference },
+    });
+    expect(readinessCallsAfterMutation).toBe(readinessCallsBeforeMutation + 1);
+    expect(executionChecksAfterMutation).toBe(executionChecksBeforeMutation + 1);
+    expect(assertDispatchAllowed).toHaveBeenCalledTimes(assertEntityReady.mock.calls.length);
+    expect(recordSendSuccess).toHaveBeenCalledWith('chat-1', expect.any(Date));
+    expect(deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER,
+        }),
+      }),
     );
     expect(deliveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({

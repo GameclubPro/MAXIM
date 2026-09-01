@@ -1,5 +1,16 @@
-import type { ManagedBroadcast as PersistedManagedBroadcast } from '../prisma/prisma-client';
+import {
+  ManagedBroadcastDeliveryStatus,
+  Prisma,
+  PublicationDispatchProfile,
+  type ManagedBroadcast as PersistedManagedBroadcast,
+} from '../prisma/prisma-client';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { AdminManagedBroadcastMessageRuntime } from './admin-managed-broadcast-message-runtime';
+import { readManagedBroadcastLedgerCommentDialogContext } from './admin-managed-broadcast-ledger';
 import { buildManagedBroadcastDeliveryActionKey } from './admin-managed-broadcast-reconciliation';
+import { buildPublicationDeliveryVerificationScheduledData } from './publication-delivery-verification-state';
+
+export const PUBLIK_LEDGER_DISPATCH_MARKER = 'PUBLIK_LEDGER_DISPATCH_V1';
 
 export type ManagedBroadcastLedgerRecoveryActionKeys = {
   currentKey: string;
@@ -34,6 +45,7 @@ export type ManagedBroadcastPendingDeliveryRecoveryUpdate = {
     attemptCount?: { decrement: number };
     lockedAt: null;
     lockToken: null;
+    lastErrorCode: null;
     lastError: null;
   };
 };
@@ -96,6 +108,7 @@ export function buildManagedBroadcastPendingDeliveryRecoveryUpdates(
               ...(decrement ? { attemptCount: { decrement: 1 } } : {}),
               lockedAt: null,
               lockToken: null,
+              lastErrorCode: null,
               lastError: null,
             },
           },
@@ -173,4 +186,192 @@ export function classifyManagedBroadcastLedgerRecovery<T extends ManagedBroadcas
   // claim an attempt-scoped key and leave two independent dispatch fences alive.
   if (legacyLedger) return { kind: 'ambiguous' };
   return { kind: 'pending' };
+}
+
+export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: {
+  prisma: PrismaService;
+  messageRuntime: Pick<AdminManagedBroadcastMessageRuntime, 'recordDialogReference'>;
+  broadcastId: string;
+  occurrenceIndex: number;
+  extraWhere?: Prisma.ManagedBroadcastDeliveryWhereInput;
+}): Promise<void> {
+  const { prisma, messageRuntime, broadcastId, occurrenceIndex, extraWhere } = options;
+  const broadcast = await prisma.managedBroadcast.findUnique({ where: { id: broadcastId } });
+  if (!broadcast) return;
+
+  const deliveries = await prisma.managedBroadcastDelivery.findMany({
+    where: {
+      broadcastId,
+      occurrenceIndex,
+      status: ManagedBroadcastDeliveryStatus.SENDING,
+      remoteMessageId: null,
+      ...(extraWhere ?? {}),
+    },
+    select: {
+      id: true,
+      targetChatId: true,
+      botId: true,
+      attemptCount: true,
+      lockedAt: true,
+      lockToken: true,
+      lastErrorCode: true,
+    },
+  });
+  if (deliveries.length === 0) return;
+
+  const actionKeysByDeliveryId = new Map(
+    deliveries.map((delivery) => [
+      delivery.id,
+      buildManagedBroadcastLedgerRecoveryActionKeys(
+        broadcast,
+        occurrenceIndex,
+        delivery.targetChatId,
+        delivery.attemptCount,
+      ),
+    ]),
+  );
+  const actionKeys = collectManagedBroadcastLedgerRecoveryActionKeys(
+    actionKeysByDeliveryId.values(),
+  );
+  const ledgerRows = await prisma.maxActionLedgerEntry.findMany({
+    where: { jobId: { in: actionKeys } },
+    select: {
+      jobId: true,
+      remoteMessageId: true,
+      dispatchToken: true,
+      dispatchStartedAt: true,
+      dispatchBotId: true,
+      lastAttemptAt: true,
+      ambiguous: true,
+      terminal: true,
+      lastError: true,
+      completedAt: true,
+      metadata: true,
+    },
+  });
+  const ledgerByJobId = new Map(ledgerRows.map((ledger) => [ledger.jobId, ledger]));
+  const pendingDeliveries: Array<(typeof deliveries)[number]> = [];
+  const ambiguousDeliveryIds: string[] = [];
+  const failedDeliveries: Array<{
+    deliveryId: string;
+    botId: string | null;
+    lastError: string;
+  }> = [];
+  const completedDeliveries: Array<{
+    delivery: (typeof deliveries)[number];
+    ledger: (typeof ledgerRows)[number];
+  }> = [];
+  const isPublikExecution = broadcast.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1;
+
+  for (const delivery of deliveries) {
+    if (isPublikExecution && delivery.lastErrorCode !== PUBLIK_LEDGER_DISPATCH_MARKER) {
+      ambiguousDeliveryIds.push(delivery.id);
+      continue;
+    }
+    const recovery = classifyManagedBroadcastLedgerRecovery(
+      actionKeysByDeliveryId.get(delivery.id)!,
+      ledgerByJobId,
+      { legacyEligibleAfter: delivery.lockedAt },
+    );
+    if (recovery.kind === 'ambiguous') {
+      ambiguousDeliveryIds.push(delivery.id);
+    } else if (recovery.kind === 'completed') {
+      completedDeliveries.push({ delivery, ledger: recovery.ledger });
+    } else if (recovery.kind === 'pending') {
+      pendingDeliveries.push(delivery);
+    } else {
+      failedDeliveries.push({
+        deliveryId: delivery.id,
+        botId: recovery.ledger.dispatchBotId ?? delivery.botId ?? null,
+        lastError:
+          recovery.ledger.lastError?.trim() ||
+          'Отправка завершилась до обращения к MAX и требует ручного повтора.',
+      });
+    }
+  }
+
+  for (const { delivery, ledger } of completedDeliveries) {
+    const sentAt = ledger.completedAt ?? new Date();
+    const reconciled = await prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        id: delivery.id,
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        botId: ledger.dispatchBotId ?? delivery.botId ?? null,
+        remoteMessageId: ledger.remoteMessageId,
+        sentAt,
+        ...buildPublicationDeliveryVerificationScheduledData(sentAt),
+        legacySentWithoutRemoteId: false,
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError: null,
+      },
+    });
+    if (reconciled.count === 0) continue;
+
+    const recoveredContext = readManagedBroadcastLedgerCommentDialogContext(ledger.metadata);
+    if (recoveredContext.found) {
+      await messageRuntime.recordDialogReference({
+        chatId: delivery.targetChatId,
+        actorUserId: broadcast.actorUserId,
+        messageId: ledger.remoteMessageId,
+        text: broadcast.text,
+        reference: recoveredContext.reference,
+        source: 'ledger_recovery',
+        broadcastId,
+        occurrenceIndex,
+      });
+    }
+  }
+
+  for (const recoveryUpdate of buildManagedBroadcastPendingDeliveryRecoveryUpdates(
+    pendingDeliveries,
+  )) {
+    await prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+        ...recoveryUpdate.where,
+      },
+      data: { status: ManagedBroadcastDeliveryStatus.PENDING, ...recoveryUpdate.data },
+    });
+  }
+  for (const failedDelivery of failedDeliveries) {
+    await prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        id: failedDelivery.deliveryId,
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.FAILED,
+        botId: failedDelivery.botId,
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError: failedDelivery.lastError,
+      },
+    });
+  }
+  if (ambiguousDeliveryIds.length > 0) {
+    await prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        id: { in: ambiguousDeliveryIds },
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError:
+          'Прошлая попытка была прервана после старта отправки. Проверьте чат вручную перед повтором.',
+      },
+    });
+  }
 }

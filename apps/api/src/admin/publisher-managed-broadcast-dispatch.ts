@@ -254,6 +254,7 @@ export class PublisherManagedBroadcastDispatch {
         status: ManagedBroadcastDeliveryStatus.PENDING,
         lockedAt: null,
         lockToken: null,
+        lastErrorCode: null,
         dispatchBlockerCode: params.blockerCode.slice(0, 96),
         dispatchBlockedAt: blockedAt,
       },
