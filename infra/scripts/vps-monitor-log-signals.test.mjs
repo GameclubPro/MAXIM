@@ -105,6 +105,20 @@ test('serializes full-fleet readonly monitors before production sampling', () =>
   assert.match(monitor, /exec \{MONITOR_LOCK_FD\}>>"\$MONITOR_LOCK_FILE"/u);
   assert.doesNotMatch(monitor, /exec \{MONITOR_LOCK_FD\}>"\$MONITOR_LOCK_FILE"/u);
   assert.match(monitor, /Another readonly VPS monitor already holds/u);
+  const remoteLockCall = monitor.lastIndexOf('\nacquire_remote_monitor_lock\n');
+  const monitorCall = monitor.lastIndexOf('\nstart_monitor_runner\n');
+  assert.notEqual(remoteLockCall, -1, 'remote monitor lock acquisition is missing');
+  assert.notEqual(monitorCall, -1, 'monitor call is missing');
+  assert.ok(remoteLockCall < monitorCall, 'remote lock must be acquired before monitoring');
+  assert.match(monitor, /env -u MAXIM_MONITOR_REMOTE_LOCK_FILE/u);
+  assert.match(monitor, /assert_remote_monitor_lock \|\| return 3/u);
+  assert.match(monitor, /trap cleanup_monitor_wrapper EXIT/u);
+  assert.match(monitor, /^\s*setsid --wait .*vps-monitor-process-guardian\.sh/mu);
+  assert.match(monitor, /disown "\$MONITOR_RUNNER_PID"/u);
+  assert.doesNotMatch(monitor, /\bcoproc\b/u);
+  assert.doesNotMatch(monitor, /run_monitor\n\} 2>&1 \| tee/u);
+  assert.match(monitor, /read -r -t 0 <&"\$MONITOR_RUNNER_REQUEST_FD"/u);
+  assert.doesNotMatch(monitor, /read -r -t 0\.[0-9]+ request/u);
 });
 
 test('uses successful remote cursors and reports bounded log saturation', () => {
@@ -117,10 +131,12 @@ test('uses successful remote cursors and reports bounded log saturation', () => 
   assert.match(monitor, /exit "\\\$failed"/u);
   assert.doesNotMatch(monitor, /logs --since "\$\{INTERVAL_SEC\}s"/u);
   assert.match(monitor, /LOG_REQUEST_LINES=\$\(\(TAIL_LINES \+ 1\)\)/u);
-  assert.equal(
-    [...monitor.matchAll(/log scan saturated=true service=\\\$service/gu)].length,
-    2,
-  );
+  assert.equal([...monitor.matchAll(/log scan saturated=true service=\\\$service/gu)].length, 2);
+  const signalCountSource = readFunction('summarize_log_signal_counts');
+  assert.match(signalCountSource, /logs --since .*--tail "\$LOG_REQUEST_LINES"/su);
+  assert.match(signalCountSource, /log signal counts saturated=true service=\\\$service/u);
+  assert.match(signalCountSource, /saturated\\\\traw_lines/u);
+  assert.doesNotMatch(signalCountSource, /logs=.*\|\| true/u);
   for (const [functionName, cursor] of [
     ['scan_service_logs', 'LAST_SERVICE_LOG_SCAN_AT_SEC'],
     ['summarize_static_services', 'LAST_STATIC_LOG_SCAN_AT_SEC'],
@@ -159,7 +175,10 @@ test('adds privacy-safe semantic, Publisher, and media-analysis readiness to eve
   assert.match(monitor, /bot_id_parity/u);
   assert.match(monitor, /admin_bot_id="\$\(read_bot_id api-admin\)" \|\| exit 1/u);
   assert.match(monitor, /publisher_bot_id="\$\(read_bot_id api-publisher\)" \|\| exit 1/u);
-  assert.match(monitor, /\[\[ -n "\$admin_bot_id" && "\$admin_bot_id" == "\$publisher_bot_id" \]\]/u);
+  assert.match(
+    monitor,
+    /\[\[ -n "\$admin_bot_id" && "\$admin_bot_id" == "\$publisher_bot_id" \]\]/u,
+  );
   assert.doesNotMatch(monitor, /exec -T -e MAX_PUBLISHER_BOT_ID=/u);
   assert.match(monitor, /run_step media-analysis-ready summarize_media_analysis_ready/u);
   assert.match(monitor, /monitor-media-ready\.cjs/u);

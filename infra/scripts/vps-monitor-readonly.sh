@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
+# Trap handlers and run_step callbacks are referenced indirectly.
+# shellcheck disable=SC2329
 set -euo pipefail
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
@@ -8,7 +11,20 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
+# shellcheck source=infra/scripts/lib/monitor-process-tree.sh
+source "$ROOT_DIR/infra/scripts/lib/monitor-process-tree.sh"
 
+MIN_MONITOR_INTERVAL_SEC=15
+MAX_MONITOR_DURATION_SEC=21600
+MAX_MONITOR_FAILED_FRESH_WINDOW_SEC=86400
+REMOTE_MONITOR_LOCK_MARKER='MAXIM_REMOTE_MONITOR_LOCK_ACQUIRED'
+REMOTE_MONITOR_LOCK_PING='MAXIM_REMOTE_MONITOR_LOCK_PING'
+REMOTE_MONITOR_LOCK_ACK='MAXIM_REMOTE_MONITOR_LOCK_ACK'
+REMOTE_MONITOR_LOCK_ACK_TIMEOUT_SEC=5
+REMOTE_MONITOR_LOCK_HEARTBEAT_SEC=5
+MONITOR_SAMPLE_REQUEST='MAXIM_MONITOR_SAMPLE_REQUEST'
+MONITOR_SAMPLE_PERMIT='MAXIM_MONITOR_SAMPLE_PERMIT'
+MONITOR_CHILD_MODE="${MAXIM_MONITOR_CHILD_MODE:-0}"
 DURATION_SEC="${1:-${MAXIM_MONITOR_DURATION_SEC:-1800}}"
 INTERVAL_SEC="${2:-${MAXIM_MONITOR_INTERVAL_SEC:-300}}"
 TAIL_LINES="${MAXIM_MONITOR_LOG_TAIL_LINES:-300}"
@@ -21,6 +37,36 @@ PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
 ADMIN_PUBLIC_URL="${MAXIM_ADMIN_PUBLIC_URL:-https://admin.major-maksimov.ru}"
 SIGNAL_WINDOW_MIN="${MAXIM_MONITOR_SIGNAL_WINDOW_MIN:-30}"
 MONITOR_LOCK_FILE="${MAXIM_MONITOR_LOCK_FILE:-${TMPDIR:-/tmp}/maxim-vps-monitor-readonly-${UID}.lock}"
+MONITOR_SUPERVISION_DIR=''
+REMOTE_MONITOR_LOCK_HELD=0
+REMOTE_MONITOR_LOCK_PID=''
+REMOTE_MONITOR_LOCK_PID_STARTTIME=''
+REMOTE_MONITOR_LOCK_SESSION=''
+REMOTE_MONITOR_LOCK_SESSION_STARTTIME=''
+REMOTE_MONITOR_LOCK_INPUT_FIFO=''
+REMOTE_MONITOR_LOCK_OUTPUT_FIFO=''
+REMOTE_MONITOR_LOCK_READ_FD=''
+REMOTE_MONITOR_LOCK_WRITE_FD=''
+REMOTE_MONITOR_LOCK_CHALLENGE_INDEX=0
+REMOTE_MONITOR_LOCK_NEXT_HEARTBEAT_AT_SEC=0
+MONITOR_RUNNER_PID=''
+MONITOR_RUNNER_PID_STARTTIME=''
+MONITOR_RUNNER_SESSION=''
+MONITOR_RUNNER_SESSION_STARTTIME=''
+MONITOR_RUNNER_OUTPUT_FIFO=''
+MONITOR_RUNNER_REQUEST_FIFO=''
+MONITOR_RUNNER_PERMIT_FIFO=''
+MONITOR_RUNNER_READ_FD=''
+MONITOR_RUNNER_REQUEST_FD=''
+MONITOR_RUNNER_PERMIT_FD=''
+MONITOR_RUNNER_NEXT_SAMPLE_INDEX=0
+MONITOR_CHILD_REQUEST_FIFO="${MAXIM_MONITOR_SAMPLE_REQUEST_FIFO:-}"
+MONITOR_CHILD_PERMIT_FIFO="${MAXIM_MONITOR_SAMPLE_PERMIT_FIFO:-}"
+MONITOR_CHILD_REQUEST_FD=''
+MONITOR_CHILD_PERMIT_FD=''
+MONITOR_LOG_FD=''
+MONITOR_WRAPPER_PID="$BASHPID"
+MONITOR_WRAPPER_STARTTIME=''
 SUCCESSFUL_ACCESS_LOG_PATTERN='" (2[0-9][0-9]|3[0-9][0-9]) [0-9]+'
 PUBLIC_URL="${PUBLIC_URL%/}"
 ADMIN_PUBLIC_URL="${ADMIN_PUBLIC_URL%/}"
@@ -33,13 +79,35 @@ is_positive_integer() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
-if ! is_positive_integer "$DURATION_SEC"; then
-  echo "DURATION_SEC must be a positive integer, got: $DURATION_SEC" >&2
+case "$MONITOR_CHILD_MODE" in
+  0|1) ;;
+  *)
+    echo "MAXIM_MONITOR_CHILD_MODE must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
+
+MONITOR_WRAPPER_STARTTIME="$(monitor_wait_for_process_starttime "$MONITOR_WRAPPER_PID")" || {
+  echo "Could not bind the monitor wrapper to its process identity." >&2
+  exit 2
+}
+if ((MONITOR_CHILD_MODE == 1)); then
+  if [[ "${MAXIM_MONITOR_PARENT_PID:-}" != "$PPID" ]] ||
+    ! monitor_process_identity_is_alive \
+      "${MAXIM_MONITOR_PARENT_PID:-}" \
+      "${MAXIM_MONITOR_PARENT_STARTTIME:-}"; then
+    echo "Monitor child mode requires its exact live wrapper parent." >&2
+    exit 2
+  fi
+fi
+
+if ! is_positive_integer "$DURATION_SEC" || ((DURATION_SEC > MAX_MONITOR_DURATION_SEC)); then
+  echo "DURATION_SEC must be an integer between 1 and $MAX_MONITOR_DURATION_SEC, got: $DURATION_SEC" >&2
   exit 2
 fi
 
-if ! is_positive_integer "$INTERVAL_SEC"; then
-  echo "INTERVAL_SEC must be a positive integer, got: $INTERVAL_SEC" >&2
+if ! is_positive_integer "$INTERVAL_SEC" || ((INTERVAL_SEC < MIN_MONITOR_INTERVAL_SEC)); then
+  echo "INTERVAL_SEC must be an integer of at least $MIN_MONITOR_INTERVAL_SEC, got: $INTERVAL_SEC" >&2
   exit 2
 fi
 
@@ -49,8 +117,10 @@ if ! is_positive_integer "$TAIL_LINES" || ((TAIL_LINES > 10000)); then
 fi
 LOG_REQUEST_LINES=$((TAIL_LINES + 1))
 
-if ! is_positive_integer "$FAILED_FRESH_WINDOW_SEC"; then
-  echo "MAXIM_MONITOR_FAILED_FRESH_WINDOW_SEC must be a positive integer, got: $FAILED_FRESH_WINDOW_SEC" >&2
+if ! is_positive_integer "$FAILED_FRESH_WINDOW_SEC" ||
+  ((FAILED_FRESH_WINDOW_SEC < INTERVAL_SEC ||
+    FAILED_FRESH_WINDOW_SEC > MAX_MONITOR_FAILED_FRESH_WINDOW_SEC)); then
+  echo "MAXIM_MONITOR_FAILED_FRESH_WINDOW_SEC must be between INTERVAL_SEC and $MAX_MONITOR_FAILED_FRESH_WINDOW_SEC, got: $FAILED_FRESH_WINDOW_SEC" >&2
   exit 2
 fi
 
@@ -59,17 +129,384 @@ if ! is_positive_integer "$SIGNAL_WINDOW_MIN" || ((SIGNAL_WINDOW_MIN > 1440)); t
   exit 2
 fi
 
-if ! command -v flock >/dev/null 2>&1; then
-  echo "flock is required to serialize readonly production monitoring" >&2
-  exit 2
+if ((MONITOR_CHILD_MODE == 0)); then
+  for required_command in flock mkfifo mktemp setsid; do
+    if ! command -v "$required_command" >/dev/null 2>&1; then
+      echo "$required_command is required for serialized readonly production monitoring" >&2
+      exit 2
+    fi
+  done
+
+  # FLAG: Multiple full-fleet monitors amplify diagnostic load and can distort the system observed.
+  exec {MONITOR_LOCK_FD}>>"$MONITOR_LOCK_FILE"
+  if ! flock -n "$MONITOR_LOCK_FD"; then
+    echo "Another readonly VPS monitor already holds $MONITOR_LOCK_FILE" >&2
+    exit 3
+  fi
 fi
 
-# FLAG: Multiple full-fleet monitors amplify diagnostic load and can distort the system observed.
-exec {MONITOR_LOCK_FD}>>"$MONITOR_LOCK_FILE"
-if ! flock -n "$MONITOR_LOCK_FD"; then
-  echo "Another readonly VPS monitor already holds $MONITOR_LOCK_FILE" >&2
-  exit 3
-fi
+prepare_monitor_supervision() {
+  if [[ -n "$MONITOR_SUPERVISION_DIR" ]]; then
+    return 0
+  fi
+
+  MONITOR_SUPERVISION_DIR="$(
+    mktemp -d "${TMPDIR:-/tmp}/maxim-vps-monitor-supervision.XXXXXXXX"
+  )"
+  REMOTE_MONITOR_LOCK_INPUT_FIFO="$MONITOR_SUPERVISION_DIR/remote-lock.stdin"
+  REMOTE_MONITOR_LOCK_OUTPUT_FIFO="$MONITOR_SUPERVISION_DIR/remote-lock.stdout"
+  MONITOR_RUNNER_OUTPUT_FIFO="$MONITOR_SUPERVISION_DIR/runner.stdout"
+  MONITOR_RUNNER_REQUEST_FIFO="$MONITOR_SUPERVISION_DIR/runner.request"
+  MONITOR_RUNNER_PERMIT_FIFO="$MONITOR_SUPERVISION_DIR/runner.permit"
+  mkfifo -- \
+    "$REMOTE_MONITOR_LOCK_INPUT_FIFO" \
+    "$REMOTE_MONITOR_LOCK_OUTPUT_FIFO" \
+    "$MONITOR_RUNNER_OUTPUT_FIFO" \
+    "$MONITOR_RUNNER_REQUEST_FIFO" \
+    "$MONITOR_RUNNER_PERMIT_FIFO"
+}
+
+cleanup_monitor_supervision() {
+  if [[ -z "$MONITOR_SUPERVISION_DIR" ]]; then
+    return 0
+  fi
+
+  rm -f -- \
+    "$REMOTE_MONITOR_LOCK_INPUT_FIFO" \
+    "$REMOTE_MONITOR_LOCK_OUTPUT_FIFO" \
+    "$MONITOR_RUNNER_OUTPUT_FIFO" \
+    "$MONITOR_RUNNER_REQUEST_FIFO" \
+    "$MONITOR_RUNNER_PERMIT_FIFO"
+  rmdir -- "$MONITOR_SUPERVISION_DIR" 2>/dev/null || true
+  MONITOR_SUPERVISION_DIR=''
+  REMOTE_MONITOR_LOCK_INPUT_FIFO=''
+  REMOTE_MONITOR_LOCK_OUTPUT_FIFO=''
+  MONITOR_RUNNER_OUTPUT_FIFO=''
+  MONITOR_RUNNER_REQUEST_FIFO=''
+  MONITOR_RUNNER_PERMIT_FIFO=''
+}
+
+release_remote_monitor_lock() {
+  if [[ "$REMOTE_MONITOR_LOCK_WRITE_FD" =~ ^[0-9]+$ ]]; then
+    exec {REMOTE_MONITOR_LOCK_WRITE_FD}>&- 2>/dev/null || true
+    REMOTE_MONITOR_LOCK_WRITE_FD=''
+  fi
+  if [[ "$REMOTE_MONITOR_LOCK_PID" =~ ^[1-9][0-9]*$ &&
+    "$REMOTE_MONITOR_LOCK_PID_STARTTIME" =~ ^[0-9]+$ &&
+    "$REMOTE_MONITOR_LOCK_SESSION" =~ ^[1-9][0-9]*$ &&
+    "$REMOTE_MONITOR_LOCK_SESSION_STARTTIME" =~ ^[0-9]+$ ]]; then
+    if ! monitor_wait_for_owned_tree_exit \
+      "$REMOTE_MONITOR_LOCK_PID" \
+      "$REMOTE_MONITOR_LOCK_PID_STARTTIME" \
+      "$REMOTE_MONITOR_LOCK_SESSION" \
+      "$REMOTE_MONITOR_LOCK_SESSION_STARTTIME" 20; then
+      monitor_terminate_owned_tree \
+        "$REMOTE_MONITOR_LOCK_PID" \
+        "$REMOTE_MONITOR_LOCK_PID_STARTTIME" \
+        "$REMOTE_MONITOR_LOCK_SESSION" \
+        "$REMOTE_MONITOR_LOCK_SESSION_STARTTIME" || true
+    fi
+    wait "$REMOTE_MONITOR_LOCK_PID" 2>/dev/null || true
+  elif [[ "$REMOTE_MONITOR_LOCK_PID" =~ ^[1-9][0-9]*$ &&
+    "$REMOTE_MONITOR_LOCK_PID_STARTTIME" =~ ^[0-9]+$ ]]; then
+    monitor_terminate_owned_tree \
+      "$REMOTE_MONITOR_LOCK_PID" \
+      "$REMOTE_MONITOR_LOCK_PID_STARTTIME" 0 0 || true
+    wait "$REMOTE_MONITOR_LOCK_PID" 2>/dev/null || true
+  fi
+  if [[ "$REMOTE_MONITOR_LOCK_READ_FD" =~ ^[0-9]+$ ]]; then
+    exec {REMOTE_MONITOR_LOCK_READ_FD}<&- 2>/dev/null || true
+    REMOTE_MONITOR_LOCK_READ_FD=''
+  fi
+  REMOTE_MONITOR_LOCK_HELD=0
+  REMOTE_MONITOR_LOCK_PID=''
+  REMOTE_MONITOR_LOCK_PID_STARTTIME=''
+  REMOTE_MONITOR_LOCK_SESSION=''
+  REMOTE_MONITOR_LOCK_SESSION_STARTTIME=''
+  REMOTE_MONITOR_LOCK_CHALLENGE_INDEX=0
+  REMOTE_MONITOR_LOCK_NEXT_HEARTBEAT_AT_SEC=0
+}
+
+acquire_remote_monitor_lock() {
+  local marker=''
+  local session_starttime=''
+
+  prepare_monitor_supervision
+  setsid --wait ./infra/scripts/vps-monitor-process-guardian.sh \
+    ./infra/scripts/vps-connect.sh exec \
+    'env -u MAXIM_MONITOR_REMOTE_LOCK_FILE ./infra/scripts/vps-monitor-lock-holder.sh' \
+    <"$REMOTE_MONITOR_LOCK_INPUT_FIFO" >"$REMOTE_MONITOR_LOCK_OUTPUT_FIFO" &
+  REMOTE_MONITOR_LOCK_PID=$!
+  disown "$REMOTE_MONITOR_LOCK_PID" 2>/dev/null || true
+  REMOTE_MONITOR_LOCK_PID_STARTTIME="$(
+    monitor_wait_for_process_starttime "$REMOTE_MONITOR_LOCK_PID"
+  )" || {
+    release_remote_monitor_lock
+    echo "Could not bind the VPS-wide monitor transport to its process identity." >&2
+    return 3
+  }
+  exec {REMOTE_MONITOR_LOCK_WRITE_FD}<>"$REMOTE_MONITOR_LOCK_INPUT_FIFO"
+  exec {REMOTE_MONITOR_LOCK_READ_FD}<>"$REMOTE_MONITOR_LOCK_OUTPUT_FIFO"
+  session_starttime="$(monitor_wait_for_session_leader "$REMOTE_MONITOR_LOCK_PID")" || {
+    release_remote_monitor_lock
+    echo "Could not isolate the VPS-wide monitor transport process group." >&2
+    return 3
+  }
+  if [[ "$session_starttime" != "$REMOTE_MONITOR_LOCK_PID_STARTTIME" ]]; then
+    release_remote_monitor_lock
+    echo "VPS-wide monitor transport identity changed during startup." >&2
+    return 3
+  fi
+  REMOTE_MONITOR_LOCK_SESSION="$REMOTE_MONITOR_LOCK_PID"
+  REMOTE_MONITOR_LOCK_SESSION_STARTTIME="$session_starttime"
+
+  if ! IFS= read -r -t 15 marker <&"$REMOTE_MONITOR_LOCK_READ_FD" ||
+    [[ "$marker" != "$REMOTE_MONITOR_LOCK_MARKER" ]]; then
+    release_remote_monitor_lock
+    echo "Could not acquire the VPS-wide readonly monitor lock." >&2
+    return 3
+  fi
+
+  REMOTE_MONITOR_LOCK_HELD=1
+  if ! assert_remote_monitor_lock; then
+    return 3
+  fi
+}
+
+assert_remote_monitor_lock() {
+  local acknowledgement=''
+  local challenge=''
+  local expected_acknowledgement=''
+
+  if ((REMOTE_MONITOR_LOCK_HELD != 1)) ||
+    [[ ! "$REMOTE_MONITOR_LOCK_READ_FD" =~ ^[0-9]+$ ]] ||
+    [[ ! "$REMOTE_MONITOR_LOCK_WRITE_FD" =~ ^[0-9]+$ ]] ||
+    ! monitor_process_identity_is_alive \
+      "$REMOTE_MONITOR_LOCK_PID" \
+      "$REMOTE_MONITOR_LOCK_PID_STARTTIME" ||
+    ! monitor_owned_session_is_alive \
+      "$REMOTE_MONITOR_LOCK_SESSION" \
+      "$REMOTE_MONITOR_LOCK_SESSION_STARTTIME"; then
+    echo "Lost the VPS-wide readonly monitor lock; stopping before the next sample." >&2
+    return 3
+  fi
+
+  REMOTE_MONITOR_LOCK_CHALLENGE_INDEX=$((REMOTE_MONITOR_LOCK_CHALLENGE_INDEX + 1))
+  challenge="${MONITOR_WRAPPER_PID}-${MONITOR_WRAPPER_STARTTIME}-${REMOTE_MONITOR_LOCK_CHALLENGE_INDEX}"
+  expected_acknowledgement="$REMOTE_MONITOR_LOCK_ACK $challenge"
+  if ! printf '%s %s\n' "$REMOTE_MONITOR_LOCK_PING" "$challenge" \
+    >&"$REMOTE_MONITOR_LOCK_WRITE_FD"; then
+    echo "Lost the VPS-wide readonly monitor lock challenge channel." >&2
+    return 3
+  fi
+  if ! IFS= read -r -t "$REMOTE_MONITOR_LOCK_ACK_TIMEOUT_SEC" acknowledgement \
+    <&"$REMOTE_MONITOR_LOCK_READ_FD" ||
+    [[ "$acknowledgement" != "$expected_acknowledgement" ]]; then
+    echo "The VPS-wide readonly monitor lock did not acknowledge its live challenge." >&2
+    return 3
+  fi
+  REMOTE_MONITOR_LOCK_NEXT_HEARTBEAT_AT_SEC=$((SECONDS + REMOTE_MONITOR_LOCK_HEARTBEAT_SEC))
+}
+
+maintain_remote_monitor_lock() {
+  if ((SECONDS >= REMOTE_MONITOR_LOCK_NEXT_HEARTBEAT_AT_SEC)); then
+    assert_remote_monitor_lock
+  fi
+}
+
+initialize_monitor_child_control() {
+  if [[ ! -p "$MONITOR_CHILD_REQUEST_FIFO" || ! -p "$MONITOR_CHILD_PERMIT_FIFO" ]]; then
+    echo "Monitor child mode requires private sample-control FIFOs." >&2
+    return 3
+  fi
+  exec {MONITOR_CHILD_REQUEST_FD}>"$MONITOR_CHILD_REQUEST_FIFO"
+  exec {MONITOR_CHILD_PERMIT_FD}<"$MONITOR_CHILD_PERMIT_FIFO"
+}
+
+request_monitor_sample_permit() {
+  local sample_index="$1"
+  local permit=''
+
+  if [[ ! "$MONITOR_CHILD_REQUEST_FD" =~ ^[0-9]+$ ||
+    ! "$MONITOR_CHILD_PERMIT_FD" =~ ^[0-9]+$ ]]; then
+    echo "Monitor child sample-control channels are unavailable." >&2
+    return 3
+  fi
+  if ! printf '%s %s\n' "$MONITOR_SAMPLE_REQUEST" "$sample_index" \
+    >&"$MONITOR_CHILD_REQUEST_FD"; then
+    echo "Monitor child could not request its next sample permit." >&2
+    return 3
+  fi
+  if ! IFS= read -r -t 15 permit <&"$MONITOR_CHILD_PERMIT_FD" ||
+    [[ "$permit" != "$MONITOR_SAMPLE_PERMIT $sample_index" ]]; then
+    echo "Monitor child did not receive its next sample permit." >&2
+    return 3
+  fi
+}
+
+close_monitor_runner_channels() {
+  if [[ "$MONITOR_RUNNER_READ_FD" =~ ^[0-9]+$ ]]; then
+    exec {MONITOR_RUNNER_READ_FD}<&- 2>/dev/null || true
+    MONITOR_RUNNER_READ_FD=''
+  fi
+  if [[ "$MONITOR_RUNNER_REQUEST_FD" =~ ^[0-9]+$ ]]; then
+    exec {MONITOR_RUNNER_REQUEST_FD}<&- 2>/dev/null || true
+    MONITOR_RUNNER_REQUEST_FD=''
+  fi
+  if [[ "$MONITOR_RUNNER_PERMIT_FD" =~ ^[0-9]+$ ]]; then
+    exec {MONITOR_RUNNER_PERMIT_FD}>&- 2>/dev/null || true
+    MONITOR_RUNNER_PERMIT_FD=''
+  fi
+}
+
+stop_monitor_runner() {
+  if [[ "$MONITOR_RUNNER_PID" =~ ^[1-9][0-9]*$ &&
+    "$MONITOR_RUNNER_PID_STARTTIME" =~ ^[0-9]+$ &&
+    "$MONITOR_RUNNER_SESSION" =~ ^[1-9][0-9]*$ &&
+    "$MONITOR_RUNNER_SESSION_STARTTIME" =~ ^[0-9]+$ ]]; then
+    monitor_terminate_owned_tree \
+      "$MONITOR_RUNNER_PID" \
+      "$MONITOR_RUNNER_PID_STARTTIME" \
+      "$MONITOR_RUNNER_SESSION" \
+      "$MONITOR_RUNNER_SESSION_STARTTIME" || true
+    wait "$MONITOR_RUNNER_PID" 2>/dev/null || true
+  elif [[ "$MONITOR_RUNNER_PID" =~ ^[1-9][0-9]*$ &&
+    "$MONITOR_RUNNER_PID_STARTTIME" =~ ^[0-9]+$ ]]; then
+    monitor_terminate_owned_tree \
+      "$MONITOR_RUNNER_PID" \
+      "$MONITOR_RUNNER_PID_STARTTIME" 0 0 || true
+    wait "$MONITOR_RUNNER_PID" 2>/dev/null || true
+  fi
+  close_monitor_runner_channels
+  MONITOR_RUNNER_PID=''
+  MONITOR_RUNNER_PID_STARTTIME=''
+  MONITOR_RUNNER_SESSION=''
+  MONITOR_RUNNER_SESSION_STARTTIME=''
+  MONITOR_RUNNER_NEXT_SAMPLE_INDEX=0
+}
+
+start_monitor_runner() {
+  local session_starttime
+
+  setsid --wait "$ROOT_DIR/infra/scripts/vps-monitor-process-guardian.sh" env \
+    MAXIM_MONITOR_CHILD_MODE=1 \
+    MAXIM_MONITOR_SAMPLE_REQUEST_FIFO="$MONITOR_RUNNER_REQUEST_FIFO" \
+    MAXIM_MONITOR_SAMPLE_PERMIT_FIFO="$MONITOR_RUNNER_PERMIT_FIFO" \
+    "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" \
+    "$DURATION_SEC" \
+    "$INTERVAL_SEC" \
+    </dev/null >"$MONITOR_RUNNER_OUTPUT_FIFO" 2>&1 &
+  MONITOR_RUNNER_PID=$!
+  disown "$MONITOR_RUNNER_PID" 2>/dev/null || true
+  MONITOR_RUNNER_PID_STARTTIME="$(monitor_wait_for_process_starttime "$MONITOR_RUNNER_PID")" || {
+    stop_monitor_runner
+    echo "Could not bind the monitor runner to its process identity." >&2
+    return 3
+  }
+  exec {MONITOR_RUNNER_REQUEST_FD}<>"$MONITOR_RUNNER_REQUEST_FIFO"
+  exec {MONITOR_RUNNER_PERMIT_FD}<>"$MONITOR_RUNNER_PERMIT_FIFO"
+  exec {MONITOR_RUNNER_READ_FD}<>"$MONITOR_RUNNER_OUTPUT_FIFO"
+  session_starttime="$(monitor_wait_for_session_leader "$MONITOR_RUNNER_PID")" || {
+    stop_monitor_runner
+    echo "Could not isolate the monitor runner process group." >&2
+    return 3
+  }
+  if [[ "$session_starttime" != "$MONITOR_RUNNER_PID_STARTTIME" ]]; then
+    stop_monitor_runner
+    echo "Monitor runner identity changed during startup." >&2
+    return 3
+  fi
+  MONITOR_RUNNER_SESSION="$MONITOR_RUNNER_PID"
+  MONITOR_RUNNER_SESSION_STARTTIME="$session_starttime"
+  MONITOR_RUNNER_NEXT_SAMPLE_INDEX=0
+}
+
+finish_monitor_runner() {
+  local status=0
+
+  if [[ "$MONITOR_RUNNER_PID" =~ ^[1-9][0-9]*$ ]]; then
+    wait "$MONITOR_RUNNER_PID" || status=$?
+  fi
+  close_monitor_runner_channels
+  MONITOR_RUNNER_PID=''
+  MONITOR_RUNNER_PID_STARTTIME=''
+  MONITOR_RUNNER_SESSION=''
+  MONITOR_RUNNER_SESSION_STARTTIME=''
+  MONITOR_RUNNER_NEXT_SAMPLE_INDEX=0
+  return "$status"
+}
+
+service_monitor_runner_request() {
+  local request=''
+  local request_command=''
+  local request_index=''
+  local extra=''
+
+  if ! IFS= read -r -t 0 <&"$MONITOR_RUNNER_REQUEST_FD"; then
+    return 0
+  fi
+  if ! IFS= read -r request <&"$MONITOR_RUNNER_REQUEST_FD"; then
+    echo "Monitor runner sample request channel closed unexpectedly." >&2
+    return 3
+  fi
+  IFS=' ' read -r request_command request_index extra <<<"$request"
+  if [[ "$request_command" != "$MONITOR_SAMPLE_REQUEST" ||
+    "$request_index" != "$MONITOR_RUNNER_NEXT_SAMPLE_INDEX" ||
+    ! "$request_index" =~ ^(0|[1-9][0-9]*)$ ||
+    -n "$extra" ]]; then
+    echo "Monitor runner sent an invalid or out-of-order sample request." >&2
+    return 3
+  fi
+  assert_remote_monitor_lock || return 3
+  if ! printf '%s %s\n' "$MONITOR_SAMPLE_PERMIT" "$request_index" \
+    >&"$MONITOR_RUNNER_PERMIT_FD"; then
+    echo "Could not grant the monitor runner sample permit." >&2
+    return 3
+  fi
+  MONITOR_RUNNER_NEXT_SAMPLE_INDEX=$((MONITOR_RUNNER_NEXT_SAMPLE_INDEX + 1))
+}
+
+stream_monitor_runner() {
+  local line
+  local status=0
+
+  while true; do
+    service_monitor_runner_request || return 3
+    maintain_remote_monitor_lock || return 3
+    if IFS= read -r -t 0.5 line <&"$MONITOR_RUNNER_READ_FD"; then
+      printf '%s\n' "$line"
+      printf '%s\n' "$line" >&"$MONITOR_LOG_FD"
+      continue
+    fi
+    if monitor_process_identity_is_alive "$MONITOR_RUNNER_PID" "$MONITOR_RUNNER_PID_STARTTIME" ||
+      monitor_owned_session_is_alive \
+        "$MONITOR_RUNNER_SESSION" \
+        "$MONITOR_RUNNER_SESSION_STARTTIME"; then
+      continue
+    fi
+    break
+  done
+  finish_monitor_runner || status=$?
+  return "$status"
+}
+
+cleanup_monitor_wrapper() {
+  trap - EXIT
+  stop_monitor_runner
+  release_remote_monitor_lock
+  if [[ "$MONITOR_LOG_FD" =~ ^[0-9]+$ ]]; then
+    exec {MONITOR_LOG_FD}>&- 2>/dev/null || true
+    MONITOR_LOG_FD=''
+  fi
+  cleanup_monitor_supervision
+}
+
+handle_monitor_signal() {
+  local status="$1"
+  trap - HUP INT TERM
+  cleanup_monitor_wrapper
+  exit "$status"
+}
 
 run_step() {
   local label="$1"
@@ -659,11 +1096,26 @@ summarize_log_signal_counts() {
   printf -v service_args '%q ' "${LOG_SERVICES[@]}"
   remote_command=$(cat <<REMOTE
 services=($service_args)
-printf "service\\tlevel40_50\\trate_limit\\tskipped_perm\\taccess_loss\\tstatus403\\ttimeout\\tgovernor\\tslow\\tledger\\tpg_warn\\n"
+printf "service\\tlevel40_50\\trate_limit\\tskipped_perm\\taccess_loss\\tstatus403\\ttimeout\\tgovernor\\tslow\\tledger\\tpg_warn\\tsaturated\\traw_lines\\n"
+failed=0
 for service in "\${services[@]}"; do
-  logs=\$(docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --since "${SIGNAL_WINDOW_MIN}m" --tail "$TAIL_LINES" "\$service" 2>/dev/null || true)
+  if ! logs=\$(docker compose --env-file .env -p infra -f infra/docker-compose.yml \
+    logs --since "${SIGNAL_WINDOW_MIN}m" --tail "$LOG_REQUEST_LINES" "\$service" 2>/dev/null); then
+    echo "WARN: could not read signal-count logs for \$service"
+    failed=1
+    continue
+  fi
+  raw_line_count=0
+  if [[ -n "\$logs" ]]; then
+    raw_line_count=\$(printf '%s\\n' "\$logs" | wc -l | tr -d '[:space:]')
+  fi
+  saturated=false
+  if ((raw_line_count > $TAIL_LINES)); then
+    saturated=true
+    echo "WARN: log signal counts saturated=true service=\$service raw_lines=\$raw_line_count limit=$TAIL_LINES"
+  fi
   count() { printf "%s" "\$logs" | grep -Eci "\$1" || true; }
-  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" \\
+  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" \\
     "\$service" \\
     "\$(count '"level":(40|50)')" \\
     "\$(count 'rate[ _-]?limit|internal limiter|"statusCode":429|HTTP( status)? 429')" \\
@@ -674,8 +1126,11 @@ for service in "\${services[@]}"; do
     "\$(count 'BackgroundRuntimeGovernor|governor|pause|slow path')" \\
     "\$(count 'slow|Slow')" \\
     "\$(count 'Failed to record successful MAX action ledger outcome|delivery-ledger-risk|ambiguous MAX')" \\
-    "\$(count 'client.query\\(\\) on a client that has already been checked out')"
+    "\$(count 'client.query\\(\\) on a client that has already been checked out')" \\
+    "\$saturated" \\
+    "\$raw_line_count"
 done
+exit "\$failed"
 REMOTE
 )
 
@@ -719,6 +1174,7 @@ run_monitor() {
   echo "log_file=$LOG_FILE"
 
   while true; do
+    request_monitor_sample_permit "$sample_index"
     sample_once "$sample_index"
     sample_index=$((sample_index + 1))
 
@@ -738,7 +1194,22 @@ run_monitor() {
   echo "Readonly VPS monitor finished at $(date -Is)"
 }
 
-mkdir -p "$(dirname "$LOG_FILE")"
-{
+if ((MONITOR_CHILD_MODE == 1)); then
+  initialize_monitor_child_control
   run_monitor
-} 2>&1 | tee "$LOG_FILE"
+  exit $?
+fi
+
+trap cleanup_monitor_wrapper EXIT
+trap 'handle_monitor_signal 129' HUP
+trap 'handle_monitor_signal 130' INT
+trap 'handle_monitor_signal 143' TERM
+
+acquire_remote_monitor_lock
+mkdir -p "$(dirname "$LOG_FILE")"
+: >"$LOG_FILE"
+exec {MONITOR_LOG_FD}>>"$LOG_FILE"
+start_monitor_runner
+monitor_status=0
+stream_monitor_runner || monitor_status=$?
+exit "$monitor_status"
