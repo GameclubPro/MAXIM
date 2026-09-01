@@ -12,11 +12,13 @@ import { useToast } from '../components/ui/toast';
 import { reviewPublisherSuggestion } from '../lib/api/publisher-suggestions-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
+import { queryKeys } from '../lib/query-keys';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { getPublisherSuggestionStatusLabel } from './publisher-entity-modules-page-model';
 import { PublisherSuggestionDraftOpenGate } from './publisher-suggestion-draft-open-gate';
 import {
   loadPublisherSuggestionsPage,
+  resolvePublisherSuggestionsRefetchInterval,
   shouldLoadPublisherSuggestions,
 } from './publisher-suggestions-inbox-model';
 
@@ -29,8 +31,6 @@ type PublisherSuggestionConfirmation = {
   suggestionId: string;
 };
 
-const PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS = 4_000;
-
 function mergePublisherSuggestionPages(
   pages: readonly PublisherSuggestionsResponse[] | undefined,
 ): PublisherSuggestion[] {
@@ -41,16 +41,6 @@ function mergePublisherSuggestionPages(
     }
   }
   return [...suggestions.values()];
-}
-
-function containsPublishingSuggestion(
-  pages: readonly PublisherSuggestionsResponse[] | undefined,
-): boolean {
-  return (
-    pages?.some((page) =>
-      page.items.some((suggestion) => suggestion.reviewStatus === 'publishing'),
-    ) ?? false
-  );
 }
 
 export function PublisherSuggestionsInbox({
@@ -72,7 +62,7 @@ export function PublisherSuggestionsInbox({
   );
   const draftOpenGateRef = useRef(new PublisherSuggestionDraftOpenGate());
   const draftOpenEpochRef = useRef(0);
-  const queryRoot = useMemo(() => ['publisher-suggestions', entityId] as const, [entityId]);
+  const queryRoot = useMemo(() => queryKeys.publisherSuggestions(entityId), [entityId]);
   const pendingQueryKey = useMemo(() => [...queryRoot, 'pending'] as const, [queryRoot]);
   const historyQueryKey = useMemo(() => [...queryRoot, 'history'] as const, [queryRoot]);
   const pendingQuery = useInfiniteQuery({
@@ -96,11 +86,11 @@ export function PublisherSuggestionsInbox({
       requestView: 'pending',
     }),
     staleTime: 10_000,
-    refetchOnWindowFocus: false,
-    refetchInterval: (query) =>
-      view === 'pending' && containsPublishingSuggestion(query.state.data?.pages)
-        ? PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS
-        : false,
+    refetchOnWindowFocus: true,
+    refetchInterval: resolvePublisherSuggestionsRefetchInterval({
+      enabled,
+      activeView: view,
+    }),
   });
   const historyQuery = useInfiniteQuery({
     queryKey: historyQueryKey,

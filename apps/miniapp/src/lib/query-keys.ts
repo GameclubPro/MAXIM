@@ -39,6 +39,8 @@ export const queryKeys = {
     dialogType: string,
     token: string | null | undefined,
   ) => ['entity-dialog', entityType, chatId, dialogType, token] as const,
+  publisherSuggestions: (entityId: string | null | undefined) =>
+    ['publisher-suggestions', entityId] as const,
 
   publicGiveaway: (giveawayId: string | null | undefined) =>
     ['public-giveaway', giveawayId] as const,

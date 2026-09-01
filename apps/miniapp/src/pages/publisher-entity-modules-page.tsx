@@ -28,6 +28,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
+import { queryKeys } from '../lib/query-keys';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import {
   buildPublisherCreateRoute,
@@ -338,6 +339,13 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             void Promise.all([
               entityQuery.refetch(),
               ...(vkOpen ? [vkCapabilityQuery.refetch()] : []),
+              ...(entity.entityType === 'channel'
+                ? [
+                    queryClient.invalidateQueries({
+                      queryKey: queryKeys.publisherSuggestions(entity.id),
+                    }),
+                  ]
+                : []),
             ])
           }
         >

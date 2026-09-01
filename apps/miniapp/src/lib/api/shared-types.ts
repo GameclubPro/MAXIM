@@ -68,6 +68,7 @@ export type BroadcastHandoffPayload = {
 
 export type CreateChannelDialogMessagePayload = {
   token: string;
+  requestId?: string;
   text: string;
   textFormat?: BroadcastTextFormat;
   replyToMessageId?: string | null;

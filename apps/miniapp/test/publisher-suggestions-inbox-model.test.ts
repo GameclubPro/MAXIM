@@ -2,9 +2,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ApiTransport } from '../src/lib/api/transport';
 import {
+  PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS,
   loadPublisherSuggestionsPage,
+  resolvePublisherSuggestionsRefetchInterval,
   shouldLoadPublisherSuggestions,
 } from '../src/pages/publisher-suggestions-inbox-model';
+
+test('active pending suggestions poll even before an item enters publishing', () => {
+  assert.equal(
+    resolvePublisherSuggestionsRefetchInterval({ enabled: true, activeView: 'pending' }),
+    PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS,
+  );
+  assert.equal(
+    resolvePublisherSuggestionsRefetchInterval({ enabled: true, activeView: 'history' }),
+    false,
+  );
+  assert.equal(
+    resolvePublisherSuggestionsRefetchInterval({ enabled: false, activeView: 'pending' }),
+    false,
+  );
+});
 
 test('disabled and inactive suggestion views perform zero transport requests', async () => {
   const calls: string[] = [];

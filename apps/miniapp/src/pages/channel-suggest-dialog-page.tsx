@@ -1,8 +1,4 @@
-import type {
-  ChannelDialogMessage,
-  ChannelDialogResponse,
-  CreateChannelDialogMessageResponse,
-} from '@maxim/contracts/channel-dialog';
+import type { ChannelDialogMessage, ChannelDialogResponse } from '@maxim/contracts/channel-dialog';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -144,17 +140,18 @@ type PreparingImageState = {
 
 type TerminalDialogErrorState = readonly [chatId: string, token: string, message: string];
 
-type CreateChannelSuggestMessagePayload = {
-  token: string;
-  requestId: string;
-  text: string;
-  textFormat: 'markdown';
-  images: Array<{
-    base64: string;
-    mimeType: string;
-    fileName: string;
-  }>;
-};
+type ChannelDialogClientModule = typeof import('../lib/api/channel-dialog-client');
+let channelDialogClientPromise: Promise<ChannelDialogClientModule> | null = null;
+
+function loadChannelDialogClient(): Promise<ChannelDialogClientModule> {
+  channelDialogClientPromise ??= import('../lib/api/channel-dialog-client').catch(
+    (error: unknown) => {
+      channelDialogClientPromise = null;
+      throw error;
+    },
+  );
+  return channelDialogClientPromise;
+}
 
 async function getChannelSuggestDialog(
   api: ApiTransport,
@@ -167,18 +164,6 @@ async function getChannelSuggestDialog(
     request,
   );
   return response as ChannelDialogResponse;
-}
-
-async function createChannelSuggestDialogMessage(
-  api: ApiTransport,
-  chatId: string,
-  payload: CreateChannelSuggestMessagePayload,
-): Promise<CreateChannelDialogMessageResponse> {
-  const response = await api.request(`/channels/${chatId}/dialog/suggest/messages`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-  return response as CreateChannelDialogMessageResponse;
 }
 
 function normalizeApiError(error: unknown): string {
@@ -990,17 +975,19 @@ export function ChannelSuggestDialogPage({
       text: string;
       attachments: SuggestDraftAttachment[];
     }) =>
-      createChannelSuggestDialogMessage(api, chatId, {
-        token,
-        requestId: payload.requestId,
-        text: payload.text,
-        textFormat: 'markdown',
-        images: (canUploadImages ? payload.attachments : []).map((attachment) => ({
-          base64: attachment.base64,
-          mimeType: attachment.mimeType,
-          fileName: attachment.fileName,
-        })),
-      }),
+      loadChannelDialogClient().then(({ createChannelDialogMessage }) =>
+        createChannelDialogMessage(api, chatId, 'suggest', {
+          token,
+          requestId: payload.requestId,
+          text: payload.text,
+          textFormat: 'markdown',
+          images: (canUploadImages ? payload.attachments : []).map((attachment) => ({
+            base64: attachment.base64,
+            mimeType: attachment.mimeType,
+            fileName: attachment.fileName,
+          })),
+        }),
+      ),
     onSuccess: (result) => {
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
         updateDialogMessage(current, result.message),
@@ -1038,6 +1025,9 @@ export function ChannelSuggestDialogPage({
         });
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.publisherSuggestions(chatId),
       });
     },
     onError: (error) => {

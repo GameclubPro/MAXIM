@@ -59,6 +59,28 @@ test('terminal suggestion submit failures replace the composer with the relaunch
   );
 });
 
+test('public suggestion submissions lazy-load the validated client and refresh the Publik inbox', () => {
+  assert.match(
+    suggestDialogPageSource,
+    /channelDialogClientPromise \?\?= import\('\.\.\/lib\/api\/channel-dialog-client'\)/u,
+  );
+  assert.match(suggestDialogPageSource, /channelDialogClientPromise = null;[\s\S]*?throw error;/u);
+  assert.match(
+    suggestDialogPageSource,
+    /queryFn: \(\{ signal \}\) => getChannelSuggestDialog\(api, chatId, token, \{ signal \}\)/u,
+  );
+  assert.match(
+    suggestDialogPageSource,
+    /loadChannelDialogClient\(\)\.then\(\(\{ createChannelDialogMessage \}\) =>[\s\S]*?createChannelDialogMessage\(api, chatId, 'suggest', \{[\s\S]*?requestId: payload\.requestId/u,
+  );
+  assert.match(suggestDialogPageSource, /queryKey: queryKeys\.publisherSuggestions\(chatId\)/u);
+  assert.doesNotMatch(
+    suggestDialogPageSource,
+    /import \{[^}]*createChannelDialogMessage[^}]*\} from '\.\.\/lib\/api\/channel-dialog-client'/u,
+  );
+  assert.doesNotMatch(suggestDialogPageSource, /response as CreateChannelDialogMessageResponse/u);
+});
+
 test('suggestion dialog state is remounted for every chat and token pair', () => {
   assert.match(
     appSource,

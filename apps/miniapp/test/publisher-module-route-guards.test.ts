@@ -106,7 +106,7 @@ test('channel suggestions open drafts directly, confirm rejection, and page both
   assert.match(suggestionsSource, /historyQuery\.data\?\.pages\[0\]\?\.total/u);
   assert.match(suggestionsSource, /activeQuery\.fetchNextPage\(\)/u);
   assert.match(suggestionsSource, /queryClient\.invalidateQueries\(\{ queryKey: queryRoot \}\)/u);
-  assert.match(suggestionsSource, /containsPublishingSuggestion/u);
+  assert.match(suggestionsSource, /resolvePublisherSuggestionsRefetchInterval/u);
   assert.match(suggestionsSource, /view === 'pending'/u);
   assert.match(suggestionsSource, /\/publications\?draft=/u);
   assert.match(suggestionsSource, /suggestion\.imageCount > 0/u);
@@ -134,5 +134,18 @@ test('channel suggestions open drafts directly, confirm rejection, and page both
   assert.match(
     modulesCss,
     /\.publisher-suggestion-row__actions button \{[\s\S]*?min-height: 44px;/u,
+  );
+});
+
+test('channel suggestion inbox refreshes while waiting for external submissions', () => {
+  assert.match(suggestionsSource, /refetchOnWindowFocus: true/u);
+  assert.match(
+    suggestionsSource,
+    /refetchInterval: resolvePublisherSuggestionsRefetchInterval\(\{[\s\S]*?activeView: view/u,
+  );
+  assert.doesNotMatch(suggestionsSource, /containsPublishingSuggestion/u);
+  assert.match(
+    modulesSource,
+    /queryClient\.invalidateQueries\(\{[\s\S]*?queryKey: queryKeys\.publisherSuggestions\(entity\.id\)/u,
   );
 });
