@@ -599,6 +599,16 @@ test('read-only BullMQ monitor batches counters and includes every Publisher que
   assert.match(monitor, /redis-cli --raw eval "\$queue_counts_script"/u);
   assert.match(monitor, /local marker = redis\.call\(\\"LINDEX\\", key, -1\)/u);
   assert.match(monitor, /string\.sub\(marker, 1, 2\) == \\"0:\\"/u);
+  assert.match(monitor, /failedTotal=%d/u);
+  assert.match(monitor, /failedFresh=%d/u);
+  assert.match(monitor, /failedFreshWindowSec=%d/u);
+  assert.match(monitor, /failedFuture=%d/u);
+  assert.match(monitor, /failedNewestAgeSec=%d/u);
+  assert.match(monitor, /redis\.call\(\\"TIME\\"\)/u);
+  assert.match(monitor, /ZCOUNT\\", KEYS\[5\], failedFreshCutoffMs, nowMs/u);
+  assert.match(monitor, /ZCOUNT\\", KEYS\[5\], \\"\(\\" \.\. tostring\(nowMs\)/u);
+  assert.match(monitor, /ZREVRANGE\\", KEYS\[5\], 0, 0, \\"WITHSCORES\\"/u);
+  assert.doesNotMatch(monitor, /now_ms=.*date \+%s/u);
   assert.doesNotMatch(monitor, /RPOP/u);
   assert.doesNotMatch(monitor, /redis_count/u);
 });

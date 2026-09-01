@@ -12,6 +12,10 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 DURATION_SEC="${1:-${MAXIM_MONITOR_DURATION_SEC:-1800}}"
 INTERVAL_SEC="${2:-${MAXIM_MONITOR_INTERVAL_SEC:-300}}"
 TAIL_LINES="${MAXIM_MONITOR_LOG_TAIL_LINES:-300}"
+FAILED_FRESH_WINDOW_SEC="${MAXIM_MONITOR_FAILED_FRESH_WINDOW_SEC:-300}"
+LAST_SERVICE_LOG_SCAN_AT_SEC=0
+LAST_STATIC_LOG_SCAN_AT_SEC=0
+LAST_BULLMQ_PROBE_AT_MS=0
 LOG_FILE="${MAXIM_MONITOR_LOG:-/tmp/maxim-vps-readonly-monitor-$(date +%Y%m%d%H%M%S).log}"
 PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
 ADMIN_PUBLIC_URL="${MAXIM_ADMIN_PUBLIC_URL:-https://admin.major-maksimov.ru}"
@@ -39,8 +43,14 @@ if ! is_positive_integer "$INTERVAL_SEC"; then
   exit 2
 fi
 
-if ! is_positive_integer "$TAIL_LINES"; then
-  echo "MAXIM_MONITOR_LOG_TAIL_LINES must be a positive integer, got: $TAIL_LINES" >&2
+if ! is_positive_integer "$TAIL_LINES" || ((TAIL_LINES > 10000)); then
+  echo "MAXIM_MONITOR_LOG_TAIL_LINES must be an integer between 1 and 10000, got: $TAIL_LINES" >&2
+  exit 2
+fi
+LOG_REQUEST_LINES=$((TAIL_LINES + 1))
+
+if ! is_positive_integer "$FAILED_FRESH_WINDOW_SEC"; then
+  echo "MAXIM_MONITOR_FAILED_FRESH_WINDOW_SEC must be a positive integer, got: $FAILED_FRESH_WINDOW_SEC" >&2
   exit 2
 fi
 
@@ -77,15 +87,45 @@ run_step() {
 }
 
 scan_service_logs() {
+  local cursor_sec
+  local lookback_sec
+  local output
   local service_args
+  local status
   local remote_command
+  local since_at
+  local since_epoch_sec
+
+  if ((LAST_SERVICE_LOG_SCAN_AT_SEC > 0)); then
+    since_epoch_sec=$((LAST_SERVICE_LOG_SCAN_AT_SEC - 5))
+  else
+    since_epoch_sec=$(($(date +%s) - INTERVAL_SEC))
+  fi
+  if ((since_epoch_sec < 0)); then since_epoch_sec=0; fi
+  since_at=$(date -u -d "@$since_epoch_sec" '+%Y-%m-%dT%H:%M:%SZ')
 
   printf -v service_args '%q ' "${LOG_SERVICES[@]}"
   remote_command=$(cat <<REMOTE
+scan_cursor_sec=\$(date +%s)
+echo "monitor_service_log_cursor_sec=\$scan_cursor_sec"
 services=($service_args)
+failed=0
 for service in "\${services[@]}"; do
   echo "-- \${service} --"
-  docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --since "${INTERVAL_SEC}s" --tail "$TAIL_LINES" "\$service" 2>/dev/null |
+  if ! logs=\$(docker compose --env-file .env -p infra -f infra/docker-compose.yml \
+    logs --since "$since_at" --tail "$LOG_REQUEST_LINES" "\$service" 2>/dev/null); then
+    echo "WARN: could not read logs for \$service"
+    failed=1
+    continue
+  fi
+  raw_line_count=0
+  if [[ -n "\$logs" ]]; then
+    raw_line_count=\$(printf '%s\n' "\$logs" | wc -l | tr -d '[:space:]')
+  fi
+  if ((raw_line_count > $TAIL_LINES)); then
+    echo "WARN: log scan saturated=true service=\$service raw_lines=\$raw_line_count limit=$TAIL_LINES"
+  fi
+  printf '%s\n' "\$logs" |
     grep -Eav '${SUCCESSFUL_ACCESS_LOG_PATTERN}' |
     grep -Eai '"level":(40|50)|"statusCode":(4[0-9][0-9]|5[0-9][0-9])|(^|[^[:alnum:]_])(error|warn|exception|failed|stalled|rate limit|ECONN|ETIMEDOUT|BullMQ|Redis)([^[:alnum:]_]|$)' |
     sed -E \
@@ -93,30 +133,80 @@ for service in "\${services[@]}"; do
       -e "s#((^|[[:space:]\":=])/(app|api)/[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" |
     tail -40 || true
 done
+exit "\$failed"
 REMOTE
 )
 
-  ./infra/scripts/vps-connect.sh exec "$remote_command"
+  if output="$(./infra/scripts/vps-connect.sh exec "$remote_command")"; then
+    status=0
+  else
+    status=$?
+  fi
+  printf '%s\n' "$output"
+  if ((status != 0)); then
+    return "$status"
+  fi
+  cursor_sec="$(printf '%s\n' "$output" |
+    sed -n 's/^monitor_service_log_cursor_sec=\([0-9][0-9]*\)$/\1/p' | head -1)"
+  [[ "$cursor_sec" =~ ^[0-9]+$ ]] || return 1
+  LAST_SERVICE_LOG_SCAN_AT_SEC="$cursor_sec"
+  lookback_sec=$((cursor_sec - since_epoch_sec))
+  echo "service_log_since=$since_at lookback_sec=$lookback_sec"
 }
 
 summarize_static_services() {
+  local cursor_sec
+  local lookback_sec
+  local output
   local service_args
+  local status
   local remote_command
+  local since_at
+  local since_epoch_sec
+
+  if ((LAST_STATIC_LOG_SCAN_AT_SEC > 0)); then
+    since_epoch_sec=$((LAST_STATIC_LOG_SCAN_AT_SEC - 5))
+  else
+    since_epoch_sec=$(($(date +%s) - INTERVAL_SEC))
+  fi
+  if ((since_epoch_sec < 0)); then since_epoch_sec=0; fi
+  since_at=$(date -u -d "@$since_epoch_sec" '+%Y-%m-%dT%H:%M:%SZ')
 
   printf -v service_args '%q ' "${STATIC_SERVICES[@]}"
   remote_command=$(cat <<REMOTE
+scan_cursor_sec=\$(date +%s)
+echo "monitor_static_log_cursor_sec=\$scan_cursor_sec"
 services=($service_args)
+failed=0
 for service in "\${services[@]}"; do
   echo "-- \${service} --"
   docker compose --env-file .env -p infra -f infra/docker-compose.yml ps "\$service" || true
   ids=\$(docker compose --env-file .env -p infra -f infra/docker-compose.yml ps -q "\$service" 2>/dev/null || true)
   if [[ -z "\$ids" ]]; then
     echo "WARN: no container found for \$service"
+    failed=1
     continue
   fi
 
-  docker inspect --format '{{.Name}}\trestarts={{.RestartCount}}\tstatus={{.State.Status}}\tstarted={{.State.StartedAt}}{{if .State.Health}}\thealth={{.State.Health.Status}}{{else}}\thealth=none{{end}}' \$ids
-  docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --since "${INTERVAL_SEC}s" --tail "$TAIL_LINES" "\$service" 2>/dev/null |
+  if ! docker inspect --format '{{.Name}}\trestarts={{.RestartCount}}\tstatus={{.State.Status}}\tstarted={{.State.StartedAt}}{{if .State.Health}}\thealth={{.State.Health.Status}}{{else}}\thealth=none{{end}}' \$ids; then
+    echo "WARN: could not inspect \$service"
+    failed=1
+    continue
+  fi
+  if ! logs=\$(docker compose --env-file .env -p infra -f infra/docker-compose.yml \
+    logs --since "$since_at" --tail "$LOG_REQUEST_LINES" "\$service" 2>/dev/null); then
+    echo "WARN: could not read logs for \$service"
+    failed=1
+    continue
+  fi
+  raw_line_count=0
+  if [[ -n "\$logs" ]]; then
+    raw_line_count=\$(printf '%s\n' "\$logs" | wc -l | tr -d '[:space:]')
+  fi
+  if ((raw_line_count > $TAIL_LINES)); then
+    echo "WARN: log scan saturated=true service=\$service raw_lines=\$raw_line_count limit=$TAIL_LINES"
+  fi
+  printf '%s\n' "\$logs" |
     grep -Eav '${SUCCESSFUL_ACCESS_LOG_PATTERN}' |
     grep -Eai '(^|[^[:alnum:]_])(error|warn|exception|failed|502|503|504|upstream|permission|denied)([^[:alnum:]_]|$)' |
     sed -E \
@@ -124,10 +214,25 @@ for service in "\${services[@]}"; do
       -e "s#((^|[[:space:]\":=])/(app|api)/[^\"[:space:]]*)\\?[^\"[:space:]#]*#\\1?[redacted]#g" |
     tail -40 || true
 done
+exit "\$failed"
 REMOTE
 )
 
-  ./infra/scripts/vps-connect.sh exec "$remote_command"
+  if output="$(./infra/scripts/vps-connect.sh exec "$remote_command")"; then
+    status=0
+  else
+    status=$?
+  fi
+  printf '%s\n' "$output"
+  if ((status != 0)); then
+    return "$status"
+  fi
+  cursor_sec="$(printf '%s\n' "$output" |
+    sed -n 's/^monitor_static_log_cursor_sec=\([0-9][0-9]*\)$/\1/p' | head -1)"
+  [[ "$cursor_sec" =~ ^[0-9]+$ ]] || return 1
+  LAST_STATIC_LOG_SCAN_AT_SEC="$cursor_sec"
+  lookback_sec=$((cursor_sec - since_epoch_sec))
+  echo "static_log_since=$since_at lookback_sec=$lookback_sec"
 }
 
 summarize_public_app_assets() {
@@ -309,13 +414,72 @@ if (
 NODE
 }
 
+summarize_publisher_runtime() {
+  local remote_command
+
+  remote_command=$(cat <<'REMOTE'
+set -o pipefail
+compose=(docker compose --env-file .env -p infra -f infra/docker-compose.yml)
+read_expected() {
+  local service="$1"
+  "${compose[@]}" exec -T "$service" node -e '
+  const value = process.env.MAX_PUBLISHER_DISPATCH_ENABLED ?? "false";
+  if (value !== "true" && value !== "false") process.exit(2);
+  process.stdout.write(value);
+'
+}
+read_bot_id() {
+  local service="$1"
+  "${compose[@]}" exec -T "$service" node -e '
+  const value = (process.env.MAX_PUBLISHER_BOT_ID ?? "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{1,127}$/.test(value)) process.exit(2);
+  process.stdout.write(value);
+'
+}
+admin_expected="$(read_expected api-admin)" || exit 1
+publisher_expected="$(read_expected api-publisher)" || exit 1
+admin_bot_id="$(read_bot_id api-admin)" || exit 1
+publisher_bot_id="$(read_bot_id api-publisher)" || exit 1
+bot_id_parity=false
+if [[ -n "$admin_bot_id" && "$admin_bot_id" == "$publisher_bot_id" ]]; then
+  bot_id_parity=true
+fi
+control="$("${compose[@]}" exec -T api-admin node - status \
+  < infra/scripts/publisher-dispatch-rollout-control.cjs)" || exit 1
+printf '%s' "$control" |
+  node infra/scripts/monitor-publisher-status.cjs \
+    "$admin_expected" "$publisher_expected" "$bot_id_parity"
+REMOTE
+)
+
+  ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
+summarize_media_analysis_ready() {
+  local remote_command
+  local service_quoted
+
+  printf -v service_quoted '%q' "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  remote_command=$(cat <<REMOTE
+docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T \
+  $service_quoted node - < infra/scripts/monitor-media-ready.cjs
+REMOTE
+)
+
+  ./infra/scripts/vps-connect.sh exec "$remote_command"
+}
+
 summarize_real_chat_signals() {
   ./infra/scripts/vps-connect.sh exec \
     ./infra/scripts/vps-postgres-audit.sh monitor-signals "$SIGNAL_WINDOW_MIN"
 }
 
 summarize_bullmq_state() {
+  local cursor_ms
+  local output
+  local probe_env
   local remote_command
+  local status
 
   remote_command=$(cat <<'REMOTE'
 queues=(
@@ -367,9 +531,20 @@ queues=(
   vk-parsing-publisher
 )
 docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T redis sh -lc '
-now_ms="$(($(date +%s) * 1000))"
-due_score="$((now_ms * 4096 + 4095))"
+minimum_failed_fresh_window_sec="$1"
+previous_probe_at_ms="$2"
+shift 2
 queue_counts_script="
+local redisTime = redis.call(\"TIME\")
+local nowMs = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local failedFreshWindowSec = tonumber(ARGV[1])
+local previousProbeAtMs = tonumber(ARGV[2])
+if previousProbeAtMs and previousProbeAtMs > 0 and nowMs >= previousProbeAtMs then
+  local elapsedWindowSec = math.ceil((nowMs - previousProbeAtMs) / 1000) + 5
+  failedFreshWindowSec = math.max(failedFreshWindowSec, elapsedWindowSec)
+end
+local failedFreshCutoffMs = nowMs - failedFreshWindowSec * 1000
+local dueScore = nowMs * 4096 + 4095
 local function listCountWithoutMarker(key)
   local count = redis.call(\"LLEN\", key)
   local marker = redis.call(\"LINDEX\", key, -1)
@@ -382,38 +557,125 @@ local waiting = listCountWithoutMarker(KEYS[1]) + listCountWithoutMarker(KEYS[2]
 local prioritized = redis.call(\"ZCARD\", KEYS[3])
 local active = redis.call(\"LLEN\", KEYS[4])
 local failed = redis.call(\"ZCARD\", KEYS[5])
+local failedFresh = redis.call(\"ZCOUNT\", KEYS[5], failedFreshCutoffMs, nowMs)
+local failedFuture = redis.call(\"ZCOUNT\", KEYS[5], \"(\" .. tostring(nowMs), \"+inf\")
+local newestFailed = redis.call(\"ZREVRANGE\", KEYS[5], 0, 0, \"WITHSCORES\")
+local failedNewestAgeSec = -1
+if newestFailed[2] then
+  local newestFailedAtMs = tonumber(newestFailed[2])
+  if newestFailedAtMs and nowMs then
+    failedNewestAgeSec = math.max(0, math.floor((nowMs - newestFailedAtMs) / 1000))
+  end
+end
 local delayed = redis.call(\"ZCARD\", KEYS[6])
-local dueNow = redis.call(\"ZCOUNT\", KEYS[6], \"-inf\", ARGV[1])
+local dueNow = redis.call(\"ZCOUNT\", KEYS[6], \"-inf\", dueScore)
 return string.format(
-  \"wait=%d\\nprioritized=%d\\nactive=%d\\nfailed=%d\\ndelayed=%d\\ndueNow=%d\",
+  \"observedAtMs=%d\\nwait=%d\\nprioritized=%d\\nactive=%d\\nfailedTotal=%d\\nfailedFresh=%d\\nfailedFreshWindowSec=%d\\nfailedFuture=%d\\nfailedNewestAgeSec=%d\\ndelayed=%d\\ndueNow=%d\",
+  nowMs,
   waiting,
   prioritized,
   active,
   failed,
+  failedFresh,
+  failedFreshWindowSec,
+  failedFuture,
+  failedNewestAgeSec,
   delayed,
   dueNow
 )
 "
+validate_counts() {
+  awk -F= '\''
+    BEGIN {
+      expected["observedAtMs"] = 1
+      expected["wait"] = 1
+      expected["prioritized"] = 1
+      expected["active"] = 1
+      expected["failedTotal"] = 1
+      expected["failedFresh"] = 1
+      expected["failedFreshWindowSec"] = 1
+      expected["failedFuture"] = 1
+      expected["failedNewestAgeSec"] = 1
+      expected["delayed"] = 1
+      expected["dueNow"] = 1
+    }
+    NF != 2 || !($1 in expected) || seen[$1] { exit 1 }
+    $1 == "failedNewestAgeSec" {
+      if ($2 !~ /^-?[0-9]+$/) exit 1
+      seen[$1] = 1
+      next
+    }
+    $2 !~ /^[0-9]+$/ { exit 1 }
+    { seen[$1] = 1 }
+    END {
+      if (NR != 11) exit 1
+      for (key in expected) if (!(key in seen)) exit 1
+    }
+  '\''
+}
+failed=0
+probe_cursor_ms=""
 for q in "$@"; do
-  counts="$(redis-cli --raw eval "$queue_counts_script" 6 \
+  if ! counts="$(redis-cli --raw eval "$queue_counts_script" 6 \
     "bull:$q:wait" \
     "bull:$q:paused" \
     "bull:$q:prioritized" \
     "bull:$q:active" \
     "bull:$q:failed" \
     "bull:$q:delayed" \
-    "$due_score" 2>/dev/null || true)"
-  if [ -z "$counts" ]; then
+    "$minimum_failed_fresh_window_sec" \
+    "$previous_probe_at_ms" 2>/dev/null)"; then
     printf "%s counts=unavailable\n" "$q"
+    failed=1
     continue
   fi
+  if ! printf "%s\n" "$counts" | validate_counts; then
+    printf "%s counts=unavailable\n" "$q"
+    failed=1
+    continue
+  fi
+  observed_at_ms="$(printf "%s\n" "$counts" | sed -n "s/^observedAtMs=//p")"
+  if [ -z "$probe_cursor_ms" ]; then probe_cursor_ms="$observed_at_ms"; fi
   while IFS= read -r count; do
+    case "$count" in observedAtMs=*) continue ;; esac
     printf "%s %s\n" "$q" "$count"
   done <<EOF
 $counts
 EOF
 done
-' sh "${queues[@]}"
+if [ "$failed" -ne 0 ] || [ -z "$probe_cursor_ms" ]; then exit 1; fi
+printf "monitor_bullmq_cursor_ms=%s\n" "$probe_cursor_ms"
+' sh "$minimum_failed_fresh_window_sec" "$previous_probe_at_ms" "${queues[@]}"
+REMOTE
+)
+  printf -v probe_env \
+    'minimum_failed_fresh_window_sec=%q\nprevious_probe_at_ms=%q\n' \
+    "$FAILED_FRESH_WINDOW_SEC" "$LAST_BULLMQ_PROBE_AT_MS"
+  remote_command="$probe_env$remote_command"
+
+  if output="$(./infra/scripts/vps-connect.sh exec "$remote_command")"; then
+    status=0
+  else
+    status=$?
+  fi
+  printf '%s\n' "$output"
+  if ((status != 0)); then
+    return "$status"
+  fi
+  cursor_ms="$(printf '%s\n' "$output" |
+    sed -n 's/^monitor_bullmq_cursor_ms=\([0-9][0-9]*\)$/\1/p' | head -1)"
+  [[ "$cursor_ms" =~ ^[0-9]+$ ]] || return 1
+  LAST_BULLMQ_PROBE_AT_MS="$cursor_ms"
+}
+
+summarize_redis_runtime() {
+  local remote_command
+
+  remote_command=$(cat <<'REMOTE'
+set -o pipefail
+docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T redis \
+  redis-cli --raw INFO all |
+  node infra/scripts/monitor-redis-info.cjs
 REMOTE
 )
 
@@ -506,8 +768,11 @@ sample_once() {
   echo "===== sample $sample_index $(date -Is) ====="
   run_step health ./infra/scripts/vps-connect.sh health
   run_step semantic-health summarize_local_ready_health
+  run_step publisher-runtime summarize_publisher_runtime
+  run_step media-analysis-ready summarize_media_analysis_ready
   run_step real-chat-signals summarize_real_chat_signals
   run_step bullmq-state summarize_bullmq_state
+  run_step redis-runtime summarize_redis_runtime
   run_step runtime-pressure summarize_runtime_pressure
   run_step ps ./infra/scripts/vps-connect.sh ps
   run_step static-services summarize_static_services
