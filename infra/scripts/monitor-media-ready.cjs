@@ -1,6 +1,7 @@
 'use strict';
 
 const MAX_BODY_BYTES = 256 * 1024;
+const OCR_READY_URL = 'http://127.0.0.1:3001/api/health/ready?scope=ocr';
 
 async function readBoundedResponseBody(response, maxBytes = MAX_BODY_BYTES) {
   const declaredLength = Number(response.headers.get('content-length'));
@@ -32,21 +33,26 @@ function summarizeMediaHealth(httpStatus, raw) {
   const workers = ocr.workers ?? {};
   const counters = ocr.counters ?? {};
   const identity = ocr.behaviorIdentity ?? {};
-  const number = (candidate, fallback = -1) =>
-    typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : fallback;
+  const number = (candidate) =>
+    typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : 'not-probed';
+  const dependency = (candidate) =>
+    typeof candidate === 'boolean' ? String(candidate) : 'not-probed';
+  const scope = typeof body?.scope === 'string' ? body.scope : 'full';
   const healthy =
     Number.isInteger(httpStatus) &&
     httpStatus >= 200 &&
     httpStatus < 300 &&
+    scope === 'ocr' &&
     body?.ok === true &&
     ocr.ready === true;
   return {
     healthy,
     line: [
       `media-analysis status=${httpStatus}`,
+      `scope=${scope}`,
       `ok=${body?.ok === true}`,
-      `db=${body?.checks?.database === true}`,
-      `redis=${body?.checks?.redis === true}`,
+      `db=${dependency(body?.checks?.database)}`,
+      `redis=${dependency(body?.checks?.redis)}`,
       `ocr=${ocr.ready === true}/${typeof ocr.state === 'string' ? ocr.state : 'unknown'}`,
       `workers=${number(workers.configured)}/${number(workers.live)}/${number(workers.ready)}/${number(workers.busy)}`,
       `nativeQueue=${number(ocr.queueDepth)}`,
@@ -60,7 +66,7 @@ function summarizeMediaHealth(httpStatus, raw) {
 
 async function main() {
   try {
-    const response = await fetch('http://127.0.0.1:3001/api/health/ready', {
+    const response = await fetch(OCR_READY_URL, {
       signal: AbortSignal.timeout(3_000),
     });
     const text = await readBoundedResponseBody(response);
@@ -73,7 +79,7 @@ async function main() {
   }
 }
 
-module.exports = { MAX_BODY_BYTES, readBoundedResponseBody, summarizeMediaHealth };
+module.exports = { MAX_BODY_BYTES, OCR_READY_URL, readBoundedResponseBody, summarizeMediaHealth };
 
 if (require.main === module || __filename === '[stdin]') {
   void main();

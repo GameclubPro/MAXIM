@@ -136,6 +136,28 @@ export type OcrReadinessSnapshot =
       }>;
     }>;
 
+export type OcrRuntimeReadinessSnapshot = Readonly<{
+  ok: boolean;
+  timestamp: string;
+  scope: 'ocr';
+  checks: Readonly<{
+    ocr: OcrRuntimeReadinessCheck;
+  }>;
+}>;
+
+type OcrRuntimeReadinessCheck = Readonly<{
+  state: NativeTesseractRuntimeStatus['state'] | 'unavailable';
+  ready: boolean;
+  workers: Readonly<{ configured: number; live: number; ready: number; busy: number }>;
+  queueDepth: number;
+  behaviorIdentity: Readonly<{
+    complete: boolean;
+    required: boolean;
+    verified: boolean;
+    state: NativeTesseractRuntimeStatus['behaviorIdentity']['state'] | 'unavailable';
+  }>;
+}>;
+
 export type BotLoadSnapshot = {
   ok: boolean;
   timestamp: string;
@@ -210,6 +232,58 @@ function emptyNativeQueueWaitSnapshot(): NativeTesseractQueueWaitSnapshot {
     p95: null,
     p99: null,
     maximum: null,
+  };
+}
+
+function isOcrRuntimeReady(status: NativeTesseractRuntimeStatus): boolean {
+  return (
+    status.ready &&
+    status.behaviorIdentity.required &&
+    status.behaviorIdentity.complete &&
+    status.behaviorIdentity.verified &&
+    status.behaviorIdentity.state === 'verified' &&
+    status.behaviorIdentity.mismatchFields.length === 0 &&
+    LOWER_SHA256_PATTERN.test(status.behaviorIdentity.fingerprintSha256) &&
+    status.behaviorIdentity.runtimeFingerprintSha256 ===
+      status.behaviorIdentity.fingerprintSha256 &&
+    typeof status.behaviorIdentity.buildManifestSha256 === 'string' &&
+    LOWER_SHA256_PATTERN.test(status.behaviorIdentity.buildManifestSha256)
+  );
+}
+
+function mapOcrRuntimeReadiness(status: NativeTesseractRuntimeStatus): OcrRuntimeReadinessCheck {
+  const ready = isOcrRuntimeReady(status);
+  return {
+    state: !ready && status.state === 'ready' ? 'degraded' : status.state,
+    ready,
+    workers: {
+      configured: status.workers.configured,
+      live: status.workers.live,
+      ready: status.workers.ready,
+      busy: status.workers.busy,
+    },
+    queueDepth: status.queueDepth,
+    behaviorIdentity: {
+      complete: status.behaviorIdentity.complete,
+      required: status.behaviorIdentity.required,
+      verified: status.behaviorIdentity.verified,
+      state: status.behaviorIdentity.state,
+    },
+  };
+}
+
+function unavailableOcrRuntimeReadiness(): OcrRuntimeReadinessCheck {
+  return {
+    state: 'unavailable',
+    ready: false,
+    workers: { configured: 0, live: 0, ready: 0, busy: 0 },
+    queueDepth: 0,
+    behaviorIdentity: {
+      complete: false,
+      required: true,
+      verified: false,
+      state: 'unavailable',
+    },
   };
 }
 
@@ -325,6 +399,24 @@ export class HealthService implements OnModuleDestroy {
     return {
       ok: true,
       timestamp: new Date().toISOString(),
+    };
+  }
+
+  ocrReady(): OcrRuntimeReadinessSnapshot {
+    let ocr = unavailableOcrRuntimeReadiness();
+    if (this.nativeTesseractOcr) {
+      try {
+        ocr = mapOcrRuntimeReadiness(this.nativeTesseractOcr.getRuntimeStatus());
+      } catch {
+        ocr = unavailableOcrRuntimeReadiness();
+      }
+    }
+
+    return {
+      ok: ocr.ready,
+      timestamp: new Date().toISOString(),
+      scope: 'ocr',
+      checks: { ocr },
     };
   }
 
@@ -491,18 +583,7 @@ export class HealthService implements OnModuleDestroy {
         this.readinessStaleFallbackMaxAgeMs,
       );
       const bullMqQueue = queueMetrics?.auxiliaryQueues?.[COMMERCIAL_OCR_QUEUE];
-      const behaviorIdentityReady =
-        status.behaviorIdentity.required &&
-        status.behaviorIdentity.complete &&
-        status.behaviorIdentity.verified &&
-        status.behaviorIdentity.state === 'verified' &&
-        status.behaviorIdentity.mismatchFields.length === 0 &&
-        LOWER_SHA256_PATTERN.test(status.behaviorIdentity.fingerprintSha256) &&
-        status.behaviorIdentity.runtimeFingerprintSha256 ===
-          status.behaviorIdentity.fingerprintSha256 &&
-        typeof status.behaviorIdentity.buildManifestSha256 === 'string' &&
-        LOWER_SHA256_PATTERN.test(status.behaviorIdentity.buildManifestSha256);
-      const ready = status.ready && behaviorIdentityReady;
+      const ready = isOcrRuntimeReady(status);
       return {
         state: !ready && status.state === 'ready' ? 'degraded' : status.state,
         ready,

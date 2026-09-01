@@ -17,8 +17,13 @@ export class HealthController {
   }
 
   @Get('ready')
-  async ready() {
-    const snapshot = await this.healthService.ready();
+  async ready(@Query('scope') scope: string | string[] | undefined) {
+    if (scope !== undefined && scope !== 'ocr') {
+      throw new BadRequestException('Unsupported readiness scope');
+    }
+
+    const snapshot =
+      scope === 'ocr' ? this.healthService.ocrReady() : await this.healthService.ready();
     if (!snapshot.ok) {
       throw new ServiceUnavailableException(snapshot);
     }

@@ -1,4 +1,5 @@
 import { HealthService } from './health.service';
+import type { NativeTesseractRuntimeStatus } from '../moderation/commercial-ocr/native-tesseract-ocr.adapter';
 
 const redisInstances: Array<{
   ping: jest.Mock<Promise<string>, []>;
@@ -55,6 +56,43 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
       }
       throw new Error(`Missing key ${key}`);
     }),
+  };
+}
+
+function healthyOcrRuntimeStatus(): NativeTesseractRuntimeStatus {
+  return {
+    state: 'ready',
+    ready: true,
+    workers: { configured: 1, live: 1, ready: 1, busy: 0 },
+    queueDepth: 0,
+    queueWaitMs: {
+      observed: 0,
+      sampled: 0,
+      capacity: 512,
+      last: null,
+      average: null,
+      p95: null,
+      p99: null,
+      maximum: null,
+    },
+    counters: {
+      completed: 0,
+      failed: 0,
+      restarts: 0,
+      recycles: 0,
+      failuresByReason: {},
+    },
+    latencyMs: { last: null, average: null, maximum: null },
+    behaviorIdentity: {
+      fingerprintSha256: 'a'.repeat(64),
+      runtimeFingerprintSha256: 'a'.repeat(64),
+      buildManifestSha256: 'b'.repeat(64),
+      complete: true,
+      required: true,
+      verified: true,
+      state: 'verified',
+      mismatchFields: [],
+    },
   };
 }
 
@@ -181,6 +219,101 @@ describe('HealthService', () => {
         breachDurationSec: 0,
       }),
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('reads isolated OCR runtime readiness without calling heavy dependencies', async () => {
+    const prisma = { $queryRawUnsafe: jest.fn() };
+    const queueMetricsService = {
+      getSnapshot: jest.fn(),
+      peekCachedSnapshot: jest.fn(),
+    };
+    const systemModeService = { getEffectiveSnapshot: jest.fn() };
+    const commercialOcrMetrics = { getSnapshot: jest.fn() };
+    const getRuntimeStatus = jest.fn().mockReturnValue(healthyOcrRuntimeStatus());
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock({ APP_SERVICE_NAME: 'api-media-analysis' }) as never,
+      undefined,
+      undefined,
+      { getRuntimeStatus } as never,
+      commercialOcrMetrics as never,
+    );
+
+    const healthy = service.ocrReady();
+
+    expect(healthy).toEqual({
+      ok: true,
+      timestamp: expect.any(String),
+      scope: 'ocr',
+      checks: {
+        ocr: {
+          state: 'ready',
+          ready: true,
+          workers: { configured: 1, live: 1, ready: 1, busy: 0 },
+          queueDepth: 0,
+          behaviorIdentity: {
+            complete: true,
+            required: true,
+            verified: true,
+            state: 'verified',
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(healthy)).not.toContain('a'.repeat(64));
+    expect(JSON.stringify(healthy)).not.toContain('b'.repeat(64));
+
+    const healthyStatus = healthyOcrRuntimeStatus();
+    getRuntimeStatus.mockReturnValue({
+      ...healthyStatus,
+      behaviorIdentity: {
+        ...healthyStatus.behaviorIdentity,
+        runtimeFingerprintSha256: 'c'.repeat(64),
+      },
+    });
+    expect(service.ocrReady()).toMatchObject({
+      ok: false,
+      checks: {
+        ocr: {
+          state: 'degraded',
+          ready: false,
+          behaviorIdentity: { verified: true, state: 'verified' },
+        },
+      },
+    });
+
+    getRuntimeStatus.mockImplementation(() => {
+      throw new Error('private OCR failure');
+    });
+    expect(service.ocrReady()).toMatchObject({
+      ok: false,
+      checks: {
+        ocr: {
+          state: 'unavailable',
+          ready: false,
+          workers: { configured: 0, live: 0, ready: 0, busy: 0 },
+          queueDepth: 0,
+          behaviorIdentity: {
+            complete: false,
+            required: true,
+            verified: false,
+            state: 'unavailable',
+          },
+        },
+      },
+    });
+
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(3);
+    expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
+    expect(redisInstances[0]?.ping).not.toHaveBeenCalled();
+    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
+    expect(queueMetricsService.peekCachedSnapshot).not.toHaveBeenCalled();
+    expect(systemModeService.getEffectiveSnapshot).not.toHaveBeenCalled();
+    expect(commercialOcrMetrics.getSnapshot).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

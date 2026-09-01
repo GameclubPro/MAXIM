@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const root = resolve(import.meta.dirname, '../..');
 const publisherPath = resolve(root, 'infra/scripts/monitor-publisher-status.cjs');
 const { summarizePublisherStatus } = require(publisherPath);
-const { MAX_BODY_BYTES, readBoundedResponseBody, summarizeMediaHealth } = require(
+const { MAX_BODY_BYTES, OCR_READY_URL, readBoundedResponseBody, summarizeMediaHealth } = require(
   resolve(root, 'infra/scripts/monitor-media-ready.cjs'),
 );
 const { REQUIRED_FIELDS, summarizeRedisInfo } = require(
@@ -101,6 +101,28 @@ test('media readiness parser preserves useful 503 diagnostics without declaring 
   assert.match(summary.line, /status=503/u);
   assert.match(summary.line, /workers=1\/1\/0\/1/u);
   assert.match(summary.line, /identity=false\/failed/u);
+});
+
+test('media readiness monitor uses the isolated OCR scope and labels omitted dependencies', () => {
+  const summary = summarizeMediaHealth(200, {
+    ok: true,
+    scope: 'ocr',
+    checks: {
+      ocr: {
+        state: 'ready',
+        ready: true,
+        workers: { configured: 1, live: 1, ready: 1, busy: 0 },
+        queueDepth: 0,
+        behaviorIdentity: { verified: true, state: 'verified' },
+      },
+    },
+  });
+
+  assert.equal(OCR_READY_URL, 'http://127.0.0.1:3001/api/health/ready?scope=ocr');
+  assert.equal(summary.healthy, true);
+  assert.match(summary.line, /scope=ocr/u);
+  assert.match(summary.line, /db=not-probed redis=not-probed/u);
+  assert.match(summary.line, /failed=not-probed restarts=not-probed recycles=not-probed/u);
 });
 
 test('media readiness body reader rejects declared and streamed overflow before buffering it', async () => {
