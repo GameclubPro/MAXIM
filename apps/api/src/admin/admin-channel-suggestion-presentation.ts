@@ -89,7 +89,8 @@ function renderChannelSuggestionAuthorLink(
 }
 
 export function buildChannelSuggestionAdminMessagePayload(params: {
-  status: 'pending' | 'published' | 'cancelled';
+  status: 'pending' | 'published' | 'drafted' | 'cancelled';
+  publishedPresentation?: 'confirmed' | 'publication_created';
   channelTitle: string;
   authorAttribution: ChannelSuggestionAuthorAttribution;
   text: string;
@@ -101,10 +102,14 @@ export function buildChannelSuggestionAdminMessagePayload(params: {
   const hasMeaningfulText = params.text.trim().length > 0;
   const title =
     params.status === 'published'
-      ? '✅ Предложка опубликована'
-      : params.status === 'cancelled'
-        ? '✖️ Предложка отклонена'
-        : '📰 Новая предложка';
+      ? params.publishedPresentation === 'publication_created'
+        ? '✅ Предложка передана в публикацию'
+        : '✅ Предложка опубликована'
+      : params.status === 'drafted'
+        ? '✏️ Предложка перенесена в черновик'
+        : params.status === 'cancelled'
+          ? '✖️ Предложка отклонена'
+          : '📰 Новая предложка';
   const normalizedActorUserId = params.authorAttribution.userId.trim();
   const richTextHtml = hasMeaningfulText
     ? renderChannelSuggestionTextHtml(params.text, params.textMarkup, params.textFormat)

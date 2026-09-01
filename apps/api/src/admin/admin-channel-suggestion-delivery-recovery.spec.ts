@@ -92,6 +92,53 @@ describe('channel suggestion delivery recovery', () => {
     expect(sql).toContain("target.status = 'FAILED'");
     expect(sql).toContain('target.terminal = true');
     expect(sql).toContain('RETURNING target.id');
+    expect(sql).toContain("private_start.normalized_payload->>'type' = 'bot_started'");
+    expect(sql).not.toContain('delivery.bot_key =');
+    expect(sql).not.toContain('private_start.bot_id =');
+  });
+
+  it('scopes Publisher recovery to the current bot ledger and all private route evidence', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ id: 'publisher-terminal' }]);
+
+    await expect(
+      recoverChannelSuggestionAdminDeliveriesAfterBotStarted({
+        prisma: prisma as never,
+        auditLogId: 'publisher-suggestion-1',
+        rows: [
+          {
+            id: 'publisher-terminal',
+            adminUserId: 'publisher-admin-1',
+            status: ChannelSuggestionAdminDeliveryStatus.FAILED,
+            terminal: true,
+            botId: 'publisher-bot',
+            lastStatusCode: 404,
+            lastErrorCode: 'suggestion.delivery.no_reachable_dialog',
+          },
+        ],
+        options: {
+          botKey: 'publisher:publisher-bot',
+          botId: 'publisher-bot',
+          privateActivityTypes: ['bot_started', 'message_created'],
+        },
+      }),
+    ).resolves.toBe(1);
+
+    const query = prisma.$queryRaw.mock.calls[0]?.[0] as { values?: unknown[] };
+    const sql = extractSqlText(query);
+    expect(sql).toContain('delivery.bot_key =');
+    expect(sql).toContain('newer_delivery.bot_key =');
+    expect(sql).toContain('blocking_sibling.bot_key =');
+    expect(sql).toContain('private_start.bot_id =');
+    expect(sql).toContain("private_start.normalized_payload->>'type' IN");
+    expect(query.values).toEqual(
+      expect.arrayContaining([
+        'publisher:publisher-bot',
+        'publisher-bot',
+        'bot_started',
+        'message_created',
+      ]),
+    );
   });
 
   it('does not reopen a terminal row beside an already retryable logical sibling', async () => {

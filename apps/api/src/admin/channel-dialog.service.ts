@@ -269,6 +269,12 @@ export class ChannelDialogService {
     return this.legacyAdminService.processChannelSuggestionDeliveryJob(...args);
   }
 
+  processPublisherSuggestionAdminDeliveryJob(
+    ...args: Parameters<ChannelDialogLegacyPort['processPublisherSuggestionAdminDeliveryJob']>
+  ): ReturnType<ChannelDialogLegacyPort['processPublisherSuggestionAdminDeliveryJob']> {
+    return this.legacyAdminService.processPublisherSuggestionAdminDeliveryJob(...args);
+  }
+
   processPublisherSuggestionPublicationJob(
     suggestionId: string,
     claimToken: string,
@@ -283,6 +289,12 @@ export class ChannelDialogService {
     ...args: Parameters<ChannelDialogLegacyPort['recoverStaleChannelSuggestionDeliveries']>
   ): ReturnType<ChannelDialogLegacyPort['recoverStaleChannelSuggestionDeliveries']> {
     return this.legacyAdminService.recoverStaleChannelSuggestionDeliveries(...args);
+  }
+
+  syncPublisherSuggestionAdminReviewMessages(
+    ...args: Parameters<ChannelDialogLegacyPort['syncPublisherSuggestionAdminReviewMessages']>
+  ): ReturnType<ChannelDialogLegacyPort['syncPublisherSuggestionAdminReviewMessages']> {
+    return this.legacyAdminService.syncPublisherSuggestionAdminReviewMessages(...args);
   }
 
   recordChannelSuggestionDeliveryJobFailure(

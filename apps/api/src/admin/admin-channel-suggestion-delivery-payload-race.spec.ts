@@ -299,6 +299,7 @@ describe('channel suggestion delivery payload races', () => {
     expect(apply).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'suggestion-observer-sync-1' }),
       expect.objectContaining({ deliveryAttemptedAt: '2026-08-21T10:00:00.000Z' }),
+      'CHANNEL_DIALOG_SUGGESTION',
     );
   });
 });

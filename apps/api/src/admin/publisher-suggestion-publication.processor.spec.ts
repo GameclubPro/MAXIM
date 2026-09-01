@@ -292,13 +292,18 @@ describe('PublisherSuggestionPublicationProcessor', () => {
     process.env.APP_ROLE = 'publisher';
     process.env.APP_SERVICE_NAME = 'api-publisher';
     const processPublisherSuggestionPublicationJob = jest.fn();
+    const syncPublisherSuggestionAdminReviewMessages = jest.fn().mockResolvedValue(undefined);
     const processPublicationJob = jest.fn().mockResolvedValue(true);
     const processor = new PublisherSuggestionPublicationProcessor(
-      { processPublisherSuggestionPublicationJob } as never,
+      {
+        processPublisherSuggestionPublicationJob,
+        syncPublisherSuggestionAdminReviewMessages,
+      } as never,
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       createDispatchHealth() as never,
       createRuntimeBoundary() as never,
       { processPublicationJob } as never,
+      { getBotId: () => 'publisher-bot' } as never,
     );
 
     await processor.process({
@@ -310,6 +315,10 @@ describe('PublisherSuggestionPublicationProcessor', () => {
     } as never);
 
     expect(processPublicationJob).toHaveBeenCalledWith('publisher-suggestion-1', 'claim-1');
+    expect(syncPublisherSuggestionAdminReviewMessages).toHaveBeenCalledWith(
+      'publisher-suggestion-1',
+      'publisher-bot',
+    );
     expect(processPublisherSuggestionPublicationJob).not.toHaveBeenCalled();
   });
 

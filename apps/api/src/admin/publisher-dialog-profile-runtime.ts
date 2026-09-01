@@ -86,6 +86,7 @@ type PublisherDialogProfileRuntimeContext = {
   publisherDialogLinks?: PublisherDialogLinkService;
   publisherReadiness?: PublisherReadinessService;
   maxBotRegistry?: MaxBotRegistryService;
+  enqueueSuggestionAdminDelivery?: (suggestionId: string) => Promise<void>;
 };
 
 export class PublisherDialogProfileRuntime {
@@ -222,6 +223,7 @@ export class PublisherDialogProfileRuntime {
       inputHash,
     });
     if (admission.kind === 'replay') {
+      await this.enqueueSuggestionAdminDelivery(admission.row.id);
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
         message: params.mapAuditLog(admission.row, 'suggest', params.user.userId),
@@ -263,6 +265,7 @@ export class PublisherDialogProfileRuntime {
       );
       throw error;
     }
+    await this.enqueueSuggestionAdminDelivery(created.id);
     return createChannelDialogMessageResponseSchema.parse({
       ok: true,
       message: params.mapAuditLog(created, 'suggest', params.user.userId),
@@ -684,6 +687,17 @@ export class PublisherDialogProfileRuntime {
             source: 'publisher_miniapp_dialog',
             publisherProfile: true,
             reviewStatus: 'pending',
+            delivered: false,
+            deliveredToUserId: null,
+            deliveredToUserIds: [],
+            suggestionDelivery: {
+              state: 'queued',
+              deliveredCount: 0,
+              targetCount: 0,
+              pendingCount: 0,
+              unreachableCount: 0,
+            },
+            deliveries: [],
             hasImage: params.preparedImages.length > 0,
             imageCount: params.preparedImages.length,
             imageStorageVersion: CHANNEL_SUGGESTION_IMAGE_STORAGE_VERSION,
@@ -702,6 +716,14 @@ export class PublisherDialogProfileRuntime {
         select: { id: true, actorUserId: true, payload: true, createdAt: true },
       });
     });
+  }
+
+  private async enqueueSuggestionAdminDelivery(suggestionId: string): Promise<void> {
+    try {
+      await this.context.enqueueSuggestionAdminDelivery?.(suggestionId);
+    } catch {
+      // The durable suggestion remains recoverable when Redis is temporarily unavailable.
+    }
   }
 
   private async settlePublisherSuggestionAdmissionFailure(

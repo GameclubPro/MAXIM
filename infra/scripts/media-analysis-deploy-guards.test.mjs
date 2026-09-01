@@ -583,6 +583,8 @@ test('read-only BullMQ monitor includes commercial image OCR', () => {
 
 test('read-only BullMQ monitor batches counters and includes every Publisher queue', () => {
   const monitor = read('infra/scripts/vps-monitor-readonly.sh');
+  const queueBlock = monitor.match(/\nqueues=\(\n(?<queues>[\s\S]*?)\n\)\n/u)?.groups?.queues ?? '';
+  assert.notEqual(queueBlock, '');
 
   for (const queue of [
     'publisher-binding-refresh',
@@ -591,9 +593,10 @@ test('read-only BullMQ monitor batches counters and includes every Publisher que
     'publisher-auto-reply-authoring',
     'publisher-post-import',
     'publisher-suggestion-publication',
+    'publisher-suggestion-admin',
     'vk-parsing-publisher',
   ]) {
-    assert.equal([...monitor.matchAll(new RegExp(`^ {2}${queue}$`, 'gmu'))].length, 1);
+    assert.equal([...queueBlock.matchAll(new RegExp(`^ {2}${queue}$`, 'gmu'))].length, 1);
   }
   assert.doesNotMatch(monitor, /^ {2}managed-broadcast$/mu);
   assert.match(monitor, /redis-cli --raw eval "\$queue_counts_script"/u);

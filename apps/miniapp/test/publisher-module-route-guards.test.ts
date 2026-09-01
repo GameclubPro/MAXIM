@@ -12,11 +12,6 @@ const modulesCss = readFileSync(
   new URL('../src/pages/publisher-entity-modules-page.css', import.meta.url),
   'utf8',
 );
-const suggestionsSource = readFileSync(
-  new URL('../src/pages/publisher-suggestions-inbox.tsx', import.meta.url),
-  'utf8',
-);
-
 test('Publik entity modules route is registered only for the publisher profile', () => {
   assert.match(
     appSource,
@@ -43,109 +38,18 @@ test('blocked Publik modules explain readiness and run one bounded targeted rech
   assert.match(modulesCss, /\.publisher-entity-modules-page__recheck \{[\s\S]*?min-height: 44px;/u);
 });
 
-test('channel suggestions open drafts directly, confirm rejection, and page both views', () => {
-  assert.match(modulesSource, /<LazyPublisherSuggestionsInbox/u);
-  assert.match(modulesSource, /await import\('\.\/publisher-suggestions-inbox'\)/u);
+test('channel suggestions expose only the Publisher module switch', () => {
   assert.match(
     modulesSource,
-    /entity\.moduleSettings\.channelSuggestionsEnabled === true \? \([\s\S]*?<LazyPublisherSuggestionsInbox/u,
+    /<strong>Предложения<\/strong>[\s\S]*?checked=\{entity\.moduleSettings\.channelSuggestionsEnabled === true\}/u,
   );
-  assert.match(
-    suggestionsSource,
-    /enabled: shouldLoadPublisherSuggestions\(\{[\s\S]*?requestView: 'pending'/u,
-  );
-  assert.match(
-    suggestionsSource,
-    /enabled: shouldLoadPublisherSuggestions\(\{[\s\S]*?requestView: 'history'/u,
-  );
-  assert.match(suggestionsSource, /if \(!enabled\) \{\s*return null;/u);
-  assert.match(suggestionsSource, /<LazyActionConfirmSheet/u);
-  assert.match(suggestionsSource, /await import\('\.\.\/components\/ui\/action-confirm-sheet'\)/u);
-  assert.doesNotMatch(suggestionsSource, /Открыть предложение в редакторе\?/u);
-  assert.match(suggestionsSource, /title="Отклонить предложение\?"/u);
-  assert.match(
-    suggestionsSource,
-    /onClick=\{\(\) => void openSuggestionDraft\(suggestion\.id\)\}/u,
-  );
-  assert.match(suggestionsSource, /setConfirmation\(\{ suggestionId: suggestion\.id \}\)/u);
-  assert.match(suggestionsSource, /Отменить это действие нельзя\./u);
-  assert.match(suggestionsSource, /tone="danger"/u);
-  assert.match(suggestionsSource, /isBusy=\{cancelMutation\.isPending\}/u);
-  assert.match(suggestionsSource, /onClose=\{\(\) => setConfirmation\(null\)\}/u);
-  assert.match(
-    suggestionsSource,
-    /onConfirm=\{\(\) => cancelMutation\.mutate\(confirmationSuggestion\.id\)\}/u,
-  );
-  assert.doesNotMatch(
-    suggestionsSource,
-    /setConfirmation\(\{ suggestionId: suggestion\.id, action: 'draft' \}\)/u,
-  );
-  assert.match(
-    suggestionsSource,
-    /const draftOpenGateRef = useRef\(new PublisherSuggestionDraftOpenGate\(\)\)/u,
-  );
-  assert.match(
-    suggestionsSource,
-    /const normalizedSuggestionId = gate\.tryStart\(suggestionId\)[\s\S]*?const response = await reviewPublisherSuggestion/u,
-  );
-  assert.match(suggestionsSource, /finally \{[\s\S]*?gate\.finish\(normalizedSuggestionId\)/u);
-  assert.match(
-    suggestionsSource,
-    /if \(!draftOpenGateRef\.current\.tryCommitNavigation\(\)\) \{[\s\S]*?navigate\(`/u,
-  );
-  assert.match(suggestionsSource, /disabled=\{draftOpenBusy \|\| cancelMutation\.isPending\}/u);
-  assert.match(
-    suggestionsSource,
-    /aria-busy=\{openingDraftSuggestionIds\.has\(suggestion\.id\)\}/u,
-  );
-  assert.match(suggestionsSource, /'Готовим черновик'/u);
-  assert.match(suggestionsSource, /useInfiniteQuery/u);
-  assert.match(suggestionsSource, /requestView: 'pending'/u);
-  assert.match(suggestionsSource, /requestView: 'history'/u);
-  assert.match(suggestionsSource, /pendingQuery\.data\?\.pages\[0\]\?\.total/u);
-  assert.match(suggestionsSource, /historyQuery\.data\?\.pages\[0\]\?\.total/u);
-  assert.match(suggestionsSource, /activeQuery\.fetchNextPage\(\)/u);
-  assert.match(suggestionsSource, /queryClient\.invalidateQueries\(\{ queryKey: queryRoot \}\)/u);
-  assert.match(suggestionsSource, /resolvePublisherSuggestionsRefetchInterval/u);
-  assert.match(suggestionsSource, /view === 'pending'/u);
-  assert.match(suggestionsSource, /\/publications\?draft=/u);
-  assert.match(suggestionsSource, /suggestion\.imageCount > 0/u);
-  assert.match(
-    suggestionsSource,
-    /suggestion\.reviewStatus === 'drafted'[\s\S]*?Открыть черновик/u,
-  );
-  assert.doesNotMatch(
-    suggestionsSource,
-    /setConfirmation\(\{ suggestionId: suggestion\.id, action: 'publish' \}\)/u,
-  );
-  assert.match(suggestionsSource, /<MaxMarkdownPreview/u);
-  assert.match(suggestionsSource, /sourceFormat=\{suggestion\.textFormat\}/u);
-  assert.match(suggestionsSource, /sourceFormat=\{confirmationSuggestion\.textFormat\}/u);
-  assert.match(suggestionsSource, /suggestion\.text\.trim\(\) \? \([\s\S]*?<MaxMarkdownPreview/u);
-  assert.match(
-    suggestionsSource,
-    /confirmationSuggestion\.text\.trim\(\) \? \([\s\S]*?<MaxMarkdownPreview/u,
-  );
-  assert.match(suggestionsSource, /Не удалось создать черновик/u);
-  assert.doesNotMatch(suggestionsSource, /Предложение без текста|Не удалось создать публикацию/u);
-  assert.doesNotMatch(suggestionsSource, /<p>\{suggestion\.text\}<\/p>/u);
-  assert.doesNotMatch(suggestionsSource, /items\.slice\(0, 20\)/u);
-  assert.doesNotMatch(suggestionsSource, /Передано в посты/u);
-  assert.match(
-    modulesCss,
-    /\.publisher-suggestion-row__actions button \{[\s\S]*?min-height: 44px;/u,
-  );
-});
-
-test('channel suggestion inbox refreshes while waiting for external submissions', () => {
-  assert.match(suggestionsSource, /refetchOnWindowFocus: true/u);
-  assert.match(
-    suggestionsSource,
-    /refetchInterval: resolvePublisherSuggestionsRefetchInterval\(\{[\s\S]*?activeView: view/u,
-  );
-  assert.doesNotMatch(suggestionsSource, /containsPublishingSuggestion/u);
   assert.match(
     modulesSource,
-    /queryClient\.invalidateQueries\(\{[\s\S]*?queryKey: queryKeys\.publisherSuggestions\(entity\.id\)/u,
+    /onChange=\{\(channelSuggestionsEnabled\) =>[\s\S]*?mutation\.mutate\(\{ channelSuggestionsEnabled \}\)/u,
   );
+  assert.doesNotMatch(
+    modulesSource,
+    /LazyPublisherSuggestionsInbox|publisher-suggestions-inbox|publisherSuggestions\(/u,
+  );
+  assert.doesNotMatch(modulesCss, /publisher-suggestions|publisher-suggestion-row/u);
 });

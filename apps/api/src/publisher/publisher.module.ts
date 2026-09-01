@@ -51,6 +51,11 @@ import { PublisherAutoReplyAuthoringRecoveryService } from './publisher-auto-rep
 import { PublisherAutoReplyContentCaptureService } from './publisher-auto-reply-content-capture.service';
 import { PublisherPrivateDialogFlowRouterService } from './publisher-private-dialog-flow-router.service';
 import { PublisherPrivateFlowLeaseService } from './publisher-private-flow-lease.service';
+import {
+  PUBLISHER_SUGGESTION_ADMIN_QUEUE,
+  PublisherSuggestionAdminQueueService,
+} from './publisher-suggestion-admin.queue';
+import { PublisherSuggestionAdminCallbackObserverService } from './publisher-suggestion-admin-callback-observer.service';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -86,6 +91,8 @@ const sharedPublisherProviders = [
   PublisherAutoReplyProducerService,
   PublisherAutoReplyAuthoringQueueService,
   PublisherAutoReplyAuthoringService,
+  PublisherSuggestionAdminQueueService,
+  PublisherSuggestionAdminCallbackObserverService,
   PublisherPrivateFlowLeaseService,
   PublisherPrivateDialogFlowRouterService,
 ];
@@ -100,6 +107,7 @@ const sharedPublisherProviders = [
       { name: PUBLISHER_POST_IMPORT_QUEUE },
       { name: PUBLISHER_AUTO_REPLY_QUEUE },
       { name: PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE },
+      { name: PUBLISHER_SUGGESTION_ADMIN_QUEUE },
     ),
   ],
   providers: [...sharedPublisherProviders, ...publisherRuntimeProviders],

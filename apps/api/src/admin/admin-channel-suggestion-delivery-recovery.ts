@@ -11,6 +11,8 @@ export type RecoverableChannelSuggestionDeliveryRow = {
   lastErrorCode: string | null;
 };
 
+export type ChannelSuggestionPrivateRecoveryActivity = 'bot_started' | 'message_created';
+
 export function isTerminalPrivateDialogDeliveryRow(
   row: RecoverableChannelSuggestionDeliveryRow,
 ): boolean {
@@ -272,6 +274,11 @@ export async function recoverChannelSuggestionAdminDeliveriesAfterBotStarted(par
   prisma: PrismaService;
   auditLogId: string;
   rows: RecoverableChannelSuggestionDeliveryRow[];
+  options?: {
+    botKey?: string;
+    botId?: string;
+    privateActivityTypes?: readonly ChannelSuggestionPrivateRecoveryActivity[];
+  };
 }): Promise<number> {
   const blockedAdminUserIds = new Set(
     params.rows
@@ -284,6 +291,19 @@ export async function recoverChannelSuggestionAdminDeliveriesAfterBotStarted(par
     )
     .map((row) => row.id);
   if (candidateIds.length === 0) return 0;
+
+  const botKey = params.options?.botKey?.trim() || null;
+  const botId = params.options?.botId?.trim() || null;
+  const configuredActivityTypes = params.options?.privateActivityTypes ?? ['bot_started'];
+  const normalizedActivityTypes = Array.from(new Set(configuredActivityTypes));
+  const privateActivityTypes =
+    normalizedActivityTypes.length > 0 ? normalizedActivityTypes : ['bot_started'];
+  const privateActivityPredicate =
+    privateActivityTypes.length === 1 && privateActivityTypes[0] === 'bot_started'
+      ? Prisma.sql`private_start.normalized_payload->>'type' = 'bot_started'`
+      : Prisma.sql`private_start.normalized_payload->>'type' IN (${Prisma.join(
+          privateActivityTypes,
+        )})`;
 
   const matchedRows = await params.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     WITH eligible_deliveries AS (
@@ -298,6 +318,7 @@ export async function recoverChannelSuggestionAdminDeliveriesAfterBotStarted(par
         ON audit.id = delivery.audit_log_id
       WHERE delivery.audit_log_id = ${params.auditLogId}
         AND delivery.id IN (${Prisma.join(candidateIds)})
+        ${botKey ? Prisma.sql`AND delivery.bot_key = ${botKey}` : Prisma.empty}
         AND delivery.status = 'FAILED'::"ChannelSuggestionAdminDeliveryStatus"
         AND delivery.terminal = true
         AND NOT EXISTS (
@@ -306,6 +327,7 @@ export async function recoverChannelSuggestionAdminDeliveriesAfterBotStarted(par
           JOIN audit_logs newer_audit
             ON newer_audit.id = newer_delivery.audit_log_id
           WHERE newer_delivery.admin_user_id = delivery.admin_user_id
+            ${botKey ? Prisma.sql`AND newer_delivery.bot_key = ${botKey}` : Prisma.empty}
             AND newer_audit.action = audit.action
             AND (
               newer_audit.created_at > audit.created_at
@@ -320,6 +342,7 @@ export async function recoverChannelSuggestionAdminDeliveriesAfterBotStarted(par
           FROM channel_suggestion_admin_deliveries blocking_sibling
           WHERE blocking_sibling.audit_log_id = delivery.audit_log_id
             AND blocking_sibling.admin_user_id = delivery.admin_user_id
+            ${botKey ? Prisma.sql`AND blocking_sibling.bot_key = ${botKey}` : Prisma.empty}
             AND blocking_sibling.id <> delivery.id
             AND (
               blocking_sibling.status IN (
@@ -355,7 +378,8 @@ export async function recoverChannelSuggestionAdminDeliveriesAfterBotStarted(par
             AND EXISTS (
               SELECT 1
               FROM webhook_events private_start
-              WHERE private_start.normalized_payload->>'type' = 'bot_started'
+              WHERE ${privateActivityPredicate}
+                ${botId ? Prisma.sql`AND private_start.bot_id = ${botId}` : Prisma.empty}
                 AND private_start.normalized_payload->'message'->>'senderId' = delivery.admin_user_id
                 AND NULLIF(
                   BTRIM(private_start.normalized_payload->'message'->>'chatId'),

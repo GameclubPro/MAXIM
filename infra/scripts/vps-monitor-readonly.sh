@@ -446,6 +446,7 @@ queues=(
   publisher-auto-reply-authoring
   publisher-post-import
   publisher-suggestion-publication
+  publisher-suggestion-admin
   vk-parsing-sync
   vk-parsing-publish
   vk-parsing-publisher

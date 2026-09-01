@@ -77,7 +77,6 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/pages/publisher-entities-page*.ts*',
     'apps/miniapp/src/pages/publisher-entities-page.css',
     'apps/miniapp/src/pages/publisher-entity-modules-page*',
-    'apps/miniapp/src/pages/publisher-suggestions-*',
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/styles/publications-page.css',
     'packages/contracts/src/publisher.ts',
@@ -443,54 +442,18 @@ const baseScenarios = [
       },
     ],
     [
-      'publisher-entity-modules-blocked',
+      'publisher-channel-suggestions-toggle',
       {
-        path: '/publisher/chat/preview-chat-2',
+        path: '/publisher/channel/preview-channel',
         searchParams: { profile: 'publisher' },
         features: ['publisher'],
       },
     ],
     [
-      'publisher-channel-suggestions-open-draft',
+      'publisher-entity-modules-blocked',
       {
-        path: '/publisher/channel/preview-channel',
-        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-channel-suggestions-cancel-confirm',
-      {
-        path: '/publisher/channel/preview-channel',
-        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-channel-suggestions-image-only-cancel-confirm',
-      {
-        path: '/publisher/channel/preview-channel',
-        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-channel-suggestions-image-only-open-draft',
-      {
-        path: '/publisher/channel/preview-channel',
-        searchParams: {
-          profile: 'publisher',
-          publisherSuggestions: 'large',
-          channelPostSignature: 'button',
-        },
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-channel-suggestions-history',
-      {
-        path: '/publisher/channel/preview-channel',
-        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
+        path: '/publisher/chat/preview-chat-2',
+        searchParams: { profile: 'publisher' },
         features: ['publisher'],
       },
     ],
@@ -617,7 +580,6 @@ const baseScenarios = [
         searchParams: {
           profile: 'publisher',
           compose: '1',
-          publisherSuggestions: 'mixed',
           channelPostSignature: 'button',
         },
         features: ['publisher', 'broadcast'],

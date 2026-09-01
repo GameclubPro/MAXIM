@@ -17,11 +17,14 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PublicationDispatchProfile, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
+import { PublisherSuggestionAdminQueueService } from '../publisher/publisher-suggestion-admin.queue';
 import {
   loadStoredChannelSuggestionImages,
   readLegacyChannelSuggestionImages,
@@ -75,6 +78,10 @@ export class PublisherSuggestionService {
     private readonly policy: PublisherPolicyService,
     private readonly publications: PublicationService,
     private readonly publicationQueue: PublisherSuggestionPublicationQueueService,
+    @Optional()
+    private readonly adminQueue?: PublisherSuggestionAdminQueueService,
+    @Optional()
+    private readonly publisherDialogLinks?: PublisherDialogLinkService,
   ) {}
 
   async list(
@@ -444,6 +451,7 @@ export class PublisherSuggestionService {
       reviewStatus: 'cancelled',
       reviewedAt: new Date().toISOString(),
       reviewedByUserId: user.userId,
+      reviewedByDisplayName: user.displayName?.trim() || user.userId,
       reviewError: null,
     } satisfies Prisma.InputJsonObject;
     const rows = await this.prisma.$queryRaw<PublisherSuggestionStoredRow[]>(Prisma.sql`
@@ -486,6 +494,7 @@ export class PublisherSuggestionService {
       ...(claim.action === 'draft' ? { draftedAt: finalizedAt } : { publishedAt: finalizedAt }),
       reviewedAt: finalizedAt,
       reviewedByUserId: claim.user.userId,
+      reviewedByDisplayName: claim.user.displayName?.trim() || claim.user.userId,
       reviewError: null,
     } satisfies Prisma.InputJsonObject;
     const rows = await this.prisma.$queryRaw<PublisherSuggestionStoredRow[]>(Prisma.sql`
@@ -710,14 +719,36 @@ export class PublisherSuggestionService {
     });
   }
 
-  private reviewResponse(
+  private async reviewResponse(
     row: PublisherSuggestionRow,
     responseVersion: 1 | 2,
-  ): ReviewPublisherSuggestionResponse | LegacyReviewPublisherSuggestionResponse {
+  ): Promise<ReviewPublisherSuggestionResponse | LegacyReviewPublisherSuggestionResponse> {
+    const suggestion = this.present(row);
+    if (
+      suggestion.reviewStatus === 'published' ||
+      suggestion.reviewStatus === 'drafted' ||
+      suggestion.reviewStatus === 'cancelled'
+    ) {
+      await this.enqueueAdminCardSync(row.id, suggestion.reviewStatus);
+    }
     if (responseVersion === 2) {
-      return reviewPublisherSuggestionResponseSchema.parse({ suggestion: this.present(row) });
+      return reviewPublisherSuggestionResponseSchema.parse({ suggestion });
     }
     return { suggestion: this.presentLegacy(row) };
+  }
+
+  private async enqueueAdminCardSync(
+    suggestionId: string,
+    reviewStatus: 'published' | 'drafted' | 'cancelled',
+  ): Promise<void> {
+    const requiredBotId = this.publisherDialogLinks?.getBotId().trim() ?? '';
+    if (!this.adminQueue || !requiredBotId) return;
+    await this.adminQueue.enqueueSync({
+      suggestionId,
+      requiredBotId,
+      reviewStatus,
+      recoverExisting: true,
+    });
   }
 
   private present(row: PublisherSuggestionRow): PublisherSuggestion {

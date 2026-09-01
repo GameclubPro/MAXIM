@@ -2,10 +2,12 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { PublisherAutoReplyAuthoringService } from './publisher-auto-reply-authoring.service';
 import { PublisherPostImportService } from './publisher-post-import.service';
+import { PublisherSuggestionAdminCallbackObserverService } from './publisher-suggestion-admin-callback-observer.service';
 
 @Injectable()
 export class PublisherPrivateDialogFlowRouterService {
   constructor(
+    private readonly suggestionAdminCallbacks: PublisherSuggestionAdminCallbackObserverService,
     private readonly autoReplyAuthoring: PublisherAutoReplyAuthoringService,
     private readonly postImport: PublisherPostImportService,
   ) {}
@@ -15,6 +17,9 @@ export class PublisherPrivateDialogFlowRouterService {
     webhookEventId: string | null,
     options: { duplicate?: boolean } = {},
   ): Promise<boolean> {
+    if (await this.suggestionAdminCallbacks.observeWebhook(update, webhookEventId, options)) {
+      return true;
+    }
     if (await this.autoReplyAuthoring.observeWebhook(update, webhookEventId, options)) {
       return true;
     }

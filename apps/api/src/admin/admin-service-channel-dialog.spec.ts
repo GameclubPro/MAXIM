@@ -3133,6 +3133,313 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('delivers Publisher suggestions through the exact current bot after a bot rotation', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'publisher-channel-1',
+      title: 'Канал Публика',
+      entityType: 'CHANNEL',
+    });
+    (prisma as any).managedEntityAccessEdge = {
+      findMany: jest.fn().mockResolvedValue([{ userId: 'publisher-admin-1' }]),
+    };
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '700001' }]);
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'publisher-suggestion-delivery-1',
+      chatId: 'publisher-channel-1',
+      actorUserId: 'subscriber-1',
+      action: 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'subscriber-1',
+        authorDisplayName: 'Подписчик',
+        text: 'Новая публикация',
+        textFormat: 'plain',
+        delivered: false,
+        deliveredToUserIds: [],
+        deliveries: [],
+        reviewStatus: 'pending',
+        hasImage: false,
+        imageCount: 0,
+      },
+      createdAt: new Date('2026-09-01T18:00:00.000Z'),
+    });
+    await prisma.channelSuggestionAdminDelivery.createMany({
+      data: [
+        {
+          auditLogId: 'publisher-suggestion-delivery-1',
+          adminUserId: 'publisher-admin-1',
+          botKey: 'publisher:retired-publisher-bot',
+          botId: 'retired-publisher-bot',
+          status: 'FAILED',
+          terminal: true,
+          lastStatusCode: 404,
+          lastErrorCode: 'suggestion.delivery.no_reachable_dialog',
+        },
+      ],
+    });
+
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({ userId: 'publisher-bot-user' }),
+      getChatAdminIds: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(new Map([['publisher-admin-1', { isAdmin: true, isOwner: false }]])),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
+      sendMessageImmediateWithId: jest.fn().mockImplementation(async (_chatId, _text, options) => {
+        await options.beforeSend();
+        return { messageId: 'publisher-card-mid-1', chatId: '700001', url: null };
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).publisherReadinessService = {
+      assertEntityReady: jest.fn().mockResolvedValue({
+        chatId: 'publisher-channel-1',
+        entityType: 'channel',
+        requiredBotId: 'publisher-bot',
+        policyRevision: 1,
+      }),
+    };
+
+    await service.processPublisherSuggestionAdminDeliveryJob(
+      'publisher-suggestion-delivery-1',
+      'publisher-bot',
+    );
+
+    expect((prisma as any).managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'publisher-channel-1',
+          botId: 'publisher-bot',
+          entityType: 'CHANNEL',
+          state: 'GRANTED',
+          userRole: { in: ['OWNER', 'ADMIN'] },
+        }),
+      }),
+    );
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'publisher-channel-1',
+      ['publisher-admin-1'],
+      expect.objectContaining({ botId: 'publisher-bot', bypassCache: true }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '700001',
+      expect.stringContaining('Новая предложка'),
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              text: '📰 В публикацию',
+              payload: 'psa:v1:publish:publisher-suggestion-delivery-1',
+            }),
+            expect.objectContaining({
+              text: '✖️ Отклонить',
+              payload: 'psa:v1:cancel:publisher-suggestion-delivery-1',
+            }),
+          ],
+        ],
+      }),
+      expect.objectContaining({
+        botId: 'publisher-bot',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+      }),
+    );
+    const ledger = await prisma.channelSuggestionAdminDelivery.findMany({
+      where: {
+        auditLogId: 'publisher-suggestion-delivery-1',
+        botKey: 'publisher:publisher-bot',
+      },
+    });
+    expect(ledger).toEqual([
+      expect.objectContaining({
+        adminUserId: 'publisher-admin-1',
+        botKey: 'publisher:publisher-bot',
+        botId: 'publisher-bot',
+        privateChatId: '700001',
+        remoteMessageId: 'publisher-card-mid-1',
+        status: 'SENT',
+      }),
+    ]);
+    await expect(
+      prisma.channelSuggestionAdminDelivery.findMany({
+        where: {
+          auditLogId: 'publisher-suggestion-delivery-1',
+          botKey: 'publisher:retired-publisher-bot',
+        },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        status: 'FAILED',
+        terminal: true,
+        botId: 'retired-publisher-bot',
+      }),
+    ]);
+  });
+
+  it('retries transient Publisher card sync and renders a drafted card as terminal', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'publisher-channel-1',
+      title: 'Канал Публика',
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'publisher-suggestion-drafted-1',
+      chatId: 'publisher-channel-1',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'subscriber-1',
+        authorDisplayName: 'Подписчик',
+        text: 'Текст черновика',
+        textFormat: 'plain',
+        reviewStatus: 'drafted',
+        reviewedByDisplayName: 'Администратор',
+      },
+    });
+    await prisma.channelSuggestionAdminDelivery.createMany({
+      data: [
+        {
+          auditLogId: 'publisher-suggestion-drafted-1',
+          adminUserId: 'publisher-admin-1',
+          botKey: 'publisher:publisher-bot',
+          botId: 'publisher-bot',
+          privateChatId: '700001',
+          status: 'SENT',
+          remoteMessageId: 'publisher-card-mid-1',
+          sentAt: new Date('2026-09-01T18:00:00.000Z'),
+        },
+      ],
+    });
+    const transientError = new Error('connection reset while editing message');
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(transientError),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.syncPublisherSuggestionAdminReviewMessages(
+        'publisher-suggestion-drafted-1',
+        'publisher-bot',
+      ),
+    ).rejects.toBe(transientError);
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      '700001',
+      'publisher-card-mid-1',
+      expect.stringContaining('Предложка перенесена в черновик'),
+      expect.objectContaining({ buttons: [] }),
+      { botId: 'publisher-bot' },
+    );
+  });
+
+  it('renders Publisher publication creation and fences a card finalized during sync', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'publisher-channel-1',
+      title: 'Канал Публика',
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'publisher-suggestion-published-1',
+      chatId: 'publisher-channel-1',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'subscriber-1',
+        authorDisplayName: 'Подписчик',
+        text: 'Текст публикации',
+        textFormat: 'plain',
+        reviewStatus: 'published',
+        reviewedByDisplayName: 'Администратор',
+      },
+    });
+    await prisma.channelSuggestionAdminDelivery.createMany({
+      data: [
+        {
+          auditLogId: 'publisher-suggestion-published-1',
+          adminUserId: 'publisher-admin-1',
+          botKey: 'publisher:publisher-bot',
+          botId: 'publisher-bot',
+          privateChatId: '700001',
+          status: 'SENT',
+          remoteMessageId: 'publisher-card-mid-1',
+          sentAt: new Date('2026-09-01T18:00:00.000Z'),
+        },
+      ],
+    });
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockImplementation(async () => {
+        await prisma.channelSuggestionAdminDelivery.createMany({
+          data: [
+            {
+              auditLogId: 'publisher-suggestion-published-1',
+              adminUserId: 'publisher-admin-2',
+              botKey: 'publisher:publisher-bot',
+              botId: 'publisher-bot',
+              privateChatId: '700002',
+              status: 'SENT',
+              remoteMessageId: 'publisher-card-mid-2',
+              sentAt: new Date('2026-09-01T18:01:00.000Z'),
+            },
+          ],
+        });
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.syncPublisherSuggestionAdminReviewMessages(
+      'publisher-suggestion-published-1',
+      'publisher-bot',
+    );
+
+    const editedText = maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2] as string;
+    expect(editedText).toContain('Предложка передана в публикацию');
+    expect(editedText).toContain('Решение принял: Администратор');
+    expect(editedText).not.toContain('Предложка опубликована');
+    const markerQuery = prisma.$executeRaw.mock.calls[0]?.[0] as {
+      strings?: readonly string[];
+      values?: unknown[];
+    };
+    expect(extractSqlText(markerQuery)).toContain('publisherAdminCardSyncKey');
+    expect(extractSqlText(markerQuery)).toContain('SELECT COUNT(*)');
+    expect(markerQuery.values).toContain(1);
+    await expect(
+      prisma.channelSuggestionAdminDelivery.findMany({
+        where: {
+          auditLogId: 'publisher-suggestion-published-1',
+          botKey: 'publisher:publisher-bot',
+          status: 'SENT',
+        },
+      }),
+    ).resolves.toHaveLength(2);
+    const markerPatch = markerQuery.values?.find(
+      (value): value is string =>
+        typeof value === 'string' && value.includes('"publisherAdminCardSyncKey"'),
+    );
+    expect(JSON.parse(markerPatch ?? '{}')).toEqual(
+      expect.objectContaining({
+        publisherAdminCardSyncKey: expect.stringMatching(/^v1:/u),
+        publisherAdminCardSyncedCount: 1,
+        publisherAdminCardSyncedAt: expect.any(String),
+      }),
+    );
+  });
+
   it('prefers stored relation image bytes when a queued suggestion is delivered', async () => {
     const prisma = createPrismaMock();
     const relationBytes = Buffer.from('relation-image-bytes');

@@ -14,11 +14,6 @@ import {
   publisherPostImportCreateRequestSchema,
   publisherPostImportCurrentResponseSchema,
   publisherPostImportSessionSchema,
-  publisherSuggestionSchema,
-  publisherSuggestionsQuerySchema,
-  publisherSuggestionsResponseSchema,
-  reviewPublisherSuggestionRequestSchema,
-  reviewPublisherSuggestionResponseSchema,
   resolvePublisherEntitiesRequestSchema,
   resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
@@ -27,7 +22,6 @@ import {
   type ManagedEntityType,
   type PublisherChatCommentSettings,
   type PublisherEntity,
-  type PublisherSuggestion,
 } from '@maxim/contracts/publisher';
 import {
   archivePublisherAutoReplyRequestSchema,
@@ -46,12 +40,8 @@ import {
 import { PREVIEW_CHAT_ID } from '../design-preview';
 import { ApiRequestError } from '../api-request-error';
 import { PREVIEW_NOT_HANDLED, type PreviewRequestHandler } from './preview-transport-runtime';
-import { replacePreviewPublication } from './preview-transport-publications';
 import { parseJsonBody } from './preview-transport-shared';
 import type { PreviewState } from './preview-transport-state';
-
-const PREVIEW_PUBLISHER_SUGGESTION_IMAGE_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
 function getPreviewPublisherPolicies(
   state: PreviewState,
@@ -187,129 +177,6 @@ function listPreviewPublisherAutoReplies(
   return store[chatId];
 }
 
-function getPreviewPublisherSuggestionReviews(
-  state: PreviewState,
-): Record<string, PublisherSuggestion['reviewStatus']> {
-  const extended = state as PreviewState & {
-    publisherSuggestionReviews?: Record<string, PublisherSuggestion['reviewStatus']>;
-  };
-  extended.publisherSuggestionReviews ??= {};
-  return extended.publisherSuggestionReviews;
-}
-
-function getPreviewPublisherSuggestionPublicationIds(state: PreviewState): Record<string, string> {
-  const extended = state as PreviewState & {
-    publisherSuggestionPublicationIds?: Record<string, string>;
-  };
-  extended.publisherSuggestionPublicationIds ??= {};
-  return extended.publisherSuggestionPublicationIds;
-}
-
-function listPreviewPublisherSuggestions(
-  state: PreviewState,
-  entityId: string,
-): PublisherSuggestion[] {
-  const count =
-    state.publisherSuggestionsVariant === 'large'
-      ? 100
-      : state.publisherSuggestionsVariant === 'mixed'
-        ? 8
-        : 0;
-  const reviews = getPreviewPublisherSuggestionReviews(state);
-  return Array.from({ length: count }, (_, index) => {
-    const id = `preview-suggestion-${entityId}-${String(index + 1).padStart(3, '0')}`;
-    const isImageOnlyFixture = index === 1;
-    const initialStatus: PublisherSuggestion['reviewStatus'] =
-      index < Math.ceil(count * 0.35)
-        ? 'pending'
-        : index < Math.ceil(count * 0.4)
-          ? 'publishing'
-          : index % 2 === 0
-            ? 'published'
-            : 'cancelled';
-    const reviewStatus = reviews[id] ?? initialStatus;
-    const textFormat: PublisherSuggestion['textFormat'] = index === 0 ? 'markdown' : 'plain';
-    return publisherSuggestionSchema.parse({
-      id,
-      text: isImageOnlyFixture
-        ? ''
-        : textFormat === 'markdown'
-          ? `**Идея для публикации №${index + 1}\n\nВажная новость сообщества с проверенными деталями.**`
-          : `Идея для публикации №${index + 1}: важная новость сообщества с проверенными деталями.`,
-      textFormat,
-      authorDisplayName: index % 4 === 0 ? null : `Автор ${index + 1}`,
-      createdAt: new Date(state.clock.now().getTime() - index * 12 * 60_000).toISOString(),
-      reviewStatus,
-      publicationId:
-        getPreviewPublisherSuggestionPublicationIds(state)[id] ??
-        (reviewStatus === 'published' ? `preview-publication-${index + 1}` : null),
-      imageCount: isImageOnlyFixture ? 1 : index % 3,
-    });
-  });
-}
-
-function buildPreviewPublisherSuggestionMedia(suggestion: PublisherSuggestion) {
-  return Array.from({ length: suggestion.imageCount }, (_, index) => ({
-    type: 'image' as const,
-    base64: PREVIEW_PUBLISHER_SUGGESTION_IMAGE_BASE64,
-    mimeType: 'image/png',
-    fileName: `suggestion-photo-${index + 1}.png`,
-  }));
-}
-
-const PREVIEW_PUBLISHER_SUGGESTIONS_CURSOR_PATTERN = /^preview_(pending|history)_([1-9]\d*)$/u;
-
-function encodePreviewPublisherSuggestionsCursor(
-  view: 'pending' | 'history',
-  offset: number,
-): string {
-  return `preview_${view}_${offset}`;
-}
-
-function decodePreviewPublisherSuggestionsCursor(
-  value: string,
-): { view: 'pending' | 'history'; offset: number } | null {
-  const match = PREVIEW_PUBLISHER_SUGGESTIONS_CURSOR_PATTERN.exec(value);
-  if (!match) {
-    return null;
-  }
-  const offset = Number.parseInt(match[2] ?? '', 10);
-  if (!Number.isSafeInteger(offset) || offset < 1) {
-    return null;
-  }
-  return { view: match[1] as 'pending' | 'history', offset };
-}
-
-function listPreviewPublisherSuggestionsPage(state: PreviewState, entityId: string, url: URL) {
-  const query = publisherSuggestionsQuerySchema.parse(
-    Object.fromEntries(url.searchParams.entries()),
-  );
-  const suggestions = listPreviewPublisherSuggestions(state, entityId).filter((suggestion) => {
-    const pending =
-      suggestion.reviewStatus === 'pending' || suggestion.reviewStatus === 'publishing';
-    return query.view === 'pending' ? pending : !pending;
-  });
-  const cursor = query.cursor ? decodePreviewPublisherSuggestionsCursor(query.cursor) : null;
-  if (
-    query.cursor &&
-    (!cursor || cursor.view !== query.view || cursor.offset >= suggestions.length)
-  ) {
-    throw new ApiRequestError(400, '', 'Invalid preview publisher suggestions cursor');
-  }
-  const startIndex = cursor?.offset ?? 0;
-  const items = suggestions.slice(startIndex, startIndex + query.limit);
-  const nextOffset = startIndex + items.length;
-
-  return publisherSuggestionsResponseSchema.parse({
-    items,
-    total: suggestions.length,
-    nextCursor:
-      nextOffset < suggestions.length
-        ? encodePreviewPublisherSuggestionsCursor(query.view, nextOffset)
-        : null,
-  });
-}
-
 function buildPreviewPublisherEntity(
   state: PreviewState,
   entityType: ManagedEntityType,
@@ -339,9 +206,7 @@ function buildPreviewPublisherEntity(
         : null;
   const runtimeUnavailable = entityId === 'preview-channel-2';
   const channelSuggestionsEnabled =
-    entityType === 'channel' &&
-    (getPreviewPublisherChannelSuggestions(state)[entityId] ??
-      state.publisherSuggestionsVariant !== 'empty');
+    entityType === 'channel' && (getPreviewPublisherChannelSuggestions(state)[entityId] ?? false);
   const channelCommentsEnabled =
     entityType === 'channel' &&
     (getPreviewPublisherChannelComments(state)[entityId] ?? state.channelSettings.commentsEnabled);
@@ -876,66 +741,6 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       ),
     ).toISOString();
     return publisherEntityRefreshResponseSchema.parse({ accepted: true });
-  }
-  if (
-    entityType === 'channel' &&
-    segments.length === 5 &&
-    segments[4] === 'suggestions' &&
-    method === 'GET'
-  ) {
-    return listPreviewPublisherSuggestionsPage(state, entityId, url);
-  }
-  if (
-    entityType === 'channel' &&
-    segments.length === 7 &&
-    segments[4] === 'suggestions' &&
-    segments[5] &&
-    segments[6] === 'review' &&
-    method === 'POST'
-  ) {
-    const request = reviewPublisherSuggestionRequestSchema.parse(parseJsonBody(init));
-    const suggestionId = decodeURIComponent(segments[5]);
-    const suggestion = listPreviewPublisherSuggestions(state, entityId).find(
-      (item) => item.id === suggestionId,
-    );
-    if (!suggestion) {
-      throw new ApiRequestError(404, '', 'Preview publisher suggestion not found');
-    }
-    let publicationId: string | null = null;
-    const reviewStatus =
-      request.action === 'publish'
-        ? 'publishing'
-        : request.action === 'draft'
-          ? 'drafted'
-          : 'cancelled';
-    if (request.action === 'draft') {
-      const publication = replacePreviewPublication(state, null, {
-        title: 'Предложение',
-        content: {
-          text: suggestion.text,
-          textFormat: suggestion.textFormat,
-          buttons: [],
-          media: buildPreviewPublisherSuggestionMedia(suggestion),
-        },
-        audience: {
-          selection: 'SELECTED',
-          mode: 'SNAPSHOT',
-          targets: [{ chatId: entityId, entityType: 'channel' }],
-        },
-        schedule: null,
-        intent: 'draft',
-      });
-      publicationId = publication.id;
-      getPreviewPublisherSuggestionPublicationIds(state)[suggestionId] = publication.id;
-    }
-    getPreviewPublisherSuggestionReviews(state)[suggestionId] = reviewStatus;
-    return reviewPublisherSuggestionResponseSchema.parse({
-      suggestion: {
-        ...suggestion,
-        reviewStatus,
-        publicationId,
-      },
-    });
   }
   if (segments[4] === 'policy' && method === 'PATCH') {
     const request = updateManagedEntityPublicationPolicyRequestSchema.parse(parseJsonBody(init));

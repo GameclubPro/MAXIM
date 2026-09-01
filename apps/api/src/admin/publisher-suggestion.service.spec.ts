@@ -92,11 +92,14 @@ function createFixture(payloadOverrides: Record<string, unknown> = {}) {
     create: jest.fn().mockResolvedValue({ id: 'publication-1' }),
   };
   const publicationQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+  const adminQueue = { enqueueSync: jest.fn().mockResolvedValue(undefined) };
   const service = new PublisherSuggestionService(
     prisma as never,
     policy as never,
     publications as never,
     publicationQueue as never,
+    adminQueue as never,
+    { getBotId: () => 'publisher-bot' } as never,
   );
   return {
     service,
@@ -104,6 +107,7 @@ function createFixture(payloadOverrides: Record<string, unknown> = {}) {
     prisma,
     publications,
     publicationQueue,
+    adminQueue,
     row,
     setPayload(next: Record<string, unknown>) {
       payload = next;
@@ -276,6 +280,12 @@ describe('PublisherSuggestionService', () => {
       recycleCompleted: true,
     });
     expect(process).toHaveBeenCalledWith('suggestion-1', 'claim-1');
+    expect(fixture.adminQueue.enqueueSync).toHaveBeenCalledWith({
+      suggestionId: 'suggestion-1',
+      requiredBotId: 'publisher-bot',
+      reviewStatus: 'drafted',
+      recoverExisting: true,
+    });
   });
 
   it('allows an image-only suggestion to enter the same durable publication claim flow', async () => {
@@ -362,6 +372,48 @@ describe('PublisherSuggestionService', () => {
       where: { auditLogId: 'suggestion-1' },
     });
     expect(fixture.publications.create).not.toHaveBeenCalled();
+    expect(fixture.adminQueue.enqueueSync).toHaveBeenCalledWith({
+      suggestionId: 'suggestion-1',
+      requiredBotId: 'publisher-bot',
+      reviewStatus: 'cancelled',
+      recoverExisting: true,
+    });
+  });
+
+  it('persists the cancelling editor for terminal admin-card attribution', async () => {
+    const fixture = createFixture();
+    fixture.prisma.$queryRaw.mockResolvedValue([fixture.row()]);
+
+    await (fixture.service as any).cancelPending('suggestion-1', 'channel-1', otherUser);
+
+    const query = fixture.prisma.$queryRaw.mock.calls[0]?.[0] as { values?: unknown[] };
+    const patchValue = query.values?.find(
+      (value): value is string =>
+        typeof value === 'string' && value.includes('"reviewStatus":"cancelled"'),
+    );
+    expect(JSON.parse(patchValue ?? '{}')).toEqual(
+      expect.objectContaining({
+        reviewedByUserId: otherUser.userId,
+        reviewedByDisplayName: otherUser.displayName,
+      }),
+    );
+  });
+
+  it('surfaces terminal card-sync enqueue failure so an idempotent review can retry it', async () => {
+    const fixture = createFixture({ reviewStatus: 'cancelled' });
+    const failure = new Error('Redis unavailable');
+    fixture.adminQueue.enqueueSync.mockRejectedValue(failure);
+
+    await expect(
+      fixture.service.review('channel-1', 'suggestion-1', user, { action: 'cancel' }),
+    ).rejects.toBe(failure);
+
+    expect(fixture.adminQueue.enqueueSync).toHaveBeenCalledWith({
+      suggestionId: 'suggestion-1',
+      requiredBotId: 'publisher-bot',
+      reviewStatus: 'cancelled',
+      recoverExisting: true,
+    });
   });
 
   it('returns a conflict when cancel wins while a concurrent publish is claiming', async () => {
@@ -665,6 +717,7 @@ describe('PublisherSuggestionService', () => {
         reviewStatus: 'drafted',
         publicationId: 'publication-draft-1',
         draftedAt: expect.any(String),
+        reviewedByDisplayName: user.displayName,
       }),
     );
     expect(sqlText(query)).toContain("payload->>'reviewAction' = ?::text");

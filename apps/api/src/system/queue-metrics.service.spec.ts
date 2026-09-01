@@ -18,6 +18,7 @@ import { PUBLISHER_BINDING_REFRESH_QUEUE } from '../publisher/publisher-binding-
 import { PUBLISHER_CHAT_COMMENT_QUEUE } from '../publisher/publisher-chat-comment.queue';
 import { PUBLISHER_AUTO_REPLY_QUEUE } from '../publisher/publisher-auto-reply.queue';
 import { PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE } from '../publisher/publisher-auto-reply-authoring.queue';
+import { PUBLISHER_SUGGESTION_ADMIN_QUEUE } from '../publisher/publisher-suggestion-admin.queue';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
 
 function createQueueMock(counts: {
@@ -223,6 +224,14 @@ describe('QueueMetricsService', () => {
         delayed: 8,
         failed: 4,
         completed: 12,
+      }),
+      [getQueueToken(PUBLISHER_SUGGESTION_ADMIN_QUEUE)]: createQueueMock({
+        waiting: 3,
+        prioritized: 1,
+        active: 1,
+        delayed: 2,
+        failed: 0,
+        completed: 8,
       }),
       [getQueueToken(MAX_ACTION_CRITICAL_QUEUE)]: createQueueMock({
         waiting: 2,
@@ -446,6 +455,11 @@ describe('QueueMetricsService', () => {
       waiting: 9,
       active: 1,
       failed: 4,
+    });
+    expect(snapshot.auxiliaryQueues[PUBLISHER_SUGGESTION_ADMIN_QUEUE]).toMatchObject({
+      waiting: 3,
+      active: 1,
+      failed: 0,
     });
     expect(snapshot.auxiliaryQueues).toHaveProperty(PHOTO_DUPLICATE_QUEUE);
     expect(Object.keys(snapshot.auxiliaryQueues).sort()).toEqual([...AUXILIARY_QUEUE_NAMES].sort());

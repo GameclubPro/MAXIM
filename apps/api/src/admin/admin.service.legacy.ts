@@ -86,6 +86,8 @@ import {
   DialogNotificationMode as PrismaDialogNotificationMode,
   DialogNotificationScope as PrismaDialogNotificationScope,
   EventType,
+  ManagedEntityAccessRole,
+  ManagedEntityAccessState,
   ManualModerationFanoutLedgerStatus as PrismaManualModerationFanoutLedgerStatus,
   Operator,
   Prisma,
@@ -114,6 +116,7 @@ import {
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
+import { raceWithTimeout } from '../common/promise-timeout.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -364,6 +367,11 @@ import { PublisherChatCommentQueueService } from '../publisher/publisher-chat-co
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
+import {
+  buildPublisherSuggestionAdminReviewCallbackPayload,
+  buildPublisherSuggestionAdminSyncMarker,
+  PublisherSuggestionAdminQueueService,
+} from '../publisher/publisher-suggestion-admin.queue';
 import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
 import {
   countPublisherChatComments,
@@ -401,6 +409,7 @@ import {
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
   CHANNEL_SUGGESTION_DELIVERY_RECOVERY_BATCH_SIZE,
+  CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS,
   CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS,
   CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
   CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
@@ -467,6 +476,7 @@ import {
   COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH,
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
+  PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
   DEFAULT_DIALOG_NOTIFICATION_SETTINGS,
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
@@ -598,6 +608,13 @@ type ChannelSuggestionDeliveryResult = {
   deliveries: ChannelSuggestionAdminDelivery[];
   deliveryAttemptedAt: string;
   deliveryFailures: ChannelSuggestionAdminDeliveryFailure[];
+};
+
+type ChannelSuggestionAdminDeliveryScope = {
+  auditAction: string;
+  botKey: string;
+  requiredBotId: string | null;
+  publisherOwned: boolean;
 };
 
 type ManualModerationFanoutLedgerRow = {
@@ -851,6 +868,8 @@ export class AdminService implements OnModuleDestroy {
     private readonly publisherDialogContextService?: PublisherDialogContextService,
     @Optional()
     private readonly publisherDialogLinkService?: PublisherDialogLinkService,
+    @Optional()
+    private readonly publisherSuggestionAdminQueueService?: PublisherSuggestionAdminQueueService,
   ) {
     this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(
       this.maxBotRegistry,
@@ -891,6 +910,8 @@ export class AdminService implements OnModuleDestroy {
       publisherDialogLinks: this.publisherDialogLinkService,
       publisherReadiness: this.publisherReadinessService,
       maxBotRegistry: this.maxBotRegistry,
+      enqueueSuggestionAdminDelivery: (suggestionId) =>
+        this.enqueuePublisherSuggestionAdminDelivery(suggestionId),
     });
     this.dialogAdminAccessRuntime = new AdminDialogAdminAccessRuntime({
       prisma: this.prisma,
@@ -17682,6 +17703,95 @@ export class AdminService implements OnModuleDestroy {
     await this.suggestionDeliveryRuntime.processChannelSuggestionDeliveryJob(auditLogId);
   }
 
+  private async enqueuePublisherSuggestionAdminDelivery(suggestionId: string): Promise<void> {
+    const requiredBotId = this.publisherDialogLinkService?.getBotId().trim() ?? '';
+    if (!this.publisherSuggestionAdminQueueService || !requiredBotId) {
+      throw new ServiceUnavailableException('Publisher suggestion delivery queue is unavailable');
+    }
+    await this.publisherSuggestionAdminQueueService.enqueueDelivery({
+      suggestionId,
+      requiredBotId,
+    });
+  }
+
+  async processPublisherSuggestionAdminDeliveryJob(
+    auditLogId: string,
+    requiredBotId: string,
+  ): Promise<void> {
+    const scope = this.buildPublisherSuggestionAdminDeliveryScope(requiredBotId);
+    await raceWithTimeout({
+      operation: this.processChannelSuggestionDeliveryJobWithinTimeout(auditLogId, scope),
+      timeoutMs: CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS,
+      onTimeout: () => {
+        throw new Error(
+          `Publisher suggestion admin delivery timed out after ${CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS}ms`,
+        );
+      },
+    });
+  }
+
+  async syncPublisherSuggestionAdminReviewMessages(
+    suggestionId: string,
+    requiredBotId: string,
+  ): Promise<void> {
+    const normalizedSuggestionId = suggestionId.trim();
+    const botId = requiredBotId.trim();
+    if (!normalizedSuggestionId || !botId) {
+      return;
+    }
+    const row = await this.prisma.auditLog.findFirst({
+      where: {
+        id: normalizedSuggestionId,
+        action: PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
+      },
+      select: { id: true, chatId: true, payload: true },
+    });
+    if (!row) {
+      return;
+    }
+    const payload = this.readObjectPayload(row.payload);
+    const reviewStatus = this.readLowerString(payload.reviewStatus);
+    if (
+      reviewStatus !== 'published' &&
+      reviewStatus !== 'drafted' &&
+      reviewStatus !== 'cancelled'
+    ) {
+      return;
+    }
+    const syncedCount = await this.syncChannelSuggestionAdminReviewMessages(
+      row.id,
+      row.chatId,
+      payload,
+      botId,
+      true,
+      'publication_created',
+    );
+    if (syncedCount === 0) {
+      return;
+    }
+    const syncPatch = JSON.stringify({
+      publisherAdminCardSyncKey: buildPublisherSuggestionAdminSyncMarker(botId, reviewStatus),
+      publisherAdminCardSyncedCount: syncedCount,
+      publisherAdminCardSyncedAt: new Date().toISOString(),
+    });
+    await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE audit_logs audit
+      SET payload = audit.payload::jsonb || ${syncPatch}::jsonb
+      WHERE audit.id = ${row.id}::text
+        AND audit.action = ${PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST}::text
+        AND audit.payload->>'reviewStatus' = ${reviewStatus}::text
+        AND (
+          SELECT COUNT(*)
+          FROM channel_suggestion_admin_deliveries delivery
+          WHERE delivery.audit_log_id = audit.id
+            AND delivery.bot_key = ${`publisher:${botId}`}
+            AND delivery.status = 'SENT'::"ChannelSuggestionAdminDeliveryStatus"
+            AND delivery.private_chat_id IS NOT NULL
+            AND delivery.remote_message_id IS NOT NULL
+        ) = ${syncedCount}
+    `);
+  }
+
   async recoverStaleChannelSuggestionDeliveries(
     limit = CHANNEL_SUGGESTION_DELIVERY_RECOVERY_BATCH_SIZE,
   ): Promise<number> {
@@ -17693,6 +17803,7 @@ export class AdminService implements OnModuleDestroy {
     const staleClaims = await reconcileStaleChannelSuggestionDeliveryClaims({
       prisma: this.prisma,
       staleBefore,
+      auditAction: CHANNEL_DIALOG_ACTION_SUGGEST,
       limit: boundedLimit,
     });
     const staleAuditLogIds = new Set(staleClaims.auditLogIds);
@@ -17896,6 +18007,12 @@ export class AdminService implements OnModuleDestroy {
 
   private async processChannelSuggestionDeliveryJobWithinTimeout(
     auditLogId: string,
+    scope: ChannelSuggestionAdminDeliveryScope = {
+      auditAction: CHANNEL_DIALOG_ACTION_SUGGEST,
+      botKey: CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY,
+      requiredBotId: null,
+      publisherOwned: false,
+    },
   ): Promise<void> {
     const normalizedAuditLogId = auditLogId.trim();
     if (!normalizedAuditLogId) {
@@ -17913,8 +18030,18 @@ export class AdminService implements OnModuleDestroy {
         createdAt: true,
       },
     });
-    if (!row || row.action !== CHANNEL_DIALOG_ACTION_SUGGEST) {
+    if (!row || row.action !== scope.auditAction) {
       return;
+    }
+
+    if (scope.publisherOwned) {
+      const route = await this.publisherReadinessService?.assertEntityReady(
+        row.chatId,
+        'suggestion_publish',
+      );
+      if (!route || route.requiredBotId !== scope.requiredBotId) {
+        throw new ServiceUnavailableException('Publisher suggestion delivery route is unavailable');
+      }
     }
 
     const payload = this.readObjectPayload(row.payload);
@@ -17923,8 +18050,9 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    await this.reconcileStaleChannelSuggestionAdminDeliveries(row.id);
-    let ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
+    const ledgerBotKey = scope.publisherOwned ? scope.botKey : undefined;
+    await this.reconcileStaleChannelSuggestionAdminDeliveries(row.id, undefined, ledgerBotKey);
+    let ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id, ledgerBotKey);
     if (
       row.createdAt.getTime() >= Date.now() - CHANNEL_SUGGESTION_TERMINAL_RECOVERY_LOOKBACK_MS &&
       ledgerRows.some((delivery) => isTerminalPrivateDialogDeliveryRow(delivery))
@@ -17933,14 +18061,23 @@ export class AdminService implements OnModuleDestroy {
         prisma: this.prisma,
         auditLogId: row.id,
         rows: ledgerRows,
+        ...(scope.publisherOwned && scope.requiredBotId
+          ? {
+              options: {
+                botKey: scope.botKey,
+                botId: scope.requiredBotId,
+                privateActivityTypes: ['bot_started', 'message_created'] as const,
+              },
+            }
+          : {}),
       });
-      ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
+      ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id, ledgerBotKey);
     }
     if (ledgerRows.length > 0) {
       if (
         !ledgerRows.some((delivery) => this.isRetryableChannelSuggestionAdminDeliveryRow(delivery))
       ) {
-        await this.syncChannelSuggestionLegacyDeliveryPayload(row);
+        await this.syncChannelSuggestionLegacyDeliveryPayload(row, scope.auditAction, ledgerBotKey);
         return;
       }
     } else {
@@ -17979,8 +18116,34 @@ export class AdminService implements OnModuleDestroy {
         mediaFileName: this.readTrimmedString(payload.mediaFileName),
         mediaBotId: this.readTrimmedString(payload.mediaBotId),
       },
+      scope,
     );
-    await this.applyChannelSuggestionDeliveryResult(row, delivery);
+    if (ledgerBotKey) {
+      await this.applyChannelSuggestionDeliveryResult(
+        row,
+        delivery,
+        scope.auditAction,
+        ledgerBotKey,
+        scope.requiredBotId ?? undefined,
+      );
+    } else {
+      await this.applyChannelSuggestionDeliveryResult(row, delivery, scope.auditAction);
+    }
+  }
+
+  private buildPublisherSuggestionAdminDeliveryScope(
+    requiredBotId: string,
+  ): ChannelSuggestionAdminDeliveryScope {
+    const botId = requiredBotId.trim();
+    if (!botId) {
+      throw new BadRequestException('Publisher suggestion delivery bot id is required');
+    }
+    return {
+      auditAction: PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
+      botKey: `publisher:${botId}`,
+      requiredBotId: botId,
+      publisherOwned: true,
+    };
   }
 
   private async resolveChannelSuggestionAuthorAttribution(
@@ -18035,6 +18198,9 @@ export class AdminService implements OnModuleDestroy {
       createdAt: Date;
     },
     delivery: ChannelSuggestionDeliveryResult,
+    auditAction = CHANNEL_DIALOG_ACTION_SUGGEST,
+    botKey?: string,
+    publisherBotId?: string,
   ) {
     const updated = await this.prisma.$transaction(async (tx) => {
       const lockKey = `channel-suggestion-delivery-sync:${row.id}`;
@@ -18045,11 +18211,12 @@ export class AdminService implements OnModuleDestroy {
         SELECT delivery.id
         FROM channel_suggestion_admin_deliveries delivery
         WHERE delivery.audit_log_id = ${row.id}
+          ${botKey ? Prisma.sql`AND delivery.bot_key = ${botKey}` : Prisma.empty}
         ORDER BY delivery.id
         FOR UPDATE
       `);
       const ledgerRows = (await tx.channelSuggestionAdminDelivery.findMany({
-        where: { auditLogId: row.id },
+        where: { auditLogId: row.id, ...(botKey ? { botKey } : {}) },
         orderBy: [{ adminUserId: 'asc' }, { botKey: 'asc' }],
       })) as ChannelSuggestionAdminDeliveryLedgerRow[];
       const synchronizedDelivery =
@@ -18088,7 +18255,7 @@ export class AdminService implements OnModuleDestroy {
           - 'deliveryJobFailureCount'
           - 'deliveryJobRecoverable'
         WHERE audit.id = ${row.id}::text
-          AND audit.action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
+          AND audit.action = ${auditAction}::text
           AND audit.payload->>'type' = 'suggest'
         RETURNING
           audit.id,
@@ -18123,13 +18290,26 @@ export class AdminService implements OnModuleDestroy {
     const latestReviewStatus = this.readLowerString(latestPayload.reviewStatus);
     if (
       updated.chatId &&
-      (latestReviewStatus === 'published' || latestReviewStatus === 'cancelled')
+      (latestReviewStatus === 'published' ||
+        latestReviewStatus === 'drafted' ||
+        latestReviewStatus === 'cancelled')
     ) {
-      await this.syncChannelSuggestionAdminReviewMessages(
-        updated.id,
-        updated.chatId,
-        latestPayload,
-      );
+      if (publisherBotId) {
+        await this.syncChannelSuggestionAdminReviewMessages(
+          updated.id,
+          updated.chatId,
+          latestPayload,
+          publisherBotId,
+          false,
+          'publication_created',
+        );
+      } else {
+        await this.syncChannelSuggestionAdminReviewMessages(
+          updated.id,
+          updated.chatId,
+          latestPayload,
+        );
+      }
     }
     return updated;
   }
@@ -18237,27 +18417,32 @@ export class AdminService implements OnModuleDestroy {
 
   private async readChannelSuggestionAdminDeliveryLedgerRows(
     auditLogId: string,
+    botKey?: string,
   ): Promise<ChannelSuggestionAdminDeliveryLedgerRow[]> {
     return (await this.prisma.channelSuggestionAdminDelivery.findMany({
-      where: { auditLogId },
+      where: { auditLogId, ...(botKey ? { botKey } : {}) },
       orderBy: [{ adminUserId: 'asc' }, { botKey: 'asc' }],
     })) as ChannelSuggestionAdminDeliveryLedgerRow[];
   }
 
-  private async syncChannelSuggestionLegacyDeliveryPayload(row: {
-    id: string;
-    chatId?: string;
-    actorUserId?: string;
-    payload: Prisma.JsonValue;
-    createdAt?: Date;
-  }): Promise<{
+  private async syncChannelSuggestionLegacyDeliveryPayload(
+    row: {
+      id: string;
+      chatId?: string;
+      actorUserId?: string;
+      payload: Prisma.JsonValue;
+      createdAt?: Date;
+    },
+    auditAction = CHANNEL_DIALOG_ACTION_SUGGEST,
+    botKey?: string,
+  ): Promise<{
     id: string;
     chatId: string;
     actorUserId: string;
     payload: Prisma.JsonValue;
     createdAt: Date;
   } | null> {
-    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id, botKey);
     if (ledgerRows.length === 0) {
       return null;
     }
@@ -18266,26 +18451,32 @@ export class AdminService implements OnModuleDestroy {
       row.createdAt?.toISOString() ??
       new Date(0).toISOString();
 
-    return this.applyChannelSuggestionDeliveryResult(
-      {
-        id: row.id,
-        chatId: row.chatId,
-        actorUserId: row.actorUserId ?? '',
-        payload: row.payload,
-        createdAt: row.createdAt ?? new Date(),
-      },
-      this.buildChannelSuggestionDeliveryResultFromLedgerRows(ledgerRows, deliveryAttemptedAt),
+    const synchronizedRow = {
+      id: row.id,
+      chatId: row.chatId,
+      actorUserId: row.actorUserId ?? '',
+      payload: row.payload,
+      createdAt: row.createdAt ?? new Date(),
+    };
+    const delivery = this.buildChannelSuggestionDeliveryResultFromLedgerRows(
+      ledgerRows,
+      deliveryAttemptedAt,
     );
+    return botKey
+      ? this.applyChannelSuggestionDeliveryResult(synchronizedRow, delivery, auditAction, botKey)
+      : this.applyChannelSuggestionDeliveryResult(synchronizedRow, delivery, auditAction);
   }
 
   private async reconcileStaleChannelSuggestionAdminDeliveries(
     auditLogId: string,
     staleBefore = new Date(Date.now() - CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS),
+    botKey?: string,
   ): Promise<void> {
     await reconcileStaleChannelSuggestionDeliveryClaims({
       prisma: this.prisma,
       auditLogId,
       staleBefore,
+      ...(botKey ? { botKey } : {}),
     });
   }
 
@@ -18313,16 +18504,111 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private async resolvePublisherSuggestionAdminUserIds(
+    chatId: string,
+    publisherBotId?: string | null,
+  ): Promise<string[]> {
+    const botId = this.readTrimmedString(publisherBotId);
+    if (!botId) {
+      return [];
+    }
+    const now = new Date();
+    const legacyGraceStart = new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS);
+    const rows = await this.prisma.managedEntityAccessEdge.findMany({
+      where: {
+        chatId,
+        botId,
+        entityType: ChatEntityType.CHANNEL,
+        state: ManagedEntityAccessState.GRANTED,
+        userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+        OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
+      },
+      select: { userId: true },
+      orderBy: [{ checkedAt: 'desc' }, { userId: 'asc' }],
+    });
+    return Array.from(
+      new Set(rows.map((row) => row.userId.trim()).filter((userId) => userId.length > 0)),
+    );
+  }
+
+  private async resolveChannelSuggestionRosterAdminUserIds(
+    chatId: string,
+    options: Parameters<MaxClientService['getChatAdminMembers']>[1],
+  ): Promise<string[]> {
+    const richAdminLookup = (
+      this.maxClient as MaxClientService & {
+        getChatAdminMembers?: (
+          lookupChatId: string,
+          lookupOptions?: Parameters<MaxClientService['getChatAdminMembers']>[1],
+        ) => Promise<MaxChatAdminMember[]>;
+      }
+    ).getChatAdminMembers;
+    return typeof richAdminLookup === 'function'
+      ? (await richAdminLookup.call(this.maxClient, chatId, options))
+          .filter((member) => member.isBot !== true)
+          .map((member) => member.userId)
+      : this.maxClient.getChatAdminIds(chatId, options);
+  }
+
+  private async reconcilePublisherSuggestionEditors(
+    adminUserIds: string[],
+    retryableRows: ChannelSuggestionAdminDeliveryLedgerRow[],
+  ): Promise<string[]> {
+    const current = new Set(adminUserIds);
+    const removedRows = retryableRows.filter((row) => !current.has(row.adminUserId));
+    if (removedRows.length > 0) {
+      await persistChannelSuggestionPreclaimFailure({
+        prisma: this.prisma,
+        rowIds: removedRows.map((row) => row.id),
+        failure: {
+          message: 'editor has no fresh Publisher-owned access edge',
+          status: 503,
+          code: 'suggestion.delivery.publisher_edge_unavailable',
+          terminal: false,
+          recoverable: true,
+        },
+        incrementAttemptCount: false,
+      });
+    }
+    return adminUserIds;
+  }
+
+  private async resolveKnownBotUserIdsForExactBot(
+    chatId: string,
+    botId?: string | null,
+  ): Promise<Set<string>> {
+    const known = new Set<string>();
+    for (const value of [this.ownBotUserId, this.explicitBotContactId]) {
+      const normalized = this.readTrimmedString(value);
+      if (normalized) known.add(normalized);
+    }
+    const currentBotUserId = await this.resolveCurrentBotUserId(chatId, botId);
+    if (currentBotUserId) known.add(currentBotUserId);
+    return known;
+  }
+
   private async deliverSuggestionToAdminPrivates(
     suggestionId: string,
     chatId: string,
     user: ChannelSuggestionActor,
     suggestion: ChannelSuggestionDeliveryInput,
+    scope: ChannelSuggestionAdminDeliveryScope = {
+      auditAction: CHANNEL_DIALOG_ACTION_SUGGEST,
+      botKey: CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY,
+      requiredBotId: null,
+      publisherOwned: false,
+    },
   ): Promise<ChannelSuggestionDeliveryResult> {
     const deliveryAttemptedAt = new Date().toISOString();
-    const deliveryBotId = await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery');
+    const ledgerBotKey = scope.publisherOwned ? scope.botKey : undefined;
+    const deliveryBotId =
+      scope.requiredBotId ??
+      (await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery')) ??
+      null;
     const privateDeliveryBotId = this.resolvePrivateDeliveryBotId(deliveryBotId);
-    const knownBotUserIds = await this.resolveKnownBotUserIdsForChat(chatId, [deliveryBotId]);
+    const knownBotUserIds = scope.publisherOwned
+      ? await this.resolveKnownBotUserIdsForExactBot(chatId, privateDeliveryBotId)
+      : await this.resolveKnownBotUserIdsForChat(chatId, [deliveryBotId]);
     const adminLookupOptions = {
       trafficClass: 'background' as const,
       sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
@@ -18330,20 +18616,9 @@ export class AdminService implements OnModuleDestroy {
       bypassCache: true,
       ...(deliveryBotId ? { botId: deliveryBotId } : {}),
     };
-    const richAdminLookup = (
-      this.maxClient as MaxClientService & {
-        getChatAdminMembers?: (
-          lookupChatId: string,
-          options?: Parameters<MaxClientService['getChatAdminMembers']>[1],
-        ) => Promise<MaxChatAdminMember[]>;
-      }
-    ).getChatAdminMembers;
-    const adminIdsFromRoster =
-      typeof richAdminLookup === 'function'
-        ? (await richAdminLookup.call(this.maxClient, chatId, adminLookupOptions))
-            .filter((member) => member.isBot !== true)
-            .map((member) => member.userId)
-        : await this.maxClient.getChatAdminIds(chatId, adminLookupOptions);
+    const adminIdsFromRoster = scope.publisherOwned
+      ? await this.resolvePublisherSuggestionAdminUserIds(chatId, privateDeliveryBotId)
+      : await this.resolveChannelSuggestionRosterAdminUserIds(chatId, adminLookupOptions);
     const rosterAdminIds = Array.from(
       new Set(
         adminIdsFromRoster
@@ -18356,36 +18631,44 @@ export class AdminService implements OnModuleDestroy {
           ),
       ),
     );
-    const existingLedgerRows =
-      await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId);
-    const adminIds = await reconcileAuthoritativeChannelSuggestionEditorRoster({
-      prisma: this.prisma,
-      rosterAdminUserIds: rosterAdminIds,
-      retryableRows: existingLedgerRows.filter((row) =>
-        this.isRetryableChannelSuggestionAdminDeliveryRow(row),
-      ),
-      knownBotUserIds,
-      isOwnBotUserId: (userId) => this.dialogLinkHelper.isOwnBotUserId(userId),
-      ...(typeof this.maxClient.getChatMembersAccess === 'function'
-        ? {
-            loadMissingAccess: (userIds: string[]) =>
-              this.maxClient.getChatMembersAccess(chatId, userIds, adminLookupOptions),
-          }
-        : {}),
-      onConfirmationError: (error, adminUserIds) =>
-        this.logger.warn(
-          {
-            suggestionId,
-            chatId,
-            adminUserIds,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Could not confirm suggestion editors missing from the fresh admin roster',
-        ),
-    });
+    const existingLedgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(
+      suggestionId,
+      ledgerBotKey,
+    );
+    const retryableExistingRows = existingLedgerRows.filter((row) =>
+      this.isRetryableChannelSuggestionAdminDeliveryRow(row),
+    );
+    const adminIds = scope.publisherOwned
+      ? await this.reconcilePublisherSuggestionEditors(rosterAdminIds, retryableExistingRows)
+      : await reconcileAuthoritativeChannelSuggestionEditorRoster({
+          prisma: this.prisma,
+          rosterAdminUserIds: rosterAdminIds,
+          retryableRows: retryableExistingRows,
+          knownBotUserIds,
+          isOwnBotUserId: (userId) => this.dialogLinkHelper.isOwnBotUserId(userId),
+          ...(typeof this.maxClient.getChatMembersAccess === 'function'
+            ? {
+                loadMissingAccess: (userIds: string[]) =>
+                  this.maxClient.getChatMembersAccess(chatId, userIds, adminLookupOptions),
+              }
+            : {}),
+          onConfirmationError: (error, adminUserIds) =>
+            this.logger.warn(
+              {
+                suggestionId,
+                chatId,
+                adminUserIds,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Could not confirm suggestion editors missing from the fresh admin roster',
+            ),
+        });
 
     if (adminIds.length === 0) {
-      const rows = await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId);
+      const rows = await this.readChannelSuggestionAdminDeliveryLedgerRows(
+        suggestionId,
+        ledgerBotKey,
+      );
       if (rows.length > 0) {
         return this.buildChannelSuggestionDeliveryResultFromLedgerRows(rows, deliveryAttemptedAt);
       }
@@ -18419,8 +18702,11 @@ export class AdminService implements OnModuleDestroy {
     const routePlan = resolveChannelSuggestionPrivateDeliveryRoutePlan({
       suggestion,
       preferredBotId: privateDeliveryBotId,
-      actionableBotIds:
-        typeof this.maxBotRegistry?.getActionableBots === 'function'
+      actionableBotIds: scope.publisherOwned
+        ? privateDeliveryBotId
+          ? [privateDeliveryBotId]
+          : []
+        : typeof this.maxBotRegistry?.getActionableBots === 'function'
           ? this.maxBotRegistry.getActionableBots().map((bot) => bot.id)
           : null,
     });
@@ -18445,14 +18731,21 @@ export class AdminService implements OnModuleDestroy {
         .map((adminUserId) => ({
           auditLogId: suggestionId,
           adminUserId,
-          botKey: CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY,
+          botKey: scope.botKey,
           botId: privateDeliveryBotId ?? null,
           status: PrismaChannelSuggestionAdminDeliveryStatus.PENDING,
         })),
       skipDuplicates: true,
     });
-    await this.reconcileStaleChannelSuggestionAdminDeliveries(suggestionId);
-    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId);
+    await this.reconcileStaleChannelSuggestionAdminDeliveries(
+      suggestionId,
+      undefined,
+      ledgerBotKey,
+    );
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(
+      suggestionId,
+      ledgerBotKey,
+    );
     const retryableLedgerRows = selectRetryableLogicalDeliveryRows(
       ledgerRows.filter((row) => adminIds.includes(row.adminUserId)),
       (row) => this.isRetryableChannelSuggestionAdminDeliveryRow(row),
@@ -18510,12 +18803,14 @@ export class AdminService implements OnModuleDestroy {
           'Failed to prepare shared suggestion delivery content before delivery claim',
         );
         return this.buildChannelSuggestionDeliveryResultFromLedgerRows(
-          await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId),
+          await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId, ledgerBotKey),
           deliveryAttemptedAt,
         );
       }
     }
-    const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
+    const buttons = scope.publisherOwned
+      ? this.buildPublisherSuggestionAdminReviewButtons(suggestionId)
+      : this.buildChannelSuggestionAdminReviewButtons(suggestionId);
     const messageOptionsByBotId = new Map<
       string,
       Promise<
@@ -18880,7 +19175,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return this.buildChannelSuggestionDeliveryResultFromLedgerRows(
-      await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId),
+      await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId, ledgerBotKey),
       deliveryAttemptedAt,
     );
   }
@@ -19004,6 +19299,25 @@ export class AdminService implements OnModuleDestroy {
     ];
   }
 
+  private buildPublisherSuggestionAdminReviewButtons(suggestionId: string): MaxMessageButton[][] {
+    return [
+      [
+        {
+          type: 'callback',
+          text: '📰 В публикацию',
+          payload: buildPublisherSuggestionAdminReviewCallbackPayload('publish', suggestionId),
+          intent: 'positive',
+        },
+        {
+          type: 'callback',
+          text: '✖️ Отклонить',
+          payload: buildPublisherSuggestionAdminReviewCallbackPayload('cancel', suggestionId),
+          intent: 'negative',
+        },
+      ],
+    ];
+  }
+
   private buildChannelSuggestionAdminReviewedButtons(
     publishedUrl: string | null,
   ): MaxMessageButton[][] {
@@ -19032,8 +19346,15 @@ export class AdminService implements OnModuleDestroy {
     suggestionId: string,
     chatId: string,
     payload: Record<string, unknown>,
-  ): Promise<void> {
-    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(suggestionId);
+    requiredBotId?: string | null,
+    throwOnRetryableFailure = false,
+    publishedPresentation: 'confirmed' | 'publication_created' = 'confirmed',
+  ): Promise<number> {
+    const exactBotId = this.readTrimmedString(requiredBotId);
+    const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(
+      suggestionId,
+      exactBotId ? `publisher:${exactBotId}` : undefined,
+    );
     const ledgerDeliveries = ledgerRows
       .map((row) => this.mapChannelSuggestionAdminDeliveryRowToLegacyDelivery(row))
       .filter((entry): entry is ChannelSuggestionAdminDelivery => entry !== null);
@@ -19041,8 +19362,11 @@ export class AdminService implements OnModuleDestroy {
       ledgerDeliveries.length > 0
         ? ledgerDeliveries
         : this.readChannelSuggestionDeliveries(payload.deliveries);
-    if (deliveries.length === 0) {
-      return;
+    const scopedDeliveries = exactBotId
+      ? deliveries.filter((delivery) => delivery.botId === exactBotId)
+      : deliveries;
+    if (scopedDeliveries.length === 0) {
+      return 0;
     }
 
     const channelTitle = await this.resolveChannelTitle(chatId);
@@ -19056,8 +19380,13 @@ export class AdminService implements OnModuleDestroy {
         this.normalizeMaxProfileUrl(this.readTrimmedString(payload.authorProfileUrl)) ?? null,
     };
     const reviewedBy = this.readTrimmedString(payload.reviewedByDisplayName);
+    const storedReviewStatus = this.readLowerString(payload.reviewStatus);
     const reviewStatus =
-      this.readLowerString(payload.reviewStatus) === 'published' ? 'published' : 'cancelled';
+      storedReviewStatus === 'published'
+        ? 'published'
+        : storedReviewStatus === 'drafted'
+          ? 'drafted'
+          : 'cancelled';
     const publishedUrl = this.readTrimmedString(payload.publishedUrl);
     const buttons =
       reviewStatus === 'published'
@@ -19066,6 +19395,7 @@ export class AdminService implements OnModuleDestroy {
     const textMarkup = this.readChannelSuggestionTextMarkup(payload.textMarkup);
     const messagePayload = buildChannelSuggestionAdminMessagePayloadValue({
       status: reviewStatus,
+      publishedPresentation,
       channelTitle,
       authorAttribution,
       text: this.readRawString(payload.text) ?? '',
@@ -19077,7 +19407,8 @@ export class AdminService implements OnModuleDestroy {
       publishedUrl,
     });
 
-    for (const delivery of deliveries) {
+    const retryableErrors: unknown[] = [];
+    for (const delivery of scopedDeliveries) {
       try {
         const deliveryBotId = this.resolvePrivateDeliveryBotId(delivery.botId);
         if (deliveryBotId) {
@@ -19103,6 +19434,16 @@ export class AdminService implements OnModuleDestroy {
           );
         }
       } catch (error: unknown) {
+        if (
+          throwOnRetryableFailure &&
+          this.isRecoverableChannelSuggestionDeliveryFailureData({
+            status: extractMaxErrorStatus(error),
+            code: extractMaxErrorCode(error),
+            message: extractMaxErrorMessage(error),
+          })
+        ) {
+          retryableErrors.push(error);
+        }
         this.logger.warn(
           {
             chatId,
@@ -19115,6 +19456,10 @@ export class AdminService implements OnModuleDestroy {
         );
       }
     }
+    if (retryableErrors.length > 0) {
+      throw retryableErrors[0];
+    }
+    return scopedDeliveries.length;
   }
 
   private readChannelSuggestionDeliveries(value: unknown): ChannelSuggestionAdminDelivery[] {

@@ -28,7 +28,6 @@ import type { ApiTransport } from '../lib/api/transport';
 import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
-import { queryKeys } from '../lib/query-keys';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import {
   buildPublisherCreateRoute,
@@ -67,11 +66,6 @@ const LazyBotPermissionRequiredDialog = lazy(() =>
 const LazyVkParsingCard = lazy(async () => {
   const module = await import('../components/vk-parsing-card');
   return { default: module.VkParsingCard };
-});
-
-const LazyPublisherSuggestionsInbox = lazy(async () => {
-  const module = await import('./publisher-suggestions-inbox');
-  return { default: module.PublisherSuggestionsInbox };
 });
 
 function ModuleSwitch({
@@ -339,13 +333,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             void Promise.all([
               entityQuery.refetch(),
               ...(vkOpen ? [vkCapabilityQuery.refetch()] : []),
-              ...(entity.entityType === 'channel'
-                ? [
-                    queryClient.invalidateQueries({
-                      queryKey: queryKeys.publisherSuggestions(entity.id),
-                    }),
-                  ]
-                : []),
             ])
           }
         >
@@ -489,37 +476,22 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         ) : null}
 
         {entity.entityType === 'channel' ? (
-          <section className="publisher-suggestions-module">
-            <article className="publisher-entity-module">
-              <span className="publisher-entity-module__icon is-suggestions" aria-hidden>
-                <ChatBubble />
-              </span>
-              <span className="publisher-entity-module__copy">
-                <strong>Предложения</strong>
-              </span>
-              <ModuleSwitch
-                checked={entity.moduleSettings.channelSuggestionsEnabled === true}
-                disabled={mutation.isPending}
-                label={`${entity.moduleSettings.channelSuggestionsEnabled ? 'Выключить' : 'Включить'} предложения`}
-                onChange={(channelSuggestionsEnabled) =>
-                  mutation.mutate({ channelSuggestionsEnabled })
-                }
-              />
-            </article>
-
-            {entity.moduleSettings.channelSuggestionsEnabled === true ? (
-              <Suspense
-                fallback={
-                  <div className="publisher-suggestions-state" role="status">
-                    <Refresh className="is-refreshing" aria-hidden />
-                    <span>Загружаю предложения</span>
-                  </div>
-                }
-              >
-                <LazyPublisherSuggestionsInbox api={api} entityId={entity.id} enabled />
-              </Suspense>
-            ) : null}
-          </section>
+          <article className="publisher-entity-module">
+            <span className="publisher-entity-module__icon is-suggestions" aria-hidden>
+              <ChatBubble />
+            </span>
+            <span className="publisher-entity-module__copy">
+              <strong>Предложения</strong>
+            </span>
+            <ModuleSwitch
+              checked={entity.moduleSettings.channelSuggestionsEnabled === true}
+              disabled={mutation.isPending}
+              label={`${entity.moduleSettings.channelSuggestionsEnabled ? 'Выключить' : 'Включить'} предложения`}
+              onChange={(channelSuggestionsEnabled) =>
+                mutation.mutate({ channelSuggestionsEnabled })
+              }
+            />
+          </article>
         ) : null}
 
         <section className="publisher-entity-vk-module" data-publisher-module="vk">

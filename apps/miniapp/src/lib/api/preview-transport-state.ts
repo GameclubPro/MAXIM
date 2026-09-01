@@ -126,7 +126,6 @@ export type PreviewState = {
   settingsScreenError: 'auth-expired' | 'access-denied' | null;
   publisherEntitiesVariant: 'mixed' | 'channel-only' | 'large' | 'empty' | 'error';
   publisherPolicyVariant: 'normal' | 'setup' | 'permission' | 'error';
-  publisherSuggestionsVariant: 'empty' | 'mixed' | 'large';
   publisherPostImportVariant: 'none' | PublisherPostImportStatus;
   publisherPostImportSession: PublisherPostImportSession | null;
 };
@@ -154,7 +153,6 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   const publisherProfile = searchParams.get('profile') === 'publisher';
   const publisherState = searchParams.get('publisherState');
   const publisherPolicyState = searchParams.get('publisherPolicyState');
-  const publisherSuggestionsState = searchParams.get('publisherSuggestions');
   const publisherPostImportState = searchParams.get('publisherImport');
   const channelPostSignatureState = searchParams.get('channelPostSignature');
   const publisherPostImportVariant: PreviewState['publisherPostImportVariant'] =
@@ -957,10 +955,6 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       publisherPolicyState === 'error'
         ? publisherPolicyState
         : 'normal',
-    publisherSuggestionsVariant:
-      publisherSuggestionsState === 'mixed' || publisherSuggestionsState === 'large'
-        ? publisherSuggestionsState
-        : 'empty',
     publisherPostImportVariant,
     publisherPostImportSession: null,
   };

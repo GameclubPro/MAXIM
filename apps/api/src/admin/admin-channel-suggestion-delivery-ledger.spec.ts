@@ -9,6 +9,32 @@ import {
 } from './admin-channel-suggestion-delivery-ledger';
 
 describe('channel suggestion delivery ledger', () => {
+  it('scopes global stale scans by audit action without excluding legacy bot keys', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = {
+      channelSuggestionAdminDelivery: {
+        findMany,
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+
+    await reconcileStaleChannelSuggestionDeliveryClaims({
+      prisma: prisma as never,
+      auditAction: 'CHANNEL_DIALOG_SUGGESTION',
+      staleBefore: new Date('2026-08-24T10:10:00.000Z'),
+    });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          auditLog: { action: 'CHANNEL_DIALOG_SUGGESTION' },
+          status: 'SENDING',
+        }),
+      }),
+    );
+    expect(findMany.mock.calls[0]?.[0]?.where).not.toHaveProperty('botKey');
+  });
+
   it('reclaims stale pre-dispatch claims but keeps started and legacy sends ambiguous', async () => {
     const prisma = createPrismaMock();
     const lockedAt = new Date('2026-08-24T10:00:00.000Z');

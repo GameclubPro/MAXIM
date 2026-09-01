@@ -5,6 +5,7 @@ import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { PublisherModule } from '../publisher/publisher.module';
+import { PUBLISHER_SUGGESTION_ADMIN_QUEUE } from '../publisher/publisher-suggestion-admin.queue';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { ModerationDeleteIntentModule } from '../moderation/moderation-delete-intent.module';
@@ -64,10 +65,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
 import { VkParsingPublisherProcessor } from './vk-parsing-publisher.processor';
 import { VkParsingRunnerService } from './vk-parsing-runner.service';
 import { VkParsingSyncProcessor } from './vk-parsing-sync.processor';
-import {
-  VK_PARSING_PUBLISHER_QUEUE,
-  VK_PARSING_SYNC_QUEUE,
-} from './vk-parsing.queue';
+import { VK_PARSING_PUBLISHER_QUEUE, VK_PARSING_SYNC_QUEUE } from './vk-parsing.queue';
 import { VkApiClientService } from './vk-api-client.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
@@ -93,6 +91,8 @@ import { PublisherReadinessService } from '../publisher/publisher-readiness.serv
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherSuggestionPublicationProcessor } from './publisher-suggestion-publication.processor';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-publication.queue';
+import { PublisherSuggestionAdminProcessor } from './publisher-suggestion-admin.processor';
+import { PublisherSuggestionAdminRecoveryService } from './publisher-suggestion-admin-recovery.service';
 import { PublisherPostImportProcessingService } from './publisher-post-import-processing.service';
 import { PublisherPostImportDeliveryService } from './publisher-post-import-delivery.service';
 import { PublisherPostImportProcessor } from './publisher-post-import.processor';
@@ -109,6 +109,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     BullModule.registerQueue({ name: VK_PARSING_SYNC_QUEUE }),
     BullModule.registerQueue({ name: VK_PARSING_PUBLISHER_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_PUBLICATION_QUEUE }),
+    BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_ADMIN_QUEUE }),
     AuthModule,
     MaxModule,
     ChatContextModule,
@@ -183,6 +184,9 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherReadinessService,
     PublisherSuggestionPublicationQueueService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherSuggestionPublicationProcessor] : []),
+    ...(roleRunsPublisher(getAppRole())
+      ? [PublisherSuggestionAdminProcessor, PublisherSuggestionAdminRecoveryService]
+      : []),
     ...(roleRunsPublisher(getAppRole())
       ? [
           PublisherPostImportProcessingService,

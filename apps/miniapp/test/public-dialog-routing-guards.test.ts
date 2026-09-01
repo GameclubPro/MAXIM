@@ -59,7 +59,7 @@ test('terminal suggestion submit failures replace the composer with the relaunch
   );
 });
 
-test('public suggestion submissions lazy-load the validated client and refresh the Publik inbox', () => {
+test('public suggestion submissions lazy-load the validated client', () => {
   assert.match(
     suggestDialogPageSource,
     /channelDialogClientPromise \?\?= import\('\.\.\/lib\/api\/channel-dialog-client'\)/u,
@@ -73,7 +73,7 @@ test('public suggestion submissions lazy-load the validated client and refresh t
     suggestDialogPageSource,
     /loadChannelDialogClient\(\)\.then\(\(\{ createChannelDialogMessage \}\) =>[\s\S]*?createChannelDialogMessage\(api, chatId, 'suggest', \{[\s\S]*?requestId: payload\.requestId/u,
   );
-  assert.match(suggestDialogPageSource, /queryKey: queryKeys\.publisherSuggestions\(chatId\)/u);
+  assert.doesNotMatch(suggestDialogPageSource, /publisherSuggestions\(chatId\)/u);
   assert.doesNotMatch(
     suggestDialogPageSource,
     /import \{[^}]*createChannelDialogMessage[^}]*\} from '\.\.\/lib\/api\/channel-dialog-client'/u,

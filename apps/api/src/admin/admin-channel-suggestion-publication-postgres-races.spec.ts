@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 
 import { buildPublisherSuggestionRecoveryQuery } from './publisher-suggestion-publication-queue.service';
+import {
+  buildPublisherSuggestionAdminRecoveryQuery,
+  buildPublisherSuggestionAdminTerminalSyncRecoveryQuery,
+} from './publisher-suggestion-admin-recovery.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgresRace = databaseUrl ? describe : describe.skip;
@@ -163,6 +167,73 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
         ]),
       );
       expect(nodes.filter((node) => node['Node Type'] === 'Limit')).toHaveLength(4);
+    } finally {
+      await rollbackQuietly(client);
+      client.release();
+    }
+  });
+
+  it('keeps Publisher admin-delivery recovery on the pending-retention partial index', async () => {
+    const query = buildPublisherSuggestionAdminRecoveryQuery({
+      lookbackFrom: new Date('2026-08-01T00:00:00.000Z'),
+      staleBefore: new Date('2026-09-01T00:00:00.000Z'),
+      botKey: 'publisher:publisher-bot',
+      publisherBotId: 'publisher-bot',
+      cursor: null,
+    });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN READ ONLY');
+      await client.query('SET LOCAL enable_seqscan = off');
+      await client.query('SET LOCAL enable_bitmapscan = off');
+      const plan = await client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON, COSTS FALSE) ${query.text}`,
+        query.values,
+      );
+      const nodes = collectExplainNodes(plan.rows[0]?.['QUERY PLAN']);
+      const indexNames = new Set(
+        nodes.flatMap((node) =>
+          typeof node['Index Name'] === 'string' ? [node['Index Name']] : [],
+        ),
+      );
+
+      expect(indexNames).toContain('audit_logs_publisher_suggestion_pending_retention_idx');
+      expect(nodes.filter((node) => node['Node Type'] === 'Limit').length).toBeGreaterThanOrEqual(
+        7,
+      );
+    } finally {
+      await rollbackQuietly(client);
+      client.release();
+    }
+  });
+
+  it('keeps terminal Publisher card-sync recovery on the bounded action index', async () => {
+    const query = buildPublisherSuggestionAdminTerminalSyncRecoveryQuery({
+      lookbackFrom: new Date('2026-08-01T00:00:00.000Z'),
+      botKey: 'publisher:publisher-bot',
+      publisherBotId: 'publisher-bot',
+      cursor: null,
+    });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN READ ONLY');
+      await client.query('SET LOCAL enable_seqscan = off');
+      await client.query('SET LOCAL enable_bitmapscan = off');
+      const plan = await client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON, COSTS FALSE) ${query.text}`,
+        query.values,
+      );
+      const nodes = collectExplainNodes(plan.rows[0]?.['QUERY PLAN']);
+      const indexNames = new Set(
+        nodes.flatMap((node) =>
+          typeof node['Index Name'] === 'string' ? [node['Index Name']] : [],
+        ),
+      );
+
+      expect(indexNames).toContain('audit_logs_action_created_at_idx');
+      expect(nodes.filter((node) => node['Node Type'] === 'Limit').length).toBeGreaterThanOrEqual(
+        4,
+      );
     } finally {
       await rollbackQuietly(client);
       client.release();

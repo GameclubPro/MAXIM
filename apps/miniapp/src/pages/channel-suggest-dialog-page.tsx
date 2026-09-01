@@ -994,7 +994,7 @@ export function ChannelSuggestDialogPage({
       );
       pushToast({
         tone: 'success',
-        title: 'Предложение сохранено',
+        title: 'Предложение отправлено',
       });
       setDraft('');
       draftValueRef.current = '';
@@ -1025,9 +1025,6 @@ export function ChannelSuggestDialogPage({
         });
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.publisherSuggestions(chatId),
       });
     },
     onError: (error) => {

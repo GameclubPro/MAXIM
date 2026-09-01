@@ -1,7 +1,9 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Optional } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
+import { PublisherActionCredentialService } from '../publisher/publisher-action-credential.service';
 import {
   assertPublisherDispatchAllowedOrDelay,
   assertPublisherRuntimeEnabledOrDelay,
@@ -24,6 +26,8 @@ export class PublisherSuggestionPublicationProcessor extends WorkerHost {
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
     private readonly publisherSuggestions: PublisherSuggestionService,
+    @Optional()
+    private readonly publisherCredentials?: PublisherActionCredentialService,
   ) {
     super();
   }
@@ -39,11 +43,19 @@ export class PublisherSuggestionPublicationProcessor extends WorkerHost {
       job.data.suggestionId,
       job.data.claimToken,
     );
-    if (!handled) {
-      await this.channelDialogService.processPublisherSuggestionPublicationJob(
-        job.data.suggestionId,
-        job.data.claimToken,
-      );
+    if (handled) {
+      const requiredBotId = this.publisherCredentials?.getBotId().trim() ?? '';
+      if (requiredBotId) {
+        await this.channelDialogService.syncPublisherSuggestionAdminReviewMessages(
+          job.data.suggestionId,
+          requiredBotId,
+        );
+      }
+      return;
     }
+    await this.channelDialogService.processPublisherSuggestionPublicationJob(
+      job.data.suggestionId,
+      job.data.claimToken,
+    );
   }
 }

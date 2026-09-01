@@ -7,10 +7,10 @@ const root = resolve(import.meta.dirname, '..');
 const guardedFiles = [
   {
     path: 'apps/api/src/admin/admin.service.legacy.ts',
-    maxLines: 23513,
+    maxLines: 23819,
     targetLines: 22500,
     reason:
-      'AdminService remains a legacy hotspot; this ceiling includes sanction lock/fence guards at existing side-effect boundaries, while unrelated domains should keep moving to focused services.',
+      'AdminService remains a legacy hotspot; this ceiling includes the shared crash-safe Major/Publisher suggestion delivery ledger and sanction lock/fence guards at existing side-effect boundaries, while unrelated domains should keep moving to focused services.',
   },
   {
     path: 'apps/api/src/admin/admin-managed-broadcast-runtime.ts',

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getMe } from '../src/lib/api/me-client';
-import { getPublication } from '../src/lib/api/publication-client';
 import {
   getPublisherEntity,
   getPublisherPolicy,
@@ -12,10 +11,6 @@ import {
   updatePublisherPolicy,
   updatePublisherModules,
 } from '../src/lib/api/publisher-client';
-import {
-  listPublisherSuggestions,
-  reviewPublisherSuggestion,
-} from '../src/lib/api/publisher-suggestions-client';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { createInitialState } from '../src/lib/api/preview-transport-state';
 import { systemPreviewClock } from '../src/lib/api/preview-transport-runtime';
@@ -108,48 +103,6 @@ test('publisher entity cursor client sends bound server filters and validates pa
   assert.equal(response.nextCursor, 'next_cursor');
   assert.equal(response.filteredTotal, 14);
   assert.equal(response.summary.total, 40);
-});
-
-test('publisher suggestions client sends a bounded server view and opaque cursor', async () => {
-  const calls: Array<{ path: string; init?: RequestInit }> = [];
-  const api = {
-    request: async (path: string, init?: RequestInit) => {
-      calls.push({ path, init });
-      return { items: [], total: 61, nextCursor: 'next_cursor' };
-    },
-  };
-  const signal = new AbortController().signal;
-
-  const response = await listPublisherSuggestions(api as never, 'channel/with symbols', {
-    view: 'history',
-    limit: 25,
-    cursor: 'opaque_cursor',
-    signal,
-  });
-
-  assert.equal(
-    calls[0]?.path,
-    '/publisher/entities/channel/channel%2Fwith%20symbols/suggestions?view=history&limit=25&cursor=opaque_cursor',
-  );
-  assert.equal(calls[0]?.init?.signal, signal);
-  assert.equal(response.total, 61);
-  assert.equal(response.nextCursor, 'next_cursor');
-});
-
-test('publisher suggestions client applies pending page defaults before requesting', async () => {
-  const calls: string[] = [];
-  const api = {
-    request: async (path: string) => {
-      calls.push(path);
-      return { items: [], total: 0, nextCursor: null };
-    },
-  };
-
-  await listPublisherSuggestions(api as never, 'channel-1');
-
-  assert.equal(calls[0], '/publisher/entities/channel/channel-1/suggestions?view=pending&limit=25');
-  await assert.rejects(listPublisherSuggestions(api as never, 'channel-1', { limit: 101 }));
-  assert.equal(calls.length, 1);
 });
 
 test('publisher entity client encodes ids and validates policy update payloads', async () => {
@@ -436,137 +389,6 @@ test('preview suggestion intro copy matches each production profile', async () =
   assert.match(String((majorDialog as { introText: unknown }).introText), /Только события/u);
 });
 
-test('preview publisher suggestions preserve multiline rich text source format', async () => {
-  const suggestions = await listPublisherSuggestions(
-    createPreviewApiTransport({
-      search: '?profile=publisher&publisherSuggestions=mixed',
-    }),
-    'preview-channel',
-  );
-
-  assert.equal(suggestions.items[0]?.textFormat, 'markdown');
-  assert.match(suggestions.items[0]?.text ?? '', /\*\*[\s\S]+\n\n[\s\S]+\*\*/u);
-  assert.ok(suggestions.items.slice(1).every((suggestion) => suggestion.textFormat === 'plain'));
-  assert.equal(suggestions.total, 4);
-  assert.equal(suggestions.nextCursor, null);
-});
-
-test('preview publisher suggestions paginate pending and history independently', async () => {
-  const api = createPreviewApiTransport({
-    search: '?profile=publisher&publisherSuggestions=large',
-  });
-  const pendingFirst = await listPublisherSuggestions(api, 'preview-channel', {
-    view: 'pending',
-    limit: 17,
-  });
-  assert.equal(pendingFirst.items.length, 17);
-  assert.equal(pendingFirst.total, 40);
-  assert.ok(pendingFirst.nextCursor);
-  assert.ok(
-    pendingFirst.items.every(
-      (suggestion) =>
-        suggestion.reviewStatus === 'pending' || suggestion.reviewStatus === 'publishing',
-    ),
-  );
-
-  const pendingSecond = await listPublisherSuggestions(api, 'preview-channel', {
-    view: 'pending',
-    limit: 17,
-    cursor: pendingFirst.nextCursor,
-  });
-  assert.equal(pendingSecond.total, 40);
-  assert.equal(pendingSecond.items.length, 17);
-  assert.equal(
-    new Set([...pendingFirst.items, ...pendingSecond.items].map((suggestion) => suggestion.id))
-      .size,
-    34,
-  );
-
-  const history = await listPublisherSuggestions(api, 'preview-channel', {
-    view: 'history',
-  });
-  assert.equal(history.items.length, 25);
-  assert.equal(history.total, 60);
-  assert.ok(history.nextCursor);
-  assert.ok(
-    history.items.every(
-      (suggestion) =>
-        suggestion.reviewStatus === 'published' ||
-        suggestion.reviewStatus === 'drafted' ||
-        suggestion.reviewStatus === 'cancelled',
-    ),
-  );
-  await assert.rejects(
-    listPublisherSuggestions(api, 'preview-channel', {
-      view: 'history',
-      cursor: pendingFirst.nextCursor,
-    }),
-    /cursor/u,
-  );
-});
-
-test('preview publisher review exposes asynchronous publishing and updates server totals', async () => {
-  const api = createPreviewApiTransport({
-    search: '?profile=publisher&publisherSuggestions=mixed',
-  });
-  const before = await listPublisherSuggestions(api, 'preview-channel');
-  const publishTarget = before.items.find((suggestion) => suggestion.reviewStatus === 'pending');
-  assert.ok(publishTarget);
-
-  const publishing = await reviewPublisherSuggestion(api, 'preview-channel', publishTarget.id, {
-    action: 'publish',
-  });
-  assert.equal(publishing.suggestion.reviewStatus, 'publishing');
-  assert.equal(publishing.suggestion.publicationId, null);
-
-  const draftTarget = before.items.find(
-    (suggestion) =>
-      suggestion.reviewStatus === 'pending' &&
-      suggestion.id !== publishTarget.id &&
-      suggestion.text.trim() === '' &&
-      suggestion.imageCount > 0,
-  );
-  assert.ok(draftTarget);
-  const drafted = await reviewPublisherSuggestion(api, 'preview-channel', draftTarget.id, {
-    action: 'draft',
-  });
-  assert.equal(drafted.suggestion.reviewStatus, 'drafted');
-  assert.ok(drafted.suggestion.publicationId);
-  const draftPublication = await getPublication(api, drafted.suggestion.publicationId);
-  assert.equal(draftPublication.lifecycle, 'DRAFT');
-  assert.equal(draftPublication.content.text, draftTarget.text);
-  assert.equal(draftPublication.content.media.length, draftTarget.imageCount);
-  const cancelTarget = before.items.find(
-    (suggestion) =>
-      suggestion.reviewStatus === 'pending' &&
-      suggestion.id !== publishTarget.id &&
-      suggestion.id !== draftTarget.id,
-  );
-  assert.ok(cancelTarget);
-  await reviewPublisherSuggestion(api, 'preview-channel', cancelTarget.id, {
-    action: 'cancel',
-  });
-  const pendingAfter = await listPublisherSuggestions(api, 'preview-channel');
-  const historyAfter = await listPublisherSuggestions(api, 'preview-channel', {
-    view: 'history',
-  });
-
-  assert.equal(pendingAfter.total, before.total - 2);
-  assert.equal(historyAfter.total, 6);
-  assert.equal(
-    pendingAfter.items.find((suggestion) => suggestion.id === publishTarget.id)?.reviewStatus,
-    'publishing',
-  );
-  assert.equal(
-    historyAfter.items.find((suggestion) => suggestion.id === cancelTarget.id)?.reviewStatus,
-    'cancelled',
-  );
-  assert.equal(
-    historyAfter.items.find((suggestion) => suggestion.id === draftTarget.id)?.reviewStatus,
-    'drafted',
-  );
-});
-
 test('preview target-specific refresh can transition a blocked publisher entity to ready', async () => {
   const api = createPreviewApiTransport({
     search: '?profile=publisher',
@@ -619,10 +441,13 @@ test('preview keeps Publisher channel comments independent and exposes channel C
   await updatePublisherModules(api, 'channel', channel.id, {
     expectedRevision: channel.moduleSettings.revision,
     channelCommentsEnabled: false,
+    channelSuggestionsEnabled: false,
   });
   const disabled = await getPublisherEntity(api, 'channel', channel.id);
   assert.equal(disabled.moduleSettings.channelCommentsEnabled, false);
+  assert.equal(disabled.moduleSettings.channelSuggestionsEnabled, false);
   assert.equal(disabled.readiness.canUseChannelComments, false);
+  assert.equal(disabled.readiness.canPublishSuggestions, false);
   assert.deepEqual(disabled.channelPostSignature, {
     enabled: true,
     presentation: 'button',
@@ -633,8 +458,11 @@ test('preview keeps Publisher channel comments independent and exposes channel C
   await updatePublisherModules(api, 'channel', channel.id, {
     expectedRevision: disabled.moduleSettings.revision,
     channelCommentsEnabled: true,
+    channelSuggestionsEnabled: true,
   });
   const enabled = await getPublisherEntity(api, 'channel', channel.id);
   assert.equal(enabled.moduleSettings.channelCommentsEnabled, true);
+  assert.equal(enabled.moduleSettings.channelSuggestionsEnabled, true);
   assert.equal(enabled.readiness.canUseChannelComments, true);
+  assert.equal(enabled.readiness.canPublishSuggestions, true);
 });

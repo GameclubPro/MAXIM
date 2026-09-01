@@ -119,6 +119,7 @@ function createHarness() {
 
 function createSuggestionHarness() {
   const prisma = createPrismaMock() as any;
+  const enqueueSuggestionAdminDelivery = jest.fn().mockResolvedValue(undefined);
   let stored: any = null;
   prisma.auditLog.count.mockResolvedValue(0);
   prisma.auditLog.findUnique.mockImplementation(async ({ where }: any) =>
@@ -161,8 +162,10 @@ function createSuggestionHarness() {
     publisherReadiness: {
       assertEntityReady: jest.fn().mockResolvedValue({ entityType: 'channel' }),
     } as never,
+    enqueueSuggestionAdminDelivery,
   });
   return {
+    enqueueSuggestionAdminDelivery,
     prisma,
     runtime,
     mapAuditLog: (...args: any[]) => (service as any).mapChannelDialogAuditLog(...args),
@@ -403,7 +406,8 @@ describe('Publisher channel suggestions with photos', () => {
       1,
     ],
   ] as const)('accepts %s suggestions', async (_label, body, expectedImageCount) => {
-    const { mapAuditLog, prisma, runtime } = createSuggestionHarness();
+    const { enqueueSuggestionAdminDelivery, mapAuditLog, prisma, runtime } =
+      createSuggestionHarness();
 
     const result = await runtime.createChannelSuggestion({
       chatId: 'channel-1',
@@ -426,11 +430,15 @@ describe('Publisher channel suggestions with photos', () => {
     expect(finalizeData.payload).toEqual(
       expect.objectContaining({
         text: body.text,
+        delivered: false,
+        deliveredToUserIds: [],
+        suggestionDelivery: expect.objectContaining({ state: 'queued' }),
         hasImage: expectedImageCount > 0,
         imageCount: expectedImageCount,
         imageStorageVersion: 1,
       }),
     );
+    expect(enqueueSuggestionAdminDelivery).toHaveBeenCalledWith(result.message.id);
     expect(finalizeData.payload).not.toHaveProperty('images');
     if (expectedImageCount === 0) {
       expect(finalizeData).not.toHaveProperty('channelSuggestionImageAssets');
@@ -449,7 +457,8 @@ describe('Publisher channel suggestions with photos', () => {
   });
 
   it('returns the exact stored suggestion on request replay and rejects content collisions', async () => {
-    const { mapAuditLog, prisma, runtime } = createSuggestionHarness();
+    const { enqueueSuggestionAdminDelivery, mapAuditLog, prisma, runtime } =
+      createSuggestionHarness();
     const baseRequest = {
       token: TOKEN,
       requestId: 'publisher_suggestion_request_1',
@@ -474,6 +483,7 @@ describe('Publisher channel suggestions with photos', () => {
     expect(replay.message.id).toBe(first.message.id);
     expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.count).toHaveBeenCalledTimes(1);
+    expect(enqueueSuggestionAdminDelivery).toHaveBeenCalledTimes(2);
     expect(
       prisma.$executeRaw.mock.calls.map((call: unknown[]) => extractSqlText(call[0])).join('\n'),
     ).toContain('pg_advisory_xact_lock');

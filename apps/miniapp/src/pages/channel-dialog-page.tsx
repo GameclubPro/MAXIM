@@ -2763,7 +2763,7 @@ export function ChannelDialogPage({
       );
       pushToast({
         tone: 'success',
-        title: dialogType === 'suggest' ? 'Предложение сохранено' : 'Комментарий отправлен',
+        title: dialogType === 'suggest' ? 'Предложение отправлено' : 'Комментарий отправлен',
       });
       setDraft('');
       setReplyToMessageId(null);

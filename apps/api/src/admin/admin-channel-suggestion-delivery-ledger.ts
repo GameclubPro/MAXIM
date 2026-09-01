@@ -180,9 +180,15 @@ export async function reconcileStaleChannelSuggestionDeliveryClaims(params: {
   prisma: PrismaService;
   staleBefore: Date;
   auditLogId?: string;
+  auditAction?: string;
+  botKey?: string;
   limit?: number;
 }): Promise<{ reclaimed: number; ambiguous: number; auditLogIds: string[] }> {
-  const scope = params.auditLogId ? { auditLogId: params.auditLogId } : {};
+  const scope = {
+    ...(params.auditLogId ? { auditLogId: params.auditLogId } : {}),
+    ...(params.auditAction ? { auditLog: { action: params.auditAction } } : {}),
+    ...(params.botKey ? { botKey: params.botKey } : {}),
+  };
   const staleRows = await params.prisma.channelSuggestionAdminDelivery.findMany({
     where: {
       ...scope,

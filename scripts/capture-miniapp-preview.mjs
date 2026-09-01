@@ -675,101 +675,6 @@ const scenarioBehaviors = [
     },
   },
   {
-    name: 'publisher-channel-suggestions-open-draft',
-    beforeShot: async (page) => {
-      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByRole('button', { name: 'Открыть в редакторе', exact: true }).first().click();
-      await page.locator('.publications-editor').waitFor({ state: 'visible' });
-      const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
-      await editor.waitFor({ state: 'visible' });
-      if (/\*\*|\+\+|~~/u.test((await editor.textContent()) ?? '')) {
-        throw new Error('Publisher suggestion draft leaked Markdown markers.');
-      }
-      await editor.locator('strong').first().waitFor({ state: 'visible' });
-    },
-  },
-  {
-    name: 'publisher-channel-suggestions-cancel-confirm',
-    beforeShot: async (page) => {
-      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByRole('button', { name: 'Отклонить', exact: true }).first().click();
-      await page
-        .getByRole('dialog', { name: 'Отклонить предложение?' })
-        .waitFor({ state: 'visible' });
-    },
-  },
-  {
-    name: 'publisher-channel-suggestions-image-only-cancel-confirm',
-    beforeShot: async (page) => {
-      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      const imageOnlyCards = page.locator('.publisher-suggestion-row').filter({
-        has: page.getByText('Автор 2', { exact: true }),
-      });
-      if ((await imageOnlyCards.count()) !== 1) {
-        throw new Error('Publisher image-only suggestion fixture is missing or ambiguous.');
-      }
-
-      const imageOnlyCard = imageOnlyCards.first();
-      await imageOnlyCard.getByText('1 фото', { exact: true }).waitFor({ state: 'visible' });
-      if ((await imageOnlyCard.locator('.publisher-suggestion-row__text').count()) !== 0) {
-        throw new Error('Publisher image-only suggestion unexpectedly rendered a text block.');
-      }
-      if (((await page.locator('body').textContent()) ?? '').includes('Предложение без текста')) {
-        throw new Error('Publisher image-only suggestion rendered forbidden fallback copy.');
-      }
-
-      await imageOnlyCard.getByRole('button', { name: 'Отклонить', exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: 'Отклонить предложение?' });
-      await dialog.waitFor({ state: 'visible' });
-      await dialog.getByText('1 фото', { exact: true }).waitFor({ state: 'visible' });
-      if (((await page.locator('body').textContent()) ?? '').includes('Предложение без текста')) {
-        throw new Error('Publisher image-only confirmation rendered forbidden fallback copy.');
-      }
-    },
-  },
-  {
-    name: 'publisher-channel-suggestions-image-only-open-draft',
-    beforeShot: async (page) => {
-      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      const imageOnlyCards = page.locator('.publisher-suggestion-row').filter({
-        has: page.getByText('Автор 2', { exact: true }),
-      });
-      if ((await imageOnlyCards.count()) !== 1) {
-        throw new Error('Publisher image-only suggestion fixture is missing or ambiguous.');
-      }
-
-      await imageOnlyCards
-        .first()
-        .getByRole('button', { name: 'Открыть в редакторе', exact: true })
-        .click();
-      await page.locator('.publications-editor').waitFor({ state: 'visible' });
-      const retainedMedia = page.locator('.publication-retained-media');
-      await retainedMedia.waitFor({ state: 'visible' });
-      await retainedMedia
-        .getByText('suggestion-photo-1.png', { exact: true })
-        .waitFor({ state: 'visible' });
-      if ((await retainedMedia.count()) !== 1) {
-        throw new Error('Publisher image-only draft did not preserve exactly one photo.');
-      }
-      for (const label of ['💬 Комментарии', '✍️ Предложить объявление', '📞 Заказать рекламу']) {
-        await page.getByText(label, { exact: true }).waitFor({ state: 'visible' });
-      }
-    },
-  },
-  {
-    name: 'publisher-channel-suggestions-history',
-    beforeShot: async (page) => {
-      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
-      await page.getByRole('button', { name: /История/u }).click();
-      const loadMore = page.getByRole('button', { name: /Показать ещё/u });
-      await loadMore.waitFor({ state: 'visible' });
-      await loadMore.press('Enter');
-      await page.getByText('Публикация создана', { exact: true }).first().waitFor({
-        state: 'visible',
-      });
-    },
-  },
-  {
     name: 'publisher-entities-error',
     beforeShot: async (page) => {
       await page.locator('.publisher-entities-page__state.has-error').waitFor({ state: 'visible' });
@@ -1850,6 +1755,20 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
       await page.getByText('Предложения', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-channel-suggestions-toggle',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      const toggle = page.getByRole('checkbox', { name: 'Включить предложения', exact: true });
+      await toggle.click();
+      await page.getByRole('checkbox', { name: 'Выключить предложения', exact: true }).waitFor({
+        state: 'visible',
+      });
+      if (!(await toggle.isChecked())) {
+        throw new Error('Publisher suggestion switch did not persist its enabled state.');
+      }
     },
   },
   {
