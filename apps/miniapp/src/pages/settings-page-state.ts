@@ -53,11 +53,7 @@ const DEFAULT_SANCTION_STAGE_KEYS: Record<
   SanctionPresetGroup,
   readonly [SanctionStageEnabledKey, SanctionStageEnabledKey, SanctionStageEnabledKey]
 > = {
-  duplicate: [
-    'duplicateBotMessageEnabled',
-    'duplicateWarnEnabled',
-    'duplicateMuteEnabled',
-  ],
+  duplicate: ['duplicateBotMessageEnabled', 'duplicateWarnEnabled', 'duplicateMuteEnabled'],
   invitationAccess: [
     'invitationAccessBotMessageEnabled',
     'invitationAccessWarnEnabled',
@@ -69,21 +65,13 @@ const DEFAULT_SANCTION_STAGE_KEYS: Record<
     'messageLimitsWarnEnabled',
     'messageLimitsMuteEnabled',
   ],
-  profanity: [
-    'profanityBotMessageEnabled',
-    'profanityWarnEnabled',
-    'profanityMuteEnabled',
-  ],
+  profanity: ['profanityBotMessageEnabled', 'profanityWarnEnabled', 'profanityMuteEnabled'],
   requiredSubscription: [
     'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionWarnEnabled',
     'requiredSubscriptionMuteEnabled',
   ],
-  textFilters: [
-    'textFiltersBotMessageEnabled',
-    'textFiltersWarnEnabled',
-    'textFiltersMuteEnabled',
-  ],
+  textFilters: ['textFiltersBotMessageEnabled', 'textFiltersWarnEnabled', 'textFiltersMuteEnabled'],
 };
 
 export function applyDefaultSanctionStages(
@@ -129,6 +117,24 @@ export function applyRequiredSubscriptionChannelAddition(
     ...nextSettings,
     requiredSubscriptionEnabled: true,
     requiredSubscriptionChannelIds: [...settings.requiredSubscriptionChannelIds, channelId],
+    requiredSubscriptionExpiresAt: '',
+  };
+}
+
+export function normalizeRequiredSubscriptionDraftSettings(settings: ChatSettings): ChatSettings {
+  const requiredSubscriptionChannelIds = Array.from(
+    new Set(
+      settings.requiredSubscriptionChannelIds
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+    ),
+  );
+
+  return {
+    ...settings,
+    requiredSubscriptionEnabled: requiredSubscriptionChannelIds.length > 0,
+    requiredSubscriptionChannelIds,
+    requiredSubscriptionBotMessageEnabled: requiredSubscriptionChannelIds.length > 0,
     requiredSubscriptionExpiresAt: '',
   };
 }

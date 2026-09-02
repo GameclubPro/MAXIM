@@ -570,6 +570,7 @@ export class QueueMetricsService {
 
     const counts = await queue.getJobCounts(
       'waiting',
+      'paused',
       'prioritized',
       'active',
       'delayed',

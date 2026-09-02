@@ -1692,6 +1692,7 @@ function createOldUpdate(): MaxUpdate {
 
 function createRequiredSubscriptionRedisCounter() {
   const stringCache = new Map<string, string>();
+  const locks = new Set<string>();
 
   return {
     stringCache,
@@ -1700,6 +1701,19 @@ function createRequiredSubscriptionRedisCounter() {
     getString: jest.fn(async (key: string) => stringCache.get(key) ?? null),
     setStringWithTtl: jest.fn(async (key: string, value: string) => {
       stringCache.set(key, value);
+    }),
+    acquireLock: jest.fn(async (key: string) => {
+      if (locks.has(key)) {
+        return null;
+      }
+      locks.add(key);
+      return `lock-${key}`;
+    }),
+    renewLock: jest.fn(
+      async (key: string, token: string) => locks.has(key) && token === `lock-${key}`,
+    ),
+    releaseLock: jest.fn(async (key: string) => {
+      locks.delete(key);
     }),
   };
 }

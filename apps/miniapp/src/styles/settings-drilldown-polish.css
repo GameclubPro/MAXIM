@@ -517,4 +517,17 @@
       align-items: flex-start;
     }
   }
+
+  @media (max-width: 360px) {
+    .settings-drilldown
+      .settings-drilldown__panel--required-subscription
+      .settings-native-toggle__title {
+      max-width: none;
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+  }
 }

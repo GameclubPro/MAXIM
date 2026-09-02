@@ -22,23 +22,7 @@ import {
   normalizeDuplicateFlowSettings,
   normalizeLegacyChatCommentScope,
 } from './settings-page-helpers';
-
-export function normalizeRequiredSubscriptionDraftSettings(settings: ChatSettings): ChatSettings {
-  const requiredSubscriptionChannelIds = Array.from(
-    new Set(
-      settings.requiredSubscriptionChannelIds
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0),
-    ),
-  );
-
-  return {
-    ...settings,
-    requiredSubscriptionEnabled: requiredSubscriptionChannelIds.length > 0,
-    requiredSubscriptionChannelIds,
-    requiredSubscriptionExpiresAt: '',
-  };
-}
+import { normalizeRequiredSubscriptionDraftSettings } from '../settings-page-state';
 
 function normalizeWorkspaceDraft(settings: ChatSettings): ChatSettings {
   return normalizeDuplicateFlowSettings(

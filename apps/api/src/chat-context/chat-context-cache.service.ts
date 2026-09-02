@@ -184,11 +184,15 @@ const APPLY_ADMIN_ACCESS_EPOCH_MUTATION_SCRIPT = `
 local incoming_timestamp = tonumber(ARGV[1])
 local incoming_priority = tonumber(ARGV[2])
 local current_epoch = redis.call('GET', KEYS[1])
+local exact_epoch_and_state = false
 if current_epoch then
   local separator = string.find(current_epoch, ':', 1, true)
   if separator then
     local current_timestamp = tonumber(string.sub(current_epoch, 1, separator - 1))
     local current_priority = tonumber(string.sub(current_epoch, separator + 1))
+    exact_epoch_and_state = current_timestamp == incoming_timestamp and
+      current_priority == incoming_priority and
+      redis.call('GET', KEYS[2]) == ARGV[4]
     if current_timestamp and current_priority and
        (current_timestamp > incoming_timestamp or
         (current_timestamp == incoming_timestamp and current_priority > incoming_priority)) then
@@ -206,11 +210,25 @@ local function matches(actual, expected_exists, expected)
   return actual == false
 end
 
+local opaque_mutations_are_noop = true
 for index, key in ipairs(opaque_keys) do
   local offset = argument_offset + ((index - 1) * 5)
   if not matches(redis.call('GET', key), ARGV[offset], ARGV[offset + 1]) then
     return -1
   end
+  if ARGV[offset + 2] ~= 'keep' then
+    opaque_mutations_are_noop = false
+  end
+end
+
+local recent_mode = ARGV[44]
+if exact_epoch_and_state and
+   opaque_mutations_are_noop and
+   recent_mode == 'deny' and
+   redis.call('SISMEMBER', KEYS[11], ARGV[6]) == 0 and
+   redis.call('SISMEMBER', KEYS[12], ARGV[6]) == 0 then
+  redis.call('PUBLISH', ARGV[7], ARGV[8])
+  return 2
 end
 
 for index, key in ipairs(opaque_keys) do
@@ -232,7 +250,6 @@ redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[47])
 redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[5])
 redis.call('INCR', KEYS[4])
 
-local recent_mode = ARGV[44]
 local recent_entity_type = ARGV[46]
 if recent_mode == 'grant' then
   if recent_entity_type == 'chat' then
@@ -764,6 +781,15 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         });
         this.applyLocalInvalidation(chatId);
         return true;
+      }
+      if (result === 2) {
+        this.recordAdminAccessEpochMutationMetric(options, {
+          phase: 'lua',
+          outcome: 'superseded',
+          durationMs: Date.now() - luaStartedAtMs,
+        });
+        this.applyLocalInvalidation(chatId);
+        return false;
       }
       if (result === 0) {
         this.recordAdminAccessEpochMutationMetric(options, {

@@ -190,7 +190,7 @@ test('bot speech placeholders move a tapped mobile caret outside the protected t
   );
 });
 
-test('required subscription explanation editor opens even while the action is disabled', () => {
+test('required subscription explanation editor remains available without an action toggle', () => {
   const editorStart = settingsPageSource.indexOf("openBotEditorKey === 'requiredSubscription' ?");
   const editorSource = settingsPageSource.slice(
     editorStart,
@@ -200,4 +200,19 @@ test('required subscription explanation editor opens even while the action is di
   assert.notEqual(editorStart, -1);
   assert.match(editorSource, /<LazyBotMessageEditor/u);
   assert.doesNotMatch(editorSource, /requiredSubscriptionBotMessageEnabled/u);
+});
+
+test('required subscription explanation cannot be disabled while enforcement is active', () => {
+  const sectionStart = settingsPageSource.indexOf(
+    'aria-label="Действия бота для обязательной подписки"',
+  );
+  const sectionSource = settingsPageSource.slice(
+    sectionStart,
+    settingsPageSource.indexOf("title: '3. Ограничение'", sectionStart),
+  );
+
+  assert.notEqual(sectionStart, -1);
+  assert.match(sectionSource, /Редактировать объяснение об обязательной подписке/u);
+  assert.doesNotMatch(sectionSource, /Включить объяснение для обязательной подписки/u);
+  assert.doesNotMatch(sectionSource, /checked=\{draft\.requiredSubscriptionBotMessageEnabled\}/u);
 });

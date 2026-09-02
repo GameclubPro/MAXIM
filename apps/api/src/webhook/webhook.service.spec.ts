@@ -425,6 +425,310 @@ describe('WebhookService', () => {
     });
   });
 
+  it('waits for canonical preparation before reusing it for shadow mirror execution', async () => {
+    const ownerBotId = 'bot-owner';
+    const mirrorBotId = 'bot-mirror';
+    const update = {
+      updateId: 'u-shadow-membership-mirror',
+      type: 'user_removed',
+      botId: mirrorBotId,
+      message: {
+        chatId: '-100-shadow-membership',
+        messageId: 'user_removed:u-shadow-membership-mirror',
+        senderId: 'user-1',
+        text: '',
+        createdAt: '2026-09-02T08:00:00.000Z',
+      },
+      membership: {
+        action: 'removed',
+        memberUserIds: ['user-1'],
+      },
+    };
+    const claim = {
+      id: 'claim-shadow-membership',
+      kind: 'EXECUTION',
+      semanticKey: 'membership:user_removed:-100-shadow-membership:user-1',
+      webhookEventId: 'evt-shadow-membership-owner',
+      executionBotId: ownerBotId,
+      enforced: false,
+      status: WebhookExecutionClaimStatus.PENDING as WebhookExecutionClaimStatus,
+      leaseToken: 'owner-lease' as string | null,
+      leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z') as Date | null,
+      preparedAt: null as Date | null,
+      completedAt: null,
+    };
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'evt-shadow-membership-mirror',
+          dedupKey: `${mirrorBotId}:u-shadow-membership-mirror`,
+          botId: mirrorBotId,
+          status: WebhookStatus.RECEIVED,
+          normalizedPayload: update,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      webhookExecutionClaim: {
+        createMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findUnique: jest.fn(async () => claim),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      $transaction: jest.fn(() => {
+        throw new Error('mirrored preparation must not open a membership transaction');
+      }),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(ownerBotId);
+    const service = new WebhookService(
+      prisma as never,
+      {
+        get: jest.fn((key: string, fallback?: unknown) =>
+          key === 'WEBHOOK_CANONICAL_EXECUTION_MODE' ? 'shadow' : (fallback ?? 1),
+        ),
+      } as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.preparePersistedWebhookEvent('evt-shadow-membership-mirror'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        canonical: true,
+        prepared: false,
+        executionBotId: ownerBotId,
+        enforced: false,
+      }),
+    );
+    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
+
+    claim.status = WebhookExecutionClaimStatus.READY;
+    claim.preparedAt = new Date('2026-09-02T08:00:01.000Z');
+    claim.leaseToken = null;
+    claim.leaseExpiresAt = null;
+
+    await expect(
+      service.preparePersistedWebhookEvent('evt-shadow-membership-mirror'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        canonical: true,
+        prepared: true,
+        normalizedPayload: expect.objectContaining({ executionOwnerBotId: ownerBotId }),
+        executionBotId: null,
+        enforced: false,
+      }),
+    );
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'evt-shadow-membership-mirror',
+        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+      },
+      data: {
+        normalizedPayload: expect.objectContaining({ executionOwnerBotId: ownerBotId }),
+      },
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(maxBotLinkService.observeStoredChatBotWebhook).toHaveBeenCalledWith({
+      chatId: '-100-shadow-membership',
+      primaryBotId: ownerBotId,
+      botId: mirrorBotId,
+      observedAt: expect.any(Date),
+    });
+  });
+
+  it('takes over terminal failed shadow membership preparation with the claim lease fenced', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T08:00:00.000Z'));
+    try {
+      const ownerBotId = 'bot-owner';
+      const mirrorBotId = 'bot-mirror';
+      const update = {
+        updateId: 'u-shadow-membership-terminal-owner',
+        type: 'user_removed',
+        botId: mirrorBotId,
+        message: {
+          chatId: '-100-shadow-membership-takeover',
+          messageId: 'user_removed:u-shadow-membership-terminal-owner',
+          senderId: 'user-1',
+          text: '',
+          createdAt: '2026-09-02T07:59:00.000Z',
+        },
+        membership: {
+          action: 'removed',
+          memberUserIds: ['user-1'],
+        },
+      };
+      const claim = {
+        id: 'claim-shadow-membership-terminal-owner',
+        kind: 'EXECUTION',
+        semanticKey: 'membership:user_removed:-100-shadow-membership-takeover:user-1',
+        webhookEventId: 'evt-shadow-membership-terminal-owner',
+        executionBotId: ownerBotId,
+        enforced: false,
+        status: WebhookExecutionClaimStatus.PENDING,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        preparedAt: null,
+        completedAt: null,
+      };
+      const claimUpdateMany = jest
+        .fn()
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 1 });
+      const prisma = {
+        webhookEvent: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'evt-shadow-membership-mirror-takeover',
+            dedupKey: `${mirrorBotId}:u-shadow-membership-terminal-owner`,
+            botId: mirrorBotId,
+            status: WebhookStatus.RECEIVED,
+            normalizedPayload: update,
+          }),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+        webhookExecutionClaim: {
+          createMany: jest.fn().mockResolvedValue({ count: 0 }),
+          findUnique: jest.fn().mockResolvedValue(claim),
+          updateMany: claimUpdateMany,
+        },
+      };
+      maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(ownerBotId);
+      const service = new WebhookService(
+        prisma as never,
+        {
+          get: jest.fn((key: string, fallback?: unknown) =>
+            key === 'WEBHOOK_CANONICAL_EXECUTION_MODE' ? 'shadow' : (fallback ?? 1),
+          ),
+        } as never,
+        maxBotLinkService as never,
+      );
+      const prepareCore = jest
+        .spyOn(service as never, 'prepareWebhookEventCore' as never)
+        .mockResolvedValue({ update, executionBotId: mirrorBotId } as never);
+
+      await expect(
+        service.preparePersistedWebhookEvent('evt-shadow-membership-mirror-takeover'),
+      ).resolves.toEqual({
+        canonical: true,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: mirrorBotId,
+        enforced: false,
+      });
+
+      expect(prepareCore).toHaveBeenCalledTimes(1);
+      expect(claimUpdateMany).toHaveBeenCalledTimes(2);
+      expect(claimUpdateMany.mock.calls[0]?.[0]).toMatchObject({
+        where: {
+          id: claim.id,
+          webhookEventId: claim.webhookEventId,
+          enforced: false,
+          status: WebhookExecutionClaimStatus.PENDING,
+          preparedAt: null,
+          completedAt: null,
+          webhookEvent: {
+            is: {
+              status: WebhookStatus.FAILED,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+          },
+        },
+        data: {
+          webhookEventId: 'evt-shadow-membership-mirror-takeover',
+          executionBotId: null,
+          leaseToken: expect.any(String),
+          leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z'),
+        },
+      });
+      const takeoverLeaseToken = claimUpdateMany.mock.calls[0]?.[0].data.leaseToken;
+      expect(claimUpdateMany.mock.calls[1]?.[0]).toMatchObject({
+        where: {
+          id: claim.id,
+          webhookEventId: 'evt-shadow-membership-mirror-takeover',
+          leaseToken: takeoverLeaseToken,
+        },
+        data: {
+          status: WebhookExecutionClaimStatus.READY,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('self-prepares an older ordered message mirror while its newer claim owner is pending', async () => {
+    const ownerBotId = 'bot-owner';
+    const mirrorBotId = 'bot-mirror';
+    const update = {
+      updateId: 'u-older-message-mirror',
+      type: 'message_created',
+      botId: mirrorBotId,
+      message: {
+        chatId: '-100-ordered-mirror',
+        messageId: 'message-ordered-mirror',
+        senderId: 'user-1',
+        text: 'hello',
+        createdAt: '2026-09-02T08:00:00.000Z',
+      },
+    };
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'evt-older-message-mirror',
+          dedupKey: `${mirrorBotId}:u-older-message-mirror`,
+          botId: mirrorBotId,
+          status: WebhookStatus.RECEIVED,
+          normalizedPayload: update,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      webhookExecutionClaim: {
+        createMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-newer-message-owner',
+          kind: 'EXECUTION',
+          semanticKey: 'message:message_created:-100-ordered-mirror:message-ordered-mirror',
+          webhookEventId: 'evt-newer-message-owner',
+          executionBotId: ownerBotId,
+          enforced: false,
+          status: WebhookExecutionClaimStatus.PENDING,
+          leaseToken: 'owner-lease',
+          leaseExpiresAt: new Date('2026-09-02T08:00:30.000Z'),
+          preparedAt: null,
+          completedAt: null,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(ownerBotId);
+    const service = new WebhookService(
+      prisma as never,
+      {
+        get: jest.fn((key: string, fallback?: unknown) =>
+          key === 'WEBHOOK_CANONICAL_EXECUTION_MODE' ? 'shadow' : (fallback ?? 1),
+        ),
+      } as never,
+      maxBotLinkService as never,
+    );
+    const prepareCore = jest
+      .spyOn(service as never, 'prepareWebhookEventCore' as never)
+      .mockResolvedValue({ update, executionBotId: ownerBotId } as never);
+
+    await expect(service.preparePersistedWebhookEvent('evt-older-message-mirror')).resolves.toEqual(
+      {
+        canonical: true,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: null,
+        enforced: false,
+      },
+    );
+
+    expect(prepareCore).toHaveBeenCalledWith('evt-older-message-mirror', update);
+  });
+
   it.each<[mode: 'on' | 'shadow' | 'off', enforced: boolean, eventStatus: WebhookStatus]>([
     ['on', true, WebhookStatus.QUEUED],
     ['on', true, WebhookStatus.FAILED],
@@ -584,6 +888,12 @@ describe('WebhookService', () => {
       'Webhook preparation lease was lost before READY',
     );
     expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(3);
+    for (const call of prisma.webhookExecutionClaim.updateMany.mock.calls) {
+      expect(call[0].where).toMatchObject({
+        id: claim.id,
+        webhookEventId: 'evt-preparation-lease',
+      });
+    }
   });
 
   it('treats a fresh same-bot legacy unscoped dedup key as duplicate for bot-scoped retries', async () => {

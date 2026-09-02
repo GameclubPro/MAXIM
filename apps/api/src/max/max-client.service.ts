@@ -2003,7 +2003,7 @@ export class MaxClientService implements OnModuleDestroy {
       return false;
     }
 
-    return url === target.url || this.normalizeUrl(url) === this.normalizeUrl(target.url);
+    return url.trim() === target.url;
   }
 
   maskWebhookUrl(url: string | null, botId?: string | null): string | null {
@@ -2056,9 +2056,7 @@ export class MaxClientService implements OnModuleDestroy {
       botId: bot.id,
       ...(sourceTag ? { sourceTag } : {}),
     });
-    const current =
-      existing.find((item) => item.url === bot.webhookUrl) ??
-      existing.find((item) => this.normalizeUrl(item.url) === this.normalizeUrl(bot.webhookUrl!));
+    const current = existing.find((item) => item.url === bot.webhookUrl);
     const targetUpdateTypes = (
       options.replaceUpdateTypes === true
         ? [...normalizedRequired]
@@ -4803,10 +4801,6 @@ export class MaxClientService implements OnModuleDestroy {
       url,
       updateTypes,
     };
-  }
-
-  private normalizeUrl(value: string): string {
-    return value.trim().replace(/\/+$/u, '');
   }
 
   async answerCallback(

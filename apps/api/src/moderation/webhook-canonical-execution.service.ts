@@ -145,6 +145,7 @@ export class WebhookCanonicalExecutionService {
     }
 
     const update = webhookEvent.normalizedPayload as MaxUpdate;
+    const normalizedUpdateType = update.type.trim().toLowerCase();
     const executionClaimModel = this.executionClaimModel;
     const semanticKey = buildWebhookSemanticEventKey(update);
     const semanticClaim =
@@ -179,6 +180,24 @@ export class WebhookCanonicalExecutionService {
       this.logger.warn(
         { webhookEventId: webhookEvent.id },
         'Skipped active non-canonical mirrored webhook job at the worker fence',
+      );
+      return null;
+    }
+    if (
+      executionClaim?.enforced !== true &&
+      executionClaim?.webhookEventId &&
+      executionClaim.webhookEventId !== webhookEvent.id &&
+      executionClaim.preparedAt == null &&
+      (normalizedUpdateType === 'user_added' || normalizedUpdateType === 'user_removed')
+    ) {
+      // FLAG: A rolling deployment can leave an older shadow mirror job active while the
+      // canonical receipt is still preparing. The worker must not bypass the outbox fence.
+      this.logger.warn(
+        {
+          webhookEventId: webhookEvent.id,
+          canonicalWebhookEventId: executionClaim.webhookEventId,
+        },
+        'Deferred shadow webhook mirror until canonical preparation is ready',
       );
       return null;
     }

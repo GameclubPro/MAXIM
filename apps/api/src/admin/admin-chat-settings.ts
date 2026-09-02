@@ -180,6 +180,7 @@ function normalizeRequiredSubscriptionSettings(settings: ChatSettings): ChatSett
     ...settings,
     requiredSubscriptionEnabled,
     requiredSubscriptionChannelIds,
+    requiredSubscriptionBotMessageEnabled: requiredSubscriptionEnabled,
     requiredSubscriptionDurationDays,
     requiredSubscriptionExpiresAt: '',
   };
@@ -622,6 +623,13 @@ export function getChatSettingsNormalizationChanges(
   }
   if (current.nightModeForceCloseUntil !== normalized.nightModeForceCloseUntil) {
     changes.nightModeForceCloseUntil = normalized.nightModeForceCloseUntil;
+  }
+  if (
+    current.requiredSubscriptionBotMessageEnabled !==
+    normalized.requiredSubscriptionBotMessageEnabled
+  ) {
+    changes.requiredSubscriptionBotMessageEnabled =
+      normalized.requiredSubscriptionBotMessageEnabled;
   }
   if (!areBotSpeechMediaEqual(current.botSpeechMedia, normalized.botSpeechMedia)) {
     changes.botSpeechMedia = normalized.botSpeechMedia;

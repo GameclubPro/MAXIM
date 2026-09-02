@@ -19,6 +19,38 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('rejects runtime service and role combinations that would boot the wrong workers', () => {
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          APP_ROLE: 'ingress',
+          APP_SERVICE_NAME: 'api-action',
+        }),
+      ),
+    ).toThrow(/api-action service requires action role/u);
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          APP_ROLE: 'action',
+          APP_SERVICE_NAME: 'api-media-analysis',
+        }),
+      ),
+    ).toThrow(/api-media-analysis service requires moderation role/u);
+
+    expect(
+      validateEnv(
+        createValidEnv({
+          APP_ROLE: 'moderation',
+          APP_SERVICE_NAME: 'api-media-analysis',
+        }),
+      ),
+    ).toMatchObject({
+      APP_ROLE: 'moderation',
+      APP_SERVICE_NAME: 'api-media-analysis',
+    });
+  });
+
   it('hydrates only the publisher ConfigService view from isolated secret files', () => {
     const directory = mkdtempSync(join(tmpdir(), 'maxim-publisher-env-'));
     const tokenFile = join(directory, 'token');

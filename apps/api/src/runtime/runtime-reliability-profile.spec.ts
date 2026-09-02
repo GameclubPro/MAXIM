@@ -84,6 +84,26 @@ describe('runtime reliability queue group health', () => {
     );
   });
 
+  it('treats prioritized-only backlog as queue pressure', () => {
+    const health = buildSystemQueueGroupHealth(
+      queueSnapshot({
+        webhookCritical: counters({ prioritized: 50 }),
+      }),
+    );
+
+    expect(health.status).toBe('critical');
+    expect(health.groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'webhook-critical',
+          waiting: 0,
+          pressure: 50,
+          status: 'critical',
+        }),
+      ]),
+    );
+  });
+
   it('tracks auxiliary queues without treating scheduled delayed jobs as pressure', () => {
     const health = buildSystemQueueGroupHealth(
       queueSnapshot({

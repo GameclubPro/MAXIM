@@ -6,6 +6,10 @@ const settingsRoutePolishCss = readFileSync(
   new URL('../src/styles/settings-route-polish.css', import.meta.url),
   'utf8',
 );
+const settingsDrilldownPolishCss = readFileSync(
+  new URL('../src/styles/settings-drilldown-polish.css', import.meta.url),
+  'utf8',
+);
 const settingsTileGridCss = readFileSync(
   new URL('../src/styles/settings-tile-grid.css', import.meta.url),
   'utf8',
@@ -23,6 +27,13 @@ test('link action titles wrap only between words on narrow settings screens', ()
   assert.match(
     settingsRoutePolishCss,
     /\.settings-drilldown \.settings-drilldown__panel--links \.settings-native-toggle__title \{\s*overflow-wrap: normal;\s*word-break: normal;\s*hyphens: none;\s*\}/u,
+  );
+});
+
+test('required subscription action titles wrap instead of clipping on narrow screens', () => {
+  assert.match(
+    settingsDrilldownPolishCss,
+    /@media \(max-width: 360px\) \{\s*\.settings-drilldown\s+\.settings-drilldown__panel--required-subscription\s+\.settings-native-toggle__title \{[\s\S]*?overflow: visible;[\s\S]*?text-overflow: clip;[\s\S]*?white-space: normal;[\s\S]*?overflow-wrap: normal;[\s\S]*?word-break: normal;/u,
   );
 });
 

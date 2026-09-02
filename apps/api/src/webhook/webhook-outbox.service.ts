@@ -48,6 +48,7 @@ const DEGRADED_ENQUEUE_BATCH_SIZE = 100;
 const DEGRADED_ENQUEUE_CONCURRENCY = 4;
 const DEGRADED_QUEUED_REPAIR_INTERVAL_MS = 5_000;
 const ENQUEUE_ADMISSION_MODE_CACHE_MS = 5_000;
+const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
 const RECEIVED_BATCH_SHARE = 0.75;
 const RECENT_RECEIPT_BATCH_SHARE = 0.25;
 const MEMBERSHIP_LEAVE_WEBHOOK_TYPES = new Set([
@@ -1446,7 +1447,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         return 'advance';
       }
       if (!prepared.prepared) {
-        return 'block';
+        const deferOutcome = await this.deferPreparationWithoutExhaustion(
+          event,
+          new WebhookPreparationDeferredError(
+            'canonical webhook preparation is still pending',
+            CANONICAL_PREPARATION_PENDING_RETRY_MS,
+          ),
+        );
+        return deferOutcome === 'terminal' ? 'advance' : 'block';
       }
       event.normalizedPayload = prepared.normalizedPayload;
       return 'ready';

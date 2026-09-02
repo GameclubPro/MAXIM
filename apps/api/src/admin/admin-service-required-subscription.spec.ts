@@ -1585,9 +1585,11 @@ describe('AdminService required subscription settings', () => {
 
     expect(result.requiredSubscriptionEnabled).toBe(false);
     expect(result.requiredSubscriptionChannelIds).toEqual([]);
+    expect(result.requiredSubscriptionBotMessageEnabled).toBe(false);
     expectChatSettingsWrite(prisma, {
       requiredSubscriptionEnabled: false,
       requiredSubscriptionChannelIds: [],
+      requiredSubscriptionBotMessageEnabled: false,
     });
   });
 
@@ -1623,9 +1625,11 @@ describe('AdminService required subscription settings', () => {
 
     expect(result.requiredSubscriptionEnabled).toBe(true);
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1', 'channel-2']);
+    expect(result.requiredSubscriptionBotMessageEnabled).toBe(true);
     expectChatSettingsWrite(prisma, {
       requiredSubscriptionEnabled: true,
       requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
+      requiredSubscriptionBotMessageEnabled: true,
     });
     const cachedHeaderIds = chatContextCache.setManagedEntityHeader.mock.calls.map(
       ([header]) => header.id,

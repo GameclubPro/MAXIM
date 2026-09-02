@@ -54,6 +54,10 @@ import {
   shouldEnforceCanonicalWebhookExecution,
   type WebhookCanonicalExecutionMode,
 } from './webhook-canonical-execution-mode';
+import {
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+  WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX,
+} from './webhook-timeout-quarantine';
 
 type WebhookIngestResult = {
   accepted: boolean;
@@ -84,6 +88,20 @@ type WebhookExecutionClaimRow = {
   leaseExpiresAt: Date | null;
   preparedAt: Date | null;
   completedAt: Date | null;
+};
+
+type WebhookExecutionClaimModel = {
+  createMany: (args: {
+    data: Array<{
+      kind: string;
+      semanticKey: string;
+      webhookEventId: string;
+      enforced?: boolean;
+    }>;
+    skipDuplicates: boolean;
+  }) => Promise<{ count: number }>;
+  findUnique: (args: unknown) => Promise<WebhookExecutionClaimRow | null>;
+  updateMany: (args: unknown) => Promise<{ count: number }>;
 };
 
 type MembershipActivityProjection = {
@@ -462,9 +480,14 @@ export class WebhookService {
       claim = { ...claim, enforced: true };
     }
 
+    let preparationLeaseToken: string | null = null;
     if (claim.webhookEventId !== webhookEventId) {
-      await this.touchMirroredReceiptMembership(update);
-      if (!claim.enforced) {
+      const shadowMembershipMirror =
+        !claim.enforced && MEMBERSHIP_ACTIVITY_UPDATE_TYPES.has(update.type.trim().toLowerCase());
+      if (!shadowMembershipMirror) {
+        await this.touchMirroredReceiptMembership(update);
+      }
+      if (!claim.enforced && !shadowMembershipMirror) {
         const prepared = await this.prepareWebhookEventCore(webhookEventId, update);
         return {
           canonical: true,
@@ -475,15 +498,78 @@ export class WebhookService {
         };
       }
 
-      await this.persistUserDisplayNameSnapshots(update);
-      await this.markMirroredReceiptDuplicate(webhookEventId);
-      return {
-        canonical: false,
-        prepared: true,
-        normalizedPayload: update,
-        executionBotId: claim.executionBotId,
-        enforced: true,
-      };
+      if (!claim.enforced && !claim.preparedAt) {
+        const takeover = await this.tryTakeOverTerminalShadowMembershipClaim({
+          claimModel,
+          claim,
+          webhookEventId,
+        });
+        if (takeover) {
+          claim = takeover.claim;
+          preparationLeaseToken = takeover.leaseToken;
+        } else {
+          claim =
+            (await claimModel.findUnique({
+              where: {
+                kind_semanticKey: {
+                  kind: EXECUTION_CLAIM_KIND,
+                  semanticKey,
+                },
+              },
+            })) ?? claim;
+        }
+      }
+
+      if (claim.webhookEventId !== webhookEventId) {
+        if (claim.enforced) {
+          if (shadowMembershipMirror) {
+            await this.touchMirroredReceiptMembership(update);
+          }
+          await this.persistUserDisplayNameSnapshots(update);
+          await this.markMirroredReceiptDuplicate(webhookEventId);
+          return {
+            canonical: false,
+            prepared: true,
+            normalizedPayload: update,
+            executionBotId: claim.executionBotId,
+            enforced: true,
+          };
+        }
+
+        // FLAG: Shadow membership mirrors reuse only a published preparation. A live or
+        // ambiguous owner must retain the claim until its lease or timeout fence is settled.
+        if (!claim.preparedAt) {
+          return {
+            canonical: true,
+            prepared: false,
+            normalizedPayload: update,
+            executionBotId: claim.executionBotId,
+            enforced: false,
+          };
+        }
+
+        if (shadowMembershipMirror) {
+          await this.touchMirroredReceiptMembership(update);
+        }
+        this.attachExecutionOwnerBotId(update, claim.executionBotId);
+        await this.persistUserDisplayNameSnapshots(update);
+        await this.prisma.webhookEvent.updateMany({
+          where: {
+            id: webhookEventId,
+            status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+          },
+          data: {
+            normalizedPayload: this.sanitizeForJsonStorage(update),
+          },
+        });
+        return {
+          canonical: true,
+          prepared: true,
+          normalizedPayload: update,
+          executionBotId: null,
+          enforced: false,
+        };
+      }
     }
 
     if (claim.status === WebhookExecutionClaimStatus.COMPLETED) {
@@ -500,36 +586,43 @@ export class WebhookService {
       };
     }
 
-    const leaseToken = randomUUID();
-    const now = new Date();
-    const lease = await claimModel.updateMany({
-      where: {
-        id: claim.id,
-        preparedAt: null,
-        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
-      },
-      data: {
-        leaseToken,
-        leaseExpiresAt: new Date(now.getTime() + WEBHOOK_PREPARATION_LEASE_MS),
-      },
-    });
-    if (lease.count === 0) {
-      claim =
-        (await claimModel.findUnique({
-          where: {
-            kind_semanticKey: {
-              kind: EXECUTION_CLAIM_KIND,
-              semanticKey,
+    const leaseToken = preparationLeaseToken ?? randomUUID();
+    if (!preparationLeaseToken) {
+      const now = new Date();
+      const lease = await claimModel.updateMany({
+        where: {
+          id: claim.id,
+          kind: EXECUTION_CLAIM_KIND,
+          semanticKey,
+          webhookEventId,
+          status: WebhookExecutionClaimStatus.PENDING,
+          preparedAt: null,
+          completedAt: null,
+          OR: [{ leaseToken: null }, { leaseExpiresAt: { lt: now } }],
+        },
+        data: {
+          leaseToken,
+          leaseExpiresAt: new Date(now.getTime() + WEBHOOK_PREPARATION_LEASE_MS),
+        },
+      });
+      if (lease.count === 0) {
+        claim =
+          (await claimModel.findUnique({
+            where: {
+              kind_semanticKey: {
+                kind: EXECUTION_CLAIM_KIND,
+                semanticKey,
+              },
             },
-          },
-        })) ?? claim;
-      return {
-        canonical: true,
-        prepared: claim.preparedAt !== null,
-        normalizedPayload: update,
-        executionBotId: claim.executionBotId,
-        enforced: claim.enforced,
-      };
+          })) ?? claim;
+        return {
+          canonical: true,
+          prepared: claim.preparedAt !== null,
+          normalizedPayload: update,
+          executionBotId: claim.executionBotId,
+          enforced: claim.enforced,
+        };
+      }
     }
 
     try {
@@ -537,6 +630,7 @@ export class WebhookService {
       const published = await claimModel.updateMany({
         where: {
           id: claim.id,
+          webhookEventId,
           leaseToken,
         },
         data: {
@@ -562,6 +656,7 @@ export class WebhookService {
       await claimModel.updateMany({
         where: {
           id: claim.id,
+          webhookEventId,
           leaseToken,
         },
         data: {
@@ -756,19 +851,7 @@ export class WebhookService {
     };
   }
 
-  private getWebhookExecutionClaimModel(): {
-    createMany: (args: {
-      data: Array<{
-        kind: string;
-        semanticKey: string;
-        webhookEventId: string;
-        enforced?: boolean;
-      }>;
-      skipDuplicates: boolean;
-    }) => Promise<{ count: number }>;
-    findUnique: (args: unknown) => Promise<WebhookExecutionClaimRow | null>;
-    updateMany: (args: unknown) => Promise<{ count: number }>;
-  } | null {
+  private getWebhookExecutionClaimModel(): WebhookExecutionClaimModel | null {
     const model = (
       this.prisma as PrismaService & {
         webhookExecutionClaim?: {
@@ -790,6 +873,70 @@ export class WebhookService {
       createMany: model.createMany.bind(model) as never,
       findUnique: model.findUnique.bind(model),
       updateMany: model.updateMany.bind(model),
+    };
+  }
+
+  private async tryTakeOverTerminalShadowMembershipClaim(params: {
+    claimModel: WebhookExecutionClaimModel;
+    claim: WebhookExecutionClaimRow;
+    webhookEventId: string;
+  }): Promise<{ claim: WebhookExecutionClaimRow; leaseToken: string } | null> {
+    const now = new Date();
+    const leaseToken = randomUUID();
+    const takeoverWhere = {
+      id: params.claim.id,
+      kind: EXECUTION_CLAIM_KIND,
+      semanticKey: params.claim.semanticKey,
+      webhookEventId: params.claim.webhookEventId,
+      enforced: false,
+      status: WebhookExecutionClaimStatus.PENDING,
+      preparedAt: null,
+      completedAt: null,
+      OR: [{ leaseToken: null }, { leaseExpiresAt: { lt: now } }],
+      webhookEvent: {
+        is: {
+          status: WebhookStatus.FAILED,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          errorMessage: { not: null },
+          NOT: [
+            {
+              errorMessage: {
+                startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`,
+              },
+            },
+            {
+              errorMessage: {
+                startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX}:`,
+              },
+            },
+          ],
+        },
+      },
+    } satisfies Prisma.WebhookExecutionClaimWhereInput;
+    const takeoverData = {
+      webhookEventId: params.webhookEventId,
+      executionBotId: null,
+      leaseToken,
+      leaseExpiresAt: new Date(now.getTime() + WEBHOOK_PREPARATION_LEASE_MS),
+    } satisfies Prisma.WebhookExecutionClaimUncheckedUpdateManyInput;
+    const takeover = await params.claimModel.updateMany({
+      where: takeoverWhere,
+      data: takeoverData,
+    });
+    if (takeover.count !== 1) {
+      return null;
+    }
+
+    return {
+      claim: {
+        ...params.claim,
+        webhookEventId: params.webhookEventId,
+        executionBotId: null,
+        leaseToken,
+        leaseExpiresAt: takeoverData.leaseExpiresAt,
+      },
+      leaseToken,
     };
   }
 

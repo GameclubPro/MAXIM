@@ -8,6 +8,7 @@ export type CachedActiveMuteState = {
   expiresAt: string | null;
   durationHours: number | null;
   permanent?: boolean;
+  ruleCode?: string | null;
 };
 
 export function buildActiveMuteStateKey(chatId: string, userId: string): string {

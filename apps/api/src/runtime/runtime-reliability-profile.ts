@@ -195,8 +195,9 @@ function buildQueueGroup(
     completed: 0,
     prioritized: 0,
   };
+  const pending = safeCounters.waiting + (safeCounters.prioritized ?? 0);
   const pressure =
-    safeCounters.waiting +
+    pending +
     safeCounters.active +
     (options.ignoreDelayedForStatus === true ? 0 : safeCounters.delayed);
 
@@ -217,12 +218,13 @@ function resolveQueueGroupStatus(
   counters: QueueCounters,
   options: { ignoreDelayedForStatus?: boolean } = {},
 ): SystemQueueGroupStatus {
-  if (counters.waiting >= QUEUE_GROUP_WAITING_CRITICAL) {
+  const pending = counters.waiting + (counters.prioritized ?? 0);
+  if (pending >= QUEUE_GROUP_WAITING_CRITICAL) {
     return 'critical';
   }
 
   if (
-    counters.waiting >= QUEUE_GROUP_WAITING_WARNING ||
+    pending >= QUEUE_GROUP_WAITING_WARNING ||
     (options.ignoreDelayedForStatus !== true && counters.delayed > 0) ||
     counters.failed > 0
   ) {

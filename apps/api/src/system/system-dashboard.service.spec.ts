@@ -3205,4 +3205,35 @@ describe('SystemDashboardService', () => {
     await expect(subject.loadNightModeReconcileRiskSnapshot()).resolves.toBeNull();
     expect(subject.buildNightModeReconcileRiskAlert(null)).toBeNull();
   });
+
+  it('detects default worker skew from prioritized-only backlog', () => {
+    const service = Object.create(SystemDashboardService.prototype) as SystemDashboardService;
+    const subject = service as unknown as {
+      buildDefaultWorkerSkewAlert(workerGroups: Record<string, unknown>): {
+        code: string;
+        level: string;
+        detail: string;
+      } | null;
+    };
+
+    const alert = subject.buildDefaultWorkerSkewAlert({
+      'api-moderation': {
+        queues: ['moderation-default-0'],
+        counters: {
+          waiting: 0,
+          prioritized: 8,
+          active: 0,
+          delayed: 0,
+          failed: 0,
+          completed: 0,
+        },
+      },
+    });
+
+    expect(alert).toMatchObject({
+      code: 'default-worker-skew',
+      level: 'critical',
+    });
+    expect(alert?.detail).toContain('8 из 8 active+pending');
+  });
 });

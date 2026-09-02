@@ -227,6 +227,7 @@ import {
   hasSectionBotSpeechMediaChanges,
   mergeBotSpeechStyleSettings,
   mergeSectionSettings,
+  normalizeRequiredSubscriptionDraftSettings,
 } from './settings-page-state';
 import {
   DUPLICATE_DETECTION_LABELS,
@@ -353,7 +354,6 @@ import {
 } from './settings/settings-page-helpers';
 import {
   ChatSettingsWorkspaceHeader,
-  normalizeRequiredSubscriptionDraftSettings,
   useChatSettingsWorkspaceLeaveGuard,
 } from './settings/chat-settings-workspace';
 import {
@@ -7767,25 +7767,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               />
                             </div>
                           </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить объяснение для обязательной подписки"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.requiredSubscriptionBotMessageEnabled}
-                              onChange={(event) => {
-                                setFieldValue(
-                                  'requiredSubscriptionBotMessageEnabled',
-                                  event.target.checked,
-                                );
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
                         </div>
 
                         {openBotEditorKey === 'requiredSubscription' ? (
@@ -7806,12 +7787,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
 
-                      {draft.requiredSubscriptionBotMessageEnabled
-                        ? renderAdminContactToggle(
-                            REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
-                            'Добавить связь с админом в сообщения об обязательной подписке',
-                          )
-                        : null}
+                      {renderAdminContactToggle(
+                        REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
+                        'Добавить связь с админом в сообщения об обязательной подписке',
+                      )}
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">

@@ -1,7 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ChatSummary, ManagedEntityHeader } from '@maxim/contracts';
+import { chatSettingsSchema, type ChatSummary, type ManagedEntityHeader } from '@maxim/contracts';
 import { buildRequiredSubscriptionChannelCollections } from '../src/pages/settings-required-subscription-state';
+import { normalizeRequiredSubscriptionDraftSettings } from '../src/pages/settings-page-state';
+
+test('keeps required subscription explanations active whenever targets are selected', () => {
+  const active = normalizeRequiredSubscriptionDraftSettings(
+    chatSettingsSchema.parse({
+      requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
+      requiredSubscriptionBotMessageEnabled: false,
+    }),
+  );
+  const inactive = normalizeRequiredSubscriptionDraftSettings(
+    chatSettingsSchema.parse({
+      requiredSubscriptionChannelIds: [],
+      requiredSubscriptionBotMessageEnabled: true,
+    }),
+  );
+
+  assert.equal(active.requiredSubscriptionEnabled, true);
+  assert.deepEqual(active.requiredSubscriptionChannelIds, ['channel-1']);
+  assert.equal(active.requiredSubscriptionBotMessageEnabled, true);
+  assert.equal(inactive.requiredSubscriptionEnabled, false);
+  assert.equal(inactive.requiredSubscriptionBotMessageEnabled, false);
+});
 
 function createEntity(
   id: string,

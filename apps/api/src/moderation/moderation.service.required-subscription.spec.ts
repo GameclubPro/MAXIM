@@ -16,6 +16,7 @@ import {
   createSettings,
   createUpdate,
   createRequiredSubscriptionRedisCounter,
+  createModerationServiceWithSanctionStateLock,
   type MaxUpdate,
 } from './moderation.service.spec-support';
 
@@ -25,6 +26,7 @@ describe('ModerationService', () => {
       settingsOverrides: Record<string, unknown> = {},
       adminUserIds: string[] = [],
     ) {
+      const persistedModerationEvents = new Map<string, { metadata: unknown }>();
       return {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -45,8 +47,22 @@ describe('ModerationService', () => {
           count: jest.fn().mockResolvedValue(1),
         },
         moderationEvent: {
+          findUnique: jest.fn(async (args: { where: { id: string } }) => {
+            return persistedModerationEvents.get(args.where.id) ?? null;
+          }),
           findFirst: jest.fn().mockResolvedValue(null),
           create: jest.fn(),
+          upsert: jest.fn(
+            async (args: { where: { id: string }; create: { metadata?: unknown } }) => {
+              const existing = persistedModerationEvents.get(args.where.id);
+              if (existing) {
+                return existing;
+              }
+              const created = { metadata: args.create.metadata ?? null };
+              persistedModerationEvents.set(args.where.id, created);
+              return created;
+            },
+          ),
         },
         webhookEvent: {
           findUnique: jest.fn(),
@@ -826,6 +842,90 @@ describe('ModerationService', () => {
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     });
 
+    it('enforces after a leave event invalidates a previously subscribed user', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      let isMember = true;
+      const membershipLookupService = {
+        getMembershipResolution: jest.fn(async () => ({ membership: isMember, fresh: true })),
+        invalidateMemberships: jest.fn(async (_chatId: string, _userIds: readonly string[]) => {
+          isMember = false;
+        }),
+      };
+      const maxClient = {
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        membershipLookupService as never,
+      );
+
+      const secondUpdate = createUpdate();
+      secondUpdate.updateId = 'upd-after-required-subscription-leave';
+      if (secondUpdate.message) {
+        secondUpdate.message.messageId = 'msg-after-required-subscription-leave';
+      }
+
+      await service.handleUpdate(createUpdate());
+      await membershipLookupService.invalidateMemberships('channel-1', ['user-1']);
+      await service.handleUpdate(secondUpdate);
+
+      expect(membershipLookupService.invalidateMemberships).toHaveBeenCalledWith('channel-1', [
+        'user-1',
+      ]);
+      expect(membershipLookupService.getMembershipResolution).toHaveBeenNthCalledWith(
+        1,
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        {},
+      );
+      expect(membershipLookupService.getMembershipResolution).toHaveBeenNthCalledWith(
+        2,
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        {},
+      );
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+      expectImmediateDeleteMessage(
+        maxClient.deleteMessage,
+        'chat-1',
+        'msg-after-required-subscription-leave',
+      );
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage.mock.calls[0]?.[1]).toContain('Новости MAX');
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    });
+
     it('checks multiple required subscription channels with bounded parallelism', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const resolvers: Array<(value: boolean | null) => void> = [];
@@ -1435,6 +1535,8 @@ describe('ModerationService', () => {
       );
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('ожидает удаления');
+      expect(noticeText).not.toMatch(/удалено/u);
       expect(noticeText).toContain('Новости MAX');
       expect(noticeText).toContain('Афиша района');
       expect(noticeOptions).toEqual(
@@ -1466,7 +1568,7 @@ describe('ModerationService', () => {
       );
     });
 
-    it('deduplicates mirrored multi-bot required-subscription enforcement with a persisted message claim', async () => {
+    it('replays the idempotent notice and delete handoff when the persisted message claim already exists', async () => {
       const prisma = {
         ...createPrismaForRequiredSubscription({
           requiredSubscriptionEnabled: true,
@@ -1516,7 +1618,7 @@ describe('ModerationService', () => {
         botId: 'bot-2',
       });
 
-      expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
+      expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(1);
       expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
         data: [
           expect.objectContaining({
@@ -1529,10 +1631,24 @@ describe('ModerationService', () => {
         ],
         skipDuplicates: true,
       });
-      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.sendMessage.mock.calls.map((call) => call[3])).toEqual([
+        expect.objectContaining({
+          idempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+        }),
+        expect.objectContaining({
+          idempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+        }),
+      ]);
+      expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        maxClient.deleteMessage.mock.invocationCallOrder[0]!,
+      );
+      expect(maxClient.sendMessage.mock.invocationCallOrder[1]).toBeLessThan(
+        maxClient.deleteMessage.mock.invocationCallOrder[1]!,
+      );
       expect(prisma.violation.create).toHaveBeenCalledTimes(1);
-      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(3);
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
@@ -1669,9 +1785,14 @@ describe('ModerationService', () => {
         expect.any(String),
         expect.objectContaining({ textFormat: 'html' }),
         expect.objectContaining({
-          botId: 'id613002203036_4_bot',
+          idempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+          trafficClass: 'interactive',
+          actionHealthLane: 'interactive',
           sourceTag: 'moderation_notice',
         }),
+      );
+      expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        maxClient.deleteMessage.mock.invocationCallOrder[0]!,
       );
       expect(
         prisma.moderationEvent.create.mock.calls.some(
@@ -2614,15 +2735,17 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('suppresses repeated notice during cooldown and reuses membership cache', async () => {
+    it('sends an explanation for every deletion despite legacy notice suppression settings', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageEnabled: false,
       });
       const ruleEngine = {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
       };
       const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.stringCache.set('required-subscription:notice:v1:chat-1:user-1', '1');
       const maxClient = {
         hasChatMember: jest.fn().mockResolvedValue(false),
         getChatSnapshot: jest.fn().mockResolvedValue({
@@ -2661,17 +2784,16 @@ describe('ModerationService', () => {
 
       expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
       expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
-      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.sendMessage.mock.calls.map((call) => call[1])).toEqual([
+        expect.stringContaining('Новости MAX'),
+        expect.stringContaining('Новости MAX'),
+      ]);
       expect(prisma.violation.create).toHaveBeenCalledTimes(2);
       expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(4);
-      expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-        expect.stringContaining('required-subscription:notice:v1:chat-1:user-1'),
-        '1',
-        15 * 60,
-      );
     });
 
-    it('sends the required subscription explanation again after the notice cooldown expires', async () => {
+    it('sends the required subscription explanation for every counted violation', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -2716,7 +2838,6 @@ describe('ModerationService', () => {
       }
 
       await service.handleUpdate(createUpdate());
-      redisCounter.stringCache.delete('required-subscription:notice:v1:chat-1:user-1');
       await service.handleUpdate(secondUpdate);
 
       expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
@@ -2858,8 +2979,14 @@ describe('ModerationService', () => {
         undefined,
         redisCounter as never,
       );
+      const hotPathProfile = (service as any).createWebhookHotPathProfile();
+      maxClient.deleteMessage.mockImplementation(async () => {
+        hotPathProfile.startedAtMs =
+          Date.now() - Math.max(1, (service as any).webhookUserFacingTimeoutMs - 500);
+      });
 
-      await service.handleUpdate(createUpdate());
+      await service.handleUpdate(createUpdate(), hotPathProfile);
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
       expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
@@ -2870,11 +2997,19 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('retries sending the explanation on the next message when the first send fails', async () => {
-      const prisma = createPrismaForRequiredSubscription({
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: ['channel-1'],
-      });
+    it('does not delete before a successful notice handoff and retries an already-claimed message idempotently', async () => {
+      const prisma = {
+        ...createPrismaForRequiredSubscription({
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: ['channel-1'],
+        }),
+        moderationViolationMessageClaim: {
+          createMany: jest
+            .fn()
+            .mockResolvedValueOnce({ count: 1 })
+            .mockResolvedValueOnce({ count: 0 }),
+        },
+      };
       const ruleEngine = {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
       };
@@ -2908,30 +3043,766 @@ describe('ModerationService', () => {
         undefined,
         redisCounter as never,
       );
+      const ensureModerationDeleteIntent = jest.spyOn(
+        service as any,
+        'ensureModerationDeleteIntent',
+      );
 
+      await expect(service.handleUpdate(createUpdate())).rejects.toThrow('MAX send failed');
+
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(ensureModerationDeleteIntent).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+
+      await service.handleUpdate({
+        ...createUpdate(),
+        updateId: 'upd-required-subscription-retry',
+      });
+
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.sendMessage.mock.calls.map((call) => call[3])).toEqual([
+        expect.objectContaining({
+          idempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+        }),
+        expect.objectContaining({
+          idempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+        }),
+      ]);
+      expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(1);
+      expect(ensureModerationDeleteIntent).toHaveBeenCalledTimes(1);
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage.mock.invocationCallOrder[1]).toBeLessThan(
+        ensureModerationDeleteIntent.mock.invocationCallOrder[0]!,
+      );
+      expect(maxClient.sendMessage.mock.invocationCallOrder[1]).toBeLessThan(
+        maxClient.deleteMessage.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('recovers the escalation decision after a crash between the durable claim and notice plan', async () => {
+      const prisma = {
+        ...createPrismaForRequiredSubscription({
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: ['channel-1'],
+          requiredSubscriptionWarnEnabled: true,
+          requiredSubscriptionWarnMessageText: 'Сохранённое предупреждение: {user}, {channels}.',
+        }),
+        moderationViolationMessageClaim: {
+          createMany: jest
+            .fn()
+            .mockResolvedValueOnce({ count: 1 })
+            .mockResolvedValueOnce({ count: 0 }),
+        },
+      };
+      prisma.violation.count
+        .mockRejectedValueOnce(new Error('simulated crash after claim'))
+        .mockResolvedValueOnce(2);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await expect(service.handleUpdate(createUpdate())).rejects.toThrow(
+        'simulated crash after claim',
+      );
+
+      expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.upsert).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+
+      await service.handleUpdate({
+        ...createUpdate(),
+        updateId: 'upd-required-subscription-after-claim-crash',
+      });
+
+      expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.count).toHaveBeenCalledTimes(2);
+      expect(prisma.moderationEvent.upsert).toHaveBeenCalledTimes(1);
+      expect(
+        prisma.moderationEvent.create.mock.calls.some(
+          ([args]) =>
+            args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION' &&
+            args?.data?.action === SanctionAction.WARN &&
+            args?.data?.metadata?.requiredSubscriptionViolationCount24h === 2,
+        ),
+      ).toBe(true);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage.mock.calls[0]?.[1]).toContain('Сохранённое предупреждение');
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      {
+        label: 'WARN',
+        action: SanctionAction.WARN,
+        violationCount: 2,
+        actionSettings: { requiredSubscriptionWarnEnabled: true },
+      },
+      {
+        label: 'MUTE',
+        action: SanctionAction.MUTE,
+        violationCount: 2,
+        actionSettings: { requiredSubscriptionMuteEnabled: true },
+      },
+      {
+        label: 'BAN',
+        action: SanctionAction.BAN,
+        violationCount: 2,
+        actionSettings: { requiredSubscriptionBanEnabled: true },
+      },
+    ])(
+      'replays the exact persisted $label notice after handoff failure without applying the action twice',
+      async ({ action, violationCount, actionSettings }) => {
+        let useChangedSettings = false;
+        const prisma = createPrismaForRequiredSubscription();
+        prisma.chat.upsert.mockImplementation(async () => ({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            requiredSubscriptionEnabled: true,
+            requiredSubscriptionChannelIds: ['channel-1'],
+            requiredSubscriptionButtonText: useChangedSettings ? 'Новая кнопка' : 'Первая кнопка',
+            requiredSubscriptionWarnMessageText: useChangedSettings
+              ? 'Новое предупреждение: {user}, {channels}.'
+              : 'Первое предупреждение: {user}, {channels}.',
+            requiredSubscriptionMuteDurationHours: useChangedSettings ? 12 : 6,
+            ...actionSettings,
+          }),
+          domains: [],
+          admins: [],
+          rules: {
+            publishedUrl: null,
+            publishedMessageId: 'mid-rules-1',
+          },
+        }));
+        prisma.violation.count.mockResolvedValue(violationCount);
+        let eventSequence = 0;
+        prisma.moderationEvent.create.mockImplementation(async () => ({
+          id: `required-subscription-event-${++eventSequence}`,
+        }));
+        const ruleEngine = {
+          detect: jest.fn().mockResolvedValue({ violations: [] }),
+        };
+        const redisCounter = createRequiredSubscriptionRedisCounter();
+        const maxClient = {
+          hasChatMember: jest.fn().mockResolvedValue(false),
+          getChatSnapshot: jest.fn(async () => ({
+            title: useChangedSettings ? 'Второй канал' : 'Первый канал',
+            link: 'https://max.ru/channels/news-max',
+            participantsCount: 100,
+            entityType: 'channel',
+          })),
+          deleteMessage: jest.fn(),
+          sendMessage: jest
+            .fn()
+            .mockRejectedValueOnce(new Error(`MAX ${action} notice failed`))
+            .mockResolvedValueOnce(undefined),
+          kickMember: jest.fn(),
+          banMember: jest.fn(),
+          notifyModerators: jest.fn(),
+          resolveMessageLink: jest.fn().mockResolvedValue(null),
+        };
+        const firstService = new ModerationService(
+          prisma as never,
+          ruleEngine as never,
+          { resolveAction: jest.fn() } as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          redisCounter as never,
+        );
+        const firstApplySanctionAction = jest.spyOn(firstService as any, 'applySanctionAction');
+
+        await expect(firstService.handleUpdate(createUpdate())).rejects.toThrow(
+          `MAX ${action} notice failed`,
+        );
+
+        const firstNotice = maxClient.sendMessage.mock.calls[0];
+        expect(firstNotice?.[1]).toContain('Первый канал');
+        expect(firstNotice?.[2]).toEqual(
+          expect.objectContaining({
+            buttons: expect.arrayContaining([
+              [{ text: 'Первая кнопка', url: 'https://max.ru/channels/news-max' }],
+            ]),
+          }),
+        );
+        expect(prisma.moderationEvent.upsert).toHaveBeenCalledTimes(1);
+        const persistedPlanPayload = (
+          prisma.moderationEvent.upsert.mock.calls[0]?.[0]?.create?.metadata as
+            | { requiredSubscriptionNoticePlan?: { payload?: unknown } }
+            | undefined
+        )?.requiredSubscriptionNoticePlan?.payload;
+        expect(typeof persistedPlanPayload).toBe('string');
+        expect(JSON.parse(persistedPlanPayload as string)).toEqual(
+          expect.objectContaining({ action }),
+        );
+        expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+
+        useChangedSettings = true;
+        const retryService = new ModerationService(
+          prisma as never,
+          ruleEngine as never,
+          { resolveAction: jest.fn() } as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          redisCounter as never,
+        );
+        const retryApplySanctionAction = jest.spyOn(retryService as any, 'applySanctionAction');
+
+        await retryService.handleUpdate({
+          ...createUpdate(),
+          updateId: `upd-required-subscription-${action.toLowerCase()}-retry`,
+        });
+
+        const retryNotice = maxClient.sendMessage.mock.calls[1];
+        expect(retryNotice?.[1]).toBe(firstNotice?.[1]);
+        expect(retryNotice?.[2]).toEqual(firstNotice?.[2]);
+        expect(retryNotice?.[3]).toEqual(
+          expect.objectContaining({
+            idempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+          }),
+        );
+        expect(prisma.moderationEvent.upsert).toHaveBeenCalledTimes(1);
+        expect(retryApplySanctionAction).not.toHaveBeenCalled();
+        expect(firstApplySanctionAction).toHaveBeenCalledTimes(
+          action === SanctionAction.WARN ? 0 : 1,
+        );
+        expect(
+          prisma.moderationEvent.create.mock.calls.filter(
+            ([args]) =>
+              args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION' && args?.data?.action === action,
+          ),
+        ).toHaveLength(1);
+        expect(maxClient.banMember).toHaveBeenCalledTimes(action === SanctionAction.BAN ? 1 : 0);
+        expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('stops a MUTE before persistence when the notice lease is lost during sanction preparation', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionMuteEnabled: true,
+      });
+      prisma.violation.count.mockResolvedValue(2);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      let noticeLeaseOwned = true;
+      redisCounter.renewLock.mockImplementation(async () => noticeLeaseOwned);
+      const sanctionLeaseGuard = {
+        assertOwned: jest.fn().mockResolvedValue(undefined),
+      };
+      const sanctionStateLock = {
+        runExclusive: jest.fn(
+          async (
+            _subject: unknown,
+            operation: (guard: typeof sanctionLeaseGuard) => Promise<unknown>,
+          ) => operation(sanctionLeaseGuard),
+        ),
+      };
+      const automaticFence = {
+        version: 1,
+        transitionId: 'required-subscription-blocked-mute',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        intendedAction: 'MUTE',
+        operator: 'BOT',
+        source: 'automatic_moderation',
+        invalidatedSanctionEventIds: [],
+      };
+      const deferredFence = createDeferred<typeof automaticFence>();
+      const sanctionStateFence = {
+        prepare: jest.fn().mockReturnValue(deferredFence.promise),
+        commit: jest.fn(),
+        markRemoteConfirmedEventMissing: jest.fn(),
+        abort: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const service = createModerationServiceWithSanctionStateLock({
+        prisma,
+        ruleEngine,
+        sanctionService: { resolveAction: jest.fn() },
+        maxClient,
+        redisCounter,
+        sanctionStateLock,
+        sanctionStateFence,
+      });
+      const rememberActiveMuteState = jest.spyOn(service as any, 'rememberActiveMuteState');
+      const ensureModerationDeleteIntent = jest.spyOn(
+        service as any,
+        'ensureModerationDeleteIntent',
+      );
+
+      const processing = service.handleUpdate(createUpdate());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(sanctionStateFence.prepare).toHaveBeenCalledTimes(1);
+
+      noticeLeaseOwned = false;
+      deferredFence.resolve(automaticFence);
+
+      await expect(processing).rejects.toThrow('Required subscription notice lease was lost');
+      expect(rememberActiveMuteState).not.toHaveBeenCalled();
+      expect(
+        prisma.moderationEvent.create.mock.calls.some(
+          ([args]) => args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION',
+        ),
+      ).toBe(false);
+      expect(prisma.moderationEvent.upsert).not.toHaveBeenCalled();
+      expect(sanctionStateFence.commit).not.toHaveBeenCalled();
+      expect(sanctionStateFence.abort).toHaveBeenCalledWith(automaticFence);
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(ensureModerationDeleteIntent).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+    });
+
+    it('rejects retryably without notice or delete side effects when the message-scoped notice lease is busy', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.acquireLock.mockResolvedValue(null);
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const ensureModerationDeleteIntent = jest.spyOn(
+        service as any,
+        'ensureModerationDeleteIntent',
+      );
+
+      const rejection = await service.handleUpdate(createUpdate()).then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      expect(rejection).toEqual(
+        new Error('Required subscription notice handoff is already in progress'),
+      );
+      expect((service as any).isTerminalWebhookProcessingError(rejection)).toBe(false);
+      expect(redisCounter.acquireLock).toHaveBeenCalledWith(
+        'moderation:required-subscription:notice-lock:v1:chat-1:msg-1',
+        60_000,
+      );
+      expect(redisCounter.releaseLock).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(ensureModerationDeleteIntent).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
+    it('does not hand off a notice or delete when the message-scoped notice lease is lost before send', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.renewLock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const ensureModerationDeleteIntent = jest.spyOn(
+        service as any,
+        'ensureModerationDeleteIntent',
+      );
+
+      await expect(service.handleUpdate(createUpdate())).rejects.toThrow(
+        'Required subscription notice lease was lost',
+      );
+
+      const lockKey = 'moderation:required-subscription:notice-lock:v1:chat-1:msg-1';
+      expect(redisCounter.renewLock).toHaveBeenNthCalledWith(1, lockKey, `lock-${lockKey}`, 60_000);
+      expect(redisCounter.renewLock).toHaveBeenNthCalledWith(2, lockKey, `lock-${lockKey}`, 60_000);
+      expect(redisCounter.releaseLock).toHaveBeenCalledWith(lockKey, `lock-${lockKey}`);
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(ensureModerationDeleteIntent).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
+    it('sends exactly one interactive required subscription notice for MUTE and bypasses the generic notice bucket', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionMuteEnabled: true,
+      });
+      prisma.violation.count.mockResolvedValue(3);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.incrementWithTtl.mockResolvedValue(999);
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText, noticeOptions, dispatchOptions] =
+        maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('Новости MAX');
+      expect(noticeOptions).toEqual(
+        expect.objectContaining({
+          textFormat: 'html',
+          debugContext: {
+            screen: 'moderation',
+            action: 'required-subscription-notice',
+          },
+        }),
+      );
+      expect(dispatchOptions).toEqual(
+        expect.objectContaining({
+          trafficClass: 'interactive',
+          actionHealthLane: 'interactive',
+          sourceTag: 'moderation_notice',
+          idempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+        }),
+      );
+      expect(redisCounter.incrementWithTtl).not.toHaveBeenCalledWith(
+        'moderation:bot-notice-bucket:v1:chat-1',
+        60,
+      );
+      expect(prisma.moderationEvent.create.mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.objectContaining({
+              data: expect.objectContaining({
+                ruleCode: 'REQUIRED_SUBSCRIPTION',
+                action: SanctionAction.MUTE,
+              }),
+            }),
+          ],
+        ]),
+      );
+    });
+
+    it('does not create or execute a delete intent when the real required-subscription MUTE notice fails', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionMuteEnabled: true,
+      });
+      prisma.violation.count.mockResolvedValue(3);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn().mockRejectedValue(new Error('MAX MUTE notice failed')),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const applySanctionAction = jest.spyOn(service as any, 'applySanctionAction');
+      const ensureModerationDeleteIntent = jest.spyOn(
+        service as any,
+        'ensureModerationDeleteIntent',
+      );
+
+      await expect(service.handleUpdate(createUpdate())).rejects.toThrow('MAX MUTE notice failed');
+
+      expect(applySanctionAction).toHaveBeenCalledTimes(1);
+      expect(applySanctionAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: SanctionAction.MUTE,
+          rethrowNoticeFailure: true,
+          noticeBeforeSend: expect.any(Function),
+        }),
+      );
+      expect(redisCounter.renewLock).toHaveBeenCalled();
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(ensureModerationDeleteIntent).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    });
+
+    it('rechecks required subscription during an active required-subscription MUTE without escalating again', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionMuteEnabled: true,
+      });
+      prisma.violation.count.mockResolvedValue(3);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const applySanctionAction = jest.spyOn(service as any, 'applySanctionAction');
+      const handleActiveMuteMessage = jest.spyOn(service as any, 'handleActiveMuteMessage');
       const secondUpdate = createUpdate();
-      secondUpdate.updateId = 'upd-2';
+      secondUpdate.updateId = 'upd-active-required-subscription-mute-2';
       if (secondUpdate.message) {
-        secondUpdate.message.messageId = 'msg-2';
+        secondUpdate.message.messageId = 'msg-active-required-subscription-mute-2';
       }
 
       await service.handleUpdate(createUpdate());
       await service.handleUpdate(secondUpdate);
 
-      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
-      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
-      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
-
-      const noticeCooldownWrites = redisCounter.setStringWithTtl.mock.calls.filter(
-        ([key]) =>
-          typeof key === 'string' && key.includes('required-subscription:notice:v1:chat-1:user-1'),
+      expect(applySanctionAction).toHaveBeenCalledTimes(1);
+      expect(applySanctionAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: SanctionAction.MUTE,
+          activeMuteRuleCode: 'REQUIRED_SUBSCRIPTION',
+        }),
       );
-      expect(noticeCooldownWrites).toHaveLength(1);
-      expect(noticeCooldownWrites[0]).toEqual([
-        expect.stringContaining('required-subscription:notice:v1:chat-1:user-1'),
-        '1',
-        15 * 60,
-      ]);
+      expect(handleActiveMuteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.sendMessage.mock.calls[1]?.[1]).toContain('Новости MAX');
+      expect(maxClient.sendMessage.mock.calls[1]?.[3]).toEqual(
+        expect.objectContaining({
+          idempotencyKey:
+            'required-subscription:notice:v1:chat-1:msg-active-required-subscription-mute-2',
+        }),
+      );
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
+      expectImmediateDeleteMessage(
+        maxClient.deleteMessage,
+        'chat-1',
+        'msg-active-required-subscription-mute-2',
+      );
+      expect(maxClient.sendMessage.mock.invocationCallOrder[1]).toBeLessThan(
+        maxClient.deleteMessage.mock.invocationCallOrder[1]!,
+      );
+      expect(maxClient.kickMember).not.toHaveBeenCalled();
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(
+        prisma.moderationEvent.create.mock.calls.some(
+          ([args]) =>
+            args?.data?.messageId === 'msg-active-required-subscription-mute-2' &&
+            args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION',
+        ),
+      ).toBe(false);
+    });
+
+    it('sends the ordinary required subscription explanation when BAN is definitively rejected', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageText: 'Обычное объяснение: подпишитесь на {channels}.',
+        requiredSubscriptionBanEnabled: true,
+      });
+      prisma.violation.count.mockResolvedValue(2);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.incrementWithTtl.mockResolvedValue(2);
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const applySanctionAction = jest
+        .spyOn(service as never, 'applySanctionAction' as never)
+        .mockResolvedValue(false as never);
+
+      await service.handleUpdate(createUpdate());
+
+      expect(applySanctionAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: SanctionAction.BAN,
+          bypassNoticeBucket: true,
+          noticeIdempotencyKey: 'required-subscription:notice:v1:chat-1:msg-1',
+          rethrowNoticeFailure: true,
+          activeMuteRuleCode: 'REQUIRED_SUBSCRIPTION',
+          routeNoticeDynamically: true,
+        }),
+      );
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('Обычное объяснение');
+      expect(noticeText).toContain('Новости MAX');
+      expect(maxClient.banMember).not.toHaveBeenCalled();
     });
 
     it('issues WARN on second required subscription violation in 24h when warning stage is enabled', async () => {

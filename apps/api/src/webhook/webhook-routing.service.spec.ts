@@ -163,9 +163,17 @@ describe('WebhookRoutingService', () => {
     await expect(
       service.resolveQueueName('evt-join', { type: 'user_added', message: { chatId: joinChatId } }),
     ).resolves.toBe(resolveJoinWebhookQueueNameForChatId(joinChatId));
-    await expect(service.resolveQueueName('evt-2', { type: 'user_removed' })).resolves.toBe(
-      'moderation-background',
-    );
+    for (const [eventId, type] of [
+      ['evt-user-removed', 'user_removed'],
+      ['evt-bot-removed', 'bot_removed'],
+      ['evt-bot-stopped', 'bot_stopped'],
+      ['evt-dialog-removed', 'dialog_removed'],
+      ['evt-message-removed', 'message_removed'],
+    ] as const) {
+      await expect(service.resolveQueueName(eventId, { type })).resolves.toBe(
+        'moderation-background',
+      );
+    }
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(queueMetricsService.getWebhookDefaultShardSnapshot).not.toHaveBeenCalled();

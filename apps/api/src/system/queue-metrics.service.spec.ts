@@ -65,6 +65,7 @@ describe('QueueMetricsService', () => {
     });
     expect(getJobCounts).toHaveBeenCalledWith(
       'waiting',
+      'paused',
       'prioritized',
       'active',
       'delayed',
@@ -343,6 +344,7 @@ describe('QueueMetricsService', () => {
 
     expect(defaultQueues[DEFAULT_WEBHOOK_QUEUE_NAMES[0]]?.getJobCounts).toHaveBeenCalledWith(
       'waiting',
+      'paused',
       'prioritized',
       'active',
       'delayed',

@@ -10,6 +10,7 @@ import { APP_ROLES } from '../runtime/app-role';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   RUNTIME_SERVICE_NAMES,
+  RUNTIME_SERVICE_PROFILES,
   WEBHOOK_DYNAMIC_LEASES_MODES,
 } from '../runtime/runtime-topology';
 import {
@@ -663,6 +664,15 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
       .join('; ');
     throw new Error(`Environment validation failed: ${details}`);
+  }
+
+  if (
+    parsed.data.APP_SERVICE_NAME &&
+    RUNTIME_SERVICE_PROFILES[parsed.data.APP_SERVICE_NAME].appRole !== parsed.data.APP_ROLE
+  ) {
+    throw new Error(
+      `Environment validation failed: ${parsed.data.APP_SERVICE_NAME} service requires ${RUNTIME_SERVICE_PROFILES[parsed.data.APP_SERVICE_NAME].appRole} role`,
+    );
   }
 
   if (

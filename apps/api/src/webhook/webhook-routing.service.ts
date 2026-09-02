@@ -118,6 +118,9 @@ export class WebhookRoutingService {
       }
       case 'user_removed':
       case 'bot_removed':
+      case 'bot_stopped':
+      case 'dialog_removed':
+      case 'message_removed':
         return WEBHOOK_QUEUE_BACKGROUND;
       case 'message_created':
         if (isManagedEntityHandshakeStartCommand(payload)) {

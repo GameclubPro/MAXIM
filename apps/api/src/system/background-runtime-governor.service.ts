@@ -244,13 +244,25 @@ export class BackgroundRuntimeGovernorService {
     allowMaxApiCapacitySlowPath?: boolean;
     ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): Promise<BackgroundRuntimeGovernorDecision> {
-    const snapshot = await this.getPressureSnapshot();
-    const decision = this.buildDecisionFromSnapshot(snapshot, {
-      allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
-      allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
-      allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
-      ignoredPressureDomains: params.ignoredPressureDomains,
-    });
+    const mode = await this.systemModeService.getEffectiveSnapshot();
+    const modeOnlyDecision = this.buildModeOnlyPauseDecision(
+      mode,
+      params.allowRecoveryWindowRun === true,
+    );
+    const decision =
+      modeOnlyDecision ??
+      this.buildDecisionFromSnapshot(
+        {
+          ...(await this.getPressureSnapshot()),
+          mode,
+        },
+        {
+          allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
+          allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
+          allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
+          ignoredPressureDomains: params.ignoredPressureDomains,
+        },
+      );
 
     if (decision.action !== 'run') {
       await this.runtimeDiagnosticsService?.recordBackgroundDecision({
@@ -272,17 +284,33 @@ export class BackgroundRuntimeGovernorService {
     allowMaxApiCapacitySlowPath?: boolean;
     ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): BackgroundRuntimeGovernorDecision | null {
+    const mode = this.systemModeService.peekCachedSnapshot(this.cacheTtlMs);
+    const modeOnlyDecision = mode
+      ? this.buildModeOnlyPauseDecision(mode, params.allowRecoveryWindowRun === true)
+      : null;
+    if (modeOnlyDecision) {
+      return modeOnlyDecision;
+    }
+
     const snapshot = this.getCachedSnapshot();
     if (!snapshot) {
       return null;
     }
 
-    return this.buildDecisionFromSnapshot(snapshot, {
-      allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
-      allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
-      allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
-      ignoredPressureDomains: params.ignoredPressureDomains,
-    });
+    return this.buildDecisionFromSnapshot(
+      mode
+        ? {
+            ...snapshot,
+            mode,
+          }
+        : snapshot,
+      {
+        allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
+        allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
+        allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
+        ignoredPressureDomains: params.ignoredPressureDomains,
+      },
+    );
   }
 
   async getDashboardBudgetSummary(): Promise<BackgroundRuntimeBudgetSummary> {
@@ -442,7 +470,10 @@ export class BackgroundRuntimeGovernorService {
     const workerGroups = Object.entries(queues.webhookDefaultWorkerGroups ?? {}).map(
       ([groupName, metrics]) => ({
         groupName,
-        pressure: metrics.counters.waiting + metrics.counters.active * 3,
+        pressure:
+          metrics.counters.waiting +
+          (metrics.counters.prioritized ?? 0) +
+          metrics.counters.active * 3,
       }),
     );
     const totalPressure = workerGroups.reduce((sum, item) => sum + item.pressure, 0);
@@ -490,20 +521,9 @@ export class BackgroundRuntimeGovernorService {
     const ignoreMaxApiTraffic =
       options.ignoredPressureDomains?.includes('max_api_traffic') === true;
 
-    if (snapshot.mode.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot.mode)) {
-      return {
-        action: 'pause',
-        retryAfterMs: this.pauseRetryAfterMs,
-        reason: snapshot.mode.reason || 'system degrade',
-      };
-    }
-
-    if (isSystemModeRecoveryWindow(snapshot.mode) && !allowRecoveryWindowRun) {
-      return {
-        action: 'pause',
-        retryAfterMs: this.pauseRetryAfterMs,
-        reason: snapshot.mode.reason || 'recovery window in progress',
-      };
+    const modeOnlyDecision = this.buildModeOnlyPauseDecision(snapshot.mode, allowRecoveryWindowRun);
+    if (modeOnlyDecision) {
+      return modeOnlyDecision;
     }
 
     if (queueLagSec >= this.softQueueLagSec) {
@@ -550,6 +570,26 @@ export class BackgroundRuntimeGovernorService {
       action: 'run',
       retryAfterMs: 0,
       reason: 'background headroom available',
+    };
+  }
+
+  private buildModeOnlyPauseDecision(
+    mode: SystemModeSnapshot,
+    allowRecoveryWindowRun: boolean,
+  ): BackgroundRuntimeGovernorDecision | null {
+    if (mode.mode !== 'degrade') {
+      return null;
+    }
+
+    const recoveryWindow = isSystemModeRecoveryWindow(mode);
+    if (recoveryWindow && allowRecoveryWindowRun) {
+      return null;
+    }
+
+    return {
+      action: 'pause',
+      retryAfterMs: this.pauseRetryAfterMs,
+      reason: mode.reason || (recoveryWindow ? 'recovery window in progress' : 'system degrade'),
     };
   }
 

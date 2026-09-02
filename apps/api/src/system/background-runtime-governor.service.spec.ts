@@ -331,6 +331,55 @@ describe('BackgroundRuntimeGovernorService', () => {
     ).toMatchObject(decision);
   });
 
+  it('counts prioritized-only backlog when detecting default worker skew', async () => {
+    const service = new BackgroundRuntimeGovernorService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          webhookDefaultWorkerGroups: {
+            'api-moderation': {
+              queues: [],
+              counters: {
+                waiting: 0,
+                prioritized: 4,
+                active: 0,
+                delayed: 0,
+                failed: 0,
+                completed: 0,
+              },
+            },
+          },
+          userFacingEffectiveLagSec: 0,
+          effectiveLagSec: 0,
+          bots: {},
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue(createDecisionSnapshotForTest().mode),
+      } as never,
+      {
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
+        getStackCriticalLimiterSnapshot: jest
+          .fn()
+          .mockResolvedValue(createCriticalLimiterSnapshot()),
+      } as never,
+      createConfigMock(),
+    );
+    mockSystemPressure(service, { enabled: false });
+
+    const snapshot = await (service as any).buildPressureSnapshot();
+
+    expect(snapshot.workerSkew).toEqual({
+      groupName: 'api-moderation',
+      pressure: 4,
+      totalPressure: 4,
+      share: 1,
+    });
+    expect((service as any).buildDecisionFromSnapshot(snapshot)).toMatchObject({
+      action: 'slow',
+      reason: 'default worker skew api-moderation 4/4',
+    });
+  });
+
   it('pauses background work during the recovery window before hard degrade', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {
@@ -388,6 +437,185 @@ describe('BackgroundRuntimeGovernorService', () => {
     ).resolves.toMatchObject({
       action: 'pause',
     });
+  });
+
+  it.each([
+    {
+      label: 'hard degrade',
+      mode: {
+        mode: 'degrade',
+        source: 'manual',
+        reason: 'manual maintenance',
+        manualMode: 'degrade',
+      },
+    },
+    {
+      label: 'recovery window without an explicit bypass',
+      mode: {
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'recovery window in progress',
+        manualMode: null,
+      },
+    },
+  ])('does not query pressure metrics during $label', async ({ mode }) => {
+    const getSnapshot = jest.fn().mockRejectedValue(new Error('queue metrics must not run'));
+    const getStackRateLimitSnapshot = jest
+      .fn()
+      .mockRejectedValue(new Error('MAX metrics must not run'));
+    const getStackCriticalLimiterSnapshot = jest
+      .fn()
+      .mockRejectedValue(new Error('MAX limiter metrics must not run'));
+    const recordBackgroundDecision = jest.fn().mockResolvedValue(undefined);
+    const service = new BackgroundRuntimeGovernorService(
+      { getSnapshot } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          ...mode,
+          updatedAt: '2026-09-02T08:00:00.000Z',
+          queueLagSec: 42,
+          action: {
+            windowSec: 60,
+            total: 100,
+            success: 90,
+            failure: 10,
+            critical: 5,
+            errorRate: 0.1,
+            criticalRate: 0.05,
+          },
+        }),
+      } as never,
+      {
+        getSourceTrafficSnapshot: jest.fn(),
+        getStackRateLimitSnapshot,
+        getStackCriticalLimiterSnapshot,
+        getBotRateLimitSnapshot: jest.fn(),
+      } as never,
+      createConfigMock(),
+      { recordBackgroundDecision } as never,
+    );
+
+    await expect(
+      service.decide({ component: 'action-recovery', sourceTag: 'managed_broadcast' }),
+    ).resolves.toMatchObject({
+      action: 'pause',
+      reason: mode.reason,
+    });
+
+    expect(getSnapshot).not.toHaveBeenCalled();
+    expect(getStackRateLimitSnapshot).not.toHaveBeenCalled();
+    expect(getStackCriticalLimiterSnapshot).not.toHaveBeenCalled();
+    expect(recordBackgroundDecision).toHaveBeenCalledWith({
+      component: 'action-recovery',
+      sourceTag: 'managed_broadcast',
+      action: 'pause',
+      reason: mode.reason,
+    });
+  });
+
+  it.each([
+    {
+      label: 'hard degrade even with a recovery bypass',
+      mode: {
+        source: 'manual',
+        reason: 'manual maintenance',
+        manualMode: 'degrade',
+      },
+      allowRecoveryWindowRun: true,
+    },
+    {
+      label: 'recovery window without a bypass',
+      mode: {
+        source: 'auto',
+        reason: 'recovery window in progress',
+        manualMode: null,
+      },
+      allowRecoveryWindowRun: false,
+    },
+  ])(
+    'peeks a mode-only pause during $label without pressure cache',
+    ({ mode, allowRecoveryWindowRun }) => {
+      const cachedMode = {
+        ...createDecisionSnapshotForTest().mode,
+        ...mode,
+        mode: 'degrade' as const,
+      };
+      const peekCachedSnapshot = jest.fn().mockReturnValue(cachedMode);
+      const service = new BackgroundRuntimeGovernorService(
+        {} as never,
+        { peekCachedSnapshot } as never,
+        {} as never,
+        createConfigMock(),
+      );
+      const getCachedSnapshot = jest.spyOn(service as any, 'getCachedSnapshot');
+
+      expect(
+        service.peekDecision({
+          component: 'action-recovery',
+          sourceTag: 'managed_broadcast',
+          allowRecoveryWindowRun,
+        }),
+      ).toMatchObject({
+        action: 'pause',
+        reason: mode.reason,
+      });
+      expect(peekCachedSnapshot).toHaveBeenCalledWith(5_000);
+      expect(getCachedSnapshot).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns null for a recovery bypass when no pressure snapshot is cached', () => {
+    const cachedMode = {
+      ...createDecisionSnapshotForTest().mode,
+      mode: 'degrade' as const,
+      reason: 'recovery window in progress',
+    };
+    const peekCachedSnapshot = jest.fn().mockReturnValue(cachedMode);
+    const service = new BackgroundRuntimeGovernorService(
+      {} as never,
+      { peekCachedSnapshot } as never,
+      {} as never,
+      createConfigMock(),
+    );
+
+    expect(
+      service.peekDecision({
+        component: 'admin-managed-refresh',
+        sourceTag: 'managed_refresh',
+        allowRecoveryWindowRun: true,
+      }),
+    ).toBeNull();
+    expect(peekCachedSnapshot).toHaveBeenCalledWith(5_000);
+  });
+
+  it('uses the fresh cached mode instead of the mode stored in the pressure snapshot', () => {
+    const base = createDecisionSnapshotForTest();
+    const peekCachedSnapshot = jest.fn().mockReturnValue(base.mode);
+    const service = new BackgroundRuntimeGovernorService(
+      {} as never,
+      { peekCachedSnapshot } as never,
+      {} as never,
+      createConfigMock(),
+    );
+    (service as any).cachedSnapshot = {
+      ...base,
+      mode: {
+        ...base.mode,
+        mode: 'degrade',
+        source: 'manual',
+        reason: 'stale manual maintenance',
+        manualMode: 'degrade',
+      },
+    };
+    (service as any).cachedSnapshotAtMs = Date.now();
+
+    expect(
+      service.peekDecision({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
+    ).toMatchObject({
+      action: 'run',
+      reason: 'background headroom available',
+    });
+    expect(peekCachedSnapshot).toHaveBeenCalledWith(5_000);
   });
 
   it('lets explicitly user-triggered work run during the recovery window when queue lag is healthy', async () => {

@@ -62,8 +62,13 @@ jest.mock('ioredis', () => {
             const incomingTimestamp = Number(args[0]);
             const incomingPriority = Number(args[1]);
             const currentEpoch = store.get(keys[0] ?? '');
+            let exactEpochAndState = false;
             if (currentEpoch) {
               const [timestamp, priority] = currentEpoch.split(':').map(Number);
+              exactEpochAndState =
+                timestamp === incomingTimestamp &&
+                priority === incomingPriority &&
+                store.get(keys[1] ?? '') === args[3];
               if (
                 timestamp > incomingTimestamp ||
                 (timestamp === incomingTimestamp && priority > incomingPriority)
@@ -73,6 +78,7 @@ jest.mock('ioredis', () => {
             }
 
             const opaqueKeyIndexes = [2, 4, 5, 6, 7, 8, 9];
+            let opaqueMutationsAreNoop = true;
             for (let index = 0; index < opaqueKeyIndexes.length; index += 1) {
               const offset = 8 + index * 5;
               const actual = store.get(keys[opaqueKeyIndexes[index] ?? -1] ?? '');
@@ -81,6 +87,20 @@ jest.mock('ioredis', () => {
               if (!matches) {
                 return -1;
               }
+              if (args[offset + 2] !== 'keep') {
+                opaqueMutationsAreNoop = false;
+              }
+            }
+            const recentMode = args[43];
+            if (
+              exactEpochAndState &&
+              opaqueMutationsAreNoop &&
+              recentMode === 'deny' &&
+              !sets.get(keys[10] ?? '')?.has(args[5] ?? '') &&
+              !sets.get(keys[11] ?? '')?.has(args[5] ?? '')
+            ) {
+              publish(args[6] ?? '', args[7] ?? '');
+              return 2;
             }
             for (let index = 0; index < opaqueKeyIndexes.length; index += 1) {
               const key = keys[opaqueKeyIndexes[index] ?? -1] ?? '';
@@ -94,7 +114,6 @@ jest.mock('ioredis', () => {
             store.set(keys[0] ?? '', args[2] ?? '');
             store.set(keys[1] ?? '', args[3] ?? '');
             store.set(keys[3] ?? '', String(Number(store.get(keys[3] ?? '') ?? '0') + 1));
-            const recentMode = args[43];
             const recentEntityType = args[45];
             if (recentMode === 'grant') {
               const setKey = recentEntityType === 'chat' ? keys[10] : keys[11];
@@ -1811,6 +1830,136 @@ describe('ChatContextCacheService', () => {
     expect(JSON.parse(store.get(ChatContextCacheService.cacheKey(chatId)) ?? 'null')).toEqual(
       expect.objectContaining({ adminUserIds: [] }),
     );
+  });
+
+  it('keeps exact denial replay key-write-free while invalidating local caches', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const redis = getRedisMutationMock(service);
+    const chatId = 'chat-exact-epoch-replay';
+    const userId = 'user-1';
+    const eventAt = new Date('2026-09-02T08:00:00.123Z');
+    const revisionKey = ChatContextCacheService.chatContextRevisionKey(chatId);
+    const recordMetric = jest.fn();
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        { chatId, userId, state: 'user_denied', eventAt },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(true);
+    const committedRevision = store.get(revisionKey);
+    const localCache = (
+      service as unknown as {
+        localChatContextCache: Map<string, { value: unknown; expiresAtMs: number }>;
+      }
+    ).localChatContextCache;
+    localCache.set(chatId, {
+      value: { chatId, adminUserIds: [userId] },
+      expiresAtMs: Date.now() + 30_000,
+    });
+    const remoteInvalidation = jest.fn();
+    (
+      Redis as unknown as {
+        __subscribers: Set<(channel: string, payload: string) => void>;
+      }
+    ).__subscribers.add(remoteInvalidation);
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        { chatId, userId, state: 'user_denied', eventAt },
+        { precheckSupersededEpoch: true, recordMetric },
+      ),
+    ).resolves.toBe(false);
+
+    expect(redis.eval).toHaveBeenCalledTimes(2);
+    expect(store.get(revisionKey)).toBe(committedRevision);
+    expect(localCache.has(chatId)).toBe(false);
+    expect(remoteInvalidation).toHaveBeenCalledWith(
+      'chat:context:invalidate:v1',
+      JSON.stringify({ chatId }),
+    );
+    expect(recordMetric.mock.calls.map(([metric]) => metric.outcome)).toEqual([
+      'miss',
+      'superseded',
+    ]);
+  });
+
+  it('repairs an equal epoch when the committed access state is missing', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const chatId = 'chat-equal-epoch-missing-state';
+    const userId = 'user-1';
+    const eventAt = new Date('2026-09-02T08:01:00.123Z');
+    store.set(
+      ChatContextCacheService.adminAccessEpochKey(chatId, userId),
+      `${eventAt.getTime()}:1`,
+    );
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        { chatId, userId, state: 'user_denied', eventAt },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(store.get(ChatContextCacheService.adminAccessKey(chatId, userId))).toBe('user_denied');
+  });
+
+  it('repairs stale derivatives behind an exact denied epoch and state', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const sets = (Redis as unknown as { __sets: Map<string, Set<string>> }).__sets;
+    const chatId = 'chat-exact-epoch-stale-derivatives';
+    const userId = 'user-1';
+    const eventAt = new Date('2026-09-02T08:02:00.123Z');
+    store.set(
+      ChatContextCacheService.adminAccessEpochKey(chatId, userId),
+      `${eventAt.getTime()}:1`,
+    );
+    store.set(ChatContextCacheService.adminAccessKey(chatId, userId), 'user_denied');
+    store.set(
+      ChatContextCacheService.cacheKey(chatId),
+      JSON.stringify({
+        chatId,
+        title: 'Stale derivative',
+        settings: buildSettings(chatId),
+        domainAllowlist: [],
+        adminUserIds: [userId],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+    );
+    const recentUsersKey = ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(
+      chatId,
+      'chat',
+    );
+    sets.set(recentUsersKey, new Set([userId]));
+
+    await expect(
+      service.applyAdminAccessEpochMutation(
+        { chatId, userId, state: 'user_denied', eventAt },
+        { precheckSupersededEpoch: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(JSON.parse(store.get(ChatContextCacheService.cacheKey(chatId)) ?? 'null')).toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+    expect(sets.get(recentUsersKey)?.has(userId)).toBe(false);
+    expect(store.get(ChatContextCacheService.chatContextRevisionKey(chatId))).toBe('1');
   });
 
   it.each([

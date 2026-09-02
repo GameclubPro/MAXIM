@@ -711,6 +711,7 @@ export class AdminRequiredSubscriptionRuntime {
         ...settings,
         requiredSubscriptionEnabled: false,
         requiredSubscriptionChannelIds: [],
+        requiredSubscriptionBotMessageEnabled: false,
       };
     }
 
@@ -740,6 +741,7 @@ export class AdminRequiredSubscriptionRuntime {
       ...settings,
       requiredSubscriptionEnabled: validChannelIds.length > 0,
       requiredSubscriptionChannelIds: validChannelIds,
+      requiredSubscriptionBotMessageEnabled: validChannelIds.length > 0,
     };
   }
 

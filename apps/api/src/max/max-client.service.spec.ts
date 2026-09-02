@@ -11151,6 +11151,55 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('upserts the exact webhook target when an existing URL has a trailing slash', async () => {
+    const exactUrl = 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
+    const updateTypes = ['message_created', 'message_callback'];
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              subscriptions: [
+                {
+                  url: `${exactUrl}/`,
+                  update_types: updateTypes,
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data: {} })),
+    };
+    const service = createService(httpService, {
+      APP_BASE_URL: 'https://major-maksimov.ru',
+      MAX_BOT_ID: '777000_bot',
+      MAX_WEBHOOK_SECRET_PATH: 'secret-path',
+      MAX_WEBHOOK_HEADER_SECRET: 'header-secret',
+    });
+
+    expect(service.matchesConfiguredWebhookUrl(`${exactUrl}/`)).toBe(false);
+    await expect(service.ensureWebhookSubscription(updateTypes)).resolves.toEqual({
+      url: exactUrl,
+      updateTypes: [...updateTypes].sort(),
+    });
+
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/subscriptions',
+        data: {
+          url: exactUrl,
+          update_types: [...updateTypes].sort(),
+          secret: 'header-secret',
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('replaces webhook update types only when exact reconciliation is requested', async () => {
     const httpService = {
       request: jest

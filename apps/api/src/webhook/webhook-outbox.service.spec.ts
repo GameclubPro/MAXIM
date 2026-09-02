@@ -1046,6 +1046,57 @@ describe('WebhookOutboxService', () => {
     }
   });
 
+  it('backs off an unprepared canonical mirror without consuming enqueue attempts', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T08:00:00.000Z'));
+    try {
+      const fixture = createService({
+        findManyResult: [
+          {
+            id: 'evt-canonical-preparation-pending',
+            enqueueAttempts: 17,
+            normalizedPayload: {
+              updateId: 'update-canonical-preparation-pending',
+              botId: 'bot-mirror',
+              type: 'user_removed',
+              message: {
+                chatId: 'chat-canonical-preparation-pending',
+                messageId: 'user_removed:update-canonical-preparation-pending',
+                senderId: 'user-1',
+              },
+            },
+          },
+        ],
+      });
+      fixture.prisma.webhookEvent.updateMany.mockImplementation(
+        createWebhookEventUpdateManyMock(fixture.webhookRows),
+      );
+      fixture.webhookService.preparePersistedWebhookEvent.mockResolvedValue({
+        canonical: true,
+        prepared: false,
+        normalizedPayload: fixture.webhookRows[0]!.normalizedPayload,
+        executionBotId: 'bot-owner',
+      });
+      const row = fixture.webhookRows[0]!;
+
+      await (fixture.service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+      expect(row.status).toBe(WebhookStatus.RECEIVED);
+      expect(row.enqueueAttempts).toBe(17);
+      expect(row.nextEnqueueAt).toEqual(new Date('2026-09-02T08:00:01.000Z'));
+      expect(row.errorMessage).toContain('canonical webhook preparation is still pending');
+      expect(fixture.webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(1);
+
+      await (fixture.service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+      expect(fixture.webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(1);
+      for (const queue of Object.values(fixture.queues)) {
+        expect(queue.add).not.toHaveBeenCalled();
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('requests FAILED candidates when due or when a completed timeout claim needs repair', async () => {
     const { service, prisma } = createService();
 

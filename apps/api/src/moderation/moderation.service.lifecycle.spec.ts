@@ -5016,7 +5016,7 @@ describe('ModerationService', () => {
     },
   );
 
-  it('skips moderation flow for user_removed update', async () => {
+  it('invalidates user_removed membership only after shared-chat execution is allowed', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn(),
@@ -5039,6 +5039,10 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       webhookEvent: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce({ id: 'owner-user-removed-event' })
+          .mockResolvedValue(null),
         findUnique: jest.fn(),
         update: jest.fn(),
       },
@@ -5056,16 +5060,81 @@ describe('ModerationService', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const membershipLookupService = {
+      invalidateMemberships: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      getChatExecutionBinding: jest.fn(),
+    };
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('bot-standby'),
+    };
 
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      membershipLookupService as never,
+      maxBotLinkService as never,
+      maxBotContextService as never,
+    );
+    const acquireSharedChatExecutionLock = jest.spyOn(
+      service as any,
+      'acquireSharedChatExecutionLock',
+    );
+    const releaseSharedChatExecutionLock = jest.spyOn(
+      service as any,
+      'releaseSharedChatExecutionLock',
+    );
+    const createMembershipUpdate = (updateId: string, memberUserId: string) =>
+      ({
+        ...createUserRemovedUpdate(),
+        updateId,
+        botId: maxBotContextService.getActiveBotId(),
+        executionOwnerBotId: 'bot-owner',
+        membership: {
+          action: 'removed',
+          memberUserIds: [memberUserId],
+        },
+      }) as MaxUpdate & { executionOwnerBotId: string };
+
+    await service.handleUpdate(createMembershipUpdate('upd-user-removed-mirror', 'mirror-user'));
+
+    expect(membershipLookupService.invalidateMemberships).not.toHaveBeenCalled();
+    expect(acquireSharedChatExecutionLock).not.toHaveBeenCalled();
+    expect(releaseSharedChatExecutionLock).not.toHaveBeenCalled();
+
+    await service.handleUpdate(
+      createMembershipUpdate('upd-user-removed-recovery', 'standby-recovery-user'),
     );
 
-    await service.handleUpdate(createUserRemovedUpdate());
+    expect(membershipLookupService.invalidateMemberships).toHaveBeenCalledWith('chat-1', [
+      'standby-recovery-user',
+    ]);
+    expect(acquireSharedChatExecutionLock).toHaveBeenCalledTimes(1);
+    expect(releaseSharedChatExecutionLock).toHaveBeenCalledTimes(1);
+    expect(acquireSharedChatExecutionLock.mock.invocationCallOrder[0]).toBeLessThan(
+      membershipLookupService.invalidateMemberships.mock.invocationCallOrder[0]!,
+    );
+    expect(membershipLookupService.invalidateMemberships.mock.invocationCallOrder[0]).toBeLessThan(
+      releaseSharedChatExecutionLock.mock.invocationCallOrder[0]!,
+    );
 
+    maxBotContextService.getActiveBotId.mockReturnValue('bot-owner');
+    await service.handleUpdate(
+      createMembershipUpdate('upd-user-removed-owner', 'canonical-owner-user'),
+    );
+
+    expect(membershipLookupService.invalidateMemberships).toHaveBeenNthCalledWith(2, 'chat-1', [
+      'canonical-owner-user',
+    ]);
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
@@ -7725,6 +7794,7 @@ describe('ModerationService', () => {
           issuedAt: issuedAt.toISOString(),
           expiresAt: expiresAt.toISOString(),
           durationHours: 6,
+          ruleCode: null,
         }),
       ),
     };
@@ -7761,8 +7831,65 @@ describe('ModerationService', () => {
       issuedAt,
       expiresAt,
       permanent: false,
+      ruleCode: null,
     });
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('rehydrates a legacy active mute cache entry without its rule origin', async () => {
+    const issuedAt = new Date(Date.now() - 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'legacy-required-mute-1',
+            createdAt: issuedAt,
+            metadata: { muteDurationHours: 2 },
+            action: SanctionAction.MUTE,
+            ruleCode: 'REQUIRED_SUBSCRIPTION',
+          })
+          .mockResolvedValueOnce(null),
+      },
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          eventId: 'legacy-required-mute-1',
+          issuedAt: issuedAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          durationHours: 2,
+        }),
+      ),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    const result = await (service as any).getActiveMute('chat-1', 'user-1', 6);
+
+    expect(result).toEqual({
+      eventId: 'legacy-required-mute-1',
+      issuedAt,
+      expiresAt: new Date(issuedAt.getTime() + 2 * 60 * 60 * 1000),
+      durationHours: 2,
+      permanent: false,
+      ruleCode: 'REQUIRED_SUBSCRIPTION',
+    });
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildActiveMuteStateKey('chat-1', 'user-1'),
+      expect.stringContaining('"ruleCode":"REQUIRED_SUBSCRIPTION"'),
+      expect.any(Number),
+    );
   });
 
   it('hydrates active mute cache from prisma fallback', async () => {

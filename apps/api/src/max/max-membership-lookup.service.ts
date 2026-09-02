@@ -79,6 +79,7 @@ type MembershipLookupPolicyConfig = {
 type PendingSingleLookup = {
   cacheKey: string;
   cacheEpoch: number;
+  probeSequence: number;
   allowStaleOnError: boolean;
   resolve: (value: MaxMembershipLookupResolution) => void;
 };
@@ -178,10 +179,14 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly chatBackoffUntilMs = new Map<string, number>();
   private readonly chatBackoffState = new Map<string, ChatBackoffState>();
   private readonly hotChannelStates = new Map<string, HotChannelState>();
+  // Invalidation epochs cancel stale work; probe sequences only select the shared-cache writer.
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
+  private readonly latestProbeSequenceByCacheKey = new Map<string, number>();
   private readonly pendingSingleLookupBatches = new Map<string, PendingSingleLookupBatch>();
   private readonly lookupIssues = new Map<string, MaxMembershipLookupIssue>();
+  private nextProbeSequence = 0;
   private lastRedisWriteFailureLogAtMs = 0;
+  private lastRedisInvalidationFailureLogAtMs = 0;
 
   constructor(
     private readonly maxClient: MaxClientService,
@@ -279,6 +284,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       }
 
       this.applyLocalInvalidation(normalized.chatId, normalized.userIds);
+      void this.deleteInvalidatedRedisSnapshots(normalized.chatId, normalized.userIds).catch(
+        (error: unknown) => {
+          this.logRedisInvalidationFailure(normalized.chatId, normalized.userIds, error);
+        },
+      );
     });
     await this.subscriber.subscribe(MEMBERSHIP_INVALIDATION_CHANNEL);
   }
@@ -306,11 +316,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
     this.applyLocalInvalidation(normalizedChatId, normalizedUserIds);
 
-    const cacheKeys = normalizedUserIds.flatMap((userId) =>
-      this.buildInvalidationCacheKeys(normalizedChatId, userId),
-    );
     await Promise.all([
-      cacheKeys.length > 0 ? this.redis.del(...cacheKeys) : Promise.resolve(0),
+      this.deleteInvalidatedRedisSnapshots(normalizedChatId, normalizedUserIds),
       this.redis.publish(
         MEMBERSHIP_INVALIDATION_CHANNEL,
         JSON.stringify({
@@ -407,7 +414,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const cacheKeyByUserId = new Map(
       normalizedUserIds.map((userId) => [
         userId,
-        this.buildCacheKey(normalizedChatId, userId, lookupBotId),
+        this.buildCacheKey(normalizedChatId, userId, lookupBotId, policyName),
       ]),
     );
     const legacyCacheKeyByUserId = new Map(
@@ -432,11 +439,18 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     if (!options.forceRefresh && unresolvedUserIds.length > 0) {
+      const redisReadEpochByCacheKey = new Map(
+        unresolvedUserIds.map((userId) => {
+          const cacheKey = cacheKeyByUserId.get(userId)!;
+          return [cacheKey, this.readCacheEpoch(cacheKey)] as const;
+        }),
+      );
       const redisReadKeys = unresolvedUserIds.flatMap((userId) =>
         this.buildRedisReadKeys(
           cacheKeyByUserId.get(userId)!,
           legacyCacheKeyByUserId.get(userId)!,
           lookupBotId,
+          policyName,
         ),
       );
       const redisSnapshots = await this.readRedisSnapshots(redisReadKeys);
@@ -445,6 +459,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       for (const userId of unresolvedUserIds) {
         const cacheKey = cacheKeyByUserId.get(userId)!;
         const legacyCacheKey = legacyCacheKeyByUserId.get(userId)!;
+        if (!this.hasSameCacheEpoch(cacheKey, redisReadEpochByCacheKey.get(cacheKey) ?? 0)) {
+          stillUnresolvedUserIds.push(userId);
+          continue;
+        }
         const redisSnapshot =
           redisSnapshots.get(cacheKey) ??
           (this.shouldReadLegacyCache(lookupBotId) ? redisSnapshots.get(legacyCacheKey) : null) ??
@@ -480,7 +498,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         continue;
       }
 
-      const inFlight = this.inFlight.get(cacheKey);
+      const inFlightKey = this.buildInFlightKey(cacheKey, policyName, allowStaleOnError);
+      const inFlight = this.inFlight.get(inFlightKey);
       if (inFlight) {
         pendingPromises.set(userId, inFlight);
         continue;
@@ -572,7 +591,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     botId: string | null,
   ): Promise<MaxMembershipLookupResolution> {
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
-    const batchKey = this.buildSingleLookupBatchKey(chatId, policyName, botId);
+    const batchKey = this.buildSingleLookupBatchKey(chatId, policyName, botId, allowStaleOnError);
     let batch = this.pendingSingleLookupBatches.get(batchKey);
     if (!batch) {
       batch = {
@@ -589,24 +608,28 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       batch.botId = botId;
     }
 
-    const cacheKey = this.buildCacheKey(chatId, userId, botId);
+    const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+    const inFlightKey = this.buildInFlightKey(cacheKey, policyName, allowStaleOnError);
     const cacheEpoch = this.readCacheEpoch(cacheKey);
+    const probeSequence = this.beginProbe(cacheKey);
     const lookupPromise = new Promise<MaxMembershipLookupResolution>((resolve) => {
       batch!.lookups.set(userId, {
         cacheKey,
         cacheEpoch,
+        probeSequence,
         allowStaleOnError,
         resolve,
       });
     });
 
     const trackedPromise = lookupPromise.finally(() => {
-      if (this.inFlight.get(cacheKey) === trackedPromise) {
-        this.inFlight.delete(cacheKey);
+      if (this.inFlight.get(inFlightKey) === trackedPromise) {
+        this.inFlight.delete(inFlightKey);
       }
+      this.finishProbe(cacheKey, probeSequence);
     });
 
-    this.inFlight.set(cacheKey, trackedPromise);
+    this.inFlight.set(inFlightKey, trackedPromise);
 
     if (!batch.scheduled) {
       batch.scheduled = true;
@@ -648,6 +671,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
             trafficClass: batch.policy.trafficClass,
             timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
+            ...(batch.policyName === 'moderation_required_subscription'
+              ? { bypassCache: true }
+              : {}),
             ...(batch.policy.sourceTag ? { sourceTag: batch.policy.sourceTag } : {}),
             ...(batch.policy.ignoreFailureMetricStatuses
               ? { ignoreFailureMetricStatuses: batch.policy.ignoreFailureMetricStatuses }
@@ -662,18 +688,24 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         },
       );
       const checkedAtMs = Date.now();
-      this.clearChatBackoff(batch.chatId, batch.policyName);
-      this.clearHotChannelMode(batch.chatId, batch.policyName);
-      this.clearLookupIssue(batch.chatId, batch.policyName);
+      if (this.hasAuthoritativePendingLookup(batch.lookups.values())) {
+        this.clearChatBackoff(batch.chatId, batch.policyName);
+        this.clearHotChannelMode(batch.chatId, batch.policyName);
+        this.clearLookupIssue(batch.chatId, batch.policyName);
+      }
 
       for (const [userId, lookup] of batch.lookups.entries()) {
+        if (!this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
+          lookup.resolve({ membership: null, fresh: false });
+          continue;
+        }
         const isMember = accessByUserId.has(userId);
         const snapshot: MembershipCacheSnapshot = {
           isMember,
           checkedAtMs,
         };
-        if (this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
-          this.storeSnapshot(lookup.cacheKey, snapshot);
+        if (this.isLatestProbe(lookup.cacheKey, lookup.probeSequence)) {
+          this.storeSnapshot(lookup.cacheKey, snapshot, batch.policyName);
           this.backoffUntilMs.delete(lookup.cacheKey);
         }
         lookup.resolve({ membership: isMember, fresh: true });
@@ -682,8 +714,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       const transient = this.isTransientLookupError(error);
       const terminalBackoffMs = this.resolveTerminalChatBackoffMs(batch.policyName);
       const terminalAccess = this.isTerminalChatAccessError(error);
-      const terminal = terminalBackoffMs > 0 && terminalAccess;
-      if (terminalAccess) {
+      const authoritative = this.hasAuthoritativePendingLookup(batch.lookups.values());
+      const terminal = authoritative && terminalBackoffMs > 0 && terminalAccess;
+      if (authoritative && terminalAccess) {
         await this.persistTerminalBotAccessProbe({
           chatId: batch.chatId,
           botId: batch.botId,
@@ -700,18 +733,21 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           terminalBackoffMs,
         );
         appliedBackoffMs = appliedBackoff.backoffMs;
-      } else if (transient) {
+      } else if (authoritative && transient) {
         const appliedBackoff = this.applyChatBackoff(batch.chatId, batch.policyName, batch.policy);
         appliedBackoffMs = appliedBackoff.backoffMs;
         this.recordHotChannelFailure(batch.chatId, batch.policyName);
         for (const lookup of batch.lookups.values()) {
-          if (this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
+          if (
+            this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch) &&
+            this.isLatestProbe(lookup.cacheKey, lookup.probeSequence)
+          ) {
             this.backoffUntilMs.set(lookup.cacheKey, appliedBackoff.backoffUntilMs);
           }
         }
       }
 
-      if (terminal || transient) {
+      if (terminal || (authoritative && transient)) {
         this.recordLookupIssue(batch.chatId, batch.policyName, error, {
           kind: terminal ? 'terminal' : 'transient',
           retryAfterMs: appliedBackoffMs,
@@ -726,6 +762,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       });
 
       for (const lookup of batch.lookups.values()) {
+        if (!this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
+          lookup.resolve({ membership: null, fresh: false });
+          continue;
+        }
         lookup.resolve({
           membership: this.resolveLookupFallback(
             batch.chatId,
@@ -750,8 +790,14 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
     const cacheEpochByKey = new Map(
       normalizedUserIds.map((userId) => {
-        const cacheKey = this.buildCacheKey(chatId, userId, botId);
+        const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
         return [cacheKey, this.readCacheEpoch(cacheKey)] as const;
+      }),
+    );
+    const probeSequenceByKey = new Map(
+      normalizedUserIds.map((userId) => {
+        const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+        return [cacheKey, this.beginProbe(cacheKey)] as const;
       }),
     );
     const batchLookupPromise = (async () => {
@@ -762,6 +808,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             this.maxClient.getChatMembersAccess(chatId, normalizedUserIds, {
               trafficClass: policy.trafficClass,
               timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
+              ...(policyName === 'moderation_required_subscription' ? { bypassCache: true } : {}),
               ...(policy.sourceTag ? { sourceTag: policy.sourceTag } : {}),
               ...(policy.ignoreFailureMetricStatuses
                 ? { ignoreFailureMetricStatuses: policy.ignoreFailureMetricStatuses }
@@ -777,19 +824,33 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         );
         const checkedAtMs = Date.now();
         const results = new Map<string, MaxMembershipLookupResolution>();
-        this.clearChatBackoff(chatId, policyName);
-        this.clearHotChannelMode(chatId, policyName);
-        this.clearLookupIssue(chatId, policyName);
+        if (
+          normalizedUserIds.some((userId) => {
+            const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+            return (
+              this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0) &&
+              this.isLatestProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0)
+            );
+          })
+        ) {
+          this.clearChatBackoff(chatId, policyName);
+          this.clearHotChannelMode(chatId, policyName);
+          this.clearLookupIssue(chatId, policyName);
+        }
 
         for (const userId of normalizedUserIds) {
-          const cacheKey = this.buildCacheKey(chatId, userId, botId);
+          const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+          if (!this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
+            results.set(userId, { membership: null, fresh: false });
+            continue;
+          }
           const isMember = accessByUserId.has(userId);
           const snapshot: MembershipCacheSnapshot = {
             isMember,
             checkedAtMs,
           };
-          if (this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
-            this.storeSnapshot(cacheKey, snapshot);
+          if (this.isLatestProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0)) {
+            this.storeSnapshot(cacheKey, snapshot, policyName);
             this.backoffUntilMs.delete(cacheKey);
           }
           results.set(userId, { membership: isMember, fresh: true });
@@ -800,8 +861,15 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         const transient = this.isTransientLookupError(error);
         const terminalBackoffMs = this.resolveTerminalChatBackoffMs(policyName);
         const terminalAccess = this.isTerminalChatAccessError(error);
-        const terminal = terminalBackoffMs > 0 && terminalAccess;
-        if (terminalAccess) {
+        const authoritative = normalizedUserIds.some((userId) => {
+          const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+          return (
+            this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0) &&
+            this.isLatestProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0)
+          );
+        });
+        const terminal = authoritative && terminalBackoffMs > 0 && terminalAccess;
+        if (authoritative && terminalAccess) {
           await this.persistTerminalBotAccessProbe({
             chatId,
             botId,
@@ -818,18 +886,21 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             terminalBackoffMs,
           );
           appliedBackoffMs = appliedBackoff.backoffMs;
-        } else if (transient) {
+        } else if (authoritative && transient) {
           const appliedBackoff = this.applyChatBackoff(chatId, policyName, policy);
           appliedBackoffMs = appliedBackoff.backoffMs;
           this.recordHotChannelFailure(chatId, policyName);
           for (const userId of normalizedUserIds) {
-            const cacheKey = this.buildCacheKey(chatId, userId, botId);
-            if (this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
+            const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+            if (
+              this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0) &&
+              this.isLatestProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0)
+            ) {
               this.backoffUntilMs.set(cacheKey, appliedBackoff.backoffUntilMs);
             }
           }
         }
-        if (terminal || transient) {
+        if (terminal || (authoritative && transient)) {
           this.recordLookupIssue(chatId, policyName, error, {
             kind: terminal ? 'terminal' : 'transient',
             retryAfterMs: appliedBackoffMs,
@@ -844,13 +915,13 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
         const results = new Map<string, MaxMembershipLookupResolution>();
         for (const userId of normalizedUserIds) {
+          const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+          if (!this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
+            results.set(userId, { membership: null, fresh: false });
+            continue;
+          }
           results.set(userId, {
-            membership: this.resolveLookupFallback(
-              chatId,
-              policyName,
-              this.buildCacheKey(chatId, userId, botId),
-              allowStaleOnError,
-            ),
+            membership: this.resolveLookupFallback(chatId, policyName, cacheKey, allowStaleOnError),
             fresh: false,
           });
         }
@@ -860,15 +931,17 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
     const promises = new Map<string, Promise<MaxMembershipLookupResolution>>();
     for (const userId of normalizedUserIds) {
-      const cacheKey = this.buildCacheKey(chatId, userId, botId);
+      const cacheKey = this.buildCacheKey(chatId, userId, botId, policyName);
+      const inFlightKey = this.buildInFlightKey(cacheKey, policyName, allowStaleOnError);
       const trackedPromise = batchLookupPromise
         .then((results) => results.get(userId) ?? { membership: null, fresh: false })
         .finally(() => {
-          if (this.inFlight.get(cacheKey) === trackedPromise) {
-            this.inFlight.delete(cacheKey);
+          if (this.inFlight.get(inFlightKey) === trackedPromise) {
+            this.inFlight.delete(inFlightKey);
           }
+          this.finishProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0);
         });
-      this.inFlight.set(cacheKey, trackedPromise);
+      this.inFlight.set(inFlightKey, trackedPromise);
       promises.set(userId, trackedPromise);
     }
 
@@ -1010,14 +1083,61 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private applyLocalInvalidation(chatId: string, userIds: readonly string[]) {
     const now = Date.now();
+    const cacheKeys = new Set(this.cancelPendingSingleLookups(chatId, userIds));
     for (const userId of userIds) {
       for (const cacheKey of this.buildInvalidationCacheKeys(chatId, userId)) {
-        this.memoryCache.delete(cacheKey);
-        this.inFlight.delete(cacheKey);
-        this.backoffUntilMs.delete(cacheKey);
-        this.bumpCacheEpoch(cacheKey, now);
+        cacheKeys.add(cacheKey);
       }
     }
+
+    for (const cacheKey of cacheKeys) {
+      this.memoryCache.delete(cacheKey);
+      this.deleteInFlightLookups(cacheKey);
+      this.backoffUntilMs.delete(cacheKey);
+      this.bumpCacheEpoch(cacheKey, now);
+    }
+  }
+
+  private cancelPendingSingleLookups(chatId: string, userIds: readonly string[]): string[] {
+    const invalidatedUserIds = new Set(userIds);
+    const cacheKeys = new Set<string>();
+
+    for (const [batchKey, batch] of this.pendingSingleLookupBatches) {
+      if (batch.chatId !== chatId) {
+        continue;
+      }
+
+      for (const userId of invalidatedUserIds) {
+        const lookup = batch.lookups.get(userId);
+        if (!lookup) {
+          continue;
+        }
+
+        batch.lookups.delete(userId);
+        cacheKeys.add(lookup.cacheKey);
+        lookup.resolve({ membership: null, fresh: false });
+      }
+
+      if (batch.lookups.size === 0) {
+        if (batch.timeout) {
+          clearTimeout(batch.timeout);
+          batch.timeout = null;
+        }
+        this.pendingSingleLookupBatches.delete(batchKey);
+      }
+    }
+
+    return [...cacheKeys];
+  }
+
+  private deleteInvalidatedRedisSnapshots(
+    chatId: string,
+    userIds: readonly string[],
+  ): Promise<number> {
+    const cacheKeys = Array.from(
+      new Set(userIds.flatMap((userId) => this.buildInvalidationCacheKeys(chatId, userId))),
+    );
+    return cacheKeys.length > 0 ? this.redis.del(...cacheKeys) : Promise.resolve(0);
   }
 
   private resolveLookupFallback(
@@ -1047,12 +1167,23 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return null;
   }
 
-  private storeSnapshot(cacheKey: string, snapshot: MembershipCacheSnapshot) {
+  private storeSnapshot(
+    cacheKey: string,
+    snapshot: MembershipCacheSnapshot,
+    policyName: MaxMembershipLookupPolicy,
+  ) {
     this.memoryCache.set(cacheKey, snapshot);
+    // A bypassed moderation result may warm general reads; general reads never write its key.
+    const sharedCacheKey = this.deriveSharedCacheKey(cacheKey, policyName);
+    if (sharedCacheKey !== cacheKey) {
+      this.memoryCache.set(sharedCacheKey, snapshot);
+    }
     const legacyCacheKey = this.deriveLegacyCacheKeyFromCacheKey(cacheKey);
-    void this.writeRedisSnapshot(cacheKey, legacyCacheKey, snapshot).catch((error: unknown) => {
-      this.logRedisWriteFailure(cacheKey, error);
-    });
+    void this.writeRedisSnapshot(cacheKey, legacyCacheKey, snapshot, policyName).catch(
+      (error: unknown) => {
+        this.logRedisWriteFailure(cacheKey, error);
+      },
+    );
   }
 
   private readCacheEpoch(cacheKey: string, now = Date.now()): number {
@@ -1071,6 +1202,36 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private hasSameCacheEpoch(cacheKey: string, epoch: number): boolean {
     return this.readCacheEpoch(cacheKey) === epoch;
+  }
+
+  private beginProbe(cacheKey: string): number {
+    this.nextProbeSequence += 1;
+    this.latestProbeSequenceByCacheKey.set(cacheKey, this.nextProbeSequence);
+    return this.nextProbeSequence;
+  }
+
+  private isLatestProbe(cacheKey: string, probeSequence: number): boolean {
+    return this.latestProbeSequenceByCacheKey.get(cacheKey) === probeSequence;
+  }
+
+  private finishProbe(cacheKey: string, probeSequence: number): void {
+    if (this.isLatestProbe(cacheKey, probeSequence)) {
+      this.latestProbeSequenceByCacheKey.delete(cacheKey);
+    }
+  }
+
+  private hasAuthoritativePendingLookup(
+    lookups: Iterable<Pick<PendingSingleLookup, 'cacheKey' | 'cacheEpoch' | 'probeSequence'>>,
+  ): boolean {
+    for (const lookup of lookups) {
+      if (
+        this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch) &&
+        this.isLatestProbe(lookup.cacheKey, lookup.probeSequence)
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private bumpCacheEpoch(cacheKey: string, now = Date.now()): number {
@@ -1121,11 +1282,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     cacheKey: string,
     legacyCacheKey: string,
     snapshot: MembershipCacheSnapshot,
+    policyName: MaxMembershipLookupPolicy,
   ): Promise<void> {
     const ttlSec = snapshot.isMember
       ? this.membershipRetentionPositiveTtlSec
       : this.membershipRetentionNegativeTtlSec;
-    const redisWriteKeys = this.buildRedisWriteKeys(cacheKey, legacyCacheKey);
+    const redisWriteKeys = this.buildRedisWriteKeys(cacheKey, legacyCacheKey, policyName);
     if (redisWriteKeys.length === 1) {
       await this.redis.set(cacheKey, JSON.stringify(snapshot), 'EX', ttlSec);
       return;
@@ -1245,13 +1407,37 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     );
   }
 
-  private buildCacheKey(chatId: string, userId: string, botId: string | null = null): string {
+  private buildCacheKey(
+    chatId: string,
+    userId: string,
+    botId: string | null,
+    policyName: MaxMembershipLookupPolicy,
+  ): string {
     const normalizedBotId = this.normalizeBotScopedCacheBotId(botId);
-    if (this.botScopedCacheEnabled && normalizedBotId) {
-      return `${MEMBERSHIP_CACHE_BOT_SCOPED_KEY_PREFIX}:${chatId}:${userId}:${normalizedBotId}`;
-    }
+    const baseKey =
+      this.botScopedCacheEnabled && normalizedBotId
+        ? `${MEMBERSHIP_CACHE_BOT_SCOPED_KEY_PREFIX}:${chatId}:${userId}:${normalizedBotId}`
+        : this.buildLegacyCacheKey(chatId, userId);
+    return policyName === 'moderation_required_subscription'
+      ? `${baseKey}:policy:${policyName}`
+      : baseKey;
+  }
 
-    return this.buildLegacyCacheKey(chatId, userId);
+  private buildInFlightKey(
+    cacheKey: string,
+    policyName: MaxMembershipLookupPolicy,
+    allowStaleOnError: boolean,
+  ): string {
+    return `${cacheKey}|${policyName}|${allowStaleOnError ? 'stale' : 'strict'}`;
+  }
+
+  private deleteInFlightLookups(cacheKey: string): void {
+    const keyPrefix = `${cacheKey}|`;
+    for (const inFlightKey of this.inFlight.keys()) {
+      if (inFlightKey.startsWith(keyPrefix)) {
+        this.inFlight.delete(inFlightKey);
+      }
+    }
   }
 
   private buildLegacyCacheKey(chatId: string, userId: string): string {
@@ -1262,11 +1448,13 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     chatId: string,
     policyName: MaxMembershipLookupPolicy,
     botId: string | null,
+    allowStaleOnError: boolean,
   ): string {
     const normalizedBotId = this.normalizeBotScopedCacheBotId(botId);
-    return normalizedBotId
+    const routeKey = normalizedBotId
       ? `${this.buildChatPolicyKey(chatId, policyName)}:${normalizedBotId}`
       : this.buildChatPolicyKey(chatId, policyName);
+    return `${routeKey}:${allowStaleOnError ? 'stale' : 'strict'}`;
   }
 
   private shouldReadLegacyCache(botId: string | null): boolean {
@@ -1280,7 +1468,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     primaryCacheKey: string,
     legacyCacheKey: string,
     botId: string | null,
+    policyName: MaxMembershipLookupPolicy,
   ): string[] {
+    if (policyName === 'moderation_required_subscription') {
+      return [primaryCacheKey];
+    }
     if (primaryCacheKey === legacyCacheKey) {
       return [primaryCacheKey];
     }
@@ -1292,12 +1484,30 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return [primaryCacheKey];
   }
 
-  private buildRedisWriteKeys(primaryCacheKey: string, legacyCacheKey: string): string[] {
+  private buildRedisWriteKeys(
+    primaryCacheKey: string,
+    legacyCacheKey: string,
+    policyName: MaxMembershipLookupPolicy,
+  ): string[] {
+    if (policyName === 'moderation_required_subscription') {
+      return Array.from(
+        new Set([primaryCacheKey, this.deriveSharedCacheKey(primaryCacheKey, policyName)]),
+      );
+    }
     if (primaryCacheKey === legacyCacheKey || !this.botScopedCacheDualWriteEnabled) {
       return [primaryCacheKey];
     }
 
     return [primaryCacheKey, legacyCacheKey];
+  }
+
+  private deriveSharedCacheKey(cacheKey: string, policyName: MaxMembershipLookupPolicy): string {
+    if (policyName !== 'moderation_required_subscription') {
+      return cacheKey;
+    }
+
+    const suffix = `:policy:${policyName}`;
+    return cacheKey.endsWith(suffix) ? cacheKey.slice(0, -suffix.length) : cacheKey;
   }
 
   private buildInvalidationCacheKeys(
@@ -1307,13 +1517,19 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   ): string[] {
     const keys = new Set<string>([this.buildLegacyCacheKey(chatId, userId)]);
     const explicitBotId = this.normalizeBotScopedCacheBotId(botId ?? null);
-    if (explicitBotId) {
-      keys.add(this.buildCacheKey(chatId, userId, explicitBotId));
+    for (const policyName of Object.keys(
+      MEMBERSHIP_LOOKUP_POLICIES,
+    ) as MaxMembershipLookupPolicy[]) {
+      keys.add(this.buildCacheKey(chatId, userId, explicitBotId, policyName));
     }
 
     if (this.botScopedCacheEnabled) {
       for (const configuredBotId of this.resolveConfiguredBotIds()) {
-        keys.add(this.buildCacheKey(chatId, userId, configuredBotId));
+        for (const policyName of Object.keys(
+          MEMBERSHIP_LOOKUP_POLICIES,
+        ) as MaxMembershipLookupPolicy[]) {
+          keys.add(this.buildCacheKey(chatId, userId, configuredBotId, policyName));
+        }
       }
     }
 
@@ -1569,6 +1785,23 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         err: error instanceof Error ? error.message : String(error),
       },
       'Failed to write MAX membership snapshot to Redis',
+    );
+  }
+
+  private logRedisInvalidationFailure(chatId: string, userIds: readonly string[], error: unknown) {
+    const nowMs = Date.now();
+    if (nowMs - this.lastRedisInvalidationFailureLogAtMs < MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastRedisInvalidationFailureLogAtMs = nowMs;
+    this.logger.warn(
+      {
+        chatId,
+        userIds,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to remove invalidated MAX membership snapshots from Redis',
     );
   }
 

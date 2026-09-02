@@ -96,7 +96,6 @@ import {
 import {
   MAX_MESSAGE_TEXT_LENGTH,
   prepareFormattedTextForMaxDelivery,
-  renderSupportedMarkdownAsHtml,
 } from '../common/max-markdown.util';
 import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
@@ -183,6 +182,14 @@ import {
   type CachedActiveMuteState,
 } from './moderation-state.util';
 import { withModerationReleaseButton } from './moderation-release-callback.util';
+import {
+  RequiredSubscriptionNoticePlanStore,
+  buildRequiredSubscriptionNoticePlan,
+  withRequiredSubscriptionHtmlMessageOptions,
+  type RequiredSubscriptionNoticeAction,
+  type RequiredSubscriptionNoticePlan,
+  type RequiredSubscriptionPersistedDecision,
+} from './required-subscription-notice-plan';
 import { ModerationReleaseCallbackService } from './moderation-release-callback.service';
 import {
   ModerationSanctionStateFenceService,
@@ -329,7 +336,7 @@ import {
   REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC,
   REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC,
   REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS,
-  REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC,
+  REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS,
   REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS,
   REQUIRED_SUBSCRIPTION_RULE_CODE,
   INVITATION_ACCESS_ESCALATION_WINDOW_HOURS,
@@ -391,8 +398,6 @@ import {
   REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
   REQUIRED_SUBSCRIPTION_MEMBERSHIP_HOT_PATH_TIMEOUT_MS,
   REQUIRED_SUBSCRIPTION_MEMBERSHIP_MIN_REMAINING_MS,
-  REQUIRED_SUBSCRIPTION_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
-  REQUIRED_SUBSCRIPTION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   VIOLATION_ADMIN_RECHECK_RESERVE_MS,
   VIOLATION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
@@ -515,10 +520,18 @@ type ApplySanctionActionParams = {
   deleteBotMessagesDelayMinutes: number;
   botMessageOptions?: MaxSendMessageOptions;
   sanctionNoticeText?: string;
+  bypassNoticeBucket?: boolean;
+  noticeIdempotencyKey?: string;
+  rethrowNoticeFailure?: boolean;
+  activeMuteRuleCode?: string;
+  routeNoticeDynamically?: boolean;
+  deferNotice?: boolean;
+  onSanctionEventPersisted?: (eventId: string | null) => void;
+  noticeBeforeSend?: () => Promise<void>;
   botSpeechStyle: BotSpeechStyle | null;
   trackAsGlobalSpammer?: boolean;
   persistModerationEvent: PersistModerationEvent;
-  assertActiveLease?: () => void;
+  assertActiveLease?: () => void | Promise<void>;
   authorizeSanction?: () => Promise<boolean>;
 };
 
@@ -569,7 +582,6 @@ const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 const WEBHOOK_TIMEOUT_SETTLEMENT_PERSIST_RETRY_MAX_MS = 30_000;
 const WEBHOOK_TIMEOUT_PERSISTENCE_LOG_INTERVAL_MS = 30_000;
 const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
-
 type ModerationDeleteExecutionResult = {
   accepted: boolean;
   gone: boolean;
@@ -607,6 +619,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       metadata: RequiredSubscriptionChannelMetadata;
     }
   >();
+  private readonly requiredSubscriptionNoticePlans: RequiredSubscriptionNoticePlanStore;
   private readonly moderationActionPermissionSkipLogAtMs = new Map<string, number>();
   private readonly moderationActionBotBackoffUntilMs = new Map<string, number>();
   private readonly moderationActionSnapshotRefreshUntilMs = new Map<string, number>();
@@ -740,6 +753,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     private readonly commercialOcrEnqueueService?: CommercialOcrEnqueueService,
   ) {
+    this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
+      prisma.moderationEvent,
+    );
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.channelAutoPostMutationGuard = new ChannelAutoPostMutationGuard({
       maxClient,
@@ -1303,7 +1319,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const serviceAuthored = this.isServiceAuthoredMessage(update);
-    const serviceMembersEvent = this.extractServiceMemberUserIds(update).length > 0;
+    const serviceMemberUserIds = this.extractServiceMemberUserIds(update);
+    const membershipInvalidationUserIds = Array.from(
+      new Set(
+        (update.membership?.memberUserIds ?? serviceMemberUserIds)
+          .map((userId) => userId.trim())
+          .filter(Boolean),
+      ),
+    );
+    const serviceMembersEvent = serviceMemberUserIds.length > 0;
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
     if (this.managedPollService && (await this.managedPollService.tryHandleCallback(update))) {
@@ -1343,6 +1367,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
+      if (membershipInvalidationUserIds.length > 0 && this.membershipLookupService) {
+        await this.membershipLookupService.invalidateMemberships(
+          chatId,
+          membershipInvalidationUserIds,
+        );
+      }
+
       if (this.isBotStartedUpdate(update)) {
         await this.handleBotStartedInstruction(update, chatId);
         return;
@@ -1770,6 +1801,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           return;
         }
         await suppressDeferredPhotoAnalysisActions();
+        if (activeMute.ruleCode === REQUIRED_SUBSCRIPTION_RULE_CODE) {
+          this.markWebhookHotPathStage(hotPathProfile, 'required-subscription');
+          const requiredSubscriptionHandled = await this.handleRequiredSubscriptionMessage({
+            chatId,
+            userId: senderId,
+            userLabel,
+            messageId,
+            text,
+            createdAt,
+            settings,
+            rulesPublishedUrl,
+            rulesPublishedMessageId,
+            hotPathProfile,
+            suppressEscalation: true,
+            knownAppliedSanctionAction: SanctionAction.MUTE,
+          });
+          if (requiredSubscriptionHandled) {
+            return;
+          }
+        }
         await this.handleActiveMuteMessage({
           chatId,
           userId: senderId,
@@ -1894,9 +1945,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         messageId,
         text,
         createdAt,
-        degradeMode,
-        hotChatBackoffActive,
-        systemMode: mode,
         settings,
         rulesPublishedUrl,
         rulesPublishedMessageId,
@@ -3877,7 +3925,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildRequiredSubscriptionExplanation(
     userLabel: string,
-    canDeleteMessage: boolean,
+    canDeleteMessage: boolean | null,
     channelTitles: readonly string[],
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
@@ -3891,7 +3939,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         channels: channelsLabel,
-        message_status: resolveBotSpeechMessageStatus(templateText, canDeleteMessage),
+        message_status:
+          canDeleteMessage === null
+            ? resolveBotSpeechPlaceholder(templateText, 'ждёт снятия с линии', 'ожидает удаления')
+            : resolveBotSpeechMessageStatus(templateText, canDeleteMessage),
       },
     });
   }
@@ -4508,7 +4559,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async applySanctionAction(params: ApplySanctionActionParams): Promise<boolean> {
-    params.assertActiveLease?.();
+    await params.assertActiveLease?.();
     if (
       params.action !== SanctionAction.BAN &&
       params.action !== SanctionAction.MUTE &&
@@ -4575,16 +4626,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private combineModerationLeaseGuards(
     leaseGuard: ModerationSanctionStateLeaseGuard | undefined,
-    assertActiveLease: (() => void) | undefined,
+    assertActiveLease: (() => void | Promise<void>) | undefined,
   ): ModerationSanctionStateLeaseGuard | undefined {
     if (!assertActiveLease) {
       return leaseGuard;
     }
     return {
       assertOwned: async () => {
-        assertActiveLease();
+        await assertActiveLease();
         await leaseGuard?.assertOwned();
-        assertActiveLease();
+        await assertActiveLease();
       },
     };
   }
@@ -4605,6 +4656,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesDelayMinutes,
       botMessageOptions,
       sanctionNoticeText,
+      bypassNoticeBucket,
+      noticeIdempotencyKey,
+      rethrowNoticeFailure,
+      activeMuteRuleCode,
+      routeNoticeDynamically,
+      deferNotice,
+      onSanctionEventPersisted,
+      noticeBeforeSend,
       botSpeechStyle,
       trackAsGlobalSpammer = true,
       persistModerationEvent,
@@ -4651,6 +4710,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           logger: this.logger,
         });
+        onSanctionEventPersisted?.(eventPersistence.eventId);
         await leaseGuard?.assertOwned();
         muteStateCached = await this.rememberActiveMuteState(chatId, userId, {
           eventId: eventPersistence.eventId ?? `runtime:${chatId}:${userId}:${issuedAt.getTime()}`,
@@ -4658,6 +4718,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           expiresAt,
           durationHours: effectiveMuteDurationHours,
           permanent: false,
+          ruleCode: activeMuteRuleCode ?? null,
         });
         if (!eventPersistence.persisted && !muteStateCached) {
           await leaseGuard?.assertOwned();
@@ -4669,6 +4730,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await leaseGuard?.assertOwned();
         await this.settleAutomaticSanctionStateFence(fence, 'COMMITTED', eventPersistence.eventId);
         fenceSettled = true;
+        if (deferNotice) {
+          return true;
+        }
         await leaseGuard?.assertOwned();
         await this.sendMuteNotice({
           chatId,
@@ -4680,9 +4744,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           deleteBotMessagesDelayMinutes,
           botMessageOptions,
           sanctionNoticeText,
+          bypassNoticeBucket,
+          idempotencyKey: noticeIdempotencyKey,
+          rethrowOnFailure: rethrowNoticeFailure,
           botSpeechStyle,
           sanctionEventId: eventPersistence.eventId,
-          beforeSend: leaseGuard?.assertOwned.bind(leaseGuard),
+          beforeSend:
+            leaseGuard || noticeBeforeSend
+              ? async () => {
+                  await leaseGuard?.assertOwned();
+                  await noticeBeforeSend?.();
+                }
+              : undefined,
         });
         return true;
       } catch (error: unknown) {
@@ -4770,6 +4843,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         messageId,
         logger: this.logger,
       });
+      onSanctionEventPersisted?.(eventPersistence.eventId);
       await leaseGuard?.assertOwned();
       await this.settleAutomaticSanctionStateFence(
         fence,
@@ -4777,6 +4851,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         eventPersistence.eventId,
       );
       fenceSettled = true;
+      if (deferNotice) {
+        return true;
+      }
       await leaseGuard?.assertOwned();
       await this.sendBanNoticeMessage({
         chatId,
@@ -4787,10 +4864,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesDelayMinutes,
         botMessageOptions,
         sanctionNoticeText,
+        bypassNoticeBucket,
+        idempotencyKey: noticeIdempotencyKey,
+        rethrowOnFailure: rethrowNoticeFailure,
         botSpeechStyle,
-        botId: banResult.botId ?? undefined,
+        botId: routeNoticeDynamically ? undefined : (banResult.botId ?? undefined),
         sanctionEventId: eventPersistence.eventId,
-        beforeSend: leaseGuard?.assertOwned.bind(leaseGuard),
+        beforeSend:
+          leaseGuard || noticeBeforeSend
+            ? async () => {
+                await leaseGuard?.assertOwned();
+                await noticeBeforeSend?.();
+              }
+            : undefined,
       });
       return true;
     } catch (error: unknown) {
@@ -5062,6 +5148,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesDelayMinutes: number;
     botMessageOptions?: MaxSendMessageOptions;
     sanctionNoticeText?: string;
+    bypassNoticeBucket?: boolean;
+    idempotencyKey?: string;
+    rethrowOnFailure?: boolean;
     botSpeechStyle: BotSpeechStyle | null;
     botId?: string;
     sanctionEventId?: string | null;
@@ -5077,6 +5166,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesDelayMinutes,
       botMessageOptions,
       sanctionNoticeText,
+      bypassNoticeBucket,
+      idempotencyKey,
+      rethrowOnFailure,
       botSpeechStyle,
       botId,
       sanctionEventId,
@@ -5098,6 +5190,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
         userFacing: true,
+        bypassNoticeBucket,
+        idempotencyKey,
         beforeSend,
       });
     } catch (error: unknown) {
@@ -5110,6 +5204,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to send mute notice message',
       );
+      if (rethrowOnFailure) {
+        throw error;
+      }
     }
   }
 
@@ -5122,6 +5219,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesDelayMinutes: number;
     botMessageOptions?: MaxSendMessageOptions;
     sanctionNoticeText?: string;
+    bypassNoticeBucket?: boolean;
+    idempotencyKey?: string;
+    rethrowOnFailure?: boolean;
     botSpeechStyle: BotSpeechStyle | null;
     botId?: string;
     sanctionEventId?: string | null;
@@ -5136,6 +5236,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesDelayMinutes,
       botMessageOptions,
       sanctionNoticeText,
+      bypassNoticeBucket,
+      idempotencyKey,
+      rethrowOnFailure,
       botSpeechStyle,
       botId,
       sanctionEventId,
@@ -5158,6 +5261,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
         userFacing: true,
+        bypassNoticeBucket,
+        idempotencyKey,
         beforeSend,
       });
     } catch (error: unknown) {
@@ -5170,6 +5275,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to send permanent ban notice message',
       );
+      if (rethrowOnFailure) {
+        throw error;
+      }
     }
   }
 
@@ -5241,7 +5349,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       muteMaxCount?: number;
       banMaxCount?: number;
     },
-  ): SanctionAction {
+  ): RequiredSubscriptionNoticeAction {
     const warnMaxCount = settings.warnMaxCount ?? 2;
     const muteMaxCount = settings.muteMaxCount ?? (settings.warnEnabled ? warnMaxCount + 1 : 2);
     const banMaxCount =
@@ -5259,7 +5367,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private resolveRequiredSubscriptionEscalationAction(
     requiredSubscriptionViolationCount24h: number,
     settings: { warnEnabled: boolean; banEnabled: boolean; muteEnabled: boolean },
-  ): SanctionAction {
+  ): RequiredSubscriptionNoticeAction {
     return this.resolveLinkEscalationAction(requiredSubscriptionViolationCount24h, settings);
   }
 
@@ -5314,7 +5422,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       muteMaxCount: number;
       banMaxCount: number;
     },
-  ): SanctionAction {
+  ): RequiredSubscriptionNoticeAction {
     const count = Number.isInteger(violationCount) ? Math.max(1, violationCount) : 1;
     const thresholds = [
       {
@@ -6312,41 +6420,47 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async countRecentRequiredSubscriptionViolations(
     chatId: string,
     userId: string,
+    options: { persistedOnly?: boolean } = {},
   ): Promise<number> {
     const windowMs = REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
+    const loadCount = async () => {
+      const violationModel = this.prisma.violation as unknown as {
+        count?: (args: {
+          where: {
+            chatId: string;
+            userId: string;
+            ruleCode: string;
+            createdAt: { gte: Date };
+          };
+        }) => Promise<number>;
+      };
+
+      if (typeof violationModel.count !== 'function') {
+        return 1;
+      }
+
+      const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+      const count = await violationModel.count({
+        where: {
+          chatId,
+          userId,
+          ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+          createdAt: { gte: since },
+        },
+      });
+
+      return Number.isInteger(count) && count > 0 ? count : 1;
+    };
+    if (options.persistedOnly) {
+      return this.normalizeRecentViolationCount(await loadCount());
+    }
+
     return this.countRecentViolationsWithEscalationCounter({
       chatId,
       userId,
       ruleKey: REQUIRED_SUBSCRIPTION_RULE_CODE,
       windowMs,
-      loadCount: async () => {
-        const violationModel = this.prisma.violation as unknown as {
-          count?: (args: {
-            where: {
-              chatId: string;
-              userId: string;
-              ruleCode: string;
-              createdAt: { gte: Date };
-            };
-          }) => Promise<number>;
-        };
-
-        if (typeof violationModel.count !== 'function') {
-          return 1;
-        }
-
-        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
-        const count = await violationModel.count({
-          where: {
-            chatId,
-            userId,
-            ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-            createdAt: { gte: since },
-          },
-        });
-
-        return Number.isInteger(count) && count > 0 ? count : 1;
-      },
+      loadCount,
     });
   }
 
@@ -6604,6 +6718,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         expiresAt: null,
         durationHours: null,
         permanent: true,
+        ruleCode: latestSanctionEvent.ruleCode ?? null,
       };
       await this.rememberActiveMuteState(chatId, userId, activeMute);
       return activeMute;
@@ -6633,6 +6748,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       expiresAt,
       durationHours,
       permanent: false,
+      ruleCode: latestSanctionEvent.ruleCode ?? null,
     };
     await this.rememberActiveMuteState(chatId, userId, activeMute);
     return activeMute;
@@ -9969,14 +10085,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     createdAt: string;
-    degradeMode: boolean;
-    hotChatBackoffActive: boolean;
-    systemMode: SystemModeSnapshot;
     settings: Pick<
       ChatSettings,
       | 'requiredSubscriptionEnabled'
       | 'requiredSubscriptionChannelIds'
-      | 'requiredSubscriptionBotMessageEnabled'
       | 'requiredSubscriptionBotMessageText'
       | 'requiredSubscriptionButtonText'
       | 'requiredSubscriptionAdminContactButtonEnabled'
@@ -9996,6 +10108,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedUrl: string | null;
     rulesPublishedMessageId: string | null;
     hotPathProfile?: WebhookHotPathProfile | null;
+    suppressEscalation?: boolean;
+    knownAppliedSanctionAction?: typeof SanctionAction.MUTE;
   }): Promise<boolean> {
     if (!isRequiredSubscriptionCurrentlyActive(params.settings)) {
       return false;
@@ -10078,76 +10192,119 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       },
     };
-    await this.ensureModerationDeleteIntent(deleteIntent);
-
-    const claimed = await this.claimAndPersistMessageScopedModerationViolation({
-      chatId: params.chatId,
-      userId: params.userId,
-      messageId: params.messageId,
-      ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-      score: 1,
-    });
-    if (!claimed) {
-      return true;
-    }
-
-    const deleteResult = await this.executeModerationDelete(deleteIntent);
-    const messageDeleted = deleteResult.gone;
-    this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
-    if (messageDeleted) {
-      this.markWebhookHotPathSuccessBoundary(params.hotPathProfile, 'required-subscription.delete');
-    }
-
-    this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.follow-up');
-    const runRequiredSubscriptionFollowUp = async () => {
-      const requiredSubscriptionViolationCount24h =
-        await this.countRecentRequiredSubscriptionViolations(params.chatId, params.userId);
-      const action = this.resolveRequiredSubscriptionEscalationAction(
-        requiredSubscriptionViolationCount24h,
-        {
-          warnEnabled: params.settings.requiredSubscriptionWarnEnabled,
-          banEnabled: params.settings.requiredSubscriptionBanEnabled,
-          muteEnabled: params.settings.requiredSubscriptionMuteEnabled,
-        },
-      );
-      if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
-        await this.createBotModerationEvent({
-          data: {
+    return this.runRequiredSubscriptionNoticeExclusive(
+      params.chatId,
+      params.messageId,
+      async (assertNoticeLeaseOwned) => {
+        const noticeIdempotencyKey = `required-subscription:notice:v1:${params.chatId}:${params.messageId}`;
+        const sendRequiredSubscriptionNoticePlan = (plan: RequiredSubscriptionNoticePlan) =>
+          this.sendBotMessageWithOptionalAutoDelete({
             chatId: params.chatId,
-            userId: params.userId,
-            messageId: params.messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: maskText(params.text),
-            score: 1,
-            operator: Operator.BOT,
-            metadata: {
-              action: SanctionAction.DELETE_MESSAGE,
-              ...requiredSubscriptionChannelMetadata,
-              missingChannelTitles,
-            },
-          },
-        });
-      }
+            text: plan.renderedText,
+            messageOptions: plan.messageOptions,
+            media: this.resolveBotSpeechMedia(params.settings, plan.mediaFieldKey ?? undefined),
+            deleteBotMessagesEnabled: plan.deleteBotMessagesEnabled,
+            deleteBotMessagesDelayMinutes: plan.deleteBotMessagesDelayMinutes,
+            userFacing: true,
+            bypassNoticeBucket: true,
+            idempotencyKey: noticeIdempotencyKey,
+            beforeSend: assertNoticeLeaseOwned,
+          });
+        const executeRequiredSubscriptionDelete = async () => {
+          await assertNoticeLeaseOwned();
+          await this.ensureModerationDeleteIntent(deleteIntent);
+          await assertNoticeLeaseOwned();
+          const deleteResult = await this.executeModerationDelete(deleteIntent);
+          this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
+          if (deleteResult.gone) {
+            this.markWebhookHotPathSuccessBoundary(
+              params.hotPathProfile,
+              'required-subscription.delete',
+            );
+          }
+          if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+            await this.createBotModerationEvent({
+              data: {
+                chatId: params.chatId,
+                userId: params.userId,
+                messageId: params.messageId,
+                eventType: EventType.MESSAGE,
+                ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
+                action: SanctionAction.DELETE_MESSAGE,
+                maskedExcerpt: maskText(params.text),
+                score: 1,
+                operator: Operator.BOT,
+                metadata: {
+                  action: SanctionAction.DELETE_MESSAGE,
+                  ...requiredSubscriptionChannelMetadata,
+                  missingChannelTitles,
+                },
+              },
+            });
+          }
+        };
 
-      let noticeContextPrepared = false;
-      let followUpMissingChannelTitles = missingChannelTitles;
-      let requiredSubscriptionMessageOptions: MaxSendMessageOptions | undefined;
-      const prepareRequiredSubscriptionNoticeContext = async () => {
-        if (noticeContextPrepared) {
-          return;
+        const persistedNoticePlan = await this.requiredSubscriptionNoticePlans.read(
+          params.chatId,
+          params.messageId,
+        );
+        if (persistedNoticePlan) {
+          await sendRequiredSubscriptionNoticePlan(persistedNoticePlan);
+          await executeRequiredSubscriptionDelete();
+          return true;
         }
 
-        noticeContextPrepared = true;
+        await assertNoticeLeaseOwned();
+        const claimed = await this.claimAndPersistMessageScopedModerationViolation({
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+          score: 1,
+        });
+
+        this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.follow-up');
+        const persistedDecision = !claimed
+          ? await this.requiredSubscriptionNoticePlans.readDecision({
+              chatId: params.chatId,
+              userId: params.userId,
+              messageId: params.messageId,
+            })
+          : null;
+        const recoveredAppliedMuteDecision =
+          !persistedDecision && params.knownAppliedSanctionAction === SanctionAction.MUTE
+            ? ({
+                action: SanctionAction.MUTE,
+                eventId: null,
+                violationCount24h: null,
+              } satisfies RequiredSubscriptionPersistedDecision)
+            : null;
+        const recoveredDecision = persistedDecision ?? recoveredAppliedMuteDecision;
+        const requiredSubscriptionViolationCount24h =
+          recoveredDecision?.violationCount24h ??
+          (await this.countRecentRequiredSubscriptionViolations(params.chatId, params.userId, {
+            persistedOnly: !claimed,
+          }));
+        const intendedAction: RequiredSubscriptionNoticeAction =
+          recoveredDecision?.action ??
+          (params.suppressEscalation
+            ? SanctionAction.NONE
+            : this.resolveRequiredSubscriptionEscalationAction(
+                requiredSubscriptionViolationCount24h,
+                {
+                  warnEnabled: params.settings.requiredSubscriptionWarnEnabled,
+                  banEnabled: params.settings.requiredSubscriptionBanEnabled,
+                  muteEnabled: params.settings.requiredSubscriptionMuteEnabled,
+                },
+              ));
         const followUpMissingChannels = await this.resolveRequiredSubscriptionNoticeChannels({
           channels: missingChannels,
           channelIdsNeedingRefresh: missingChannelIdsNeedingRefresh,
         });
-        followUpMissingChannelTitles = followUpMissingChannels
+        const followUpMissingChannelTitles = followUpMissingChannels
           .map((channel) => this.readRequiredSubscriptionChannelTitle(channel.id, channel.title))
           .filter((title) => title.length > 0);
-        requiredSubscriptionMessageOptions =
+        const requiredSubscriptionMessageOptions =
           this.buildRequiredSubscriptionMessageOptions(
             followUpMissingChannels,
             params.settings.requiredSubscriptionButtonText,
@@ -10155,219 +10312,151 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             params.rulesPublishedUrl,
             params.rulesPublishedMessageId,
           ) ?? undefined;
-      };
-
-      const sendRequiredSubscriptionBotMessage = async (
-        textValue: string,
-        mediaFieldKey?: BotSpeechMediaFieldKey,
-      ) => {
-        await prepareRequiredSubscriptionNoticeContext();
-        return this.sendBotMessageWithOptionalAutoDelete({
-          chatId: params.chatId,
-          botId: deleteResult.botId ?? undefined,
-          text: this.renderRequiredSubscriptionNoticeHtml(textValue),
-          messageOptions: this.withHtmlMessageOptions(requiredSubscriptionMessageOptions),
-          media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey),
-          deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
-          deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-          bypassNoticeBucket: true,
-        });
-      };
-      const requiredSubscriptionNoticeSkipReason = this.resolveOptionalWebhookStageSkipReason({
-        stage: 'required-subscription.notice',
-        hotPathProfile: params.hotPathProfile,
-        systemMode: params.systemMode,
-        hotChatBackoffActive: params.hotChatBackoffActive,
-        minRemainingMs: REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
-      });
-      const canSendRequiredSubscriptionNotice = !requiredSubscriptionNoticeSkipReason;
-      if (requiredSubscriptionNoticeSkipReason) {
-        this.recordOptionalWebhookStageSkip({
-          stage: 'required-subscription.notice',
-          reason: requiredSubscriptionNoticeSkipReason,
-        });
-      }
-
-      if (action === SanctionAction.NONE) {
-        if (
-          params.settings.requiredSubscriptionBotMessageEnabled &&
-          canSendRequiredSubscriptionNotice
-        ) {
-          const noticeOnCooldown = await this.hasRequiredSubscriptionNoticeCooldown(
-            params.chatId,
-            params.userId,
-          );
-          if (!noticeOnCooldown) {
-            try {
-              await prepareRequiredSubscriptionNoticeContext();
-              const noticeSent = await sendRequiredSubscriptionBotMessage(
-                await this.appendAdminContactMarkdownLink(
-                  params.chatId,
-                  this.buildRequiredSubscriptionExplanation(
-                    params.userLabel,
-                    messageDeleted,
-                    followUpMissingChannelTitles,
-                    params.settings.requiredSubscriptionBotMessageText,
-                    params.settings.botSpeechStyle,
-                  ),
-                  params.settings.requiredSubscriptionAdminContactButtonEnabled,
-                  params.settings.requiredSubscriptionAdminContactButtonUrl,
-                ),
-                'requiredSubscriptionBotMessageText',
-              );
-              if (noticeSent) {
-                await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
-              }
-            } catch (error: unknown) {
-              this.logger.warn(
-                {
-                  chatId: params.chatId,
-                  userId: params.userId,
-                  messageId: params.messageId,
-                  error: error instanceof Error ? error.message : 'Unknown error',
-                },
-                'Failed to send required subscription explanation message',
-              );
-            }
-          }
-        }
-      } else if (action === SanctionAction.WARN && canSendRequiredSubscriptionNotice) {
-        try {
-          await sendRequiredSubscriptionBotMessage(
-            await this.appendAdminContactMarkdownLink(
-              params.chatId,
-              this.buildRequiredSubscriptionWarnExplanation(
-                params.userLabel,
-                followUpMissingChannelTitles,
-                params.settings.requiredSubscriptionWarnMessageText,
-                params.settings.botSpeechStyle,
-              ),
-              params.settings.requiredSubscriptionAdminContactButtonEnabled,
-              params.settings.requiredSubscriptionAdminContactButtonUrl,
-            ),
-            'requiredSubscriptionWarnMessageText',
-          );
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
+        const persistModerationEvent = (
+          metadataPatch: Record<string, unknown> = {},
+          actionOverride: SanctionAction = intendedAction,
+        ) =>
+          this.createBotModerationEvent({
+            data: {
               chatId: params.chatId,
               userId: params.userId,
               messageId: params.messageId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Failed to send required subscription warning message',
-          );
-        }
-      }
-
-      const sanctionUserLabel =
-        action === SanctionAction.MUTE || action === SanctionAction.BAN
-          ? await this.resolveSanctionUserLabel(params.chatId, params.userId, params.userLabel)
-          : params.userLabel;
-      const persistModerationEvent = (
-        metadataPatch: Record<string, unknown> = {},
-        actionOverride: SanctionAction = action,
-      ) =>
-        this.createBotModerationEvent({
-          data: {
-            chatId: params.chatId,
-            userId: params.userId,
-            messageId: params.messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-            action: actionOverride,
-            maskedExcerpt: maskText(params.text),
-            score: 1,
-            operator: Operator.BOT,
-            metadata: {
+              eventType: EventType.MESSAGE,
+              ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
               action: actionOverride,
-              ...requiredSubscriptionChannelMetadata,
-              missingChannelTitles: followUpMissingChannelTitles,
-              requiredSubscriptionViolationCount24h,
-              requiredSubscriptionEscalationWindowHours:
-                REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
-              ...metadataPatch,
+              maskedExcerpt: maskText(params.text),
+              score: 1,
+              operator: Operator.BOT,
+              metadata: {
+                action: actionOverride,
+                ...requiredSubscriptionChannelMetadata,
+                missingChannelTitles: followUpMissingChannelTitles,
+                requiredSubscriptionViolationCount24h,
+                requiredSubscriptionEscalationWindowHours:
+                  REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
+                ...metadataPatch,
+              },
             },
-          },
-        });
-      let sanctionEventPersisted = false;
+          });
+        let effectiveNoticeAction = intendedAction;
+        let sanctionEventId = recoveredDecision?.eventId ?? null;
+        const sanctionUserLabel =
+          intendedAction === SanctionAction.MUTE || intendedAction === SanctionAction.BAN
+            ? await this.resolveSanctionUserLabel(params.chatId, params.userId, params.userLabel)
+            : params.userLabel;
 
-      if (action === SanctionAction.MUTE || action === SanctionAction.BAN) {
-        await prepareRequiredSubscriptionNoticeContext();
-      }
+        if (!recoveredDecision) {
+          await assertNoticeLeaseOwned();
+          if (intendedAction === SanctionAction.NONE || intendedAction === SanctionAction.WARN) {
+            const event = await persistModerationDecisionWithoutAppliedSanction(
+              persistModerationEvent,
+              intendedAction,
+            );
+            sanctionEventId = this.readString(this.asRecord(event)?.id);
+          } else {
+            let persistedSanctionEventId: string | null = null;
+            const sanctionApplied = await this.applySanctionAction({
+              chatId: params.chatId,
+              userId: params.userId,
+              action: intendedAction,
+              userLabel: sanctionUserLabel,
+              messageId: params.messageId,
+              muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
+              deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+              deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+              botMessageOptions: withRequiredSubscriptionHtmlMessageOptions(
+                requiredSubscriptionMessageOptions,
+              ),
+              bypassNoticeBucket: true,
+              noticeIdempotencyKey,
+              rethrowNoticeFailure: true,
+              activeMuteRuleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+              routeNoticeDynamically: true,
+              deferNotice: true,
+              onSanctionEventPersisted: (eventId) => {
+                persistedSanctionEventId = eventId;
+              },
+              noticeBeforeSend: assertNoticeLeaseOwned,
+              botSpeechStyle: params.settings.botSpeechStyle,
+              trackAsGlobalSpammer: false,
+              persistModerationEvent,
+              assertActiveLease: assertNoticeLeaseOwned,
+            });
+            if (sanctionApplied) {
+              sanctionEventId = persistedSanctionEventId;
+            } else {
+              effectiveNoticeAction = SanctionAction.NONE;
+              await assertNoticeLeaseOwned();
+              await persistModerationDecisionWithoutAppliedSanction(
+                persistModerationEvent,
+                intendedAction,
+              );
+              sanctionEventId = null;
+            }
+          }
+        }
 
-      if (action !== SanctionAction.NONE) {
-        const requiredSubscriptionBanNoticeText =
-          action === SanctionAction.BAN
-            ? this.buildRequiredSubscriptionBanExplanation(
-                sanctionUserLabel,
-                followUpMissingChannelTitles,
-                params.settings.requiredSubscriptionMuteDurationHours,
-                params.settings.botSpeechStyle,
-              )
-            : null;
-        sanctionEventPersisted = await this.applySanctionAction({
-          chatId: params.chatId,
-          userId: params.userId,
-          action,
-          userLabel: sanctionUserLabel,
-          messageId: params.messageId,
-          muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
+        const candidateNoticePlan = await buildRequiredSubscriptionNoticePlan({
+          action: effectiveNoticeAction,
+          baseMessageOptions: requiredSubscriptionMessageOptions,
+          sanctionEventId,
           deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-          botMessageOptions:
-            requiredSubscriptionBanNoticeText !== null
-              ? this.withHtmlMessageOptions(requiredSubscriptionMessageOptions)
-              : requiredSubscriptionMessageOptions,
-          sanctionNoticeText:
-            requiredSubscriptionBanNoticeText !== null
-              ? this.renderRequiredSubscriptionNoticeHtml(requiredSubscriptionBanNoticeText)
-              : undefined,
-          botSpeechStyle: params.settings.botSpeechStyle,
-          trackAsGlobalSpammer: false,
-          persistModerationEvent,
-        });
-
-        if (action === SanctionAction.MUTE && canSendRequiredSubscriptionNotice) {
-          try {
-            await sendRequiredSubscriptionBotMessage(
+          copy: {
+            explanation: () =>
+              this.appendAdminContactMarkdownLink(
+                params.chatId,
+                this.buildRequiredSubscriptionExplanation(
+                  params.userLabel,
+                  null,
+                  followUpMissingChannelTitles,
+                  params.settings.requiredSubscriptionBotMessageText,
+                  params.settings.botSpeechStyle,
+                ),
+                params.settings.requiredSubscriptionAdminContactButtonEnabled,
+                params.settings.requiredSubscriptionAdminContactButtonUrl,
+              ),
+            warning: () =>
+              this.appendAdminContactMarkdownLink(
+                params.chatId,
+                this.buildRequiredSubscriptionWarnExplanation(
+                  params.userLabel,
+                  followUpMissingChannelTitles,
+                  params.settings.requiredSubscriptionWarnMessageText,
+                  params.settings.botSpeechStyle,
+                ),
+                params.settings.requiredSubscriptionAdminContactButtonEnabled,
+                params.settings.requiredSubscriptionAdminContactButtonUrl,
+              ),
+            mute: () =>
               this.buildRequiredSubscriptionMuteExplanation(
                 sanctionUserLabel,
                 followUpMissingChannelTitles,
                 params.settings.botSpeechStyle,
               ),
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId: params.chatId,
-                userId: params.userId,
-                messageId: params.messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send required subscription mute message',
-            );
-          }
-        }
-      }
+            ban: () =>
+              this.buildRequiredSubscriptionBanExplanation(
+                sanctionUserLabel,
+                followUpMissingChannelTitles,
+                params.settings.requiredSubscriptionMuteDurationHours,
+                params.settings.botSpeechStyle,
+              ),
+          },
+        });
+        await assertNoticeLeaseOwned();
+        const durableNoticePlan = await this.requiredSubscriptionNoticePlans.persist({
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          botId: this.maxBotContextService?.getActiveBotId() ?? null,
+          plan: candidateNoticePlan,
+        });
+        await sendRequiredSubscriptionNoticePlan(durableNoticePlan);
+        await executeRequiredSubscriptionDelete();
 
-      if (!sanctionEventPersisted) {
-        await persistModerationDecisionWithoutAppliedSanction(persistModerationEvent, action);
-      }
-    };
-
-    await this.runWebhookFollowUpWithBudget({
-      stage: 'required-subscription.follow-up',
-      hotPathProfile: params.hotPathProfile,
-      chatId: params.chatId,
-      userId: params.userId,
-      messageId: params.messageId,
-      maxWaitMs: REQUIRED_SUBSCRIPTION_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
-      minRemainingMs: REQUIRED_SUBSCRIPTION_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
-      task: runRequiredSubscriptionFollowUp,
-    });
-
-    return true;
+        return true;
+      },
+    );
   }
 
   private async handleInvitationAccessMembershipUpdate(params: {
@@ -11801,24 +11890,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private async hasRequiredSubscriptionNoticeCooldown(
-    chatId: string,
-    userId: string,
-  ): Promise<boolean> {
-    const cacheKey = this.buildRequiredSubscriptionNoticeCooldownKey(chatId, userId);
-    const cached = await this.redisCounter?.getString(cacheKey);
-    return cached === '1';
-  }
-
-  private async markRequiredSubscriptionNoticeSent(chatId: string, userId: string): Promise<void> {
-    const cacheKey = this.buildRequiredSubscriptionNoticeCooldownKey(chatId, userId);
-    await this.redisCounter?.setStringWithTtl(
-      cacheKey,
-      '1',
-      REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC,
-    );
-  }
-
   private async hasInvitationAccessNoticeCooldown(
     chatId: string,
     userId: string,
@@ -11835,10 +11906,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildRequiredSubscriptionMembershipCacheKey(channelId: string, userId: string): string {
     return `required-subscription:member:v1:${channelId}:${userId}`;
-  }
-
-  private buildRequiredSubscriptionNoticeCooldownKey(chatId: string, userId: string): string {
-    return `required-subscription:notice:v1:${chatId}:${userId}`;
   }
 
   private buildInvitationAccessNoticeCooldownKey(chatId: string, userId: string): string {
@@ -17952,21 +18019,80 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private renderRequiredSubscriptionNoticeHtml(text: string): string {
-    return this.stripLooseMarkdownMarkers(
-      renderSupportedMarkdownAsHtml(text, { blockMode: 'raw' }),
-    );
-  }
+  private async runRequiredSubscriptionNoticeExclusive<T>(
+    chatId: string,
+    messageId: string,
+    task: (assertOwned: () => Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    const redis = this.redisCounter as Partial<RedisCounterService> | undefined;
+    if (!redis) {
+      if (process.env.NODE_ENV === 'test') {
+        return task(async () => undefined);
+      }
+      throw new Error('Required subscription notice lock service is unavailable');
+    }
+    if (
+      typeof redis.acquireLock !== 'function' ||
+      typeof redis.renewLock !== 'function' ||
+      typeof redis.releaseLock !== 'function'
+    ) {
+      throw new Error('Required subscription notice lock API is unavailable');
+    }
 
-  private stripLooseMarkdownMarkers(text: string): string {
-    return text.replace(/(?:\*\*\*|\*\*)/g, '');
-  }
+    const lockKey = `moderation:required-subscription:notice-lock:v1:${chatId}:${messageId}`;
+    const lockToken = await redis.acquireLock(lockKey, REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS);
+    if (!lockToken) {
+      throw new Error('Required subscription notice handoff is already in progress');
+    }
 
-  private withHtmlMessageOptions(options?: MaxSendMessageOptions): MaxSendMessageOptions {
-    return {
-      ...(options ?? {}),
-      textFormat: 'html',
+    let leaseError: Error | null = null;
+    const assertOwned = async () => {
+      if (leaseError) {
+        throw leaseError;
+      }
+
+      try {
+        const renewed = await redis.renewLock!(
+          lockKey,
+          lockToken,
+          REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS,
+        );
+        if (!renewed) {
+          throw new Error('Required subscription notice lease was lost');
+        }
+      } catch (error: unknown) {
+        leaseError =
+          error instanceof Error
+            ? error
+            : new Error('Required subscription notice lease renewal failed');
+        throw leaseError;
+      }
     };
+    const renewalTimer = setInterval(
+      () => {
+        void assertOwned().catch(() => undefined);
+      },
+      Math.max(1_000, Math.trunc(REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS / 3)),
+    );
+    renewalTimer.unref?.();
+
+    try {
+      const result = await task(assertOwned);
+      await assertOwned();
+      return result;
+    } finally {
+      clearInterval(renewalTimer);
+      await redis.releaseLock(lockKey, lockToken).catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId,
+            messageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to release required subscription notice lock',
+        );
+      });
+    }
   }
 
   private resolveBotSpeechMedia(
@@ -18320,6 +18446,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const parsed = JSON.parse(raw) as Partial<CachedActiveMuteState>;
       const eventId = typeof parsed.eventId === 'string' ? parsed.eventId.trim() : '';
+      const ruleCode =
+        parsed.ruleCode === null
+          ? null
+          : typeof parsed.ruleCode === 'string' && parsed.ruleCode.trim().length > 0
+            ? parsed.ruleCode.trim()
+            : undefined;
       const permanent = parsed.permanent === true;
       const durationHours =
         typeof parsed.durationHours === 'number' && Number.isFinite(parsed.durationHours)
@@ -18329,7 +18461,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         typeof parsed.issuedAt === 'string' ? Date.parse(parsed.issuedAt) : Number.NaN;
       const expiresAtMs =
         typeof parsed.expiresAt === 'string' ? Date.parse(parsed.expiresAt) : Number.NaN;
-      if (!eventId || !Number.isFinite(issuedAtMs)) {
+      if (!eventId || !Number.isFinite(issuedAtMs) || ruleCode === undefined) {
         return { status: 'miss' };
       }
 
@@ -18342,6 +18474,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             expiresAt: null,
             durationHours: null,
             permanent: true,
+            ruleCode,
           },
         };
       }
@@ -18361,6 +18494,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         expiresAt: new Date(expiresAtMs),
         durationHours,
         permanent: false,
+        ruleCode,
       };
       if (expiresAtMs <= Date.now()) {
         await this.rememberInactiveActiveMuteState(chatId, userId);
@@ -18414,6 +18548,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           expiresAt: mute.expiresAt ? mute.expiresAt.toISOString() : null,
           durationHours: mute.durationHours,
           permanent: mute.permanent,
+          ruleCode: mute.ruleCode ?? null,
         } satisfies CachedActiveMuteState),
         ttlSec,
       );
