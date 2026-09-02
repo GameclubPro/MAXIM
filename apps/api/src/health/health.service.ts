@@ -10,6 +10,7 @@ import {
 import {
   CommercialOcrMetricsService,
   type CommercialOcrRolloutMetricsSnapshot,
+  type CommercialOcrTerminalDeadlineExhaustedCounters,
 } from '../moderation/commercial-ocr/commercial-ocr-metrics.service';
 import { COMMERCIAL_OCR_QUEUE } from '../moderation/commercial-ocr/commercial-ocr.queue';
 import { MaxApiMetricsService } from '../system/max-api-metrics.service';
@@ -150,6 +151,7 @@ type OcrRuntimeReadinessCheck = Readonly<{
   ready: boolean;
   workers: Readonly<{ configured: number; live: number; ready: number; busy: number }>;
   queueDepth: number;
+  bullMqTerminalDeadlineExhaustedProcess: CommercialOcrTerminalDeadlineExhaustedCounters | null;
   behaviorIdentity: Readonly<{
     complete: boolean;
     required: boolean;
@@ -251,7 +253,10 @@ function isOcrRuntimeReady(status: NativeTesseractRuntimeStatus): boolean {
   );
 }
 
-function mapOcrRuntimeReadiness(status: NativeTesseractRuntimeStatus): OcrRuntimeReadinessCheck {
+function mapOcrRuntimeReadiness(
+  status: NativeTesseractRuntimeStatus,
+  terminalDeadlineExhausted: CommercialOcrTerminalDeadlineExhaustedCounters | null,
+): OcrRuntimeReadinessCheck {
   const ready = isOcrRuntimeReady(status);
   return {
     state: !ready && status.state === 'ready' ? 'degraded' : status.state,
@@ -263,6 +268,7 @@ function mapOcrRuntimeReadiness(status: NativeTesseractRuntimeStatus): OcrRuntim
       busy: status.workers.busy,
     },
     queueDepth: status.queueDepth,
+    bullMqTerminalDeadlineExhaustedProcess: terminalDeadlineExhausted,
     behaviorIdentity: {
       complete: status.behaviorIdentity.complete,
       required: status.behaviorIdentity.required,
@@ -278,6 +284,7 @@ function unavailableOcrRuntimeReadiness(): OcrRuntimeReadinessCheck {
     ready: false,
     workers: { configured: 0, live: 0, ready: 0, busy: 0 },
     queueDepth: 0,
+    bullMqTerminalDeadlineExhaustedProcess: null,
     behaviorIdentity: {
       complete: false,
       required: true,
@@ -406,7 +413,15 @@ export class HealthService implements OnModuleDestroy {
     let ocr = unavailableOcrRuntimeReadiness();
     if (this.nativeTesseractOcr) {
       try {
-        ocr = mapOcrRuntimeReadiness(this.nativeTesseractOcr.getRuntimeStatus());
+        const status = this.nativeTesseractOcr.getRuntimeStatus();
+        let terminalDeadlineExhausted: CommercialOcrTerminalDeadlineExhaustedCounters | null = null;
+        try {
+          terminalDeadlineExhausted =
+            this.commercialOcrMetrics?.getProcessTerminalDeadlineExhaustedCounters?.() ?? null;
+        } catch {
+          // Optional diagnostics never affect isolated OCR readiness.
+        }
+        ocr = mapOcrRuntimeReadiness(status, terminalDeadlineExhausted);
       } catch {
         ocr = unavailableOcrRuntimeReadiness();
       }

@@ -230,7 +230,15 @@ describe('HealthService', () => {
       peekCachedSnapshot: jest.fn(),
     };
     const systemModeService = { getEffectiveSnapshot: jest.fn() };
-    const commercialOcrMetrics = { getSnapshot: jest.fn() };
+    const getProcessTerminalDeadlineExhaustedCounters = jest.fn().mockReturnValue({
+      source_not_ready: 2,
+      governor_pressure: 3,
+      admission_pending: 1,
+    });
+    const commercialOcrMetrics = {
+      getSnapshot: jest.fn(),
+      getProcessTerminalDeadlineExhaustedCounters,
+    };
     const getRuntimeStatus = jest.fn().mockReturnValue(healthyOcrRuntimeStatus());
     const service = new HealthService(
       prisma as never,
@@ -255,6 +263,11 @@ describe('HealthService', () => {
           ready: true,
           workers: { configured: 1, live: 1, ready: 1, busy: 0 },
           queueDepth: 0,
+          bullMqTerminalDeadlineExhaustedProcess: {
+            source_not_ready: 2,
+            governor_pressure: 3,
+            admission_pending: 1,
+          },
           behaviorIdentity: {
             complete: true,
             required: true,
@@ -266,6 +279,14 @@ describe('HealthService', () => {
     });
     expect(JSON.stringify(healthy)).not.toContain('a'.repeat(64));
     expect(JSON.stringify(healthy)).not.toContain('b'.repeat(64));
+
+    getProcessTerminalDeadlineExhaustedCounters.mockImplementationOnce(() => {
+      throw new Error('private metrics failure');
+    });
+    expect(service.ocrReady()).toMatchObject({
+      ok: true,
+      checks: { ocr: { bullMqTerminalDeadlineExhaustedProcess: null } },
+    });
 
     const healthyStatus = healthyOcrRuntimeStatus();
     getRuntimeStatus.mockReturnValue({
@@ -297,6 +318,7 @@ describe('HealthService', () => {
           ready: false,
           workers: { configured: 0, live: 0, ready: 0, busy: 0 },
           queueDepth: 0,
+          bullMqTerminalDeadlineExhaustedProcess: null,
           behaviorIdentity: {
             complete: false,
             required: true,
@@ -307,7 +329,7 @@ describe('HealthService', () => {
       },
     });
 
-    expect(getRuntimeStatus).toHaveBeenCalledTimes(3);
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(4);
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
     expect(redisInstances[0]?.ping).not.toHaveBeenCalled();
     expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();

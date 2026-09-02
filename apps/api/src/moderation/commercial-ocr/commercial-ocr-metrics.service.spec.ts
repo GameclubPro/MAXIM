@@ -126,6 +126,7 @@ describe('CommercialOcrMetricsService', () => {
     service.recordCounter('analysis.complete.delete');
     service.recordCounter('analysis.complete.delete', 2);
     service.recordCounter('analysis.incomplete.ocr_timeout');
+    service.recordCounter('bullmq.job.deadline_exhausted.governor_pressure', 2);
 
     const snapshot = await service.getSnapshot(Date.parse('2026-08-14T10:00:00.000Z'));
 
@@ -163,6 +164,11 @@ describe('CommercialOcrMetricsService', () => {
     expect(Object.keys(snapshot.processCounters.counters)).toEqual(COMMERCIAL_OCR_METRIC_COUNTERS);
     expect(snapshot.processCounters.counters['analysis.complete.delete']).toBe(3);
     expect(snapshot.processCounters.counters['analysis.incomplete.ocr_timeout']).toBe(1);
+    expect(service.getProcessTerminalDeadlineExhaustedCounters()).toEqual({
+      source_not_ready: 0,
+      governor_pressure: 2,
+      admission_pending: 0,
+    });
     expect(snapshot.releaseCounters.available).toBe(false);
     expect(snapshot.windowCounters).toMatchObject({
       available: false,

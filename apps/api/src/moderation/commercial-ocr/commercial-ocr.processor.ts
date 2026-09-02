@@ -196,6 +196,7 @@ export class CommercialOcrProcessor extends WorkerHost {
     }
     const deferUntilMs = Date.now() + result.delayMs;
     if (deferUntilMs >= deadlineAtMs) {
+      this.metrics.recordCounter(`bullmq.job.deadline_exhausted.${result.reason}`);
       await this.releaseAdmission(identity);
       throw new UnrecoverableError(`Commercial OCR job deadline exhausted: ${result.reason}`);
     }

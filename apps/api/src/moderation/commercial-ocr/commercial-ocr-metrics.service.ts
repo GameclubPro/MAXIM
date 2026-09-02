@@ -102,6 +102,9 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'bullmq.job.defer.source_not_ready',
   'bullmq.job.defer.governor_pressure',
   'bullmq.job.defer.admission_pending',
+  'bullmq.job.deadline_exhausted.source_not_ready',
+  'bullmq.job.deadline_exhausted.governor_pressure',
+  'bullmq.job.deadline_exhausted.admission_pending',
   'album.image_count.1',
   'album.image_count.2_3',
   'album.image_count.4_6',
@@ -148,6 +151,11 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
 ] as const;
 
 export type CommercialOcrMetricCounter = (typeof COMMERCIAL_OCR_METRIC_COUNTERS)[number];
+export type CommercialOcrTerminalDeadlineExhaustedCounters = Readonly<{
+  source_not_ready: number;
+  governor_pressure: number;
+  admission_pending: number;
+}>;
 export type CommercialOcrStage = 'download' | 'preprocess' | 'native' | 'policy' | 'end_to_end';
 
 type TimedSample = Readonly<{
@@ -380,6 +388,17 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
       (this.pendingRemoteCounters.get(counter) ?? 0) + amount,
     );
     this.scheduleFlush();
+  }
+
+  getProcessTerminalDeadlineExhaustedCounters(): CommercialOcrTerminalDeadlineExhaustedCounters {
+    return {
+      source_not_ready:
+        this.processCounters.get('bullmq.job.deadline_exhausted.source_not_ready') ?? 0,
+      governor_pressure:
+        this.processCounters.get('bullmq.job.deadline_exhausted.governor_pressure') ?? 0,
+      admission_pending:
+        this.processCounters.get('bullmq.job.deadline_exhausted.admission_pending') ?? 0,
+    };
   }
 
   recordQueueWait(waitMs: number, recordedAtMs = Date.now()): void {

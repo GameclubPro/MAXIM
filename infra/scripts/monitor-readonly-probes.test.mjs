@@ -123,6 +123,12 @@ test('media readiness monitor uses the isolated OCR scope and labels omitted dep
         ready: true,
         workers: { configured: 1, live: 1, ready: 1, busy: 0 },
         queueDepth: 0,
+        bullMqTerminalDeadlineExhaustedProcess: {
+          source_not_ready: 2,
+          governor_pressure: 18,
+          admission_pending: 1,
+          privateReason: 'private payload',
+        },
         behaviorIdentity: { verified: true, state: 'verified' },
       },
     },
@@ -132,7 +138,34 @@ test('media readiness monitor uses the isolated OCR scope and labels omitted dep
   assert.equal(summary.healthy, true);
   assert.match(summary.line, /scope=ocr/u);
   assert.match(summary.line, /db=not-probed redis=not-probed/u);
+  assert.match(
+    summary.line,
+    /bullMqDeadlineExhaustedProcess=source_not_ready:2,governor_pressure:18,admission_pending:1/u,
+  );
+  assert.doesNotMatch(summary.line, /private/u);
   assert.match(summary.line, /failed=not-probed restarts=not-probed recycles=not-probed/u);
+});
+
+test('media readiness labels missing BullMQ deadline process counters as not probed', () => {
+  const summary = summarizeMediaHealth(200, {
+    ok: true,
+    scope: 'ocr',
+    checks: {
+      ocr: {
+        state: 'ready',
+        ready: true,
+        workers: { configured: 1, live: 1, ready: 1, busy: 0 },
+        queueDepth: 0,
+        behaviorIdentity: { verified: true, state: 'verified' },
+      },
+    },
+  });
+
+  assert.equal(summary.healthy, true);
+  assert.match(
+    summary.line,
+    /bullMqDeadlineExhaustedProcess=source_not_ready:not-probed,governor_pressure:not-probed,admission_pending:not-probed/u,
+  );
 });
 
 test('media readiness body reader rejects declared and streamed overflow before buffering it', async () => {

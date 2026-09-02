@@ -322,26 +322,41 @@ describe('CommercialOcrProcessor', () => {
 
       expect(harness.job.moveToDelayed).toHaveBeenCalledWith(activeNowMs + 5_000, 'lock-1');
       expect(harness.metrics.recordCounter).toHaveBeenCalledWith(`bullmq.job.defer.${reason}`);
+      expect(harness.metrics.recordCounter).not.toHaveBeenCalledWith(
+        `bullmq.job.deadline_exhausted.${reason}`,
+      );
       expect(harness.admissionStore.release).not.toHaveBeenCalled();
     },
   );
 
-  it('refuses a defer that would reach the absolute job deadline', async () => {
-    jest.mocked(Date.now).mockReturnValue(deadlineAtMs - 5_000);
-    const harness = createHarness({
-      result: { kind: 'defer', delayMs: 5_000, reason: 'governor_pressure' },
-    });
+  it.each(['source_not_ready', 'governor_pressure', 'admission_pending'] as const)(
+    'counts a terminal %s defer without changing the deadline failure',
+    async (reason) => {
+      jest.mocked(Date.now).mockReturnValue(deadlineAtMs - 5_000);
+      const harness = createHarness({
+        result: { kind: 'defer', delayMs: 5_000, reason },
+      });
 
-    const error = await harness.processor.process(harness.job, 'lock-1').catch((caught) => caught);
+      const error = await harness.processor
+        .process(harness.job, 'lock-1')
+        .catch((caught) => caught);
 
-    expect(error).toBeInstanceOf(UnrecoverableError);
-    expect(error).toHaveProperty(
-      'message',
-      'Commercial OCR job deadline exhausted: governor_pressure',
-    );
-    expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
-    expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
-  });
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      expect(error).toHaveProperty('message', `Commercial OCR job deadline exhausted: ${reason}`);
+      expect(harness.metrics.recordCounter).toHaveBeenCalledWith(
+        `bullmq.job.deadline_exhausted.${reason}`,
+      );
+      const counterCallIndex = harness.metrics.recordCounter.mock.calls.findIndex(
+        ([counter]) => counter === `bullmq.job.deadline_exhausted.${reason}`,
+      );
+      expect(counterCallIndex).toBeGreaterThanOrEqual(0);
+      expect(harness.metrics.recordCounter.mock.invocationCallOrder[counterCallIndex]).toBeLessThan(
+        harness.admissionStore.release.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+      expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
+      expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
+    },
+  );
 
   it('does not release admission after an ordinary retryable failure', async () => {
     const originalError = new Error('temporary failure');
