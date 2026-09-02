@@ -79,11 +79,24 @@ export type WebhookMembershipCacheMetrics = {
     timeout: number;
     timing: WebhookMembershipCacheTimingMetrics;
   };
+  detached: {
+    completed: number;
+    timeout: number;
+    failure: number;
+    peakInFlight: number;
+    rejected: number;
+  };
 };
 
 export type WebhookMembershipCacheBudgetMetric = {
   outcome: 'completed' | 'timeout';
   durationMs: number;
+};
+
+export type WebhookMembershipCacheDetachedWorkMetric = {
+  outcome: 'completed' | 'timeout' | 'failure' | 'rejected' | null;
+  inFlight: number;
+  count?: number;
 };
 
 export type WebhookMembershipTransitionMetrics = {
@@ -281,6 +294,25 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       return;
     }
     this.recordMembershipCacheMetric('budget', metric.outcome, metric.durationMs);
+  }
+
+  recordMembershipCacheDetachedWork(metric: WebhookMembershipCacheDetachedWorkMetric): void {
+    if (this.destroying) {
+      return;
+    }
+    const key = this.buildBucketKey(Date.now());
+    const inFlight = Number.isFinite(metric.inFlight)
+      ? Math.min(1_024, Math.max(0, Math.trunc(metric.inFlight)))
+      : 0;
+    this.incrementPendingRouteField(key, `membership_cache:detached:in_flight:${inFlight}`);
+    if (metric.outcome) {
+      this.incrementPendingRouteField(
+        key,
+        `membership_cache:detached:${metric.outcome}`,
+        metric.count,
+      );
+    }
+    this.scheduleRouteOutcomeFlush();
   }
 
   recordMembershipAccessEdgeAdvance(metric: WebhookMembershipAccessEdgeAdvanceMetric): void {
@@ -494,6 +526,21 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       metrics.lua.failed += this.readCounter(row['membership_cache:lua:failed']);
       metrics.budget.completed += this.readCounter(row['membership_cache:budget:completed']);
       metrics.budget.timeout += this.readCounter(row['membership_cache:budget:timeout']);
+      if (metrics.detached) {
+        metrics.detached.completed += this.readCounter(row['membership_cache:detached:completed']);
+        metrics.detached.timeout += this.readCounter(row['membership_cache:detached:timeout']);
+        metrics.detached.failure += this.readCounter(row['membership_cache:detached:failure']);
+        metrics.detached.rejected += this.readCounter(row['membership_cache:detached:rejected']);
+        for (const [field, rawCount] of Object.entries(row)) {
+          const match = /^membership_cache:detached:in_flight:(\d+)$/u.exec(field);
+          if (match && this.readCounter(rawCount) > 0) {
+            metrics.detached.peakInFlight = Math.max(
+              metrics.detached.peakInFlight,
+              Math.min(1_024, Number(match[1])),
+            );
+          }
+        }
+      }
 
       for (const stage of MEMBERSHIP_CACHE_TIMING_STAGES) {
         for (let index = 0; index < timingBuckets[stage].length; index += 1) {
@@ -751,6 +798,13 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
         completed: 0,
         timeout: 0,
         timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+      detached: {
+        completed: 0,
+        timeout: 0,
+        failure: 0,
+        peakInFlight: 0,
+        rejected: 0,
       },
     };
   }

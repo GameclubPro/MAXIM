@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
+# ShellCheck cannot follow function reachability through the isolated background monitor worker.
+# shellcheck disable=SC2329
 set -euo pipefail
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
@@ -11,16 +14,34 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 
 DURATION_SEC="${1:-${MAXIM_MONITOR_DURATION_SEC:-1800}}"
 INTERVAL_SEC="${2:-${MAXIM_MONITOR_INTERVAL_SEC:-300}}"
+CAPACITY_INTERVAL_SEC="${MAXIM_MONITOR_CAPACITY_INTERVAL_SEC:-15}"
 TAIL_LINES="${MAXIM_MONITOR_LOG_TAIL_LINES:-300}"
 FAILED_FRESH_WINDOW_SEC="${MAXIM_MONITOR_FAILED_FRESH_WINDOW_SEC:-300}"
 LAST_SERVICE_LOG_SCAN_AT_SEC=0
 LAST_STATIC_LOG_SCAN_AT_SEC=0
 LAST_BULLMQ_PROBE_AT_MS=0
-LOG_FILE="${MAXIM_MONITOR_LOG:-/tmp/maxim-vps-readonly-monitor-$(date +%Y%m%d%H%M%S).log}"
+LOG_FILE="${MAXIM_MONITOR_LOG:-}"
+EPHEMERAL_LOG_DIR=""
+MONITOR_LOG_FD=""
+MONITOR_TEE_PID=""
+MONITOR_WORKER_PID=""
+CAPACITY_SAMPLE_INDEX=0
+CAPACITY_SAMPLER_PID=""
+CAPACITY_SAMPLER_LOCK_FD=""
 PUBLIC_URL="${MAXIM_VPS_PUBLIC_URL:-https://major-maksimov.ru}"
 ADMIN_PUBLIC_URL="${MAXIM_ADMIN_PUBLIC_URL:-https://admin.major-maksimov.ru}"
 SIGNAL_WINDOW_MIN="${MAXIM_MONITOR_SIGNAL_WINDOW_MIN:-30}"
 MONITOR_LOCK_FILE="${MAXIM_MONITOR_LOCK_FILE:-${TMPDIR:-/tmp}/maxim-vps-monitor-readonly-${UID}.lock}"
+CAPACITY_SAMPLER_LOCK_FILE="${MAXIM_MONITOR_CAPACITY_LOCK_FILE:-${MONITOR_LOCK_FILE}.capacity}"
+CAPACITY_BLOCK_DEVICE="${MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE:-vda}"
+CAPACITY_PROBE="$ROOT_DIR/infra/scripts/monitor-capacity-probe.cjs"
+CAPACITY_ARCHIVER="$ROOT_DIR/infra/scripts/monitor-capacity-archive.cjs"
+if [[ -n "${XDG_STATE_HOME:-}" ]]; then
+  CAPACITY_STATE_HOME="$XDG_STATE_HOME"
+else
+  CAPACITY_STATE_HOME="$HOME/.local/state"
+fi
+CAPACITY_ARCHIVE_DIR="${MAXIM_MONITOR_CAPACITY_ARCHIVE_DIR:-$CAPACITY_STATE_HOME/maxim/capacity-monitor}"
 SUCCESSFUL_ACCESS_LOG_PATTERN='" (2[0-9][0-9]|3[0-9][0-9]) [0-9]+'
 PUBLIC_URL="${PUBLIC_URL%/}"
 ADMIN_PUBLIC_URL="${ADMIN_PUBLIC_URL%/}"
@@ -33,6 +54,176 @@ is_positive_integer() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+run_step() {
+  local label="$1"
+  local status
+  shift
+
+  echo "--- $label ---"
+  set +e
+  "$@"
+  status=$?
+  set -e
+  if ((status != 0)); then
+    echo "WARN: $label failed with exit code $status"
+  fi
+}
+
+summarize_capacity_observability() {
+  local archive_status=0
+  local probe_status=0
+  local snapshot
+
+  snapshot="$(
+    ./infra/scripts/vps-connect.sh exec node - "$CAPACITY_BLOCK_DEVICE" <"$CAPACITY_PROBE"
+  )" || probe_status=$?
+  printf '%s\n' "$snapshot" |
+    node "$CAPACITY_ARCHIVER" --archive-dir "$CAPACITY_ARCHIVE_DIR" || archive_status=$?
+  if ((archive_status != 0)); then
+    return "$archive_status"
+  fi
+  return "$probe_status"
+}
+
+sample_capacity_once() {
+  echo "===== capacity sample $CAPACITY_SAMPLE_INDEX $(date -Is) ====="
+  run_step capacity-observability summarize_capacity_observability
+  CAPACITY_SAMPLE_INDEX=$((CAPACITY_SAMPLE_INDEX + 1))
+}
+
+run_capacity_sampler() {
+  local monitor_pid="$1"
+  local stop_at="$2"
+  local lock_fd="$3"
+  local next_sample_at
+  local now
+  local remaining
+  local sleep_for
+
+  if ! is_positive_integer "$monitor_pid" || ! is_positive_integer "$stop_at" ||
+    ! is_positive_integer "$lock_fd" || ! flock -n "$lock_fd"; then
+    echo "Capacity sampler received an invalid owner or lock." >&2
+    return 2
+  fi
+
+  next_sample_at=$(date +%s)
+  while kill -0 "$monitor_pid" 2>/dev/null; do
+    now=$(date +%s)
+    if ((now >= stop_at)); then
+      # Stay reapable until the owning monitor finishes its current diagnostic step.
+      sleep 1
+      continue
+    fi
+    if ((now < next_sample_at)); then
+      sleep_for=$((next_sample_at - now))
+      remaining=$((stop_at - now))
+      if ((sleep_for > remaining)); then sleep_for=$remaining; fi
+      sleep "$sleep_for"
+      continue
+    fi
+
+    sample_capacity_once
+    next_sample_at=$((next_sample_at + CAPACITY_INTERVAL_SEC))
+    now=$(date +%s)
+    if ((next_sample_at <= now)); then
+      next_sample_at=$((now + CAPACITY_INTERVAL_SEC))
+    fi
+  done
+}
+
+if [[ "${1:-}" == "--internal-capacity-sampler" ]]; then
+  if [[ $# -ne 4 ]]; then
+    echo "Capacity sampler invocation is invalid." >&2
+    exit 2
+  fi
+  run_capacity_sampler "$2" "$3" "$4"
+  exit $?
+fi
+
+cleanup_monitor_log() {
+  if [[ -n "$MONITOR_LOG_FD" ]]; then
+    exec {MONITOR_LOG_FD}>&-
+  fi
+  if [[ -n "$EPHEMERAL_LOG_DIR" ]]; then
+    if [[ -f "$LOG_FILE" && ! -L "$LOG_FILE" ]]; then
+      unlink -- "$LOG_FILE" 2>/dev/null || true
+    fi
+    rmdir -- "$EPHEMERAL_LOG_DIR" 2>/dev/null || true
+  fi
+}
+
+cleanup_monitor() {
+  local status=$?
+
+  trap - EXIT HUP INT TERM
+  if declare -F stop_monitor_worker >/dev/null 2>&1; then
+    stop_monitor_worker
+  fi
+  if declare -F stop_capacity_sampler >/dev/null 2>&1; then
+    stop_capacity_sampler
+  fi
+  if declare -F stop_monitor_output >/dev/null 2>&1; then
+    stop_monitor_output || true
+  fi
+  cleanup_monitor_log
+  return "$status"
+}
+
+prepare_monitor_log() {
+  local created=0
+  local log_directory
+  local log_directory_mode
+  local log_directory_owner
+  local temp_root
+
+  if [[ -z "$LOG_FILE" ]]; then
+    temp_root="${TMPDIR:-/tmp}"
+    if [[ "$temp_root" != /* || "$temp_root" =~ [[:cntrl:]] || ! -d "$temp_root" ]]; then
+      echo "TMPDIR must identify an existing absolute directory." >&2
+      return 1
+    fi
+    if ! EPHEMERAL_LOG_DIR="$(
+      mktemp -d "$temp_root/maxim-vps-readonly-monitor-${UID}.XXXXXXXX"
+    )"; then
+      echo "Failed to create a private temporary monitor log directory." >&2
+      return 1
+    fi
+    LOG_FILE="$EPHEMERAL_LOG_DIR/monitor.log"
+  else
+    if [[ "$LOG_FILE" != /* || "$LOG_FILE" =~ [[:cntrl:]] ]]; then
+      echo "MAXIM_MONITOR_LOG must be an absolute path without control characters." >&2
+      return 1
+    fi
+    log_directory="$(dirname -- "$LOG_FILE")"
+    if [[ ! -d "$log_directory" || -L "$log_directory" ]]; then
+      echo "MAXIM_MONITOR_LOG parent must be a real directory." >&2
+      return 1
+    fi
+    log_directory_owner="$(stat -c '%u' -- "$log_directory" 2>/dev/null || true)"
+    log_directory_mode="$(stat -c '%a' -- "$log_directory" 2>/dev/null || true)"
+    if [[ "$log_directory_owner" != "$UID" || ! "$log_directory_mode" =~ ^[0-7]*00$ ]]; then
+      echo "MAXIM_MONITOR_LOG parent must be owner-private and owned by the operator." >&2
+      return 1
+    fi
+  fi
+
+  # FLAG: The full monitor stream can contain identifiers that must never follow a symlink or be shared.
+  set -o noclobber
+  if exec {MONITOR_LOG_FD}>"$LOG_FILE"; then
+    created=1
+  fi
+  set +o noclobber
+  if ((created == 0)); then
+    echo "Monitor log target already exists or cannot be created safely: $LOG_FILE" >&2
+    return 1
+  fi
+}
+
+trap cleanup_monitor EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 if ! is_positive_integer "$DURATION_SEC"; then
   echo "DURATION_SEC must be a positive integer, got: $DURATION_SEC" >&2
   exit 2
@@ -40,6 +231,12 @@ fi
 
 if ! is_positive_integer "$INTERVAL_SEC"; then
   echo "INTERVAL_SEC must be a positive integer, got: $INTERVAL_SEC" >&2
+  exit 2
+fi
+
+if ! is_positive_integer "$CAPACITY_INTERVAL_SEC" ||
+  ((CAPACITY_INTERVAL_SEC < 15 || CAPACITY_INTERVAL_SEC > 60)); then
+  echo "MAXIM_MONITOR_CAPACITY_INTERVAL_SEC must be an integer between 15 and 60, got: $CAPACITY_INTERVAL_SEC" >&2
   exit 2
 fi
 
@@ -59,10 +256,27 @@ if ! is_positive_integer "$SIGNAL_WINDOW_MIN" || ((SIGNAL_WINDOW_MIN > 1440)); t
   exit 2
 fi
 
-if ! command -v flock >/dev/null 2>&1; then
-  echo "flock is required to serialize readonly production monitoring" >&2
+if ! command -v flock >/dev/null 2>&1 || ! command -v setsid >/dev/null 2>&1; then
+  echo "flock and setsid are required for readonly production monitoring" >&2
   exit 2
 fi
+
+if [[ ! "$CAPACITY_BLOCK_DEVICE" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+  echo "MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE is invalid: $CAPACITY_BLOCK_DEVICE" >&2
+  exit 2
+fi
+
+if [[ -z "$CAPACITY_ARCHIVE_DIR" || "$CAPACITY_ARCHIVE_DIR" != /* ]]; then
+  echo "MAXIM_MONITOR_CAPACITY_ARCHIVE_DIR must be an absolute path." >&2
+  exit 2
+fi
+
+for capacity_helper in "$CAPACITY_PROBE" "$CAPACITY_ARCHIVER"; do
+  if [[ ! -r "$capacity_helper" ]]; then
+    echo "Capacity observability helper is unavailable: $capacity_helper" >&2
+    exit 2
+  fi
+done
 
 # FLAG: Multiple full-fleet monitors amplify diagnostic load and can distort the system observed.
 exec {MONITOR_LOCK_FD}>>"$MONITOR_LOCK_FILE"
@@ -71,20 +285,9 @@ if ! flock -n "$MONITOR_LOCK_FD"; then
   exit 3
 fi
 
-run_step() {
-  local label="$1"
-  local status
-  shift
-
-  echo "--- $label ---"
-  set +e
-  "$@"
-  status=$?
-  set -e
-  if ((status != 0)); then
-    echo "WARN: $label failed with exit code $status"
-  fi
-}
+if ! prepare_monitor_log; then
+  exit 2
+fi
 
 scan_service_logs() {
   local cursor_sec
@@ -710,14 +913,15 @@ sample_once() {
 }
 
 run_monitor() {
-  local end_at
+  local end_at="$1"
   local sample_index=0
 
-  end_at=$(($(date +%s) + DURATION_SEC))
   echo "Readonly VPS monitor started at $(date -Is)"
   echo "duration_sec=$DURATION_SEC interval_sec=$INTERVAL_SEC log_tail_lines=$TAIL_LINES"
+  echo "capacity_interval_sec=$CAPACITY_INTERVAL_SEC"
   echo "signal_window_min=$SIGNAL_WINDOW_MIN"
   echo "log_file=$LOG_FILE"
+  echo "capacity_archive_dir=$CAPACITY_ARCHIVE_DIR retention_days=14"
 
   while true; do
     sample_once "$sample_index"
@@ -730,16 +934,158 @@ run_monitor() {
     if ((sleep_for <= 0)); then
       break
     fi
-    if ((sleep_for > INTERVAL_SEC)); then
-      sleep_for=$INTERVAL_SEC
-    fi
+    if ((sleep_for > INTERVAL_SEC)); then sleep_for=$INTERVAL_SEC; fi
     sleep "$sleep_for"
   done
 
   echo "Readonly VPS monitor finished at $(date -Is)"
 }
 
-mkdir -p "$(dirname "$LOG_FILE")"
-{
-  run_monitor
-} 2>&1 | tee "$LOG_FILE"
+start_capacity_sampler() {
+  local monitor_pid="$BASHPID"
+  local stop_at="$1"
+
+  exec {CAPACITY_SAMPLER_LOCK_FD}>>"$CAPACITY_SAMPLER_LOCK_FILE"
+  if ! flock -n "$CAPACITY_SAMPLER_LOCK_FD"; then
+    exec {CAPACITY_SAMPLER_LOCK_FD}>&-
+    CAPACITY_SAMPLER_LOCK_FD=""
+    echo "Another capacity sampler already holds $CAPACITY_SAMPLER_LOCK_FILE" >&2
+    return 3
+  fi
+
+  (
+    # The sampler must not keep the full-monitor lock alive if its owner exits abruptly.
+    exec {MONITOR_LOCK_FD}>&-
+    exec setsid "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" \
+      --internal-capacity-sampler "$monitor_pid" "$stop_at" "$CAPACITY_SAMPLER_LOCK_FD"
+  ) &
+  CAPACITY_SAMPLER_PID=$!
+}
+
+stop_capacity_sampler() {
+  local live_sampler=0
+  local sampler_pid="${CAPACITY_SAMPLER_PID:-}"
+  local running_pid
+
+  CAPACITY_SAMPLER_PID=""
+  if [[ "$sampler_pid" =~ ^[1-9][0-9]*$ && "$sampler_pid" != "$BASHPID" ]]; then
+    while IFS= read -r running_pid; do
+      if [[ "$running_pid" == "$sampler_pid" ]]; then
+        live_sampler=1
+        break
+      fi
+    done < <(jobs -pr)
+    if ((live_sampler == 1)); then
+      kill -TERM -- "-$sampler_pid" 2>/dev/null || kill -TERM "$sampler_pid" 2>/dev/null || true
+    fi
+    wait "$sampler_pid" 2>/dev/null || true
+  fi
+  if [[ -n "${CAPACITY_SAMPLER_LOCK_FD:-}" ]]; then
+    exec {CAPACITY_SAMPLER_LOCK_FD}>&-
+    CAPACITY_SAMPLER_LOCK_FD=""
+  fi
+}
+
+start_monitor_worker() {
+  local stop_at="$1"
+
+  # Job control gives the diagnostic worker and all of its commands an isolated process group.
+  set -m
+  (
+    trap - EXIT HUP INT TERM
+    exec {MONITOR_LOCK_FD}>&-
+    if [[ -n "${CAPACITY_SAMPLER_LOCK_FD:-}" ]]; then
+      exec {CAPACITY_SAMPLER_LOCK_FD}>&-
+    fi
+    run_monitor "$stop_at"
+  ) &
+  MONITOR_WORKER_PID=$!
+  set +m
+}
+
+stop_monitor_worker() {
+  local live_worker=0
+  local running_pid
+  local worker_pid="${MONITOR_WORKER_PID:-}"
+
+  MONITOR_WORKER_PID=""
+  if [[ "$worker_pid" =~ ^[1-9][0-9]*$ && "$worker_pid" != "$BASHPID" ]]; then
+    while IFS= read -r running_pid; do
+      if [[ "$running_pid" == "$worker_pid" ]]; then
+        live_worker=1
+        break
+      fi
+    done < <(jobs -pr)
+    if ((live_worker == 1)); then
+      kill -TERM -- "-$worker_pid" 2>/dev/null || kill -TERM "$worker_pid" 2>/dev/null || true
+    fi
+    wait "$worker_pid" 2>/dev/null || true
+  fi
+}
+
+start_monitor_output() {
+  exec > >(
+    trap - EXIT HUP INT TERM
+    exec {MONITOR_LOCK_FD}>&-
+    exec tee -a "/dev/fd/$MONITOR_LOG_FD"
+  ) 2>&1
+  MONITOR_TEE_PID=$!
+}
+
+stop_monitor_output() {
+  local status=0
+  local tee_pid="${MONITOR_TEE_PID:-}"
+
+  MONITOR_TEE_PID=""
+  if [[ "$tee_pid" =~ ^[1-9][0-9]*$ && "$tee_pid" != "$BASHPID" ]]; then
+    exec 1>&- 2>&-
+    if wait "$tee_pid" 2>/dev/null; then
+      status=0
+    else
+      status=$?
+    fi
+  fi
+  return "$status"
+}
+
+run_monitor_with_capacity_sampler() {
+  local end_at
+  local status
+
+  end_at=$(($(date +%s) + DURATION_SEC))
+  if start_capacity_sampler "$end_at"; then
+    :
+  else
+    status=$?
+    return "$status"
+  fi
+  if start_monitor_worker "$end_at"; then
+    :
+  else
+    status=$?
+    stop_capacity_sampler
+    return "$status"
+  fi
+  if wait "$MONITOR_WORKER_PID"; then
+    status=0
+  else
+    status=$?
+  fi
+  MONITOR_WORKER_PID=""
+  stop_capacity_sampler
+  return "$status"
+}
+
+start_monitor_output
+if run_monitor_with_capacity_sampler; then
+  MONITOR_STATUS=0
+else
+  MONITOR_STATUS=$?
+fi
+if stop_monitor_output; then
+  :
+else
+  OUTPUT_STATUS=$?
+  if ((MONITOR_STATUS == 0)); then MONITOR_STATUS=$OUTPUT_STATUS; fi
+fi
+exit "$MONITOR_STATUS"

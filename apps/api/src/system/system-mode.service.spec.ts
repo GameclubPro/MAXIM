@@ -212,6 +212,7 @@ describe('SystemModeService', () => {
       expect.objectContaining({
         mode: 'degrade',
         source: 'manual',
+        condition: 'manual',
         manualMode: 'degrade',
       }),
     );
@@ -219,6 +220,7 @@ describe('SystemModeService', () => {
       expect.objectContaining({
         mode: 'degrade',
         source: 'manual',
+        condition: 'manual',
         manualMode: 'degrade',
       }),
     );
@@ -457,6 +459,7 @@ describe('SystemModeService', () => {
       expect.objectContaining({
         mode: 'degrade',
         source: 'manual',
+        condition: 'manual',
         manualMode: 'degrade',
       }),
     );
@@ -552,6 +555,7 @@ describe('SystemModeService', () => {
       expect.objectContaining({
         mode: 'degrade',
         source: 'auto',
+        condition: 'mixed',
         reason: 'queue lag 18.0s',
         queueLagSec: 18,
       }),
@@ -612,6 +616,7 @@ describe('SystemModeService', () => {
       expect.objectContaining({
         mode: 'degrade',
         source: 'auto',
+        condition: 'queue_backlog',
         reason: 'queue lag 12.0s',
       }),
     );
@@ -691,6 +696,7 @@ describe('SystemModeService', () => {
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'degrade',
+        condition: 'max_api',
         reason: expect.stringContaining('action error rate'),
       }),
     );
@@ -802,6 +808,7 @@ describe('SystemModeService', () => {
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'degrade',
+        condition: 'max_api',
         reason: expect.stringContaining('critical MAX API rate'),
       }),
     );
@@ -842,6 +849,7 @@ describe('SystemModeService', () => {
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'degrade',
+        condition: 'queue_backlog',
         reason: 'queue lag 18.0s',
       }),
     );
@@ -852,6 +860,7 @@ describe('SystemModeService', () => {
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'degrade',
+        condition: 'stabilizing',
         reason: 'recovery window in progress',
         queueLagSec: 0,
       }),

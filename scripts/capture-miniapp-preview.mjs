@@ -1085,7 +1085,7 @@ const scenarioBehaviors = [
       const systemButtonLabels = await page
         .locator('.publication-content-composer .broadcast-message-card__button')
         .allTextContents();
-      const expectedLabels = ['💬 Комментарии', '✍️ Предложить объявление', '📞 Заказать рекламу'];
+      const expectedLabels = ['💬 Комментарии', '📞 Заказать рекламу'];
       if (JSON.stringify(systemButtonLabels) !== JSON.stringify(expectedLabels)) {
         throw new Error(`Publisher system buttons differ: ${JSON.stringify(systemButtonLabels)}`);
       }
@@ -1765,10 +1765,14 @@ const scenarioBehaviors = [
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
       const toggle = page.getByRole('checkbox', { name: 'Включить предложения', exact: true });
       await toggle.click();
-      await page.getByRole('checkbox', { name: 'Выключить предложения', exact: true }).waitFor({
+      const enabledToggle = page.getByRole('checkbox', {
+        name: 'Выключить предложения',
+        exact: true,
+      });
+      await enabledToggle.waitFor({
         state: 'visible',
       });
-      if (!(await toggle.isChecked())) {
+      if (!(await enabledToggle.isChecked())) {
         throw new Error('Publisher suggestion switch did not persist its enabled state.');
       }
     },
@@ -1853,7 +1857,7 @@ const scenarioBehaviors = [
     name: 'channel-settings-post-signature',
     beforeShot: async (page) => {
       const signatureEntry = page.getByRole('button', {
-        name: 'Подпись публикаций',
+        name: 'Действие под публикацией',
         exact: true,
       });
       if ((await signatureEntry.getAttribute('aria-expanded')) !== 'false') {
@@ -1864,13 +1868,13 @@ const scenarioBehaviors = [
       }
       await openSettingsSection(
         page,
-        'Подпись публикаций',
+        'Действие под публикацией',
         '.settings-drilldown__panel--signature',
       );
       if ((await signatureEntry.getAttribute('aria-expanded')) !== 'true') {
         throw new Error('Channel post signature entry did not expose its open state.');
       }
-      const signatureToggle = page.getByRole('checkbox', { name: 'Подпись публикаций' });
+      const signatureToggle = page.getByRole('checkbox', { name: 'Действие под публикацией' });
       await signatureToggle.check();
       const signatureText = page.getByRole('textbox', { name: 'Текст ссылки' });
       await signatureText.fill('Читать канал');
@@ -2723,7 +2727,8 @@ async function simulateKeyboardViewport(page, scenario) {
       root.dataset.visualKeyboardViewportHeight = String(viewportHeight);
     },
     {
-      forceKeyboardFlag: keyboardProfile?.flow === 'publisher-auto-reply-editor',
+      forceKeyboardFlag:
+        keyboardProfile === null || keyboardProfile.flow === 'publisher-auto-reply-editor',
       originalHeight: viewport.height,
       viewportHeight: reducedHeight,
     },

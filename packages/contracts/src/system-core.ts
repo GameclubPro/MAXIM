@@ -119,9 +119,21 @@ export type SystemMode = z.infer<typeof systemModeSchema>;
 export const systemModeSourceSchema = z.enum(['auto', 'manual']);
 export type SystemModeSource = z.infer<typeof systemModeSourceSchema>;
 
+export const systemModeConditionSchema = z.enum([
+  'healthy',
+  'queue_backlog',
+  'max_api',
+  'mixed',
+  'stabilizing',
+  'manual',
+  'unknown',
+]);
+export type SystemModeCondition = z.infer<typeof systemModeConditionSchema>;
+
 export const systemModeSnapshotSchema = z.object({
   mode: systemModeSchema,
   source: systemModeSourceSchema,
+  condition: systemModeConditionSchema.optional().default('unknown'),
   reason: z.string(),
   updatedAt: z.string().datetime(),
   manualMode: systemModeSchema.nullable(),
@@ -1147,6 +1159,22 @@ export const systemDashboardWebhookMembershipCacheMetricsSchema = z
       timeout: z.number().int().min(0),
       timing: systemDashboardWebhookMembershipCacheTimingSchema,
     }),
+    detached: z
+      .object({
+        completed: z.number().int().min(0).default(0),
+        timeout: z.number().int().min(0).default(0),
+        failure: z.number().int().min(0).default(0),
+        peakInFlight: z.number().int().min(0).max(1_024).default(0),
+        rejected: z.number().int().min(0).default(0),
+      })
+      .optional()
+      .default({
+        completed: 0,
+        timeout: 0,
+        failure: 0,
+        peakInFlight: 0,
+        rejected: 0,
+      }),
   })
   .superRefine((value, context) => {
     const precheckSamples = value.precheck.hit + value.precheck.miss + value.precheck.failOpen;
@@ -1252,6 +1280,11 @@ export const systemDashboardWebhookMembershipCacheSloSchema = z
     luaConflict: systemDashboardWebhookMembershipCacheAlertSignalSchema,
     luaTerminalFailure: systemDashboardWebhookMembershipCacheAlertSignalSchema,
     budgetTimeout: systemDashboardWebhookMembershipCacheAlertSignalSchema,
+    detachedFailure: systemDashboardWebhookMembershipCacheAlertSignalSchema.optional().default({
+      sampled: 0,
+      affected: 0,
+      ratio: null,
+    }),
     thresholds: z.object({
       warning: systemDashboardWebhookMembershipCacheAlertThresholdSchema,
       critical: systemDashboardWebhookMembershipCacheAlertThresholdSchema,
@@ -1284,6 +1317,7 @@ export const systemDashboardWebhookMembershipCacheSloSchema = z
       value.luaConflict,
       value.luaTerminalFailure,
       value.budgetTimeout,
+      value.detachedFailure,
     ];
     const exceeds = (
       signal: SystemDashboardWebhookMembershipCacheAlertSignal,

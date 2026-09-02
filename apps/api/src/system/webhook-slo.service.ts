@@ -44,6 +44,7 @@ export type WebhookMembershipCacheSloSnapshot = {
   luaConflict: WebhookMembershipCacheAlertSignal;
   luaTerminalFailure: WebhookMembershipCacheAlertSignal;
   budgetTimeout: WebhookMembershipCacheAlertSignal;
+  detachedFailure: WebhookMembershipCacheAlertSignal;
   thresholds: {
     warning: WebhookMembershipCacheAlertThreshold;
     critical: WebhookMembershipCacheAlertThreshold;
@@ -446,7 +447,24 @@ export class WebhookSloService {
       metrics.budget.completed + metrics.budget.timeout,
       metrics.budget.timeout,
     );
-    const signals = [precheckFailOpen, luaConflict, luaTerminalFailure, budgetTimeout];
+    const detached = metrics.detached ?? {
+      completed: 0,
+      timeout: 0,
+      failure: 0,
+      peakInFlight: 0,
+      rejected: 0,
+    };
+    const detachedFailure = this.buildMembershipCacheAlertSignal(
+      detached.completed + detached.failure + detached.rejected,
+      detached.failure + detached.rejected,
+    );
+    const signals = [
+      precheckFailOpen,
+      luaConflict,
+      luaTerminalFailure,
+      budgetTimeout,
+      detachedFailure,
+    ];
     const status = signals.some((signal) =>
       this.membershipCacheSignalExceeds(signal, MEMBERSHIP_CACHE_ALERT_THRESHOLDS.critical),
     )
@@ -463,6 +481,7 @@ export class WebhookSloService {
       luaConflict,
       luaTerminalFailure,
       budgetTimeout,
+      detachedFailure,
       thresholds: MEMBERSHIP_CACHE_ALERT_THRESHOLDS,
     };
   }
@@ -601,6 +620,13 @@ export class WebhookSloService {
         completed: 0,
         timeout: 0,
         timing: this.emptyMembershipCacheTimingMetrics(),
+      },
+      detached: {
+        completed: 0,
+        timeout: 0,
+        failure: 0,
+        peakInFlight: 0,
+        rejected: 0,
       },
     };
   }

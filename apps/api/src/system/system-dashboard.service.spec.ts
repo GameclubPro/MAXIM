@@ -2795,6 +2795,59 @@ describe('SystemDashboardService', () => {
     });
   });
 
+  it('explains a webhook SLO alert caused only by detached cache failures', () => {
+    const service = Object.create(SystemDashboardService.prototype) as SystemDashboardService;
+    const buildWebhookSloAlert = (
+      service as unknown as {
+        buildWebhookSloAlert(snapshot: unknown): { detail: string } | null;
+      }
+    ).buildWebhookSloAlert.bind(service);
+
+    const alert = buildWebhookSloAlert({
+      status: 'warning',
+      underTargetRatio: 1,
+      p95ProcessingMs: 100,
+      p99ProcessingMs: 150,
+      failedEvents: 0,
+      oldestUnprocessedLagSec: 0,
+      ingress: {
+        available: true,
+        p95LatencyMs: 100,
+        p99LatencyMs: 150,
+        underTargetRatio: 1,
+        failedReceipts: 0,
+        rejectedReceipts: 0,
+        membershipCache: {
+          lua: { timing: { p95DurationMs: 10 } },
+          budget: { timing: { p95DurationMs: 20 } },
+          detached: {
+            completed: 17,
+            timeout: 0,
+            failure: 2,
+            rejected: 1,
+            peakInFlight: 64,
+          },
+        },
+      },
+      membershipCache: {
+        status: 'warning',
+        precheckFailOpen: { ratio: 0 },
+        luaConflict: { ratio: 0 },
+        luaTerminalFailure: { ratio: 0 },
+        budgetTimeout: { ratio: 0 },
+        detachedFailure: { ratio: 0.15 },
+      },
+      canonicalExecution: {
+        receipts: 20,
+        executionClaims: 20,
+        claimsPerReceiptRatio: 1,
+      },
+    });
+
+    expect(alert?.detail).toContain('detached failures/rejections 15.0%');
+    expect(alert?.detail).toContain('failed 2, rejected 1, completed 17, peak in-flight 64');
+  });
+
   it('raises an explicit critical alert when the action ledger watchdog quarantines an action', () => {
     const service = new SystemDashboardService(
       {} as never,
@@ -3235,5 +3288,46 @@ describe('SystemDashboardService', () => {
       level: 'critical',
     });
     expect(alert?.detail).toContain('8 из 8 active+pending');
+  });
+
+  it('uses the structured mode condition before legacy stabilization heuristics', () => {
+    const service = Object.create(SystemDashboardService.prototype) as SystemDashboardService;
+    const isStabilizing = (
+      service as unknown as {
+        isStabilizing(mode: Record<string, unknown>, queueLagSec: number): boolean;
+      }
+    ).isStabilizing.bind(service);
+    const healthyAction = {
+      windowSec: 60,
+      total: 150,
+      success: 150,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    };
+
+    expect(
+      isStabilizing(
+        {
+          mode: 'degrade',
+          source: 'auto',
+          condition: 'max_api',
+          action: healthyAction,
+        },
+        0,
+      ),
+    ).toBe(false);
+    expect(
+      isStabilizing(
+        {
+          mode: 'degrade',
+          source: 'auto',
+          condition: 'stabilizing',
+          action: healthyAction,
+        },
+        12,
+      ),
+    ).toBe(true);
   });
 });

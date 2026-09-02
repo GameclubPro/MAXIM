@@ -96,6 +96,16 @@ function parseSystemModeSnapshot(value: unknown): SystemModeSnapshot {
   return {
     mode: value.mode,
     source: value.source,
+    condition:
+      value.condition === 'healthy' ||
+      value.condition === 'queue_backlog' ||
+      value.condition === 'max_api' ||
+      value.condition === 'mixed' ||
+      value.condition === 'stabilizing' ||
+      value.condition === 'manual' ||
+      value.condition === 'unknown'
+        ? value.condition
+        : 'unknown',
     reason: value.reason,
     updatedAt: value.updatedAt,
     manualMode: value.manualMode ?? null,

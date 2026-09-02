@@ -264,6 +264,7 @@ const envSchema = z.object({
   WEBHOOK_ACK_DEADLINE_MS: z.coerce.number().int().min(1_000).max(18_000).default(18_000),
   WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS: z.coerce.number().int().min(10).max(5_000).default(100),
   WEBHOOK_RECEIPT_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(1_024).default(64),
+  WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT: z.coerce.number().int().min(2).max(1_024).default(64),
   ENQUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(200),
   ENQUEUE_BATCH_SIZE: z.coerce.number().int().positive().default(400),
   ENQUEUE_CONCURRENCY: z.coerce.number().int().positive().default(32),

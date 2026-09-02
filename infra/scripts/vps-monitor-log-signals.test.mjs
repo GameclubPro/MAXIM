@@ -96,11 +96,13 @@ test('filters successful static access logs before scanning error-like asset nam
 
 test('serializes full-fleet readonly monitors before production sampling', () => {
   const lockIndex = monitor.indexOf('flock -n "$MONITOR_LOCK_FD"');
-  const sampleIndex = monitor.indexOf('run_monitor\n');
+  const sampleIndex = monitor.lastIndexOf('if run_monitor_with_capacity_sampler; then');
 
   assert.notEqual(lockIndex, -1, 'monitor process lock is missing');
   assert.notEqual(sampleIndex, -1, 'monitor entrypoint is missing');
   assert.ok(lockIndex < sampleIndex, 'monitor lock must be acquired before the first sample');
+  assert.match(monitor, /start_capacity_sampler "\$end_at"[\s\S]*start_monitor_worker "\$end_at"/u);
+  assert.match(monitor, /start_monitor_worker "\$end_at"[\s\S]*wait "\$MONITOR_WORKER_PID"/u);
   assert.match(monitor, /MAXIM_MONITOR_LOCK_FILE/u);
   assert.match(monitor, /exec \{MONITOR_LOCK_FD\}>>"\$MONITOR_LOCK_FILE"/u);
   assert.doesNotMatch(monitor, /exec \{MONITOR_LOCK_FD\}>"\$MONITOR_LOCK_FILE"/u);

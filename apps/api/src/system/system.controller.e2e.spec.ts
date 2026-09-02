@@ -38,6 +38,8 @@ describe('SystemController auth e2e', () => {
   const getRoutePreview = jest.fn();
   const getRouteAudit = jest.fn();
   const getMembershipAudit = jest.fn();
+  const getQueueSnapshot = jest.fn();
+  const getOperationalQueueSnapshot = jest.fn();
 
   beforeEach(async () => {
     appCreated = false;
@@ -68,6 +70,29 @@ describe('SystemController auth e2e', () => {
     getMembershipAudit.mockReset().mockResolvedValue({
       generatedAt: '2026-04-01T18:12:00.000Z',
       summary: { criticalCount: 0 },
+    });
+    getQueueSnapshot.mockReset();
+    getOperationalQueueSnapshot.mockReset().mockResolvedValue({
+      effectiveLagSec: 2,
+      webhookDefaultShards: {
+        'moderation-default-0': {
+          waiting: 1,
+          prioritized: 0,
+          active: 0,
+          delayed: 0,
+          failed: 0,
+          completed: 4,
+        },
+      },
+      actions: {
+        waiting: 0,
+        prioritized: 0,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 3,
+      },
+      generatedAt: '2026-09-02T12:00:00.000Z',
     });
 
     const moduleRef = await Test.createTestingModule({
@@ -105,7 +130,10 @@ describe('SystemController auth e2e', () => {
         },
         {
           provide: QueueMetricsService,
-          useValue: { getSnapshot: jest.fn() },
+          useValue: {
+            getSnapshot: getQueueSnapshot,
+            getOperationalSnapshot: getOperationalQueueSnapshot,
+          },
         },
         {
           provide: SystemModeService,
@@ -150,6 +178,34 @@ describe('SystemController auth e2e', () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it('protects and serves the lightweight operational queue endpoint', async () => {
+    const unauthenticated = await app.inject({
+      method: 'GET',
+      url: '/v1/system/metrics/queues/operational',
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const initData = createSignedInitData(botToken, '100', Math.floor(Date.now() / 1_000));
+    const authenticated = await app.inject({
+      method: 'GET',
+      url: '/v1/system/metrics/queues/operational',
+      headers: {
+        authorization: `InitData ${initData}`,
+      },
+    });
+
+    expect(authenticated.statusCode).toBe(200);
+    expect(authenticated.json()).toMatchObject({
+      effectiveLagSec: 2,
+      webhookDefaultShards: {
+        'moderation-default-0': { waiting: 1 },
+      },
+      actions: { active: 1 },
+    });
+    expect(getOperationalQueueSnapshot).toHaveBeenCalledWith({ maxAgeMs: 1_000 });
+    expect(getQueueSnapshot).not.toHaveBeenCalled();
   });
 
   it('returns source-level MAX metrics for an authenticated system admin', async () => {

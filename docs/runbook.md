@@ -58,6 +58,60 @@ mutating direct invocation without the expected full SHA is rejected; only `--pl
 
 `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper.
 
+### Durable capacity summaries
+
+`monitor-readonly` runs one bounded, privacy-safe capacity sampler independently from its heavier
+diagnostic samples and records the summaries on the operator machine. The capacity cadence defaults
+to 15 seconds and must remain between 15 and 60 seconds; override it with
+`MAXIM_MONITOR_CAPACITY_INTERVAL_SEC`. Run for at least five minutes to evaluate sustained alerts:
+
+```bash
+./infra/scripts/vps-connect.sh monitor-readonly 600 300
+```
+
+The default archive is
+`${XDG_STATE_HOME:-$HOME/.local/state}/maxim/capacity-monitor`. Override it only with an absolute
+local path through `MAXIM_MONITOR_CAPACITY_ARCHIVE_DIR`. Set
+`MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE` when the production root filesystem does not use `vda`.
+
+The archive contains only allowlisted numeric, boolean, and fixed-enum readiness, queue-fence,
+memory, filesystem, swap, CPU, and block-device summaries. It never stores service logs, URLs,
+request data, event/job identifiers, bot/chat/user identifiers, payloads, or secrets. Full monitor
+output is not copied into this archive. By default it is written to a private random local file only
+while the monitor runs and is removed on exit. To retain it for a reviewed incident, set
+`MAXIM_MONITOR_LOG` to an absolute, previously unused path inside an existing owner-private
+directory; the monitor creates it as `0600` and refuses existing targets. Remove a retained raw log
+as soon as the review is complete.
+
+Summary files are private hourly `capacity-YYYYMMDDTHH.jsonl` files. Each update is written through
+a private temporary file, fsynced, and atomically renamed. Files older than 14 days are removed;
+the archive is additionally capped at 337 hourly files and 240 records per hour. Unknown files
+in the directory are never removed. Inspect the archive without `jq`:
+
+```bash
+CAPACITY_ARCHIVE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/maxim/capacity-monitor"
+find "$CAPACITY_ARCHIVE_DIR" -maxdepth 1 -type f -name 'capacity-*.jsonl' -mtime -1 -print
+```
+
+Every sample prints explicit `clear`, `pending`, `firing`, or `unknown` outcomes for:
+
+- I/O wait above 15% for five minutes and above 30% for two minutes;
+- available memory below 25% for five minutes and below 15% for two minutes;
+- swap-in activity for five minutes and swap use above 10% for five minutes;
+- less than 40 GiB free on the Docker filesystem;
+- ingress/admin readiness, stale queue-metrics fallback, queue-metrics availability, automatic
+  normal mode/no burst (a manual override warns even when set to `normal`), the allowlisted
+  `healthy|queue_backlog|max_api|mixed|stabilizing|manual|unknown` condition, queue lag above 10/30
+  seconds, and a paused or owned webhook queue fence. The archive never stores the free-form
+  system-mode reason.
+
+Sustained alerts require a continuous series with no gap above 90 seconds. Full diagnostics cannot
+delay that series because the dedicated sampler runs in its own lifecycle-bound process group. The
+sampler never overlaps probes; if a capacity probe itself stalls long enough to cross the continuity
+limit, the window resets instead of inventing data. A current breach remains `pending` until its full
+window is observed; missing or malformed allowlisted fields are `unknown`. Archive failure is
+reported as a failed monitor step but does not suppress the remaining read-only diagnostics.
+
 An interactive VPS shell and direct PostgreSQL CLIs are reviewed break-glass paths, not routine
 diagnostics. Keep the authorization in the invoking process only and supply a non-empty reason:
 

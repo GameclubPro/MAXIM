@@ -196,7 +196,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         },
         options,
       ),
-    ).toMatchObject({ action: 'pause', reason: 'user-facing queue lag 12.0s' });
+    ).toMatchObject({ action: 'pause', reason: 'queue lag 12.0s' });
     expect(
       (service as any).buildDecisionFromSnapshot(
         {
@@ -258,7 +258,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         queues: { userFacingEffectiveLagSec: 12, effectiveLagSec: 12 },
       },
       options: {},
-      decision: { action: 'pause', reason: 'user-facing queue lag 12.0s' },
+      decision: { action: 'pause', reason: 'queue lag 12.0s' },
     },
     {
       label: 'queue lag slow path',
@@ -266,7 +266,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         queues: { userFacingEffectiveLagSec: 12, effectiveLagSec: 12 },
       },
       options: { allowQueueLagSlowPathBelowSec: 30 },
-      decision: { action: 'slow', reason: 'user-facing queue lag 12.0s' },
+      decision: { action: 'slow', reason: 'queue lag 12.0s' },
     },
     {
       label: 'host load slow pressure',
@@ -332,9 +332,13 @@ describe('BackgroundRuntimeGovernorService', () => {
   });
 
   it('counts prioritized-only backlog when detecting default worker skew', async () => {
+    const getSnapshot = jest.fn().mockRejectedValue(new Error('full snapshot must not run'));
+    const getBotRateLimitSnapshot = jest
+      .fn()
+      .mockRejectedValue(new Error('per-bot metrics must not run'));
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {
             'api-moderation': {
               queues: [],
@@ -352,6 +356,7 @@ describe('BackgroundRuntimeGovernorService', () => {
           effectiveLagSec: 0,
           bots: {},
         }),
+        getSnapshot,
       } as never,
       {
         getEffectiveSnapshot: jest.fn().mockResolvedValue(createDecisionSnapshotForTest().mode),
@@ -361,6 +366,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         getStackCriticalLimiterSnapshot: jest
           .fn()
           .mockResolvedValue(createCriticalLimiterSnapshot()),
+        getBotRateLimitSnapshot,
       } as never,
       createConfigMock(),
     );
@@ -378,12 +384,14 @@ describe('BackgroundRuntimeGovernorService', () => {
       action: 'slow',
       reason: 'default worker skew api-moderation 4/4',
     });
+    expect(getSnapshot).not.toHaveBeenCalled();
+    expect(getBotRateLimitSnapshot).not.toHaveBeenCalled();
   });
 
   it('pauses background work during the recovery window before hard degrade', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {},
           userFacingEffectiveLagSec: 0,
           effectiveLagSec: 0,
@@ -459,7 +467,10 @@ describe('BackgroundRuntimeGovernorService', () => {
       },
     },
   ])('does not query pressure metrics during $label', async ({ mode }) => {
-    const getSnapshot = jest.fn().mockRejectedValue(new Error('queue metrics must not run'));
+    const getOperationalSnapshot = jest
+      .fn()
+      .mockRejectedValue(new Error('queue metrics must not run'));
+    const getSnapshot = jest.fn().mockRejectedValue(new Error('full queue metrics must not run'));
     const getStackRateLimitSnapshot = jest
       .fn()
       .mockRejectedValue(new Error('MAX metrics must not run'));
@@ -468,7 +479,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       .mockRejectedValue(new Error('MAX limiter metrics must not run'));
     const recordBackgroundDecision = jest.fn().mockResolvedValue(undefined);
     const service = new BackgroundRuntimeGovernorService(
-      { getSnapshot } as never,
+      { getOperationalSnapshot, getSnapshot } as never,
       {
         getEffectiveSnapshot: jest.fn().mockResolvedValue({
           ...mode,
@@ -502,6 +513,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       reason: mode.reason,
     });
 
+    expect(getOperationalSnapshot).not.toHaveBeenCalled();
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(getStackRateLimitSnapshot).not.toHaveBeenCalled();
     expect(getStackCriticalLimiterSnapshot).not.toHaveBeenCalled();
@@ -621,7 +633,7 @@ describe('BackgroundRuntimeGovernorService', () => {
   it('lets explicitly user-triggered work run during the recovery window when queue lag is healthy', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {},
           userFacingEffectiveLagSec: 0,
           effectiveLagSec: 0,
@@ -693,7 +705,7 @@ describe('BackgroundRuntimeGovernorService', () => {
   it('downgrades soft queue-lag pauses to slow when an explicit slow-path ceiling is provided', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {},
           userFacingEffectiveLagSec: 12.7,
           effectiveLagSec: 12.7,
@@ -750,7 +762,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       }),
     ).resolves.toMatchObject({
       action: 'slow',
-      reason: 'user-facing queue lag 12.7s',
+      reason: 'queue lag 12.7s',
     });
   });
 
@@ -774,7 +786,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       );
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {
             'api-moderation': {
               queues: [],
@@ -840,7 +852,7 @@ describe('BackgroundRuntimeGovernorService', () => {
   it('pauses background work when host iowait crosses the pause threshold', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {},
           userFacingEffectiveLagSec: 0,
           effectiveLagSec: 0,
@@ -906,7 +918,7 @@ describe('BackgroundRuntimeGovernorService', () => {
   it('ignores host pressure when the system pressure guard is disabled', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {},
           userFacingEffectiveLagSec: 0,
           effectiveLagSec: 0,
@@ -970,28 +982,23 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
   });
 
-  it('keeps aggregate stack and hottest-bot load observational at runtime', async () => {
+  it('keeps aggregate stack load observational without per-bot runtime fanout', async () => {
     const getSourceTrafficSnapshot = jest.fn();
+    const getSnapshot = jest.fn().mockRejectedValue(new Error('full snapshot must not run'));
     const getStackRateLimitSnapshot = jest
       .fn()
       .mockResolvedValue(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }));
-    const getBotRateLimitSnapshot = jest.fn().mockResolvedValue({
-      'bot-a': { smoothedLoad: 0.8, peakLoad: 0.9, avgLoad: 0.7 },
-      'bot-b': { smoothedLoad: 0.17, peakLoad: 0.2, avgLoad: 0.05 },
-      'bot-c': { smoothedLoad: 0.16, peakLoad: 0.2, avgLoad: 0.05 },
-    });
+    const getBotRateLimitSnapshot = jest
+      .fn()
+      .mockRejectedValue(new Error('per-bot metrics must not run'));
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {},
           userFacingEffectiveLagSec: 0,
           effectiveLagSec: 0,
-          bots: {
-            'bot-a': {},
-            'bot-b': {},
-            'bot-c': {},
-          },
         }),
+        getSnapshot,
       } as never,
       {
         getEffectiveSnapshot: jest.fn().mockResolvedValue({
@@ -1057,10 +1064,8 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
     expect(getStackRateLimitSnapshot).toHaveBeenCalledTimes(2);
     expect(getSourceTrafficSnapshot).not.toHaveBeenCalled();
-    expect(getBotRateLimitSnapshot).toHaveBeenCalledWith(['bot-a', 'bot-b', 'bot-c'], {
-      windowSec: 60,
-      capacityScope: 'service',
-    });
+    expect(getSnapshot).not.toHaveBeenCalled();
+    expect(getBotRateLimitSnapshot).not.toHaveBeenCalled();
   });
 
   it('reports service class capacity and shared per-bot capacity on the dashboard', async () => {
@@ -1114,22 +1119,19 @@ describe('BackgroundRuntimeGovernorService', () => {
       .fn()
       .mockResolvedValueOnce({ windowSec: 60, internalRejects: 1 })
       .mockResolvedValueOnce(createCriticalLimiterSnapshot(4));
-    const getBotRateLimitSnapshot = jest
-      .fn()
-      .mockResolvedValueOnce({
-        'bot-a': { smoothedLoad: 0.4, peakLoad: 0.5, avgLoad: 0.2 },
-      })
-      .mockResolvedValue({
-        'bot-a': { smoothedLoad: 0.1, peakLoad: 0.2, avgLoad: 0.05 },
-      });
+    const getBotRateLimitSnapshot = jest.fn().mockResolvedValue({
+      'bot-a': { smoothedLoad: 0.1, peakLoad: 0.2, avgLoad: 0.05 },
+    });
+    const getOperationalSnapshot = jest.fn().mockResolvedValue({
+      webhookDefaultWorkerGroups: {},
+      userFacingEffectiveLagSec: 0,
+      effectiveLagSec: 0,
+    });
+    const getSnapshot = jest.fn().mockResolvedValue({ bots: { 'bot-a': {} } });
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
-          webhookDefaultWorkerGroups: {},
-          userFacingEffectiveLagSec: 0,
-          effectiveLagSec: 0,
-          bots: { 'bot-a': {} },
-        }),
+        getOperationalSnapshot,
+        getSnapshot,
       } as never,
       {
         getEffectiveSnapshot: jest.fn().mockResolvedValue(createDecisionSnapshotForTest().mode),
@@ -1201,20 +1203,21 @@ describe('BackgroundRuntimeGovernorService', () => {
       capacityScope: 'service',
     });
     expect(getStackRateLimitSnapshot).toHaveBeenCalledTimes(2);
-    expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(1, ['bot-a'], {
-      windowSec: 60,
-      capacityScope: 'service',
-    });
+    expect(getOperationalSnapshot).toHaveBeenCalledTimes(1);
+    expect(getOperationalSnapshot).toHaveBeenCalledWith({ maxAgeMs: 2_000 });
+    expect(getSnapshot).toHaveBeenCalledTimes(3);
+    expect(getSnapshot).toHaveBeenCalledWith({ maxAgeMs: 2_000 });
+    expect(getBotRateLimitSnapshot).toHaveBeenCalledTimes(3);
+    expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(1, ['bot-a'], { windowSec: 60 });
     expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(2, ['bot-a'], { windowSec: 60 });
     expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(3, ['bot-a'], { windowSec: 60 });
-    expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(4, ['bot-a'], { windowSec: 60 });
   });
 
   it('reuses the direct critical limiter snapshot for the default alert window', async () => {
     const getRateLimitOutcomeSnapshot = jest.fn();
     const service = new BackgroundRuntimeGovernorService(
       {
-        getSnapshot: jest.fn().mockResolvedValue({
+        getOperationalSnapshot: jest.fn().mockResolvedValue({
           webhookDefaultWorkerGroups: {},
           userFacingEffectiveLagSec: 0,
           effectiveLagSec: 0,
@@ -1252,5 +1255,16 @@ describe('BackgroundRuntimeGovernorService', () => {
       internalRejects: 7,
     });
     expect(getRateLimitOutcomeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps the automatic pressure builder off full snapshots and per-bot metrics', () => {
+    const builderSource = (
+      BackgroundRuntimeGovernorService.prototype as any
+    ).buildPressureSnapshot.toString();
+
+    expect(builderSource).toContain('queueMetricsService.getOperationalSnapshot(');
+    expect(builderSource).not.toContain('.getSnapshot(');
+    expect(builderSource).not.toContain('buildBotLoadSnapshot(');
+    expect(builderSource).not.toContain('getBotRateLimitSnapshot(');
   });
 });

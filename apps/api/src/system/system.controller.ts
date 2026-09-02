@@ -148,6 +148,12 @@ export class SystemController {
     return { queues, mode };
   }
 
+  @Get('metrics/queues/operational')
+  async getOperationalQueueMetrics(@CurrentUser() user: AuthUser) {
+    this.assertSystemAdmin(user);
+    return this.queueMetricsService.getOperationalSnapshot({ maxAgeMs: 1_000 });
+  }
+
   @Get('metrics/max-api')
   async getMaxApiMetrics(@CurrentUser() user: AuthUser, @Query() query: unknown) {
     this.assertSystemAdmin(user);

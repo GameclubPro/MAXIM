@@ -72,6 +72,13 @@ function createHealthyIngress(
         timeout: 0,
         timing: { sampled: 0, p95DurationMs: null, p99DurationMs: null, overflowSamples: 0 },
       },
+      detached: {
+        completed: 0,
+        timeout: 0,
+        failure: 0,
+        peakInFlight: 0,
+        rejected: 0,
+      },
     },
     membershipTransition: {
       edgeAdvance: {
@@ -673,6 +680,7 @@ describe('WebhookSloService', () => {
       buildMembershipCacheSloSnapshot: (ingress: WebhookIngressMetricsSnapshot) => {
         status: string;
         budgetTimeout: { sampled: number; affected: number; ratio: number | null };
+        detachedFailure: { sampled: number; affected: number; ratio: number | null };
         thresholds: {
           warning: { minimumSamples: number; minimumAffected: number; ratio: number };
           critical: { minimumSamples: number; minimumAffected: number; ratio: number };
@@ -693,6 +701,22 @@ describe('WebhookSloService', () => {
         },
       };
     };
+    const withDetachedOutcomes = (completed: number, failure: number, rejected: number) => {
+      const ingress = createHealthyIngress();
+      return {
+        ...ingress,
+        membershipCache: {
+          ...ingress.membershipCache,
+          detached: {
+            completed,
+            timeout: 0,
+            failure,
+            peakInFlight: 10,
+            rejected,
+          },
+        },
+      };
+    };
     const resolveStatus = (ingress: WebhookIngressMetricsSnapshot) =>
       subject.resolveStatus({
         failedEvents: 0,
@@ -708,6 +732,8 @@ describe('WebhookSloService', () => {
     expect(resolveStatus(withBudgetOutcomes(17, 3))).toBe('warning');
     expect(resolveStatus(withBudgetOutcomes(7_004, 2_996))).toBe('warning');
     expect(resolveStatus(withBudgetOutcomes(35, 15))).toBe('critical');
+    expect(resolveStatus(withDetachedOutcomes(17, 2, 1))).toBe('warning');
+    expect(resolveStatus(withDetachedOutcomes(35, 10, 5))).toBe('critical');
     expect(subject.buildMembershipCacheSloSnapshot(withBudgetOutcomes(35, 15))).toMatchObject({
       status: 'critical',
       budgetTimeout: { sampled: 50, affected: 15, ratio: 0.3 },
@@ -715,6 +741,10 @@ describe('WebhookSloService', () => {
         warning: { minimumSamples: 20, minimumAffected: 3, ratio: 0.1 },
         critical: { minimumSamples: 50, minimumAffected: 10, ratio: 0.3 },
       },
+    });
+    expect(subject.buildMembershipCacheSloSnapshot(withDetachedOutcomes(35, 10, 5))).toMatchObject({
+      status: 'critical',
+      detachedFailure: { sampled: 50, affected: 15, ratio: 0.3 },
     });
   });
 });

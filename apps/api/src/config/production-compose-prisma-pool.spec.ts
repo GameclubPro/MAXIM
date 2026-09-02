@@ -76,6 +76,22 @@ describe('production compose Prisma pool caps', () => {
       }
     });
 
+    it('enables the host-pressure governor for every background worker owner', () => {
+      for (const service of [
+        'api-moderation-background',
+        'api-action',
+        'api-publisher',
+      ] as const) {
+        const block = readServiceBlock(compose, service);
+
+        expect(readEnvString(block, 'BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED')).toBe('true');
+        expect(readEnvNumber(block, 'BACKGROUND_GOVERNOR_SLOW_RETRY_AFTER_MS')).toBe(90_000);
+        expect(readEnvNumber(block, 'BACKGROUND_GOVERNOR_PAUSE_RETRY_AFTER_MS')).toBe(180_000);
+        expect(readEnvDecimal(block, 'BACKGROUND_GOVERNOR_IOWAIT_SLOW_THRESHOLD')).toBe(0.15);
+        expect(readEnvDecimal(block, 'BACKGROUND_GOVERNOR_IOWAIT_PAUSE_THRESHOLD')).toBe(0.35);
+      }
+    });
+
     it('persists Redis /data on an explicit named volume', () => {
       const redisBlock = readServiceBlock(compose, 'redis');
       const volumesBlock = readTopLevelVolumesBlock(compose);
@@ -142,6 +158,15 @@ function readEnvString(serviceBlock: string, key: string): string {
   }
 
   return match[1].trim();
+}
+
+function readEnvDecimal(serviceBlock: string, key: string): number {
+  const value = readEnvString(serviceBlock, key);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid numeric compose env ${key}`);
+  }
+  return parsed;
 }
 
 function escapeRegExp(value: string): string {

@@ -7,6 +7,7 @@ import {
 } from './queue-metrics.service';
 import {
   MAX_ACTION_BACKGROUND_QUEUE,
+  MAX_ACTION_ALL_QUEUE_NAMES,
   MAX_ACTION_CRITICAL_QUEUE,
   MAX_ACTION_INTERACTIVE_QUEUE,
   MAX_ACTION_LEGACY_QUEUE,
@@ -155,6 +156,159 @@ describe('QueueMetricsService', () => {
       expect(maxBotRegistry.getAllBots).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
+    }
+  });
+
+  it('builds, coalesces, and caches operational metrics without diagnostic fanout', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));
+    try {
+      const findFirst = jest
+        .fn()
+        .mockImplementation(async ({ where }: { where: { status: WebhookStatus } }) =>
+          where.status === WebhookStatus.RECEIVED
+            ? {
+                id: 'received-oldest',
+                createdAt: new Date('2026-09-02T11:59:48.000Z'),
+              }
+            : {
+                id: 'queued-oldest',
+                createdAt: new Date('2026-09-02T11:59:35.000Z'),
+              },
+        );
+      const prisma = {
+        webhookEvent: {
+          findFirst,
+          count: jest.fn(),
+          groupBy: jest.fn(),
+        },
+        $queryRaw: jest.fn(),
+      };
+      const defaultQueues = Object.fromEntries(
+        DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
+          getQueueToken(queueName),
+          createQueueMock({
+            waiting: index === 0 ? 2 : 0,
+            prioritized: index === 1 ? 3 : 0,
+            active: index === 0 ? 1 : 0,
+            delayed: 0,
+            failed: 0,
+            completed: index,
+          }),
+        ]),
+      );
+      const actionQueues = Object.fromEntries(
+        MAX_ACTION_ALL_QUEUE_NAMES.map((queueName, index) => [
+          getQueueToken(queueName),
+          createQueueMock({
+            waiting: index + 1,
+            prioritized: index,
+            active: index === 0 ? 1 : 0,
+            delayed: 0,
+            failed: 0,
+            completed: 10 + index,
+          }),
+        ]),
+      );
+      const moduleRef = {
+        get: jest.fn((token: string) => defaultQueues[token] ?? actionQueues[token]),
+      };
+      const actionHealthService = {
+        refreshSnapshots: jest.fn(),
+        getSnapshot: jest.fn(),
+        getCombinedSnapshot: jest.fn(),
+      };
+      const maxBotRegistry = {
+        getOperationalBots: jest.fn(),
+        getAllBots: jest.fn(),
+      };
+      const service = new QueueMetricsService(
+        prisma as never,
+        actionHealthService as never,
+        moduleRef as never,
+        maxBotRegistry as never,
+      );
+      const buildPerBotSnapshots = jest.spyOn(service as any, 'buildPerBotSnapshots');
+
+      const firstSnapshotPromise = service.getOperationalSnapshot({ maxAgeMs: 15_000 });
+      const overlappingSnapshotPromise = service.getOperationalSnapshot({ maxAgeMs: 15_000 });
+      const firstSnapshot = await firstSnapshotPromise;
+
+      await expect(overlappingSnapshotPromise).resolves.toBe(firstSnapshot);
+      await expect(service.getOperationalSnapshot({ maxAgeMs: 15_000 })).resolves.toBe(
+        firstSnapshot,
+      );
+      expect(firstSnapshot).toMatchObject({
+        oldestQueuedEventId: 'queued-oldest',
+        oldestQueuedLagSec: 25,
+        oldestReceivedEventId: 'received-oldest',
+        oldestReceivedLagSec: 12,
+        effectiveLagSec: 25,
+        actions: {
+          waiting: 10,
+          prioritized: 6,
+          active: 1,
+          delayed: 0,
+          failed: 0,
+          completed: 46,
+        },
+        generatedAt: '2026-09-02T12:00:00.000Z',
+      });
+
+      expect(findFirst.mock.calls).toEqual([
+        [
+          {
+            where: { status: WebhookStatus.RECEIVED },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, createdAt: true },
+          },
+        ],
+        [
+          {
+            where: { status: WebhookStatus.QUEUED },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, createdAt: true },
+          },
+        ],
+      ]);
+      for (const queue of Object.values(defaultQueues)) {
+        expect(queue.getJobCounts).toHaveBeenCalledTimes(1);
+      }
+      for (const queue of Object.values(actionQueues)) {
+        expect(queue.getJobCounts).toHaveBeenCalledTimes(1);
+      }
+      expect(prisma.webhookEvent.count).not.toHaveBeenCalled();
+      expect(prisma.webhookEvent.groupBy).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(actionHealthService.refreshSnapshots).not.toHaveBeenCalled();
+      expect(actionHealthService.getSnapshot).not.toHaveBeenCalled();
+      expect(actionHealthService.getCombinedSnapshot).not.toHaveBeenCalled();
+      expect(maxBotRegistry.getOperationalBots).not.toHaveBeenCalled();
+      expect(maxBotRegistry.getAllBots).not.toHaveBeenCalled();
+      expect(buildPerBotSnapshots).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the operational snapshot builder on lightweight data sources', () => {
+    const builderSource = (
+      QueueMetricsService.prototype as any
+    ).buildOperationalSnapshot.toString();
+
+    expect(builderSource).toContain('this.getLagSnapshot(');
+    expect(builderSource).toContain('this.getWebhookDefaultShardSnapshot(');
+    expect(builderSource).toContain('this.readQueueCounters(');
+    for (const forbiddenCall of [
+      'this.prisma.',
+      '$queryRaw',
+      'readWebhookStatusMetrics',
+      'buildPerBotSnapshots',
+      'refreshSnapshots',
+      'actionHealthService',
+      'maxBotRegistry',
+      'this.getSnapshot(',
+    ]) {
+      expect(builderSource).not.toContain(forbiddenCall);
     }
   });
 

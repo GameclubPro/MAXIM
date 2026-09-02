@@ -264,6 +264,7 @@ export function buildPreviewSystemMode(state: PreviewState): SystemModeSnapshot 
   return {
     mode,
     source: manualMode ? 'manual' : 'auto',
+    condition: manualMode ? 'manual' : 'healthy',
     reason: manualMode ? 'manual override' : 'system healthy',
     updatedAt: now,
     manualMode,

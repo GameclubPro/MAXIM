@@ -1,7 +1,7 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, MaxUpdate } from '@maxim/contracts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   ChatEntityType,
   ManagedEntityAccessState,
@@ -22,6 +22,7 @@ import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entity-forwarded-recovery.util';
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -130,6 +131,33 @@ type MembershipTransitionResult = {
   deniedUserIds: string[];
 };
 
+type MembershipDenialCacheMutationResult = {
+  key: string;
+  userId: string;
+  error: unknown | null;
+};
+
+type MembershipDenialCacheMutation = {
+  key: string;
+  userId: string;
+};
+
+type MembershipDenialCacheMutationTask = {
+  promise: Promise<MembershipDenialCacheMutationResult>;
+  state: 'pending' | 'succeeded';
+  retainUntilMs: number | null;
+};
+
+type MembershipDenialCachePublicationTask = {
+  promise: Promise<readonly MembershipDenialCacheMutationResult[]>;
+  state: 'pending' | 'succeeded' | 'failed';
+  retainUntilMs: number | null;
+  failedMutationKeys: ReadonlySet<string> | null;
+  waitBudgetClaimed: boolean;
+  waitBudgetExhausted: boolean;
+  lateObserverAttached: boolean;
+};
+
 type ManagedEntityLocalActivityProjection = {
   userId: string;
   chatId: string;
@@ -178,6 +206,12 @@ const BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
 const MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS = 100;
+const MEMBERSHIP_DENIAL_CACHE_RETRY_MS = 1_000;
+const MEMBERSHIP_DENIAL_CACHE_SHUTDOWN_WAIT_MS = 1_000;
+const MEMBERSHIP_DENIAL_CACHE_SUCCESS_RETENTION_MS = 30_000;
+const MEMBERSHIP_DENIAL_CACHE_MAX_SETTLED_TASKS = 16_384;
+const MEMBERSHIP_DENIAL_CACHE_MAX_SETTLED_PUBLICATIONS = 4_096;
+const DEFAULT_MEMBERSHIP_DENIAL_CACHE_MAX_IN_FLIGHT = 64;
 const BOT_REMOVED_CACHE_PUBLICATION_WAIT_MS = 100;
 const WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const WEBHOOK_PREPARATION_LEASE_MS = 30_000;
@@ -224,7 +258,7 @@ const DURABLE_BOT_LIFECYCLE_UPDATE_TYPES = new Set([
 ]);
 
 @Injectable()
-export class WebhookService {
+export class WebhookService implements OnModuleDestroy {
   private readonly logger = new Logger(WebhookService.name);
   private static readonly BOT_ADDED_ADMIN_ROSTER_RETRY_WINDOW_MS = 120_000;
   private readonly rawPayloadSampleRate: number;
@@ -238,6 +272,21 @@ export class WebhookService {
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
   private readonly botSelfAccessRecoveryInFlight = new Map<string, Promise<string | null>>();
   private readonly executionOwnerRecheckBackoffUntilMs = new Map<string, number>();
+  private readonly membershipDenialCacheMaxInFlight: number;
+  private readonly membershipDenialCacheTasks = new Map<
+    string,
+    MembershipDenialCacheMutationTask
+  >();
+  private readonly membershipDenialCachePublications = new Map<
+    string,
+    MembershipDenialCachePublicationTask
+  >();
+  private readonly membershipDenialCacheMaxPendingPublications: number;
+  private membershipDenialCacheInFlightTaskCount = 0;
+  private membershipDenialCachePendingPublicationCount = 0;
+  private membershipDenialCacheSettledTaskCount = 0;
+  private membershipDenialCacheSettledPublicationCount = 0;
+  private membershipDenialCacheShuttingDown = false;
   private readonly publisherBotId: string;
 
   constructor(
@@ -285,6 +334,43 @@ export class WebhookService {
     this.extendedLifecycleCanaryEntityIds = this.parseCanaryEntityIds(
       configService.get<string>('MAX_EXTENDED_WEBHOOK_LIFECYCLE_CANARY_ENTITY_IDS', ''),
     );
+    this.membershipDenialCacheMaxInFlight = this.readMembershipDenialCacheMaxInFlight(
+      configService.get<unknown>('WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT'),
+    );
+    this.membershipDenialCacheMaxPendingPublications = this.membershipDenialCacheMaxInFlight;
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.membershipDenialCacheShuttingDown = true;
+    const tasks = [
+      ...this.membershipDenialCacheTasks.values(),
+      ...this.membershipDenialCachePublications.values(),
+    ]
+      .filter((task) => task.state === 'pending')
+      .map((task) => task.promise);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    let timeout: NodeJS.Timeout | null = null;
+    const settled = await Promise.race([
+      Promise.allSettled(tasks).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), MEMBERSHIP_DENIAL_CACHE_SHUTDOWN_WAIT_MS);
+      }),
+    ]);
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    if (!settled) {
+      this.logger.warn(
+        {
+          inFlightTaskCount: this.membershipDenialCacheInFlightTaskCount,
+          timeoutMs: MEMBERSHIP_DENIAL_CACHE_SHUTDOWN_WAIT_MS,
+        },
+        'Timed out waiting for committed membership denial cache publication during shutdown',
+      );
+    }
   }
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
@@ -2255,32 +2341,93 @@ export class WebhookService {
       return;
     }
 
+    epochCache.invalidateLocal?.(transition.chatId);
+    const mutationsByKey = new Map<string, MembershipDenialCacheMutation>();
+    for (const userId of transition.deniedUserIds) {
+      const key = this.buildMembershipDenialCacheMutationKey(transition, userId);
+      if (!mutationsByKey.has(key)) {
+        mutationsByKey.set(key, { key, userId });
+      }
+    }
+    const mutations = [...mutationsByKey.values()];
+    const publicationKey = this.buildMembershipDenialCachePublicationKey(mutations);
+    const existingPublication = this.getMembershipDenialCachePublication(publicationKey);
+    const mutationsToPublish =
+      existingPublication?.state === 'failed' && existingPublication.failedMutationKeys
+        ? mutations.filter(({ key }) => existingPublication.failedMutationKeys?.has(key))
+        : mutations;
+    const publicationNeedsWork =
+      existingPublication === null || existingPublication.state === 'failed';
+    const newMutationCount = mutationsToPublish.filter(
+      ({ key }) => this.getMembershipDenialCacheMutationTask(key) === null,
+    ).length;
+    const cannotAdmitNewPublication =
+      publicationNeedsWork &&
+      (this.membershipDenialCachePendingPublicationCount >=
+        this.membershipDenialCacheMaxPendingPublications ||
+        (newMutationCount > 0 &&
+          (newMutationCount <= this.membershipDenialCacheMaxInFlight
+            ? this.membershipDenialCacheInFlightTaskCount + newMutationCount >
+              this.membershipDenialCacheMaxInFlight
+            : this.membershipDenialCacheInFlightTaskCount > 0)));
+    if (this.membershipDenialCacheShuttingDown || cannotAdmitNewPublication) {
+      const rejectedCount = this.membershipDenialCacheShuttingDown
+        ? mutations.length
+        : Math.max(1, newMutationCount);
+      this.recordMembershipDenialCacheWorkMetric({
+        outcome: 'rejected',
+        count: rejectedCount,
+        inFlight: this.membershipDenialCacheInFlightTaskCount,
+      });
+      this.logger.warn(
+        {
+          type: update.type,
+          deniedUserCount: mutations.length,
+          newMutationCount,
+          inFlightTaskCount: this.membershipDenialCacheInFlightTaskCount,
+          maxInFlightTaskCount: this.membershipDenialCacheMaxInFlight,
+          pendingPublicationCount: this.membershipDenialCachePendingPublicationCount,
+          maxPendingPublicationCount: this.membershipDenialCacheMaxPendingPublications,
+          shuttingDown: this.membershipDenialCacheShuttingDown,
+        },
+        'Rejected committed membership denial cache publication for retry',
+      );
+      throw new WebhookPreparationDeferredError(
+        'Committed membership denial cache publication capacity is unavailable',
+        MEMBERSHIP_DENIAL_CACHE_RETRY_MS,
+      );
+    }
+
     const recordMutationMetric = this.webhookIngressMetricsService
       ? (metric: AdminAccessEpochMutationMetric) =>
           this.webhookIngressMetricsService?.recordMembershipCacheMutation(metric)
       : undefined;
-    const budgetStartedAtMs = Date.now();
-    const completed = Promise.all(
-      transition.deniedUserIds.map(async (userId) => {
-        try {
-          await epochCache.applyAdminAccessEpochMutation(
-            {
-              chatId: transition.chatId,
-              userId,
-              state: 'user_denied',
-              eventAt: transition.eventAt,
-            },
-            {
-              precheckSupersededEpoch: true,
-              ...(recordMutationMetric ? { recordMetric: recordMutationMetric } : {}),
-            },
+    const publication =
+      existingPublication && existingPublication.state !== 'failed'
+        ? existingPublication
+        : this.trackMembershipDenialCachePublication(publicationKey, () =>
+            this.runMembershipDenialCachePublication(
+              transition,
+              mutationsToPublish,
+              epochCache,
+              recordMutationMetric,
+            ),
           );
-          return null;
-        } catch (error: unknown) {
-          return { userId, error };
-        }
-      }),
-    );
+    if (publication.state === 'succeeded') {
+      return;
+    }
+    if (publication.state === 'pending' && publication.waitBudgetClaimed) {
+      throw new WebhookPreparationDeferredError(
+        publication.waitBudgetExhausted
+          ? 'Committed membership denial cache publication exceeded its wait budget'
+          : 'Committed membership denial cache publication is already pending',
+        MEMBERSHIP_DENIAL_CACHE_RETRY_MS,
+      );
+    }
+
+    publication.waitBudgetClaimed = true;
+    const budgetStartedAtMs = Date.now();
+    const completed = publication.promise;
     let budgetTimer: NodeJS.Timeout | null = null;
     const outcome = await Promise.race([
       completed.then((failures) => ({ kind: 'completed' as const, failures })),
@@ -2289,6 +2436,7 @@ export class WebhookService {
           () => resolve({ kind: 'timeout' }),
           MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS,
         );
+        budgetTimer.unref();
       }),
     ]);
     if (budgetTimer) {
@@ -2300,6 +2448,7 @@ export class WebhookService {
     });
 
     if (outcome.kind === 'timeout') {
+      publication.waitBudgetExhausted = true;
       this.logger.warn(
         {
           type: update.type,
@@ -2308,18 +2457,357 @@ export class WebhookService {
         },
         'Committed membership denial cache publication exceeded its wait budget',
       );
-      void completed.then((failures) => this.logMembershipDenialCacheFailures(failures, update));
-      return;
+      this.observeMembershipDenialCachePublicationAfterTimeout(publication, completed, update);
+      throw new WebhookPreparationDeferredError(
+        'Committed membership denial cache publication exceeded its wait budget',
+        MEMBERSHIP_DENIAL_CACHE_RETRY_MS,
+      );
     }
 
     this.logMembershipDenialCacheFailures(outcome.failures, update);
+    if (outcome.failures.some(({ error }) => error !== null)) {
+      throw new WebhookPreparationDeferredError(
+        'Committed membership denial cache publication failed',
+        MEMBERSHIP_DENIAL_CACHE_RETRY_MS,
+      );
+    }
+  }
+
+  private observeMembershipDenialCachePublicationAfterTimeout(
+    publication: MembershipDenialCachePublicationTask,
+    completed: Promise<readonly MembershipDenialCacheMutationResult[]>,
+    update: Pick<MaxUpdate, 'type'>,
+  ): void {
+    if (publication.lateObserverAttached) {
+      return;
+    }
+    publication.lateObserverAttached = true;
+    void completed.then(
+      (failures) => this.logMembershipDenialCacheFailures(failures, update),
+      (error: unknown) => {
+        this.logger.warn(
+          {
+            type: update.type,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Committed membership denial cache publication failed after its wait budget',
+        );
+      },
+    );
+  }
+
+  private async runMembershipDenialCachePublication(
+    transition: MembershipTransitionResult,
+    mutations: readonly MembershipDenialCacheMutation[],
+    epochCache: ChatContextCacheService,
+    recordMutationMetric?: (metric: AdminAccessEpochMutationMetric) => void,
+  ): Promise<readonly MembershipDenialCacheMutationResult[]> {
+    const tasks = new Map<string, Promise<MembershipDenialCacheMutationResult>>();
+    let nextMutationIndex = 0;
+
+    while (nextMutationIndex < mutations.length) {
+      const mutation = mutations[nextMutationIndex]!;
+      const existing = this.getMembershipDenialCacheMutationTask(mutation.key);
+      if (existing) {
+        tasks.set(mutation.key, existing.promise);
+        nextMutationIndex += 1;
+        continue;
+      }
+
+      if (this.membershipDenialCacheInFlightTaskCount >= this.membershipDenialCacheMaxInFlight) {
+        await this.waitForMembershipDenialCacheCapacity();
+        continue;
+      }
+
+      tasks.set(
+        mutation.key,
+        this.trackMembershipDenialCacheMutation(
+          mutation.key,
+          async () => {
+            await epochCache.applyAdminAccessEpochMutation(
+              {
+                chatId: transition.chatId,
+                userId: mutation.userId,
+                state: 'user_denied',
+                eventAt: transition.eventAt,
+              },
+              {
+                precheckSupersededEpoch: true,
+                ...(recordMutationMetric ? { recordMetric: recordMutationMetric } : {}),
+              },
+            );
+          },
+          mutation.userId,
+        ),
+      );
+      nextMutationIndex += 1;
+    }
+
+    return Promise.all(tasks.values());
+  }
+
+  private async waitForMembershipDenialCacheCapacity(): Promise<void> {
+    const pending = [...this.membershipDenialCacheTasks.values()]
+      .filter((task) => task.state === 'pending')
+      .map((task) => task.promise);
+    if (pending.length === 0) {
+      throw new Error('Membership denial cache capacity accounting lost its pending task');
+    }
+    await Promise.race(pending);
+  }
+
+  private trackMembershipDenialCacheMutation(
+    key: string,
+    operation: () => Promise<void>,
+    userId: string,
+  ): Promise<MembershipDenialCacheMutationResult> {
+    const existing = this.getMembershipDenialCacheMutationTask(key);
+    if (existing) {
+      return existing.promise;
+    }
+
+    let timeout: NodeJS.Timeout | null = null;
+    const settled = Promise.resolve()
+      .then(operation)
+      .then(
+        () => ({ key, userId, error: null }),
+        (error: unknown) => ({ key, userId, error }),
+      );
+    const task: MembershipDenialCacheMutationTask = {
+      promise: settled,
+      state: 'pending',
+      retainUntilMs: null,
+    };
+    const tracked = settled.then((result) => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      this.membershipDenialCacheInFlightTaskCount -= 1;
+      if (this.membershipDenialCacheTasks.get(key) === task) {
+        if (result.error === null) {
+          task.state = 'succeeded';
+          task.retainUntilMs = Date.now() + MEMBERSHIP_DENIAL_CACHE_SUCCESS_RETENTION_MS;
+          this.membershipDenialCacheSettledTaskCount += 1;
+          this.membershipDenialCacheTasks.delete(key);
+          this.membershipDenialCacheTasks.set(key, task);
+          this.pruneMembershipDenialCacheMutationTasks();
+        } else {
+          this.deleteMembershipDenialCacheMutationTask(key, task);
+        }
+      }
+      this.recordMembershipDenialCacheWorkMetric({
+        outcome: result.error === null ? 'completed' : 'failure',
+        inFlight: this.membershipDenialCacheInFlightTaskCount,
+      });
+      return result;
+    });
+    task.promise = tracked;
+    this.membershipDenialCacheTasks.set(key, task);
+    this.membershipDenialCacheInFlightTaskCount += 1;
+    this.recordMembershipDenialCacheWorkMetric({
+      outcome: null,
+      inFlight: this.membershipDenialCacheInFlightTaskCount,
+    });
+    timeout = setTimeout(() => {
+      timeout = null;
+      if (this.membershipDenialCacheTasks.get(key) !== task || task.state !== 'pending') {
+        return;
+      }
+      this.recordMembershipDenialCacheWorkMetric({
+        outcome: 'timeout',
+        inFlight: this.membershipDenialCacheInFlightTaskCount,
+      });
+    }, MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS);
+    timeout.unref();
+    return tracked;
+  }
+
+  private getMembershipDenialCacheMutationTask(
+    key: string,
+  ): MembershipDenialCacheMutationTask | null {
+    const task = this.membershipDenialCacheTasks.get(key) ?? null;
+    if (
+      task?.state === 'succeeded' &&
+      task.retainUntilMs !== null &&
+      task.retainUntilMs <= Date.now()
+    ) {
+      this.deleteMembershipDenialCacheMutationTask(key, task);
+      return null;
+    }
+    return task;
+  }
+
+  private deleteMembershipDenialCacheMutationTask(
+    key: string,
+    task: MembershipDenialCacheMutationTask,
+  ): void {
+    if (this.membershipDenialCacheTasks.get(key) !== task) {
+      return;
+    }
+    this.membershipDenialCacheTasks.delete(key);
+    if (task.state === 'succeeded') {
+      this.membershipDenialCacheSettledTaskCount -= 1;
+    }
+  }
+
+  private pruneMembershipDenialCacheMutationTasks(): void {
+    while (this.membershipDenialCacheSettledTaskCount > MEMBERSHIP_DENIAL_CACHE_MAX_SETTLED_TASKS) {
+      let deleted = false;
+      for (const [key, task] of this.membershipDenialCacheTasks) {
+        if (task.state !== 'succeeded') {
+          continue;
+        }
+        this.deleteMembershipDenialCacheMutationTask(key, task);
+        deleted = true;
+        break;
+      }
+      if (!deleted) {
+        return;
+      }
+    }
+  }
+
+  private trackMembershipDenialCachePublication(
+    key: string,
+    operation: () => Promise<readonly MembershipDenialCacheMutationResult[]>,
+  ): MembershipDenialCachePublicationTask {
+    const existing = this.getMembershipDenialCachePublication(key);
+    if (existing && existing.state !== 'failed') {
+      return existing;
+    }
+
+    const publication: MembershipDenialCachePublicationTask = existing ?? {
+      promise: Promise.resolve([]),
+      state: 'pending',
+      retainUntilMs: null,
+      failedMutationKeys: null,
+      waitBudgetClaimed: false,
+      waitBudgetExhausted: false,
+      lateObserverAttached: false,
+    };
+    if (existing?.state === 'failed') {
+      this.membershipDenialCacheSettledPublicationCount -= 1;
+    }
+    publication.state = 'pending';
+    publication.retainUntilMs = null;
+    publication.failedMutationKeys = null;
+    publication.waitBudgetClaimed = false;
+    publication.waitBudgetExhausted = false;
+    publication.lateObserverAttached = false;
+    this.membershipDenialCachePublications.set(key, publication);
+    this.membershipDenialCachePendingPublicationCount += 1;
+
+    let operationPromise: Promise<readonly MembershipDenialCacheMutationResult[]>;
+    try {
+      operationPromise = operation();
+    } catch (error: unknown) {
+      operationPromise = Promise.reject(error);
+    }
+    const tracked = operationPromise.then(
+      (results) => {
+        if (this.membershipDenialCachePublications.get(key) === publication) {
+          const failedMutationKeys = new Set(
+            results
+              .filter(({ error }) => error !== null)
+              .map(({ key: mutationKey }) => mutationKey),
+          );
+          publication.state = failedMutationKeys.size === 0 ? 'succeeded' : 'failed';
+          publication.retainUntilMs = Date.now() + MEMBERSHIP_DENIAL_CACHE_SUCCESS_RETENTION_MS;
+          publication.failedMutationKeys =
+            failedMutationKeys.size === 0 ? null : failedMutationKeys;
+          publication.promise = Promise.resolve([]);
+          this.membershipDenialCachePendingPublicationCount -= 1;
+          this.membershipDenialCacheSettledPublicationCount += 1;
+          this.membershipDenialCachePublications.delete(key);
+          this.membershipDenialCachePublications.set(key, publication);
+          this.pruneMembershipDenialCachePublications();
+        }
+        return results;
+      },
+      (error: unknown) => {
+        this.deleteMembershipDenialCachePublication(key, publication);
+        throw error;
+      },
+    );
+    publication.promise = tracked;
+    return publication;
+  }
+
+  private getMembershipDenialCachePublication(
+    key: string,
+  ): MembershipDenialCachePublicationTask | null {
+    const publication = this.membershipDenialCachePublications.get(key) ?? null;
+    if (
+      publication !== null &&
+      publication.state !== 'pending' &&
+      publication.retainUntilMs !== null &&
+      publication.retainUntilMs <= Date.now()
+    ) {
+      this.deleteMembershipDenialCachePublication(key, publication);
+      return null;
+    }
+    return publication;
+  }
+
+  private deleteMembershipDenialCachePublication(
+    key: string,
+    publication: MembershipDenialCachePublicationTask,
+  ): void {
+    if (this.membershipDenialCachePublications.get(key) !== publication) {
+      return;
+    }
+    this.membershipDenialCachePublications.delete(key);
+    if (publication.state === 'pending') {
+      this.membershipDenialCachePendingPublicationCount -= 1;
+    } else {
+      this.membershipDenialCacheSettledPublicationCount -= 1;
+    }
+  }
+
+  private pruneMembershipDenialCachePublications(): void {
+    while (
+      this.membershipDenialCacheSettledPublicationCount >
+      MEMBERSHIP_DENIAL_CACHE_MAX_SETTLED_PUBLICATIONS
+    ) {
+      let deleted = false;
+      for (const [key, publication] of this.membershipDenialCachePublications) {
+        if (publication.state === 'pending') {
+          continue;
+        }
+        this.deleteMembershipDenialCachePublication(key, publication);
+        deleted = true;
+        break;
+      }
+      if (!deleted) {
+        return;
+      }
+    }
+  }
+
+  private buildMembershipDenialCacheMutationKey(
+    transition: MembershipTransitionResult,
+    userId: string,
+  ): string {
+    return JSON.stringify([transition.chatId, userId, transition.eventAt.toISOString()]);
+  }
+
+  private buildMembershipDenialCachePublicationKey(
+    mutations: readonly MembershipDenialCacheMutation[],
+  ): string {
+    const digest = createHash('sha256');
+    const keys = mutations.map(({ key }) => key).sort();
+    for (const key of keys) {
+      digest.update(`${key.length}:`);
+      digest.update(key);
+    }
+    return digest.digest('base64url');
   }
 
   private logMembershipDenialCacheFailures(
-    failures: Array<{ userId: string; error: unknown } | null>,
+    failures: readonly MembershipDenialCacheMutationResult[],
     update: Pick<MaxUpdate, 'type'>,
   ): void {
-    const failureCount = failures.filter((failure) => failure !== null).length;
+    const failureCount = failures.filter(({ error }) => error !== null).length;
     if (failureCount === 0) {
       return;
     }
@@ -2339,6 +2827,18 @@ export class WebhookService {
   }): void {
     try {
       this.webhookIngressMetricsService?.recordMembershipCacheBudget(metric);
+    } catch {
+      // Metrics must never affect committed membership transitions.
+    }
+  }
+
+  private recordMembershipDenialCacheWorkMetric(metric: {
+    outcome: 'completed' | 'timeout' | 'failure' | 'rejected' | null;
+    inFlight: number;
+    count?: number;
+  }): void {
+    try {
+      this.webhookIngressMetricsService?.recordMembershipCacheDetachedWork?.(metric);
     } catch {
       // Metrics must never affect committed membership transitions.
     }
@@ -3441,6 +3941,13 @@ export class WebhookService {
     }
 
     return String(error).trim().toLowerCase();
+  }
+
+  private readMembershipDenialCacheMaxInFlight(value: unknown): number {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 2
+      ? Math.min(1_024, parsed)
+      : DEFAULT_MEMBERSHIP_DENIAL_CACHE_MAX_IN_FLIGHT;
   }
 
   private isPrismaKnownError(error: unknown, code: string): boolean {

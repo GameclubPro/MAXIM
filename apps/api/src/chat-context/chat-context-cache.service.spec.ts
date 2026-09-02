@@ -878,6 +878,39 @@ describe('ChatContextCacheService', () => {
     expect(redisInstance.get).toHaveBeenCalledTimes(1);
   });
 
+  it('invalidates only the local chat context without issuing a Redis mutation', async () => {
+    const chatId = 'chat-local-invalidation';
+    const cachedSettings = JSON.parse(JSON.stringify(buildSettings(chatId))) as ChatSettings;
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      get: jest.Mock;
+      eval: jest.Mock;
+    };
+    redisInstance.get.mockResolvedValue(
+      JSON.stringify({
+        chatId,
+        title: 'Local invalidation',
+        settings: cachedSettings,
+        domainAllowlist: [],
+        adminUserIds: ['user-1'],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+    );
+
+    await service.getChatContext(chatId, 'Local invalidation');
+    await service.getChatContext(chatId, 'Local invalidation');
+    service.invalidateLocal(chatId);
+    await service.getChatContext(chatId, 'Local invalidation');
+
+    expect(redisInstance.get).toHaveBeenCalledTimes(2);
+    expect(redisInstance.eval).not.toHaveBeenCalled();
+  });
+
   it('propagates chat context invalidation to other service instances', async () => {
     const chatId = 'chat-1';
     const initialSettings = buildSettings(chatId);

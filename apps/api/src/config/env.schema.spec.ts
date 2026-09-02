@@ -247,6 +247,7 @@ describe('validateEnv boolean parsing', () => {
     expect(defaults.WEBHOOK_ACK_DEADLINE_MS).toBe(18_000);
     expect(defaults.WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS).toBe(100);
     expect(defaults.WEBHOOK_RECEIPT_MAX_IN_FLIGHT).toBe(64);
+    expect(defaults.WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT).toBe(64);
 
     const configured = validateEnv(
       createValidEnv({
@@ -254,12 +255,14 @@ describe('validateEnv boolean parsing', () => {
         WEBHOOK_ACK_DEADLINE_MS: '15000',
         WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS: '250',
         WEBHOOK_RECEIPT_MAX_IN_FLIGHT: '32',
+        WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT: '16',
       }),
     );
     expect(configured.WEBHOOK_BODY_LIMIT_BYTES).toBe(2_097_152);
     expect(configured.WEBHOOK_ACK_DEADLINE_MS).toBe(15_000);
     expect(configured.WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS).toBe(250);
     expect(configured.WEBHOOK_RECEIPT_MAX_IN_FLIGHT).toBe(32);
+    expect(configured.WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT).toBe(16);
 
     expect(() => validateEnv(createValidEnv({ WEBHOOK_BODY_LIMIT_BYTES: '4194305' }))).toThrow(
       /WEBHOOK_BODY_LIMIT_BYTES/u,
@@ -273,6 +276,9 @@ describe('validateEnv boolean parsing', () => {
     expect(() => validateEnv(createValidEnv({ WEBHOOK_RECEIPT_MAX_IN_FLIGHT: '1025' }))).toThrow(
       /WEBHOOK_RECEIPT_MAX_IN_FLIGHT/u,
     );
+    expect(() =>
+      validateEnv(createValidEnv({ WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT: '1' })),
+    ).toThrow(/WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT/u);
   });
 
   it('keeps Publisher auto-reply flood and backlog admission strictly bounded', () => {

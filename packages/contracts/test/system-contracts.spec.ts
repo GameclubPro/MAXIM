@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   systemDashboardActionLatencySchema,
   systemDashboardWebhookIngressSloSchema,
+  systemModeSnapshotSchema,
 } from '../src/system.js';
 
 const emptyPercentiles = {
@@ -114,6 +115,31 @@ function expectRejectedAt(value: unknown, path: Array<string | number>) {
 }
 
 describe('system dashboard contracts', () => {
+  it('classifies system mode while accepting legacy snapshots without a condition', () => {
+    const legacy = {
+      mode: 'degrade',
+      source: 'auto',
+      reason: 'legacy snapshot',
+      updatedAt: '2026-08-15T12:00:00.000Z',
+      manualMode: null,
+      queueLagSec: 12,
+      action: {
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+
+    expect(systemModeSnapshotSchema.parse(legacy).condition).toBe('unknown');
+    expect(
+      systemModeSnapshotSchema.parse({ ...legacy, condition: 'queue_backlog' }).condition,
+    ).toBe('queue_backlog');
+  });
+
   it('defaults admission rejects for webhook ingress snapshots from older API versions', () => {
     expect(
       systemDashboardWebhookIngressSloSchema.parse({

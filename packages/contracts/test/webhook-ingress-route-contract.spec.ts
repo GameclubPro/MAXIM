@@ -111,6 +111,13 @@ describe('system dashboard webhook ingress route contract', () => {
           timing,
         },
         budget: { completed: 3, timeout: 1, timing },
+        detached: {
+          completed: 3,
+          timeout: 1,
+          failure: 1,
+          peakInFlight: 4,
+          rejected: 2,
+        },
       },
       membershipTransition: {
         edgeAdvance: { calls: 4, affectedRows: 3, noOpCalls: 1, timing },
@@ -118,6 +125,13 @@ describe('system dashboard webhook ingress route contract', () => {
     });
 
     expect(parsed.membershipCache?.precheck).toMatchObject({ hit: 2, miss: 1, failOpen: 1 });
+    expect(parsed.membershipCache?.detached).toEqual({
+      completed: 3,
+      timeout: 1,
+      failure: 1,
+      peakInFlight: 4,
+      rejected: 2,
+    });
     expect(parsed.membershipTransition?.edgeAdvance).toMatchObject({
       calls: 4,
       affectedRows: 3,
@@ -130,12 +144,50 @@ describe('system dashboard webhook ingress route contract', () => {
         luaConflict: { sampled: 20, affected: 2, ratio: 0.1 },
         luaTerminalFailure: { sampled: 20, affected: 0, ratio: 0 },
         budgetTimeout: { sampled: 20, affected: 3, ratio: 0.15 },
+        detachedFailure: { sampled: 20, affected: 3, ratio: 0.15 },
         thresholds: {
           warning: { minimumSamples: 20, minimumAffected: 3, ratio: 0.1 },
           critical: { minimumSamples: 50, minimumAffected: 10, ratio: 0.3 },
         },
       }),
-    ).toMatchObject({ status: 'warning', budgetTimeout: { ratio: 0.15 } });
+    ).toMatchObject({
+      status: 'warning',
+      budgetTimeout: { ratio: 0.15 },
+      detachedFailure: { ratio: 0.15 },
+    });
+  });
+
+  it('defaults detached membership cache observability for older snapshots', () => {
+    const timing = {
+      sampled: 0,
+      p95DurationMs: null,
+      p99DurationMs: null,
+      overflowSamples: 0,
+    };
+    const parsed = systemDashboardWebhookIngressSloSchema.parse({
+      ...createIngressSnapshot(),
+      membershipCache: {
+        precheck: { hit: 0, miss: 0, failOpen: 0, timing },
+        lua: {
+          applied: 0,
+          superseded: 0,
+          conflict: 0,
+          retry: 0,
+          exhausted: 0,
+          failed: 0,
+          timing,
+        },
+        budget: { completed: 0, timeout: 0, timing },
+      },
+    });
+
+    expect(parsed.membershipCache?.detached).toEqual({
+      completed: 0,
+      timeout: 0,
+      failure: 0,
+      peakInFlight: 0,
+      rejected: 0,
+    });
   });
 
   it('rejects internally inconsistent membership observability', () => {

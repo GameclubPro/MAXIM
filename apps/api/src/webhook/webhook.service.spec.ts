@@ -1,4 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import {
   ChatEntityType,
   WebhookExecutionClaimStatus,
@@ -1689,6 +1690,9 @@ describe('WebhookService', () => {
     const fixture = createAtomicMembershipFixture();
     const eventAt = new Date('2026-07-20T10:00:00.123Z');
     const chatContextCache = {
+      invalidateLocal: jest.fn((chatId: string) => {
+        fixture.operations.push(`cache-local:${chatId}`);
+      }),
       applyAdminAccessEpochMutation: jest.fn(async ({ userId }: { userId: string }) => {
         fixture.operations.push(`cache:${userId}`);
         return true;
@@ -1697,6 +1701,7 @@ describe('WebhookService', () => {
     const webhookIngressMetricsService = {
       recordMembershipCacheMutation: jest.fn(),
       recordMembershipCacheBudget: jest.fn(),
+      recordMembershipCacheDetachedWork: jest.fn(),
       recordMembershipAccessEdgeAdvance: jest.fn(),
     };
     const service = new WebhookService(
@@ -1738,6 +1743,7 @@ describe('WebhookService', () => {
       'admin:newer',
       'allowlist:delete',
       'transaction:commit',
+      'cache-local:-100-membership',
       'cache:user-1',
       'cache:iduser-1',
     ]);
@@ -1814,6 +1820,10 @@ describe('WebhookService', () => {
       outcome: 'completed',
       durationMs: expect.any(Number),
     });
+    expect(webhookIngressMetricsService.recordMembershipCacheDetachedWork).toHaveBeenCalledWith({
+      outcome: 'completed',
+      inFlight: 0,
+    });
     expect(
       JSON.stringify(webhookIngressMetricsService.recordMembershipCacheBudget.mock.calls),
     ).not.toMatch(/u-atomic-remove|-100-membership|user-1/u);
@@ -1882,6 +1892,7 @@ describe('WebhookService', () => {
   it('keeps committed membership denial when cache epoch publication fails', async () => {
     const fixture = createAtomicMembershipFixture();
     const chatContextCache = {
+      invalidateLocal: jest.fn(),
       applyAdminAccessEpochMutation: jest.fn().mockRejectedValue(new Error('redis unavailable')),
     };
     const service = new WebhookService(
@@ -1903,7 +1914,7 @@ describe('WebhookService', () => {
         }),
         '127.0.0.1',
       ),
-    ).resolves.toEqual({ accepted: true, duplicate: false });
+    ).rejects.toThrow('Committed membership denial cache publication failed');
 
     expect(fixture.operations).toContain('transaction:commit');
     expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledTimes(1);
@@ -1911,15 +1922,74 @@ describe('WebhookService', () => {
     expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
   });
 
-  it('does not hold webhook preparation indefinitely on a pending cache epoch mutation', async () => {
+  it('retries only failed cache mutations after a partial publication failure', async () => {
     const fixture = createAtomicMembershipFixture();
-    const neverSettles = new Promise<boolean>(() => undefined);
+    let aliasAttempts = 0;
     const chatContextCache = {
-      applyAdminAccessEpochMutation: jest.fn().mockReturnValue(neverSettles),
+      invalidateLocal: jest.fn(),
+      applyAdminAccessEpochMutation: jest.fn(
+        async ({ userId }: { userId: string }): Promise<boolean> => {
+          if (userId === 'iduser-1' && aliasAttempts++ === 0) {
+            throw new Error('redis unavailable');
+          }
+          return true;
+        },
+      ),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+    const createdAt = '2026-07-20T10:02:00.500Z';
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-cache-partial-failure',
+          type: 'user_removed',
+          createdAt,
+        }),
+        '127.0.0.1',
+      ),
+    ).rejects.toThrow('Committed membership denial cache publication failed');
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-cache-partial-failure-retry',
+          type: 'user_removed',
+          createdAt,
+        }),
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(
+      chatContextCache.applyAdminAccessEpochMutation.mock.calls.map(
+        ([mutation]) => mutation.userId,
+      ),
+    ).toEqual(['user-1', 'iduser-1', 'iduser-1']);
+  });
+
+  it('fails retryably at the cache wait budget and drains late work during shutdown', async () => {
+    const fixture = createAtomicMembershipFixture();
+    let resolveMutation!: (value: boolean) => void;
+    const pendingMutation = new Promise<boolean>((resolve) => {
+      resolveMutation = resolve;
+    });
+    const chatContextCache = {
+      invalidateLocal: jest.fn(),
+      applyAdminAccessEpochMutation: jest.fn().mockReturnValue(pendingMutation),
     };
     const webhookIngressMetricsService = {
       recordMembershipCacheMutation: jest.fn(),
       recordMembershipCacheBudget: jest.fn(),
+      recordMembershipCacheDetachedWork: jest.fn(),
       recordMembershipAccessEdgeAdvance: jest.fn(),
     };
     const service = new WebhookService(
@@ -1939,36 +2009,418 @@ describe('WebhookService', () => {
       webhookIngressMetricsService as never,
     );
 
-    let guardTimer: NodeJS.Timeout | null = null;
-    const outcome = await Promise.race([
-      service
-        .ingest(
-          buildMembershipUpdate({
-            updateId: 'u-remove-pending-cache',
-            type: 'user_removed',
-            createdAt: '2026-07-20T10:02:01.000Z',
-          }),
-          '127.0.0.1',
-        )
-        .then((result) => ({ kind: 'accepted' as const, result })),
-      new Promise<{ kind: 'timeout' }>((resolve) => {
-        guardTimer = setTimeout(() => resolve({ kind: 'timeout' }), 750);
+    const timedOut = service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-remove-pending-cache',
+        type: 'user_removed',
+        createdAt: '2026-07-20T10:02:01.000Z',
       }),
-    ]);
-    if (guardTimer) {
-      clearTimeout(guardTimer);
-    }
-
-    expect(outcome).toEqual({
-      kind: 'accepted',
-      result: { accepted: true, duplicate: false },
+      '127.0.0.1',
+    );
+    await expect(timedOut).rejects.toThrow(
+      'Committed membership denial cache publication exceeded its wait budget',
+    );
+    await expect(timedOut).rejects.toMatchObject({
+      code: 'WEBHOOK_PREPARATION_DEFERRED',
+      retryAfterMs: 1_000,
     });
     expect(fixture.operations).toContain('transaction:commit');
+    expect(chatContextCache.invalidateLocal).toHaveBeenCalledWith('-100-membership');
     expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
     expect(webhookIngressMetricsService.recordMembershipCacheBudget).toHaveBeenCalledWith({
       outcome: 'timeout',
       durationMs: expect.any(Number),
     });
+    expect(webhookIngressMetricsService.recordMembershipCacheDetachedWork).toHaveBeenCalledWith({
+      outcome: 'timeout',
+      inFlight: 2,
+    });
+
+    for (let retry = 0; retry < 5; retry += 1) {
+      await expect(
+        service.ingest(
+          buildMembershipUpdate({
+            updateId: `u-remove-pending-cache-retry-${retry}`,
+            type: 'user_removed',
+            createdAt: '2026-07-20T10:02:01.000Z',
+          }),
+          '127.0.0.1',
+        ),
+      ).rejects.toMatchObject({
+        code: 'WEBHOOK_PREPARATION_DEFERRED',
+        retryAfterMs: 1_000,
+      });
+    }
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(
+      webhookIngressMetricsService.recordMembershipCacheBudget.mock.calls.filter(
+        ([metric]) => metric.outcome === 'timeout',
+      ),
+    ).toHaveLength(1);
+
+    const shutdown = service.onModuleDestroy();
+    resolveMutation(true);
+    await shutdown;
+    await flushDeferredWebhookWork();
+
+    expect(webhookIngressMetricsService.recordMembershipCacheDetachedWork).toHaveBeenCalledWith({
+      outcome: 'completed',
+      inFlight: 0,
+    });
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-during-shutdown',
+          type: 'user_removed',
+          createdAt: '2026-07-20T10:02:02.000Z',
+        }),
+        '127.0.0.1',
+      ),
+    ).rejects.toThrow('Committed membership denial cache publication capacity is unavailable');
+    expect(chatContextCache.invalidateLocal).toHaveBeenCalledTimes(7);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('observes a late cache publication coordinator rejection after the wait budget', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const chatContextCache = {
+      invalidateLocal: jest.fn(),
+      applyAdminAccessEpochMutation: jest.fn(),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(2) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+    let rejectPublication!: (error: Error) => void;
+    const latePublication = new Promise<never>((_resolve, reject) => {
+      rejectPublication = reject;
+    });
+    const runPublication = jest
+      .spyOn(service as any, 'runMembershipDenialCachePublication')
+      .mockReturnValue(latePublication);
+    const warn = jest.spyOn((service as any).logger, 'warn');
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-late-cache-coordinator-failure',
+          type: 'user_removed',
+          createdAt: '2026-07-20T10:02:01.500Z',
+        }),
+        '127.0.0.1',
+      ),
+    ).rejects.toThrow('Committed membership denial cache publication exceeded its wait budget');
+
+    for (let retry = 0; retry < 5; retry += 1) {
+      await expect(
+        service.ingest(
+          buildMembershipUpdate({
+            updateId: `u-remove-late-cache-coordinator-failure-retry-${retry}`,
+            type: 'user_removed',
+            createdAt: '2026-07-20T10:02:01.500Z',
+          }),
+          '127.0.0.1',
+        ),
+      ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+    }
+    expect(runPublication).toHaveBeenCalledTimes(1);
+
+    rejectPublication(new Error('coordinator failed late'));
+    await flushDeferredWebhookWork();
+
+    const lateFailureLogs = warn.mock.calls.filter(
+      ([, message]) =>
+        message === 'Committed membership denial cache publication failed after its wait budget',
+    );
+    expect(lateFailureLogs).toEqual([
+      [
+        {
+          type: 'user_removed',
+          err: 'coordinator failed late',
+        },
+        'Committed membership denial cache publication failed after its wait budget',
+      ],
+    ]);
+    await service.onModuleDestroy();
+  });
+
+  it('canonicalizes shared pending publications and bounds distinct subset coordinators', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const neverSettles = new Promise<boolean>(() => undefined);
+    const chatContextCache = {
+      invalidateLocal: jest.fn(),
+      applyAdminAccessEpochMutation: jest.fn().mockReturnValue(neverSettles),
+    };
+    const config = {
+      get: jest.fn((key: string, fallback?: unknown) =>
+        key === 'WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT' ? 6 : fallback,
+      ),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+    const runPublication = jest.spyOn(service as any, 'runMembershipDenialCachePublication');
+    const createdAt = '2026-07-20T10:02:01.750Z';
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-shared-pending-full',
+          type: 'user_removed',
+          createdAt,
+          userIds: ['user-1', 'user-2', 'user-3'],
+        }),
+        '127.0.0.1',
+      ),
+    ).rejects.toThrow('Committed membership denial cache publication exceeded its wait budget');
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(6);
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-shared-pending-reordered',
+          type: 'user_removed',
+          createdAt,
+          userIds: ['user-3', 'user-2', 'user-1'],
+        }),
+        '127.0.0.1',
+      ),
+    ).rejects.toThrow('Committed membership denial cache publication exceeded its wait budget');
+    expect(runPublication).toHaveBeenCalledTimes(1);
+    expect((service as any).membershipDenialCachePendingPublicationCount).toBe(1);
+
+    const admittedSubsets = [
+      ['user-1'],
+      ['user-2'],
+      ['user-3'],
+      ['user-1', 'user-2'],
+      ['user-1', 'user-3'],
+    ];
+    const subsetOutcomes = await Promise.all(
+      admittedSubsets.map((userIds, index) =>
+        service
+          .ingest(
+            buildMembershipUpdate({
+              updateId: `u-remove-shared-pending-subset-${index}`,
+              type: 'user_removed',
+              createdAt,
+              userIds,
+            }),
+            '127.0.0.1',
+          )
+          .catch((error: unknown) => error),
+      ),
+    );
+    expect(subsetOutcomes).toHaveLength(5);
+    for (const outcome of subsetOutcomes) {
+      expect(outcome).toBeInstanceOf(WebhookPreparationDeferredError);
+    }
+    expect((service as any).membershipDenialCachePendingPublicationCount).toBe(6);
+    expect((service as any).membershipDenialCachePublications).toHaveProperty('size', 6);
+    expect(runPublication).toHaveBeenCalledTimes(6);
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-shared-pending-over-cap',
+          type: 'user_removed',
+          createdAt,
+          userIds: ['user-2', 'user-3'],
+        }),
+        '127.0.0.1',
+      ),
+    ).rejects.toThrow('Committed membership denial cache publication capacity is unavailable');
+    expect((service as any).membershipDenialCachePendingPublicationCount).toBe(6);
+    expect((service as any).membershipDenialCachePublications).toHaveProperty('size', 6);
+    expect(runPublication).toHaveBeenCalledTimes(6);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(6);
+  });
+
+  it('bounds a burst and rejects excess cache work for durable webhook retry', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const mutationResolvers: Array<(value: boolean) => void> = [];
+    const chatContextCache = {
+      invalidateLocal: jest.fn(),
+      applyAdminAccessEpochMutation: jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            mutationResolvers.push(resolve);
+          }),
+      ),
+    };
+    const webhookIngressMetricsService = {
+      recordMembershipCacheMutation: jest.fn(),
+      recordMembershipCacheBudget: jest.fn(),
+      recordMembershipCacheDetachedWork: jest.fn(),
+      recordMembershipAccessEdgeAdvance: jest.fn(),
+    };
+    const config = {
+      get: jest.fn((key: string, fallback?: unknown) =>
+        key === 'WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT' ? 2 : fallback,
+      ),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      webhookIngressMetricsService as never,
+    );
+
+    const firstOutcome = service
+      .ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-burst-first',
+          type: 'user_removed',
+          createdAt: '2026-07-20T10:03:00.000Z',
+        }),
+        '127.0.0.1',
+      )
+      .catch((error: unknown) => error);
+    await flushDeferredWebhookWork();
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+
+    const rejected = service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-remove-burst-rejected',
+        type: 'user_removed',
+        createdAt: '2026-07-20T10:03:01.000Z',
+      }),
+      '127.0.0.1',
+    );
+    await expect(rejected).rejects.toThrow(
+      'Committed membership denial cache publication capacity is unavailable',
+    );
+    await expect(rejected).rejects.toBeInstanceOf(WebhookPreparationDeferredError);
+
+    expect(chatContextCache.invalidateLocal).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(webhookIngressMetricsService.recordMembershipCacheDetachedWork).toHaveBeenCalledWith({
+      outcome: 'rejected',
+      count: 2,
+      inFlight: 2,
+    });
+    await expect(firstOutcome).resolves.toBeInstanceOf(Error);
+
+    for (const resolve of mutationResolvers) {
+      resolve(true);
+    }
+    await flushDeferredWebhookWork();
+    await service.onModuleDestroy();
+  });
+
+  it('publishes an oversized membership event in bounded waves and reuses its settled result', async () => {
+    const fixture = createAtomicMembershipFixture();
+    let activeMutationCount = 0;
+    let peakMutationCount = 0;
+    const pendingMutations: Array<{ resolve: () => void }> = [];
+    const chatContextCache = {
+      invalidateLocal: jest.fn(),
+      applyAdminAccessEpochMutation: jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            activeMutationCount += 1;
+            peakMutationCount = Math.max(peakMutationCount, activeMutationCount);
+            pendingMutations.push({
+              resolve: () => {
+                activeMutationCount -= 1;
+                resolve(true);
+              },
+            });
+          }),
+      ),
+    };
+    const config = {
+      get: jest.fn((key: string, fallback?: unknown) =>
+        key === 'WEBHOOK_MEMBERSHIP_CACHE_MAX_IN_FLIGHT' ? 2 : fallback,
+      ),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+    const createdAt = '2026-07-20T10:04:00.000Z';
+    const oversized = service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-remove-oversized',
+        type: 'user_removed',
+        createdAt,
+        userIds: ['user-1', 'user-2'],
+      }),
+      '127.0.0.1',
+    );
+
+    await flushDeferredWebhookWork();
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(peakMutationCount).toBe(2);
+
+    for (const mutation of pendingMutations.splice(0)) {
+      mutation.resolve();
+    }
+    await flushDeferredWebhookWork();
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(4);
+    expect(peakMutationCount).toBe(2);
+
+    for (const mutation of pendingMutations.splice(0)) {
+      mutation.resolve();
+    }
+    await expect(oversized).resolves.toEqual({ accepted: true, duplicate: false });
+    expect(activeMutationCount).toBe(0);
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-oversized-retry',
+          type: 'user_removed',
+          createdAt,
+          userIds: ['user-1', 'user-2'],
+        }),
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(4);
+
+    const later = service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-remove-after-settled-cache',
+        type: 'user_removed',
+        createdAt: '2026-07-20T10:04:01.000Z',
+      }),
+      '127.0.0.1',
+    );
+    await flushDeferredWebhookWork();
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(6);
+    for (const mutation of pendingMutations.splice(0)) {
+      mutation.resolve();
+    }
+    await expect(later).resolves.toEqual({ accepted: true, duplicate: false });
+    expect(peakMutationCount).toBe(2);
   });
 
   it('resets prior admin evidence when user_added starts a new membership session', async () => {

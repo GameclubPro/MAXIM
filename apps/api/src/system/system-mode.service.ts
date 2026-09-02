@@ -7,10 +7,19 @@ import { ActionHealthService, type ActionHealthSnapshot } from './action-health.
 
 export type SystemMode = 'normal' | 'degrade';
 export type SystemModeSource = 'auto' | 'manual';
+export type SystemModeCondition =
+  | 'healthy'
+  | 'queue_backlog'
+  | 'max_api'
+  | 'mixed'
+  | 'stabilizing'
+  | 'manual'
+  | 'unknown';
 
 export type SystemModeSnapshot = {
   mode: SystemMode;
   source: SystemModeSource;
+  condition?: SystemModeCondition;
   reason: string;
   updatedAt: string;
   manualMode: SystemMode | null;
@@ -40,12 +49,24 @@ const ACTION_ERROR_RATE_MIN_FAILURES = 5;
 const ACTION_CRITICAL_RATE_MIN_TOTAL = 100;
 const ACTION_CRITICAL_RATE_MIN_FAILURES = 5;
 const RECOVERY_WINDOW_REASON = 'recovery window in progress';
+const SYSTEM_MODE_CONDITIONS = new Set<SystemModeCondition>([
+  'healthy',
+  'queue_backlog',
+  'max_api',
+  'mixed',
+  'stabilizing',
+  'manual',
+  'unknown',
+]);
 export const SYSTEM_MODE_RECOVERY_WINDOW_REASON = RECOVERY_WINDOW_REASON;
 
 export function isSystemModeRecoveryWindow(
-  snapshot: Pick<SystemModeSnapshot, 'mode' | 'reason'>,
+  snapshot: Pick<SystemModeSnapshot, 'mode' | 'reason' | 'condition'>,
 ): boolean {
-  return snapshot.mode === 'degrade' && snapshot.reason === RECOVERY_WINDOW_REASON;
+  return (
+    snapshot.mode === 'degrade' &&
+    (snapshot.condition === 'stabilizing' || snapshot.reason === RECOVERY_WINDOW_REASON)
+  );
 }
 
 @Injectable()
@@ -64,6 +85,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
 
   private mode: SystemMode = 'normal';
   private source: SystemModeSource = 'auto';
+  private condition: SystemModeCondition = 'healthy';
   private reason = 'system healthy';
   private updatedAt = new Date();
   private manualMode: SystemMode | null = null;
@@ -146,10 +168,11 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
 
     this.manualMode = mode;
     if (mode) {
-      this.applyMode(mode, 'manual override');
+      this.applyMode(mode, 'manual override', 'manual');
       this.source = 'manual';
     } else {
       this.source = 'auto';
+      this.condition = 'unknown';
       this.reason = 'manual override cleared';
       this.updatedAt = new Date();
     }
@@ -215,7 +238,14 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         if (actionCriticalRateDegraded) {
           reasons.push(`critical MAX API rate ${(action.criticalRate * 100).toFixed(2)}%`);
         }
-        this.applyMode('degrade', reasons.join('; '));
+        this.applyMode(
+          'degrade',
+          reasons.join('; '),
+          this.resolveAutomaticDegradeCondition(
+            queueLagSec > this.queueLagThresholdSec,
+            actionErrorRateDegraded || actionCriticalRateDegraded,
+          ),
+        );
         this.source = 'auto';
         await this.persistSnapshot(action, true);
         return;
@@ -224,21 +254,21 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       if (this.mode === 'degrade') {
         if (!this.healthySinceMs) {
           this.healthySinceMs = Date.now();
-          this.applyMode('degrade', RECOVERY_WINDOW_REASON);
+          this.applyMode('degrade', RECOVERY_WINDOW_REASON, 'stabilizing');
           this.source = 'auto';
           await this.persistSnapshot(action, true);
           return;
         }
 
         if (Date.now() - this.healthySinceMs >= this.stabilizeSec * 1_000) {
-          this.applyMode('normal', 'stability window reached');
+          this.applyMode('normal', 'stability window reached', 'healthy');
           this.source = 'auto';
         } else {
-          this.applyMode('degrade', RECOVERY_WINDOW_REASON);
+          this.applyMode('degrade', RECOVERY_WINDOW_REASON, 'stabilizing');
           this.source = 'auto';
         }
       } else {
-        this.applyMode('normal', 'system healthy');
+        this.applyMode('normal', 'system healthy', 'healthy');
       }
 
       await this.persistSnapshot(action, true);
@@ -293,6 +323,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     return {
       mode: this.mode,
       source: this.source,
+      condition: this.condition,
       reason: this.reason,
       updatedAt: this.updatedAt.toISOString(),
       manualMode: this.manualMode,
@@ -301,14 +332,31 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private applyMode(mode: SystemMode, reason: string) {
-    if (this.mode === mode && this.reason === reason) {
+  private applyMode(mode: SystemMode, reason: string, condition: SystemModeCondition) {
+    if (this.mode === mode && this.reason === reason && this.condition === condition) {
       return;
     }
 
     this.mode = mode;
     this.reason = reason;
+    this.condition = condition;
     this.updatedAt = new Date();
+  }
+
+  private resolveAutomaticDegradeCondition(
+    queueBacklog: boolean,
+    maxApiDegraded: boolean,
+  ): SystemModeCondition {
+    if (queueBacklog && maxApiDegraded) {
+      return 'mixed';
+    }
+    if (queueBacklog) {
+      return 'queue_backlog';
+    }
+    if (maxApiDegraded) {
+      return 'max_api';
+    }
+    return 'unknown';
   }
 
   private getCachedSharedSnapshot(
@@ -410,6 +458,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   private hydrateFromSnapshot(snapshot: SystemModeSnapshot) {
     this.mode = snapshot.mode;
     this.source = snapshot.source;
+    this.condition = snapshot.condition ?? 'unknown';
     this.reason = snapshot.reason;
     this.updatedAt = new Date(snapshot.updatedAt);
     this.manualMode = snapshot.manualMode;
@@ -453,47 +502,89 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
           ? parsed.updatedAt
           : this.updatedAt.toISOString();
 
+      const normalizedAction: ActionHealthSnapshot = {
+        windowSec:
+          typeof action.windowSec === 'number' && Number.isFinite(action.windowSec)
+            ? action.windowSec
+            : 60,
+        total: typeof action.total === 'number' && Number.isFinite(action.total) ? action.total : 0,
+        success:
+          typeof action.success === 'number' && Number.isFinite(action.success)
+            ? action.success
+            : 0,
+        failure:
+          typeof action.failure === 'number' && Number.isFinite(action.failure)
+            ? action.failure
+            : 0,
+        critical:
+          typeof action.critical === 'number' && Number.isFinite(action.critical)
+            ? action.critical
+            : 0,
+        errorRate:
+          typeof action.errorRate === 'number' && Number.isFinite(action.errorRate)
+            ? action.errorRate
+            : 0,
+        criticalRate:
+          typeof action.criticalRate === 'number' && Number.isFinite(action.criticalRate)
+            ? action.criticalRate
+            : 0,
+      };
+      const queueLagSec =
+        typeof parsed.queueLagSec === 'number' && Number.isFinite(parsed.queueLagSec)
+          ? parsed.queueLagSec
+          : 0;
+      const reason = typeof parsed.reason === 'string' ? parsed.reason : 'unknown';
+
       return {
         mode: parsed.mode,
         source: parsed.source,
-        reason: typeof parsed.reason === 'string' ? parsed.reason : 'unknown',
+        condition: this.resolveParsedCondition({
+          condition: parsed.condition,
+          mode: parsed.mode,
+          source: parsed.source,
+          reason,
+          queueLagSec,
+          action: normalizedAction,
+        }),
+        reason,
         updatedAt,
         manualMode: parsed.manualMode ?? null,
-        queueLagSec:
-          typeof parsed.queueLagSec === 'number' && Number.isFinite(parsed.queueLagSec)
-            ? parsed.queueLagSec
-            : 0,
-        action: {
-          windowSec:
-            typeof action.windowSec === 'number' && Number.isFinite(action.windowSec)
-              ? action.windowSec
-              : 60,
-          total:
-            typeof action.total === 'number' && Number.isFinite(action.total) ? action.total : 0,
-          success:
-            typeof action.success === 'number' && Number.isFinite(action.success)
-              ? action.success
-              : 0,
-          failure:
-            typeof action.failure === 'number' && Number.isFinite(action.failure)
-              ? action.failure
-              : 0,
-          critical:
-            typeof action.critical === 'number' && Number.isFinite(action.critical)
-              ? action.critical
-              : 0,
-          errorRate:
-            typeof action.errorRate === 'number' && Number.isFinite(action.errorRate)
-              ? action.errorRate
-              : 0,
-          criticalRate:
-            typeof action.criticalRate === 'number' && Number.isFinite(action.criticalRate)
-              ? action.criticalRate
-              : 0,
-        },
+        queueLagSec,
+        action: normalizedAction,
       };
     } catch {
       return null;
     }
+  }
+
+  private resolveParsedCondition(params: {
+    condition: unknown;
+    mode: SystemMode;
+    source: SystemModeSource;
+    reason: string;
+    queueLagSec: number;
+    action: ActionHealthSnapshot;
+  }): SystemModeCondition {
+    if (
+      typeof params.condition === 'string' &&
+      SYSTEM_MODE_CONDITIONS.has(params.condition as SystemModeCondition)
+    ) {
+      return params.condition as SystemModeCondition;
+    }
+    if (params.source === 'manual') {
+      return 'manual';
+    }
+    if (params.mode === 'normal') {
+      return 'healthy';
+    }
+    if (params.reason === RECOVERY_WINDOW_REASON) {
+      return 'stabilizing';
+    }
+
+    return this.resolveAutomaticDegradeCondition(
+      params.queueLagSec > this.queueLagThresholdSec,
+      this.shouldDegradeForActionErrorRate(params.action) ||
+        this.shouldDegradeForActionCriticalRate(params.action),
+    );
   }
 }

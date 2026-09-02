@@ -18644,7 +18644,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const snapshot = await this.queueMetricsService.getSnapshot({ maxAgeMs: 1_500 });
+      const snapshot = await this.queueMetricsService.getOperationalSnapshot({ maxAgeMs: 1_500 });
       if (snapshot.effectiveLagSec >= this.backgroundWorkSoftPauseQueueLagSec) {
         return `queue lag ${snapshot.effectiveLagSec.toFixed(1)}s`;
       }
@@ -18652,7 +18652,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const workerGroups = Object.entries(snapshot.webhookDefaultWorkerGroups).map(
         ([groupName, metrics]) => ({
           groupName,
-          pressure: metrics.counters.waiting + metrics.counters.active * 3,
+          pressure:
+            metrics.counters.waiting +
+            (metrics.counters.prioritized ?? 0) +
+            metrics.counters.active * 3,
         }),
       );
       const totalPressure = workerGroups.reduce((sum, item) => sum + item.pressure, 0);

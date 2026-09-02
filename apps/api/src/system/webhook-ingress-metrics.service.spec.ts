@@ -241,6 +241,13 @@ describe('WebhookIngressMetricsService', () => {
             overflowSamples: 0,
           },
         },
+        detached: {
+          completed: 0,
+          timeout: 0,
+          failure: 0,
+          peakInFlight: 0,
+          rejected: 0,
+        },
       },
       membershipTransition: {
         edgeAdvance: {
@@ -285,6 +292,11 @@ describe('WebhookIngressMetricsService', () => {
     service.recordMembershipCacheMutation({ phase: 'lua', outcome: 'failed', durationMs: 35 });
     service.recordMembershipCacheBudget({ outcome: 'completed', durationMs: 75 });
     service.recordMembershipCacheBudget({ outcome: 'timeout', durationMs: 100 });
+    service.recordMembershipCacheDetachedWork({ outcome: null, inFlight: 2 });
+    service.recordMembershipCacheDetachedWork({ outcome: 'timeout', inFlight: 2 });
+    service.recordMembershipCacheDetachedWork({ outcome: 'completed', inFlight: 1 });
+    service.recordMembershipCacheDetachedWork({ outcome: 'failure', inFlight: 0 });
+    service.recordMembershipCacheDetachedWork({ outcome: 'rejected', inFlight: 0, count: 2 });
     service.recordMembershipAccessEdgeAdvance({ durationMs: 5, affectedRows: 3 });
     service.recordMembershipAccessEdgeAdvance({ durationMs: 150, affectedRows: 0 });
 
@@ -309,6 +321,13 @@ describe('WebhookIngressMetricsService', () => {
           completed: 1,
           timeout: 1,
           timing: { sampled: 2, p95DurationMs: 100, p99DurationMs: 100 },
+        },
+        detached: {
+          completed: 1,
+          timeout: 1,
+          failure: 1,
+          peakInFlight: 2,
+          rejected: 2,
         },
       },
       membershipTransition: {

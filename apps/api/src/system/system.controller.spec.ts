@@ -14,6 +14,32 @@ function createConfigMock(values: Partial<Record<string, string>> = {}): ConfigS
 }
 
 describe('SystemController', () => {
+  it('returns only lightweight operational queue metrics to an allowed system admin', async () => {
+    const getSnapshot = jest.fn();
+    const getOperationalSnapshot = jest.fn().mockResolvedValue({ effectiveLagSec: 2 });
+    const controller = new SystemController(
+      { getSnapshot, getOperationalSnapshot } as never,
+      { getEffectiveSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn() } as never,
+      { getSourceSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn() } as never,
+      createConfigMock({
+        NODE_ENV: 'production',
+        SYSTEM_ADMIN_USER_IDS: '100',
+      }),
+    );
+
+    await expect(
+      controller.getOperationalQueueMetrics({ userId: '100' } as never),
+    ).resolves.toEqual({ effectiveLagSec: 2 });
+    await expect(controller.getOperationalQueueMetrics({ userId: '200' } as never)).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(getOperationalSnapshot).toHaveBeenCalledTimes(1);
+    expect(getOperationalSnapshot).toHaveBeenCalledWith({ maxAgeMs: 1_000 });
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
   it('rejects access in production when user is not in the system admin allowlist', async () => {
     const controller = new SystemController(
       { getSnapshot: jest.fn() } as never,

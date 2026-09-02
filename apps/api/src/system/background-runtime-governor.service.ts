@@ -2,7 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { cpus, loadavg } from 'node:os';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { QueueMetricsService, type QueueMetricsSnapshot } from './queue-metrics.service';
+import {
+  QueueMetricsService,
+  type OperationalQueueMetricsSnapshot,
+  type QueueMetricsSnapshot,
+} from './queue-metrics.service';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -23,7 +27,7 @@ export type BackgroundRuntimeGovernorDecision = {
 type BackgroundPressureSnapshot = {
   generatedAt: string;
   mode: SystemModeSnapshot;
-  queues: QueueMetricsSnapshot;
+  queues: OperationalQueueMetricsSnapshot;
   backgroundShare: number;
   systemPressure: BackgroundSystemPressureSnapshot;
   stackLoad: BackgroundStackLoadSnapshot;
@@ -314,10 +318,13 @@ export class BackgroundRuntimeGovernorService {
   }
 
   async getDashboardBudgetSummary(): Promise<BackgroundRuntimeBudgetSummary> {
-    const snapshot = await this.getPressureSnapshot();
+    const [snapshot, fullQueueSnapshot] = await Promise.all([
+      this.getPressureSnapshot(),
+      this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
+    ]);
     const [pauseReasons, sharedBotLoad, topSources] = await Promise.all([
       this.runtimeDiagnosticsService?.getBackgroundDecisionSummary(),
-      this.buildBotLoadSnapshot(snapshot.queues, 'shared'),
+      this.buildBotLoadSnapshot(fullQueueSnapshot, 'shared'),
       this.getTopSources(),
     ]);
 
@@ -448,7 +455,7 @@ export class BackgroundRuntimeGovernorService {
       systemPressure,
     ] = await Promise.all([
       this.systemModeService.getEffectiveSnapshot(),
-      this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
+      this.queueMetricsService.getOperationalSnapshot({ maxAgeMs: 2_000 }),
       this.maxApiMetricsService.getStackRateLimitSnapshot({
         windowSec: this.sourceWindowSec,
         capacityScope: 'shared',
@@ -466,7 +473,6 @@ export class BackgroundRuntimeGovernorService {
     const backgroundRequests = sharedStackRateLimit.trafficClasses.background.totalRequests;
     const backgroundShare = totalRequests > 0 ? backgroundRequests / totalRequests : 0;
     const stackLoad = this.buildStackLoadSnapshot(serviceStackRateLimit);
-    const botLoad = await this.buildBotLoadSnapshot(queues, 'service');
     const workerGroups = Object.entries(queues.webhookDefaultWorkerGroups ?? {}).map(
       ([groupName, metrics]) => ({
         groupName,
@@ -489,7 +495,13 @@ export class BackgroundRuntimeGovernorService {
       backgroundShare,
       systemPressure,
       stackLoad,
-      botLoad,
+      botLoad: {
+        maxSmoothedLoad: 0,
+        maxPeakLoad: 0,
+        slowThreshold: this.botLoadSlowThreshold,
+        pauseThreshold: this.botLoadPauseThreshold,
+        topBots: [],
+      },
       criticalLimiter,
       workerSkew: {
         groupName: primary.groupName,
@@ -509,8 +521,7 @@ export class BackgroundRuntimeGovernorService {
       ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
     } = {},
   ): BackgroundRuntimeGovernorDecision {
-    const queueLagSec =
-      snapshot.queues.userFacingEffectiveLagSec ?? snapshot.queues.effectiveLagSec;
+    const queueLagSec = snapshot.queues.effectiveLagSec;
     const allowRecoveryWindowRun =
       options.allowRecoveryWindowRun === true && queueLagSec < this.softQueueLagSec;
     const allowQueueLagSlowPath =
@@ -531,14 +542,14 @@ export class BackgroundRuntimeGovernorService {
         return {
           action: 'slow',
           retryAfterMs: this.pauseRetryAfterMs,
-          reason: `user-facing queue lag ${queueLagSec.toFixed(1)}s`,
+          reason: `queue lag ${queueLagSec.toFixed(1)}s`,
         };
       }
 
       return {
         action: 'pause',
         retryAfterMs: this.pauseRetryAfterMs,
-        reason: `user-facing queue lag ${queueLagSec.toFixed(1)}s`,
+        reason: `queue lag ${queueLagSec.toFixed(1)}s`,
       };
     }
 

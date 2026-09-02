@@ -543,7 +543,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.applyLocalInvalidation(normalizedChatId);
+    this.invalidateLocal(normalizedChatId);
     await this.redis.eval(
       INVALIDATE_CHAT_CONTEXT_SCRIPT,
       2,
@@ -552,6 +552,14 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       CHAT_CONTEXT_INVALIDATION_CHANNEL,
       JSON.stringify({ chatId: normalizedChatId }),
     );
+  }
+
+  invalidateLocal(chatId: string): void {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+    this.applyLocalInvalidation(normalizedChatId);
   }
 
   async getAdminAccess(chatId: string, userId: string): Promise<ChatAdminAccessState | null> {

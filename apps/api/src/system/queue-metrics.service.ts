@@ -203,6 +203,16 @@ export type QueueLagSnapshot = {
   generatedAt: string;
 };
 
+export type OperationalQueueMetricsSnapshot = QueueLagSnapshot & {
+  webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>;
+  webhookDefaultWorkerGroups: Record<
+    DefaultWebhookWorkerGroupName,
+    WebhookDefaultWorkerGroupMetrics
+  >;
+  actions: QueueCounters;
+  actionQueues: Record<MaxActionQueueName, QueueCounters>;
+};
+
 export type WebhookDefaultShardSnapshot = {
   webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>;
   webhookDefaultWorkerGroups: Record<
@@ -246,6 +256,9 @@ export class QueueMetricsService {
   private snapshotCache: QueueMetricsSnapshot | null = null;
   private snapshotCacheAtMs = 0;
   private snapshotPromise: Promise<QueueMetricsSnapshot> | null = null;
+  private operationalSnapshotCache: OperationalQueueMetricsSnapshot | null = null;
+  private operationalSnapshotCacheAtMs = 0;
+  private operationalSnapshotPromise: Promise<OperationalQueueMetricsSnapshot> | null = null;
   private lagSnapshotCache: QueueLagSnapshot | null = null;
   private lagSnapshotCacheAtMs = 0;
   private lagSnapshotPromise: Promise<QueueLagSnapshot> | null = null;
@@ -355,6 +368,31 @@ export class QueueMetricsService {
     }
   }
 
+  async getOperationalSnapshot(
+    options: QueueMetricsSnapshotOptions = {},
+  ): Promise<OperationalQueueMetricsSnapshot> {
+    const maxAgeMs = options.maxAgeMs ?? 0;
+    const cachedSnapshot = this.getCachedOperationalSnapshot(maxAgeMs);
+    if (cachedSnapshot) {
+      return cachedSnapshot;
+    }
+
+    if (this.operationalSnapshotPromise) {
+      return this.operationalSnapshotPromise;
+    }
+
+    this.operationalSnapshotPromise = this.buildOperationalSnapshot();
+
+    try {
+      const snapshot = await this.operationalSnapshotPromise;
+      this.operationalSnapshotCache = snapshot;
+      this.operationalSnapshotCacheAtMs = Date.now();
+      return snapshot;
+    } finally {
+      this.operationalSnapshotPromise = null;
+    }
+  }
+
   peekCachedSnapshot(maxAgeMs = Number.POSITIVE_INFINITY): QueueMetricsSnapshot | null {
     return this.getCachedSnapshot(maxAgeMs);
   }
@@ -411,6 +449,18 @@ export class QueueMetricsService {
     return this.lagSnapshotCache;
   }
 
+  private getCachedOperationalSnapshot(maxAgeMs: number): OperationalQueueMetricsSnapshot | null {
+    if (!this.operationalSnapshotCache || maxAgeMs <= 0) {
+      return null;
+    }
+
+    if (Date.now() - this.operationalSnapshotCacheAtMs > maxAgeMs) {
+      return null;
+    }
+
+    return this.operationalSnapshotCache;
+  }
+
   private getCachedDefaultShardSnapshot(maxAgeMs: number): WebhookDefaultShardSnapshot | null {
     if (!this.defaultShardSnapshotCache || maxAgeMs <= 0) {
       return null;
@@ -426,6 +476,33 @@ export class QueueMetricsService {
   private setDefaultShardSnapshotCache(snapshot: WebhookDefaultShardSnapshot): void {
     this.defaultShardSnapshotCache = snapshot;
     this.defaultShardSnapshotCacheAtMs = Date.now();
+  }
+
+  private async buildOperationalSnapshot(): Promise<OperationalQueueMetricsSnapshot> {
+    const [lagSnapshot, defaultShardSnapshot, actionQueueSnapshots] = await Promise.all([
+      this.getLagSnapshot(),
+      this.getWebhookDefaultShardSnapshot(),
+      Promise.all(
+        MAX_ACTION_ALL_QUEUE_NAMES.map((queueName) =>
+          this.readQueueCounters(this.actionQueuesByName[queueName]),
+        ),
+      ),
+    ]);
+    const actionQueues = Object.fromEntries(
+      MAX_ACTION_ALL_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        actionQueueSnapshots[index] ?? { ...EMPTY_COUNTERS },
+      ]),
+    ) as Record<MaxActionQueueName, QueueCounters>;
+
+    return {
+      ...lagSnapshot,
+      webhookDefaultShards: defaultShardSnapshot.webhookDefaultShards,
+      webhookDefaultWorkerGroups: defaultShardSnapshot.webhookDefaultWorkerGroups,
+      actions: this.sumQueueCounters(...Object.values(actionQueues)),
+      actionQueues,
+      generatedAt: new Date().toISOString(),
+    };
   }
 
   private async buildSnapshot(): Promise<QueueMetricsSnapshot> {

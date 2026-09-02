@@ -163,6 +163,7 @@ function createDashboardResponse(overrides: Record<string, unknown> = {}) {
     mode: {
       mode: 'normal',
       source: 'auto',
+      condition: 'healthy',
       reason: 'ok',
       updatedAt: generatedAt,
       manualMode: null,
@@ -452,6 +453,7 @@ test('parses runtime dashboard fields through contract schemas', async () => {
   const dashboard = await getSystemDashboard(createApi(createDashboardResponse()));
 
   assert.equal(dashboard.runtimeProfile?.appRole, 'ingress');
+  assert.equal(dashboard.mode.condition, 'healthy');
   assert.equal(dashboard.canaryState?.status, 'disabled');
   assert.equal(dashboard.rollbackReadiness?.status, 'ready');
   assert.equal(dashboard.queueGroupHealth?.status, 'healthy');

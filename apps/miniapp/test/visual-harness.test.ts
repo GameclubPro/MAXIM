@@ -551,7 +551,7 @@ test('keyboard capture reduces geometry and exercises the Publik focus flow', ()
   assert.match(captureSource, /assertPublisherComposerActionInFlow/u);
   assert.match(
     captureSource,
-    /forceKeyboardFlag: keyboardProfile\?\.flow === 'publisher-auto-reply-editor'/u,
+    /forceKeyboardFlag:\s*keyboardProfile === null \|\| keyboardProfile\.flow === 'publisher-auto-reply-editor'/u,
   );
   assert.match(captureSource, /Publisher primary publish action does not contain its label/u);
   assert.match(captureSource, /publisher-auto-replies-editor-keyboard/u);

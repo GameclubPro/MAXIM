@@ -557,7 +557,10 @@ export class SystemDashboardService {
       },
       alerts,
       queues,
-      mode,
+      mode: {
+        ...mode,
+        condition: mode.condition ?? 'unknown',
+      },
       webhookSubscription,
       ownership,
       runtimeProfile,
@@ -741,6 +744,10 @@ export class SystemDashboardService {
     mode: Awaited<ReturnType<SystemModeService['getEffectiveSnapshot']>>,
     queueLagSec: number,
   ): boolean {
+    if (mode.condition !== undefined) {
+      return mode.condition === 'stabilizing';
+    }
+
     return (
       mode.mode === 'degrade' &&
       mode.source === 'auto' &&
@@ -955,6 +962,7 @@ export class SystemDashboardService {
       ` timed out ${routeOutcomes?.timed_out ?? 0}, failed ${routeOutcomes?.failed ?? 0}]`;
     const membershipCache = snapshot.membershipCache;
     const cacheMetrics = snapshot.ingress.membershipCache;
+    const detachedCacheMetrics = cacheMetrics?.detached;
     const edgeAdvance = snapshot.ingress.membershipTransition?.edgeAdvance;
     const formatRatio = (value: number | null | undefined) =>
       value === null || value === undefined ? 'n/a' : `${(value * 100).toFixed(1)}%`;
@@ -964,6 +972,9 @@ export class SystemDashboardService {
       ` Lua conflicts ${formatRatio(membershipCache?.luaConflict.ratio)},` +
       ` Lua terminal failures ${formatRatio(membershipCache?.luaTerminalFailure.ratio)},` +
       ` budget timeouts ${formatRatio(membershipCache?.budgetTimeout.ratio)},` +
+      ` detached failures/rejections ${formatRatio(membershipCache?.detachedFailure.ratio)}` +
+      ` (failed ${detachedCacheMetrics?.failure ?? 0}, rejected ${detachedCacheMetrics?.rejected ?? 0},` +
+      ` completed ${detachedCacheMetrics?.completed ?? 0}, peak in-flight ${detachedCacheMetrics?.peakInFlight ?? 0}),` +
       ` Lua p95 ${cacheMetrics?.lua.timing.p95DurationMs ?? 0} ms,` +
       ` budget p95 ${cacheMetrics?.budget.timing.p95DurationMs ?? 0} ms,` +
       ` edge no-op ${edgeAdvance?.noOpCalls ?? 0}/${edgeAdvance?.calls ?? 0}]`;

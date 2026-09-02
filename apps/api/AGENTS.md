@@ -11,7 +11,7 @@
 - Runtime signal handling goes through `runtime/runtime-worker-shutdown.ts`: pause and bounded-drain BullMQ workers while Prisma/Redis clients are still alive, then close the Nest context under the hard deadline. Do not restore direct `enableShutdownHooks()` calls in `main.ts`.
 - Admin entry points should use `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService` instead of growing legacy `AdminService`.
 - Refactor guards track real `*.legacy` files. New code imports public facades; only thin facade modules may import legacy implementations.
-- Ingress `SystemModeService` polling and readiness use the lightweight `QueueMetricsService.getLagSnapshot()` path: keep it limited to indexed oldest `RECEIVED`/`QUEUED` reads. Per-bot, JSON, count, action-health, and BullMQ fanout belong only to the full dashboard snapshot; health may read that detail from cache but must never refresh it.
+- Ingress `SystemModeService` polling and readiness use the lightweight `QueueMetricsService.getLagSnapshot()` path: keep it limited to indexed oldest `RECEIVED`/`QUEUED` reads. Runtime governors and bounded drain probes may use `getOperationalSnapshot()`, which adds fixed BullMQ default-shard/action counters and the bounded dynamic-lease summary to those two indexed reads. Per-bot, JSON, count, action-health, auxiliary-queue, and dynamic full-fleet fanout belong only to the closed dashboard snapshot; health may read that detail from cache but must never refresh it.
 
 ## Validation And Prisma
 

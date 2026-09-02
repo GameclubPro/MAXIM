@@ -4845,6 +4845,69 @@ describe('ModerationService', () => {
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
     });
   });
+  it('uses lightweight operational queue metrics in the background-pressure fallback', async () => {
+    const getOperationalSnapshot = jest.fn().mockResolvedValue({
+      effectiveLagSec: 0,
+      webhookDefaultWorkerGroups: {},
+    });
+    const getSnapshot = jest.fn().mockRejectedValue(new Error('full snapshot must not run'));
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { getOperationalSnapshot, getSnapshot } as never,
+    );
+
+    await expect((service as any).resolveBackgroundPressurePauseReason()).resolves.toBeNull();
+
+    expect(getOperationalSnapshot).toHaveBeenCalledWith({ maxAgeMs: 1_500 });
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('counts prioritized-only backlog in the background-pressure fallback', async () => {
+    const getOperationalSnapshot = jest.fn().mockResolvedValue({
+      effectiveLagSec: 0,
+      webhookDefaultWorkerGroups: {
+        'api-moderation': {
+          counters: { waiting: 0, prioritized: 4, active: 0 },
+        },
+        'api-moderation-realtime-b': {
+          counters: { waiting: 0, prioritized: 0, active: 0 },
+        },
+      },
+    });
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { getOperationalSnapshot } as never,
+    );
+
+    await expect((service as any).resolveBackgroundPressurePauseReason()).resolves.toBe(
+      'default worker skew api-moderation 4/4',
+    );
+  });
+
   it('throttles channel auto-post scans instead of pausing them completely when the runtime governor returns slow', async () => {
     const backgroundRuntimeGovernorService = {
       decide: jest.fn().mockResolvedValue({
