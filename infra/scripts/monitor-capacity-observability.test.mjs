@@ -936,6 +936,7 @@ test('TERM to only the top-level monitor PID reaps every worker and ephemeral lo
 test('readonly monitor archives only the allowlisted capacity probe outside raw log capture', () => {
   const monitor = monitorSource;
   const probe = readFileSync(probePath, 'utf8');
+  assert.match(monitor, /# shellcheck disable=SC2317,SC2329/u);
   assert.match(monitor, /set -euo pipefail\numask 077/u);
   assert.match(monitor, /run_step capacity-observability summarize_capacity_observability/u);
   assert.match(monitor, /monitor-capacity-probe\.cjs/u);

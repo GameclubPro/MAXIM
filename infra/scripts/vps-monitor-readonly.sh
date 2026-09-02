@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ShellCheck cannot follow function reachability through the isolated background monitor worker.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 set -euo pipefail
 umask 077
 
