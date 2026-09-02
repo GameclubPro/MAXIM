@@ -3476,6 +3476,174 @@ describe('NightModeTransitionSchedulerService', () => {
     },
   );
 
+  it.each([
+    'Night mode close send ledger provenance is unsafe',
+    'Exact completed night mode close send is not proven',
+  ])('blocks an exact v4 job after deterministic close-ledger failure: %s', async (reason) => {
+    const chatId = 'chat-unsafe-close-ledger-recovery';
+    const sessionKey = CLOSE_SESSION_A;
+    const scheduledFor = '2026-05-31T05:00:00.000Z';
+    const fingerprint = `sha256:${'a'.repeat(64)}`;
+    const jobId = buildNightModeTransitionJobId(
+      chatId,
+      'open',
+      scheduledFor,
+      sessionKey,
+    );
+    const closeLedgerJobId = `night-mode:close:${chatId}:session:${sessionKey}`;
+    const failedJob = {
+      id: jobId,
+      data: {
+        chatId,
+        transition: 'open' as const,
+        scheduledFor,
+        sessionKey,
+        transitionRuntimeVersion: 4 as const,
+        scheduleFingerprint: fingerprint,
+      },
+      failedReason: `${reason} (${closeLedgerJobId})`,
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: { findUnique: jest.fn().mockResolvedValue(null) },
+      } as never,
+      { getJob: jest.fn().mockResolvedValue(failedJob) } as never,
+    );
+    await seedRegisteredJob(service, {
+      chatId,
+      jobId,
+      transition: 'open',
+      sessionKey,
+      scheduledFor,
+      runtimeVersion: 4,
+    });
+
+    await expect(
+      (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'open';
+            scheduledFor: string;
+            fingerprint: string;
+          }): Promise<{ kind: string; manualReview?: Record<string, unknown> }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition: 'open',
+        scheduledFor,
+        fingerprint,
+      }),
+    ).resolves.toEqual({
+      kind: 'blocked',
+      manualReview: expect.objectContaining({
+        category: 'unsafe_prior_provenance',
+        jobId,
+        ledgerJobId: closeLedgerJobId,
+        sessionKey,
+        fingerprint,
+      }),
+    });
+    expect(failedJob.retry).not.toHaveBeenCalled();
+  });
+
+  it('reloads a job that becomes failed before classifying its terminal reason', async () => {
+    const chatId = 'chat-failed-state-race';
+    const sessionKey = CLOSE_SESSION_A;
+    const scheduledFor = '2026-05-31T05:00:00.000Z';
+    const fingerprint = `sha256:${'a'.repeat(64)}`;
+    const jobId = buildNightModeTransitionJobId(
+      chatId,
+      'open',
+      scheduledFor,
+      sessionKey,
+    );
+    const closeLedgerJobId = `night-mode:close:${chatId}:session:${sessionKey}`;
+    const data = {
+      chatId,
+      transition: 'open' as const,
+      scheduledFor,
+      sessionKey,
+      transitionRuntimeVersion: 4 as const,
+      scheduleFingerprint: fingerprint,
+    };
+    const staleActiveSnapshot = {
+      id: jobId,
+      data,
+      failedReason: undefined,
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const freshFailedJob = {
+      id: jobId,
+      data,
+      failedReason: `Night mode close send ledger provenance is unsafe (${closeLedgerJobId})`,
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const queue = {
+      getJob: jest
+        .fn()
+        .mockResolvedValueOnce(staleActiveSnapshot)
+        .mockResolvedValueOnce(freshFailedJob),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: { findUnique: jest.fn().mockResolvedValue(null) },
+      } as never,
+      queue as never,
+    );
+    await seedRegisteredJob(service, {
+      chatId,
+      jobId,
+      transition: 'open',
+      sessionKey,
+      scheduledFor,
+      runtimeVersion: 4,
+    });
+
+    await expect(
+      (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'open';
+            scheduledFor: string;
+            fingerprint: string;
+          }): Promise<{ kind: string; manualReview?: Record<string, unknown> }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition: 'open',
+        scheduledFor,
+        fingerprint,
+      }),
+    ).resolves.toEqual({
+      kind: 'blocked',
+      manualReview: expect.objectContaining({
+        category: 'unsafe_prior_provenance',
+        ledgerJobId: closeLedgerJobId,
+      }),
+    });
+    expect(queue.getJob).toHaveBeenCalledTimes(2);
+    expect(staleActiveSnapshot.getState).toHaveBeenCalledTimes(1);
+    expect(freshFailedJob.getState).toHaveBeenCalledTimes(1);
+    expect(staleActiveSnapshot.retry).not.toHaveBeenCalled();
+    expect(freshFailedJob.retry).not.toHaveBeenCalled();
+  });
+
   it('keeps a pre-v4 failed envelope blocked when only the registry has been promoted to v4', async () => {
     const chatId = 'chat-pre-v4-missing-ledger';
     const sessionKey = CLOSE_SESSION_A;

@@ -384,8 +384,8 @@ describe('NightModeTransitionReconcileService', () => {
         const statement = extractSqlText(query);
         const values = extractSqlValues(query);
         if (statement.includes('WITH candidates AS')) {
-          leaseToken = values[3] as string;
-          leaseExpiresAt = values[4] as Date;
+          leaseToken = values[6] as string;
+          leaseExpiresAt = values[7] as Date;
           jest.setSystemTime(new Date(leaseExpiresAt.getTime() + 1));
           return [request];
         }
@@ -433,7 +433,7 @@ describe('NightModeTransitionReconcileService', () => {
         const values = extractSqlValues(query);
         if (statement.includes('WITH candidates AS')) {
           currentToken = 'replacement-owner-token';
-          const leaseExpiresAt = values[4] as Date;
+          const leaseExpiresAt = values[7] as Date;
           jest.setSystemTime(new Date(leaseExpiresAt.getTime() + 1));
           return [request];
         }
@@ -455,6 +455,43 @@ describe('NightModeTransitionReconcileService', () => {
       expect(ownershipStatement).not.toContain('"lease_expires_at" > CURRENT_TIMESTAMP');
       expect(scheduler.repairAccessSchedule).not.toHaveBeenCalled();
       expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps an active catch-up in claim cooldown despite generation and requested-at churn', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T01:24:13.500Z'));
+    try {
+      const queryRaw = jest.fn(async (query: unknown) => {
+        const statement = extractSqlText(query);
+        if (!statement.includes('WITH candidates AS')) {
+          return [];
+        }
+        return [];
+      });
+      const { scheduler, service } = createService({ queryRaw });
+
+      await expect(
+        (
+          service as unknown as {
+            reconcileBatch: () => Promise<number>;
+          }
+        ).reconcileBatch(),
+      ).resolves.toBe(0);
+
+      const claimQuery = queryRaw.mock.calls[0]?.[0];
+      const statement = extractSqlText(claimQuery);
+      const values = extractSqlValues(claimQuery);
+      expect(statement).toContain('request."last_error_at" <=');
+      expect(statement).toContain('request."last_error_code" IS DISTINCT FROM');
+      expect(statement).toContain('COALESCE(request."last_error", \'\') NOT LIKE');
+      expect(values).toContainEqual(new Date('2026-09-02T01:23:58.500Z'));
+      expect(values).toContain('night_mode_catch_up_active');
+      expect(values).toContain(
+        'Night mode transition catch-up is still active during durable repair (%',
+      );
+      expect(scheduler.repairAccessSchedule).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -601,8 +638,8 @@ describe('NightModeTransitionReconcileService', () => {
           const statement = extractSqlText(query);
           const values = extractSqlValues(query);
           if (statement.includes('WITH candidates AS')) {
-            durableRow.leaseToken = values[3] as string;
-            durableRow.leaseExpiresAt = values[4] as Date;
+            durableRow.leaseToken = values[6] as string;
+            durableRow.leaseExpiresAt = values[7] as Date;
             return [request];
           }
 
@@ -766,8 +803,8 @@ describe('NightModeTransitionReconcileService', () => {
           const values = extractSqlValues(query);
           if (statement.includes('WITH candidates AS')) {
             const now = values[0] as Date;
-            const leaseToken = values[3] as string;
-            const leaseExpiresAt = values[4] as Date;
+            const leaseToken = values[6] as string;
+            const leaseExpiresAt = values[7] as Date;
             const candidates = rows.filter(
               (row) =>
                 !row.deleted &&
@@ -1069,5 +1106,26 @@ describe('NightModeTransitionReconcileService', () => {
     expect(statement).toContain('"last_error_at" =');
     expect(statement).toContain('"last_error" =');
     expect(statement).not.toContain('"manual_blocked_at" =');
+  });
+
+  it('stores a stable error code for an active catch-up retry', async () => {
+    const error = new Error(
+      'Night mode transition catch-up is still active during durable repair (job-1)',
+    );
+    const { prisma, service } = createService({
+      requests: [{ chat_id: 'chat-active-retry', generation: 3n }],
+      repair: jest.fn().mockRejectedValue(error),
+    });
+
+    await expect(
+      (
+        service as unknown as {
+          reconcileBatch: () => Promise<number>;
+        }
+      ).reconcileBatch(),
+    ).resolves.toBe(1);
+
+    const requeueQuery = prisma.$executeRaw.mock.calls[0]?.[0];
+    expect(extractSqlValues(requeueQuery)).toContain('night_mode_catch_up_active');
   });
 });

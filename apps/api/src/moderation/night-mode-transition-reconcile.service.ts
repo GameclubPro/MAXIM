@@ -15,6 +15,7 @@ const NIGHT_MODE_RECONCILE_BATCH_SIZE = 4;
 // Keep one reconcile worker so its batch heartbeat and unrelated background work can make progress.
 const NIGHT_MODE_RECONCILE_CONCURRENCY = 1;
 const NIGHT_MODE_RECONCILE_REQUEUE_DELAY_MS = 5_000;
+const NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_COOLDOWN_MS = 15_000;
 const NIGHT_MODE_RECONCILE_LEASE_MS = 30_000;
 const NIGHT_MODE_RECONCILE_HEARTBEAT_MS = 10_000;
 const NIGHT_MODE_REGISTRY_OVERDUE_MS = 5 * 60_000;
@@ -29,6 +30,9 @@ const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_OVERLAP_MS = 5 * 60_000;
 const NIGHT_MODE_RECONCILE_LEADER_LOCK_KEY = 'night-mode:transition-reconcile:leader:v1';
 const NIGHT_MODE_RECONCILE_LEADER_LOCK_TTL_MS = 120_000;
 const NIGHT_MODE_RECONCILE_LEADER_RENEW_MS = 30_000;
+const NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_CODE = 'night_mode_catch_up_active';
+const NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_PREFIX =
+  'Night mode transition catch-up is still active during durable repair (';
 
 type NightModeTransitionReconcileRequest = {
   chat_id: string;
@@ -410,6 +414,11 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
 
   private async claimRequests(): Promise<ClaimedNightModeTransitionReconcileRequests> {
     const now = new Date();
+    // FLAG: Bull's failed hook can advance generation and pull requested_at forward while the
+    // same catch-up is still active. last_error_at is the monotonic cooldown fence for that race.
+    const activeCatchUpRetryBefore = new Date(
+      now.getTime() - NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_COOLDOWN_MS,
+    );
     const registryOverdueBefore = new Date(now.getTime() - NIGHT_MODE_REGISTRY_OVERDUE_MS);
     const leaseToken = randomUUID();
     const leaseExpiresAt = new Date(now.getTime() + NIGHT_MODE_RECONCILE_LEASE_MS);
@@ -422,6 +431,16 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
             OR request."generation" > request."manual_blocked_generation"
           )
           AND request."requested_at" <= ${now}
+          AND (
+            request."last_error_at" IS NULL
+            OR request."last_error_at" <= ${activeCatchUpRetryBefore}
+            OR (
+              request."last_error_code" IS DISTINCT FROM
+                ${NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_CODE}
+              AND COALESCE(request."last_error", '') NOT LIKE
+                ${`${NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_PREFIX}%`}
+            )
+          )
           AND (
             request."lease_expires_at" IS NULL
             OR request."lease_expires_at" < ${now}
@@ -791,6 +810,12 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
   }
 
   private normalizeErrorCode(error: unknown): string {
+    if (
+      error instanceof Error &&
+      error.message.startsWith(NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_PREFIX)
+    ) {
+      return NIGHT_MODE_RECONCILE_ACTIVE_CATCH_UP_ERROR_CODE;
+    }
     const candidate =
       error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
         ? (error as { code: string }).code

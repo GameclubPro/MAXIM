@@ -183,6 +183,13 @@ class NightModeTransitionJobsActiveError extends Error {
   }
 }
 
+class NightModeTransitionFailedJobSnapshotUnstableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NightModeTransitionFailedJobSnapshotUnstableError';
+  }
+}
+
 export type NightModeTransitionReconcileResult = {
   queueAvailable: boolean;
   scheduleEnabled: boolean | null;
@@ -2229,12 +2236,12 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       }
       let transitionRuntimeVersion = existing.data?.transitionRuntimeVersion;
       const registry = await this.findScheduledJobRegistryRow(params.chatId, params.jobId);
-      const failedUnderCurrentV4Runtime =
+      const hadExactCurrentV4FailureProof =
         this.isExactCurrentV4BullEnvelope(existing.data, params) &&
         this.isExactCurrentV4Registry(registry, params);
       const existingState =
         typeof existing.getState === 'function' ? await existing.getState() : null;
-      const currentRuntimeJob =
+      let currentRuntimeJob =
         existing.data === undefined ||
         transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
         registry?.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
@@ -2279,6 +2286,58 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         return { kind: 'enqueue' };
       }
 
+      const failedJob = await this.queue.getJob(params.jobId);
+      if (!failedJob || typeof failedJob.getState !== 'function') {
+        throw new NightModeTransitionFailedJobSnapshotUnstableError(
+          `Night mode transition failed job disappeared before durable inspection (${params.jobId})`,
+        );
+      }
+      const failedJobState = await failedJob.getState();
+      if (
+        failedJobState !== 'failed' ||
+        typeof failedJob.failedReason !== 'string' ||
+        failedJob.failedReason.trim().length === 0
+      ) {
+        throw new NightModeTransitionFailedJobSnapshotUnstableError(
+          `Night mode transition failed job did not stabilize before durable inspection (${params.jobId})`,
+        );
+      }
+      transitionRuntimeVersion = failedJob.data?.transitionRuntimeVersion;
+      currentRuntimeJob =
+        failedJob.data === undefined ||
+        transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
+        registry?.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
+        (failedJob.data !== undefined &&
+          Number.isFinite(Date.parse(params.scheduledFor)) &&
+          Date.parse(params.scheduledFor) >= this.runtimeStartedAtMs);
+      const failedUnderCurrentV4Runtime =
+        hadExactCurrentV4FailureProof &&
+        this.isExactCurrentV4BullEnvelope(failedJob.data, params) &&
+        this.isExactCurrentV4Registry(registry, params);
+      const closeLedgerJobId = buildNightModeNoticeIdempotencyKey(
+        'close',
+        params.chatId,
+        params.sessionKey,
+      );
+      if (
+        this.isDeterministicCloseLedgerProvenanceFailure(
+          failedJob.failedReason,
+          closeLedgerJobId,
+        )
+      ) {
+        return {
+          kind: 'blocked',
+          manualReview: {
+            category: 'unsafe_prior_provenance',
+            reason: `Night mode catch-up has unsafe close ledger provenance (${params.jobId})`,
+            jobId: params.jobId,
+            ledgerJobId: closeLedgerJobId,
+            sessionKey: params.sessionKey,
+            fingerprint: params.fingerprint,
+          },
+        };
+      }
+
       const preDispatchLedger = await this.inspectExactRetryablePreDispatchLedger(params);
       // FLAG: v4 records SEND_MESSAGE start before any remote dispatch. Only a pre-existing exact
       // v4 Bull/SQL intent makes a missing ledger definitive pre-dispatch proof.
@@ -2286,22 +2345,22 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         preDispatchLedger === 'retryable' ||
         (preDispatchLedger === 'missing' && failedUnderCurrentV4Runtime)
       ) {
-        await this.retryFailedTransitionJob(existing, params.jobId);
+        await this.retryFailedTransitionJob(failedJob, params.jobId);
         return { kind: 'enqueue' };
       }
       const legacyPreDispatchNoRouteFailure =
-        existing.failedReason ===
+        failedJob.failedReason ===
         buildMaxActionNoExecutableRouteMessage('SEND_MESSAGE', params.chatId);
       const preDispatchRouteQuarantineFailure =
-        existing.failedReason ===
+        failedJob.failedReason ===
         buildMaxActionRouteQuarantinedMessage('SEND_MESSAGE', params.chatId);
       const preDispatchLockContentionFailure =
-        existing.failedReason ===
+        failedJob.failedReason ===
         `${NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX} (${params.chatId})`;
       const recoverableLegacyOpenFailure =
         params.transition === 'open' &&
         transitionRuntimeVersion === undefined &&
-        this.isRecoverableCurrentOpenFailure(existing.failedReason);
+        this.isRecoverableCurrentOpenFailure(failedJob.failedReason);
       const ledgerJobId = buildNightModeNoticeIdempotencyKey(
         'open',
         params.chatId,
@@ -2313,13 +2372,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         (transitionRuntimeVersion === 2 ||
           transitionRuntimeVersion === 3 ||
           transitionRuntimeVersion === 4) &&
-        existing.failedReason ===
+        failedJob.failedReason ===
           `MAX SEND_MESSAGE ledger entry ${ledgerJobId} is no longer executable (${MaxActionLedgerStatus.FAILED_TERMINAL})`;
       const retryablePostExecutionCleanupFailure =
         params.transition === 'open' &&
         currentRuntimeJob &&
         (transitionRuntimeVersion === 3 || transitionRuntimeVersion === 4) &&
-        existing.failedReason?.startsWith(
+        failedJob.failedReason.startsWith(
           `${NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX}: `,
         ) === true;
       if (retryablePostExecutionCleanupFailure) {
@@ -2327,7 +2386,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           durableRegistryProof: true,
         });
         if (ledgerResolution.kind === 'enqueue') {
-          await this.retryFailedTransitionJob(existing, params.jobId);
+          await this.retryFailedTransitionJob(failedJob, params.jobId);
           return ledgerResolution;
         }
         if (ledgerResolution.kind === 'blocked') {
@@ -2363,7 +2422,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             },
           };
         }
-        await this.retryFailedTransitionJob(existing, params.jobId);
+        await this.retryFailedTransitionJob(failedJob, params.jobId);
         return { kind: 'enqueue' };
       }
       if (recoverableLegacyOpenFailure) {
@@ -2390,7 +2449,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             jobId: params.jobId,
             sessionKey: params.sessionKey,
             transitionRuntimeVersion: transitionRuntimeVersion ?? null,
-            failedReason: existing.failedReason ?? null,
+            failedReason: failedJob.failedReason,
           },
           'Skipped night mode catch-up after an ambiguous or terminal prior failure',
         );
@@ -2407,9 +2466,12 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         };
       }
 
-      await this.retryFailedTransitionJob(existing, params.jobId);
+      await this.retryFailedTransitionJob(failedJob, params.jobId);
       return { kind: 'enqueue' };
     } catch (error: unknown) {
+      if (error instanceof NightModeTransitionFailedJobSnapshotUnstableError) {
+        throw error;
+      }
       if (this.isBullMqMissingJobRemovalError(error, params.jobId)) {
         return { kind: 'enqueue' };
       }
@@ -2442,6 +2504,17 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   private isRecoverableCurrentOpenFailure(failedReason: string | undefined): boolean {
     const normalized = failedReason?.trim().toLowerCase() ?? '';
     return normalized.includes('user.not.admin') || normalized.includes('user is not an admin');
+  }
+
+  private isDeterministicCloseLedgerProvenanceFailure(
+    failedReason: string | undefined,
+    closeLedgerJobId: string,
+  ): boolean {
+    return (
+      failedReason ===
+        `Night mode close send ledger provenance is unsafe (${closeLedgerJobId})` ||
+      failedReason === `Exact completed night mode close send is not proven (${closeLedgerJobId})`
+    );
   }
 
   private isExactCurrentV4BullEnvelope(
