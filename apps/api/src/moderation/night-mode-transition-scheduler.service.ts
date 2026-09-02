@@ -107,6 +107,8 @@ type NightModeCloseRecoveryResolution =
 
 export type NightModeRecoveryOnlyPreflight = 'needed' | 'already_complete' | 'unsafe';
 
+export type NightModeTransitionExecutionDisposition = 'execute' | 'defer' | 'retire' | 'unsafe';
+
 type NightModeRecoveryScheduleResult = {
   jobId: string | null;
   manualReview: NightModeTransitionManualReview | null;
@@ -425,6 +427,103 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     return this.hasActionableTransitionCandidate(normalizedChatIds[0]!);
   }
 
+  async inspectTransitionExecution(
+    job: NightModeTransitionJob,
+    bullJobId?: string | null,
+  ): Promise<NightModeTransitionExecutionDisposition> {
+    const normalizedChatIds = this.normalizeChatIds([job.chatId]);
+    if (normalizedChatIds.length === 0 || typeof this.prisma.chat?.findUnique !== 'function') {
+      return 'unsafe';
+    }
+
+    const chatId = normalizedChatIds[0]!;
+    if (job.transition !== 'close' && job.transition !== 'open') {
+      return 'unsafe';
+    }
+    const scheduledFor = new Date(job.scheduledFor);
+    if (!Number.isFinite(scheduledFor.getTime())) {
+      return 'unsafe';
+    }
+    const expectedJobId = buildNightModeTransitionJobId(
+      chatId,
+      job.transition,
+      job.scheduledFor,
+      job.sessionKey,
+    );
+    const actualJobId = bullJobId?.trim() ?? '';
+    if (actualJobId !== expectedJobId) {
+      return 'unsafe';
+    }
+    if (job.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION) {
+      const scheduleFingerprint = job.scheduleFingerprint?.trim() ?? '';
+      if (!scheduleFingerprint) {
+        return 'unsafe';
+      }
+      const registry = await this.findScheduledJobRegistryRow(chatId, actualJobId);
+      if (
+        !registry ||
+        registry.transition !== job.transition ||
+        registry.session_key !== job.sessionKey ||
+        registry.scheduled_for.getTime() !== scheduledFor.getTime() ||
+        registry.schedule_fingerprint !== scheduleFingerprint ||
+        registry.runtime_version !== NIGHT_MODE_TRANSITION_RUNTIME_VERSION
+      ) {
+        return 'unsafe';
+      }
+    }
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        entityType: true,
+        settings: {
+          select: {
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: true,
+            nightModeEndTimeMinutes: true,
+            nightModeTimezone: true,
+          },
+        },
+        botMemberships: {
+          select: {
+            botId: true,
+            status: true,
+            botAccessState: true,
+            permissionsSnapshot: true,
+          },
+        },
+      },
+    });
+    const settings = chat?.settings;
+    if (
+      chat?.entityType !== ChatEntityType.CHAT ||
+      !settings?.nightModeEnabled ||
+      this.resolveJobScheduleFingerprint(job) !==
+        buildNightModeTransitionScheduleFingerprint(settings)
+    ) {
+      return 'retire';
+    }
+
+    const now = new Date();
+    const currentOccurrence =
+      job.transition === 'close'
+        ? resolveCurrentNightModeCloseOccurrence(settings, now)
+        : resolveCurrentNightModeOpenOccurrence(settings, now);
+    if (
+      !currentOccurrence ||
+      currentOccurrence.transition !== job.transition ||
+      currentOccurrence.sessionKey !== job.sessionKey ||
+      currentOccurrence.dueAt.toISOString() !== job.scheduledFor
+    ) {
+      return 'retire';
+    }
+
+    // FLAG: The exact v4 job and registry row remain the durable occurrence proof while access is
+    // unavailable. Access reconciliation removes obsolete jobs, and the current-session check above
+    // bounds retries even when terminal membership evidence has not been reconciled yet.
+    return this.snapshotHasActionableTransitionCandidate(chat.botMemberships) ? 'execute' : 'defer';
+  }
+
   async inspectRecoveryOnlyTransition(
     job: NightModeTransitionJob,
   ): Promise<NightModeRecoveryOnlyPreflight> {
@@ -510,24 +609,43 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     if (normalizedChatIds.length === 0) {
       return;
     }
-    const jobId =
-      completedJobId?.trim() ||
-      (job.recoveryOnly
-        ? (() => {
-            const recovery = parseNightModeTransitionRecoveryOnly(job.recoveryOnly);
-            return recovery
-              ? buildNightModeTransitionRecoveryJobId(normalizedChatIds[0]!, recovery)
-              : null;
-          })()
-        : buildNightModeTransitionJobId(
-            normalizedChatIds[0]!,
-            job.transition,
-            job.scheduledFor,
-            job.sessionKey,
-          ));
-    if (jobId) {
-      await this.deleteScheduledJobRegistryRow(normalizedChatIds[0]!, jobId);
+    const chatId = normalizedChatIds[0]!;
+    const recovery = job.recoveryOnly
+      ? parseNightModeTransitionRecoveryOnly(job.recoveryOnly)
+      : null;
+    const expectedJobId = job.recoveryOnly
+      ? recovery
+        ? buildNightModeTransitionRecoveryJobId(chatId, recovery)
+        : null
+      : buildNightModeTransitionJobId(chatId, job.transition, job.scheduledFor, job.sessionKey);
+    const jobId = completedJobId?.trim() || expectedJobId;
+    if (!expectedJobId || !jobId || jobId !== expectedJobId) {
+      await this.requestDurableReconcile(chatId);
+      return;
     }
+
+    await this.runChatQueueMutationSerialized(chatId, async () => {
+      if (this.queue && typeof this.queue.getJob === 'function') {
+        const currentJob = await this.queue.getJob(jobId);
+        if (currentJob) {
+          const state =
+            typeof currentJob.getState === 'function' ? await currentJob.getState() : 'unknown';
+          if (state !== 'completed') {
+            return;
+          }
+        }
+      }
+
+      const registry = await this.findScheduledJobRegistryRow(chatId, jobId);
+      if (!registry) {
+        return;
+      }
+      if (!this.registryRowMatchesTransitionJob(registry, job, jobId)) {
+        await this.requestDurableReconcile(chatId);
+        return;
+      }
+      await this.deleteScheduledJobRegistryRow(chatId, jobId);
+    });
   }
 
   async enqueueNextTransitionsForChat(chatId: string): Promise<void> {
@@ -2320,10 +2438,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         params.sessionKey,
       );
       if (
-        this.isDeterministicCloseLedgerProvenanceFailure(
-          failedJob.failedReason,
-          closeLedgerJobId,
-        )
+        this.isDeterministicCloseLedgerProvenanceFailure(failedJob.failedReason, closeLedgerJobId)
       ) {
         return {
           kind: 'blocked',
@@ -2511,8 +2626,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     closeLedgerJobId: string,
   ): boolean {
     return (
-      failedReason ===
-        `Night mode close send ledger provenance is unsafe (${closeLedgerJobId})` ||
+      failedReason === `Night mode close send ledger provenance is unsafe (${closeLedgerJobId})` ||
       failedReason === `Exact completed night mode close send is not proven (${closeLedgerJobId})`
     );
   }
@@ -2864,6 +2978,26 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   ): Promise<NightModeScheduledJobRegistryRow | null> {
     const rows = await this.listScheduledJobRegistryRows([chatId]);
     return rows.find((row) => row.job_id === jobId) ?? null;
+  }
+
+  private registryRowMatchesTransitionJob(
+    row: NightModeScheduledJobRegistryRow,
+    job: NightModeTransitionJob,
+    jobId: string,
+  ): boolean {
+    const scheduledFor = new Date(job.scheduledFor);
+    const scheduleFingerprint = this.resolveJobScheduleFingerprint(job);
+    return (
+      Number.isFinite(scheduledFor.getTime()) &&
+      scheduleFingerprint !== null &&
+      row.job_id === jobId &&
+      row.transition === job.transition &&
+      row.session_key === job.sessionKey &&
+      row.scheduled_for.getTime() === scheduledFor.getTime() &&
+      row.schedule_fingerprint === scheduleFingerprint &&
+      (job.transitionRuntimeVersion === undefined ||
+        row.runtime_version === job.transitionRuntimeVersion)
+    );
   }
 
   private async upsertScheduledJobRegistryIntent(

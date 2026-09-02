@@ -10,6 +10,7 @@ import {
 } from '../prisma/prisma-client';
 import { NightModeTransitionProcessor } from './night-mode-transition.processor';
 import {
+  buildNightModeTransitionJobId,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
   type NightModeTransitionJob,
@@ -59,7 +60,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: false }),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -79,7 +80,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: true }),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
@@ -101,7 +102,7 @@ describe('NightModeTransitionProcessor', () => {
     });
     const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn(),
       isTransitionManuallyFenced: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
     };
@@ -113,6 +114,7 @@ describe('NightModeTransitionProcessor', () => {
     await expect(processor.process(job)).resolves.toBeUndefined();
 
     expect(scheduler.isTransitionManuallyFenced).toHaveBeenCalledWith(job.data, 'night-job-1');
+    expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
     expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
   });
@@ -125,7 +127,7 @@ describe('NightModeTransitionProcessor', () => {
         processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: true }),
       } as never,
       {
-        shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+        inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
         enqueueNextTransitionsForChat: jest.fn().mockRejectedValue(schedulerError),
       } as never,
     );
@@ -144,7 +146,7 @@ describe('NightModeTransitionProcessor', () => {
         .mockRejectedValue(new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1')),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
@@ -155,9 +157,10 @@ describe('NightModeTransitionProcessor', () => {
     await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
 
     expect(job.moveToDelayed).toHaveBeenCalledWith(
-      new Date('2026-05-31T05:04:00.000Z').getTime(),
+      new Date('2026-05-31T04:59:30.000Z').getTime(),
       'lock-token',
     );
+    expect(scheduler.inspectTransitionExecution).toHaveBeenCalledTimes(2);
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
   });
 
@@ -173,7 +176,7 @@ describe('NightModeTransitionProcessor', () => {
         ),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -184,6 +187,7 @@ describe('NightModeTransitionProcessor', () => {
     await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
 
     expect(job.moveToDelayed).toHaveBeenCalledWith(retryAt.getTime(), 'lock-token');
+    expect(scheduler.inspectTransitionExecution).toHaveBeenCalledTimes(2);
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
   });
 
@@ -203,7 +207,7 @@ describe('NightModeTransitionProcessor', () => {
         ),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -229,7 +233,7 @@ describe('NightModeTransitionProcessor', () => {
         .mockResolvedValueOnce({ shouldEnqueueNext: true }),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
@@ -251,7 +255,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockRejectedValue(noRouteError),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -275,7 +279,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockRejectedValue(noRouteError),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -298,7 +302,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockRejectedValue(processingError),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('execute'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -324,7 +328,15 @@ describe('NightModeTransitionProcessor', () => {
   ])(
     'continues an expired confirmed route with $name so live preflight can refresh it',
     async ({ permissionsSnapshot }) => {
-      const job = buildJob();
+      jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:00:10.000Z'));
+      const job = buildJob({
+        id: buildNightModeTransitionJobId(
+          'chat-1',
+          'close',
+          '2026-05-30T20:00:00.000Z',
+          'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+        ),
+      });
       const moderationExecutionService = {
         processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: false }),
       };
@@ -332,6 +344,12 @@ describe('NightModeTransitionProcessor', () => {
         chat: {
           findUnique: jest.fn().mockResolvedValue({
             entityType: ChatEntityType.CHAT,
+            settings: {
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+            },
             botMemberships: [
               {
                 botId: 'bot-1',
@@ -388,8 +406,16 @@ describe('NightModeTransitionProcessor', () => {
         },
       },
     },
-  ])('completes without execution for a $name', async ({ membership }) => {
-    const job = buildJob();
+  ])('defers without execution for a $name', async ({ membership }) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:00:10.000Z'));
+    const job = buildJob({
+      id: buildNightModeTransitionJobId(
+        'chat-1',
+        'close',
+        '2026-05-30T20:00:00.000Z',
+        'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      ),
+    });
     const moderationExecutionService = {
       processNightModeTransitionJob: jest.fn(),
     };
@@ -397,6 +423,12 @@ describe('NightModeTransitionProcessor', () => {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           entityType: ChatEntityType.CHAT,
+          settings: {
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 23 * 60,
+            nightModeEndTimeMinutes: 8 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+          },
           botMemberships: [membership],
         }),
       },
@@ -406,18 +438,51 @@ describe('NightModeTransitionProcessor', () => {
       scheduler,
     );
 
-    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
 
     expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+    expect(job.moveToDelayed).toHaveBeenCalledWith(
+      new Date('2026-05-30T20:00:40.000Z').getTime(),
+      'lock-token',
+    );
   });
 
-  it('completes a transition when no actionable membership candidate remains', async () => {
+  it('throttles the live access refresh while an exact transition remains deferred', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:00:10.000Z'));
+    const job = buildJob();
+    const scheduler = {
+      inspectTransitionExecution: jest.fn().mockResolvedValue('defer'),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const rosterSync = {
+      scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+    };
+    const processor = new NightModeTransitionProcessor(
+      { processNightModeTransitionJob: jest.fn() } as never,
+      scheduler as never,
+      rosterSync as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
+    jest.advanceTimersByTime(5 * 60_000);
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
+
+    expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledTimes(2);
+    expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      source: 'moderation_destructive_path',
+    });
+  });
+
+  it('retires a stale transition without entering runtime', async () => {
     const job = buildJob();
     const moderationExecutionService = {
       processNightModeTransitionJob: jest.fn(),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(false),
+      inspectTransitionExecution: jest.fn().mockResolvedValue('retire'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -432,18 +497,54 @@ describe('NightModeTransitionProcessor', () => {
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
   });
 
-  it('does not delay a no-route job when removal wins during route resolution', async () => {
+  it('keeps an unsafe v4 envelope on the failed reconciliation path', async () => {
+    const job = buildJob({
+      data: {
+        transitionRuntimeVersion: 4,
+        scheduleFingerprint: `sha256:${'a'.repeat(64)}`,
+      },
+    });
+    const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
+    const scheduler = {
+      inspectTransitionExecution: jest.fn().mockResolvedValue('unsafe'),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(scheduler.inspectTransitionExecution).toHaveBeenCalledWith(job.data, 'night-job-1');
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'no-route failure',
+      error: new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1'),
+    },
+    {
+      name: 'route quarantine',
+      error: new MaxActionRouteQuarantinedError(
+        'SEND_MESSAGE',
+        'chat-1',
+        new Date('2026-05-30T20:05:00.000Z'),
+        ['bot-1'],
+      ),
+    },
+  ])('retires after a $name only when repeat inspection finds a stale job', async ({ error }) => {
     const job = buildJob();
     const moderationExecutionService = {
-      processNightModeTransitionJob: jest
-        .fn()
-        .mockRejectedValue(new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1')),
+      processNightModeTransitionJob: jest.fn().mockRejectedValue(error),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest
+      inspectTransitionExecution: jest
         .fn()
-        .mockResolvedValueOnce(true)
-        .mockResolvedValueOnce(false),
+        .mockResolvedValueOnce('execute')
+        .mockResolvedValueOnce('retire'),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -454,7 +555,7 @@ describe('NightModeTransitionProcessor', () => {
     await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
 
     expect(moderationExecutionService.processNightModeTransitionJob).toHaveBeenCalledTimes(1);
-    expect(scheduler.shouldProcessChatTransitions).toHaveBeenCalledTimes(2);
+    expect(scheduler.inspectTransitionExecution).toHaveBeenCalledTimes(2);
     expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 
@@ -471,7 +572,7 @@ describe('NightModeTransitionProcessor', () => {
       }),
     };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(false),
+      inspectTransitionExecution: jest.fn(),
       inspectRecoveryOnlyTransition: jest.fn().mockResolvedValue('already_complete'),
       requestJobReconcile: jest.fn(async () => {
         order.push('durable-request');
@@ -489,7 +590,7 @@ describe('NightModeTransitionProcessor', () => {
     await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
 
     expect(order).toEqual(['recover-event']);
-    expect(scheduler.shouldProcessChatTransitions).not.toHaveBeenCalled();
+    expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
     expect(scheduler.completeScheduledJob).not.toHaveBeenCalled();
 
@@ -498,11 +599,39 @@ describe('NightModeTransitionProcessor', () => {
     expect(scheduler.completeScheduledJob).toHaveBeenCalledWith(job.data, 'night-job-1');
   });
 
+  it('rechecks recovery-only proof instead of the normal schedule after a route error', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:00:10.000Z'));
+    const job = buildJob({ data: { recoveryOnly: closeRecovery } });
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest
+        .fn()
+        .mockRejectedValue(new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1')),
+    };
+    const scheduler = {
+      inspectTransitionExecution: jest.fn(),
+      inspectRecoveryOnlyTransition: jest.fn().mockResolvedValue('needed'),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
+
+    expect(scheduler.inspectRecoveryOnlyTransition).toHaveBeenCalledTimes(2);
+    expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
+    expect(job.moveToDelayed).toHaveBeenCalledWith(
+      new Date('2026-05-30T20:00:40.000Z').getTime(),
+      'lock-token',
+    );
+  });
+
   it('never enters runtime when recovery-only proof is no longer exact', async () => {
     const job = buildJob({ data: { recoveryOnly: closeRecovery, transition: 'open' } });
     const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
     const scheduler = {
-      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectTransitionExecution: jest.fn(),
       inspectRecoveryOnlyTransition: jest.fn().mockResolvedValue('unsafe'),
     };
     const processor = new NightModeTransitionProcessor(
@@ -511,6 +640,7 @@ describe('NightModeTransitionProcessor', () => {
     );
 
     await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
     expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
   });
 

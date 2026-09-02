@@ -29,6 +29,28 @@ const ACTIVE_TRANSITION_MEMBERSHIP = {
   botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
   permissionsSnapshot: null,
 } as const;
+const SAMARA_CLOSE_SETTINGS = {
+  nightModeEnabled: true,
+  nightModeStartTimeMinutes: 10 * 60 + 32,
+  nightModeEndTimeMinutes: 6 * 60 + 3,
+  nightModeTimezone: 'Europe/Samara',
+} as const;
+const SAMARA_CLOSE_SESSION = 'v1:Europe/Samara:10:32:06:03:2026-09-02';
+
+function buildSamaraCloseJob(
+  overrides: Partial<NightModeTransitionJob> = {},
+): NightModeTransitionJob {
+  return {
+    chatId: 'chat-samara-close',
+    transition: 'close',
+    scheduledFor: '2026-09-02T06:32:00.000Z',
+    sessionKey: SAMARA_CLOSE_SESSION,
+    transitionRuntimeVersion: 4,
+    scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(SAMARA_CLOSE_SETTINGS),
+    createdAt: '2026-09-02T06:30:00.000Z',
+    ...overrides,
+  };
+}
 
 function buildCloseRecoveryA(chatId: string) {
   return {
@@ -61,6 +83,7 @@ async function seedRegisteredJob(
     transition?: 'open' | 'close';
     sessionKey?: string;
     scheduledFor?: string;
+    scheduleFingerprint?: string;
     runtimeVersion?: number;
   },
 ): Promise<void> {
@@ -82,7 +105,7 @@ async function seedRegisteredJob(
     transition: params.transition ?? 'close',
     session_key: params.sessionKey ?? 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
     scheduled_for: new Date(params.scheduledFor ?? '2026-05-30T20:00:00.000Z'),
-    schedule_fingerprint: `sha256:${'a'.repeat(64)}`,
+    schedule_fingerprint: params.scheduleFingerprint ?? `sha256:${'a'.repeat(64)}`,
     runtime_version: params.runtimeVersion ?? 4,
   });
 }
@@ -255,6 +278,231 @@ describe('NightModeTransitionSchedulerService', () => {
       expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('defers an exact current close while access is denied and executes after access recovers', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T06:33:00.000Z'));
+    try {
+      const deniedSnapshot = {
+        entityType: ChatEntityType.CHAT,
+        settings: SAMARA_CLOSE_SETTINGS,
+        botMemberships: [
+          {
+            botId: 'bot-1',
+            status: ChatBotMembershipStatus.ACTIVE,
+            botAccessState: ChatBotAccessState.DENIED,
+            permissionsSnapshot: null,
+          },
+        ],
+      };
+      const prisma = {
+        chat: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(deniedSnapshot)
+            .mockResolvedValueOnce({
+              ...deniedSnapshot,
+              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
+            }),
+        },
+      };
+      const maxBotRegistry = {
+        getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }]),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        undefined,
+        undefined,
+        maxBotRegistry as never,
+      );
+      const job = buildSamaraCloseJob();
+      const jobId = buildNightModeTransitionJobId(
+        job.chatId,
+        job.transition,
+        job.scheduledFor,
+        job.sessionKey,
+      );
+      await seedRegisteredJob(service, {
+        chatId: job.chatId,
+        jobId,
+        transition: job.transition,
+        sessionKey: job.sessionKey,
+        scheduledFor: job.scheduledFor,
+        scheduleFingerprint: job.scheduleFingerprint,
+      });
+
+      await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('defer');
+      await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('execute');
+
+      expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      name: 'the schedule is disabled',
+      entityType: ChatEntityType.CHAT,
+      settings: { ...SAMARA_CLOSE_SETTINGS, nightModeEnabled: false },
+      sessionKey: SAMARA_CLOSE_SESSION,
+    },
+    {
+      name: 'the schedule was changed',
+      entityType: ChatEntityType.CHAT,
+      settings: { ...SAMARA_CLOSE_SETTINGS, nightModeStartTimeMinutes: 22 * 60 + 5 },
+      sessionKey: SAMARA_CLOSE_SESSION,
+    },
+    {
+      name: 'the occurrence belongs to another session',
+      entityType: ChatEntityType.CHAT,
+      settings: SAMARA_CLOSE_SETTINGS,
+      sessionKey: 'v1:Europe/Samara:10:32:06:03:2026-09-01',
+    },
+    {
+      name: 'the managed entity is a channel',
+      entityType: ChatEntityType.CHANNEL,
+      settings: SAMARA_CLOSE_SETTINGS,
+      sessionKey: SAMARA_CLOSE_SESSION,
+    },
+  ])('retires an exact close job when $name', async ({ entityType, settings, sessionKey }) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T06:33:00.000Z'));
+    try {
+      const prisma = {
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            entityType,
+            settings,
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
+          }),
+        },
+      };
+      const service = new NightModeTransitionSchedulerService(prisma as never);
+      const job = buildSamaraCloseJob({ sessionKey });
+      const jobId = buildNightModeTransitionJobId(
+        job.chatId,
+        job.transition,
+        job.scheduledFor,
+        job.sessionKey,
+      );
+      await seedRegisteredJob(service, {
+        chatId: job.chatId,
+        jobId,
+        transition: job.transition,
+        sessionKey: job.sessionKey,
+        scheduledFor: job.scheduledFor,
+        scheduleFingerprint: job.scheduleFingerprint,
+      });
+
+      await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('retire');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    { name: 'the Bull id is not deterministic', bullJobId: 'wrong-job-id' },
+    { name: 'the durable registry row is missing', bullJobId: null },
+  ])('marks a v4 transition unsafe when $name', async ({ bullJobId }) => {
+    const job = buildSamaraCloseJob();
+    const expectedJobId = buildNightModeTransitionJobId(
+      job.chatId,
+      job.transition,
+      job.scheduledFor,
+      job.sessionKey,
+    );
+    const service = new NightModeTransitionSchedulerService({
+      chat: { findUnique: jest.fn() },
+    } as never);
+
+    await expect(service.inspectTransitionExecution(job, bullJobId ?? expectedJobId)).resolves.toBe(
+      'unsafe',
+    );
+  });
+
+  it('marks a legacy transition unsafe when its Bull id is not deterministic', async () => {
+    const job = buildSamaraCloseJob({
+      transitionRuntimeVersion: undefined,
+      scheduleFingerprint: undefined,
+    });
+    const service = new NightModeTransitionSchedulerService({
+      chat: { findUnique: jest.fn() },
+    } as never);
+
+    await expect(service.inspectTransitionExecution(job, 'wrong-legacy-job-id')).resolves.toBe(
+      'unsafe',
+    );
+  });
+
+  it('retires a non-canonical boundary timestamp even within the correct local minute', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T06:33:00.000Z'));
+    try {
+      const job = buildSamaraCloseJob({ scheduledFor: '2026-09-02T06:32:30.000Z' });
+      const jobId = buildNightModeTransitionJobId(
+        job.chatId,
+        job.transition,
+        job.scheduledFor,
+        job.sessionKey,
+      );
+      const service = new NightModeTransitionSchedulerService({
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            entityType: ChatEntityType.CHAT,
+            settings: SAMARA_CLOSE_SETTINGS,
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
+          }),
+        },
+      } as never);
+      await seedRegisteredJob(service, {
+        chatId: job.chatId,
+        jobId,
+        transition: job.transition,
+        sessionKey: job.sessionKey,
+        scheduledFor: job.scheduledFor,
+        scheduleFingerprint: job.scheduleFingerprint,
+      });
+
+      await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('retire');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('retires an open occurrence after the bounded catch-up window', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-03T04:04:00.000Z'));
+    try {
+      const job = buildSamaraCloseJob({
+        transition: 'open',
+        scheduledFor: '2026-09-03T02:03:00.000Z',
+      });
+      const jobId = buildNightModeTransitionJobId(
+        job.chatId,
+        job.transition,
+        job.scheduledFor,
+        job.sessionKey,
+      );
+      const service = new NightModeTransitionSchedulerService({
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            entityType: ChatEntityType.CHAT,
+            settings: SAMARA_CLOSE_SETTINGS,
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
+          }),
+        },
+      } as never);
+      await seedRegisteredJob(service, {
+        chatId: job.chatId,
+        jobId,
+        transition: job.transition,
+        sessionKey: job.sessionKey,
+        scheduledFor: job.scheduledFor,
+        scheduleFingerprint: job.scheduleFingerprint,
+      });
+
+      await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('retire');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 
   it('bootstraps only chats with an active refreshable bot membership', async () => {
     const prisma = {
@@ -3119,11 +3367,13 @@ describe('NightModeTransitionSchedulerService', () => {
       chatId,
       jobId: olderJobId,
       sessionKey: olderRecovery.sessionKey,
+      scheduleFingerprint: SCHEDULE_FINGERPRINT,
     });
     await seedRegisteredJob(service, {
       chatId,
       jobId: newerJobId,
       sessionKey: newerRecovery.sessionKey,
+      scheduleFingerprint: SCHEDULE_FINGERPRINT,
     });
 
     await service.completeScheduledJob(
@@ -3147,6 +3397,52 @@ describe('NightModeTransitionSchedulerService', () => {
     expect(olderJobId).not.toBe(newerJobId);
     expect(rows).toEqual([expect.objectContaining({ job_id: newerJobId })]);
   });
+
+  it.each(['delayed', 'failed'])(
+    'keeps a same-id registry row when reconciliation recreated a $state Bull job first',
+    async (state) => {
+      const chatId = 'chat-normal-completion-aba';
+      const job: NightModeTransitionJob = {
+        chatId,
+        transition: 'close',
+        scheduledFor: '2026-05-30T20:00:00.000Z',
+        sessionKey: CLOSE_SESSION_A,
+        transitionRuntimeVersion: 4,
+        scheduleFingerprint: SCHEDULE_FINGERPRINT,
+      };
+      const jobId = buildNightModeTransitionJobId(
+        chatId,
+        job.transition,
+        job.scheduledFor,
+        job.sessionKey,
+      );
+      const queue = {
+        getJob: jest.fn().mockResolvedValue({
+          getState: jest.fn().mockResolvedValue(state),
+        }),
+      };
+      const service = new NightModeTransitionSchedulerService({} as never, queue as never);
+      await seedRegisteredJob(service, {
+        chatId,
+        jobId,
+        sessionKey: job.sessionKey,
+        scheduledFor: job.scheduledFor,
+        scheduleFingerprint: job.scheduleFingerprint,
+      });
+
+      await service.completeScheduledJob(job, jobId);
+
+      const rows = await (
+        service as unknown as {
+          listScheduledJobRegistryRows(
+            chatIds: readonly string[],
+          ): Promise<Array<{ job_id: string }>>;
+        }
+      ).listScheduledJobRegistryRows([chatId]);
+      expect(queue.getJob).toHaveBeenCalledWith(jobId);
+      expect(rows).toEqual([expect.objectContaining({ job_id: jobId })]);
+    },
+  );
 
   it('retries an exhausted generic open cleanup failure only with pristine ledger state', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
@@ -3484,12 +3780,7 @@ describe('NightModeTransitionSchedulerService', () => {
     const sessionKey = CLOSE_SESSION_A;
     const scheduledFor = '2026-05-31T05:00:00.000Z';
     const fingerprint = `sha256:${'a'.repeat(64)}`;
-    const jobId = buildNightModeTransitionJobId(
-      chatId,
-      'open',
-      scheduledFor,
-      sessionKey,
-    );
+    const jobId = buildNightModeTransitionJobId(chatId, 'open', scheduledFor, sessionKey);
     const closeLedgerJobId = `night-mode:close:${chatId}:session:${sessionKey}`;
     const failedJob = {
       id: jobId,
@@ -3559,12 +3850,7 @@ describe('NightModeTransitionSchedulerService', () => {
     const sessionKey = CLOSE_SESSION_A;
     const scheduledFor = '2026-05-31T05:00:00.000Z';
     const fingerprint = `sha256:${'a'.repeat(64)}`;
-    const jobId = buildNightModeTransitionJobId(
-      chatId,
-      'open',
-      scheduledFor,
-      sessionKey,
-    );
+    const jobId = buildNightModeTransitionJobId(chatId, 'open', scheduledFor, sessionKey);
     const closeLedgerJobId = `night-mode:close:${chatId}:session:${sessionKey}`;
     const data = {
       chatId,
