@@ -93,6 +93,7 @@ import {
   type MaxSendAutoDeleteConfirmationKind,
   type MaxSendAutoDeleteMarker,
 } from './max-send-auto-delete-marker';
+import { createMaxSendAutoDeleteVerificationError } from './max-send-auto-delete-verification-error';
 
 export {
   MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
@@ -100,6 +101,7 @@ export {
   type MaxSendAutoDeleteConfirmationKind,
   type MaxSendAutoDeleteMarker,
 } from './max-send-auto-delete-marker';
+export { MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE } from './max-send-auto-delete-verification-error';
 
 export type MaxBotChat = {
   chatId: string;
@@ -468,9 +470,6 @@ export type MaxActionLedgerContextValue =
 export type MaxActionLedgerContext = {
   [key: string]: MaxActionLedgerContextValue;
 };
-
-export const MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE =
-  'send_auto_delete_exact_verification_unknown';
 
 export type MaxActionJob = QueueJobEnvelope<
   {
@@ -6549,11 +6548,21 @@ export class MaxClientService implements OnModuleDestroy {
         bypassCache: true,
       });
     } catch (cause: unknown) {
-      const error = new Error(`Could not verify sent bot message ${messageId} for auto-delete`, {
-        cause,
-      }) as Error & { code: string };
-      error.name = 'MaxSendAutoDeleteVerificationError';
-      error.code = MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE;
+      const error = createMaxSendAutoDeleteVerificationError(cause);
+      const diagnostic = error.maxSendAutoDeleteVerificationDiagnostic;
+      this.logger.warn(
+        {
+          botId: boundBotId,
+          trafficClass: action.trafficClass ?? null,
+          actionHealthLane: action.actionHealthLane ?? null,
+          sourceTag: this.normalizeMetricSourceTag(action.sourceTag),
+          attempt: Number.isInteger(action.attempt) ? action.attempt : null,
+          verificationCauseKind: diagnostic.kind,
+          verificationStatusCode: diagnostic.statusCode,
+          verificationErrorCode: diagnostic.errorCode,
+        },
+        'Failed exact MAX presence verification for send-side auto-delete',
+      );
       throw error;
     }
   }

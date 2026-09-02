@@ -17,6 +17,12 @@ import {
   wasMaxMemberMutationAttempted,
 } from './max-member-error.util';
 import { readMaxSendAutoDeleteConfirmation } from './max-send-auto-delete-marker';
+import {
+  buildMaxSendAutoDeleteVerificationLedgerErrorCode,
+  buildMaxSendAutoDeleteVerificationLedgerErrorMessage,
+  readMaxSendAutoDeleteVerificationDiagnostic,
+  type MaxSendAutoDeleteVerificationDiagnostic,
+} from './max-send-auto-delete-verification-error';
 
 const IRREVERSIBLE_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
   'SEND_MESSAGE',
@@ -1042,6 +1048,7 @@ export class MaxActionLedgerService {
     if (this.isSendDispatchLedgerFinalizedError(error)) {
       return;
     }
+    const autoDeleteVerification = this.readAutoDeleteVerificationDiagnostic(job, error);
     const ambiguous = this.isAmbiguousFailure(job, error);
     const intrinsicallyTerminal = !ambiguous && this.isIntrinsicallyTerminalFailure(job, error);
     const terminal =
@@ -1062,9 +1069,15 @@ export class MaxActionLedgerService {
       ambiguous,
       terminal,
       completedAt: terminal ? new Date() : null,
-      lastStatusCode: this.extractStatusCode(error),
-      lastErrorCode: this.extractPersistedFailureErrorCode(job, error),
-      lastError: this.extractErrorMessage(error),
+      // FLAG: The nested presence-check status is not the DELETE result. Persisting its 404 would
+      // make the ledger watchdog terminalize an otherwise retryable verification failure.
+      lastStatusCode: autoDeleteVerification ? null : this.extractStatusCode(error),
+      lastErrorCode: autoDeleteVerification
+        ? buildMaxSendAutoDeleteVerificationLedgerErrorCode(autoDeleteVerification)
+        : this.extractPersistedFailureErrorCode(job, error),
+      lastError: autoDeleteVerification
+        ? buildMaxSendAutoDeleteVerificationLedgerErrorMessage(autoDeleteVerification)
+        : this.extractErrorMessage(error),
     };
     if (job.actionType === 'SEND_MESSAGE') {
       await this.recordProtectedSendFailure(job, mutation);
@@ -1751,6 +1764,15 @@ export class MaxActionLedgerService {
     return job.actionType === 'KICK_MEMBER'
       ? MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.KICK_FAILED
       : MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.BAN_FAILED;
+  }
+
+  private readAutoDeleteVerificationDiagnostic(
+    job: MaxActionJob,
+    error: unknown,
+  ): MaxSendAutoDeleteVerificationDiagnostic | null {
+    return job.actionType === 'DELETE_MESSAGE' && job.sendAutoDelete
+      ? readMaxSendAutoDeleteVerificationDiagnostic(error)
+      : null;
   }
 
   private extractErrorMessage(error: unknown): string {

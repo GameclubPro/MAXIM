@@ -24,6 +24,7 @@ import {
   MaxMediaUploadValidationError,
 } from './max-media-upload-validation';
 import { markMaxMemberMutationAttempted } from './max-member-error.util';
+import { createMaxSendAutoDeleteVerificationError } from './max-send-auto-delete-verification-error';
 
 function createJob(overrides: Partial<MaxActionJob> = {}): MaxActionJob {
   return {
@@ -2347,6 +2348,84 @@ describe('MaxActionLedgerService', () => {
       }),
     );
   });
+
+  it.each([
+    {
+      label: 'access-masked 404',
+      cause: {
+        response: {
+          status: 404,
+          data: { code: 'message.not.found', message: 'Message mid-private-1 not found' },
+        },
+      },
+      expectedStatus: null,
+      expectedCode: 'send_auto_delete_exact_verification_access_ambiguous',
+      expectedMessage:
+        'Send-side auto-delete exact presence verification failed (access_ambiguous)',
+    },
+    {
+      label: 'upstream 502',
+      cause: {
+        response: {
+          status: 502,
+          data: { code: 'server.failure', message: 'Upstream unavailable' },
+        },
+      },
+      expectedStatus: null,
+      expectedCode: 'send_auto_delete_exact_verification_upstream_5xx',
+      expectedMessage: 'Send-side auto-delete exact presence verification failed (upstream_5xx)',
+    },
+    {
+      label: 'connection reset',
+      cause: Object.assign(new Error('socket failed for private-message-1'), {
+        code: 'ECONNRESET',
+      }),
+      expectedStatus: null,
+      expectedCode: 'send_auto_delete_exact_verification_transport',
+      expectedMessage: 'Send-side auto-delete exact presence verification failed (transport)',
+    },
+  ])(
+    'persists privacy-safe send-side auto-delete diagnostics for $label without changing retryability',
+    async ({ cause, expectedStatus, expectedCode, expectedMessage }) => {
+      const { service, prisma } = createService();
+      const job = createJob({
+        actionType: 'DELETE_MESSAGE',
+        text: undefined,
+        messageId: 'mid-private-1',
+        sendAutoDelete: {
+          version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+          sourceSendJobId: 'send-private-1',
+          sourceSendCompletedAt: '2026-09-02T01:00:00.000Z',
+          requestedDelayMs: 60_000,
+          originBotId: 'bot-1',
+        },
+      });
+
+      await service.recordFailed(job, createMaxSendAutoDeleteVerificationError(cause));
+
+      expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+            ambiguous: false,
+            terminal: false,
+            completedAt: null,
+            lastStatusCode: expectedStatus,
+            lastErrorCode: expectedCode,
+            lastError: expectedMessage,
+          }),
+        }),
+      );
+      const persisted = prisma.maxActionLedgerEntry.upsert.mock.calls[0]?.[0]?.update;
+      expect(
+        JSON.stringify({
+          lastStatusCode: persisted?.lastStatusCode,
+          lastErrorCode: persisted?.lastErrorCode,
+          lastError: persisted?.lastError,
+        }),
+      ).not.toMatch(/mid-private-1|send-private-1|private-message-1|upstream unavailable/iu);
+    },
+  );
 
   it('terminally classifies deterministic local payload and definitive member failures', async () => {
     const { service, prisma } = createService();

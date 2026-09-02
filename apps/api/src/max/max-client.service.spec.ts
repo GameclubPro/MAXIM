@@ -881,6 +881,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
     };
     const service = createService(httpService);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
     jest.spyOn(service, 'getExactMessagePresence').mockRejectedValue(lookupError);
 
     await expect(
@@ -902,9 +903,31 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
     ).rejects.toMatchObject({
       name: 'MaxSendAutoDeleteVerificationError',
+      message: 'Could not verify sent bot message for auto-delete',
       code: MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE,
       cause: lookupError,
+      maxSendAutoDeleteVerificationDiagnostic: {
+        kind: 'access_ambiguous',
+        statusCode: 404,
+        errorCode: 'message.not.found',
+      },
     });
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        botId: '777000_bot',
+        trafficClass: null,
+        actionHealthLane: null,
+        sourceTag: null,
+        attempt: 1,
+        verificationCauseKind: 'access_ambiguous',
+        verificationStatusCode: 404,
+        verificationErrorCode: 'message.not.found',
+      },
+      'Failed exact MAX presence verification for send-side auto-delete',
+    );
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toMatch(
+      /chat-1|mid-auto-delete-unknown-1|MAX message unavailable/iu,
+    );
     expect(httpService.request).not.toHaveBeenCalled();
     await service.onModuleDestroy();
   });
