@@ -7,6 +7,7 @@ import { AppModule } from './app.module';
 import { MiniappRequestSecurityService } from './auth/miniapp-request-security.service';
 import { SanitizedExceptionFilter } from './common/sanitized-exception.filter';
 import { getAppRole, resolveHttpListenHost, roleRunsHttp } from './runtime/app-role';
+import { installRuntimeWorkerShutdown } from './runtime/runtime-worker-shutdown';
 import { WebhookIngressMetricsService } from './system/webhook-ingress-metrics.service';
 import {
   readMaxWebhookAckDeadlineAtMs,
@@ -23,7 +24,7 @@ async function bootstrap() {
   if (!httpEnabled) {
     const context = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
     context.useLogger(context.get(Logger));
-    context.enableShutdownHooks();
+    installRuntimeWorkerShutdown(context);
     return;
   }
 
@@ -42,7 +43,6 @@ async function bootstrap() {
   const miniappRequestSecurity = app.get(MiniappRequestSecurityService);
   const webhookBodyLimit = configService.getOrThrow<number>('WEBHOOK_BODY_LIMIT_BYTES');
   const webhookAckDeadlineMs = configService.getOrThrow<number>('WEBHOOK_ACK_DEADLINE_MS');
-  app.enableShutdownHooks();
   app.useGlobalFilters(new SanitizedExceptionFilter());
   const fastify = app.getHttpAdapter().getInstance();
   await app.register(fastifyCookie);
@@ -88,6 +88,8 @@ async function bootstrap() {
     done(null, payload);
   });
 
+  await app.init();
+  installRuntimeWorkerShutdown(app);
   await app.listen(port, resolveHttpListenHost());
 }
 

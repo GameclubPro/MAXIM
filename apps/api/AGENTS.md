@@ -8,6 +8,7 @@
 - Ingress accepts public health/webhooks, admin serves `/api/v1/` and local owner APIs, enqueue materializes queue work, moderation roles process their assigned queues, and action dispatches MAX actions.
 - `api-media-analysis` owns CPU-isolated commercial-image OCR; keep it single-concurrency, resource-capped, and in `shadow` until corpus gates authorize a wider rollout.
 - Runtime hot paths must go through `WebhookIngestionService`, `ModerationExecutionService`, `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`, not legacy implementations.
+- Runtime signal handling goes through `runtime/runtime-worker-shutdown.ts`: pause and bounded-drain BullMQ workers while Prisma/Redis clients are still alive, then close the Nest context under the hard deadline. Do not restore direct `enableShutdownHooks()` calls in `main.ts`.
 - Admin entry points should use `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService` instead of growing legacy `AdminService`.
 - Refactor guards track real `*.legacy` files. New code imports public facades; only thin facade modules may import legacy implementations.
 - Ingress `SystemModeService` polling and readiness use the lightweight `QueueMetricsService.getLagSnapshot()` path: keep it limited to indexed oldest `RECEIVED`/`QUEUED` reads. Per-bot, JSON, count, action-health, and BullMQ fanout belong only to the full dashboard snapshot; health may read that detail from cache but must never refresh it.
