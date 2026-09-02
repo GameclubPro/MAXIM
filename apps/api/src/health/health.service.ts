@@ -17,6 +17,7 @@ import { MaxApiMetricsService } from '../system/max-api-metrics.service';
 import {
   QueueMetricsService,
   type QueueCounters,
+  type QueueLagSnapshot,
   type QueueMetricsSnapshot,
 } from '../system/queue-metrics.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
@@ -312,8 +313,6 @@ export class HealthService implements OnModuleDestroy {
   private readyCache: ReadinessSnapshot | null = null;
   private readyCacheAtMs = 0;
   private readyPromise: Promise<ReadinessSnapshot> | null = null;
-  private backgroundQueueMetricsRefreshPromise: Promise<void> | null = null;
-  private backgroundQueueMetricsRefreshStartedAtMs = 0;
   private readonly backgroundDependencyRefreshPromises = new Map<
     DependencyHealthKey,
     Promise<void>
@@ -660,7 +659,7 @@ export class HealthService implements OnModuleDestroy {
   }
 
   private async buildReadySnapshot(): Promise<ReadinessSnapshot> {
-    const [database, redis, systemMode, queueMetricsResult] = await Promise.all([
+    const [database, redis, systemMode, queueLagResult] = await Promise.all([
       this.resolveDependencyHealth('database', () => this.checkDatabase(), 'database check'),
       this.resolveDependencyHealth('redis', () => this.checkRedis(), 'redis check'),
       this.withTimeout(
@@ -668,18 +667,21 @@ export class HealthService implements OnModuleDestroy {
         this.readinessDependencyTimeoutMs,
         'system mode snapshot',
       ),
-      this.tryGetQueueMetricsSnapshot(),
+      this.tryGetQueueLagSnapshot(),
     ]);
-    const queueMetrics = queueMetricsResult.snapshot;
+    const queueLag = queueLagResult.snapshot;
     const cachedQueueMetrics =
-      queueMetrics ??
-      this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ??
-      null;
-    const queueMetricsFallbackDetail = queueMetricsResult.fallbackDetail;
-    if (queueMetrics) {
+      this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
+    const queueMetricsFallbackDetail = queueLagResult.fallbackDetail;
+    if (queueLag) {
       void this.runtimeDiagnosticsService
         ?.recordQueueLagSnapshot({
-          queues: queueMetrics,
+          queues: {
+            effectiveLagSec: queueLag.effectiveLagSec,
+            userFacingEffectiveLagSec: queueLag.effectiveLagSec,
+            generatedAt: queueLag.generatedAt,
+            bots: cachedQueueMetrics?.bots ?? {},
+          },
           mode: systemMode,
         })
         .catch(() => undefined);
@@ -689,25 +691,13 @@ export class HealthService implements OnModuleDestroy {
     );
     const runtimeDiagnostics = await this.tryGetRuntimeReadinessSnapshot();
 
-    const effectiveLagSec =
-      queueMetrics?.userFacingEffectiveLagSec ??
-      queueMetrics?.effectiveLagSec ??
-      systemMode.queueLagSec ??
-      0;
-    const oldestQueuedEventId =
-      queueMetrics?.userFacingOldestQueuedEventId ?? queueMetrics?.oldestQueuedEventId ?? null;
-    const oldestQueuedCreatedAt =
-      queueMetrics?.userFacingOldestQueuedCreatedAt ?? queueMetrics?.oldestQueuedCreatedAt ?? null;
-    const oldestQueuedLagSec =
-      queueMetrics?.userFacingOldestQueuedLagSec ?? queueMetrics?.oldestQueuedLagSec ?? 0;
-    const oldestReceivedEventId =
-      queueMetrics?.userFacingOldestReceivedEventId ?? queueMetrics?.oldestReceivedEventId ?? null;
-    const oldestReceivedCreatedAt =
-      queueMetrics?.userFacingOldestReceivedCreatedAt ??
-      queueMetrics?.oldestReceivedCreatedAt ??
-      null;
-    const oldestReceivedLagSec =
-      queueMetrics?.userFacingOldestReceivedLagSec ?? queueMetrics?.oldestReceivedLagSec ?? 0;
+    const effectiveLagSec = queueLag?.effectiveLagSec ?? systemMode.queueLagSec ?? 0;
+    const oldestQueuedEventId = queueLag?.oldestQueuedEventId ?? null;
+    const oldestQueuedCreatedAt = queueLag?.oldestQueuedCreatedAt ?? null;
+    const oldestQueuedLagSec = queueLag?.oldestQueuedLagSec ?? 0;
+    const oldestReceivedEventId = queueLag?.oldestReceivedEventId ?? null;
+    const oldestReceivedCreatedAt = queueLag?.oldestReceivedCreatedAt ?? null;
+    const oldestReceivedLagSec = queueLag?.oldestReceivedLagSec ?? 0;
     const evaluatedAtMs = Date.now();
     const rawQueueLagOk = effectiveLagSec <= this.queueLagThresholdSec;
     const severeQueueLag = effectiveLagSec > this.queueLagSevereSec;
@@ -726,10 +716,10 @@ export class HealthService implements OnModuleDestroy {
         : null;
     const softWarningDetail = queueMetricsFallbackDetail
       ? hysteresisSoftWarning
-        ? `Raw user-facing queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded. ${queueMetricsFallbackDetail}`
+        ? `Raw queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded. ${queueMetricsFallbackDetail}`
         : queueMetricsFallbackDetail
       : hysteresisSoftWarning
-        ? `Raw user-facing queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
+        ? `Raw queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
         : null;
 
     return {
@@ -756,7 +746,7 @@ export class HealthService implements OnModuleDestroy {
           sustainSec: this.queueLagSustainSec,
           severeThresholdSec: this.queueLagSevereSec,
           effectiveLagSec,
-          sampleGeneratedAt: queueMetrics?.generatedAt ?? systemMode.updatedAt,
+          sampleGeneratedAt: queueLag?.generatedAt ?? systemMode.updatedAt,
           breachStartedAt: breachStartedAtMs ? new Date(breachStartedAtMs).toISOString() : null,
           breachDurationSec,
           oldestQueuedEventId,
@@ -770,12 +760,12 @@ export class HealthService implements OnModuleDestroy {
     };
   }
 
-  private async tryGetQueueMetricsSnapshot(): Promise<{
-    snapshot: Awaited<ReturnType<QueueMetricsService['getSnapshot']>> | null;
+  private async tryGetQueueLagSnapshot(): Promise<{
+    snapshot: Awaited<ReturnType<QueueMetricsService['getLagSnapshot']>> | null;
     fallbackDetail: string | null;
   }> {
     const staleCachedSnapshot =
-      this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
+      this.queueMetricsService.peekCachedLagSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
     const freshCachedSnapshot =
       staleCachedSnapshot &&
       Date.now() - new Date(staleCachedSnapshot.generatedAt).getTime() <= this.queueSnapshotMaxAgeMs
@@ -791,7 +781,7 @@ export class HealthService implements OnModuleDestroy {
 
     if (staleCachedSnapshot) {
       const refreshedSnapshot =
-        (await this.tryRefreshStaleQueueMetricsSnapshot(staleCachedSnapshot)) ?? null;
+        (await this.tryRefreshStaleQueueLagSnapshot(staleCachedSnapshot)) ?? null;
       if (refreshedSnapshot) {
         return {
           snapshot: refreshedSnapshot,
@@ -808,7 +798,7 @@ export class HealthService implements OnModuleDestroy {
 
     try {
       const snapshot = await this.withTimeout(
-        this.queueMetricsService.getSnapshot({ maxAgeMs: this.queueSnapshotMaxAgeMs }),
+        this.queueMetricsService.getLagSnapshot({ maxAgeMs: this.queueSnapshotMaxAgeMs }),
         this.readinessDependencyTimeoutMs,
         'queue metrics snapshot',
       );
@@ -825,17 +815,12 @@ export class HealthService implements OnModuleDestroy {
     }
   }
 
-  private async tryRefreshStaleQueueMetricsSnapshot(
-    staleCachedSnapshot: QueueMetricsSnapshot,
-  ): Promise<QueueMetricsSnapshot | null> {
-    const refreshPromise = this.refreshQueueMetricsSnapshotInBackground();
-    if (!refreshPromise) {
-      return null;
-    }
-
+  private async tryRefreshStaleQueueLagSnapshot(
+    staleCachedSnapshot: QueueLagSnapshot,
+  ): Promise<QueueLagSnapshot | null> {
     try {
       await this.withTimeout(
-        refreshPromise,
+        this.queueMetricsService.getLagSnapshot({ maxAgeMs: 0 }),
         this.readinessOptionalDiagnosticsTimeoutMs,
         'queue metrics stale refresh',
       );
@@ -844,10 +829,10 @@ export class HealthService implements OnModuleDestroy {
     }
 
     const refreshedSnapshot =
-      this.queueMetricsService.peekCachedSnapshot?.(this.queueSnapshotMaxAgeMs) ?? null;
+      this.queueMetricsService.peekCachedLagSnapshot?.(this.queueSnapshotMaxAgeMs) ?? null;
     if (
       refreshedSnapshot &&
-      this.isQueueMetricsSnapshotFresher(staleCachedSnapshot, refreshedSnapshot)
+      this.isQueueLagSnapshotFresher(staleCachedSnapshot, refreshedSnapshot)
     ) {
       return refreshedSnapshot;
     }
@@ -855,9 +840,9 @@ export class HealthService implements OnModuleDestroy {
     return null;
   }
 
-  private isQueueMetricsSnapshotFresher(
-    previousSnapshot: QueueMetricsSnapshot,
-    nextSnapshot: QueueMetricsSnapshot,
+  private isQueueLagSnapshotFresher(
+    previousSnapshot: QueueLagSnapshot,
+    nextSnapshot: QueueLagSnapshot,
   ): boolean {
     const previousGeneratedAtMs = Date.parse(previousSnapshot.generatedAt);
     const nextGeneratedAtMs = Date.parse(nextSnapshot.generatedAt);
@@ -866,29 +851,6 @@ export class HealthService implements OnModuleDestroy {
     }
 
     return nextGeneratedAtMs > previousGeneratedAtMs;
-  }
-
-  private refreshQueueMetricsSnapshotInBackground(): Promise<void> | null {
-    const now = Date.now();
-    if (this.backgroundQueueMetricsRefreshPromise) {
-      return this.backgroundQueueMetricsRefreshPromise;
-    }
-    if (now - this.backgroundQueueMetricsRefreshStartedAtMs < this.queueSnapshotMaxAgeMs) {
-      return null;
-    }
-
-    this.backgroundQueueMetricsRefreshStartedAtMs = now;
-    const refreshPromise = this.queueMetricsService
-      .getSnapshot({ maxAgeMs: 0 })
-      .then(() => undefined)
-      .catch(() => undefined)
-      .finally(() => {
-        if (this.backgroundQueueMetricsRefreshPromise === refreshPromise) {
-          this.backgroundQueueMetricsRefreshPromise = null;
-        }
-      });
-    this.backgroundQueueMetricsRefreshPromise = refreshPromise;
-    return refreshPromise;
   }
 
   private updateQueueLagBreachState(rawQueueLagOk: boolean, evaluatedAtMs: number): number | null {

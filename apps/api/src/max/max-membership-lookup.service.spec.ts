@@ -3,6 +3,49 @@ import Redis from 'ioredis';
 jest.mock('ioredis', () => {
   const store = new Map<string, string>();
   const subscribers = new Set<(channel: string, payload: string) => void>();
+  type OrderedSnapshot = {
+    checkedAtMs: number;
+    probeStartedAtMs: number;
+    writerPolicy: string;
+  };
+  const shouldApplySnapshot = (
+    currentRaw: string | null,
+    incoming: OrderedSnapshot,
+    strictPolicy: string,
+  ): boolean => {
+    if (!currentRaw) {
+      return true;
+    }
+
+    try {
+      const current = JSON.parse(currentRaw) as Partial<OrderedSnapshot>;
+      if (typeof current.checkedAtMs !== 'number') {
+        return true;
+      }
+      if (
+        typeof current.probeStartedAtMs !== 'number' ||
+        typeof current.writerPolicy !== 'string'
+      ) {
+        return incoming.checkedAtMs >= current.checkedAtMs;
+      }
+
+      const incomingIsStrict = incoming.writerPolicy === strictPolicy;
+      const currentIsStrict = current.writerPolicy === strictPolicy;
+      if (incomingIsStrict && !currentIsStrict) {
+        return incoming.checkedAtMs >= current.probeStartedAtMs;
+      }
+      if (!incomingIsStrict && currentIsStrict) {
+        return incoming.probeStartedAtMs > current.checkedAtMs;
+      }
+      return (
+        incoming.probeStartedAtMs > current.probeStartedAtMs ||
+        (incoming.probeStartedAtMs === current.probeStartedAtMs &&
+          incoming.checkedAtMs >= current.checkedAtMs)
+      );
+    } catch {
+      return true;
+    }
+  };
   const createInstance = () => {
     const messageHandlers = new Set<(channel: string, payload: string) => void>();
     const instance = {
@@ -14,6 +57,45 @@ jest.mock('ioredis', () => {
         store.set(key, value);
         return 'OK';
       }),
+      eval: jest
+        .fn()
+        .mockImplementation(
+          async (_script: string, numberOfKeys: number, ...args: Array<string | number>) => {
+            const keys = args.slice(0, numberOfKeys).map(String);
+            if (_script.includes('membership-cache-invalidation-v1')) {
+              const invalidatedAtMs = Number(args[numberOfKeys]);
+              const fenceSuffix = String(args[numberOfKeys + 2]);
+              const channel = String(args[numberOfKeys + 3]);
+              const payload = String(args[numberOfKeys + 4]);
+              for (const key of keys) {
+                store.delete(key);
+                const fenceKey = `${key}${fenceSuffix}`;
+                const currentInvalidatedAtMs = Number(store.get(fenceKey) ?? 0);
+                store.set(fenceKey, String(Math.max(currentInvalidatedAtMs, invalidatedAtMs)));
+              }
+              for (const subscriber of subscribers) {
+                subscriber(channel, payload);
+              }
+              return keys.length;
+            }
+
+            const serializedSnapshot = String(args[numberOfKeys]);
+            const strictPolicy = String(args[numberOfKeys + 2]);
+            const fenceSuffix = String(args[numberOfKeys + 3]);
+            const incoming = JSON.parse(serializedSnapshot) as OrderedSnapshot;
+            return keys.map((key) => {
+              const invalidatedAtMs = Number(store.get(`${key}${fenceSuffix}`) ?? 0);
+              if (incoming.probeStartedAtMs <= invalidatedAtMs) {
+                return 0;
+              }
+              if (!shouldApplySnapshot(store.get(key) ?? null, incoming, strictPolicy)) {
+                return 0;
+              }
+              store.set(key, serializedSnapshot);
+              return 1;
+            });
+          },
+        ),
       del: jest.fn().mockImplementation(async (...keys: string[]) => {
         let deleted = 0;
         for (const key of keys) {
@@ -90,6 +172,14 @@ function createConfigMock(overrides: Partial<Record<string, number | string | bo
       return fallback;
     }),
   };
+}
+
+function readRedisMembershipSnapshot(cacheKey: string): {
+  isMember: boolean;
+  checkedAtMs: number;
+} | null {
+  const raw = (Redis as unknown as { __store: Map<string, string> }).__store.get(cacheKey);
+  return raw ? (JSON.parse(raw) as { isMember: boolean; checkedAtMs: number }) : null;
 }
 
 describe('MaxMembershipLookupService', () => {
@@ -282,7 +372,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(3);
   });
 
-  it('does not let an older lenient probe overwrite a newer strict result', async () => {
+  it('does not let an older lenient probe overwrite a newer strict result across instances', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:09:00.000Z'));
 
     let resolveOlderLookup:
@@ -300,9 +390,16 @@ describe('MaxMembershipLookupService', () => {
         )
         .mockResolvedValueOnce(new Map()),
     };
-    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const lenientService = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+    );
+    const strictService = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+    );
 
-    const olderLookup = service.getMembershipResolution(
+    const olderLookup = lenientService.getMembershipResolution(
       'channel-probe-order',
       'user-probe-order',
       'giveaway_interactive',
@@ -313,7 +410,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
 
     await expect(
-      service.getMembershipResolution(
+      strictService.getMembershipResolution(
         'channel-probe-order',
         'user-probe-order',
         'moderation_required_subscription',
@@ -332,20 +429,37 @@ describe('MaxMembershipLookupService', () => {
     );
 
     await expect(olderLookup).resolves.toEqual({ membership: true, fresh: true });
+    await Promise.resolve();
+    const readerService = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+    );
     await expect(
-      service.getMembership(
+      strictService.getMembership(
         'channel-probe-order',
         'user-probe-order',
         'moderation_required_subscription',
       ),
     ).resolves.toBe(false);
     await expect(
-      service.getMembership('channel-probe-order', 'user-probe-order', 'giveaway_interactive'),
-    ).resolves.toBe(true);
+      readerService.getMembership(
+        'channel-probe-order',
+        'user-probe-order',
+        'giveaway_interactive',
+      ),
+    ).resolves.toBe(false);
+    expect(
+      readRedisMembershipSnapshot('max:membership:v1:channel-probe-order:user-probe-order'),
+    ).toEqual(expect.objectContaining({ isMember: false }));
+    expect(
+      readRedisMembershipSnapshot(
+        'max:membership:v1:channel-probe-order:user-probe-order:policy:moderation_required_subscription',
+      ),
+    ).toEqual(expect.objectContaining({ isMember: false }));
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
   });
 
-  it('does not let a newer lenient probe discard an older strict result', async () => {
+  it('lets an older strict probe supersede an overlapping newer lenient result across instances', async () => {
     let resolveStrictLookup:
       | ((value: Map<string, { userId: string; isAdmin: boolean }>) => void)
       | null = null;
@@ -365,9 +479,16 @@ describe('MaxMembershipLookupService', () => {
           return new Map([['user-strict-first', { userId: 'user-strict-first', isAdmin: false }]]);
         }),
     };
-    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const strictService = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+    );
+    const lenientService = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+    );
 
-    const strictLookup = service.getMembershipResolution(
+    const strictLookup = strictService.getMembershipResolution(
       'channel-strict-first',
       'user-strict-first',
       'moderation_required_subscription',
@@ -378,7 +499,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
 
     await expect(
-      service.getMembershipResolution(
+      lenientService.getMembershipResolution(
         'channel-strict-first',
         'user-strict-first',
         'giveaway_interactive',
@@ -395,20 +516,91 @@ describe('MaxMembershipLookupService', () => {
     finishStrictLookup(new Map());
 
     await expect(strictLookup).resolves.toEqual({ membership: false, fresh: true });
+    const readerService = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+    );
     await expect(
-      service.getMembership(
+      strictService.getMembership(
         'channel-strict-first',
         'user-strict-first',
         'moderation_required_subscription',
       ),
     ).resolves.toBe(false);
     await expect(
-      service.getMembership('channel-strict-first', 'user-strict-first', 'giveaway_interactive'),
+      readerService.getMembership(
+        'channel-strict-first',
+        'user-strict-first',
+        'giveaway_interactive',
+      ),
     ).resolves.toBe(false);
+    expect(
+      readRedisMembershipSnapshot('max:membership:v1:channel-strict-first:user-strict-first'),
+    ).toEqual(expect.objectContaining({ isMember: false }));
+    expect(
+      readRedisMembershipSnapshot(
+        'max:membership:v1:channel-strict-first:user-strict-first:policy:moderation_required_subscription',
+      ),
+    ).toEqual(expect.objectContaining({ isMember: false }));
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
   });
 
+  it('does not let an earlier Redis read replace a strict snapshot committed while it was pending', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:09:15.000Z'));
+
+    let resolveRedisRead: ((values: Array<string | null>) => void) | null = null;
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      mget: jest.Mock;
+    };
+    redisInstance.mget.mockImplementationOnce(
+      () =>
+        new Promise<Array<string | null>>((resolve) => {
+          resolveRedisRead = resolve;
+        }),
+    );
+
+    const pendingGeneralLookup = service.getMembershipResolution(
+      'channel-pending-cache-read',
+      'user-pending-cache-read',
+      'giveaway_interactive',
+    );
+    await Promise.resolve();
+    expect(redisInstance.mget).toHaveBeenCalledTimes(1);
+
+    await expect(
+      service.getMembershipResolution(
+        'channel-pending-cache-read',
+        'user-pending-cache-read',
+        'moderation_required_subscription',
+        { forceRefresh: true, allowStaleOnError: false },
+      ),
+    ).resolves.toEqual({ membership: false, fresh: true });
+
+    const finishRedisRead = resolveRedisRead as ((values: Array<string | null>) => void) | null;
+    if (!finishRedisRead) {
+      throw new Error('Expected pending Redis membership read resolver');
+    }
+    finishRedisRead([
+      JSON.stringify({
+        isMember: true,
+        checkedAtMs: Date.now() - 1,
+        probeStartedAtMs: Date.now() - 2,
+        writerPolicy: 'giveaway_interactive',
+      }),
+    ]);
+
+    await expect(pendingGeneralLookup).resolves.toEqual({ membership: false, fresh: true });
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
   it('isolates a completed required-subscription result from a later stale inner-cache probe', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:09:30.000Z'));
+
     const maxClient = {
       hasChatMember: jest.fn(),
       getChatMembersAccess: jest
@@ -432,6 +624,7 @@ describe('MaxMembershipLookupService', () => {
         { forceRefresh: true, allowStaleOnError: false },
       ),
     ).resolves.toEqual({ membership: false, fresh: true });
+    jest.advanceTimersByTime(1);
     await expect(
       service.getMembershipResolution(
         'channel-stale-inner',
@@ -451,7 +644,106 @@ describe('MaxMembershipLookupService', () => {
     await expect(
       service.getMembership('channel-stale-inner', 'user-stale-inner', 'giveaway_interactive'),
     ).resolves.toBe(true);
+    expect(
+      readRedisMembershipSnapshot('max:membership:v1:channel-stale-inner:user-stale-inner'),
+    ).toEqual(expect.objectContaining({ isMember: true }));
+    expect(
+      readRedisMembershipSnapshot(
+        'max:membership:v1:channel-stale-inner:user-stale-inner:policy:moderation_required_subscription',
+      ),
+    ).toEqual(expect.objectContaining({ isMember: false }));
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a delayed strict Redis write when a lenient probe started after strict completion', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:09:45.000Z'));
+
+    const strictMaxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+    };
+    const strictService = new MaxMembershipLookupService(
+      strictMaxClient as never,
+      createConfigMock() as never,
+    );
+    const strictRedis = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      eval: jest.Mock;
+    };
+    const originalEval = strictRedis.eval.getMockImplementation() as
+      | ((...args: Array<string | number>) => Promise<unknown>)
+      | undefined;
+    if (!originalEval) {
+      throw new Error('Expected Redis eval mock implementation');
+    }
+    let releaseStrictWrite: (() => void) | null = null;
+    let markStrictWriteStarted: (() => void) | null = null;
+    const strictWriteGate = new Promise<void>((resolve) => {
+      releaseStrictWrite = resolve;
+    });
+    const strictWriteStarted = new Promise<void>((resolve) => {
+      markStrictWriteStarted = resolve;
+    });
+    strictRedis.eval.mockImplementation(async (...args: Array<string | number>) => {
+      if (String(args[0]).includes('membership-cache-compare-and-set-v1')) {
+        markStrictWriteStarted?.();
+        await strictWriteGate;
+      }
+      return originalEval(...args);
+    });
+
+    await expect(
+      strictService.getMembershipResolution(
+        'channel-delayed-strict-write',
+        'user-delayed-strict-write',
+        'moderation_required_subscription',
+        { forceRefresh: true, allowStaleOnError: false },
+      ),
+    ).resolves.toEqual({ membership: false, fresh: true });
+    await strictWriteStarted;
+    const delayedStrictWrite = strictRedis.eval.mock.results[0]?.value as Promise<unknown>;
+
+    jest.advanceTimersByTime(1);
+    const lenientMaxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(
+          new Map([
+            ['user-delayed-strict-write', { userId: 'user-delayed-strict-write', isAdmin: false }],
+          ]),
+        ),
+    };
+    const lenientService = new MaxMembershipLookupService(
+      lenientMaxClient as never,
+      createConfigMock() as never,
+    );
+    await expect(
+      lenientService.getMembershipResolution(
+        'channel-delayed-strict-write',
+        'user-delayed-strict-write',
+        'giveaway_interactive',
+        { forceRefresh: true, allowStaleOnError: true },
+      ),
+    ).resolves.toEqual({ membership: true, fresh: true });
+
+    const finishStrictWrite = releaseStrictWrite as (() => void) | null;
+    if (!finishStrictWrite) {
+      throw new Error('Expected delayed strict Redis write resolver');
+    }
+    finishStrictWrite();
+    await delayedStrictWrite;
+    await Promise.resolve();
+
+    expect(
+      readRedisMembershipSnapshot(
+        'max:membership:v1:channel-delayed-strict-write:user-delayed-strict-write',
+      ),
+    ).toEqual(expect.objectContaining({ isMember: true }));
+    expect(
+      readRedisMembershipSnapshot(
+        'max:membership:v1:channel-delayed-strict-write:user-delayed-strict-write:policy:moderation_required_subscription',
+      ),
+    ).toEqual(expect.objectContaining({ isMember: false }));
   });
 
   it('uses MAX batch membership lookups for shared chat checks and reuses the cached result later', async () => {
@@ -1338,6 +1630,84 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('does not let an already-dispatched Redis write repopulate an invalidated snapshot', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:22:00.000Z'));
+
+    const writerMaxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Map([['user-delayed-write', { userId: 'user-delayed-write', isAdmin: false }]]),
+        )
+        .mockResolvedValueOnce(new Map()),
+    };
+    const writerService = new MaxMembershipLookupService(
+      writerMaxClient as never,
+      createConfigMock() as never,
+    );
+    const writerRedis = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      eval: jest.Mock;
+    };
+    const originalEval = writerRedis.eval.getMockImplementation() as
+      | ((...args: Array<string | number>) => Promise<unknown>)
+      | undefined;
+    if (!originalEval) {
+      throw new Error('Expected Redis eval mock implementation');
+    }
+    let releaseWrite: (() => void) | null = null;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    writerRedis.eval.mockImplementation(async (...args: Array<string | number>) => {
+      if (String(args[0]).includes('membership-cache-compare-and-set-v1')) {
+        await writeGate;
+      }
+      return originalEval(...args);
+    });
+
+    await expect(
+      writerService.getMembership(
+        'channel-delayed-write',
+        'user-delayed-write',
+        'giveaway_interactive',
+      ),
+    ).resolves.toBe(true);
+    const delayedWrite = writerRedis.eval.mock.results[0]?.value as Promise<unknown>;
+
+    jest.advanceTimersByTime(1);
+    const invalidatorService = new MaxMembershipLookupService(
+      { hasChatMember: jest.fn(), getChatMembersAccess: jest.fn() } as never,
+      createConfigMock({ MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_POSITIVE_TTL_SEC: 300 }) as never,
+    );
+    const invalidatorRedis = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      eval: jest.Mock;
+    };
+    await invalidatorService.invalidateMemberships('channel-delayed-write', ['user-delayed-write']);
+    const invalidationCall = invalidatorRedis.eval.mock.calls[0] as Array<string | number>;
+    expect(invalidationCall[Number(invalidationCall[1]) + 3]).toBe('420000');
+
+    const finishWrite = releaseWrite as (() => void) | null;
+    if (!finishWrite) {
+      throw new Error('Expected delayed Redis write resolver');
+    }
+    finishWrite();
+    await delayedWrite;
+    await Promise.resolve();
+
+    expect(
+      readRedisMembershipSnapshot('max:membership:v1:channel-delayed-write:user-delayed-write'),
+    ).toBeNull();
+    await expect(
+      writerService.getMembership(
+        'channel-delayed-write',
+        'user-delayed-write',
+        'giveaway_interactive',
+      ),
+    ).resolves.toBe(false);
+    expect(writerMaxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+  });
+
   it('ignores a Redis membership snapshot read before invalidation', async () => {
     let resolveRedisRead: ((values: Array<string | null>) => void) | null = null;
     const maxClient = {
@@ -1511,6 +1881,79 @@ describe('MaxMembershipLookupService', () => {
 
     await expect(replacementLookup).resolves.toBe(false);
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel a replacement lookup on a reordered invalidation self-echo', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:27:30.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock({ MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS: 25 }) as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      eval: jest.Mock;
+    };
+    await service.onModuleInit();
+    await service.invalidateMemberships('channel-invalidation-echo', ['user-invalidation-echo']);
+    const publishedPayload = String(redisInstance.eval.mock.calls[0]?.at(-1));
+
+    const replacementLookup = service.getMembership(
+      'channel-invalidation-echo',
+      'user-invalidation-echo',
+      'moderation_required_subscription',
+      { forceRefresh: true },
+    );
+    const subscribers = (
+      Redis as unknown as {
+        __subscribers: Set<(channel: string, payload: string) => void>;
+      }
+    ).__subscribers;
+    for (const subscriber of subscribers) {
+      subscriber('max:membership:invalidate:v1', publishedPayload);
+    }
+
+    await jest.advanceTimersByTimeAsync(25);
+    await expect(replacementLookup).resolves.toBe(false);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not merge two real invalidations created in the same millisecond', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:27:45.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn(),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock({ MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS: 25 }) as never,
+    );
+    await service.onModuleInit();
+    await service.invalidateMemberships('channel-double-invalidation', [
+      'user-double-invalidation',
+    ]);
+
+    const replacementLookup = service.getMembership(
+      'channel-double-invalidation',
+      'user-double-invalidation',
+      'moderation_required_subscription',
+      { forceRefresh: true },
+    );
+    await service.invalidateMemberships('channel-double-invalidation', [
+      'user-double-invalidation',
+    ]);
+
+    await expect(replacementLookup).resolves.toBeNull();
+    await jest.advanceTimersByTimeAsync(25);
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
   });
 
   it('keeps strict and stale-tolerant moderation waiters separate inside the batch window', async () => {

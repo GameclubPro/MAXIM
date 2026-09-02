@@ -192,6 +192,17 @@ export type QueueMetricsSnapshot = {
   generatedAt: string;
 };
 
+export type QueueLagSnapshot = {
+  oldestQueuedEventId: string | null;
+  oldestQueuedCreatedAt: string | null;
+  oldestQueuedLagSec: number;
+  oldestReceivedEventId: string | null;
+  oldestReceivedCreatedAt: string | null;
+  oldestReceivedLagSec: number;
+  effectiveLagSec: number;
+  generatedAt: string;
+};
+
 export type WebhookDefaultShardSnapshot = {
   webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>;
   webhookDefaultWorkerGroups: Record<
@@ -235,6 +246,9 @@ export class QueueMetricsService {
   private snapshotCache: QueueMetricsSnapshot | null = null;
   private snapshotCacheAtMs = 0;
   private snapshotPromise: Promise<QueueMetricsSnapshot> | null = null;
+  private lagSnapshotCache: QueueLagSnapshot | null = null;
+  private lagSnapshotCacheAtMs = 0;
+  private lagSnapshotPromise: Promise<QueueLagSnapshot> | null = null;
   private defaultShardSnapshotCache: WebhookDefaultShardSnapshot | null = null;
   private defaultShardSnapshotCacheAtMs = 0;
   private defaultShardSnapshotPromise: Promise<WebhookDefaultShardSnapshot> | null = null;
@@ -318,8 +332,35 @@ export class QueueMetricsService {
     }
   }
 
+  async getLagSnapshot(options: QueueMetricsSnapshotOptions = {}): Promise<QueueLagSnapshot> {
+    const maxAgeMs = options.maxAgeMs ?? 0;
+    const cachedSnapshot = this.getCachedLagSnapshot(maxAgeMs);
+    if (cachedSnapshot) {
+      return cachedSnapshot;
+    }
+
+    if (this.lagSnapshotPromise) {
+      return this.lagSnapshotPromise;
+    }
+
+    this.lagSnapshotPromise = this.buildLagSnapshot();
+
+    try {
+      const snapshot = await this.lagSnapshotPromise;
+      this.lagSnapshotCache = snapshot;
+      this.lagSnapshotCacheAtMs = Date.now();
+      return snapshot;
+    } finally {
+      this.lagSnapshotPromise = null;
+    }
+  }
+
   peekCachedSnapshot(maxAgeMs = Number.POSITIVE_INFINITY): QueueMetricsSnapshot | null {
     return this.getCachedSnapshot(maxAgeMs);
+  }
+
+  peekCachedLagSnapshot(maxAgeMs = Number.POSITIVE_INFINITY): QueueLagSnapshot | null {
+    return this.getCachedLagSnapshot(maxAgeMs);
   }
 
   async getWebhookDefaultShardSnapshot(
@@ -356,6 +397,18 @@ export class QueueMetricsService {
     }
 
     return this.snapshotCache;
+  }
+
+  private getCachedLagSnapshot(maxAgeMs: number): QueueLagSnapshot | null {
+    if (!this.lagSnapshotCache || maxAgeMs <= 0) {
+      return null;
+    }
+
+    if (Date.now() - this.lagSnapshotCacheAtMs > maxAgeMs) {
+      return null;
+    }
+
+    return this.lagSnapshotCache;
   }
 
   private getCachedDefaultShardSnapshot(maxAgeMs: number): WebhookDefaultShardSnapshot | null {
@@ -530,6 +583,41 @@ export class QueueMetricsService {
       userFacingEffectiveLagSec,
       generatedAt: new Date().toISOString(),
     };
+  }
+
+  private async buildLagSnapshot(): Promise<QueueLagSnapshot> {
+    const [received, queued] = await Promise.all([
+      this.readOldestWebhookEvent(WebhookStatus.RECEIVED),
+      this.readOldestWebhookEvent(WebhookStatus.QUEUED),
+    ]);
+    const now = new Date();
+    const oldestReceivedLagSec = received
+      ? Math.max(0, (now.getTime() - received.createdAt.getTime()) / 1_000)
+      : 0;
+    const oldestQueuedLagSec = queued
+      ? Math.max(0, (now.getTime() - queued.createdAt.getTime()) / 1_000)
+      : 0;
+
+    return {
+      oldestQueuedEventId: queued?.id ?? null,
+      oldestQueuedCreatedAt: queued?.createdAt.toISOString() ?? null,
+      oldestQueuedLagSec,
+      oldestReceivedEventId: received?.id ?? null,
+      oldestReceivedCreatedAt: received?.createdAt.toISOString() ?? null,
+      oldestReceivedLagSec,
+      effectiveLagSec: Math.max(oldestQueuedLagSec, oldestReceivedLagSec),
+      generatedAt: now.toISOString(),
+    };
+  }
+
+  private readOldestWebhookEvent(
+    status: WebhookStatus,
+  ): Promise<{ id: string; createdAt: Date } | null> {
+    return this.prisma.webhookEvent.findFirst({
+      where: { status },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, createdAt: true },
+    });
   }
 
   private async buildWebhookDefaultShardSnapshot(

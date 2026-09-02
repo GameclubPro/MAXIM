@@ -34,6 +34,7 @@ return ARGV[1]
 const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
 const SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS = 30_000;
 const DEFAULT_SYSTEM_MODE_QUEUE_SNAPSHOT_MAX_AGE_MS = 15_000;
+const SYSTEM_MODE_SHUTDOWN_WAIT_MS = 5_000;
 const ACTION_ERROR_RATE_MIN_TOTAL = 100;
 const ACTION_ERROR_RATE_MIN_FAILURES = 5;
 const ACTION_CRITICAL_RATE_MIN_TOTAL = 100;
@@ -58,6 +59,8 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   private readonly actionCriticalThreshold: number;
   private readonly queueSnapshotMaxAgeMs: number;
   private intervalId: NodeJS.Timeout | null = null;
+  private evaluationPromise: Promise<void> | null = null;
+  private shuttingDown = false;
 
   private mode: SystemMode = 'normal';
   private source: SystemModeSource = 'auto';
@@ -87,7 +90,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    if (!this.enabled) {
+    if (!this.enabled || this.shuttingDown) {
       return;
     }
 
@@ -97,6 +100,9 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.evaluateAutoMode();
+    if (this.shuttingDown) {
+      return;
+    }
     this.intervalId = setInterval(() => {
       void this.evaluateAutoMode();
     }, 5_000);
@@ -104,11 +110,31 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    this.shuttingDown = true;
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
 
+    const evaluationPromise = this.evaluationPromise;
+    if (evaluationPromise) {
+      let timeout: NodeJS.Timeout | null = null;
+      const settled = await Promise.race([
+        Promise.allSettled([evaluationPromise]).then(() => true),
+        new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => resolve(false), SYSTEM_MODE_SHUTDOWN_WAIT_MS);
+        }),
+      ]);
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      if (!settled) {
+        this.logger.warn(
+          { timeoutMs: SYSTEM_MODE_SHUTDOWN_WAIT_MS },
+          'Timed out waiting for system mode evaluation during shutdown',
+        );
+      }
+    }
     await this.redis.quit();
   }
 
@@ -136,24 +162,37 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     return this.getSnapshot();
   }
 
-  async evaluateAutoMode() {
-    if (!this.enabled) {
-      return;
+  evaluateAutoMode(): Promise<void> {
+    if (!this.enabled || this.shuttingDown) {
+      return Promise.resolve();
+    }
+    if (this.evaluationPromise) {
+      return this.evaluationPromise;
     }
 
-    const sharedSnapshot = await this.readSharedSnapshot();
-    if (sharedSnapshot) {
-      this.hydrateFromSnapshot(sharedSnapshot);
-    }
-    if (this.manualMode) {
-      return;
-    }
+    const evaluationPromise = this.evaluateAutoModeOnce().finally(() => {
+      if (this.evaluationPromise === evaluationPromise) {
+        this.evaluationPromise = null;
+      }
+    });
+    this.evaluationPromise = evaluationPromise;
+    return evaluationPromise;
+  }
 
+  private async evaluateAutoModeOnce(): Promise<void> {
     try {
-      const queue = await this.queueMetricsService.getSnapshot({
+      const sharedSnapshot = await this.readSharedSnapshot();
+      if (sharedSnapshot) {
+        this.hydrateFromSnapshot(sharedSnapshot);
+      }
+      if (this.manualMode) {
+        return;
+      }
+
+      const queue = await this.queueMetricsService.getLagSnapshot({
         maxAgeMs: this.queueSnapshotMaxAgeMs,
       });
-      const queueLagSec = queue.userFacingEffectiveLagSec ?? queue.effectiveLagSec ?? 0;
+      const queueLagSec = queue.effectiveLagSec ?? 0;
       this.lastQueueLagSec = queueLagSec;
       await this.actionHealthService.refreshSnapshots(60);
       const action = this.getUserFacingActionSnapshot();
@@ -168,7 +207,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         this.healthySinceMs = null;
         const reasons: string[] = [];
         if (queueLagSec > this.queueLagThresholdSec) {
-          reasons.push(`user-facing queue lag ${queueLagSec.toFixed(1)}s`);
+          reasons.push(`queue lag ${queueLagSec.toFixed(1)}s`);
         }
         if (actionErrorRateDegraded) {
           reasons.push(`user-facing action error rate ${(action.errorRate * 100).toFixed(2)}%`);

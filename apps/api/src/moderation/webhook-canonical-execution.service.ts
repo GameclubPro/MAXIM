@@ -19,6 +19,10 @@ import { WebhookOrderedPredecessorPendingError } from './webhook-ordered-predece
 export { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from '../webhook/webhook-timeout-quarantine';
 
 const WEBHOOK_CANONICAL_BUSINESS_LEASE_MS = 5 * 60_000;
+// FLAG: Timeout persistence must tolerate a short database stall while remaining below the
+// 60-second quarantine heartbeat and far below the lease and hard-settlement watchdog.
+const WEBHOOK_TIMEOUT_PERSISTENCE_TRANSACTION_MAX_WAIT_MS = 10_000;
+const WEBHOOK_TIMEOUT_PERSISTENCE_TRANSACTION_TIMEOUT_MS = 30_000;
 
 type WebhookExecutionClaimRecord = {
   id?: string;
@@ -1340,13 +1344,17 @@ export class WebhookCanonicalExecutionService {
       this.prisma as PrismaService & {
         $transaction?: <R>(
           callback: (client: WebhookCanonicalPersistenceClient) => Promise<R>,
+          options?: { maxWait?: number; timeout?: number },
         ) => Promise<R>;
       }
     ).$transaction;
     if (typeof transaction !== 'function') {
       return operation(this.prisma as unknown as WebhookCanonicalPersistenceClient);
     }
-    return transaction.call(this.prisma, operation) as Promise<T>;
+    return transaction.call(this.prisma, operation, {
+      maxWait: WEBHOOK_TIMEOUT_PERSISTENCE_TRANSACTION_MAX_WAIT_MS,
+      timeout: WEBHOOK_TIMEOUT_PERSISTENCE_TRANSACTION_TIMEOUT_MS,
+    }) as Promise<T>;
   }
 
   private isHotPathTimeoutQuarantined(webhookEvent: WebhookEvent): boolean {

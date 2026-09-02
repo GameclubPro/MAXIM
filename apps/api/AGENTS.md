@@ -10,6 +10,7 @@
 - Runtime hot paths must go through `WebhookIngestionService`, `ModerationExecutionService`, `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`, not legacy implementations.
 - Admin entry points should use `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService` instead of growing legacy `AdminService`.
 - Refactor guards track real `*.legacy` files. New code imports public facades; only thin facade modules may import legacy implementations.
+- Ingress `SystemModeService` polling and readiness use the lightweight `QueueMetricsService.getLagSnapshot()` path: keep it limited to indexed oldest `RECEIVED`/`QUEUED` reads. Per-bot, JSON, count, action-health, and BullMQ fanout belong only to the full dashboard snapshot; health may read that detail from cache but must never refresh it.
 
 ## Validation And Prisma
 

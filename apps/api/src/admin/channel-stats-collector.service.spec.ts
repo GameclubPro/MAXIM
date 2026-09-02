@@ -1329,6 +1329,369 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
+  it('contains a rejected startup Prisma query inside the timer callback', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockRejectedValue(new Error('postgres pool unavailable'));
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock({
+        startupSyncEnabled: true,
+        startupSyncMaxChannels: 2,
+        startupDelayMs: 0,
+        startupJitterMs: 0,
+      }) as never,
+    );
+    const warnSpy = jest
+      .spyOn(
+        (
+          service as unknown as {
+            logger: { warn: (payload: unknown, message: string) => void };
+          }
+        ).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(prisma.chat.findMany).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        task: 'startup_candidate_query',
+        reason: 'startup',
+        err: 'postgres pool unavailable',
+      },
+      'Failed to run channel stats background task',
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('contains and rate-limits rejected governor checks from recurring timers', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockRejectedValue(new Error('governor unavailable')),
+    };
+    const service = new ChannelStatsCollectorService(
+      createPrismaMock() as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    const warnSpy = jest
+      .spyOn(
+        (
+          service as unknown as {
+            logger: { warn: (payload: unknown, message: string) => void };
+          }
+        ).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(90_000);
+    await (
+      service as unknown as {
+        syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+      }
+    ).syncScheduledAudienceCatchUpOnly('scheduled');
+
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        task: 'channel_sync',
+        reason: 'scheduled',
+        err: 'governor unavailable',
+      },
+      'Failed to run channel stats background task',
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    {
+      name: 'hourly sync',
+      task: 'scheduled_sync_timer',
+      reason: 'scheduled',
+      delayMs: 60 * 60 * 1_000,
+      method: 'syncAllChannels',
+    },
+    {
+      name: 'recurring audience catch-up',
+      task: 'scheduled_audience_catch_up_timer',
+      reason: 'scheduled',
+      delayMs: 5 * 60 * 1_000,
+      method: 'syncScheduledAudienceCatchUpOnly',
+    },
+    {
+      name: 'startup audience catch-up',
+      task: 'startup_audience_catch_up_timer',
+      reason: 'scheduled',
+      delayMs: 90_000,
+      method: 'syncScheduledAudienceCatchUpOnly',
+    },
+    {
+      name: 'startup channel selection',
+      task: 'startup_sync_timer',
+      reason: 'startup',
+      delayMs: 0,
+      method: 'syncStartupChannels',
+    },
+  ])('contains a rejected $name callback', async ({ task, reason, delayMs, method }) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const service = new ChannelStatsCollectorService(
+      createPrismaMock() as never,
+      {} as never,
+      createConfigMock(
+        task === 'startup_sync_timer'
+          ? {
+              startupSyncEnabled: true,
+              startupSyncMaxChannels: 1,
+              startupDelayMs: 0,
+              startupJitterMs: 0,
+            }
+          : undefined,
+      ) as never,
+    );
+    const warnSpy = jest
+      .spyOn(
+        (
+          service as unknown as {
+            logger: { warn: (payload: unknown, message: string) => void };
+          }
+        ).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+    jest
+      .spyOn(service as unknown as Record<string, () => Promise<void>>, method)
+      .mockRejectedValue(new Error(`${method} rejected`));
+
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(delayMs);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        task,
+        reason,
+        err: `${method} rejected`,
+      },
+      'Failed to run channel stats background task',
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('waits for an active background task to settle before closing Redis', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    let resolveTask: (() => void) | null = null;
+    const service = new ChannelStatsCollectorService(
+      createPrismaMock() as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const redisQuit = (
+      service as unknown as {
+        redis: { quit: jest.Mock };
+      }
+    ).redis.quit;
+    const catchUpSpy = jest
+      .spyOn(
+        service as unknown as {
+          syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+        },
+        'syncScheduledAudienceCatchUpOnly',
+      )
+      .mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveTask = resolve;
+          }),
+      );
+
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(catchUpSpy).toHaveBeenCalledTimes(1);
+
+    const destroyPromise = service.onModuleDestroy();
+    await Promise.resolve();
+    expect(redisQuit).not.toHaveBeenCalled();
+
+    const finishTask = resolveTask as (() => void) | null;
+    if (!finishTask) {
+      throw new Error('Expected active channel stats task resolver');
+    }
+    finishTask();
+    await destroyPromise;
+
+    expect(redisQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it('contains an active task rejection while waiting for shutdown', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    let rejectTask: ((error: Error) => void) | null = null;
+    const service = new ChannelStatsCollectorService(
+      createPrismaMock() as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const redisQuit = (
+      service as unknown as {
+        redis: { quit: jest.Mock };
+      }
+    ).redis.quit;
+    const warnSpy = jest
+      .spyOn(
+        (
+          service as unknown as {
+            logger: { warn: (payload: unknown, message: string) => void };
+          }
+        ).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+    jest
+      .spyOn(
+        service as unknown as {
+          syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+        },
+        'syncScheduledAudienceCatchUpOnly',
+      )
+      .mockImplementation(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectTask = reject;
+          }),
+      );
+
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(90_000);
+    const destroyPromise = service.onModuleDestroy();
+    await Promise.resolve();
+    expect(redisQuit).not.toHaveBeenCalled();
+
+    const failTask = rejectTask as ((error: Error) => void) | null;
+    if (!failTask) {
+      throw new Error('Expected active channel stats task rejector');
+    }
+    failTask(new Error('active task failed during shutdown'));
+    await destroyPromise;
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        task: 'startup_audience_catch_up_timer',
+        reason: 'scheduled',
+        err: 'active task failed during shutdown',
+      },
+      'Failed to run channel stats background task',
+    );
+    expect(redisQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds shutdown when an active background task does not settle', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const service = new ChannelStatsCollectorService(
+      createPrismaMock() as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const redisQuit = (
+      service as unknown as {
+        redis: { quit: jest.Mock };
+      }
+    ).redis.quit;
+    const warnSpy = jest
+      .spyOn(
+        (
+          service as unknown as {
+            logger: { warn: (payload: unknown, message: string) => void };
+          }
+        ).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+    jest
+      .spyOn(
+        service as unknown as {
+          syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+        },
+        'syncScheduledAudienceCatchUpOnly',
+      )
+      .mockReturnValue(new Promise<void>(() => undefined));
+
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(90_000);
+    const destroyPromise = service.onModuleDestroy();
+    await Promise.resolve();
+    expect(redisQuit).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(5_000);
+    await destroyPromise;
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        inFlightTaskCount: 1,
+        timeoutMs: 5_000,
+      },
+      'Timed out waiting for channel stats background tasks during shutdown',
+    );
+    expect(redisQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not schedule background timers after destruction', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const service = new ChannelStatsCollectorService(
+      createPrismaMock() as never,
+      {} as never,
+      createConfigMock({
+        startupSyncEnabled: true,
+        startupSyncMaxChannels: 1,
+        startupDelayMs: 0,
+        startupJitterMs: 0,
+      }) as never,
+    );
+    const syncSpy = jest.spyOn(service, 'syncAllChannels').mockResolvedValue(undefined);
+    const startupSpy = jest
+      .spyOn(
+        service as unknown as { syncStartupChannels: () => Promise<void> },
+        'syncStartupChannels',
+      )
+      .mockResolvedValue(undefined);
+    const catchUpSpy = jest
+      .spyOn(
+        service as unknown as {
+          syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+        },
+        'syncScheduledAudienceCatchUpOnly',
+      )
+      .mockResolvedValue(undefined);
+
+    service.onModuleInit();
+    await service.onModuleDestroy();
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(60 * 60 * 1_000);
+
+    expect(syncSpy).not.toHaveBeenCalled();
+    expect(startupSpy).not.toHaveBeenCalled();
+    expect(catchUpSpy).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it('schedules a delayed lightweight catch-up pass on startup', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 

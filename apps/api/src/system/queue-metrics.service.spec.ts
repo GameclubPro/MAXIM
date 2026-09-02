@@ -74,6 +74,90 @@ describe('QueueMetricsService', () => {
     );
   });
 
+  it('builds and caches lightweight lag from only two indexed oldest-event queries', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));
+    try {
+      const findFirst = jest
+        .fn()
+        .mockResolvedValueOnce({
+          id: 'received-oldest',
+          createdAt: new Date('2026-09-02T11:59:48.000Z'),
+        })
+        .mockResolvedValueOnce({
+          id: 'queued-oldest',
+          createdAt: new Date('2026-09-02T11:59:35.000Z'),
+        });
+      const prisma = {
+        webhookEvent: {
+          findFirst,
+          count: jest.fn(),
+          groupBy: jest.fn(),
+        },
+        $queryRaw: jest.fn(),
+      };
+      const getJobCounts = jest.fn();
+      const actionHealthService = {
+        refreshSnapshots: jest.fn(),
+        getSnapshot: jest.fn(),
+      };
+      const maxBotRegistry = {
+        getOperationalBots: jest.fn(),
+        getAllBots: jest.fn(),
+      };
+      const service = new QueueMetricsService(
+        prisma as never,
+        actionHealthService as never,
+        { get: jest.fn().mockReturnValue({ getJobCounts }) } as never,
+        maxBotRegistry as never,
+      );
+
+      const firstSnapshot = service.getLagSnapshot({ maxAgeMs: 15_000 });
+      const overlappingSnapshot = service.getLagSnapshot({ maxAgeMs: 15_000 });
+
+      await expect(firstSnapshot).resolves.toEqual({
+        oldestQueuedEventId: 'queued-oldest',
+        oldestQueuedCreatedAt: '2026-09-02T11:59:35.000Z',
+        oldestQueuedLagSec: 25,
+        oldestReceivedEventId: 'received-oldest',
+        oldestReceivedCreatedAt: '2026-09-02T11:59:48.000Z',
+        oldestReceivedLagSec: 12,
+        effectiveLagSec: 25,
+        generatedAt: '2026-09-02T12:00:00.000Z',
+      });
+      await expect(overlappingSnapshot).resolves.toEqual(await firstSnapshot);
+      await expect(service.getLagSnapshot({ maxAgeMs: 15_000 })).resolves.toEqual(
+        await firstSnapshot,
+      );
+
+      expect(findFirst.mock.calls).toEqual([
+        [
+          {
+            where: { status: WebhookStatus.RECEIVED },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, createdAt: true },
+          },
+        ],
+        [
+          {
+            where: { status: WebhookStatus.QUEUED },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, createdAt: true },
+          },
+        ],
+      ]);
+      expect(prisma.webhookEvent.count).not.toHaveBeenCalled();
+      expect(prisma.webhookEvent.groupBy).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(getJobCounts).not.toHaveBeenCalled();
+      expect(actionHealthService.refreshSnapshots).not.toHaveBeenCalled();
+      expect(actionHealthService.getSnapshot).not.toHaveBeenCalled();
+      expect(maxBotRegistry.getOperationalBots).not.toHaveBeenCalled();
+      expect(maxBotRegistry.getAllBots).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('returns queue counters, webhook status metrics, and action health in one snapshot', async () => {
     const prisma = {
       webhookEvent: {

@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import {
@@ -48,11 +49,14 @@ export type MaxMembershipLookupResolution = {
 type MembershipCacheSnapshot = {
   isMember: boolean;
   checkedAtMs: number;
+  probeStartedAtMs?: number;
+  writerPolicy?: MaxMembershipLookupPolicy;
 };
 
 type CacheEpochState = {
   epoch: number;
   expiresAtMs: number;
+  invalidatedAtMs: number;
 };
 
 type ChatBackoffState = {
@@ -152,6 +156,84 @@ const GIVEAWAY_DRAW_TERMINAL_CHAT_BACKOFF_MS = 30 * 60 * 1_000;
 const REQUIRED_SUBSCRIPTION_TERMINAL_CHAT_BACKOFF_MS = 60_000;
 const MEMBERSHIP_CACHE_LEGACY_KEY_PREFIX = 'max:membership:v1';
 const MEMBERSHIP_CACHE_BOT_SCOPED_KEY_PREFIX = 'max:membership:v2';
+const MEMBERSHIP_CACHE_INVALIDATION_FENCE_SUFFIX = ':invalidation-fence';
+const MEMBERSHIP_CACHE_COMPARE_AND_SET_SCRIPT = `-- membership-cache-compare-and-set-v1
+local incoming_ok, incoming = pcall(cjson.decode, ARGV[1])
+local ttl_sec = tonumber(ARGV[2])
+local strict_policy = ARGV[3]
+local invalidation_fence_suffix = ARGV[4]
+if not incoming_ok or type(incoming) ~= 'table' or not ttl_sec then
+  return redis.error_reply('invalid membership cache snapshot')
+end
+
+local incoming_started_at = tonumber(incoming.probeStartedAtMs)
+local incoming_checked_at = tonumber(incoming.checkedAtMs)
+local incoming_policy = incoming.writerPolicy
+if not incoming_started_at or not incoming_checked_at or type(incoming_policy) ~= 'string' then
+  return redis.error_reply('missing membership cache ordering metadata')
+end
+
+local applied = {}
+for index, key in ipairs(KEYS) do
+  local should_write = true
+  local invalidated_at = tonumber(redis.call('GET', key .. invalidation_fence_suffix))
+  if invalidated_at and incoming_started_at <= invalidated_at then
+    should_write = false
+  end
+  local current_raw = redis.call('GET', key)
+  if should_write and current_raw then
+    local current_ok, current = pcall(cjson.decode, current_raw)
+    if current_ok and type(current) == 'table' then
+      local current_started_at = tonumber(current.probeStartedAtMs)
+      local current_checked_at = tonumber(current.checkedAtMs)
+      local current_policy = current.writerPolicy
+      if current_started_at and current_checked_at and type(current_policy) == 'string' then
+        local incoming_is_strict = incoming_policy == strict_policy
+        local current_is_strict = current_policy == strict_policy
+        if incoming_is_strict and not current_is_strict then
+          should_write = incoming_checked_at >= current_started_at
+        elseif not incoming_is_strict and current_is_strict then
+          should_write = incoming_started_at > current_checked_at
+        else
+          should_write = incoming_started_at > current_started_at or
+            (incoming_started_at == current_started_at and incoming_checked_at >= current_checked_at)
+        end
+      elseif current_checked_at then
+        should_write = incoming_checked_at >= current_checked_at
+      end
+    end
+  end
+
+  if should_write then
+    redis.call('SET', key, ARGV[1], 'EX', ttl_sec)
+    applied[index] = 1
+  else
+    applied[index] = 0
+  end
+end
+return applied
+`;
+const MEMBERSHIP_CACHE_INVALIDATE_SCRIPT = `-- membership-cache-invalidation-v1
+local invalidated_at = tonumber(ARGV[1])
+local fence_ttl_ms = tonumber(ARGV[2])
+local invalidation_fence_suffix = ARGV[3]
+if not invalidated_at or not fence_ttl_ms then
+  return redis.error_reply('invalid membership cache invalidation')
+end
+
+for _, key in ipairs(KEYS) do
+  redis.call('DEL', key)
+  local fence_key = key .. invalidation_fence_suffix
+  local current_invalidated_at = tonumber(redis.call('GET', fence_key))
+  if not current_invalidated_at or invalidated_at > current_invalidated_at then
+    redis.call('SET', fence_key, invalidated_at, 'PX', fence_ttl_ms)
+  else
+    redis.call('PEXPIRE', fence_key, fence_ttl_ms)
+  end
+end
+redis.call('PUBLISH', ARGV[4], ARGV[5])
+return #KEYS
+`;
 
 @Injectable()
 export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy {
@@ -170,6 +252,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly lookupTimeoutMsByTrafficClass: Record<MaxApiTrafficClass, number>;
   private readonly membershipRetentionPositiveTtlSec: number;
   private readonly membershipRetentionNegativeTtlSec: number;
+  private readonly membershipInvalidationFenceTtlMs: number;
   private readonly botScopedCacheEnabled: boolean;
   private readonly botScopedCacheDualReadEnabled: boolean;
   private readonly botScopedCacheDualWriteEnabled: boolean;
@@ -179,12 +262,15 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly chatBackoffUntilMs = new Map<string, number>();
   private readonly chatBackoffState = new Map<string, ChatBackoffState>();
   private readonly hotChannelStates = new Map<string, HotChannelState>();
-  // Invalidation epochs cancel stale work; probe sequences only select the shared-cache writer.
+  // Invalidation epochs cancel stale work; probe sequences select cache writers across policies.
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
+  private readonly seenInvalidationIds = new Map<string, number>();
   private readonly latestProbeSequenceByCacheKey = new Map<string, number>();
   private readonly pendingSingleLookupBatches = new Map<string, PendingSingleLookupBatch>();
   private readonly lookupIssues = new Map<string, MaxMembershipLookupIssue>();
   private nextProbeSequence = 0;
+  private lastInvalidatedAtMs = 0;
+  private nextSeenInvalidationCleanupAtMs = 0;
   private lastRedisWriteFailureLogAtMs = 0;
   private lastRedisInvalidationFailureLogAtMs = 0;
 
@@ -258,6 +344,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       this.hotChannelPositiveFreshTtlSec,
     );
     this.membershipRetentionNegativeTtlSec = BASE_MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC;
+    this.membershipInvalidationFenceTtlMs =
+      Math.max(this.membershipRetentionPositiveTtlSec, this.membershipRetentionNegativeTtlSec) *
+        1_000 +
+      MEMBERSHIP_INVALIDATION_GUARD_TTL_MS;
     this.botScopedCacheEnabled = configService.get<boolean>(
       'MAX_MEMBERSHIP_LOOKUP_BOT_SCOPED_CACHE_ENABLED',
       true,
@@ -283,11 +373,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         return;
       }
 
-      this.applyLocalInvalidation(normalized.chatId, normalized.userIds);
-      void this.deleteInvalidatedRedisSnapshots(normalized.chatId, normalized.userIds).catch(
-        (error: unknown) => {
-          this.logRedisInvalidationFailure(normalized.chatId, normalized.userIds, error);
-        },
+      this.applyLocalInvalidation(
+        normalized.chatId,
+        normalized.userIds,
+        normalized.invalidatedAtMs,
+        normalized.invalidationId,
       );
     });
     await this.subscriber.subscribe(MEMBERSHIP_INVALIDATION_CHANNEL);
@@ -314,18 +404,31 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return;
     }
 
-    this.applyLocalInvalidation(normalizedChatId, normalizedUserIds);
-
-    await Promise.all([
-      this.deleteInvalidatedRedisSnapshots(normalizedChatId, normalizedUserIds),
-      this.redis.publish(
-        MEMBERSHIP_INVALIDATION_CHANNEL,
-        JSON.stringify({
-          chatId: normalizedChatId,
-          userIds: normalizedUserIds,
-        }),
-      ),
-    ]);
+    const invalidatedAtMs = this.createInvalidatedAtMs();
+    const invalidationId = randomUUID();
+    const payload = JSON.stringify({
+      chatId: normalizedChatId,
+      userIds: normalizedUserIds,
+      invalidatedAtMs,
+      invalidationId,
+    });
+    this.applyLocalInvalidation(
+      normalizedChatId,
+      normalizedUserIds,
+      invalidatedAtMs,
+      invalidationId,
+    );
+    try {
+      await this.invalidateRedisSnapshotsAndPublish(
+        normalizedChatId,
+        normalizedUserIds,
+        invalidatedAtMs,
+        payload,
+      );
+    } catch (error: unknown) {
+      this.logRedisInvalidationFailure(normalizedChatId, normalizedUserIds, error);
+      throw error;
+    }
   }
 
   async getMembership(
@@ -468,9 +571,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           (this.shouldReadLegacyCache(lookupBotId) ? redisSnapshots.get(legacyCacheKey) : null) ??
           null;
         if (redisSnapshot) {
-          this.memoryCache.set(cacheKey, redisSnapshot);
-          if (this.isSnapshotFresh(redisSnapshot, policy, now)) {
-            results.set(userId, { membership: redisSnapshot.isMember, fresh: true });
+          const selectedSnapshot = this.storeMemorySnapshot(cacheKey, redisSnapshot);
+          if (this.isSnapshotFresh(selectedSnapshot, policy, now)) {
+            results.set(userId, { membership: selectedSnapshot.isMember, fresh: true });
             continue;
           }
         }
@@ -700,9 +803,15 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           continue;
         }
         const isMember = accessByUserId.has(userId);
+        const probeStartedAtMs = this.resolveProbeStartedAtMs(
+          lookup.cacheKey,
+          probeStartedAt.getTime(),
+        );
         const snapshot: MembershipCacheSnapshot = {
           isMember,
-          checkedAtMs,
+          checkedAtMs: Math.max(checkedAtMs, probeStartedAtMs),
+          probeStartedAtMs,
+          writerPolicy: batch.policyName,
         };
         if (this.isLatestProbe(lookup.cacheKey, lookup.probeSequence)) {
           this.storeSnapshot(lookup.cacheKey, snapshot, batch.policyName);
@@ -845,9 +954,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             continue;
           }
           const isMember = accessByUserId.has(userId);
+          const probeStartedAtMs = this.resolveProbeStartedAtMs(cacheKey, probeStartedAt.getTime());
           const snapshot: MembershipCacheSnapshot = {
             isMember,
-            checkedAtMs,
+            checkedAtMs: Math.max(checkedAtMs, probeStartedAtMs),
+            probeStartedAtMs,
+            writerPolicy: policyName,
           };
           if (this.isLatestProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0)) {
             this.storeSnapshot(cacheKey, snapshot, policyName);
@@ -1047,10 +1159,14 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private parseInvalidationMessage(payload: string): {
     chatId: string;
     userIds: string[];
+    invalidatedAtMs: number;
+    invalidationId: string | null;
   } | null {
     try {
       const parsed = JSON.parse(payload) as {
         chatId?: unknown;
+        invalidatedAtMs?: unknown;
+        invalidationId?: unknown;
         userIds?: unknown;
       };
       if (
@@ -1075,14 +1191,30 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return {
         chatId,
         userIds,
+        invalidatedAtMs:
+          typeof parsed.invalidatedAtMs === 'number' && Number.isFinite(parsed.invalidatedAtMs)
+            ? Math.trunc(parsed.invalidatedAtMs)
+            : Date.now(),
+        invalidationId:
+          typeof parsed.invalidationId === 'string' && parsed.invalidationId.trim().length > 0
+            ? parsed.invalidationId.trim()
+            : null,
       };
     } catch {
       return null;
     }
   }
 
-  private applyLocalInvalidation(chatId: string, userIds: readonly string[]) {
-    const now = Date.now();
+  private applyLocalInvalidation(
+    chatId: string,
+    userIds: readonly string[],
+    invalidatedAtMs = Date.now(),
+    invalidationId: string | null = null,
+  ) {
+    if (invalidationId && !this.markInvalidationSeen(invalidationId)) {
+      return;
+    }
+    this.lastInvalidatedAtMs = Math.max(this.lastInvalidatedAtMs, invalidatedAtMs);
     const cacheKeys = new Set(this.cancelPendingSingleLookups(chatId, userIds));
     for (const userId of userIds) {
       for (const cacheKey of this.buildInvalidationCacheKeys(chatId, userId)) {
@@ -1094,7 +1226,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       this.memoryCache.delete(cacheKey);
       this.deleteInFlightLookups(cacheKey);
       this.backoffUntilMs.delete(cacheKey);
-      this.bumpCacheEpoch(cacheKey, now);
+      this.bumpCacheEpoch(cacheKey, invalidatedAtMs);
     }
   }
 
@@ -1112,7 +1244,6 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         if (!lookup) {
           continue;
         }
-
         batch.lookups.delete(userId);
         cacheKeys.add(lookup.cacheKey);
         lookup.resolve({ membership: null, fresh: false });
@@ -1130,14 +1261,29 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return [...cacheKeys];
   }
 
-  private deleteInvalidatedRedisSnapshots(
+  private invalidateRedisSnapshotsAndPublish(
     chatId: string,
     userIds: readonly string[],
+    invalidatedAtMs: number,
+    payload: string,
   ): Promise<number> {
     const cacheKeys = Array.from(
       new Set(userIds.flatMap((userId) => this.buildInvalidationCacheKeys(chatId, userId))),
     );
-    return cacheKeys.length > 0 ? this.redis.del(...cacheKeys) : Promise.resolve(0);
+    if (cacheKeys.length === 0) {
+      return Promise.resolve(0);
+    }
+
+    return this.redis.eval(
+      MEMBERSHIP_CACHE_INVALIDATE_SCRIPT,
+      cacheKeys.length,
+      ...cacheKeys,
+      String(Math.trunc(invalidatedAtMs)),
+      String(this.membershipInvalidationFenceTtlMs),
+      MEMBERSHIP_CACHE_INVALIDATION_FENCE_SUFFIX,
+      MEMBERSHIP_INVALIDATION_CHANNEL,
+      payload,
+    ) as Promise<number>;
   }
 
   private resolveLookupFallback(
@@ -1172,18 +1318,32 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     snapshot: MembershipCacheSnapshot,
     policyName: MaxMembershipLookupPolicy,
   ) {
-    this.memoryCache.set(cacheKey, snapshot);
-    // A bypassed moderation result may warm general reads; general reads never write its key.
     const sharedCacheKey = this.deriveSharedCacheKey(cacheKey, policyName);
-    if (sharedCacheKey !== cacheKey) {
-      this.memoryCache.set(sharedCacheKey, snapshot);
+    const sharedWriterSequence =
+      sharedCacheKey === cacheKey ? null : this.beginProbe(sharedCacheKey);
+    try {
+      this.storeMemorySnapshot(cacheKey, snapshot);
+      // A bypassed moderation result may warm general reads; general reads never write its key.
+      if (sharedCacheKey !== cacheKey) {
+        this.storeMemorySnapshot(sharedCacheKey, snapshot);
+      }
+      const legacyCacheKey = this.deriveLegacyCacheKeyFromCacheKey(cacheKey);
+      void this.writeRedisSnapshot(cacheKey, legacyCacheKey, snapshot, policyName)
+        .then((rejectedCacheKeys) => {
+          for (const rejectedCacheKey of rejectedCacheKeys) {
+            if (this.memoryCache.get(rejectedCacheKey) === snapshot) {
+              this.memoryCache.delete(rejectedCacheKey);
+            }
+          }
+        })
+        .catch((error: unknown) => {
+          this.logRedisWriteFailure(cacheKey, error);
+        });
+    } finally {
+      if (sharedWriterSequence !== null) {
+        this.finishProbe(sharedCacheKey, sharedWriterSequence);
+      }
     }
-    const legacyCacheKey = this.deriveLegacyCacheKeyFromCacheKey(cacheKey);
-    void this.writeRedisSnapshot(cacheKey, legacyCacheKey, snapshot, policyName).catch(
-      (error: unknown) => {
-        this.logRedisWriteFailure(cacheKey, error);
-      },
-    );
   }
 
   private readCacheEpoch(cacheKey: string, now = Date.now()): number {
@@ -1234,13 +1394,37 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return false;
   }
 
-  private bumpCacheEpoch(cacheKey: string, now = Date.now()): number {
-    const nextEpoch = this.readCacheEpoch(cacheKey, now) + 1;
+  private bumpCacheEpoch(cacheKey: string, invalidatedAtMs = Date.now()): number {
+    const nextEpoch = this.readCacheEpoch(cacheKey) + 1;
     this.cacheEpochs.set(cacheKey, {
       epoch: nextEpoch,
-      expiresAtMs: now + MEMBERSHIP_INVALIDATION_GUARD_TTL_MS,
+      expiresAtMs: Date.now() + MEMBERSHIP_INVALIDATION_GUARD_TTL_MS,
+      invalidatedAtMs,
     });
     return nextEpoch;
+  }
+
+  private createInvalidatedAtMs(): number {
+    this.lastInvalidatedAtMs = Math.max(Date.now(), this.lastInvalidatedAtMs + 1);
+    return this.lastInvalidatedAtMs;
+  }
+
+  private markInvalidationSeen(invalidationId: string, now = Date.now()): boolean {
+    const seenUntilMs = this.seenInvalidationIds.get(invalidationId) ?? 0;
+    if (seenUntilMs > now) {
+      return false;
+    }
+
+    this.seenInvalidationIds.set(invalidationId, now + MEMBERSHIP_INVALIDATION_GUARD_TTL_MS);
+    if (now >= this.nextSeenInvalidationCleanupAtMs) {
+      this.nextSeenInvalidationCleanupAtMs = now + MEMBERSHIP_INVALIDATION_GUARD_TTL_MS;
+      for (const [seenId, expiresAtMs] of this.seenInvalidationIds) {
+        if (expiresAtMs <= now) {
+          this.seenInvalidationIds.delete(seenId);
+        }
+      }
+    }
+    return true;
   }
 
   private async readRedisSnapshots(
@@ -1283,21 +1467,26 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     legacyCacheKey: string,
     snapshot: MembershipCacheSnapshot,
     policyName: MaxMembershipLookupPolicy,
-  ): Promise<void> {
+  ): Promise<string[]> {
     const ttlSec = snapshot.isMember
       ? this.membershipRetentionPositiveTtlSec
       : this.membershipRetentionNegativeTtlSec;
     const redisWriteKeys = this.buildRedisWriteKeys(cacheKey, legacyCacheKey, policyName);
-    if (redisWriteKeys.length === 1) {
-      await this.redis.set(cacheKey, JSON.stringify(snapshot), 'EX', ttlSec);
-      return;
+    const serializedSnapshot = JSON.stringify(snapshot);
+    const rawResult = await this.redis.eval(
+      MEMBERSHIP_CACHE_COMPARE_AND_SET_SCRIPT,
+      redisWriteKeys.length,
+      ...redisWriteKeys,
+      serializedSnapshot,
+      String(ttlSec),
+      'moderation_required_subscription',
+      MEMBERSHIP_CACHE_INVALIDATION_FENCE_SUFFIX,
+    );
+    if (!Array.isArray(rawResult) || rawResult.length !== redisWriteKeys.length) {
+      throw new Error('Invalid membership cache compare-and-set result');
     }
 
-    const pipeline = this.redis.pipeline();
-    for (const writeKey of redisWriteKeys) {
-      pipeline.set(writeKey, JSON.stringify(snapshot), 'EX', ttlSec);
-    }
-    await pipeline.exec();
+    return redisWriteKeys.filter((_writeKey, index) => Number(rawResult[index]) !== 1);
   }
 
   private deriveLegacyCacheKeyFromCacheKey(cacheKey: string): string {
@@ -1335,6 +1524,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       const parsed = JSON.parse(raw) as {
         checkedAtMs?: unknown;
         isMember?: unknown;
+        probeStartedAtMs?: unknown;
+        writerPolicy?: unknown;
       };
       if (
         typeof parsed.checkedAtMs !== 'number' ||
@@ -1348,6 +1539,16 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         checkedAtMs: Math.trunc(parsed.checkedAtMs),
         isMember: parsed.isMember,
       };
+      if (
+        typeof parsed.probeStartedAtMs === 'number' &&
+        Number.isFinite(parsed.probeStartedAtMs) &&
+        parsed.probeStartedAtMs <= snapshot.checkedAtMs &&
+        typeof parsed.writerPolicy === 'string' &&
+        Object.prototype.hasOwnProperty.call(MEMBERSHIP_LOOKUP_POLICIES, parsed.writerPolicy)
+      ) {
+        snapshot.probeStartedAtMs = Math.trunc(parsed.probeStartedAtMs);
+        snapshot.writerPolicy = parsed.writerPolicy as MaxMembershipLookupPolicy;
+      }
       const retentionTtlMs = this.resolveRetentionTtlMs(snapshot.isMember);
       if (snapshot.checkedAtMs + retentionTtlMs <= Date.now()) {
         return null;
@@ -1357,6 +1558,58 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     } catch {
       return null;
     }
+  }
+
+  private storeMemorySnapshot(
+    cacheKey: string,
+    incoming: MembershipCacheSnapshot,
+  ): MembershipCacheSnapshot {
+    const current = this.readRetainedMemorySnapshot(cacheKey);
+    if (current && !this.shouldReplaceCacheSnapshot(current, incoming)) {
+      return current;
+    }
+
+    this.memoryCache.set(cacheKey, incoming);
+    return incoming;
+  }
+
+  private shouldReplaceCacheSnapshot(
+    current: MembershipCacheSnapshot,
+    incoming: MembershipCacheSnapshot,
+  ): boolean {
+    if (incoming.probeStartedAtMs === undefined || incoming.writerPolicy === undefined) {
+      return incoming.checkedAtMs > current.checkedAtMs;
+    }
+    if (current.probeStartedAtMs === undefined || current.writerPolicy === undefined) {
+      return incoming.checkedAtMs >= current.checkedAtMs;
+    }
+
+    const incomingIsStrict = incoming.writerPolicy === 'moderation_required_subscription';
+    const currentIsStrict = current.writerPolicy === 'moderation_required_subscription';
+    if (incomingIsStrict && !currentIsStrict) {
+      return incoming.checkedAtMs >= current.probeStartedAtMs;
+    }
+    if (!incomingIsStrict && currentIsStrict) {
+      return incoming.probeStartedAtMs > current.checkedAtMs;
+    }
+    return (
+      incoming.probeStartedAtMs > current.probeStartedAtMs ||
+      (incoming.probeStartedAtMs === current.probeStartedAtMs &&
+        incoming.checkedAtMs >= current.checkedAtMs)
+    );
+  }
+
+  private resolveProbeStartedAtMs(cacheKey: string, probeStartedAtMs: number): number {
+    const cacheEpoch = this.cacheEpochs.get(cacheKey);
+    if (
+      cacheEpoch &&
+      cacheEpoch.expiresAtMs > Date.now() &&
+      probeStartedAtMs <= cacheEpoch.invalidatedAtMs
+    ) {
+      return cacheEpoch.invalidatedAtMs + 1;
+    }
+
+    return probeStartedAtMs;
   }
 
   private readFreshMemorySnapshot(
@@ -1801,7 +2054,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         userIds,
         err: error instanceof Error ? error.message : String(error),
       },
-      'Failed to remove invalidated MAX membership snapshots from Redis',
+      'Failed to invalidate MAX membership snapshots in Redis',
     );
   }
 

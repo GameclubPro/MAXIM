@@ -557,6 +557,44 @@ describe('ModerationService', () => {
     expect(executionClaimUpdateMany).not.toHaveBeenCalled();
   });
 
+  it('bounds timeout settlement transactions and keeps the quarantine fail-closed on expiry', async () => {
+    const transactionExpiry = new Error('Transaction already closed after timeout');
+    const webhookEventUpdateMany = jest.fn().mockRejectedValue(transactionExpiry);
+    const executionClaimUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma: {
+      webhookEvent: { updateMany: jest.Mock };
+      webhookExecutionClaim: { updateMany: jest.Mock };
+      $transaction?: jest.Mock;
+    } = {
+      webhookEvent: { updateMany: webhookEventUpdateMany },
+      webhookExecutionClaim: { updateMany: executionClaimUpdateMany },
+    };
+    prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    await expect(
+      service.completeTimedOutExecution(
+        {
+          webhookEvent: { id: 'event-timeout-transaction-expiry-1' } as never,
+          update: createUpdate(),
+          activeBotId: 'bot-1',
+          businessLeaseToken: 'lease-token-transaction-expiry-1',
+        },
+        {
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-transaction-expiry: pending`,
+          deadlineAt: new Date(Date.now() + 30_000),
+        },
+      ),
+    ).rejects.toBe(transactionExpiry);
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: 10_000,
+      timeout: 30_000,
+    });
+    expect(webhookEventUpdateMany).toHaveBeenCalledTimes(1);
+    expect(executionClaimUpdateMany).not.toHaveBeenCalled();
+  });
+
   it('retains an ordered-head timeout quarantine when no semantic claim can fence mirrors', async () => {
     const operations: string[] = [];
     const webhookEventUpdateMany = jest.fn().mockImplementation(async () => {

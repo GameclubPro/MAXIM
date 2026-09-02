@@ -106,7 +106,7 @@ describe('HealthService', () => {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({
+      getLagSnapshot: jest.fn().mockResolvedValue({
         moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
         webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
         webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
@@ -151,6 +151,7 @@ describe('HealthService', () => {
         effectiveLagSec: 1.5,
         generatedAt: '2026-03-29T10:00:02.000Z',
       }),
+      getSnapshot: jest.fn(),
     };
     const systemModeService = {
       getEffectiveSnapshot: jest.fn().mockResolvedValue({
@@ -183,8 +184,9 @@ describe('HealthService', () => {
     const second = await service.ready();
 
     expect(first).toBe(second);
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledWith({ maxAgeMs: 2000 });
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledWith({ maxAgeMs: 2000 });
+    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
     expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalledTimes(1);
     expect(prisma.$queryRawUnsafe).toHaveBeenCalledTimes(1);
     expect(redisInstances[0]?.ping).toHaveBeenCalledTimes(1);
@@ -346,7 +348,7 @@ describe('HealthService', () => {
     };
     const queueSnapshot = healthyQueueSnapshot();
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue(queueSnapshot),
+      getLagSnapshot: jest.fn().mockResolvedValue(queueSnapshot),
       peekCachedSnapshot: jest.fn().mockReturnValue(queueSnapshot),
     };
     const systemModeService = {
@@ -518,7 +520,7 @@ describe('HealthService', () => {
         mismatchFields: ['tesseract.binarySha256'],
       },
     });
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
   });
@@ -604,87 +606,89 @@ describe('HealthService', () => {
     const prisma = {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
     };
-    const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({
-        moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-        webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-        webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-        webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-        webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-        actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-        webhookEvents: {
-          received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-          queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-          failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-        },
-        userFacingWebhookEvents: {
-          received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-          queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-          failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-        },
-        actionHealth: {
-          windowSec: 60,
-          total: 1,
-          success: 1,
-          failure: 0,
-          critical: 0,
-          errorRate: 0,
-          criticalRate: 0,
-        },
-        oldestQueuedEventId: null,
-        oldestQueuedCreatedAt: null,
-        oldestQueuedLagSec: 0,
-        oldestReceivedEventId: null,
-        oldestReceivedCreatedAt: null,
-        oldestReceivedLagSec: 0,
-        effectiveLagSec: 0,
-        userFacingOldestQueuedEventId: null,
-        userFacingOldestQueuedCreatedAt: null,
-        userFacingOldestQueuedLagSec: 0,
-        userFacingOldestReceivedEventId: null,
-        userFacingOldestReceivedCreatedAt: null,
-        userFacingOldestReceivedLagSec: 0,
-        userFacingEffectiveLagSec: 0,
-        generatedAt: '2026-03-31T09:12:05.000Z',
-        bots: {
-          id613002203036_bot: {
-            webhookEvents: {
-              received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-              queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-              failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-            },
-            userFacingWebhookEvents: {
-              received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-              queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-              failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-            },
-            queuedByQueue: {},
-            actionHealth: {
-              windowSec: 60,
-              total: 1,
-              success: 1,
-              failure: 0,
-              critical: 0,
-              errorRate: 0,
-              criticalRate: 0,
-            },
-            oldestQueuedEventId: null,
-            oldestQueuedCreatedAt: null,
-            oldestQueuedLagSec: 0,
-            oldestReceivedEventId: null,
-            oldestReceivedCreatedAt: null,
-            oldestReceivedLagSec: 0,
-            effectiveLagSec: 0,
-            userFacingOldestQueuedEventId: null,
-            userFacingOldestQueuedCreatedAt: null,
-            userFacingOldestQueuedLagSec: 0,
-            userFacingOldestReceivedEventId: null,
-            userFacingOldestReceivedCreatedAt: null,
-            userFacingOldestReceivedLagSec: 0,
-            userFacingEffectiveLagSec: 0,
+    const queueMetricsSnapshot = {
+      moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookEvents: {
+        received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      },
+      userFacingWebhookEvents: {
+        received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      },
+      actionHealth: {
+        windowSec: 60,
+        total: 1,
+        success: 1,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+      oldestQueuedEventId: null,
+      oldestQueuedCreatedAt: null,
+      oldestQueuedLagSec: 0,
+      oldestReceivedEventId: null,
+      oldestReceivedCreatedAt: null,
+      oldestReceivedLagSec: 0,
+      effectiveLagSec: 0,
+      userFacingOldestQueuedEventId: null,
+      userFacingOldestQueuedCreatedAt: null,
+      userFacingOldestQueuedLagSec: 0,
+      userFacingOldestReceivedEventId: null,
+      userFacingOldestReceivedCreatedAt: null,
+      userFacingOldestReceivedLagSec: 0,
+      userFacingEffectiveLagSec: 0,
+      generatedAt: '2026-03-31T09:12:05.000Z',
+      bots: {
+        id613002203036_bot: {
+          webhookEvents: {
+            received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
           },
+          userFacingWebhookEvents: {
+            received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          },
+          queuedByQueue: {},
+          actionHealth: {
+            windowSec: 60,
+            total: 1,
+            success: 1,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+          effectiveLagSec: 0,
+          userFacingOldestQueuedEventId: null,
+          userFacingOldestQueuedCreatedAt: null,
+          userFacingOldestQueuedLagSec: 0,
+          userFacingOldestReceivedEventId: null,
+          userFacingOldestReceivedCreatedAt: null,
+          userFacingOldestReceivedLagSec: 0,
+          userFacingEffectiveLagSec: 0,
         },
-      }),
+      },
+    };
+    const queueMetricsService = {
+      getLagSnapshot: jest.fn().mockResolvedValue(queueMetricsSnapshot),
+      peekCachedSnapshot: jest.fn().mockReturnValue(queueMetricsSnapshot),
     };
     const systemModeService = {
       getEffectiveSnapshot: jest.fn().mockResolvedValue({
@@ -899,7 +903,7 @@ describe('HealthService', () => {
         .mockResolvedValueOnce([{ '?column?': 1 }]),
     };
     const queueMetricsService = {
-      getSnapshot: jest
+      getLagSnapshot: jest
         .fn()
         .mockResolvedValueOnce(queueMetricsSnapshot)
         .mockImplementationOnce(() => new Promise(() => undefined)),
@@ -948,7 +952,7 @@ describe('HealthService', () => {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      getLagSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
     };
     const systemModeSnapshot = {
       mode: 'normal',
@@ -1045,7 +1049,7 @@ describe('HealthService', () => {
       },
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue(queueMetricsSnapshot),
+      getLagSnapshot: jest.fn().mockResolvedValue(queueMetricsSnapshot),
     };
     const systemModeSnapshot = {
       mode: 'normal',
@@ -1150,7 +1154,7 @@ describe('HealthService', () => {
       },
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      getLagSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
       peekCachedSnapshot: jest.fn().mockReturnValue(cachedQueueSnapshot),
     };
     const systemModeSnapshot = {
@@ -1215,145 +1219,146 @@ describe('HealthService', () => {
       const prisma = {
         $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
       };
+      const queueMetricsSnapshot = {
+        moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookJoin: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookJoinShards: {},
+        webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookDefaultShards: {},
+        webhookDefaultWorkerGroups: {},
+        webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookEvents: {
+          received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          failed: {
+            count: 5,
+            activeCount: 1,
+            staleCount: 4,
+            activeWindowSec: 21600,
+            oldestEventId: 'failed-1',
+            oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+            oldestLagSec: 32400,
+          },
+        },
+        userFacingWebhookEvents: {
+          received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          failed: {
+            count: 5,
+            activeCount: 1,
+            staleCount: 4,
+            activeWindowSec: 21600,
+            oldestEventId: 'failed-1',
+            oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+            oldestLagSec: 32400,
+          },
+        },
+        actionHealth: {
+          windowSec: 60,
+          total: 3,
+          success: 3,
+          failure: 0,
+          critical: 0,
+          errorRate: 0,
+          criticalRate: 0,
+        },
+        webhookDynamicLeases: null,
+        bots: {
+          id613002203036_bot: {
+            webhookEvents: {
+              received: {
+                count: 0,
+                oldestEventId: null,
+                oldestCreatedAt: null,
+                oldestLagSec: 0,
+              },
+              queued: {
+                count: 0,
+                oldestEventId: null,
+                oldestCreatedAt: null,
+                oldestLagSec: 0,
+              },
+              failed: {
+                count: 5,
+                activeCount: 1,
+                staleCount: 4,
+                activeWindowSec: 21600,
+                oldestEventId: 'failed-1',
+                oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+                oldestLagSec: 32400,
+              },
+            },
+            userFacingWebhookEvents: {
+              received: {
+                count: 0,
+                oldestEventId: null,
+                oldestCreatedAt: null,
+                oldestLagSec: 0,
+              },
+              queued: {
+                count: 0,
+                oldestEventId: null,
+                oldestCreatedAt: null,
+                oldestLagSec: 0,
+              },
+              failed: {
+                count: 5,
+                activeCount: 1,
+                staleCount: 4,
+                activeWindowSec: 21600,
+                oldestEventId: 'failed-1',
+                oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+                oldestLagSec: 32400,
+              },
+            },
+            queuedByQueue: {},
+            actionHealth: {
+              windowSec: 60,
+              total: 3,
+              success: 3,
+              failure: 0,
+              critical: 0,
+              errorRate: 0,
+              criticalRate: 0,
+            },
+            oldestQueuedEventId: null,
+            oldestQueuedCreatedAt: null,
+            oldestQueuedLagSec: 0,
+            oldestReceivedEventId: null,
+            oldestReceivedCreatedAt: null,
+            oldestReceivedLagSec: 0,
+            effectiveLagSec: 0,
+            userFacingOldestQueuedEventId: null,
+            userFacingOldestQueuedCreatedAt: null,
+            userFacingOldestQueuedLagSec: 0,
+            userFacingOldestReceivedEventId: null,
+            userFacingOldestReceivedCreatedAt: null,
+            userFacingOldestReceivedLagSec: 0,
+            userFacingEffectiveLagSec: 0,
+          },
+        },
+        oldestQueuedEventId: null,
+        oldestQueuedCreatedAt: null,
+        oldestQueuedLagSec: 0,
+        oldestReceivedEventId: null,
+        oldestReceivedCreatedAt: null,
+        oldestReceivedLagSec: 0,
+        effectiveLagSec: 0,
+        userFacingOldestQueuedEventId: null,
+        userFacingOldestQueuedCreatedAt: null,
+        userFacingOldestQueuedLagSec: 0,
+        userFacingOldestReceivedEventId: null,
+        userFacingOldestReceivedCreatedAt: null,
+        userFacingOldestReceivedLagSec: 0,
+        userFacingEffectiveLagSec: 0,
+        generatedAt: '2026-04-12T12:00:00.000Z',
+      };
       const queueMetricsService = {
-        getSnapshot: jest.fn().mockResolvedValue({
-          moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-          webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-          webhookJoin: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-          webhookJoinShards: {},
-          webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-          webhookDefaultShards: {},
-          webhookDefaultWorkerGroups: {},
-          webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-          webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-          actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
-          webhookEvents: {
-            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-            failed: {
-              count: 5,
-              activeCount: 1,
-              staleCount: 4,
-              activeWindowSec: 21600,
-              oldestEventId: 'failed-1',
-              oldestCreatedAt: '2026-04-12T03:00:00.000Z',
-              oldestLagSec: 32400,
-            },
-          },
-          userFacingWebhookEvents: {
-            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
-            failed: {
-              count: 5,
-              activeCount: 1,
-              staleCount: 4,
-              activeWindowSec: 21600,
-              oldestEventId: 'failed-1',
-              oldestCreatedAt: '2026-04-12T03:00:00.000Z',
-              oldestLagSec: 32400,
-            },
-          },
-          actionHealth: {
-            windowSec: 60,
-            total: 3,
-            success: 3,
-            failure: 0,
-            critical: 0,
-            errorRate: 0,
-            criticalRate: 0,
-          },
-          webhookDynamicLeases: null,
-          bots: {
-            id613002203036_bot: {
-              webhookEvents: {
-                received: {
-                  count: 0,
-                  oldestEventId: null,
-                  oldestCreatedAt: null,
-                  oldestLagSec: 0,
-                },
-                queued: {
-                  count: 0,
-                  oldestEventId: null,
-                  oldestCreatedAt: null,
-                  oldestLagSec: 0,
-                },
-                failed: {
-                  count: 5,
-                  activeCount: 1,
-                  staleCount: 4,
-                  activeWindowSec: 21600,
-                  oldestEventId: 'failed-1',
-                  oldestCreatedAt: '2026-04-12T03:00:00.000Z',
-                  oldestLagSec: 32400,
-                },
-              },
-              userFacingWebhookEvents: {
-                received: {
-                  count: 0,
-                  oldestEventId: null,
-                  oldestCreatedAt: null,
-                  oldestLagSec: 0,
-                },
-                queued: {
-                  count: 0,
-                  oldestEventId: null,
-                  oldestCreatedAt: null,
-                  oldestLagSec: 0,
-                },
-                failed: {
-                  count: 5,
-                  activeCount: 1,
-                  staleCount: 4,
-                  activeWindowSec: 21600,
-                  oldestEventId: 'failed-1',
-                  oldestCreatedAt: '2026-04-12T03:00:00.000Z',
-                  oldestLagSec: 32400,
-                },
-              },
-              queuedByQueue: {},
-              actionHealth: {
-                windowSec: 60,
-                total: 3,
-                success: 3,
-                failure: 0,
-                critical: 0,
-                errorRate: 0,
-                criticalRate: 0,
-              },
-              oldestQueuedEventId: null,
-              oldestQueuedCreatedAt: null,
-              oldestQueuedLagSec: 0,
-              oldestReceivedEventId: null,
-              oldestReceivedCreatedAt: null,
-              oldestReceivedLagSec: 0,
-              effectiveLagSec: 0,
-              userFacingOldestQueuedEventId: null,
-              userFacingOldestQueuedCreatedAt: null,
-              userFacingOldestQueuedLagSec: 0,
-              userFacingOldestReceivedEventId: null,
-              userFacingOldestReceivedCreatedAt: null,
-              userFacingOldestReceivedLagSec: 0,
-              userFacingEffectiveLagSec: 0,
-            },
-          },
-          oldestQueuedEventId: null,
-          oldestQueuedCreatedAt: null,
-          oldestQueuedLagSec: 0,
-          oldestReceivedEventId: null,
-          oldestReceivedCreatedAt: null,
-          oldestReceivedLagSec: 0,
-          effectiveLagSec: 0,
-          userFacingOldestQueuedEventId: null,
-          userFacingOldestQueuedCreatedAt: null,
-          userFacingOldestQueuedLagSec: 0,
-          userFacingOldestReceivedEventId: null,
-          userFacingOldestReceivedCreatedAt: null,
-          userFacingOldestReceivedLagSec: 0,
-          userFacingEffectiveLagSec: 0,
-          generatedAt: '2026-04-12T12:00:00.000Z',
-        }),
-        peekCachedSnapshot: jest.fn().mockReturnValue(null),
+        getLagSnapshot: jest.fn().mockResolvedValue(queueMetricsSnapshot),
+        peekCachedSnapshot: jest.fn().mockReturnValue(queueMetricsSnapshot),
       };
       const systemModeSnapshot = {
         mode: 'normal',
@@ -1502,7 +1507,8 @@ describe('HealthService', () => {
       },
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue(staleQueueSnapshot),
+      getLagSnapshot: jest.fn().mockResolvedValue(staleQueueSnapshot),
+      peekCachedLagSnapshot: jest.fn().mockReturnValue(staleQueueSnapshot),
       peekCachedSnapshot: jest.fn().mockReturnValue(staleQueueSnapshot),
     };
     const systemModeSnapshot = {
@@ -1567,8 +1573,8 @@ describe('HealthService', () => {
         },
       },
     });
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledWith({ maxAgeMs: 0 });
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledWith({ maxAgeMs: 0 });
 
     await service.onModuleDestroy();
   });
@@ -1641,13 +1647,14 @@ describe('HealthService', () => {
     let cachedQueueSnapshot: typeof staleQueueSnapshot | typeof freshQueueSnapshot =
       staleQueueSnapshot;
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockImplementation(async ({ maxAgeMs }: { maxAgeMs: number }) => {
+      getLagSnapshot: jest.fn().mockImplementation(async ({ maxAgeMs }: { maxAgeMs: number }) => {
         if (maxAgeMs === 0) {
           cachedQueueSnapshot = freshQueueSnapshot;
           return freshQueueSnapshot;
         }
         return cachedQueueSnapshot;
       }),
+      peekCachedLagSnapshot: jest.fn(() => cachedQueueSnapshot),
       peekCachedSnapshot: jest.fn(() => cachedQueueSnapshot),
     };
     const systemModeSnapshot = {
@@ -1692,8 +1699,8 @@ describe('HealthService', () => {
         effectiveLagSec: 0,
       }),
     );
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledWith({ maxAgeMs: 0 });
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledWith({ maxAgeMs: 0 });
 
     await service.onModuleDestroy();
   });
@@ -1706,7 +1713,7 @@ describe('HealthService', () => {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      getLagSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
     };
     const systemModeSnapshot = {
       mode: 'degrade',
@@ -1840,7 +1847,7 @@ describe('HealthService', () => {
         .mockImplementationOnce(() => new Promise(() => undefined)),
     };
     const queueMetricsService = {
-      getSnapshot: jest
+      getLagSnapshot: jest
         .fn()
         .mockResolvedValueOnce(queueMetricsSnapshot)
         .mockImplementationOnce(() => new Promise(() => undefined)),
@@ -1964,7 +1971,7 @@ describe('HealthService', () => {
         ),
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue(queueMetricsSnapshot),
+      getLagSnapshot: jest.fn().mockResolvedValue(queueMetricsSnapshot),
     };
     const systemModeService = {
       getEffectiveSnapshot: jest.fn().mockResolvedValue(systemModeSnapshot),
@@ -2011,7 +2018,7 @@ describe('HealthService', () => {
       $queryRawUnsafe: jest.fn().mockImplementation(() => new Promise(() => undefined)),
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      getLagSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
     };
     const systemModeService = {
       getEffectiveSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
@@ -2060,7 +2067,7 @@ describe('HealthService', () => {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
     };
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({
+      getLagSnapshot: jest.fn().mockResolvedValue({
         moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
         webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
         webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
@@ -2145,7 +2152,7 @@ describe('HealthService', () => {
         breachDurationSec: 0,
       }),
     );
-    expect(first.checks.queueLag.softWarningDetail).toContain('Raw user-facing queue lag 12.0s');
+    expect(first.checks.queueLag.softWarningDetail).toContain('Raw queue lag 12.0s');
 
     jest.setSystemTime(new Date('2026-03-29T10:00:21.000Z'));
 

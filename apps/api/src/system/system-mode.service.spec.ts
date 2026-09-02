@@ -61,7 +61,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -114,7 +114,7 @@ describe('SystemModeService', () => {
     };
     const service = new SystemModeService(
       createConfigMock() as never,
-      { getSnapshot: jest.fn() } as never,
+      { getLagSnapshot: jest.fn() } as never,
       actionHealthService as never,
     );
 
@@ -170,7 +170,7 @@ describe('SystemModeService', () => {
 
     process.env.APP_ROLE = 'ingress';
     const ingressQueueMetricsService = {
-      getSnapshot: jest.fn().mockReturnValue(queueSnapshotPromise),
+      getLagSnapshot: jest.fn().mockReturnValue(queueSnapshotPromise),
     };
     const ingress = new SystemModeService(
       createConfigMock() as never,
@@ -185,7 +185,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'admin';
     const admin = new SystemModeService(
       createConfigMock() as never,
-      { getSnapshot: jest.fn() } as never,
+      { getLagSnapshot: jest.fn() } as never,
       {
         refreshSnapshots: jest.fn().mockResolvedValue(undefined),
         getSnapshot: jest.fn().mockReturnValue(actionSnapshot),
@@ -195,7 +195,7 @@ describe('SystemModeService', () => {
 
     const autoEvaluation = ingress.evaluateAutoMode();
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(ingressQueueMetricsService.getSnapshot).toHaveBeenCalled();
+    expect(ingressQueueMetricsService.getLagSnapshot).toHaveBeenCalled();
 
     await admin.setManualMode('degrade');
     releaseQueueSnapshot?.({ effectiveLagSec: 0 });
@@ -232,11 +232,190 @@ describe('SystemModeService', () => {
     await Promise.all([ingress.onModuleDestroy(), admin.onModuleDestroy()]);
   });
 
+  it('coalesces overlapping evaluations and contains one lightweight lag failure', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    let rejectLagSnapshot: ((error: Error) => void) | null = null;
+    const lagSnapshotPromise = new Promise<{ effectiveLagSec: number }>((_resolve, reject) => {
+      rejectLagSnapshot = reject;
+    });
+    const queueMetricsService = {
+      getLagSnapshot: jest.fn().mockReturnValue(lagSnapshotPromise),
+      getSnapshot: jest.fn(),
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+    const warnSpy = jest
+      .spyOn(
+        (
+          service as unknown as {
+            logger: { warn: (payload: unknown, message: string) => void };
+          }
+        ).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+
+    const firstEvaluation = service.evaluateAutoMode();
+    const overlappingEvaluation = service.evaluateAutoMode();
+
+    expect(overlappingEvaluation).toBe(firstEvaluation);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
+
+    const failLagSnapshot = rejectLagSnapshot as ((error: Error) => void) | null;
+    if (!failLagSnapshot) {
+      throw new Error('Expected lightweight lag snapshot rejector');
+    }
+    failLagSnapshot(new Error('lightweight lag unavailable'));
+    await Promise.all([firstEvaluation, overlappingEvaluation]);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      { err: 'lightweight lag unavailable' },
+      'Failed to evaluate auto system mode',
+    );
+    expect(actionHealthService.refreshSnapshots).not.toHaveBeenCalled();
+
+    queueMetricsService.getLagSnapshot.mockResolvedValue({ effectiveLagSec: 0 });
+    await service.evaluateAutoMode();
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(2);
+
+    await service.onModuleDestroy();
+  });
+
+  it('waits for an active evaluation before closing Redis and rejects new work after destroy', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    let resolveLagSnapshot: ((snapshot: { effectiveLagSec: number }) => void) | null = null;
+    const queueMetricsService = {
+      getLagSnapshot: jest.fn().mockReturnValue(
+        new Promise<{ effectiveLagSec: number }>((resolve) => {
+          resolveLagSnapshot = resolve;
+        }),
+      ),
+      getSnapshot: jest.fn(),
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+    const redis = redisInstances[0];
+
+    const evaluation = service.evaluateAutoMode();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+
+    const destroyPromise = service.onModuleDestroy();
+    await Promise.resolve();
+    expect(redis.quit).not.toHaveBeenCalled();
+
+    const finishLagSnapshot = resolveLagSnapshot as
+      | ((snapshot: { effectiveLagSec: number }) => void)
+      | null;
+    if (!finishLagSnapshot) {
+      throw new Error('Expected lightweight lag snapshot resolver');
+    }
+    finishLagSnapshot({ effectiveLagSec: 0 });
+    await Promise.all([evaluation, destroyPromise]);
+
+    expect(redis.quit).toHaveBeenCalledTimes(1);
+    await service.evaluateAutoMode();
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('bounds shutdown when an active evaluation never settles', async () => {
+    jest.useFakeTimers();
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getLagSnapshot: jest.fn().mockReturnValue(new Promise(() => undefined)),
+      getSnapshot: jest.fn(),
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+    const redis = redisInstances[0];
+    const warnSpy = jest
+      .spyOn(
+        (
+          service as unknown as {
+            logger: { warn: (payload: unknown, message: string) => void };
+          }
+        ).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+
+    void service.evaluateAutoMode();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+
+    const destroyPromise = service.onModuleDestroy();
+    await jest.advanceTimersByTimeAsync(4_999);
+    expect(redis.quit).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    await destroyPromise;
+
+    expect(redis.quit).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      { timeoutMs: 5_000 },
+      'Timed out waiting for system mode evaluation during shutdown',
+    );
+  });
+
   it('keeps a cached manual override when Redis cannot be read', async () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionSnapshot = {
       windowSec: 60,
@@ -273,7 +452,7 @@ describe('SystemModeService', () => {
     await service.evaluateAutoMode();
     await service.evaluateAutoMode();
 
-    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
+    expect(queueMetricsService.getLagSnapshot).not.toHaveBeenCalled();
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'degrade',
@@ -289,7 +468,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -331,7 +510,7 @@ describe('SystemModeService', () => {
 
     const service = new SystemModeService(
       createConfigMock() as never,
-      { getSnapshot: jest.fn() } as never,
+      { getLagSnapshot: jest.fn() } as never,
       {
         refreshSnapshots: jest.fn().mockResolvedValue(undefined),
         getSnapshot: jest.fn().mockReturnValue({
@@ -385,7 +564,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'admin';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -448,7 +627,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -471,7 +650,7 @@ describe('SystemModeService', () => {
 
     await service.evaluateAutoMode();
 
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledWith({ maxAgeMs: 15000 });
+    expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledWith({ maxAgeMs: 15000 });
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'normal',
@@ -486,7 +665,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -523,7 +702,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -560,7 +739,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -597,7 +776,7 @@ describe('SystemModeService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+      getLagSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
@@ -635,7 +814,7 @@ describe('SystemModeService', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T11:00:00.000Z'));
 
     const queueMetricsService = {
-      getSnapshot: jest
+      getLagSnapshot: jest
         .fn()
         .mockResolvedValueOnce({ effectiveLagSec: 18 })
         .mockResolvedValue({ effectiveLagSec: 0 }),
@@ -663,7 +842,7 @@ describe('SystemModeService', () => {
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'degrade',
-        reason: 'user-facing queue lag 18.0s',
+        reason: 'queue lag 18.0s',
       }),
     );
 

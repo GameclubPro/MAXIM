@@ -38,6 +38,8 @@ const CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS = 500;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS = 60_000;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY = 'channel-stats:background-sync-backoff:v1';
 const CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
+const CHANNEL_STATS_BACKGROUND_FAILURE_LOG_INTERVAL_MS = 60_000;
+const CHANNEL_STATS_BACKGROUND_SHUTDOWN_TIMEOUT_MS = 5_000;
 const CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES = [404] as const;
 const DEFAULT_CHANNEL_STATS_STARTUP_DELAY_MS = 30_000;
 const DEFAULT_CHANNEL_STATS_STARTUP_JITTER_MS = 15_000;
@@ -63,6 +65,14 @@ type ChannelStatsSyncResult = {
   viewsSynced: boolean;
   throttled: boolean;
 };
+
+type ChannelStatsBackgroundTask =
+  | 'scheduled_sync_timer'
+  | 'scheduled_audience_catch_up_timer'
+  | 'startup_sync_timer'
+  | 'startup_audience_catch_up_timer'
+  | 'startup_candidate_query'
+  | 'channel_sync';
 
 type ChannelStatsAudienceSyncResult = Pick<
   ChannelStatsSyncResult,
@@ -112,11 +122,14 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private scheduledCatchUpStartupTimer: NodeJS.Timeout | null = null;
   private scheduledAudienceCatchUpTimer: NodeJS.Timeout | null = null;
   private scheduledSyncInFlight = false;
+  private shuttingDown = false;
+  private readonly backgroundTasksInFlight = new Set<Promise<void>>();
   private backgroundSyncBackoffUntilMs = 0;
   private backgroundSyncSlowUntilMs = 0;
   private subscriptionCoverageFrom: Date | null = null;
   private degradePauseLogAtMs = 0;
   private priorityViewsCapacityLogAtMs = 0;
+  private readonly backgroundFailureLogAtMsByTask = new Map<ChannelStatsBackgroundTask, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -175,17 +188,21 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   onModuleInit() {
-    if (!this.backgroundEnabled) {
+    if (!this.backgroundEnabled || this.shuttingDown) {
       return;
     }
 
     this.timer = setInterval(() => {
-      void this.syncAllChannels('scheduled');
+      this.runBackgroundTask('scheduled_sync_timer', 'scheduled', () =>
+        this.syncAllChannels('scheduled'),
+      );
     }, this.syncIntervalMs);
     this.timer.unref();
 
     this.scheduledAudienceCatchUpTimer = setInterval(() => {
-      void this.syncScheduledAudienceCatchUpOnly('scheduled');
+      this.runBackgroundTask('scheduled_audience_catch_up_timer', 'scheduled', () =>
+        this.syncScheduledAudienceCatchUpOnly('scheduled'),
+      );
     }, CHANNEL_STATS_AUDIENCE_CATCH_UP_INTERVAL_MS);
     this.scheduledAudienceCatchUpTimer.unref();
 
@@ -194,6 +211,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   async onModuleDestroy() {
+    this.shuttingDown = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -211,6 +229,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       this.scheduledAudienceCatchUpTimer = null;
     }
 
+    await this.waitForBackgroundTasksToSettle();
     await this.redis.quit();
   }
 
@@ -406,23 +425,29 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   private async syncStartupChannels() {
-    if (!this.startupSyncEnabled || this.startupSyncMaxChannels === 0) {
+    if (this.shuttingDown || !this.startupSyncEnabled || this.startupSyncMaxChannels === 0) {
       return;
     }
 
-    const channels = await this.prisma.chat.findMany({
-      where: { entityType: ChatEntityType.CHANNEL },
-      select: {
-        id: true,
-        channelStatsSyncState: {
-          select: {
-            lastAudienceSyncAt: true,
-            lastViewsSyncAt: true,
+    let channels: ChannelStartupSyncCandidate[];
+    try {
+      channels = await this.prisma.chat.findMany({
+        where: { entityType: ChatEntityType.CHANNEL },
+        select: {
+          id: true,
+          channelStatsSyncState: {
+            select: {
+              lastAudienceSyncAt: true,
+              lastViewsSyncAt: true,
+            },
           },
         },
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
+        orderBy: { updatedAt: 'desc' },
+      });
+    } catch (error: unknown) {
+      this.logBackgroundFailure('startup_candidate_query', 'startup', error);
+      return;
+    }
     const candidates = channels
       .filter((channel) => this.shouldSyncChannelOnStartup(channel))
       .sort((left, right) => this.compareStartupSyncCandidates(left, right))
@@ -444,19 +469,21 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       priorityViewsLane?: boolean;
     },
   ) {
-    if (
-      !this.backgroundEnabled ||
-      this.scheduledSyncInFlight ||
-      (await this.isBackgroundWorkPaused(reason, {
-        allowMaxApiCapacitySlowPath: options?.priorityViewsLane === true,
-      })) ||
-      (await this.isBackgroundSyncBackoffActive())
-    ) {
+    if (!this.backgroundEnabled || this.shuttingDown || this.scheduledSyncInFlight) {
       return;
     }
 
     this.scheduledSyncInFlight = true;
     try {
+      if (
+        (await this.isBackgroundWorkPaused(reason, {
+          allowMaxApiCapacitySlowPath: options?.priorityViewsLane === true,
+        })) ||
+        (await this.isBackgroundSyncBackoffActive())
+      ) {
+        return;
+      }
+
       await this.withRedisLock(
         'channel-stats:sync-all',
         CHANNEL_STATS_ALL_LOCK_TTL_MS,
@@ -500,13 +527,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         },
       );
     } catch (error: unknown) {
-      this.logger.warn(
-        {
-          reason,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to sync channel stats in background',
-      );
+      this.logBackgroundFailure('channel_sync', reason, error);
     } finally {
       this.scheduledSyncInFlight = false;
     }
@@ -1521,7 +1542,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         : 0);
     this.startupTimer = setTimeout(() => {
       this.startupTimer = null;
-      void this.syncStartupChannels();
+      this.runBackgroundTask('startup_sync_timer', 'startup', () => this.syncStartupChannels());
     }, startupDelayMs);
     this.startupTimer.unref();
   }
@@ -1529,9 +1550,88 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private scheduleScheduledCatchUpOnStartup() {
     this.scheduledCatchUpStartupTimer = setTimeout(() => {
       this.scheduledCatchUpStartupTimer = null;
-      void this.syncScheduledAudienceCatchUpOnly('scheduled');
+      this.runBackgroundTask('startup_audience_catch_up_timer', 'scheduled', () =>
+        this.syncScheduledAudienceCatchUpOnly('scheduled'),
+      );
     }, CHANNEL_STATS_SCHEDULED_CATCH_UP_STARTUP_DELAY_MS);
     this.scheduledCatchUpStartupTimer.unref();
+  }
+
+  private runBackgroundTask(
+    task: ChannelStatsBackgroundTask,
+    reason: 'startup' | 'scheduled',
+    operation: () => Promise<void>,
+  ): void {
+    if (this.shuttingDown) {
+      return;
+    }
+
+    try {
+      const operationPromise = operation();
+      const trackedPromise = operationPromise
+        .catch((error: unknown) => {
+          this.logBackgroundFailure(task, reason, error);
+        })
+        .finally(() => {
+          this.backgroundTasksInFlight.delete(trackedPromise);
+        });
+      this.backgroundTasksInFlight.add(trackedPromise);
+    } catch (error: unknown) {
+      this.logBackgroundFailure(task, reason, error);
+    }
+  }
+
+  private async waitForBackgroundTasksToSettle(): Promise<void> {
+    const tasks = [...this.backgroundTasksInFlight];
+    if (tasks.length === 0) {
+      return;
+    }
+
+    let timeout: NodeJS.Timeout | null = null;
+    const settled = await Promise.race([
+      Promise.allSettled(tasks).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), CHANNEL_STATS_BACKGROUND_SHUTDOWN_TIMEOUT_MS);
+      }),
+    ]);
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    if (!settled) {
+      this.logger.warn(
+        {
+          inFlightTaskCount: this.backgroundTasksInFlight.size,
+          timeoutMs: CHANNEL_STATS_BACKGROUND_SHUTDOWN_TIMEOUT_MS,
+        },
+        'Timed out waiting for channel stats background tasks during shutdown',
+      );
+    }
+  }
+
+  private logBackgroundFailure(
+    task: ChannelStatsBackgroundTask,
+    reason: 'startup' | 'scheduled',
+    error: unknown,
+  ): void {
+    const nowMs = Date.now();
+    const lastLogAtMs = this.backgroundFailureLogAtMsByTask.get(task);
+    if (
+      lastLogAtMs !== undefined &&
+      nowMs >= lastLogAtMs &&
+      nowMs - lastLogAtMs < CHANNEL_STATS_BACKGROUND_FAILURE_LOG_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    this.backgroundFailureLogAtMsByTask.set(task, nowMs);
+    this.logger.warn(
+      {
+        task,
+        reason,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to run channel stats background task',
+    );
   }
 
   private async isBackgroundWorkPaused(
