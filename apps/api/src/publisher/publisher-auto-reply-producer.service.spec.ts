@@ -1,6 +1,9 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { ConfigService } from '@nestjs/config';
-import { PublisherAutoReplyDeliveryStatus } from '../prisma/prisma-client';
+import {
+  PublisherAutoReplyDeliveryStatus,
+  PublisherAutoReplyMatchKind,
+} from '../prisma/prisma-client';
 import {
   PublisherAutoReplyProducerService,
   PublisherAutoReplyEnqueuePendingError,
@@ -8,7 +11,7 @@ import {
 import { PublisherAutoReplyAdmissionError } from './publisher-auto-reply.queue';
 import type { PublisherAutoReplyFloodGateResult } from './publisher-auto-reply-flood-gate.service';
 
-function update(type = 'message_created'): MaxUpdate {
+function update(type = 'message_created', text = 'ПРАЙС'): MaxUpdate {
   return {
     updateId: `update-${type}`,
     botId: 'publisher-bot',
@@ -18,16 +21,46 @@ function update(type = 'message_created'): MaxUpdate {
       chatId: '-100',
       entityType: 'chat',
       senderId: 'user-1',
-      text: 'ПРАЙС',
+      text,
       createdAt: '2026-08-29T12:00:00.000Z',
     },
     raw: {
       update_type: type,
       message: {
-        body: { mid: 'message-1', text: 'ПРАЙС' },
+        body: { mid: 'message-1', text },
         sender: { user_id: 'user-1' },
         recipient: { chat_id: '-100', chat_type: 'chat' },
       },
+    },
+  };
+}
+
+function triggerRow(
+  options: {
+    id?: string;
+    ruleId?: string;
+    position?: number;
+    phrase?: string;
+    normalizedPhrase?: string;
+    version?: number;
+    matchInContext?: boolean;
+    fuzzyMatch?: boolean;
+    currentContentRevisionId?: string;
+  } = {},
+) {
+  const ruleId = options.ruleId ?? 'rule-1';
+  return {
+    id: options.id ?? 'trigger-1',
+    ruleId,
+    position: options.position ?? 0,
+    phrase: options.phrase ?? 'Прайс',
+    normalizedPhrase: options.normalizedPhrase ?? 'прайс',
+    rule: {
+      id: ruleId,
+      version: options.version ?? 3,
+      matchInContext: options.matchInContext ?? false,
+      fuzzyMatch: options.fuzzyMatch ?? false,
+      currentContentRevisionId: options.currentContentRevisionId ?? 'content-1',
     },
   };
 }
@@ -45,6 +78,8 @@ function harness(
     sourceFenceAdmit?: 'admitted' | 'canceled' | 'missing';
     sourceFenceRead?: 'admitted' | 'canceled' | 'missing';
     sourceFenceFailure?: Error;
+    triggerRows?: ReturnType<typeof triggerRow>[];
+    extendedMatchingMode?: 'off' | 'shadow' | 'on';
   } = {},
 ) {
   const delivery = {
@@ -54,19 +89,40 @@ function harness(
     dueAt: new Date('2026-08-29T12:00:01.500Z'),
     dispatchStartedAt: null,
   };
+  const triggerRows = options.triggerRows ?? [triggerRow()];
   const prisma = {
     chat: {
       findFirst: jest.fn().mockResolvedValue({
-        publisherSettings: { autoRepliesEnabled: true, revision: 4 },
+        publisherSettings: {
+          autoRepliesEnabled: true,
+          autoReplyConfigRevision: 7,
+          revision: 4,
+        },
         publicationPolicy: { publikEnabled: true, revision: 2 },
-        publisherAutoReplyRules: [
-          {
-            id: 'rule-1',
-            version: 3,
-            normalizedPhrase: 'прайс',
-            currentContentRevisionId: 'content-1',
-          },
-        ],
+      }),
+    },
+    publisherAutoReplyTrigger: {
+      findMany: jest.fn().mockResolvedValue(triggerRows.slice(0, 201)),
+      findFirst: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { normalizedPhrase: string } }) =>
+          Promise.resolve(
+            triggerRows.find((row) => row.normalizedPhrase === where.normalizedPhrase) ?? null,
+          ),
+        ),
+    },
+    publisherAutoReplyRule: {
+      findFirst: jest.fn().mockImplementation(({ where }: { where: { id: string } }) => {
+        const trigger = triggerRows.find((row) => row.ruleId === where.id);
+        return Promise.resolve(
+          trigger
+            ? {
+                id: trigger.rule.id,
+                version: trigger.rule.version,
+                currentContentRevisionId: trigger.rule.currentContentRevisionId,
+              }
+            : null,
+        );
       }),
     },
     publisherAutoReplyDelivery: {
@@ -116,6 +172,9 @@ function harness(
       get: jest.fn((key: string, fallback?: unknown) => {
         if (key === 'MAX_PUBLISHER_BOT_ID') return 'publisher-bot';
         if (key === 'PUBLISHER_AUTO_REPLY_DELAY_MS') return 1_500;
+        if (key === 'PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE') {
+          return options.extendedMatchingMode ?? 'on';
+        }
         return fallback;
       }),
     } as unknown as ConfigService,
@@ -126,7 +185,10 @@ function harness(
 describe('PublisherAutoReplyProducerService', () => {
   it('freezes the matching epochs before enqueueing only the delivery id', async () => {
     const { service, prisma, queue, floodGate } = harness();
-    await expect(service.observeWebhook(update(), 'webhook-1')).resolves.toEqual({ matched: true });
+    await expect(service.observeWebhook(update(), 'webhook-1')).resolves.toEqual({
+      matched: true,
+      disposition: 'selected',
+    });
 
     expect(prisma.publisherAutoReplyDelivery.createMany).toHaveBeenCalledWith({
       data: [
@@ -139,6 +201,11 @@ describe('PublisherAutoReplyProducerService', () => {
           sourceUserId: 'user-1',
           matchedRuleVersion: 3,
           matchedNormalizedPhrase: 'прайс',
+          matchedTriggerId: 'trigger-1',
+          matchKind: PublisherAutoReplyMatchKind.EXACT_FULL,
+          distance: 0,
+          matcherVersion: 1,
+          autoReplyConfigRevision: 7,
           publisherSettingsRevision: 4,
           publicationPolicyRevision: 2,
         }),
@@ -161,10 +228,197 @@ describe('PublisherAutoReplyProducerService', () => {
     expect(queue.ensureDeliveryJob).toHaveBeenCalledWith('delivery-1', expect.any(Date));
   });
 
+  it('selects an exact alias and freezes the matched trigger identity', async () => {
+    const { service, prisma } = harness({
+      triggerRows: [
+        triggerRow(),
+        triggerRow({
+          id: 'trigger-alias',
+          position: 1,
+          phrase: 'Стоимость',
+          normalizedPhrase: 'стоимость',
+        }),
+      ],
+    });
+
+    await expect(
+      service.observeWebhook(update('message_created', 'СТОИМОСТЬ'), 'webhook-alias-1'),
+    ).resolves.toEqual({ matched: true, disposition: 'selected' });
+
+    expect(prisma.publisherAutoReplyDelivery.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            ruleId: 'rule-1',
+            matchedTriggerId: 'trigger-alias',
+            matchedNormalizedPhrase: 'стоимость',
+            matchKind: PublisherAutoReplyMatchKind.EXACT_FULL,
+            distance: 0,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('keeps exact matching available when a legacy chat exceeds the candidate budget', async () => {
+    const triggerRows = Array.from({ length: 202 }, (_, index) =>
+      triggerRow({
+        id: `trigger-${index}`,
+        ruleId: `rule-${index}`,
+        phrase: index === 201 ? 'Нужный ответ' : `Фраза ${index}`,
+        normalizedPhrase: index === 201 ? 'нужный ответ' : `фраза ${index}`,
+      }),
+    );
+    const { service, prisma } = harness({ triggerRows });
+
+    await expect(
+      service.observeWebhook(update('message_created', 'НУЖНЫЙ ОТВЕТ'), 'webhook-over-budget-1'),
+    ).resolves.toEqual({ matched: true, disposition: 'selected' });
+
+    expect(prisma.publisherAutoReplyTrigger.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 201 }),
+    );
+    expect(prisma.publisherAutoReplyTrigger.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ normalizedPhrase: 'нужный ответ' }),
+      }),
+    );
+    expect(prisma.publisherAutoReplyDelivery.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            ruleId: 'rule-201',
+            matchedTriggerId: 'trigger-201',
+            matchedNormalizedPhrase: 'нужный ответ',
+            matchKind: PublisherAutoReplyMatchKind.EXACT_FULL,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('refreshes the selected rule epoch while reusing the matcher configuration cache', async () => {
+    const fixture = harness();
+    fixture.prisma.publisherAutoReplyRule.findFirst
+      .mockResolvedValueOnce({ id: 'rule-1', version: 3, currentContentRevisionId: 'content-1' })
+      .mockResolvedValueOnce({ id: 'rule-1', version: 4, currentContentRevisionId: 'content-2' });
+
+    await fixture.service.observeWebhook(update(), 'webhook-cache-1');
+    const second = update();
+    second.updateId = 'update-cache-2';
+    second.message!.messageId = 'message-2';
+    ((second.raw?.message as Record<string, unknown>).body as Record<string, unknown>).mid =
+      'message-2';
+    await fixture.service.observeWebhook(second, 'webhook-cache-2');
+
+    expect(fixture.prisma.publisherAutoReplyTrigger.findMany).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.publisherAutoReplyRule.findFirst).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.publisherAutoReplyDelivery.createMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            matchedRuleVersion: 4,
+            contentRevisionId: 'content-2',
+            sourceMessageId: 'message-2',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it.each([
+    {
+      label: 'contains',
+      message: 'Подскажите прайс, пожалуйста',
+      row: triggerRow({ matchInContext: true }),
+      matchKind: PublisherAutoReplyMatchKind.EXACT_CONTEXT,
+      distance: 0,
+    },
+    {
+      label: 'fuzzy',
+      message: 'ПРАЙСС',
+      row: triggerRow({ fuzzyMatch: true }),
+      matchKind: PublisherAutoReplyMatchKind.FUZZY_FULL,
+      distance: 1,
+    },
+  ])('selects a $label trigger through the extended matcher', async (example) => {
+    const { service, prisma } = harness({ triggerRows: [example.row] });
+
+    await expect(
+      service.observeWebhook(
+        update('message_created', example.message),
+        `webhook-${example.label}`,
+      ),
+    ).resolves.toEqual({ matched: true, disposition: 'selected' });
+
+    expect(prisma.publisherAutoReplyDelivery.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            matchedTriggerId: 'trigger-1',
+            matchKind: example.matchKind,
+            distance: example.distance,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('returns an ambiguous disposition without reserving or enqueueing delivery work', async () => {
+    const { service, prisma, queue, floodGate, sourceFence } = harness({
+      triggerRows: [
+        triggerRow({
+          id: 'trigger-price',
+          ruleId: 'rule-price',
+          phrase: 'Цена',
+          normalizedPhrase: 'цена',
+          matchInContext: true,
+        }),
+        triggerRow({
+          id: 'trigger-term',
+          ruleId: 'rule-term',
+          phrase: 'Срок',
+          normalizedPhrase: 'срок',
+          matchInContext: true,
+        }),
+      ],
+    });
+
+    await expect(
+      service.observeWebhook(update('message_created', 'ЦЕНА СРОК'), 'webhook-ambiguous-1'),
+    ).resolves.toEqual({ matched: true, disposition: 'ambiguous' });
+
+    expect(queue.assertNewDeliveryAdmissionEnabled).not.toHaveBeenCalled();
+    expect(floodGate.reserve).not.toHaveBeenCalled();
+    expect(sourceFence.admit).not.toHaveBeenCalled();
+    expect(prisma.publisherAutoReplyDelivery.createMany).not.toHaveBeenCalled();
+    expect(queue.ensureDeliveryJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps an extended-only match as no_match in shadow mode', async () => {
+    const { service, prisma, queue, floodGate } = harness({
+      extendedMatchingMode: 'shadow',
+      triggerRows: [triggerRow({ matchInContext: true })],
+    });
+
+    await expect(
+      service.observeWebhook(
+        update('message_created', 'Подскажите прайс, пожалуйста'),
+        'webhook-shadow-1',
+      ),
+    ).resolves.toEqual({ matched: false, disposition: 'no_match' });
+
+    expect(prisma.publisherAutoReplyDelivery.createMany).not.toHaveBeenCalled();
+    expect(queue.assertNewDeliveryAdmissionEnabled).not.toHaveBeenCalled();
+    expect(floodGate.reserve).not.toHaveBeenCalled();
+  });
+
   it('ensures the pending job again after a repeated canonical preparation claim', async () => {
     const { service, queue } = harness({ duplicate: true });
     await expect(service.observeWebhook(update(), 'webhook-repeated-1')).resolves.toEqual({
       matched: true,
+      disposition: 'selected',
     });
     expect(queue.ensureDeliveryJob).toHaveBeenCalledTimes(1);
   });
@@ -241,7 +495,7 @@ describe('PublisherAutoReplyProducerService', () => {
       fixture.service.observeWebhook(update(), 'webhook-flood-ambiguous-2', {
         duplicateRepair: true,
       }),
-    ).resolves.toEqual({ matched: true });
+    ).resolves.toEqual({ matched: true, disposition: 'selected' });
 
     expect(fixture.floodGate.reserve).toHaveBeenCalledTimes(1);
     expect(fixture.floodGate.replay).toHaveBeenCalledTimes(1);
@@ -259,6 +513,7 @@ describe('PublisherAutoReplyProducerService', () => {
 
     await expect(service.observeWebhook(update(), 'webhook-source-canceled-1')).resolves.toEqual({
       matched: true,
+      disposition: 'suppressed',
     });
 
     expect(prisma.publisherAutoReplyDelivery.createMany).not.toHaveBeenCalled();
@@ -270,6 +525,7 @@ describe('PublisherAutoReplyProducerService', () => {
 
     await expect(service.observeWebhook(update(), 'webhook-source-race-1')).resolves.toEqual({
       matched: true,
+      disposition: 'suppressed',
     });
 
     expect(prisma.publisherAutoReplyDelivery.createMany).toHaveBeenCalledTimes(1);
@@ -294,6 +550,7 @@ describe('PublisherAutoReplyProducerService', () => {
 
     await expect(service.observeWebhook(update(), 'webhook-flood-denied-1')).resolves.toEqual({
       matched: true,
+      disposition: 'suppressed',
     });
 
     expect(prisma.publisherAutoReplyDelivery.createMany).not.toHaveBeenCalled();
@@ -311,6 +568,7 @@ describe('PublisherAutoReplyProducerService', () => {
 
       await expect(service.observeWebhook(update(), 'webhook-backlog-denied-1')).resolves.toEqual({
         matched: true,
+        disposition: 'suppressed',
       });
 
       expect(floodGate.reserve).toHaveBeenCalledWith(
@@ -329,6 +587,7 @@ describe('PublisherAutoReplyProducerService', () => {
 
     await expect(service.observeWebhook(update(), 'webhook-backlog-replay-1')).resolves.toEqual({
       matched: true,
+      disposition: 'selected',
     });
 
     expect(floodGate.reserve).toHaveBeenCalledWith(
@@ -343,7 +602,7 @@ describe('PublisherAutoReplyProducerService', () => {
 
     await expect(
       service.observeWebhook(update(), null, { duplicateRepair: true }),
-    ).resolves.toEqual({ matched: true });
+    ).resolves.toEqual({ matched: true, disposition: 'selected' });
 
     expect(prisma.publisherAutoReplyDelivery.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -363,7 +622,7 @@ describe('PublisherAutoReplyProducerService', () => {
 
     await expect(
       service.observeWebhook(update(), null, { duplicateRepair: true }),
-    ).resolves.toEqual({ matched: true });
+    ).resolves.toEqual({ matched: true, disposition: 'suppressed' });
 
     expect(prisma.publisherAutoReplyDelivery.findUnique).toHaveBeenCalledTimes(1);
     expect(prisma.publisherAutoReplyDelivery.createMany).not.toHaveBeenCalled();
@@ -402,7 +661,10 @@ describe('PublisherAutoReplyProducerService', () => {
     };
     externalBotUpdate.message!.senderId = 'external-bot-1';
 
-    await expect(service.observeWebhook(externalBotUpdate)).resolves.toEqual({ matched: true });
+    await expect(service.observeWebhook(externalBotUpdate)).resolves.toEqual({
+      matched: true,
+      disposition: 'bot_authored',
+    });
 
     expect(prisma.chat.findFirst).not.toHaveBeenCalled();
     expect(queue.assertNewDeliveryAdmissionEnabled).not.toHaveBeenCalled();
@@ -415,6 +677,7 @@ describe('PublisherAutoReplyProducerService', () => {
       const { service, prisma, queue, sourceFence } = harness();
       await expect(service.observeWebhook(update(type), `webhook-${type}`)).resolves.toEqual({
         matched: false,
+        disposition: 'no_match',
       });
       expect(prisma.publisherAutoReplyDelivery.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({

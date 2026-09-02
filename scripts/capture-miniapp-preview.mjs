@@ -219,7 +219,9 @@ async function openPublisherAutoReplyEditor(page) {
   await dialog.getByRole('button', { name: 'Создать здесь', exact: true }).click();
   const editor = page.locator('.publisher-auto-reply-editor');
   await editor.waitFor({ state: 'visible' });
-  await editor.getByRole('textbox', { name: /Кодовая фраза/u }).fill('Каталог');
+  const phraseInput = editor.getByRole('textbox', { name: /Фразы-триггеры/u });
+  await phraseInput.fill('Каталог');
+  await phraseInput.press('Enter');
   await editor
     .getByRole('textbox', { name: 'Текст автоответа', exact: true })
     .fill('Каталог готов. Выберите нужный раздел.');

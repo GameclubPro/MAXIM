@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { PublisherAutoReplyAuthoringState } from '../prisma/prisma-client';
 import { PublisherAutoReplyAuthoringProcessingService } from './publisher-auto-reply-authoring-processing.service';
 import { BotCapabilityRequiredException } from './bot-capability-required.error';
@@ -10,7 +11,11 @@ function savingSession() {
     targetChatId: 'chat-1',
     state: PublisherAutoReplyAuthoringState.SAVING,
     stageRevision: 4,
+    phrase: 'Каталог',
     normalizedPhrase: 'каталог',
+    triggerPhrases: ['Каталог'],
+    matchInContext: false,
+    fuzzyMatch: false,
     ruleId: 'rule-1',
     contentRevisionId: 'content-1',
     expiresAt: new Date(Date.now() + 60_000),
@@ -35,7 +40,10 @@ function fixture() {
     release: jest.fn().mockResolvedValue(true),
   };
   const captureService = { capture: jest.fn() };
-  const autoReplies = { createFromPreparedContent: jest.fn() };
+  const autoReplies = {
+    createFromPreparedContent: jest.fn(),
+    assertTriggerActivationCapacity: jest.fn().mockResolvedValue(undefined),
+  };
   return {
     service: new PublisherAutoReplyAuthoringProcessingService(
       prisma as never,
@@ -64,6 +72,9 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
       privateChatId: '42',
       contentMessageId: 'message-1',
       phrase: 'Каталог',
+      triggerPhrases: ['Каталог', 'Стоимость'],
+      matchInContext: true,
+      fuzzyMatch: true,
       sourceWebhookEventId: 'webhook-1',
     });
     captureService.capture.mockResolvedValue({
@@ -91,6 +102,9 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
 
     expect(autoReplies.createFromPreparedContent).toHaveBeenCalledWith(
       expect.objectContaining({
+        phrases: ['Каталог', 'Стоимость'],
+        matchInContext: true,
+        fuzzyMatch: true,
         content: {
           text: '**Выберите раздел**',
           textFormat: 'markdown',
@@ -102,7 +116,7 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
   });
 
   it('atomically enables module settings without a create race', async () => {
-    const { service, prisma, policy, privateFlows } = fixture();
+    const { service, prisma, policy, privateFlows, autoReplies } = fixture();
     let settingsQueryText = '';
     const tx = {
       publisherAutoReplyRule: {
@@ -110,6 +124,8 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
           id: 'rule-1',
           version: 1,
           normalizedPhrase: 'каталог',
+          fuzzyMatch: false,
+          _count: { triggers: 1 },
         }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -129,13 +145,19 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
 
     await expect(service.activate('session-1')).resolves.toBe('activated');
 
-    expect(policy.assertBotCapabilityForFeatureEnablement).toHaveBeenCalledWith(
-      'chat',
-      'chat-1',
-      ['enabled', 'autoRepliesEnabled'],
-    );
+    expect(policy.assertBotCapabilityForFeatureEnablement).toHaveBeenCalledWith('chat', 'chat-1', [
+      'enabled',
+      'autoRepliesEnabled',
+    ]);
     expect(settingsQueryText).toContain('ON CONFLICT');
     expect(settingsQueryText).toContain('auto_replies_enabled');
+    expect(settingsQueryText).toContain('auto_reply_config_revision');
+    expect(autoReplies.assertTriggerActivationCapacity).toHaveBeenCalledWith(tx, {
+      chatId: 'chat-1',
+      ruleId: 'rule-1',
+      phraseCount: 1,
+      fuzzyMatch: false,
+    });
     expect(tx.publisherAutoReplyRule.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -173,6 +195,53 @@ describe('PublisherAutoReplyAuthoringProcessingService', () => {
         notificationPending: true,
       }),
     });
+  });
+
+  it.each([
+    ['PUBLISHER_AUTO_REPLY_TRIGGER_LIMIT', 'trigger_capacity'],
+    ['PUBLISHER_AUTO_REPLY_FUZZY_TRIGGER_LIMIT', 'fuzzy_trigger_capacity'],
+  ] as const)('returns %s activation failures to review', async (code, failureCode) => {
+    const { service, prisma, autoReplies, privateFlows } = fixture();
+    autoReplies.assertTriggerActivationCapacity.mockRejectedValueOnce(
+      new BadRequestException({ statusCode: 400, code, message: 'Capacity reached' }),
+    );
+    const tx = {
+      publisherAutoReplyRule: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'rule-1',
+          version: 1,
+          normalizedPhrase: 'каталог',
+          fuzzyMatch: code === 'PUBLISHER_AUTO_REPLY_FUZZY_TRIGGER_LIMIT',
+          _count: { triggers: 1 },
+        }),
+        updateMany: jest.fn(),
+      },
+      publisherAutoReplyAuthoringSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    prisma.$transaction.mockImplementation((run: (client: typeof tx) => Promise<unknown>) =>
+      run(tx),
+    );
+
+    await expect(service.activate('session-1')).resolves.toBe('ready');
+
+    expect(tx.publisherAutoReplyRule.updateMany).not.toHaveBeenCalled();
+    expect(tx.publisherAutoReplyAuthoringSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'session-1',
+        state: PublisherAutoReplyAuthoringState.SAVING,
+        stageRevision: 4,
+      },
+      data: expect.objectContaining({
+        state: PublisherAutoReplyAuthoringState.REVIEW,
+        failureCode,
+        notificationKind: 'ready',
+        notificationPending: true,
+      }),
+    });
+    expect(privateFlows.renew).toHaveBeenCalled();
+    expect(privateFlows.release).not.toHaveBeenCalled();
   });
 
   it('does not misclassify an unrelated unique constraint as a phrase conflict', async () => {

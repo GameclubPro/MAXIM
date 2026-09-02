@@ -367,6 +367,13 @@ enum PublisherAutoReplyDeliveryStatus {
   CANCELED
 }
 
+enum PublisherAutoReplyMatchKind {
+  EXACT_FULL
+  EXACT_CONTEXT
+  FUZZY_FULL
+  FUZZY_CONTEXT
+}
+
 enum PublisherAutoReplyAssetUploadStatus {
   PENDING
   UPLOADING
@@ -559,6 +566,7 @@ model PublisherEntitySettings {
   channelCommentsEnabled    Boolean  @default(false) @map("channel_comments_enabled")
   channelSuggestionsEnabled Boolean  @default(false) @map("channel_suggestions_enabled")
   autoRepliesEnabled        Boolean  @default(false) @map("auto_replies_enabled")
+  autoReplyConfigRevision   Int      @default(0) @map("auto_reply_config_revision")
   revision                  Int      @default(0)
   updatedByUserId           String?  @map("updated_by_user_id")
   createdAt                 DateTime @default(now()) @map("created_at")
@@ -574,6 +582,8 @@ model PublisherAutoReplyRule {
   chatId                   String    @map("chat_id")
   phrase                   String
   normalizedPhrase         String    @map("normalized_phrase")
+  matchInContext           Boolean   @default(false) @map("match_in_context")
+  fuzzyMatch               Boolean   @default(false) @map("fuzzy_match")
   enabled                  Boolean   @default(true)
   cooldownSeconds          Int       @default(30) @map("cooldown_seconds")
   version                  Int       @default(1)
@@ -592,12 +602,33 @@ model PublisherAutoReplyRule {
   cooldowns              PublisherAutoReplyCooldown[]
   mutationRecords        PublisherAutoReplyMutationRecord[]
   authoringSessions      PublisherAutoReplyAuthoringSession[]
+  triggers               PublisherAutoReplyTrigger[]
 
+  @@unique([id, chatId], map: "publisher_auto_reply_rules_id_chat_id_key")
   @@index([chatId, archivedAt, updatedAt(sort: Desc), id], map: "publisher_auto_reply_rules_chat_archived_updated_idx")
   @@index([chatId, normalizedPhrase], map: "publisher_auto_reply_rules_chat_normalized_phrase_idx")
   @@index([chatId, enabled, archivedAt], map: "publisher_auto_reply_rules_chat_enabled_archived_idx")
   @@index([authoringSessionId, archivedAt], map: "publisher_auto_reply_rules_authoring_session_archived_idx")
   @@map("publisher_auto_reply_rules")
+}
+
+model PublisherAutoReplyTrigger {
+  id               String    @id @default(cuid())
+  chatId           String    @map("chat_id")
+  ruleId           String    @map("rule_id")
+  position         Int
+  phrase           String
+  normalizedPhrase String    @map("normalized_phrase")
+  archivedAt       DateTime? @map("archived_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  rule       PublisherAutoReplyRule       @relation(fields: [ruleId, chatId], references: [id, chatId], onDelete: Cascade, onUpdate: Cascade, map: "publisher_auto_reply_triggers_rule_chat_fkey")
+  deliveries PublisherAutoReplyDelivery[]
+
+  @@unique([ruleId, position], map: "publisher_auto_reply_triggers_rule_position_key")
+  @@unique([ruleId, normalizedPhrase], map: "publisher_auto_reply_triggers_rule_normalized_phrase_key")
+  @@index([chatId, ruleId, position], map: "publisher_auto_reply_triggers_chat_rule_position_idx")
+  @@map("publisher_auto_reply_triggers")
 }
 
 model PublisherAutoReplyContentRevision {
@@ -698,6 +729,11 @@ model PublisherAutoReplyDelivery {
   sourceWebhookEventId      String?                          @map("source_webhook_event_id")
   matchedRuleVersion        Int                              @map("matched_rule_version")
   matchedNormalizedPhrase   String                           @map("matched_normalized_phrase")
+  matchedTriggerId          String?                          @map("matched_trigger_id")
+  matchKind                 PublisherAutoReplyMatchKind      @default(EXACT_FULL) @map("match_kind")
+  distance                  Int                              @default(0)
+  matcherVersion            Int                              @default(1) @map("matcher_version")
+  autoReplyConfigRevision   Int                              @default(0) @map("auto_reply_config_revision")
   publisherSettingsRevision Int                              @map("publisher_settings_revision")
   publicationPolicyRevision Int                              @map("publication_policy_revision")
   status                    PublisherAutoReplyDeliveryStatus @default(PENDING)
@@ -716,11 +752,13 @@ model PublisherAutoReplyDelivery {
   chat            Chat                              @relation(fields: [chatId], references: [id], onDelete: Cascade)
   rule            PublisherAutoReplyRule            @relation(fields: [ruleId], references: [id], onDelete: Cascade)
   contentRevision PublisherAutoReplyContentRevision @relation(fields: [contentRevisionId], references: [id], onDelete: Restrict)
+  matchedTrigger  PublisherAutoReplyTrigger?        @relation(fields: [matchedTriggerId], references: [id], onDelete: SetNull)
 
   @@unique([chatId, sourceMessageId], map: "publisher_auto_reply_deliveries_chat_source_message_key")
   @@index([status, dueAt, lockedAt, id], map: "publisher_auto_reply_deliveries_status_due_locked_idx")
   @@index([ruleId, createdAt(sort: Desc)], map: "publisher_auto_reply_deliveries_rule_created_idx")
   @@index([contentRevisionId], map: "publisher_auto_reply_deliveries_content_revision_idx")
+  @@index([matchedTriggerId], map: "publisher_auto_reply_deliveries_matched_trigger_idx")
   @@map("publisher_auto_reply_deliveries")
 }
 
@@ -757,6 +795,9 @@ model PublisherAutoReplyAuthoringSession {
   targetChatId                      String                           @map("target_chat_id")
   phrase                            String?
   normalizedPhrase                  String?                          @map("normalized_phrase")
+  triggerPhrases                    Json                             @default("[]") @map("trigger_phrases")
+  matchInContext                    Boolean                          @default(false) @map("match_in_context")
+  fuzzyMatch                        Boolean                          @default(false) @map("fuzzy_match")
   phraseMessageId                   String?                          @map("phrase_message_id")
   contentMessageId                  String?                          @map("content_message_id")
   sourceWebhookEventId              String?                          @map("source_webhook_event_id")

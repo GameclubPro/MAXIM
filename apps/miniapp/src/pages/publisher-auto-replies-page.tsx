@@ -1,7 +1,7 @@
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import {
   type PublisherAutoReplyAsset,
-  type PublisherAutoReplyRule,
+  type PublisherAutoReplyRuleV2,
 } from '@maxim/contracts/publisher-auto-replies';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -14,10 +14,12 @@ import {
   WarningCircle,
   Xmark,
 } from 'iconoir-react';
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { AutoReplyCreateSheet } from '../components/auto-reply-create-sheet';
-import { BroadcastContentComposer } from '../components/broadcast-content-composer';
+import type { AutoReplyMatchTesterProps } from '../components/auto-reply-match-tester';
+import type { BotPermissionRequiredDialogProps } from '../components/bot-permission-required-dialog';
+import type { BroadcastContentComposerProps } from '../components/broadcast-content-composer';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
@@ -48,20 +50,30 @@ import { useManagedEntityLeaveGuard } from '../lib/managed-entity-navigation';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { useAutoReplyDraft } from '../lib/use-auto-reply-draft';
+import { recoverableLazyNamedComponent } from '../lib/recoverable-lazy';
 import { describeUserFacingError } from '../lib/user-facing-error';
+import type { PublicationButtonsSheetProps } from '../features/publications/publication-buttons-sheet';
 import {
   AUTO_REPLY_COOLDOWN_OPTIONS,
   AUTO_REPLY_MAX_IMAGES,
+  AUTO_REPLY_MAX_PHRASES,
   AUTO_REPLY_PHRASE_MAX_LENGTH,
   AUTO_REPLY_TEXT_MAX_LENGTH,
   buildPublisherChatModulesRoute,
   createEmptyAutoReplyDraft,
+  getAutoReplyConflictKind,
   getAutoReplyCooldownLabel,
   getAutoReplyAuthoringStateLabel,
+  getAutoReplyMatchModeLabel,
+  getAutoReplyPhraseCountLabel,
   isActiveAutoReplyAuthoringState,
-  isAutoReplyConflictError,
+  isAutoReplyAuthoringConflictError,
+  mergeAutoReplyPhrases,
   normalizeAutoReplyDraft,
+  normalizeAutoReplyPhrase,
+  splitAutoReplyPhrasePaste,
   validateAutoReplyDraft,
+  validateAutoReplyTriggerDraft,
   type AutoReplyDraft,
   type AutoReplyDraftIssues,
 } from './publisher-auto-replies-page-model';
@@ -78,19 +90,28 @@ function loadBotPermissionErrorModule() {
   return botPermissionErrorModulePromise;
 }
 
-const LazyBotPermissionRequiredDialog = lazy(() =>
-  import('../components/bot-permission-required-dialog').then((module) => ({
-    default: module.BotPermissionRequiredDialog,
-  })),
+const LazyBotPermissionRequiredDialog =
+  recoverableLazyNamedComponent<BotPermissionRequiredDialogProps>(
+    () => import('../components/bot-permission-required-dialog'),
+    'BotPermissionRequiredDialog',
+  );
+
+const LazyAutoReplyMatchTester = recoverableLazyNamedComponent<AutoReplyMatchTesterProps>(
+  () => import('../components/auto-reply-match-tester'),
+  'AutoReplyMatchTester',
 );
 
-const PublicationButtonsSheet = lazy(() =>
-  import('../features/publications/publication-buttons-sheet').then((module) => ({
-    default: module.PublicationButtonsSheet,
-  })),
+const LazyBroadcastContentComposer = recoverableLazyNamedComponent<BroadcastContentComposerProps>(
+  () => import('../components/broadcast-content-composer'),
+  'BroadcastContentComposer',
 );
 
-type EditorTarget = { kind: 'create' } | { kind: 'edit'; rule: PublisherAutoReplyRule };
+const PublicationButtonsSheet = recoverableLazyNamedComponent<PublicationButtonsSheetProps>(
+  () => import('../features/publications/publication-buttons-sheet'),
+  'PublicationButtonsSheet',
+);
+
+type EditorTarget = { kind: 'create' } | { kind: 'edit'; rule: PublisherAutoReplyRuleV2 };
 
 function AutoReplySwitch({
   checked,
@@ -214,9 +235,11 @@ function RetainedAssetEditorItem({
   );
 }
 
-function createDraftFromRule(rule: PublisherAutoReplyRule): AutoReplyDraft {
+function createDraftFromRule(rule: PublisherAutoReplyRuleV2): AutoReplyDraft {
   return {
-    phrase: rule.phrase,
+    phrases: rule.phrases,
+    matchInContext: rule.matchInContext,
+    fuzzyMatch: rule.fuzzyMatch,
     text: rule.content.text,
     images: [],
     retainedAssets: rule.content.images.map((asset) => ({
@@ -231,15 +254,16 @@ function createDraftFromRule(rule: PublisherAutoReplyRule): AutoReplyDraft {
 }
 
 function buildRuleFromList(
-  current: readonly PublisherAutoReplyRule[],
-  updated: PublisherAutoReplyRule,
-): PublisherAutoReplyRule[] {
+  current: readonly PublisherAutoReplyRuleV2[],
+  updated: PublisherAutoReplyRuleV2,
+): PublisherAutoReplyRuleV2[] {
   const next = current.map((rule) => (rule.id === updated.id ? updated : rule));
   return next.some((rule) => rule.id === updated.id) ? next : [updated, ...next];
 }
 
 function PublisherAutoReplyEditor({
   api,
+  userId,
   chatId,
   target,
   onClose,
@@ -247,11 +271,12 @@ function PublisherAutoReplyEditor({
   onSaved,
 }: {
   api: ApiTransport;
+  userId: string;
   chatId: string;
   target: EditorTarget;
   onClose: () => void;
   onPermissionBlocker: (blocker: BotPermissionBlocker) => void;
-  onSaved: (rule: PublisherAutoReplyRule) => void;
+  onSaved: (rule: PublisherAutoReplyRuleV2) => void;
 }) {
   const { pushToast } = useToast();
   const rule = target.kind === 'edit' ? target.rule : null;
@@ -259,7 +284,20 @@ function PublisherAutoReplyEditor({
     () => (rule ? createDraftFromRule(rule) : createEmptyAutoReplyDraft()),
     [rule],
   );
-  const { draft, setDraft, hydrated, dirty, persist, discard, markSaved } = useAutoReplyDraft({
+  const {
+    draft,
+    setDraft,
+    hydrated,
+    dirty,
+    missingImageCount,
+    storageReadError,
+    modifiedSinceHydration,
+    retryHydration,
+    persist,
+    discard,
+    markSaved,
+  } = useAutoReplyDraft({
+    userId,
     chatId,
     ruleId: rule?.id,
     initialDraft,
@@ -270,6 +308,7 @@ function PublisherAutoReplyEditor({
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [imagesPreparing, setImagesPreparing] = useState(false);
+  const [phraseInput, setPhraseInput] = useState('');
   const requestIdRef = useRef<string | null>(null);
 
   const saveMutation = useMutation({
@@ -298,14 +337,18 @@ function PublisherAutoReplyEditor({
         ? updatePublisherAutoReply(api, chatId, rule.id, {
             requestId: requestIdRef.current,
             expectedVersion: rule.version,
-            phrase: normalized.phrase,
+            phrases: normalized.phrases,
+            matchInContext: normalized.matchInContext,
+            fuzzyMatch: normalized.fuzzyMatch,
             enabled: normalized.enabled,
             cooldownSeconds: normalized.cooldownSeconds,
             content,
           })
         : createPublisherAutoReply(api, chatId, {
             requestId: requestIdRef.current,
-            phrase: normalized.phrase,
+            phrases: normalized.phrases,
+            matchInContext: normalized.matchInContext,
+            fuzzyMatch: normalized.fuzzyMatch,
             enabled: true,
             cooldownSeconds: normalized.cooldownSeconds,
             content,
@@ -314,6 +357,7 @@ function PublisherAutoReplyEditor({
     onSuccess: async (savedRule) => {
       requestIdRef.current = null;
       setConflict(false);
+      setPhraseInput('');
       setReviewOpen(false);
       await markSaved(createDraftFromRule(savedRule));
       pushToast({
@@ -333,7 +377,28 @@ function PublisherAutoReplyEditor({
         onPermissionBlocker(permissionBlocker);
         return;
       }
-      if (isAutoReplyConflictError(error)) {
+      const conflictKind = getAutoReplyConflictKind(error);
+      if (conflictKind === 'phrase_conflict') {
+        setIssues((current) => ({
+          ...current,
+          phrases: 'Одна из фраз уже используется в другом автоответе.',
+        }));
+        pushToast({
+          tone: 'danger',
+          title: 'Фраза уже используется',
+          description: 'Удалите повторяющуюся фразу или измените другое правило.',
+        });
+        return;
+      }
+      if (conflictKind === 'client_upgrade_required') {
+        pushToast({
+          tone: 'danger',
+          title: 'Нужно обновить мини-приложение',
+          description: 'Закройте его в MAX, откройте снова и повторите сохранение.',
+        });
+        return;
+      }
+      if (conflictKind === 'version_conflict') {
         setConflict(true);
         pushToast({
           tone: 'danger',
@@ -351,32 +416,86 @@ function PublisherAutoReplyEditor({
 
   const updateDraft = useCallback(
     (change: Partial<AutoReplyDraft>) => {
-      setConflict(false);
       setDraft((current) => ({ ...current, ...change }));
     },
     [setDraft],
   );
 
+  const mergePendingPhrase = useCallback(
+    (value: AutoReplyDraft = draft) => {
+      const pending = normalizeAutoReplyPhrase(phraseInput);
+      if (!pending) {
+        return { draft: value };
+      }
+      const merged = mergeAutoReplyPhrases(value.phrases, [pending]);
+      return merged.issue
+        ? { draft: value, issue: merged.issue }
+        : { draft: { ...value, phrases: merged.phrases } };
+    },
+    [draft, phraseInput],
+  );
+
+  const addPhraseCandidates = useCallback(
+    (candidates: readonly string[]) => {
+      const merged = mergeAutoReplyPhrases(draft.phrases, candidates);
+      if (merged.issue) {
+        setIssues((current) => ({ ...current, phrases: merged.issue }));
+        return false;
+      }
+      const fuzzyIssue = validateAutoReplyTriggerDraft({
+        ...draft,
+        phrases: merged.phrases,
+      }).fuzzyMatch;
+      updateDraft({ phrases: merged.phrases });
+      setPhraseInput('');
+      setIssues((current) => ({ ...current, phrases: undefined, fuzzyMatch: fuzzyIssue }));
+      return true;
+    },
+    [draft, updateDraft],
+  );
+
+  const validateEditorDraft = useCallback(
+    (value: AutoReplyDraft) => {
+      const nextIssues = validateAutoReplyDraft(value);
+      if (missingImageCount > 0) {
+        nextIssues.content = `Выберите заново ${missingImageCount} фото из сохранённого черновика.`;
+      }
+      return nextIssues;
+    },
+    [missingImageCount],
+  );
+
   const validateAndReview = useCallback(() => {
-    const nextIssues = validateAutoReplyDraft(draft);
+    const composed = mergePendingPhrase();
+    if (composed.issue) {
+      setIssues((current) => ({ ...current, phrases: composed.issue }));
+      return;
+    }
+    const nextIssues = validateEditorDraft(composed.draft);
     setIssues(nextIssues);
     if (nextIssues.buttons) {
       setButtonsOpen(true);
     } else if (Object.keys(nextIssues).length === 0) {
+      if (composed.draft !== draft) {
+        setDraft(composed.draft);
+        setPhraseInput('');
+      }
       setReviewOpen(true);
     }
-  }, [draft]);
+  }, [draft, mergePendingPhrase, setDraft, validateEditorDraft]);
+
+  const editorDirty = dirty || normalizeAutoReplyPhrase(phraseInput).length > 0;
 
   const requestClose = useCallback(() => {
     if (saveMutation.isPending) {
       return;
     }
-    if (dirty) {
+    if (editorDirty) {
       setCloseConfirmOpen(true);
       return;
     }
     onClose();
-  }, [dirty, onClose, saveMutation.isPending]);
+  }, [editorDirty, onClose, saveMutation.isPending]);
 
   useNativeBackHandler(
     () => {
@@ -387,23 +506,29 @@ function PublisherAutoReplyEditor({
   );
 
   useManagedEntityLeaveGuard({
-    dirty,
+    dirty: editorDirty,
     saving: saveMutation.isPending,
     save: async () => {
-      const nextIssues = validateAutoReplyDraft(draft);
+      const composed = mergePendingPhrase();
+      if (composed.issue) {
+        setIssues((current) => ({ ...current, phrases: composed.issue }));
+        return false;
+      }
+      const nextIssues = validateEditorDraft(composed.draft);
       setIssues(nextIssues);
       if (Object.keys(nextIssues).length > 0) {
         pushToast({ tone: 'danger', title: 'Проверьте поля автоответа' });
         return false;
       }
       try {
-        await saveMutation.mutateAsync(draft);
+        await saveMutation.mutateAsync(composed.draft);
         return true;
       } catch {
         return false;
       }
     },
     discard: () => {
+      setPhraseInput('');
       void discard();
     },
   });
@@ -416,6 +541,25 @@ function PublisherAutoReplyEditor({
       <div className="publisher-auto-replies-page__state" role="status">
         <Spinner label={null} />
         <strong>Восстанавливаю редактор</strong>
+      </div>
+    );
+  }
+
+  if (storageReadError) {
+    return (
+      <div className="publisher-auto-replies-page__state has-error" role="alert">
+        <WarningCircle aria-hidden />
+        <strong>Не удалось восстановить черновик</strong>
+        <span>Повторите попытку или явно начните без локальной копии.</span>
+        <div className="publisher-auto-replies-page__state-actions">
+          <button type="button" onClick={retryHydration}>
+            <Refresh aria-hidden />
+            <span>Повторить</span>
+          </button>
+          <button type="button" onClick={() => void discard()}>
+            Начать заново
+          </button>
+        </div>
       </div>
     );
   }
@@ -438,36 +582,164 @@ function PublisherAutoReplyEditor({
         </div>
       ) : null}
 
-      <section className="publisher-auto-reply-editor__section">
+      <section className="publisher-auto-reply-editor__section is-triggers">
         <header>
-          <h2 id="publisher-auto-reply-phrase-title">Кодовая фраза</h2>
-          <small>Точное совпадение</small>
+          <h2 id="publisher-auto-reply-phrase-title">Фразы-триггеры</h2>
+          <small aria-live="polite">{getAutoReplyPhraseCountLabel(draft.phrases.length)}</small>
         </header>
-        <div className={cn('publisher-auto-reply-editor__field', issues.phrase && 'has-error')}>
-          <input
-            value={draft.phrase}
-            maxLength={AUTO_REPLY_PHRASE_MAX_LENGTH}
-            disabled={saveMutation.isPending}
-            placeholder="Например: прайс"
-            autoCapitalize="sentences"
-            aria-labelledby="publisher-auto-reply-phrase-title"
-            aria-describedby="publisher-auto-reply-phrase-meta"
-            aria-invalid={Boolean(issues.phrase)}
-            onChange={(event) => {
-              updateDraft({ phrase: event.target.value });
-              if (issues.phrase) {
-                setIssues((current) => ({ ...current, phrase: undefined }));
+
+        {draft.phrases.length > 0 ? (
+          <div
+            className="publisher-auto-reply-editor__phrases"
+            role="list"
+            aria-label="Добавленные фразы"
+          >
+            {draft.phrases.map((phrase, index) => (
+              <span
+                key={`${phrase}-${index}`}
+                className="publisher-auto-reply-editor__phrase-chip"
+                role="listitem"
+              >
+                <span>{phrase}</span>
+                <button
+                  type="button"
+                  disabled={saveMutation.isPending}
+                  onClick={() => {
+                    const phrases = draft.phrases.filter((_, phraseIndex) => phraseIndex !== index);
+                    updateDraft({
+                      phrases,
+                    });
+                    setIssues((current) => ({
+                      ...current,
+                      phrases: undefined,
+                      fuzzyMatch: validateAutoReplyTriggerDraft({ ...draft, phrases }).fuzzyMatch,
+                    }));
+                  }}
+                  aria-label={`Удалить фразу «${phrase}»`}
+                  title="Удалить фразу"
+                >
+                  <Xmark aria-hidden />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        <div className={cn('publisher-auto-reply-editor__field', issues.phrases && 'has-error')}>
+          <div className="publisher-auto-reply-editor__phrase-add">
+            <input
+              value={phraseInput}
+              maxLength={AUTO_REPLY_PHRASE_MAX_LENGTH}
+              disabled={saveMutation.isPending || draft.phrases.length >= AUTO_REPLY_MAX_PHRASES}
+              placeholder="Например: прайс"
+              autoCapitalize="sentences"
+              enterKeyHint="done"
+              aria-labelledby="publisher-auto-reply-phrase-title"
+              aria-describedby="publisher-auto-reply-phrase-meta"
+              aria-invalid={Boolean(issues.phrases)}
+              onPaste={(event) => {
+                const value = event.clipboardData.getData('text');
+                if (!/[\r\n]/u.test(value)) {
+                  return;
+                }
+                event.preventDefault();
+                addPhraseCandidates(splitAutoReplyPhrasePaste(value));
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
+                  return;
+                }
+                event.preventDefault();
+                addPhraseCandidates([phraseInput]);
+              }}
+              onChange={(event) => {
+                setPhraseInput(event.target.value);
+                setIssues((current) => ({ ...current, phrases: undefined }));
+              }}
+            />
+            <button
+              type="button"
+              disabled={
+                saveMutation.isPending ||
+                !phraseInput.trim() ||
+                draft.phrases.length >= AUTO_REPLY_MAX_PHRASES
               }
-            }}
-          />
+              onClick={() => addPhraseCandidates([phraseInput])}
+              aria-label="Добавить фразу"
+              title="Добавить фразу"
+            >
+              <Plus aria-hidden />
+            </button>
+          </div>
           <small
             id="publisher-auto-reply-phrase-meta"
             className="publisher-auto-reply-editor__field-meta"
-            role={issues.phrase ? 'alert' : undefined}
+            role={issues.phrases ? 'alert' : undefined}
           >
-            {issues.phrase ?? `${draft.phrase.length}/${AUTO_REPLY_PHRASE_MAX_LENGTH}`}
+            {issues.phrases ?? `${draft.phrases.length} из ${AUTO_REPLY_MAX_PHRASES}`}
           </small>
         </div>
+
+        <div className="publisher-auto-reply-editor__match-options">
+          <div className="publisher-auto-reply-editor__toggle-row">
+            <span>
+              <strong>Искать внутри сообщения</strong>
+              <small>{draft.matchInContext ? 'В любом месте текста' : 'Сообщение целиком'}</small>
+            </span>
+            <AutoReplySwitch
+              checked={draft.matchInContext}
+              disabled={saveMutation.isPending}
+              label="Искать фразу внутри сообщения"
+              onChange={(matchInContext) => updateDraft({ matchInContext })}
+            />
+          </div>
+          <div className="publisher-auto-reply-editor__toggle-row">
+            <span>
+              <strong>Учитывать опечатки</strong>
+              <small>{draft.fuzzyMatch ? 'Близкое написание' : 'Точное написание'}</small>
+            </span>
+            <AutoReplySwitch
+              checked={draft.fuzzyMatch}
+              disabled={saveMutation.isPending}
+              label="Учитывать опечатки во фразах"
+              onChange={(fuzzyMatch) => {
+                updateDraft({ fuzzyMatch });
+                setIssues((current) => ({
+                  ...current,
+                  fuzzyMatch: validateAutoReplyTriggerDraft({ ...draft, fuzzyMatch }).fuzzyMatch,
+                }));
+              }}
+            />
+          </div>
+          {issues.fuzzyMatch ? (
+            <small className="publisher-auto-reply-editor__match-error" role="alert">
+              {issues.fuzzyMatch}
+            </small>
+          ) : null}
+        </div>
+
+        <Suspense fallback={null}>
+          <LazyAutoReplyMatchTester
+            api={api}
+            chatId={chatId}
+            ruleId={rule?.id}
+            draft={draft}
+            pendingPhrase={phraseInput}
+            disabled={saveMutation.isPending}
+            onCommitPhrases={(phrases) => {
+              updateDraft({ phrases });
+              setPhraseInput('');
+              setIssues((current) => ({
+                ...current,
+                phrases: undefined,
+                fuzzyMatch: validateAutoReplyTriggerDraft({ ...draft, phrases }).fuzzyMatch,
+              }));
+            }}
+            onTriggerIssues={(triggerIssues) => {
+              setIssues((current) => ({ ...current, ...triggerIssues }));
+            }}
+          />
+        </Suspense>
       </section>
 
       <section className="publisher-auto-reply-editor__section is-content">
@@ -501,41 +773,59 @@ function PublisherAutoReplyEditor({
           </div>
         ) : null}
 
-        <BroadcastContentComposer
-          className="publisher-auto-reply-editor__composer"
-          text={draft.text}
-          sourceFormat="markdown"
-          maxLength={AUTO_REPLY_TEXT_MAX_LENGTH}
-          images={draft.images}
-          buttons={draft.buttons}
-          buttonsPerRow={1}
-          buttonsStatusLabel="Кнопка"
-          buttonsActive={draft.buttons.length > 0}
-          buttonsError={Boolean(issues.buttons)}
-          maxImages={Math.max(1, AUTO_REPLY_MAX_IMAGES - draft.retainedAssets.length)}
-          allowImages={draft.retainedAssets.length < AUTO_REPLY_MAX_IMAGES}
-          disabled={saveMutation.isPending}
-          textError={issues.content}
-          messageAriaLabel="Ответ на кодовую фразу"
-          textPlaceholder="Текст ответа"
-          textAriaLabel="Текст автоответа"
-          showToolLabels
-          onOpenButtons={() => setButtonsOpen(true)}
-          onTextChange={(text) => {
-            updateDraft({ text });
-            if (issues.content) {
-              setIssues((current) => ({ ...current, content: undefined }));
-            }
-          }}
-          onImagesChange={(images: BroadcastImage[]) => {
-            updateDraft({ images });
-            if (issues.content) {
-              setIssues((current) => ({ ...current, content: undefined }));
-            }
-          }}
-          onImagePreparationChange={setImagesPreparing}
-          onError={(message) => pushToast({ tone: 'danger', title: message })}
-        />
+        <Suspense
+          fallback={
+            <div className="publisher-auto-reply-editor__composer-placeholder" aria-busy="true">
+              <Spinner label={null} />
+            </div>
+          }
+        >
+          <LazyBroadcastContentComposer
+            className="publisher-auto-reply-editor__composer"
+            text={draft.text}
+            sourceFormat="markdown"
+            maxLength={AUTO_REPLY_TEXT_MAX_LENGTH}
+            images={draft.images}
+            buttons={draft.buttons}
+            buttonsPerRow={1}
+            buttonsStatusLabel="Кнопка"
+            buttonsActive={draft.buttons.length > 0}
+            buttonsError={Boolean(issues.buttons)}
+            maxImages={Math.max(1, AUTO_REPLY_MAX_IMAGES - draft.retainedAssets.length)}
+            allowImages={draft.retainedAssets.length < AUTO_REPLY_MAX_IMAGES}
+            disabled={saveMutation.isPending}
+            textError={issues.content}
+            messageAriaLabel="Ответ автоответа"
+            textPlaceholder="Текст ответа"
+            textAriaLabel="Текст автоответа"
+            showToolLabels
+            onOpenButtons={() => setButtonsOpen(true)}
+            onTextChange={(text) => {
+              updateDraft({ text });
+              if (issues.content) {
+                setIssues((current) => ({ ...current, content: undefined }));
+              }
+            }}
+            onImagesChange={(images: BroadcastImage[]) => {
+              updateDraft({ images });
+              if (issues.content) {
+                setIssues((current) => ({ ...current, content: undefined }));
+              }
+            }}
+            onImagePreparationChange={setImagesPreparing}
+            onError={(message) => pushToast({ tone: 'danger', title: message })}
+          />
+        </Suspense>
+        {missingImageCount > 0 ? (
+          <small className="publisher-auto-reply-editor__missing-images" role="alert">
+            Выберите заново {missingImageCount} фото из сохранённого черновика.
+          </small>
+        ) : null}
+        {storageReadError ? (
+          <small className="publisher-auto-reply-editor__missing-images" role="alert">
+            Локальный черновик недоступен. Сохраните автоответ перед закрытием редактора.
+          </small>
+        ) : null}
         {totalImages > 0 ? (
           <small className="publisher-auto-reply-editor__image-count">
             {totalImages} из {AUTO_REPLY_MAX_IMAGES} фото
@@ -604,7 +894,7 @@ function PublisherAutoReplyEditor({
         id="publisher-auto-reply-review"
         open={reviewOpen}
         title={rule ? 'Сохранить изменения?' : 'Создать автоответ?'}
-        summary={`Фраза «${normalizeAutoReplyDraft(draft).phrase}» сработает только при точном совпадении.`}
+        summary={`${getAutoReplyPhraseCountLabel(draft.phrases.length)} · ${getAutoReplyMatchModeLabel(draft)}.`}
         previewTitle={
           <MaxMarkdownPreview
             value={draft.text}
@@ -613,6 +903,9 @@ function PublisherAutoReplyEditor({
           />
         }
         previewMeta={[
+          draft.phrases.length > 0
+            ? `«${draft.phrases[0]}»${draft.phrases.length > 1 ? ` +${draft.phrases.length - 1}` : ''}`
+            : null,
           totalImages > 0 ? `${totalImages} фото` : null,
           draft.buttons.length > 0 ? formatBroadcastButtonsStatus(draft.buttons) : null,
           `Пауза: ${getAutoReplyCooldownLabel(draft.cooldownSeconds)}`,
@@ -632,12 +925,30 @@ function PublisherAutoReplyEditor({
         id="publisher-auto-reply-close"
         open={closeConfirmOpen}
         title="Закрыть редактор?"
-        summary="Черновик останется на этом устройстве и восстановится при следующем открытии."
+        summary={
+          storageReadError
+            ? 'Локальный черновик недоступен. Несохранённые изменения будут потеряны.'
+            : 'Черновик останется на этом устройстве и восстановится при следующем открытии.'
+        }
         confirmLabel="Закрыть"
         tone="danger"
         onClose={() => setCloseConfirmOpen(false)}
         onConfirm={() => {
-          persist();
+          const composed = mergePendingPhrase();
+          if (composed.issue) {
+            setIssues((current) => ({ ...current, phrases: composed.issue }));
+            setCloseConfirmOpen(false);
+            return;
+          }
+          if (missingImageCount > 0 && (modifiedSinceHydration || composed.draft !== draft)) {
+            setIssues((current) => ({
+              ...current,
+              content: `Выберите заново ${missingImageCount} фото из сохранённого черновика.`,
+            }));
+            setCloseConfirmOpen(false);
+            return;
+          }
+          void persist(composed.draft);
           setCloseConfirmOpen(false);
           onClose();
         }}
@@ -658,7 +969,7 @@ function AutoReplyRuleRow({
 }: {
   api: ApiTransport;
   chatId: string;
-  rule: PublisherAutoReplyRule;
+  rule: PublisherAutoReplyRuleV2;
   busy: boolean;
   conflict: boolean;
   onToggle: (enabled: boolean) => void;
@@ -670,12 +981,17 @@ function AutoReplyRuleRow({
       <div className="publisher-auto-reply-row__head">
         <span className="publisher-auto-reply-row__phrase">
           <Key aria-hidden />
-          <strong>{rule.phrase}</strong>
+          <strong>{rule.phrases[0] ?? 'Без фразы'}</strong>
+          {rule.phrases.length > 1 ? (
+            <small className="publisher-auto-reply-row__phrase-more">
+              +{rule.phrases.length - 1}
+            </small>
+          ) : null}
         </span>
         <AutoReplySwitch
           checked={rule.enabled}
           disabled={busy}
-          label={`${rule.enabled ? 'Выключить' : 'Включить'} автоответ «${rule.phrase}»`}
+          label={`${rule.enabled ? 'Выключить' : 'Включить'} автоответ «${rule.phrases[0] ?? 'без фразы'}»`}
           onChange={onToggle}
         />
       </div>
@@ -710,6 +1026,8 @@ function AutoReplyRuleRow({
       <footer className="publisher-auto-reply-row__footer">
         <span>
           {[
+            getAutoReplyPhraseCountLabel(rule.phrases.length),
+            getAutoReplyMatchModeLabel(rule),
             rule.content.images.length > 0 ? `${rule.content.images.length} фото` : null,
             rule.content.buttons.length > 0
               ? formatBroadcastButtonsStatus(rule.content.buttons)
@@ -724,7 +1042,7 @@ function AutoReplyRuleRow({
             type="button"
             disabled={busy}
             onClick={onEdit}
-            aria-label={`Редактировать автоответ «${rule.phrase}»`}
+            aria-label={`Редактировать автоответ «${rule.phrases[0] ?? 'без фразы'}»`}
             title="Редактировать"
           >
             <EditPencil aria-hidden />
@@ -733,7 +1051,7 @@ function AutoReplyRuleRow({
             type="button"
             disabled={busy}
             onClick={onDelete}
-            aria-label={`Удалить автоответ «${rule.phrase}»`}
+            aria-label={`Удалить автоответ «${rule.phrases[0] ?? 'без фразы'}»`}
             title="Удалить"
           >
             <Trash aria-hidden />
@@ -750,7 +1068,7 @@ function AutoReplyRuleRow({
   );
 }
 
-export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
+export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; userId: string }) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -761,7 +1079,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
   const entityQueryKey = [...PUBLISHER_ENTITY_QUERY_ROOT, 'chat', chatId] as const;
   const [createSheetOpen, setCreateSheetOpen] = useState(false);
   const [editorTarget, setEditorTarget] = useState<EditorTarget | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<PublisherAutoReplyRule | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PublisherAutoReplyRuleV2 | null>(null);
   const [conflictRuleId, setConflictRuleId] = useState<string | null>(null);
   const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [botBusy, setBotBusy] = useState(false);
@@ -824,7 +1142,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: ({ rule, enabled }: { rule: PublisherAutoReplyRule; enabled: boolean }) =>
+    mutationFn: ({ rule, enabled }: { rule: PublisherAutoReplyRuleV2; enabled: boolean }) =>
       updatePublisherAutoReply(api, chatId, rule.id, {
         requestId: createPublisherAutoReplyRequestId(),
         expectedVersion: rule.version,
@@ -839,7 +1157,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
         if (!current || typeof current !== 'object' || !('items' in current)) {
           return current;
         }
-        const response = current as { items: PublisherAutoReplyRule[]; total: number };
+        const response = current as { items: PublisherAutoReplyRuleV2[]; total: number };
         return {
           ...response,
           items: response.items.map((item) => (item.id === rule.id ? { ...item, enabled } : item)),
@@ -851,7 +1169,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
         if (!current || typeof current !== 'object' || !('items' in current)) {
           return current;
         }
-        const response = current as { items: PublisherAutoReplyRule[]; total: number };
+        const response = current as { items: PublisherAutoReplyRuleV2[]; total: number };
         return { ...response, items: buildRuleFromList(response.items, updated) };
       });
     },
@@ -860,13 +1178,21 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
       const blocker = parseBotPermissionBlocker(error);
       if (blocker) {
         setPermissionBlocker(blocker);
-      } else if (isAutoReplyConflictError(error)) {
-        setConflictRuleId(variables.rule.id);
       } else {
-        pushToast({
-          tone: 'danger',
-          title: describeUserFacingError(error, 'Не удалось изменить правило.'),
-        });
+        const conflictKind = getAutoReplyConflictKind(error);
+        if (conflictKind === 'version_conflict') {
+          setConflictRuleId(variables.rule.id);
+        } else {
+          pushToast({
+            tone: 'danger',
+            title:
+              conflictKind === 'client_upgrade_required'
+                ? 'Закройте мини-приложение и откройте его снова'
+                : conflictKind === 'phrase_conflict'
+                  ? 'Одна из фраз уже используется'
+                  : describeUserFacingError(error, 'Не удалось изменить правило.'),
+          });
+        }
       }
       await queryClient.invalidateQueries({ queryKey });
     },
@@ -892,19 +1218,19 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (rule: PublisherAutoReplyRule) =>
+    mutationFn: (rule: PublisherAutoReplyRuleV2) =>
       archivePublisherAutoReply(api, chatId, rule.id, {
         requestId: createPublisherAutoReplyRequestId(),
         expectedVersion: rule.version,
       }),
     onSuccess: async (_response, rule) => {
-      await clearAutoReplyDraft(chatId, rule.id);
+      await clearAutoReplyDraft(userId, chatId, rule.id);
       setDeleteTarget(null);
       pushToast({ tone: 'success', title: 'Автоответ удалён' });
       await queryClient.invalidateQueries({ queryKey });
     },
     onError: async (error, rule) => {
-      if (isAutoReplyConflictError(error)) {
+      if (getAutoReplyConflictKind(error) === 'version_conflict') {
         setConflictRuleId(rule.id);
         setDeleteTarget(null);
       } else {
@@ -931,12 +1257,12 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const handleSaved = (savedRule: PublisherAutoReplyRule) => {
+  const handleSaved = (savedRule: PublisherAutoReplyRuleV2) => {
     queryClient.setQueryData(queryKey, (current: unknown) => {
       if (!current || typeof current !== 'object' || !('items' in current)) {
         return { items: [savedRule], total: 1 };
       }
-      const response = current as { items: PublisherAutoReplyRule[]; total: number };
+      const response = current as { items: PublisherAutoReplyRuleV2[]; total: number };
       const exists = response.items.some((rule) => rule.id === savedRule.id);
       return {
         ...response,
@@ -967,7 +1293,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
       setCreateSheetOpen(false);
       setBotBusy(false);
     } catch (error) {
-      if (isAutoReplyConflictError(error)) {
+      if (isAutoReplyAuthoringConflictError(error)) {
         const current = await authoringQuery.refetch();
         const botUrl = current.data?.botUrl;
         if (botUrl && openMaxBotLinkAndClose(botUrl)) {
@@ -1016,6 +1342,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
         <PublisherAutoReplyEditor
           key={editorTarget.kind === 'edit' ? editorTarget.rule.id : 'new'}
           api={api}
+          userId={userId}
           chatId={chatId}
           target={editorTarget}
           onClose={() => setEditorTarget(null)}
@@ -1199,8 +1526,12 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
         id="publisher-auto-reply-delete"
         open={deleteTarget !== null}
         title="Удалить автоответ?"
-        summary="Публик перестанет отвечать на эту кодовую фразу."
-        previewTitle={deleteTarget?.phrase}
+        summary="Публик перестанет отвечать по этому правилу."
+        previewTitle={
+          deleteTarget
+            ? `${deleteTarget.phrases[0] ?? 'Без фразы'}${deleteTarget.phrases.length > 1 ? ` +${deleteTarget.phrases.length - 1}` : ''}`
+            : undefined
+        }
         confirmLabel="Удалить"
         confirmBusyLabel="Удаляю..."
         tone="danger"

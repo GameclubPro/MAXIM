@@ -10,6 +10,9 @@ function notificationSession(overrides: Record<string, unknown> = {}) {
     targetChatId: '-100500',
     state: PublisherAutoReplyAuthoringState.REVIEW,
     phrase: 'Каталог',
+    triggerPhrases: ['Каталог'],
+    matchInContext: false,
+    fuzzyMatch: false,
     failureCode: null,
     privateChatId: '42',
     botStatusMessageId: null,
@@ -103,6 +106,47 @@ describe('PublisherAutoReplyAuthoringDeliveryService', () => {
     );
   });
 
+  it('explains the fuzzy minimum while keeping the phrase step active', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      publisherAutoReplyAuthoringSession: {
+        findUnique: jest.fn().mockResolvedValue(
+          notificationSession({
+            state: PublisherAutoReplyAuthoringState.AWAITING_PHRASE,
+            phrase: null,
+            triggerPhrases: [],
+            fuzzyMatch: true,
+            failureCode: 'fuzzy_phrase_too_short',
+            notificationKind: 'prompt_phrase',
+          }),
+        ),
+        updateMany,
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, _text: string, options: { beforeSend?: () => Promise<void> }) => {
+            await options.beforeSend?.();
+            return { messageId: 'fuzzy-minimum-status-mid' };
+          },
+        ),
+    };
+    const service = new PublisherAutoReplyAuthoringDeliveryService(
+      prisma as never,
+      maxClient as never,
+    );
+
+    await expect(
+      service.deliver({ ...readyJob, notification: 'prompt_phrase' }),
+    ).resolves.toBeUndefined();
+
+    expect(maxClient.sendMessageImmediateWithId.mock.calls[0]?.[1]).toBe(
+      'Для учёта опечаток каждая фраза должна содержать не меньше 5 букв или цифр. Отправьте другой набор.',
+    );
+  });
+
   it('does not clear a newer notification revision after an older send completes', async () => {
     const updateMany = jest
       .fn()
@@ -158,6 +202,100 @@ describe('PublisherAutoReplyAuthoringDeliveryService', () => {
     });
     expect(supersededRelease.data).not.toHaveProperty('notificationPending');
     expect(supersededRelease.data).not.toHaveProperty('notificationKind');
+  });
+
+  it('renders multiline phrases and independent mode toggles in the review notification', async () => {
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    const prisma = {
+      publisherAutoReplyAuthoringSession: {
+        findUnique: jest.fn().mockResolvedValue(
+          notificationSession({
+            triggerPhrases: ['Каталог', 'Стоимость'],
+            matchInContext: true,
+            fuzzyMatch: true,
+          }),
+        ),
+        updateMany,
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, _text: string, options: { beforeSend?: () => Promise<void> }) => {
+            await options.beforeSend?.();
+            return { messageId: 'review-status-mid' };
+          },
+        ),
+    };
+    const service = new PublisherAutoReplyAuthoringDeliveryService(
+      prisma as never,
+      maxClient as never,
+    );
+
+    await expect(service.deliver(readyJob)).resolves.toBeUndefined();
+
+    const [, text, options] = maxClient.sendMessageImmediateWithId.mock.calls[0] ?? [];
+    expect(text).toBe(
+      'Автоответ готов. 2 фразы: «Каталог», «Стоимость». Фото: 2. Режим: поиск внутри сообщения, учёт опечаток.',
+    );
+    expect(options.buttons).toEqual([
+      [expect.objectContaining({ text: 'Включить', payload: 'ar:activate:token-1' })],
+      [
+        expect.objectContaining({ text: 'В тексте: да', payload: 'ar:toggle_context:token-1' }),
+        expect.objectContaining({ text: 'Опечатки: да', payload: 'ar:toggle_fuzzy:token-1' }),
+      ],
+      [
+        expect.objectContaining({ text: 'Изменить фразы' }),
+        expect.objectContaining({ text: 'Заменить ответ' }),
+      ],
+      [expect.objectContaining({ text: 'Отмена' })],
+    ]);
+  });
+
+  it.each([
+    [
+      'trigger_capacity',
+      'В чате достигнут лимит фраз автоответов. Уменьшите набор или удалите другой автоответ в Публике.',
+    ],
+    [
+      'fuzzy_trigger_capacity',
+      'Достигнут лимит фраз с учётом опечаток. Отключите «Опечатки» или уменьшите набор фраз.',
+    ],
+  ])('renders an actionable %s review warning', async (failureCode, warning) => {
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    const prisma = {
+      publisherAutoReplyAuthoringSession: {
+        findUnique: jest.fn().mockResolvedValue(notificationSession({ failureCode })),
+        updateMany,
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, _text: string, options: { beforeSend?: () => Promise<void> }) => {
+            await options.beforeSend?.();
+            return { messageId: 'capacity-status-mid' };
+          },
+        ),
+    };
+    const service = new PublisherAutoReplyAuthoringDeliveryService(
+      prisma as never,
+      maxClient as never,
+    );
+
+    await expect(service.deliver(readyJob)).resolves.toBeUndefined();
+
+    expect(maxClient.sendMessageImmediateWithId.mock.calls[0]?.[1]).toContain(warning);
   });
 
   it('quarantines an attempted send as ambiguous instead of retrying it', async () => {

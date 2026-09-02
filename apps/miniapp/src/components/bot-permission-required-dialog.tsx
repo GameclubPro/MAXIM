@@ -3,7 +3,7 @@ import { getBotPermissionBlockerLabels } from '../lib/bot-permission-error';
 import { ActionConfirmSheet } from './ui/action-confirm-sheet';
 import './bot-permission-required-dialog.css';
 
-type BotPermissionRequiredDialogProps = {
+export type BotPermissionRequiredDialogProps = {
   id: string;
   blocker: BotPermissionBlocker | null;
   isRechecking: boolean;

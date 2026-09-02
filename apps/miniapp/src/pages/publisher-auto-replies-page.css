@@ -2,6 +2,7 @@
   .publisher-auto-replies-page {
     --auto-reply-danger-border: color-mix(in srgb, var(--color-danger) 25%, transparent);
     --auto-reply-danger-surface: color-mix(in srgb, var(--color-danger) 9%, var(--color-surface));
+    --auto-reply-success-border: color-mix(in srgb, var(--color-success) 35%, var(--color-border));
     --auto-reply-media-action-surface: color-mix(in srgb, var(--color-surface) 88%, transparent);
     --auto-reply-save-surface: color-mix(in srgb, var(--color-surface-muted) 92%, transparent);
     --auto-reply-primary-surface: color-mix(in srgb, var(--color-accent) 94%, #000);
@@ -138,6 +139,7 @@
   }
 
   .publisher-auto-replies-page__state > :is(button, a),
+  .publisher-auto-replies-page__state-actions button,
   .publisher-auto-replies-page__empty > button {
     min-height: 44px;
     display: inline-flex;
@@ -153,6 +155,13 @@
     font-size: 0.78rem;
     font-weight: 800;
     text-decoration: none;
+  }
+
+  .publisher-auto-replies-page__state-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
   }
 
   .publisher-auto-replies-page__state button svg,
@@ -285,6 +294,13 @@
     font-size: 0.84rem;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .publisher-auto-reply-row__phrase-more {
+    flex: 0 0 auto;
+    color: var(--color-ink-subtle);
+    font-size: 0.68rem;
+    font-weight: 800;
   }
 
   .publisher-auto-reply-row__content {
@@ -555,6 +571,74 @@
     font-weight: 750;
   }
 
+  .publisher-auto-reply-editor__phrases {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .publisher-auto-reply-editor__phrase-chip {
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    align-items: center;
+    overflow: hidden;
+    padding-left: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+    color: var(--color-ink);
+    font-size: 0.76rem;
+    font-weight: 760;
+  }
+
+  .publisher-auto-reply-editor__phrase-chip > span {
+    min-width: 0;
+    padding-block: 7px;
+    overflow-wrap: anywhere;
+  }
+
+  .publisher-auto-reply-editor__phrase-chip button {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--color-ink-muted);
+    place-items: center;
+  }
+
+  .publisher-auto-reply-editor__phrase-chip button svg,
+  .publisher-auto-reply-editor__phrase-add button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .publisher-auto-reply-editor__phrase-add,
+  .publisher-auto-reply-editor__tester-row {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+  }
+
+  .publisher-auto-reply-editor__phrase-add button {
+    width: 48px;
+    min-width: 48px;
+    height: 48px;
+    display: grid;
+    padding: 0;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 8px;
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    place-items: center;
+  }
+
   .publisher-auto-reply-editor__field input,
   .publisher-auto-reply-editor__select-field select {
     width: 100%;
@@ -579,6 +663,13 @@
     color: var(--color-ink-subtle);
     font-size: 0.67rem;
     font-weight: 680;
+  }
+
+  .publisher-auto-reply-editor__missing-images {
+    color: var(--color-danger);
+    font-size: 0.7rem;
+    font-weight: 720;
+    line-height: 1.4;
   }
 
   .publisher-auto-reply-editor__field.has-error .publisher-auto-reply-editor__field-meta {
@@ -636,9 +727,151 @@
     border-bottom: 1px solid var(--color-border);
   }
 
+  .publisher-auto-reply-editor__match-options {
+    min-width: 0;
+    display: grid;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .publisher-auto-reply-editor__match-options .publisher-auto-reply-editor__toggle-row {
+    padding: 5px 0;
+  }
+
+  .publisher-auto-reply-editor__match-options
+    .publisher-auto-reply-editor__toggle-row:last-of-type {
+    border-bottom: 0;
+  }
+
+  .publisher-auto-reply-editor__toggle-row > span {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .publisher-auto-reply-editor__toggle-row small {
+    color: var(--color-ink-subtle);
+    font-size: 0.67rem;
+    font-weight: 680;
+    line-height: 1.35;
+  }
+
   .publisher-auto-reply-editor__toggle-row strong {
     color: var(--color-ink);
     font-size: 0.78rem;
+  }
+
+  .publisher-auto-reply-editor__match-error,
+  .publisher-auto-reply-editor__tester > small {
+    color: var(--color-danger);
+    font-size: 0.68rem;
+    font-weight: 720;
+    line-height: 1.4;
+  }
+
+  .publisher-auto-reply-editor__match-error {
+    padding: 7px 0 2px;
+    border-top: 1px solid var(--auto-reply-danger-border);
+  }
+
+  .publisher-auto-reply-editor__tester {
+    min-width: 0;
+    display: grid;
+    gap: 7px;
+    padding-top: 10px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .publisher-auto-reply-editor__tester > label {
+    color: var(--color-ink-muted);
+    font-size: 0.73rem;
+    font-weight: 780;
+  }
+
+  .publisher-auto-reply-editor__tester-row input {
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 8px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 0.84rem;
+  }
+
+  .publisher-auto-reply-editor__tester-row input[aria-invalid='true'] {
+    border-color: var(--color-danger);
+  }
+
+  .publisher-auto-reply-editor__tester-row button {
+    min-width: 112px;
+    min-height: 48px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 8px;
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 820;
+  }
+
+  .publisher-auto-reply-editor__tester-row button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .publisher-auto-reply-editor__preview-result {
+    min-width: 0;
+    min-height: 48px;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+    color: var(--color-ink-muted);
+  }
+
+  .publisher-auto-reply-editor__preview-result:is(.is-ambiguous, .is-other) {
+    border-color: var(--auto-reply-danger-border);
+    color: var(--color-danger);
+  }
+
+  .publisher-auto-reply-editor__preview-result.is-matched {
+    border-color: var(--auto-reply-success-border);
+    color: var(--color-success);
+  }
+
+  .publisher-auto-reply-editor__preview-result > svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .publisher-auto-reply-editor__preview-result > span {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .publisher-auto-reply-editor__preview-result strong {
+    color: currentColor;
+    font-size: 0.74rem;
+  }
+
+  .publisher-auto-reply-editor__preview-result small {
+    min-width: 0;
+    color: var(--color-ink-subtle);
+    font-size: 0.67rem;
+    font-weight: 680;
+    overflow-wrap: anywhere;
   }
 
   .publisher-auto-reply-editor__save-bar {
@@ -668,6 +901,10 @@
     left: max(var(--app-page-gutter), calc((100vw - var(--app-shell-max-width)) / 2));
   }
 
+  html[data-max-keyboard-open='true'] .publisher-auto-reply-editor__save-bar {
+    display: none;
+  }
+
   .publisher-auto-reply-editor__save-bar button {
     width: 100%;
     min-height: 48px;
@@ -687,6 +924,15 @@
 
   .publisher-auto-reply-editor__composer {
     min-width: 0;
+  }
+
+  .publisher-auto-reply-editor__composer-placeholder {
+    min-height: 156px;
+    display: grid;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 8px;
+    background: var(--color-surface);
+    place-items: center;
   }
 
   .publisher-auto-replies-page .broadcast-content-composer__workspace,
@@ -812,6 +1058,14 @@
 
     .publisher-auto-reply-editor__retained {
       grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .publisher-auto-reply-editor__tester-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .publisher-auto-reply-editor__tester-row button {
+      width: 100%;
     }
   }
 

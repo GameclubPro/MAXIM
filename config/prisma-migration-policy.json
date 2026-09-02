@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260901100000_add_forwarded_message_restriction",
-  "baselineNamesSha256": "41a26bdc02d2478d9a0f5b2112cf506161e4933488cf4a4cb1b6c62c106f304a",
-  "baselineContentsSha256": "5ae9fd2623be6fbda0ebcfa63973802de6818280345d1273f8cb1851b2ff6d86",
+  "baselineThrough": "20260902120000_add_publisher_auto_reply_matchers",
+  "baselineNamesSha256": "0b8025a70973bdefb61991d721b9b86aaadc701c1623cdf2195c1bf3aedfb986",
+  "baselineContentsSha256": "cd097f8a813adf6a31244efde6ce3e5715e7461345cab27d43c67d53dc7db98c",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -76,6 +76,11 @@
       "reason": "Delete retired Major-owned VK settings, sources, and posts, including cross-owner child posts attached to a Major source, then make every persisted VK owner scope Publisher-only with an explicit nonblank bot id.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Compatible runtime release a5ef2537ebb96bde30ce30a5c33586d41248d8ca was deployed and verified on every production API role before this migration; it no longer creates, recovers, schedules, or publishes Major-owned VK parsing work and supplies explicit Publisher ownership on every surviving write."
+    },
+    "20260902120000_add_publisher_auto_reply_matchers": {
+      "reason": "Manual review approved two static trigger functions that validate Publisher auto-reply trigger ownership and mirror the legacy primary phrase plus archive state, plus an atomic widening of the authoring-message kind check for durable callback deduplication. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION, PL/pgSQL bodies, UPDATE OF, and the check-constraint replacement as dynamic or destructive, but this migration contains no dynamic EXECUTE and drops no schema object, column, or accepted value.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Every existing-table column is nullable or has an exact-match-compatible constant default, all legacy phrase columns and indexes remain present, existing authoring PHRASE and CONTENT rows remain accepted, and existing deliveries retain EXACT_FULL distance-zero snapshots. The explicit PostgreSQL transaction holds the parent-rule write lock from the additive ALTER through the backfill and trigger installation, so the one position-zero trigger per legacy rule and the database mirror remain aligned with mixed-version writers throughout a rolling deployment."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -93,6 +98,9 @@
     },
     "20260829120000_add_publisher_auto_replies": {
       "reason": "All non-concurrent indexes are created with new empty auto-reply, asset, delivery, authoring-message, and lease tables. Keeping partial uniqueness, draft provenance, deduplication, and recovery indexes atomic prevents unfenced matcher or authoring states, and the only existing-table change is an additive boolean column with a constant default."
+    },
+    "20260902120000_add_publisher_auto_reply_matchers": {
+      "reason": "Trigger uniqueness and lookup indexes are created on the new table in the same atomic migration as its bounded one-row-per-rule backfill. The redundant rule id/chat unique index is required immediately by the composite ownership foreign key, and the nullable delivery provenance index keeps trigger replacement from scanning the delivery ledger; these Publisher auto-reply tables have bounded recent product history."
     }
   }
 }

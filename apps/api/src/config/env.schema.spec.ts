@@ -247,6 +247,7 @@ describe('validateEnv boolean parsing', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults).toMatchObject({
       PUBLISHER_AUTO_REPLY_DELAY_MS: 1_500,
+      PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE: 'on',
       PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: 3,
       PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: 10,
       PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: 30,
@@ -259,6 +260,7 @@ describe('validateEnv boolean parsing', () => {
       validateEnv(
         createValidEnv({
           PUBLISHER_AUTO_REPLY_DELAY_MS: '2500',
+          PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE: 'shadow',
           PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: '5',
           PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: '20',
           PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: '50',
@@ -269,6 +271,7 @@ describe('validateEnv boolean parsing', () => {
       ),
     ).toMatchObject({
       PUBLISHER_AUTO_REPLY_DELAY_MS: 2_500,
+      PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE: 'shadow',
       PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: 5,
       PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: 20,
       PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: 50,
@@ -279,6 +282,7 @@ describe('validateEnv boolean parsing', () => {
 
     for (const [key, value] of [
       ['PUBLISHER_AUTO_REPLY_DELAY_MS', '60001'],
+      ['PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE', 'canary'],
       ['PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT', '0'],
       ['PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT', '1001'],
       ['PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT', '1001'],

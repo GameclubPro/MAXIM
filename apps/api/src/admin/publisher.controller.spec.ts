@@ -26,6 +26,36 @@ describe('PublisherController', () => {
       ],
       [PublisherController.prototype.cancelPostImport, 'post-imports', RequestMethod.DELETE],
       [
+        PublisherController.prototype.listAutoReplies,
+        'entities/chat/:entityId/auto-replies',
+        RequestMethod.GET,
+      ],
+      [
+        PublisherController.prototype.getAutoReply,
+        'entities/chat/:entityId/auto-replies/:ruleId',
+        RequestMethod.GET,
+      ],
+      [
+        PublisherController.prototype.previewAutoReplyMatch,
+        'entities/chat/:entityId/auto-replies/match-preview',
+        RequestMethod.POST,
+      ],
+      [
+        PublisherController.prototype.createAutoReply,
+        'entities/chat/:entityId/auto-replies',
+        RequestMethod.POST,
+      ],
+      [
+        PublisherController.prototype.updateAutoReply,
+        'entities/chat/:entityId/auto-replies/:ruleId',
+        RequestMethod.PATCH,
+      ],
+      [
+        PublisherController.prototype.archiveAutoReply,
+        'entities/chat/:entityId/auto-replies/:ruleId',
+        RequestMethod.DELETE,
+      ],
+      [
         PublisherController.prototype.createAutoReplyAuthoringSession,
         'entities/chat/:entityId/auto-replies/authoring-sessions',
         RequestMethod.POST,
@@ -147,6 +177,7 @@ describe('PublisherController', () => {
       create: jest.fn().mockResolvedValue({ id: 'rule-1' }),
       update: jest.fn().mockResolvedValue({ id: 'rule-1', version: 2 }),
       archive: jest.fn().mockResolvedValue({ id: 'rule-1', archived: true }),
+      previewMatch: jest.fn().mockResolvedValue({ outcome: 'no_match', selected: null }),
     };
     const autoReplyAuthoringService = {
       create: jest
@@ -200,6 +231,9 @@ describe('PublisherController', () => {
     await controller.createAutoReply('chat-1', user, autoReplyBody);
     await controller.updateAutoReply('chat-1', 'rule-1', user, autoReplyBody);
     await controller.archiveAutoReply('chat-1', 'rule-1', user, autoReplyBody);
+    await expect(
+      controller.previewAutoReplyMatch('chat-1', user, { message: 'прайс' }, '2'),
+    ).resolves.toEqual({ outcome: 'no_match', selected: null });
 
     expect(policyService.listEntities).toHaveBeenCalledWith(user, listQuery);
     expect(policyService.resolveEntities).toHaveBeenCalledWith(user, resolveBody);
@@ -220,11 +254,20 @@ describe('PublisherController', () => {
       action: 'publish',
     });
     expect(entityRefreshService.requestRefresh).toHaveBeenCalledWith('chat', 'chat-1', user);
-    expect(autoReplyService.list).toHaveBeenCalledWith('chat-1', user);
-    expect(autoReplyService.get).toHaveBeenCalledWith('chat-1', 'rule-1', user);
-    expect(autoReplyService.create).toHaveBeenCalledWith('chat-1', user, autoReplyBody);
-    expect(autoReplyService.update).toHaveBeenCalledWith('chat-1', 'rule-1', user, autoReplyBody);
+    expect(autoReplyService.list).toHaveBeenCalledWith('chat-1', user, 1);
+    expect(autoReplyService.get).toHaveBeenCalledWith('chat-1', 'rule-1', user, 1);
+    expect(autoReplyService.create).toHaveBeenCalledWith('chat-1', user, autoReplyBody, 1);
+    expect(autoReplyService.update).toHaveBeenCalledWith(
+      'chat-1',
+      'rule-1',
+      user,
+      autoReplyBody,
+      1,
+    );
     expect(autoReplyService.archive).toHaveBeenCalledWith('chat-1', 'rule-1', user, autoReplyBody);
+    expect(autoReplyService.previewMatch).toHaveBeenCalledWith('chat-1', user, {
+      message: 'прайс',
+    });
     await controller.createAutoReplyAuthoringSession('chat-1', user, autoReplyBody);
     await controller.getCurrentAutoReplyAuthoringSession('chat-1', user);
     await controller.cancelCurrentAutoReplyAuthoringSession('chat-1', user);
@@ -261,6 +304,10 @@ describe('PublisherController', () => {
       }),
     ).toThrow(BadRequestException);
     expect(() => controller.refreshEntity('group', 'group-1', user)).toThrow(BadRequestException);
+    expect(() => controller.listAutoReplies('chat-1', user, '3')).toThrow(BadRequestException);
+    expect(() => controller.previewAutoReplyMatch('chat-1', user, { message: 'test' })).toThrow(
+      BadRequestException,
+    );
     expect(() =>
       controller.updateModules('group', 'group-1', user, {
         expectedRevision: 0,

@@ -13,12 +13,33 @@ const user = {
 
 const now = new Date('2026-08-29T10:00:00.000Z');
 
+function triggerRow(
+  position = 0,
+  phrase = 'ПРАЙС',
+  normalizedPhrase = 'прайс',
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: position === 0 ? 'primary:rule-1' : `trigger-${position}`,
+    chatId: 'chat-1',
+    ruleId: 'rule-1',
+    position,
+    phrase,
+    normalizedPhrase,
+    archivedAt: null,
+    createdAt: now,
+    ...overrides,
+  };
+}
+
 function ruleRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'rule-1',
     chatId: 'chat-1',
     phrase: 'ПРАЙС',
     normalizedPhrase: 'прайс',
+    matchInContext: false,
+    fuzzyMatch: false,
     enabled: true,
     cooldownSeconds: 30,
     version: 1,
@@ -39,11 +60,17 @@ function ruleRow(overrides: Record<string, unknown> = {}) {
       createdAt: now,
       assets: [],
     },
+    triggers: [triggerRow()],
     ...overrides,
   };
 }
 
-function createFixture(options: { moduleEnabled?: boolean } = {}) {
+function createFixture(
+  options: {
+    moduleEnabled?: boolean;
+    extendedMatchingMode?: 'off' | 'shadow' | 'on';
+  } = {},
+) {
   const tx = {
     publisherAutoReplyRule: {
       create: jest.fn().mockResolvedValue({ id: 'rule-1', version: 1 }),
@@ -59,11 +86,21 @@ function createFixture(options: { moduleEnabled?: boolean } = {}) {
       upsert: jest.fn(),
     },
     publisherAutoReplyContentAsset: { create: jest.fn() },
+    publisherAutoReplyTrigger: {
+      count: jest.fn().mockResolvedValue(0),
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     publisherAutoReplyMutationRecord: { create: jest.fn().mockResolvedValue({}) },
     publisherEntitySettings: {
-      upsert: jest.fn().mockResolvedValue({ revision: 4 }),
+      upsert: jest
+        .fn()
+        .mockImplementation(async (args: { select?: Record<string, unknown> }) =>
+          args.select?.autoReplyConfigRevision ? { autoReplyConfigRevision: 5 } : { revision: 4 },
+        ),
     },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
+    $queryRaw: jest.fn().mockResolvedValue([]),
   };
   const prisma = {
     publisherAutoReplyRule: {
@@ -72,6 +109,10 @@ function createFixture(options: { moduleEnabled?: boolean } = {}) {
       findFirst: jest.fn().mockResolvedValue(ruleRow()),
     },
     publisherAutoReplyAsset: { findFirst: jest.fn() },
+    publisherAutoReplyTrigger: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     publisherAutoReplyMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
     $transaction: jest
       .fn()
@@ -89,6 +130,9 @@ function createFixture(options: { moduleEnabled?: boolean } = {}) {
     prisma as never,
     policy as never,
     maxClient as never,
+    {
+      get: jest.fn((_key: string, fallback: unknown) => options.extendedMatchingMode ?? fallback),
+    } as never,
   );
   return { service, prisma, tx, policy, maxClient };
 }
@@ -182,13 +226,435 @@ describe('PublisherAutoReplyService', () => {
       content: { text: 'Ответ' },
     });
 
-    expect(fixture.tx.publisherEntitySettings.upsert).not.toHaveBeenCalled();
+    expect(fixture.tx.publisherEntitySettings.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.publisherEntitySettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ autoReplyConfigRevision: { increment: 1 } }),
+        select: { autoReplyConfigRevision: true },
+      }),
+    );
     expect(fixture.tx.auditLog.create).toHaveBeenCalledTimes(1);
     expect(fixture.policy.assertBotCapabilityForFeatureEnablement).toHaveBeenCalledWith(
       'chat',
       'chat-1',
       ['enabled'],
     );
+  });
+
+  it('presents ordered phrases and matching modes only through the v2 read contract', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    const advanced = ruleRow({
+      matchInContext: true,
+      fuzzyMatch: true,
+      triggers: [triggerRow(), triggerRow(1, 'Стоимость', 'стоимость')],
+    });
+    fixture.prisma.publisherAutoReplyRule.findMany.mockResolvedValue([advanced]);
+    fixture.prisma.publisherAutoReplyRule.findFirst.mockResolvedValue(advanced);
+
+    const listed = await fixture.service.list('chat-1', user, 2);
+    const fetched = await fixture.service.get('chat-1', 'rule-1', user, 2);
+
+    expect(listed).toMatchObject({
+      items: [
+        expect.objectContaining({
+          phrases: ['ПРАЙС', 'Стоимость'],
+          matchInContext: true,
+          fuzzyMatch: true,
+        }),
+      ],
+      total: 1,
+    });
+    expect(fetched).toMatchObject({
+      phrases: ['ПРАЙС', 'Стоимость'],
+      matchInContext: true,
+      fuzzyMatch: true,
+    });
+    expect(listed.items[0]).not.toHaveProperty('phrase');
+    expect(fetched).not.toHaveProperty('phrase');
+  });
+
+  it('creates a v2 rule with aliases, matching modes, and one config revision bump', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    fixture.prisma.publisherAutoReplyRule.findFirst.mockResolvedValue(
+      ruleRow({
+        phrase: 'Каталог',
+        normalizedPhrase: 'каталог',
+        matchInContext: true,
+        fuzzyMatch: true,
+        triggers: [triggerRow(0, 'Каталог', 'каталог'), triggerRow(1, 'Стоимость', 'стоимость')],
+      }),
+    );
+
+    await expect(
+      fixture.service.create(
+        'chat-1',
+        user,
+        {
+          requestId: 'request_create_v2',
+          phrases: [' Каталог ', ' Стоимость '],
+          matchInContext: true,
+          fuzzyMatch: true,
+          content: { text: 'Ответ' },
+        },
+        2,
+      ),
+    ).resolves.toMatchObject({
+      phrases: ['Каталог', 'Стоимость'],
+      matchInContext: true,
+      fuzzyMatch: true,
+    });
+
+    expect(fixture.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.publisherAutoReplyTrigger.count).toHaveBeenCalledTimes(2);
+    expect(fixture.tx.publisherAutoReplyRule.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        phrase: 'Каталог',
+        normalizedPhrase: 'каталог',
+        matchInContext: true,
+        fuzzyMatch: true,
+      }),
+      select: { id: true, version: true },
+    });
+    expect(fixture.tx.publisherAutoReplyTrigger.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          ruleId: 'rule-1',
+          chatId: 'chat-1',
+          position: 1,
+          phrase: 'Стоимость',
+          normalizedPhrase: 'стоимость',
+          archivedAt: null,
+        },
+      ],
+    });
+    expect(fixture.tx.publisherEntitySettings.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.publisherEntitySettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ select: { autoReplyConfigRevision: true } }),
+    );
+    expect(fixture.tx.auditLog.create.mock.calls[0]?.[0]?.data?.payload).toMatchObject({
+      phrases: [
+        { length: 7, sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+        { length: 9, sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+      ],
+      matchInContext: true,
+      fuzzyMatch: true,
+    });
+  });
+
+  it('atomically replaces v2 aliases and bumps config revision on matching changes', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    const existing = ruleRow();
+    const updated = ruleRow({
+      phrase: 'Каталог',
+      normalizedPhrase: 'каталог',
+      matchInContext: true,
+      fuzzyMatch: true,
+      version: 2,
+      triggers: [triggerRow(0, 'Каталог', 'каталог'), triggerRow(1, 'Стоимость', 'стоимость')],
+    });
+    fixture.prisma.publisherAutoReplyRule.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValue(updated);
+
+    await expect(
+      fixture.service.update(
+        'chat-1',
+        'rule-1',
+        user,
+        {
+          requestId: 'request_update_v2',
+          expectedVersion: 1,
+          phrases: ['Каталог', 'Стоимость'],
+          matchInContext: true,
+          fuzzyMatch: true,
+        },
+        2,
+      ),
+    ).resolves.toMatchObject({
+      version: 2,
+      phrases: ['Каталог', 'Стоимость'],
+      matchInContext: true,
+      fuzzyMatch: true,
+    });
+
+    expect(fixture.tx.publisherAutoReplyRule.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ matchInContext: true, fuzzyMatch: true }),
+      }),
+    );
+    expect(fixture.tx.publisherAutoReplyTrigger.deleteMany).toHaveBeenCalledWith({
+      where: { ruleId: 'rule-1', position: { gt: 0 } },
+    });
+    expect(fixture.tx.publisherAutoReplyRule.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'rule-1' },
+        data: { phrase: 'Каталог', normalizedPhrase: 'каталог' },
+      }),
+    );
+    expect(fixture.tx.publisherAutoReplyTrigger.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: [expect.objectContaining({ position: 1 })] }),
+    );
+    expect(fixture.tx.publisherEntitySettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ select: { autoReplyConfigRevision: true } }),
+    );
+  });
+
+  it('previews a draft context match without persisting it', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+
+    await expect(
+      fixture.service.previewMatch('chat-1', user, {
+        message: 'Подскажите, пожалуйста, прайс сегодня',
+        draft: {
+          phrases: ['Прайс'],
+          matchInContext: true,
+          fuzzyMatch: false,
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: 'matched',
+      selected: {
+        ruleId: null,
+        phrase: 'Прайс',
+        matchKind: 'exact_context',
+        distance: 0,
+        matchedDraft: true,
+      },
+    });
+    expect(fixture.prisma.publisherAutoReplyTrigger.findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        archivedAt: null,
+        rule: {
+          is: {
+            enabled: true,
+            archivedAt: null,
+            currentContentRevisionId: { not: null },
+          },
+        },
+      },
+      orderBy: [{ ruleId: 'asc' }, { position: 'asc' }, { id: 'asc' }],
+      take: 201,
+      select: {
+        id: true,
+        ruleId: true,
+        position: true,
+        phrase: true,
+        normalizedPhrase: true,
+        rule: { select: { matchInContext: true, fuzzyMatch: true } },
+      },
+    });
+    expect(fixture.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('excludes the edited rule from the bounded preview query', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+
+    await fixture.service.previewMatch('chat-1', user, {
+      message: 'Прайс',
+      draft: {
+        ruleId: 'rule-1',
+        phrases: ['Прайс'],
+        matchInContext: false,
+        fuzzyMatch: false,
+      },
+    });
+
+    expect(fixture.prisma.publisherAutoReplyTrigger.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ ruleId: { not: 'rule-1' } }),
+        take: 201,
+      }),
+    );
+  });
+
+  it('does not match a draft that will be saved disabled', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+
+    await expect(
+      fixture.service.previewMatch('chat-1', user, {
+        message: 'Прайс',
+        draft: {
+          ruleId: 'rule-1',
+          phrases: ['Прайс'],
+          matchInContext: false,
+          fuzzyMatch: false,
+          enabled: false,
+        },
+      }),
+    ).resolves.toEqual({ outcome: 'no_match', selected: null });
+  });
+
+  it('uses the production exact fallback when a legacy chat exceeds the matcher budget', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    fixture.prisma.publisherAutoReplyTrigger.findMany.mockResolvedValue(
+      Array.from({ length: 201 }, (_, index) => ({
+        ...triggerRow(index, `Фраза ${index}`, `фраза ${index}`, {
+          id: `trigger-${index}`,
+          ruleId: `rule-${index}`,
+        }),
+        rule: { matchInContext: false, fuzzyMatch: false },
+      })),
+    );
+    fixture.prisma.publisherAutoReplyTrigger.findFirst.mockResolvedValue({
+      ...triggerRow(0, 'Прайс', 'прайс', { id: 'trigger-exact', ruleId: 'rule-exact' }),
+      rule: { matchInContext: false, fuzzyMatch: false },
+    });
+
+    await expect(
+      fixture.service.previewMatch('chat-1', user, { message: 'ПРАЙС' }),
+    ).resolves.toEqual({
+      outcome: 'matched',
+      selected: {
+        ruleId: 'rule-exact',
+        phrase: 'Прайс',
+        matchKind: 'exact_full',
+        distance: 0,
+        matchedDraft: false,
+      },
+    });
+    expect(fixture.prisma.publisherAutoReplyTrigger.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ normalizedPhrase: 'прайс' }),
+      }),
+    );
+  });
+
+  it.each(['off', 'shadow'] as const)(
+    'previews only enforced exact matches while extended matching is %s',
+    async (extendedMatchingMode) => {
+      const fixture = createFixture({ moduleEnabled: true, extendedMatchingMode });
+      fixture.prisma.publisherAutoReplyTrigger.findMany.mockResolvedValue([
+        {
+          ...triggerRow(0, 'Прайс', 'прайс'),
+          rule: { matchInContext: true, fuzzyMatch: true },
+        },
+      ]);
+
+      await expect(
+        fixture.service.previewMatch('chat-1', user, { message: 'Подскажите прайс' }),
+      ).resolves.toEqual({ outcome: 'no_match', selected: null });
+    },
+  );
+
+  it.each([
+    {
+      label: 'all trigger capacity',
+      counts: [200, 0],
+      phrases: ['Каталог'],
+      fuzzyMatch: false,
+      code: 'PUBLISHER_AUTO_REPLY_TRIGGER_LIMIT',
+    },
+    {
+      label: 'fuzzy trigger capacity',
+      counts: [0, 49],
+      phrases: ['Каталог', 'Стоимость'],
+      fuzzyMatch: true,
+      code: 'PUBLISHER_AUTO_REPLY_FUZZY_TRIGGER_LIMIT',
+    },
+  ])('rejects v2 create above $label', async ({ counts, phrases, fuzzyMatch, code }) => {
+    const fixture = createFixture({ moduleEnabled: true });
+    fixture.tx.publisherAutoReplyTrigger.count
+      .mockResolvedValueOnce(counts[0])
+      .mockResolvedValueOnce(counts[1]);
+
+    await expect(
+      fixture.service.create(
+        'chat-1',
+        user,
+        {
+          requestId: `request_capacity_${fuzzyMatch ? 'fuzzy' : 'all'}`,
+          phrases,
+          fuzzyMatch,
+          content: { text: 'Ответ' },
+        },
+        2,
+      ),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code }) });
+
+    expect(fixture.tx.publisherAutoReplyRule.create).not.toHaveBeenCalled();
+  });
+
+  it('allows an over-capacity legacy rule to reduce its phrase contribution', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    const existing = ruleRow({
+      triggers: Array.from({ length: 10 }, (_, index) =>
+        triggerRow(index, `Фраза ${index}`, `фраза ${index}`),
+      ),
+    });
+    const updated = ruleRow({ version: 2, triggers: [triggerRow(0, 'Фраза 0', 'фраза 0')] });
+    fixture.prisma.publisherAutoReplyRule.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValue(updated);
+    fixture.tx.publisherAutoReplyTrigger.count.mockResolvedValueOnce(240).mockResolvedValueOnce(0);
+
+    await expect(
+      fixture.service.update(
+        'chat-1',
+        'rule-1',
+        user,
+        {
+          requestId: 'request_heal_total_capacity',
+          expectedVersion: 1,
+          phrases: ['Фраза 0'],
+        },
+        2,
+      ),
+    ).resolves.toMatchObject({ version: 2, phrases: ['Фраза 0'] });
+
+    expect(fixture.tx.publisherAutoReplyRule.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows fuzzy mode to be disabled while grandfathered totals remain above both caps', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    const triggers = [triggerRow(), triggerRow(1, 'Стоимость', 'стоимость')];
+    const existing = ruleRow({ fuzzyMatch: true, triggers });
+    const updated = ruleRow({ version: 2, fuzzyMatch: false, triggers });
+    fixture.prisma.publisherAutoReplyRule.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValue(updated);
+    fixture.tx.publisherAutoReplyTrigger.count.mockResolvedValueOnce(199).mockResolvedValueOnce(55);
+
+    await expect(
+      fixture.service.update(
+        'chat-1',
+        'rule-1',
+        user,
+        {
+          requestId: 'request_heal_fuzzy_capacity',
+          expectedVersion: 1,
+          fuzzyMatch: false,
+        },
+        2,
+      ),
+    ).resolves.toMatchObject({ version: 2, fuzzyMatch: false });
+
+    expect(fixture.tx.publisherAutoReplyRule.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('still blocks a non-healing update while a legacy chat remains over capacity', async () => {
+    const fixture = createFixture({ moduleEnabled: true });
+    const triggers = [triggerRow(), triggerRow(1, 'Стоимость', 'стоимость')];
+    fixture.prisma.publisherAutoReplyRule.findFirst.mockResolvedValue(ruleRow({ triggers }));
+    fixture.tx.publisherAutoReplyTrigger.count.mockResolvedValueOnce(199).mockResolvedValueOnce(0);
+
+    await expect(
+      fixture.service.update(
+        'chat-1',
+        'rule-1',
+        user,
+        {
+          requestId: 'request_non_healing_capacity',
+          expectedVersion: 1,
+          phrases: ['Каталог', 'Стоимость'],
+        },
+        2,
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'PUBLISHER_AUTO_REPLY_TRIGGER_LIMIT' }),
+    });
+
+    expect(fixture.tx.publisherAutoReplyRule.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects an ordinary enabled create before content preparation or writes', async () => {
@@ -219,9 +685,7 @@ describe('PublisherAutoReplyService', () => {
 
   it('preflights a disabled-to-enabled rule update before its transaction', async () => {
     const fixture = createFixture({ moduleEnabled: true });
-    fixture.prisma.publisherAutoReplyRule.findFirst.mockResolvedValue(
-      ruleRow({ enabled: false }),
-    );
+    fixture.prisma.publisherAutoReplyRule.findFirst.mockResolvedValue(ruleRow({ enabled: false }));
     fixture.policy.assertBotCapabilityForFeatureEnablement.mockRejectedValueOnce(
       new BotCapabilityRequiredException({
         missingPermissions: ['write'],
@@ -307,7 +771,9 @@ describe('PublisherAutoReplyService', () => {
         payload: expect.objectContaining({
           ruleId: 'rule-1',
           sessionId: 'session-1',
-          phrase: { length: 5, sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+          phrases: [{ length: 5, sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) }],
+          matchInContext: false,
+          fuzzyMatch: false,
         }),
       }),
     });
@@ -331,7 +797,10 @@ describe('PublisherAutoReplyService', () => {
 
   it('maps a concurrent active-phrase uniqueness violation to a focused conflict', async () => {
     const fixture = createFixture({ moduleEnabled: true });
-    fixture.prisma.$transaction.mockRejectedValue({ code: 'P2002' });
+    fixture.prisma.$transaction.mockRejectedValue({
+      code: 'P2002',
+      meta: { target: 'publisher_auto_reply_triggers_active_phrase_key' },
+    });
 
     await expect(
       fixture.service.create('chat-1', user, {

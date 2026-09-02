@@ -45,7 +45,7 @@ function isBroadcastSystemButtonPreview(
   return 'kind' in button;
 }
 
-type BroadcastContentComposerProps = {
+export type BroadcastContentComposerProps = {
   className?: string;
   text: string;
   sourceFormat?: BroadcastTextFormat;

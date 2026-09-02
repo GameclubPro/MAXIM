@@ -1,23 +1,31 @@
 import {
   archivePublisherAutoReplyRequestSchema,
   archivePublisherAutoReplyResponseSchema,
+  createPublisherAutoReplyV2RequestSchema,
   createPublisherAutoReplyRequestSchema,
   MAX_PUBLISHER_AUTO_REPLY_BUTTONS,
   MAX_PUBLISHER_AUTO_REPLY_IMAGES,
-  MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH,
   MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH,
   normalizePublisherAutoReplyPhrase,
-  normalizePublisherAutoReplyPhraseDisplay,
+  publisherAutoReplyListResponseV2Schema,
   publisherAutoReplyButtonSchema,
   publisherAutoReplyListResponseSchema,
+  publisherAutoReplyPhrasesSchema,
+  publisherAutoReplyPreviewRequestSchema,
+  publisherAutoReplyPreviewResponseSchema,
   publisherAutoReplyRequestIdSchema,
+  publisherAutoReplyRuleV2Schema,
   publisherAutoReplyRuleSchema,
+  updatePublisherAutoReplyV2RequestSchema,
   updatePublisherAutoReplyRequestSchema,
   type ArchivePublisherAutoReplyResponse,
   type PublisherAutoReplyButton,
   type PublisherAutoReplyContentInput,
   type PublisherAutoReplyListResponse,
+  type PublisherAutoReplyListResponseV2,
+  type PublisherAutoReplyPreviewResponse,
   type PublisherAutoReplyRule,
+  type PublisherAutoReplyRuleV2,
 } from '@maxim/contracts/publisher-auto-replies';
 import {
   BadRequestException,
@@ -25,6 +33,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxClientService } from '../max/max-client.service';
@@ -39,6 +48,11 @@ import {
 } from './publication-media-limits';
 import { readStoredPublicationButtons } from './publication-buttons';
 import { PublisherPolicyService } from './publisher-policy.service';
+import {
+  matchPublisherAutoReply,
+  PUBLISHER_AUTO_REPLY_MATCHER_LIMITS,
+  type PublisherAutoReplyTriggerCandidate,
+} from '../publisher/publisher-auto-reply-matcher';
 
 const AUTO_REPLY_RULE_INCLUDE = {
   currentContentRevision: {
@@ -48,6 +62,10 @@ const AUTO_REPLY_RULE_INCLUDE = {
         include: { asset: true },
       },
     },
+  },
+  triggers: {
+    where: { archivedAt: null },
+    orderBy: { position: 'asc' as const },
   },
 } satisfies Prisma.PublisherAutoReplyRuleInclude;
 
@@ -88,8 +106,16 @@ export type CreatePublisherAutoReplyFromPreparedContentParams = {
   sessionId: string;
   phrase: string;
   normalizedPhrase: string;
+  phrases?: string[];
+  matchInContext?: boolean;
+  fuzzyMatch?: boolean;
   content: PreparedPublisherAutoReplyContent;
 };
+
+type AutoReplyContractVersion = 1 | 2;
+type AutoReplyRuleResponse = PublisherAutoReplyRule | PublisherAutoReplyRuleV2;
+type AutoReplyListResponse = PublisherAutoReplyListResponse | PublisherAutoReplyListResponseV2;
+const AUTO_REPLY_PREVIEW_DRAFT_RULE_ID = '__publisher_auto_reply_preview_draft__';
 
 type PersistedContentSummary = {
   id: string;
@@ -109,13 +135,25 @@ type PersistedContentSummary = {
 
 @Injectable()
 export class PublisherAutoReplyService {
+  private readonly extendedMatchingMode: 'off' | 'shadow' | 'on';
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly policy: PublisherPolicyService,
     private readonly maxClient: MaxClientService,
-  ) {}
+    configService: ConfigService,
+  ) {
+    this.extendedMatchingMode = configService.get<'off' | 'shadow' | 'on'>(
+      'PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE',
+      'on',
+    );
+  }
 
-  async list(chatId: string, user: AuthUser): Promise<PublisherAutoReplyListResponse> {
+  async list(
+    chatId: string,
+    user: AuthUser,
+    contractVersion: AutoReplyContractVersion = 1,
+  ): Promise<AutoReplyListResponse> {
     await this.policy.getEntity('chat', chatId, user);
     const where = { chatId, archivedAt: null, currentContentRevisionId: { not: null } };
     const [rows, total] = await Promise.all([
@@ -126,28 +164,53 @@ export class PublisherAutoReplyService {
       }),
       this.prisma.publisherAutoReplyRule.count({ where }),
     ]);
-    return publisherAutoReplyListResponseSchema.parse({
-      items: rows.map((row) => this.presentRule(row)),
-      total,
-    });
+    const response = { items: rows.map((row) => this.presentRule(row, contractVersion)), total };
+    return contractVersion === 2
+      ? publisherAutoReplyListResponseV2Schema.parse(response)
+      : publisherAutoReplyListResponseSchema.parse(response);
   }
 
-  async get(chatId: string, ruleId: string, user: AuthUser): Promise<PublisherAutoReplyRule> {
+  async get(
+    chatId: string,
+    ruleId: string,
+    user: AuthUser,
+    contractVersion: AutoReplyContractVersion = 1,
+  ): Promise<AutoReplyRuleResponse> {
     await this.policy.getEntity('chat', chatId, user);
-    return this.presentRule(await this.requireRule(chatId, ruleId));
+    return this.presentRule(await this.requireRule(chatId, ruleId), contractVersion);
   }
 
-  async create(chatId: string, user: AuthUser, body: unknown): Promise<PublisherAutoReplyRule> {
-    const parsed = createPublisherAutoReplyRequestSchema.safeParse(body);
+  async create(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    contractVersion: AutoReplyContractVersion = 1,
+  ): Promise<AutoReplyRuleResponse> {
+    const parsed =
+      contractVersion === 2
+        ? createPublisherAutoReplyV2RequestSchema.safeParse(body)
+        : createPublisherAutoReplyRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
     const entity = await this.policy.getEntity('chat', chatId, user);
     const request = parsed.data;
-    const requestHash = this.hashMutationRequest({ operation: 'CREATE', chatId, request });
+    const phrases = 'phrases' in request ? request.phrases : [request.phrase];
+    const matchInContext = 'matchInContext' in request ? request.matchInContext : false;
+    const fuzzyMatch = 'fuzzyMatch' in request ? request.fuzzyMatch : false;
+    this.assertFuzzyPhrases(phrases, fuzzyMatch);
+    const requestHash = this.hashMutationRequest({
+      operation: 'CREATE',
+      ...(contractVersion === 2 ? { contractVersion } : {}),
+      chatId,
+      request,
+    });
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
-      return this.presentRule(await this.requireRuleById(replay.ruleId, chatId, true));
+      return this.presentRule(
+        await this.requireRuleById(replay.ruleId, chatId, true),
+        contractVersion,
+      );
     }
 
     if (request.enabled) {
@@ -161,15 +224,19 @@ export class PublisherAutoReplyService {
     }
 
     const content = await this.prepareContent(request.content);
-    const normalizedPhrase = normalizePublisherAutoReplyPhrase(request.phrase);
+    const primaryPhrase = phrases[0]!;
+    const normalizedPhrase = normalizePublisherAutoReplyPhrase(primaryPhrase);
     let createdRuleId: string;
     try {
       createdRuleId = await this.prisma.$transaction(async (tx) => {
+        await this.assertTriggerCapacity(tx, chatId, null, phrases.length, fuzzyMatch);
         const rule = await tx.publisherAutoReplyRule.create({
           data: {
             chatId,
-            phrase: request.phrase,
+            phrase: primaryPhrase,
             normalizedPhrase,
+            matchInContext,
+            fuzzyMatch,
             enabled: request.enabled,
             cooldownSeconds: request.cooldownSeconds,
             createdByUserId: user.userId,
@@ -177,6 +244,7 @@ export class PublisherAutoReplyService {
           },
           select: { id: true, version: true },
         });
+        await this.replaceAdditionalTriggers(tx, rule.id, chatId, phrases, null);
         const persistedContent = await this.persistPreparedContentRevision(tx, {
           ruleId: rule.id,
           chatId,
@@ -197,6 +265,7 @@ export class PublisherAutoReplyService {
         if (moduleEnable) {
           await this.auditModuleEnable(tx, chatId, user.userId, moduleEnable.revision);
         }
+        await this.bumpAutoReplyConfigRevision(tx, chatId, user.userId);
         await tx.publisherAutoReplyMutationRecord.create({
           data: {
             actorUserId: user.userId,
@@ -217,7 +286,13 @@ export class PublisherAutoReplyService {
               version: rule.version,
               enabled: request.enabled,
               cooldownSeconds: request.cooldownSeconds,
-              phrase: this.auditText(request.phrase),
+              ...(contractVersion === 2
+                ? {
+                    phrases: phrases.map((phrase) => this.auditText(phrase)),
+                    matchInContext,
+                    fuzzyMatch,
+                  }
+                : { phrase: this.auditText(primaryPhrase) }),
               content: persistedContent,
               ...(moduleEnable
                 ? { autoRepliesModuleEnabled: true, moduleSettingsRevision: moduleEnable.revision }
@@ -237,13 +312,14 @@ export class PublisherAutoReplyService {
         if (concurrentReplay) {
           return this.presentRule(
             await this.requireRuleById(concurrentReplay.ruleId, chatId, true),
+            contractVersion,
           );
         }
-        throw this.phraseConflict();
+        if (this.isPhraseConflict(error)) throw this.phraseConflict();
       }
       throw error;
     }
-    return this.presentRule(await this.requireRule(chatId, createdRuleId));
+    return this.presentRule(await this.requireRule(chatId, createdRuleId), contractVersion);
   }
 
   async update(
@@ -251,46 +327,93 @@ export class PublisherAutoReplyService {
     ruleId: string,
     user: AuthUser,
     body: unknown,
-  ): Promise<PublisherAutoReplyRule> {
-    const parsed = updatePublisherAutoReplyRequestSchema.safeParse(body);
+    contractVersion: AutoReplyContractVersion = 1,
+  ): Promise<AutoReplyRuleResponse> {
+    const parsed =
+      contractVersion === 2
+        ? updatePublisherAutoReplyV2RequestSchema.safeParse(body)
+        : updatePublisherAutoReplyRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
     const entity = await this.policy.getEntity('chat', chatId, user);
     const request = parsed.data;
-    const requestHash = this.hashMutationRequest({ operation: 'UPDATE', chatId, ruleId, request });
+    const requestHash = this.hashMutationRequest({
+      operation: 'UPDATE',
+      ...(contractVersion === 2 ? { contractVersion } : {}),
+      chatId,
+      ruleId,
+      request,
+    });
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
       this.assertReplayRule(replay.ruleId, ruleId);
-      return this.presentRule(await this.requireRuleById(ruleId, chatId, true));
+      return this.presentRule(await this.requireRuleById(ruleId, chatId, true), contractVersion);
     }
 
     const existing = await this.requireRule(chatId, ruleId);
+    let requestedPhrases =
+      'phrases' in request
+        ? request.phrases
+        : 'phrase' in request && request.phrase !== undefined
+          ? [request.phrase]
+          : undefined;
+    if (
+      contractVersion === 1 &&
+      requestedPhrases &&
+      (existing.matchInContext || existing.fuzzyMatch || existing.triggers.length > 1)
+    ) {
+      if (normalizePublisherAutoReplyPhrase(requestedPhrases[0]!) !== existing.normalizedPhrase) {
+        throw this.clientUpgradeRequired();
+      }
+      requestedPhrases = undefined;
+    }
+    const fuzzyMatch =
+      'fuzzyMatch' in request && request.fuzzyMatch !== undefined
+        ? request.fuzzyMatch
+        : existing.fuzzyMatch;
+    this.assertFuzzyPhrases(
+      requestedPhrases ?? existing.triggers.map((trigger) => trigger.phrase),
+      fuzzyMatch,
+    );
     if (
       request.enabled === true &&
       (existing.enabled !== true || entity.moduleSettings.autoRepliesEnabled !== true)
     ) {
-      await this.policy.assertBotCapabilityForFeatureEnablement(
-        'chat',
-        chatId,
-        [
-          ...(existing.enabled !== true ? ['enabled'] : []),
-          ...(entity.moduleSettings.autoRepliesEnabled !== true ? ['autoRepliesEnabled'] : []),
-        ],
-      );
+      await this.policy.assertBotCapabilityForFeatureEnablement('chat', chatId, [
+        ...(existing.enabled !== true ? ['enabled'] : []),
+        ...(entity.moduleSettings.autoRepliesEnabled !== true ? ['autoRepliesEnabled'] : []),
+      ]);
     }
     const content = request.content ? await this.prepareContent(request.content) : null;
     const nextVersion = request.expectedVersion + 1;
     try {
       await this.prisma.$transaction(async (tx) => {
+        if (
+          requestedPhrases ||
+          ('fuzzyMatch' in request && request.fuzzyMatch !== undefined) ||
+          (request.enabled === true && !existing.enabled)
+        ) {
+          await this.assertTriggerCapacity(
+            tx,
+            chatId,
+            ruleId,
+            requestedPhrases?.length ?? Math.max(1, existing.triggers.length),
+            fuzzyMatch,
+            {
+              phraseCount: Math.max(1, existing.triggers.length),
+              fuzzyMatch: existing.fuzzyMatch,
+            },
+          );
+        }
         const changed = await tx.publisherAutoReplyRule.updateMany({
           where: { id: ruleId, chatId, archivedAt: null, version: request.expectedVersion },
           data: {
-            ...(request.phrase !== undefined
-              ? {
-                  phrase: request.phrase,
-                  normalizedPhrase: normalizePublisherAutoReplyPhrase(request.phrase),
-                }
+            ...('matchInContext' in request && request.matchInContext !== undefined
+              ? { matchInContext: request.matchInContext }
+              : {}),
+            ...('fuzzyMatch' in request && request.fuzzyMatch !== undefined
+              ? { fuzzyMatch: request.fuzzyMatch }
               : {}),
             ...(request.enabled !== undefined ? { enabled: request.enabled } : {}),
             ...(request.cooldownSeconds !== undefined
@@ -302,6 +425,9 @@ export class PublisherAutoReplyService {
         });
         if (changed.count !== 1) {
           throw this.versionConflict();
+        }
+        if (requestedPhrases) {
+          await this.replaceRulePhrases(tx, ruleId, chatId, requestedPhrases, null);
         }
 
         let persistedContent: PersistedContentSummary | null = null;
@@ -327,6 +453,14 @@ export class PublisherAutoReplyService {
         if (moduleEnable) {
           await this.auditModuleEnable(tx, chatId, user.userId, moduleEnable.revision);
         }
+        if (
+          requestedPhrases ||
+          ('matchInContext' in request && request.matchInContext !== undefined) ||
+          ('fuzzyMatch' in request && request.fuzzyMatch !== undefined) ||
+          request.enabled !== undefined
+        ) {
+          await this.bumpAutoReplyConfigRevision(tx, chatId, user.userId);
+        }
         await tx.publisherAutoReplyMutationRecord.create({
           data: {
             actorUserId: user.userId,
@@ -346,7 +480,17 @@ export class PublisherAutoReplyService {
               ruleId,
               version: nextVersion,
               changed: {
-                ...(request.phrase !== undefined ? { phrase: this.auditText(request.phrase) } : {}),
+                ...(requestedPhrases
+                  ? contractVersion === 2
+                    ? { phrases: requestedPhrases.map((phrase) => this.auditText(phrase)) }
+                    : { phrase: this.auditText(requestedPhrases[0]!) }
+                  : {}),
+                ...('matchInContext' in request && request.matchInContext !== undefined
+                  ? { matchInContext: request.matchInContext }
+                  : {}),
+                ...('fuzzyMatch' in request && request.fuzzyMatch !== undefined
+                  ? { fuzzyMatch: request.fuzzyMatch }
+                  : {}),
                 ...(request.enabled !== undefined ? { enabled: request.enabled } : {}),
                 ...(request.cooldownSeconds !== undefined
                   ? { cooldownSeconds: request.cooldownSeconds }
@@ -369,13 +513,16 @@ export class PublisherAutoReplyService {
         );
         if (concurrentReplay) {
           this.assertReplayRule(concurrentReplay.ruleId, ruleId);
-          return this.presentRule(await this.requireRuleById(ruleId, chatId, true));
+          return this.presentRule(
+            await this.requireRuleById(ruleId, chatId, true),
+            contractVersion,
+          );
         }
-        throw this.phraseConflict();
+        if (this.isPhraseConflict(error)) throw this.phraseConflict();
       }
       throw error;
     }
-    return this.presentRule(await this.requireRule(chatId, ruleId));
+    return this.presentRule(await this.requireRule(chatId, ruleId), contractVersion);
   }
 
   async archive(
@@ -420,6 +567,7 @@ export class PublisherAutoReplyService {
           }
           throw this.versionConflict();
         }
+        await this.bumpAutoReplyConfigRevision(tx, chatId, user.userId);
         await tx.publisherAutoReplyMutationRecord.create({
           data: {
             actorUserId: user.userId,
@@ -482,15 +630,161 @@ export class PublisherAutoReplyService {
     return { bytes: Buffer.from(asset.bytes), mimeType: asset.mimeType };
   }
 
+  async previewMatch(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<PublisherAutoReplyPreviewResponse> {
+    const parsed = publisherAutoReplyPreviewRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    await this.policy.getEntity('chat', chatId, user);
+    const storedTriggers = await this.prisma.publisherAutoReplyTrigger.findMany({
+      where: {
+        chatId,
+        archivedAt: null,
+        ...(parsed.data.draft?.ruleId ? { ruleId: { not: parsed.data.draft.ruleId } } : {}),
+        rule: {
+          is: {
+            enabled: true,
+            archivedAt: null,
+            currentContentRevisionId: { not: null },
+          },
+        },
+      },
+      orderBy: [{ ruleId: 'asc' }, { position: 'asc' }, { id: 'asc' }],
+      take: PUBLISHER_AUTO_REPLY_MATCHER_LIMITS.candidates + 1,
+      select: {
+        id: true,
+        ruleId: true,
+        position: true,
+        phrase: true,
+        normalizedPhrase: true,
+        rule: {
+          select: {
+            matchInContext: true,
+            fuzzyMatch: true,
+          },
+        },
+      },
+    });
+    const draftRuleId = AUTO_REPLY_PREVIEW_DRAFT_RULE_ID;
+    const candidates: PublisherAutoReplyTriggerCandidate[] = storedTriggers.map((trigger) => ({
+      ruleId: trigger.ruleId,
+      triggerId: trigger.id,
+      position: trigger.position,
+      phrase: trigger.phrase,
+      normalizedPhrase: trigger.normalizedPhrase,
+      matchInContext: trigger.rule.matchInContext,
+      fuzzyMatch: trigger.rule.fuzzyMatch,
+    }));
+    if (parsed.data.draft) {
+      this.assertFuzzyPhrases(parsed.data.draft.phrases, parsed.data.draft.fuzzyMatch);
+    }
+    if (parsed.data.draft?.enabled) {
+      candidates.push(
+        ...parsed.data.draft.phrases.map((phrase, position) => ({
+          ruleId: draftRuleId,
+          triggerId: `${draftRuleId}:${position}`,
+          position,
+          phrase,
+          normalizedPhrase: normalizePublisherAutoReplyPhrase(phrase),
+          matchInContext: parsed.data.draft!.matchInContext,
+          fuzzyMatch: parsed.data.draft!.fuzzyMatch,
+        })),
+      );
+    }
+    const enforcedCandidates = this.enforceMatchingMode(candidates);
+    let match = matchPublisherAutoReply(parsed.data.message, enforcedCandidates);
+    if (match.kind === 'no_match' && match.reason === 'budget_exceeded') {
+      match = await this.previewExactFallback(chatId, parsed.data, enforcedCandidates);
+    }
+    if (match.kind !== 'matched') {
+      return publisherAutoReplyPreviewResponseSchema.parse({
+        outcome: match.kind === 'ambiguous' ? 'ambiguous' : 'no_match',
+        selected: null,
+      });
+    }
+    return publisherAutoReplyPreviewResponseSchema.parse({
+      outcome: 'matched',
+      selected: {
+        ruleId: match.winner.ruleId === draftRuleId ? null : match.winner.ruleId,
+        phrase: match.winner.phrase,
+        matchKind: match.winner.matchKind,
+        distance: match.winner.distance,
+        matchedDraft: match.winner.ruleId === draftRuleId,
+      },
+    });
+  }
+
+  private enforceMatchingMode(
+    candidates: readonly PublisherAutoReplyTriggerCandidate[],
+  ): PublisherAutoReplyTriggerCandidate[] {
+    return this.extendedMatchingMode === 'on'
+      ? [...candidates]
+      : candidates.map((candidate) => ({
+          ...candidate,
+          matchInContext: false,
+          fuzzyMatch: false,
+        }));
+  }
+
+  private async previewExactFallback(
+    chatId: string,
+    request: ReturnType<typeof publisherAutoReplyPreviewRequestSchema.parse>,
+    candidates: readonly PublisherAutoReplyTriggerCandidate[],
+  ) {
+    const normalizedMessage = normalizePublisherAutoReplyPhrase(request.message);
+    const stored = await this.prisma.publisherAutoReplyTrigger.findFirst({
+      where: {
+        chatId,
+        normalizedPhrase: normalizedMessage,
+        archivedAt: null,
+        ...(request.draft?.ruleId ? { ruleId: { not: request.draft.ruleId } } : {}),
+        rule: {
+          is: {
+            enabled: true,
+            archivedAt: null,
+            currentContentRevisionId: { not: null },
+          },
+        },
+      },
+      select: {
+        id: true,
+        ruleId: true,
+        position: true,
+        phrase: true,
+        normalizedPhrase: true,
+        rule: { select: { matchInContext: true, fuzzyMatch: true } },
+      },
+    });
+    const exactCandidates = candidates.filter(
+      (candidate) =>
+        candidate.ruleId === AUTO_REPLY_PREVIEW_DRAFT_RULE_ID &&
+        candidate.normalizedPhrase === normalizedMessage,
+    );
+    if (stored) {
+      exactCandidates.push({
+        ruleId: stored.ruleId,
+        triggerId: stored.id,
+        position: stored.position,
+        phrase: stored.phrase,
+        normalizedPhrase: stored.normalizedPhrase,
+        matchInContext: false,
+        fuzzyMatch: false,
+      });
+    }
+    return matchPublisherAutoReply(request.message, exactCandidates);
+  }
+
   /** Persists an archived bot-authoring draft after the caller has fenced its authoring session. */
   async createFromPreparedContent(
     params: CreatePublisherAutoReplyFromPreparedContentParams,
   ): Promise<{ ruleId: string; contentRevisionId: string; version: number }> {
     const requestId = publisherAutoReplyRequestIdSchema.parse(params.requestId);
-    const phrase = normalizePublisherAutoReplyPhraseDisplay(params.phrase);
-    if (!phrase || phrase.length > MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH) {
-      throw new BadRequestException('Кодовая фраза должна содержать от 1 до 80 символов.');
-    }
+    const phrases = publisherAutoReplyPhrasesSchema.parse(params.phrases ?? [params.phrase]);
+    const phrase = phrases[0]!;
     const normalizedPhrase = normalizePublisherAutoReplyPhrase(phrase);
     if (params.normalizedPhrase !== normalizedPhrase) {
       throw new BadRequestException('Нормализованная кодовая фраза не совпадает с исходной.');
@@ -498,13 +792,16 @@ export class PublisherAutoReplyService {
     if (!params.chatId.trim() || !params.actorUserId.trim() || !params.sessionId.trim()) {
       throw new BadRequestException('Сценарий создания автоответа повреждён.');
     }
+    this.assertFuzzyPhrases(phrases, params.fuzzyMatch ?? false);
     this.assertPreparedContent(params.content);
     const requestHash = this.hashMutationRequest({
       operation: 'CREATE_DRAFT',
       chatId: params.chatId,
       sessionId: params.sessionId,
-      phrase,
+      phrases,
       normalizedPhrase,
+      matchInContext: params.matchInContext ?? false,
+      fuzzyMatch: params.fuzzyMatch ?? false,
       content: this.preparedContentFingerprint(params.content),
     });
     const replay = await this.findMutationReplay(params.actorUserId, requestId, requestHash);
@@ -525,6 +822,8 @@ export class PublisherAutoReplyService {
             chatId: params.chatId,
             phrase,
             normalizedPhrase,
+            matchInContext: params.matchInContext ?? false,
+            fuzzyMatch: params.fuzzyMatch ?? false,
             enabled: false,
             archivedAt,
             authoringSessionId: params.sessionId,
@@ -533,6 +832,7 @@ export class PublisherAutoReplyService {
           },
           select: { id: true, version: true },
         });
+        await this.replaceAdditionalTriggers(tx, rule.id, params.chatId, phrases, archivedAt);
         const persistedContent = await this.persistPreparedContentRevision(tx, {
           ruleId: rule.id,
           chatId: params.chatId,
@@ -563,7 +863,9 @@ export class PublisherAutoReplyService {
               ruleId: rule.id,
               sessionId: params.sessionId,
               version: rule.version,
-              phrase: this.auditText(phrase),
+              phrases: phrases.map((item) => this.auditText(item)),
+              matchInContext: params.matchInContext ?? false,
+              fuzzyMatch: params.fuzzyMatch ?? false,
               content: persistedContent,
             } satisfies Prisma.InputJsonValue,
           },
@@ -711,6 +1013,19 @@ export class PublisherAutoReplyService {
     };
   }
 
+  async assertTriggerActivationCapacity(
+    tx: Prisma.TransactionClient,
+    params: { chatId: string; ruleId: string; phraseCount: number; fuzzyMatch: boolean },
+  ): Promise<void> {
+    await this.assertTriggerCapacity(
+      tx,
+      params.chatId,
+      params.ruleId,
+      params.phraseCount,
+      params.fuzzyMatch,
+    );
+  }
+
   private async requireRule(chatId: string, ruleId: string): Promise<AutoReplyRuleRow> {
     return this.requireRuleById(ruleId, chatId, false);
   }
@@ -730,15 +1045,17 @@ export class PublisherAutoReplyService {
     return rule;
   }
 
-  private presentRule(rule: AutoReplyRuleRow): PublisherAutoReplyRule {
+  private presentRule(
+    rule: AutoReplyRuleRow,
+    contractVersion: AutoReplyContractVersion = 1,
+  ): AutoReplyRuleResponse {
     const content = rule.currentContentRevision;
     if (!content) {
       throw new NotFoundException('Контент автоответа не найден.');
     }
-    return publisherAutoReplyRuleSchema.parse({
+    const common = {
       id: rule.id,
       chatId: rule.chatId,
-      phrase: rule.phrase,
       enabled: rule.enabled,
       cooldownSeconds: rule.cooldownSeconds,
       version: rule.version,
@@ -763,7 +1080,17 @@ export class PublisherAutoReplyService {
       createdAt: rule.createdAt.toISOString(),
       updatedAt: rule.updatedAt.toISOString(),
       archivedAt: rule.archivedAt?.toISOString() ?? null,
-    });
+    };
+    if (contractVersion === 2) {
+      return publisherAutoReplyRuleV2Schema.parse({
+        ...common,
+        phrases:
+          rule.triggers.length > 0 ? rule.triggers.map((trigger) => trigger.phrase) : [rule.phrase],
+        matchInContext: rule.matchInContext,
+        fuzzyMatch: rule.fuzzyMatch,
+      });
+    }
+    return publisherAutoReplyRuleSchema.parse({ ...common, phrase: rule.phrase });
   }
 
   private presentArchive(rule: AutoReplyRuleRow): ArchivePublisherAutoReplyResponse {
@@ -817,6 +1144,138 @@ export class PublisherAutoReplyService {
     });
   }
 
+  private async bumpAutoReplyConfigRevision(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    actorUserId: string,
+  ): Promise<number> {
+    const settings = await tx.publisherEntitySettings.upsert({
+      where: { chatId },
+      create: {
+        chatId,
+        autoReplyConfigRevision: 1,
+        updatedByUserId: actorUserId,
+      },
+      update: {
+        autoReplyConfigRevision: { increment: 1 },
+        updatedByUserId: actorUserId,
+      },
+      select: { autoReplyConfigRevision: true },
+    });
+    return settings.autoReplyConfigRevision;
+  }
+
+  private async assertTriggerCapacity(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    excludedRuleId: string | null,
+    nextPhraseCount: number,
+    nextFuzzyMatch: boolean,
+    current?: { phraseCount: number; fuzzyMatch: boolean },
+  ): Promise<void> {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`publisher-auto-reply-config:${chatId}`}))
+    `);
+    const exclusion = excludedRuleId ? { ruleId: { not: excludedRuleId } } : {};
+    const [otherPhrases, otherFuzzyPhrases] = await Promise.all([
+      tx.publisherAutoReplyTrigger.count({
+        where: { chatId, archivedAt: null, ...exclusion },
+      }),
+      tx.publisherAutoReplyTrigger.count({
+        where: {
+          chatId,
+          archivedAt: null,
+          ...exclusion,
+          rule: { is: { fuzzyMatch: true } },
+        },
+      }),
+    ]);
+    const currentPhraseCount = current?.phraseCount ?? 0;
+    const currentFuzzyPhraseCount = current?.fuzzyMatch ? currentPhraseCount : 0;
+    const nextFuzzyPhraseCount = nextFuzzyMatch ? nextPhraseCount : 0;
+    const isHealingUpdate =
+      current !== undefined &&
+      (nextPhraseCount < currentPhraseCount || nextFuzzyPhraseCount < currentFuzzyPhraseCount);
+    const doesNotWorsenTotal = isHealingUpdate && nextPhraseCount <= currentPhraseCount;
+    const doesNotWorsenFuzzy = isHealingUpdate && nextFuzzyPhraseCount <= currentFuzzyPhraseCount;
+    if (
+      otherPhrases + nextPhraseCount > PUBLISHER_AUTO_REPLY_MATCHER_LIMITS.candidates &&
+      !doesNotWorsenTotal
+    ) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'PUBLISHER_AUTO_REPLY_TRIGGER_LIMIT',
+        message: 'В чате достигнут лимит фраз автоответов.',
+      });
+    }
+    if (
+      otherFuzzyPhrases + nextFuzzyPhraseCount >
+        PUBLISHER_AUTO_REPLY_MATCHER_LIMITS.fuzzyCandidates &&
+      !doesNotWorsenFuzzy
+    ) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'PUBLISHER_AUTO_REPLY_FUZZY_TRIGGER_LIMIT',
+        message: 'В чате достигнут лимит фраз с учётом опечаток.',
+      });
+    }
+  }
+
+  private async replaceAdditionalTriggers(
+    tx: Prisma.TransactionClient,
+    ruleId: string,
+    chatId: string,
+    phrases: readonly string[],
+    archivedAt: Date | null,
+  ): Promise<void> {
+    if (phrases.length <= 1) return;
+    await tx.publisherAutoReplyTrigger.createMany({
+      data: phrases.slice(1).map((phrase, index) => ({
+        ruleId,
+        chatId,
+        position: index + 1,
+        phrase,
+        normalizedPhrase: normalizePublisherAutoReplyPhrase(phrase),
+        archivedAt,
+      })),
+    });
+  }
+
+  private async replaceRulePhrases(
+    tx: Prisma.TransactionClient,
+    ruleId: string,
+    chatId: string,
+    phrases: readonly string[],
+    archivedAt: Date | null,
+  ): Promise<void> {
+    await tx.publisherAutoReplyTrigger.deleteMany({
+      where: { ruleId, position: { gt: 0 } },
+    });
+    const primary = phrases[0]!;
+    await tx.publisherAutoReplyRule.update({
+      where: { id: ruleId },
+      data: {
+        phrase: primary,
+        normalizedPhrase: normalizePublisherAutoReplyPhrase(primary),
+      },
+    });
+    await this.replaceAdditionalTriggers(tx, ruleId, chatId, phrases, archivedAt);
+  }
+
+  private assertFuzzyPhrases(phrases: readonly string[], fuzzyMatch: boolean): void {
+    if (!fuzzyMatch) return;
+    const invalid = phrases.find((phrase) => {
+      const characters = normalizePublisherAutoReplyPhrase(phrase).match(/[\p{L}\p{M}\p{N}]/gu);
+      return (characters?.length ?? 0) < 5;
+    });
+    if (!invalid) return;
+    throw new BadRequestException({
+      statusCode: 400,
+      code: 'PUBLISHER_AUTO_REPLY_FUZZY_PHRASE_TOO_SHORT',
+      message: 'Для учёта опечаток каждая фраза должна содержать не меньше 5 символов.',
+    });
+  }
+
   private async auditModuleEnable(
     tx: Prisma.TransactionClient,
     chatId: string,
@@ -849,6 +1308,25 @@ export class PublisherAutoReplyService {
       code: 'PUBLISHER_AUTO_REPLY_PHRASE_CONFLICT',
       message: 'Автоответ с такой кодовой фразой уже существует.',
     });
+  }
+
+  private clientUpgradeRequired(): ConflictException {
+    return new ConflictException({
+      statusCode: 409,
+      code: 'PUBLISHER_AUTO_REPLY_CLIENT_UPGRADE_REQUIRED',
+      message: 'Обновите мини-приложение, чтобы изменить расширенное правило.',
+    });
+  }
+
+  private isPhraseConflict(error: unknown): boolean {
+    if (!isPrismaKnownError(error, 'P2002')) return false;
+    const metadata = JSON.stringify((error as { meta?: unknown }).meta ?? '').toLowerCase();
+    return (
+      metadata.includes('publisher_auto_reply_rules_active_phrase_key') ||
+      metadata.includes('publisher_auto_reply_triggers_active_phrase_key') ||
+      metadata.includes('publisher_auto_reply_triggers_rule_normalized_phrase_key') ||
+      (metadata.includes('chat_id') && metadata.includes('normalized_phrase'))
+    );
   }
 
   private versionConflict(): ConflictException {

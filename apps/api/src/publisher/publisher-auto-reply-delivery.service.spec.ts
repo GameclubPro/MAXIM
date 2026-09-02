@@ -2,6 +2,7 @@ import {
   PublicationContentFormat,
   PublisherAutoReplyAssetUploadStatus,
   PublisherAutoReplyDeliveryStatus,
+  PublisherAutoReplyMatchKind,
 } from '../prisma/prisma-client';
 import { PublisherAutoReplyDeliveryService } from './publisher-auto-reply-delivery.service';
 import type { PublisherAutoReplyJob } from './publisher-auto-reply.queue';
@@ -39,6 +40,11 @@ function delivery(overrides: Record<string, unknown> = {}) {
     sourceUserId: 'user-1',
     matchedRuleVersion: 3,
     matchedNormalizedPhrase: 'прайс',
+    matchedTriggerId: 'trigger-1',
+    matchKind: PublisherAutoReplyMatchKind.EXACT_FULL,
+    distance: 0,
+    matcherVersion: 1,
+    autoReplyConfigRevision: 7,
     publisherSettingsRevision: 4,
     publicationPolicyRevision: 2,
     status: PublisherAutoReplyDeliveryStatus.SENDING,
@@ -53,8 +59,18 @@ function delivery(overrides: Record<string, unknown> = {}) {
       cooldownSeconds: 30,
       currentContentRevisionId: 'content-1',
     },
+    matchedTrigger: {
+      id: 'trigger-1',
+      ruleId: 'rule-1',
+      normalizedPhrase: 'прайс',
+      archivedAt: null,
+    },
     chat: {
-      publisherSettings: { autoRepliesEnabled: true, revision: 4 },
+      publisherSettings: {
+        autoRepliesEnabled: true,
+        autoReplyConfigRevision: 7,
+        revision: 4,
+      },
       publicationPolicy: { publikEnabled: true, revision: 2 },
     },
     contentRevision: {
@@ -77,6 +93,7 @@ function harness(
     sendError?: Error & { response?: { status: number } };
     sourceFenceState?: 'admitted' | 'canceled' | 'missing';
     sourceFenceLockAdmitted?: boolean;
+    extendedMatchingMode?: 'off' | 'shadow' | 'on';
   } = {},
 ) {
   const leased = options.leased ?? delivery();
@@ -140,6 +157,9 @@ function harness(
     readiness as never,
     dispatchHealth as never,
     sourceFence as never,
+    {
+      get: jest.fn((_key: string, fallback: unknown) => options.extendedMatchingMode ?? fallback),
+    } as never,
     {
       getBotId: () => 'publisher-bot',
       getRequiredActionToken: jest.fn(() => 'not-a-real-token'),
@@ -206,6 +226,79 @@ describe('PublisherAutoReplyDeliveryService', () => {
 
     await service.process(job, attempt);
 
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: PublisherAutoReplyDeliveryStatus.CANCELED,
+          failureCode: 'EPOCH_CHANGED',
+        }),
+      }),
+    );
+  });
+
+  it.each(['off', 'shadow'] as const)(
+    'cancels a queued context or fuzzy match when extended matching changes to %s',
+    async (extendedMatchingMode) => {
+      const leased = delivery({ matchKind: PublisherAutoReplyMatchKind.EXACT_CONTEXT });
+      const { service, maxClient, deliveryUpdateMany } = harness({
+        leased,
+        extendedMatchingMode,
+      });
+
+      await service.process(job, attempt);
+
+      expect(maxClient.uploadImage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      expect(deliveryUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: PublisherAutoReplyDeliveryStatus.CANCELED,
+            failureCode: 'EPOCH_CHANGED',
+          }),
+        }),
+      );
+    },
+  );
+
+  it('cancels before upload or send when the chat auto-reply config revision changed', async () => {
+    const leased = delivery({
+      chat: {
+        ...delivery().chat,
+        publisherSettings: {
+          ...delivery().chat.publisherSettings,
+          autoReplyConfigRevision: 8,
+        },
+      },
+    });
+    const { service, maxClient, deliveryUpdateMany } = harness({ leased });
+
+    await service.process(job, attempt);
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: PublisherAutoReplyDeliveryStatus.CANCELED,
+          failureCode: 'EPOCH_CHANGED',
+        }),
+      }),
+    );
+  });
+
+  it('cancels before upload or send when the matched trigger was archived', async () => {
+    const leased = delivery({
+      matchedTrigger: {
+        ...delivery().matchedTrigger,
+        archivedAt: new Date('2026-08-29T12:00:00.000Z'),
+      },
+    });
+    const { service, maxClient, deliveryUpdateMany } = harness({ leased });
+
+    await service.process(job, attempt);
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(deliveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -28,14 +28,24 @@ import {
   archivePublisherAutoReplyResponseSchema,
   createPublisherAutoReplyAuthoringSessionRequestSchema,
   createPublisherAutoReplyRequestSchema,
+  createPublisherAutoReplyV2RequestSchema,
+  normalizePublisherAutoReplyPhrase,
   publisherAutoReplyAuthoringSessionCurrentResponseSchema,
   publisherAutoReplyAuthoringSessionResponseSchema,
   publisherAutoReplyListResponseSchema,
+  publisherAutoReplyListResponseV2Schema,
+  publisherAutoReplyPreviewRequestSchema,
+  publisherAutoReplyPreviewResponseSchema,
   publisherAutoReplyRuleSchema,
+  publisherAutoReplyRuleV2Schema,
   updatePublisherAutoReplyRequestSchema,
+  updatePublisherAutoReplyV2RequestSchema,
   type PublisherAutoReplyAuthoringSession,
   type PublisherAutoReplyContentInput,
+  type PublisherAutoReplyMatchKind,
+  type PublisherAutoReplyPreviewResponse,
   type PublisherAutoReplyRule,
+  type PublisherAutoReplyRuleV2,
 } from '@maxim/contracts/publisher-auto-replies';
 import { PREVIEW_CHAT_ID } from '../design-preview';
 import { ApiRequestError } from '../api-request-error';
@@ -103,13 +113,24 @@ function getPreviewPublisherAutoRepliesEnabled(state: PreviewState): Record<stri
 
 function getPreviewPublisherAutoReplies(
   state: PreviewState,
-): Record<string, PublisherAutoReplyRule[]> {
+): Record<string, PreviewPublisherAutoReplyStoredRule[]> {
   const extended = state as PreviewState & {
-    publisherAutoReplies?: Record<string, PublisherAutoReplyRule[]>;
+    publisherAutoReplies?: Record<string, PreviewPublisherAutoReplyStoredRule[]>;
   };
   extended.publisherAutoReplies ??= {};
   return extended.publisherAutoReplies;
 }
+
+type PreviewPublisherAutoReplyStoredRule = PublisherAutoReplyRule & {
+  phrases: string[];
+  matchInContext: boolean;
+  fuzzyMatch: boolean;
+};
+
+const PUBLISHER_AUTO_REPLY_VERSION_CONFLICT_CODE = 'PUBLISHER_AUTO_REPLY_VERSION_CONFLICT';
+const PUBLISHER_AUTO_REPLY_PHRASE_CONFLICT_CODE = 'PUBLISHER_AUTO_REPLY_PHRASE_CONFLICT';
+const PUBLISHER_AUTO_REPLY_CLIENT_UPGRADE_REQUIRED_CODE =
+  'PUBLISHER_AUTO_REPLY_CLIENT_UPGRADE_REQUIRED';
 
 function getPreviewPublisherAutoReplyAuthoring(
   state: PreviewState,
@@ -133,10 +154,10 @@ function buildPreviewAutoReplyAssetBlob(): Blob {
 function listPreviewPublisherAutoReplies(
   state: PreviewState,
   chatId: string,
-): PublisherAutoReplyRule[] {
+): PreviewPublisherAutoReplyStoredRule[] {
   const store = getPreviewPublisherAutoReplies(state);
-  store[chatId] ??= [
-    publisherAutoReplyRuleSchema.parse({
+  if (!store[chatId]) {
+    const legacyRule = publisherAutoReplyRuleSchema.parse({
       id: `preview-auto-reply-${chatId}-1`,
       chatId,
       phrase: 'Прайс',
@@ -172,9 +193,59 @@ function listPreviewPublisherAutoReplies(
       createdAt: state.clock.now().toISOString(),
       updatedAt: state.clock.now().toISOString(),
       archivedAt: null,
-    }),
-  ];
+    });
+    store[chatId] = [
+      {
+        ...legacyRule,
+        phrases: ['Прайс', 'Стоимость'],
+        matchInContext: true,
+        fuzzyMatch: false,
+      },
+    ];
+  }
   return store[chatId];
+}
+
+function presentPreviewPublisherAutoReplyV1(
+  rule: PreviewPublisherAutoReplyStoredRule,
+): PublisherAutoReplyRule {
+  return publisherAutoReplyRuleSchema.parse({
+    id: rule.id,
+    chatId: rule.chatId,
+    phrase: rule.phrases[0] ?? rule.phrase,
+    enabled: rule.enabled,
+    cooldownSeconds: rule.cooldownSeconds,
+    version: rule.version,
+    currentContentRevisionId: rule.currentContentRevisionId,
+    content: rule.content,
+    createdByUserId: rule.createdByUserId,
+    updatedByUserId: rule.updatedByUserId,
+    createdAt: rule.createdAt,
+    updatedAt: rule.updatedAt,
+    archivedAt: rule.archivedAt,
+  });
+}
+
+function presentPreviewPublisherAutoReplyV2(
+  rule: PreviewPublisherAutoReplyStoredRule,
+): PublisherAutoReplyRuleV2 {
+  return publisherAutoReplyRuleV2Schema.parse({
+    id: rule.id,
+    chatId: rule.chatId,
+    phrases: rule.phrases,
+    matchInContext: rule.matchInContext,
+    fuzzyMatch: rule.fuzzyMatch,
+    enabled: rule.enabled,
+    cooldownSeconds: rule.cooldownSeconds,
+    version: rule.version,
+    currentContentRevisionId: rule.currentContentRevisionId,
+    content: rule.content,
+    createdByUserId: rule.createdByUserId,
+    updatedByUserId: rule.updatedByUserId,
+    createdAt: rule.createdAt,
+    updatedAt: rule.updatedAt,
+    archivedAt: rule.archivedAt,
+  });
 }
 
 function buildPreviewPublisherEntity(
@@ -417,6 +488,347 @@ function buildPreviewPublisherAutoReplyContent(
   };
 }
 
+function publisherAutoReplyConflict(code: string, message: string): ApiRequestError {
+  return new ApiRequestError(409, JSON.stringify({ statusCode: 409, code }), message);
+}
+
+function assertPreviewPublisherAutoReplyFuzzyPhrases(
+  phrases: readonly string[],
+  fuzzyMatch: boolean,
+): void {
+  if (!fuzzyMatch) return;
+  const invalid = phrases.some((phrase) => {
+    const characters = normalizePublisherAutoReplyPhrase(phrase).match(/[\p{L}\p{M}\p{N}]/gu);
+    return (characters?.length ?? 0) < 5;
+  });
+  if (!invalid) return;
+  const code = 'PUBLISHER_AUTO_REPLY_FUZZY_PHRASE_TOO_SHORT';
+  throw new ApiRequestError(
+    400,
+    JSON.stringify({ statusCode: 400, code }),
+    'Для учёта опечаток каждая фраза должна содержать не меньше 5 символов.',
+  );
+}
+
+function assertPreviewPublisherAutoReplyPhrasesAvailable(
+  rules: readonly PreviewPublisherAutoReplyStoredRule[],
+  phrases: readonly string[],
+  excludeRuleId?: string,
+): void {
+  const occupied = new Set(
+    rules
+      .filter((rule) => rule.id !== excludeRuleId)
+      .flatMap((rule) => rule.phrases.map(normalizePublisherAutoReplyPhrase)),
+  );
+  if (phrases.some((phrase) => occupied.has(normalizePublisherAutoReplyPhrase(phrase)))) {
+    throw publisherAutoReplyConflict(
+      PUBLISHER_AUTO_REPLY_PHRASE_CONFLICT_CODE,
+      'Preview auto-reply phrase conflict',
+    );
+  }
+}
+
+function replacePreviewPublisherAutoReplyPrimaryPhrase(
+  current: readonly string[],
+  phrase: string,
+): string[] {
+  const normalized = normalizePublisherAutoReplyPhrase(phrase);
+  return [
+    phrase,
+    ...current.slice(1).filter((item) => normalizePublisherAutoReplyPhrase(item) !== normalized),
+  ];
+}
+
+function resolvePreviewLegacyPhraseUpdate(
+  current: PreviewPublisherAutoReplyStoredRule,
+  phrase: string | undefined,
+): string[] | undefined {
+  if (phrase === undefined) {
+    return undefined;
+  }
+  const extended = current.matchInContext || current.fuzzyMatch || current.phrases.length > 1;
+  if (!extended) {
+    return replacePreviewPublisherAutoReplyPrimaryPhrase(current.phrases, phrase);
+  }
+  if (
+    normalizePublisherAutoReplyPhrase(phrase) !== normalizePublisherAutoReplyPhrase(current.phrase)
+  ) {
+    throw publisherAutoReplyConflict(
+      PUBLISHER_AUTO_REPLY_CLIENT_UPGRADE_REQUIRED_CODE,
+      'Preview auto-reply client upgrade required',
+    );
+  }
+  return undefined;
+}
+
+const PREVIEW_AUTO_REPLY_TOKEN_PATTERN = /[\p{L}\p{M}\p{N}]+/gu;
+const PREVIEW_AUTO_REPLY_MATCH_LIMITS = Object.freeze({
+  messageCodePoints: 4_096,
+  messageTokens: 256,
+  candidates: 200,
+  fuzzyCandidates: 50,
+});
+
+type PreviewAutoReplyMatchCandidate = {
+  ruleKey: string;
+  ruleId: string | null;
+  position: number;
+  phrase: string;
+  matchInContext: boolean;
+  fuzzyMatch: boolean;
+  matchedDraft: boolean;
+};
+
+type PreviewAutoReplyScoredMatch = {
+  ruleKey: string;
+  position: number;
+  rank: number;
+  tokenCount: number;
+  phraseLength: number;
+  selected: NonNullable<PublisherAutoReplyPreviewResponse['selected']>;
+};
+
+const PREVIEW_AUTO_REPLY_MATCH_RANK: Record<PublisherAutoReplyMatchKind, number> = {
+  exact_full: 4,
+  exact_context: 3,
+  fuzzy_full: 2,
+  fuzzy_context: 1,
+};
+
+function buildPreviewPublisherAutoReplyMatch(
+  rules: readonly PreviewPublisherAutoReplyStoredRule[],
+  request: ReturnType<typeof publisherAutoReplyPreviewRequestSchema.parse>,
+): PublisherAutoReplyPreviewResponse {
+  const candidates: PreviewAutoReplyMatchCandidate[] = rules
+    .filter((rule) => rule.enabled && rule.id !== request.draft?.ruleId)
+    .flatMap((rule) =>
+      rule.phrases.map((phrase, position) => ({
+        ruleKey: rule.id,
+        ruleId: rule.id,
+        position,
+        phrase,
+        matchInContext: rule.matchInContext,
+        fuzzyMatch: rule.fuzzyMatch,
+        matchedDraft: false,
+      })),
+    );
+  if (request.draft?.enabled) {
+    const draftRuleId = request.draft.ruleId ?? null;
+    candidates.push(
+      ...request.draft.phrases.map((phrase, position) => ({
+        ruleKey: `draft:${draftRuleId ?? 'new'}`,
+        ruleId: null,
+        position,
+        phrase,
+        matchInContext: request.draft!.matchInContext,
+        fuzzyMatch: request.draft!.fuzzyMatch,
+        matchedDraft: true,
+      })),
+    );
+  }
+
+  const normalizedMessage = normalizePublisherAutoReplyPhrase(request.message);
+  const messageTokens = previewAutoReplyTokens(normalizedMessage);
+  if (
+    Array.from(request.message).length > PREVIEW_AUTO_REPLY_MATCH_LIMITS.messageCodePoints ||
+    Array.from(normalizedMessage).length > PREVIEW_AUTO_REPLY_MATCH_LIMITS.messageCodePoints ||
+    messageTokens.length > PREVIEW_AUTO_REPLY_MATCH_LIMITS.messageTokens
+  ) {
+    return publisherAutoReplyPreviewResponseSchema.parse({ outcome: 'no_match', selected: null });
+  }
+  if (candidates.length > PREVIEW_AUTO_REPLY_MATCH_LIMITS.candidates) {
+    return resolvePreviewPublisherAutoReplyMatches(
+      candidates
+        .filter(
+          (candidate) => normalizePublisherAutoReplyPhrase(candidate.phrase) === normalizedMessage,
+        )
+        .map((candidate) =>
+          previewAutoReplyScoredMatch(
+            candidate,
+            previewAutoReplyTokens(normalizedMessage),
+            'exact_full',
+            0,
+          ),
+        ),
+    );
+  }
+  const exactMatches = candidates.flatMap((candidate) => {
+    const normalizedPhrase = normalizePublisherAutoReplyPhrase(candidate.phrase);
+    const phraseTokens = previewAutoReplyTokens(normalizedPhrase);
+    if (normalizedMessage === normalizedPhrase) {
+      return [previewAutoReplyScoredMatch(candidate, phraseTokens, 'exact_full', 0)];
+    }
+    if (candidate.matchInContext && previewAutoReplyContainsTokens(messageTokens, phraseTokens)) {
+      return [previewAutoReplyScoredMatch(candidate, phraseTokens, 'exact_context', 0)];
+    }
+    return [];
+  });
+  if (exactMatches.length === 0) {
+    const fuzzyCandidateCount = candidates.filter((candidate) => candidate.fuzzyMatch).length;
+    if (fuzzyCandidateCount > PREVIEW_AUTO_REPLY_MATCH_LIMITS.fuzzyCandidates) {
+      return publisherAutoReplyPreviewResponseSchema.parse({ outcome: 'no_match', selected: null });
+    }
+  }
+  const matches =
+    exactMatches.length > 0
+      ? exactMatches
+      : candidates.flatMap((candidate) => previewAutoReplyFuzzyMatch(candidate, messageTokens));
+  return resolvePreviewPublisherAutoReplyMatches(matches);
+}
+
+function previewAutoReplyFuzzyMatch(
+  candidate: PreviewAutoReplyMatchCandidate,
+  messageTokens: readonly string[],
+): PreviewAutoReplyScoredMatch[] {
+  if (!candidate.fuzzyMatch) return [];
+  const phraseTokens = previewAutoReplyTokens(normalizePublisherAutoReplyPhrase(candidate.phrase));
+  const limit = previewAutoReplyFuzzyLimit(phraseTokens);
+  if (limit === null || phraseTokens.length === 0) return [];
+  const fuzzyPhrase = phraseTokens.map(previewAutoReplyFuzzyText).join(' ');
+  const fuzzyMessageTokens = messageTokens.map(previewAutoReplyFuzzyText);
+  if (fuzzyMessageTokens.length === phraseTokens.length) {
+    const distance = previewAutoReplyOsaDistance(fuzzyMessageTokens.join(' '), fuzzyPhrase, limit);
+    return distance <= limit
+      ? [previewAutoReplyScoredMatch(candidate, phraseTokens, 'fuzzy_full', distance)]
+      : [];
+  }
+  if (!candidate.matchInContext || fuzzyMessageTokens.length < phraseTokens.length) return [];
+  let best = limit + 1;
+  for (let start = 0; start <= fuzzyMessageTokens.length - phraseTokens.length; start += 1) {
+    best = Math.min(
+      best,
+      previewAutoReplyOsaDistance(
+        fuzzyMessageTokens.slice(start, start + phraseTokens.length).join(' '),
+        fuzzyPhrase,
+        limit,
+      ),
+    );
+  }
+  return best <= limit
+    ? [previewAutoReplyScoredMatch(candidate, phraseTokens, 'fuzzy_context', best)]
+    : [];
+}
+
+function previewAutoReplyScoredMatch(
+  candidate: PreviewAutoReplyMatchCandidate,
+  phraseTokens: readonly string[],
+  matchKind: PublisherAutoReplyMatchKind,
+  distance: number,
+): PreviewAutoReplyScoredMatch {
+  return {
+    ruleKey: candidate.ruleKey,
+    position: candidate.position,
+    rank: PREVIEW_AUTO_REPLY_MATCH_RANK[matchKind],
+    tokenCount: phraseTokens.length,
+    phraseLength: Array.from(phraseTokens.join('')).length,
+    selected: {
+      ruleId: candidate.ruleId,
+      phrase: candidate.phrase,
+      matchKind,
+      distance,
+      matchedDraft: candidate.matchedDraft,
+    },
+  };
+}
+
+function resolvePreviewPublisherAutoReplyMatches(
+  matches: readonly PreviewAutoReplyScoredMatch[],
+): PublisherAutoReplyPreviewResponse {
+  if (matches.length === 0) {
+    return publisherAutoReplyPreviewResponseSchema.parse({ outcome: 'no_match', selected: null });
+  }
+  const bestByRule = new Map<string, PreviewAutoReplyScoredMatch>();
+  for (const match of matches) {
+    const current = bestByRule.get(match.ruleKey);
+    const quality = current ? comparePreviewAutoReplyMatch(match, current) : 1;
+    if (quality > 0 || (quality === 0 && match.position < current!.position)) {
+      bestByRule.set(match.ruleKey, match);
+    }
+  }
+  const ruleMatches = [...bestByRule.values()];
+  let best = ruleMatches[0]!;
+  for (const match of ruleMatches.slice(1)) {
+    if (comparePreviewAutoReplyMatch(match, best) > 0) best = match;
+  }
+  const tied = ruleMatches.filter((match) => comparePreviewAutoReplyMatch(match, best) === 0);
+  return tied.length === 1
+    ? publisherAutoReplyPreviewResponseSchema.parse({ outcome: 'matched', selected: best.selected })
+    : publisherAutoReplyPreviewResponseSchema.parse({ outcome: 'ambiguous', selected: null });
+}
+
+function comparePreviewAutoReplyMatch(
+  left: PreviewAutoReplyScoredMatch,
+  right: PreviewAutoReplyScoredMatch,
+): number {
+  return (
+    left.rank - right.rank ||
+    right.selected.distance - left.selected.distance ||
+    left.tokenCount - right.tokenCount ||
+    left.phraseLength - right.phraseLength
+  );
+}
+
+function previewAutoReplyTokens(value: string): string[] {
+  return value.match(PREVIEW_AUTO_REPLY_TOKEN_PATTERN) ?? [];
+}
+
+function previewAutoReplyContainsTokens(
+  messageTokens: readonly string[],
+  phraseTokens: readonly string[],
+): boolean {
+  if (phraseTokens.length === 0 || phraseTokens.length > messageTokens.length) return false;
+  for (let start = 0; start <= messageTokens.length - phraseTokens.length; start += 1) {
+    if (phraseTokens.every((token, offset) => token === messageTokens[start + offset])) return true;
+  }
+  return false;
+}
+
+function previewAutoReplyFuzzyText(value: string): string {
+  return value.replace(/ё/gu, 'е');
+}
+
+function previewAutoReplyFuzzyLimit(tokens: readonly string[]): number | null {
+  const length = Array.from(tokens.join('')).length;
+  if (length < 5) return null;
+  if (length <= 9) return 1;
+  if (length <= 19) return 2;
+  return 3;
+}
+
+function previewAutoReplyOsaDistance(leftValue: string, rightValue: string, limit: number): number {
+  if (leftValue === rightValue) return 0;
+  const left = Array.from(leftValue);
+  const right = Array.from(rightValue);
+  if (Math.abs(left.length - right.length) > limit) return limit + 1;
+  let previousPrevious: number[] | null = null;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = Array<number>(right.length + 1).fill(limit + 1);
+    current[0] = leftIndex;
+    const start = Math.max(1, leftIndex - limit);
+    const end = Math.min(right.length, leftIndex + limit);
+    for (let rightIndex = start; rightIndex <= end; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        previous[rightIndex]! + 1,
+        current[rightIndex - 1]! + 1,
+        previous[rightIndex - 1]! + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+      if (
+        previousPrevious &&
+        leftIndex > 1 &&
+        rightIndex > 1 &&
+        left[leftIndex - 1] === right[rightIndex - 2] &&
+        left[leftIndex - 2] === right[rightIndex - 1]
+      ) {
+        current[rightIndex] = Math.min(current[rightIndex]!, previousPrevious[rightIndex - 2]! + 1);
+      }
+    }
+    previousPrevious = previous;
+    previous = current;
+  }
+  return previous[right.length]! <= limit ? previous[right.length]! : limit + 1;
+}
+
 export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
   state,
   url,
@@ -584,11 +996,32 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
   }
   if (entityType === 'chat' && segments[4] === 'auto-replies') {
     const rules = listPreviewPublisherAutoReplies(state, entityId);
+    const contractV2 = url.searchParams.get('contractVersion') === '2';
     if (segments.length === 5 && method === 'GET') {
-      return publisherAutoReplyListResponseSchema.parse({ items: rules, total: rules.length });
+      return contractV2
+        ? publisherAutoReplyListResponseV2Schema.parse({
+            items: rules.map(presentPreviewPublisherAutoReplyV2),
+            total: rules.length,
+          })
+        : publisherAutoReplyListResponseSchema.parse({
+            items: rules.map(presentPreviewPublisherAutoReplyV1),
+            total: rules.length,
+          });
     }
     if (segments.length === 5 && method === 'POST') {
-      const request = createPublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
+      const request = contractV2
+        ? createPublisherAutoReplyV2RequestSchema.parse(parseJsonBody(init))
+        : (() => {
+            const legacy = createPublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
+            return {
+              ...legacy,
+              phrases: [legacy.phrase],
+              matchInContext: false,
+              fuzzyMatch: false,
+            };
+          })();
+      assertPreviewPublisherAutoReplyFuzzyPhrases(request.phrases, request.fuzzyMatch);
+      assertPreviewPublisherAutoReplyPhrasesAvailable(rules, request.phrases);
       const ruleId = `preview-auto-reply-${entityId}-${rules.length + 1}`;
       const content = buildPreviewPublisherAutoReplyContent(
         state,
@@ -598,10 +1031,10 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
         request.content,
         null,
       );
-      const rule = publisherAutoReplyRuleSchema.parse({
+      const legacyRule = publisherAutoReplyRuleSchema.parse({
         id: ruleId,
         chatId: entityId,
-        phrase: request.phrase,
+        phrase: request.phrases[0],
         enabled: request.enabled,
         cooldownSeconds: request.cooldownSeconds,
         version: 1,
@@ -613,8 +1046,31 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
         updatedAt: state.clock.now().toISOString(),
         archivedAt: null,
       });
+      const rule: PreviewPublisherAutoReplyStoredRule = {
+        ...legacyRule,
+        phrases: [...request.phrases],
+        matchInContext: request.matchInContext,
+        fuzzyMatch: request.fuzzyMatch,
+      };
       rules.unshift(rule);
-      return rule;
+      return contractV2
+        ? presentPreviewPublisherAutoReplyV2(rule)
+        : presentPreviewPublisherAutoReplyV1(rule);
+    }
+    if (
+      contractV2 &&
+      segments.length === 6 &&
+      segments[5] === 'match-preview' &&
+      method === 'POST'
+    ) {
+      const request = publisherAutoReplyPreviewRequestSchema.parse(parseJsonBody(init));
+      if (request.draft) {
+        assertPreviewPublisherAutoReplyFuzzyPhrases(
+          request.draft.phrases,
+          request.draft.fuzzyMatch,
+        );
+      }
+      return buildPreviewPublisherAutoReplyMatch(rules, request);
     }
     if (segments[5] === 'authoring-sessions') {
       const sessions = getPreviewPublisherAutoReplyAuthoring(state);
@@ -666,6 +1122,15 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       }
       return buildPreviewAutoReplyAssetBlob();
     }
+    if (segments.length === 6 && segments[5] && method === 'GET') {
+      const rule = rules.find((item) => item.id === decodeURIComponent(segments[5]));
+      if (!rule) {
+        throw new ApiRequestError(404, '', 'Preview auto-reply not found');
+      }
+      return contractV2
+        ? presentPreviewPublisherAutoReplyV2(rule)
+        : presentPreviewPublisherAutoReplyV1(rule);
+    }
     if (segments.length === 6 && segments[5] && method === 'PATCH') {
       const ruleId = decodeURIComponent(segments[5]);
       const index = rules.findIndex((item) => item.id === ruleId);
@@ -673,9 +1138,30 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       if (!current) {
         throw new ApiRequestError(404, '', 'Preview auto-reply not found');
       }
-      const request = updatePublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
+      const request = contractV2
+        ? updatePublisherAutoReplyV2RequestSchema.parse(parseJsonBody(init))
+        : (() => {
+            const legacy = updatePublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
+            return {
+              ...legacy,
+              phrases: resolvePreviewLegacyPhraseUpdate(current, legacy.phrase),
+              matchInContext: undefined,
+              fuzzyMatch: undefined,
+            };
+          })();
       if (request.expectedVersion !== current.version) {
-        throw new ApiRequestError(409, '', 'Preview auto-reply version conflict');
+        throw publisherAutoReplyConflict(
+          PUBLISHER_AUTO_REPLY_VERSION_CONFLICT_CODE,
+          'Preview auto-reply version conflict',
+        );
+      }
+      const phrases = request.phrases ?? current.phrases;
+      assertPreviewPublisherAutoReplyFuzzyPhrases(
+        phrases,
+        request.fuzzyMatch ?? current.fuzzyMatch,
+      );
+      if (request.phrases) {
+        assertPreviewPublisherAutoReplyPhrasesAvailable(rules, phrases, ruleId);
       }
       const version = current.version + 1;
       const content = request.content
@@ -688,9 +1174,12 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
             current.content,
           )
         : current.content;
-      const updated = publisherAutoReplyRuleSchema.parse({
+      const updated: PreviewPublisherAutoReplyStoredRule = {
         ...current,
-        ...(request.phrase !== undefined ? { phrase: request.phrase } : {}),
+        phrase: phrases[0] ?? current.phrase,
+        phrases: [...phrases],
+        ...(request.matchInContext !== undefined ? { matchInContext: request.matchInContext } : {}),
+        ...(request.fuzzyMatch !== undefined ? { fuzzyMatch: request.fuzzyMatch } : {}),
         ...(request.enabled !== undefined ? { enabled: request.enabled } : {}),
         ...(request.cooldownSeconds !== undefined
           ? { cooldownSeconds: request.cooldownSeconds }
@@ -699,9 +1188,11 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
         currentContentRevisionId: content.id,
         content,
         updatedAt: state.clock.now().toISOString(),
-      });
+      };
       rules[index] = updated;
-      return updated;
+      return contractV2
+        ? presentPreviewPublisherAutoReplyV2(updated)
+        : presentPreviewPublisherAutoReplyV1(updated);
     }
     if (segments.length === 6 && segments[5] && method === 'DELETE') {
       const ruleId = decodeURIComponent(segments[5]);
@@ -712,7 +1203,10 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       }
       const request = archivePublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
       if (request.expectedVersion !== current.version) {
-        throw new ApiRequestError(409, '', 'Preview auto-reply version conflict');
+        throw publisherAutoReplyConflict(
+          PUBLISHER_AUTO_REPLY_VERSION_CONFLICT_CODE,
+          'Preview auto-reply version conflict',
+        );
       }
       rules.splice(index, 1);
       return archivePublisherAutoReplyResponseSchema.parse({

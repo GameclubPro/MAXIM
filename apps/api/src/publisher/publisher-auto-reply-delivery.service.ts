@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { UnrecoverableError } from 'bullmq';
 import { buildManagedBroadcastLinkButtonRows } from '../admin/admin-managed-broadcast-buttons';
@@ -15,6 +16,7 @@ import {
   PublicationContentFormat,
   PublisherAutoReplyAssetUploadStatus,
   PublisherAutoReplyDeliveryStatus,
+  PublisherAutoReplyMatchKind,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
@@ -63,6 +65,10 @@ type LeasedDelivery = {
   sourceUserId: string | null;
   matchedRuleVersion: number;
   matchedNormalizedPhrase: string;
+  matchedTriggerId: string | null;
+  matchKind: PublisherAutoReplyMatchKind;
+  matcherVersion: number;
+  autoReplyConfigRevision: number;
   publisherSettingsRevision: number;
   publicationPolicyRevision: number;
   status: PublisherAutoReplyDeliveryStatus;
@@ -77,8 +83,18 @@ type LeasedDelivery = {
     cooldownSeconds: number;
     currentContentRevisionId: string | null;
   };
+  matchedTrigger: {
+    id: string;
+    ruleId: string;
+    normalizedPhrase: string;
+    archivedAt: Date | null;
+  } | null;
   chat: {
-    publisherSettings: { autoRepliesEnabled: boolean; revision: number } | null;
+    publisherSettings: {
+      autoRepliesEnabled: boolean;
+      autoReplyConfigRevision: number;
+      revision: number;
+    } | null;
     publicationPolicy: { publikEnabled: boolean; revision: number } | null;
   };
   contentRevision: DeliveryContent;
@@ -100,6 +116,7 @@ class PublisherAutoReplyUploadBusyError extends Error {}
 export class PublisherAutoReplyDeliveryService {
   private readonly logger = new Logger(PublisherAutoReplyDeliveryService.name);
   private readonly publisherBotId: string;
+  private readonly extendedMatchingMode: 'off' | 'shadow' | 'on';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -107,9 +124,14 @@ export class PublisherAutoReplyDeliveryService {
     private readonly readiness: PublisherReadinessService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly sourceFence: PublisherAutoReplySourceFenceService,
+    configService: ConfigService,
     credentials: PublisherActionCredentialService,
   ) {
     this.publisherBotId = credentials.getBotId();
+    this.extendedMatchingMode = configService.get<'off' | 'shadow' | 'on'>(
+      'PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE',
+      'on',
+    );
     credentials.getRequiredActionToken(this.publisherBotId);
   }
 
@@ -346,9 +368,23 @@ export class PublisherAutoReplyDeliveryService {
               currentContentRevisionId: true,
             },
           },
+          matchedTrigger: {
+            select: {
+              id: true,
+              ruleId: true,
+              normalizedPhrase: true,
+              archivedAt: true,
+            },
+          },
           chat: {
             select: {
-              publisherSettings: { select: { autoRepliesEnabled: true, revision: true } },
+              publisherSettings: {
+                select: {
+                  autoRepliesEnabled: true,
+                  autoReplyConfigRevision: true,
+                  revision: true,
+                },
+              },
               publicationPolicy: { select: { publikEnabled: true, revision: true } },
             },
           },
@@ -391,12 +427,23 @@ export class PublisherAutoReplyDeliveryService {
       delivery.rule.archivedAt !== null ||
       !delivery.rule.enabled ||
       delivery.rule.version !== delivery.matchedRuleVersion ||
-      delivery.rule.normalizedPhrase !== delivery.matchedNormalizedPhrase ||
+      (this.extendedMatchingMode !== 'on' &&
+        delivery.matchKind !== PublisherAutoReplyMatchKind.EXACT_FULL) ||
+      delivery.matcherVersion !== 1 ||
+      (delivery.matchedTriggerId
+        ? !delivery.matchedTrigger ||
+          delivery.matchedTrigger.id !== delivery.matchedTriggerId ||
+          delivery.matchedTrigger.ruleId !== delivery.ruleId ||
+          delivery.matchedTrigger.archivedAt !== null ||
+          delivery.matchedTrigger.normalizedPhrase !== delivery.matchedNormalizedPhrase
+        : delivery.rule.normalizedPhrase !== delivery.matchedNormalizedPhrase) ||
       delivery.rule.currentContentRevisionId !== delivery.contentRevisionId ||
       delivery.contentRevision.id !== delivery.contentRevisionId ||
       delivery.contentRevision.ruleId !== delivery.ruleId ||
       delivery.chat.publisherSettings?.autoRepliesEnabled !== true ||
       delivery.chat.publisherSettings.revision !== delivery.publisherSettingsRevision ||
+      delivery.chat.publisherSettings.autoReplyConfigRevision !==
+        delivery.autoReplyConfigRevision ||
       delivery.chat.publicationPolicy?.publikEnabled === false ||
       policyRevision !== delivery.publicationPolicyRevision ||
       delivery.contentRevision.assets.some(({ asset }) => asset.chatId !== delivery.chatId)
@@ -433,9 +480,23 @@ export class PublisherAutoReplyDeliveryService {
               currentContentRevisionId: true,
             },
           },
+          matchedTrigger: {
+            select: {
+              id: true,
+              ruleId: true,
+              normalizedPhrase: true,
+              archivedAt: true,
+            },
+          },
           chat: {
             select: {
-              publisherSettings: { select: { autoRepliesEnabled: true, revision: true } },
+              publisherSettings: {
+                select: {
+                  autoRepliesEnabled: true,
+                  autoReplyConfigRevision: true,
+                  revision: true,
+                },
+              },
               publicationPolicy: { select: { publikEnabled: true, revision: true } },
             },
           },

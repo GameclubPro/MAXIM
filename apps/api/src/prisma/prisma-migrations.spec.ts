@@ -1122,4 +1122,61 @@ describe('Prisma migrations', () => {
       /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE)\b/i,
     );
   });
+
+  it('adds versioned Publisher auto-reply triggers with a rolling-compatible primary mirror', () => {
+    const migration = readMigration('20260902120000_add_publisher_auto_reply_matchers');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+    const schema = readSchema();
+
+    expect(compact).toMatch(/^BEGIN;/u);
+    expect(compact).toMatch(/COMMIT;$/u);
+
+    expect(schema).toContain('enum PublisherAutoReplyMatchKind {');
+    expect(schema).toContain('model PublisherAutoReplyTrigger {');
+    expect(schema).toContain(
+      '@@unique([id, chatId], map: "publisher_auto_reply_rules_id_chat_id_key")',
+    );
+    expect(schema).toContain(
+      '@relation(fields: [ruleId, chatId], references: [id, chatId], onDelete: Cascade, onUpdate: Cascade, map: "publisher_auto_reply_triggers_rule_chat_fkey")',
+    );
+    expect(schema).toContain('autoReplyConfigRevision   Int      @default(0)');
+    expect(schema).toContain('matchInContext           Boolean   @default(false)');
+    expect(schema).toContain('fuzzyMatch               Boolean   @default(false)');
+    expect(schema).toContain('matchedTriggerId          String?');
+    expect(schema).toContain('matcherVersion            Int');
+    expect(schema).toContain('triggerPhrases                    Json');
+
+    expect(compact).toContain(
+      "CREATE TYPE \"PublisherAutoReplyMatchKind\" AS ENUM ( 'EXACT_FULL', 'EXACT_CONTEXT', 'FUZZY_FULL', 'FUZZY_CONTEXT' )",
+    );
+    expect(compact).toContain('CREATE TABLE "publisher_auto_reply_triggers"');
+    expect(compact).toContain(
+      'FOREIGN KEY ("rule_id", "chat_id") REFERENCES "publisher_auto_reply_rules"("id", "chat_id")',
+    );
+    expect(compact).toContain(
+      'CREATE UNIQUE INDEX "publisher_auto_reply_triggers_active_phrase_key" ON "publisher_auto_reply_triggers"("chat_id", "normalized_phrase") WHERE "archived_at" IS NULL',
+    );
+    expect(compact).toContain('\'primary:\' || rules."id"');
+    expect(compact).toContain('missing_primary_count');
+    expect(compact).toContain('CREATE TRIGGER "publisher_auto_reply_rules_primary_trigger_sync"');
+    expect(compact.indexOf('INSERT INTO "publisher_auto_reply_triggers"')).toBeLessThan(
+      compact.indexOf('CREATE TRIGGER "publisher_auto_reply_rules_primary_trigger_sync"'),
+    );
+    expect(compact).toContain('WHERE rules."id" = NEW."rule_id" FOR UPDATE');
+    expect(compact).toContain(
+      'AFTER INSERT OR UPDATE OF "chat_id", "phrase", "normalized_phrase", "archived_at"',
+    );
+    expect(compact).toContain('ADD COLUMN "matched_trigger_id" TEXT');
+    expect(compact).toContain(
+      'ADD COLUMN "match_kind" "PublisherAutoReplyMatchKind" NOT NULL DEFAULT \'EXACT_FULL\'',
+    );
+    expect(compact).toContain('ADD COLUMN "trigger_phrases" JSONB NOT NULL DEFAULT \'[]\'::jsonb');
+    expect(compact).toContain(
+      'DROP CONSTRAINT "publisher_auto_reply_authoring_messages_values_check"',
+    );
+    expect(compact).toContain(`"kind" IN ('PHRASE', 'CONTENT', 'CALLBACK')`);
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
 });

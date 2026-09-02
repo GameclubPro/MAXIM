@@ -189,6 +189,7 @@ const envSchema = z.object({
   MAX_PUBLISHER_DISPATCH_ENABLED: envBoolean(false),
   PUBLISHER_POST_IMPORT_ENABLED: envBoolean(false),
   PUBLISHER_AUTO_REPLY_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1_500),
+  PUBLISHER_AUTO_REPLY_EXTENDED_MATCHING_MODE: z.enum(['off', 'shadow', 'on']).default('on'),
   PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: z.coerce
     .number()
     .int()

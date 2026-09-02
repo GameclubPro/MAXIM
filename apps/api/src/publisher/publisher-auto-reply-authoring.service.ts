@@ -1,5 +1,7 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import {
+  MAX_PUBLISHER_AUTO_REPLY_PHRASES,
+  MAX_PUBLISHER_AUTO_REPLY_PHRASES_TOTAL_LENGTH,
   MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH,
   normalizePublisherAutoReplyPhrase,
   normalizePublisherAutoReplyPhraseDisplay,
@@ -35,7 +37,13 @@ const AUTHORING_CAPTURE_GUARD_MS = 60_000;
 const AUTHORING_START_PREFIX = 'ar_';
 const AUTHORING_CALLBACK_PREFIX = 'ar:';
 
-type AuthoringCallbackAction = 'activate' | 'cancel' | 'replace_content' | 'replace_phrase';
+type AuthoringCallbackAction =
+  | 'activate'
+  | 'cancel'
+  | 'replace_content'
+  | 'replace_phrase'
+  | 'toggle_context'
+  | 'toggle_fuzzy';
 type AuthoringSessionRow = Prisma.PublisherAutoReplyAuthoringSessionGetPayload<
   Record<string, never>
 >;
@@ -226,10 +234,17 @@ export class PublisherAutoReplyAuthoringService {
       if (!parsed) return false;
       const session = await this.findSessionForActorToken(parsed.token, callback.actorUserId);
       if (!session) return true;
+      const callbackLedgerId = this.callbackLedgerId(callback.callbackId, update.updateId);
+      if (callbackLedgerId && (await this.hasConsumedCallback(callbackLedgerId))) {
+        await this.recoverSessionWork(session, update.updateId);
+        return true;
+      }
       if (parsed.action === 'cancel') {
         await this.cancelSession(session, callback.callbackId);
       } else if (parsed.action === 'activate') {
         await this.requestActivation(session, callback.callbackId);
+      } else if (parsed.action === 'toggle_context' || parsed.action === 'toggle_fuzzy') {
+        await this.toggleMatchMode(session, parsed.action, callback.callbackId, callbackLedgerId);
       } else {
         await this.resetStep(session, parsed.action, callback.callbackId);
       }
@@ -356,31 +371,37 @@ export class PublisherAutoReplyAuthoringService {
     update: MaxUpdate,
     identity: { actorUserId: string; privateChatId: string; messageId: string },
   ): Promise<void> {
-    const phrase = extractDirectPhrase(update);
-    const display = phrase ? normalizePublisherAutoReplyPhraseDisplay(phrase) : '';
-    const normalized = display ? normalizePublisherAutoReplyPhrase(display) : '';
-    const invalid =
-      !display ||
-      display.length > MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH ||
-      normalized === '/start' ||
-      normalized === 'старт';
-    const duplicate = invalid
-      ? null
-      : await this.prisma.publisherAutoReplyRule.findFirst({
-          where: {
-            chatId: session.targetChatId,
-            normalizedPhrase: normalized,
-            archivedAt: null,
-          },
-          select: { id: true },
-        });
-    if (invalid || duplicate) {
+    const parsedPhrases = parseAuthoringPhrases(extractDirectPhrase(update));
+    const primary = parsedPhrases?.[0] ?? null;
+    const invalid = !primary;
+    const fuzzyPhraseTooShort = Boolean(
+      primary &&
+      session.fuzzyMatch &&
+      parsedPhrases!.some((item) => isPublisherAutoReplyPhraseTooShortForFuzzy(item.normalized)),
+    );
+    const duplicate =
+      invalid || fuzzyPhraseTooShort
+        ? null
+        : await this.prisma.publisherAutoReplyTrigger.findFirst({
+            where: {
+              chatId: session.targetChatId,
+              normalizedPhrase: { in: parsedPhrases!.map((item) => item.normalized) },
+              archivedAt: null,
+            },
+            select: { id: true },
+          });
+    if (invalid || fuzzyPhraseTooShort || duplicate) {
+      let changed: { count: number };
       try {
-        await this.prisma.$transaction(async (tx) => {
+        changed = await this.prisma.$transaction(async (tx) => {
           const changed = await tx.publisherAutoReplyAuthoringSession.updateMany({
             where: { id: session.id, state: session.state, stageRevision: session.stageRevision },
             data: {
-              failureCode: duplicate ? 'phrase_conflict' : 'invalid_phrase',
+              failureCode: duplicate
+                ? 'phrase_conflict'
+                : fuzzyPhraseTooShort
+                  ? 'fuzzy_phrase_too_short'
+                  : 'invalid_phrase',
               notificationKind: 'prompt_phrase',
               notificationPending: true,
               notificationRevision: { increment: 1 },
@@ -398,13 +419,20 @@ export class PublisherAutoReplyAuthoringService {
               },
             });
           }
+          return changed;
         });
       } catch (error: unknown) {
-        if ((error as { code?: unknown })?.code !== 'P2002') throw error;
+        if (await this.recoverConsumedMessageError(error, session, identity.messageId)) return;
+        throw error;
       }
-      await this.enqueueNotificationSafe(session.id, 'prompt_phrase', identity.messageId);
+      if (changed.count === 1) {
+        await this.enqueueNotificationSafe(session.id, 'prompt_phrase', identity.messageId);
+      }
       return;
     }
+
+    const acceptedPhrases = parsedPhrases!;
+    const acceptedPrimary = primary!;
 
     const expiresAt = new Date(Date.now() + AUTHORING_WAITING_TTL_MS);
     const reuseDraft = Boolean(session.ruleId && session.contentRevisionId);
@@ -417,8 +445,9 @@ export class PublisherAutoReplyAuthoringService {
               ? PublisherAutoReplyAuthoringState.REVIEW
               : PublisherAutoReplyAuthoringState.AWAITING_CONTENT,
             stageRevision: { increment: 1 },
-            phrase: display,
-            normalizedPhrase: normalized,
+            phrase: acceptedPrimary.display,
+            normalizedPhrase: acceptedPrimary.normalized,
+            triggerPhrases: acceptedPhrases.map((item) => item.display),
             phraseMessageId: identity.messageId,
             privateChatId: identity.privateChatId,
             failureCode: null,
@@ -430,6 +459,11 @@ export class PublisherAutoReplyAuthoringService {
         });
         if (result.count === 1) {
           if (reuseDraft) {
+            // The legacy rule trigger writes position 0 immediately. Remove aliases first so an
+            // alias-to-primary reorder cannot collide with the per-rule normalized phrase key.
+            await tx.publisherAutoReplyTrigger.deleteMany({
+              where: { ruleId: session.ruleId!, position: { gt: 0 } },
+            });
             const rule = await tx.publisherAutoReplyRule.updateMany({
               where: {
                 id: session.ruleId!,
@@ -438,14 +472,26 @@ export class PublisherAutoReplyAuthoringService {
                 archivedAt: { not: null },
               },
               data: {
-                phrase: display,
-                normalizedPhrase: normalized,
+                phrase: acceptedPrimary.display,
+                normalizedPhrase: acceptedPrimary.normalized,
                 updatedByUserId: session.actorUserId,
                 version: { increment: 1 },
               },
             });
             if (rule.count !== 1) {
               throw new Error('Publisher auto-reply authoring draft changed before phrase update');
+            }
+            if (acceptedPhrases.length > 1) {
+              await tx.publisherAutoReplyTrigger.createMany({
+                data: acceptedPhrases.slice(1).map((item, index) => ({
+                  ruleId: session.ruleId!,
+                  chatId: session.targetChatId,
+                  position: index + 1,
+                  phrase: item.display,
+                  normalizedPhrase: item.normalized,
+                  archivedAt: new Date(),
+                })),
+              });
             }
             await tx.auditLog.create({
               data: {
@@ -476,8 +522,8 @@ export class PublisherAutoReplyAuthoringService {
       });
       if (changed.count !== 1) return;
     } catch (error: unknown) {
-      if ((error as { code?: unknown })?.code !== 'P2002') throw error;
-      return;
+      if (await this.recoverConsumedMessageError(error, session, identity.messageId)) return;
+      throw error;
     }
     await this.enqueueNotificationSafe(
       session.id,
@@ -566,6 +612,118 @@ export class PublisherAutoReplyAuthoringService {
     }
   }
 
+  private async toggleMatchMode(
+    session: AuthoringSessionRow,
+    action: Extract<AuthoringCallbackAction, 'toggle_context' | 'toggle_fuzzy'>,
+    callbackId: string | null,
+    callbackLedgerId: string | null,
+  ): Promise<void> {
+    if (
+      session.state !== PublisherAutoReplyAuthoringState.REVIEW ||
+      !session.ruleId ||
+      !session.contentRevisionId
+    ) {
+      return;
+    }
+    if (
+      action === 'toggle_fuzzy' &&
+      !session.fuzzyMatch &&
+      readSessionTriggerPhrases(session.triggerPhrases, session.phrase).some(
+        isPublisherAutoReplyPhraseTooShortForFuzzy,
+      )
+    ) {
+      let rejected: { count: number };
+      try {
+        rejected = await this.prisma.$transaction(async (tx) => {
+          const result = await tx.publisherAutoReplyAuthoringSession.updateMany({
+            where: { id: session.id, state: session.state, stageRevision: session.stageRevision },
+            data: {
+              stageRevision: { increment: 1 },
+              callbackId,
+              failureCode: 'fuzzy_phrase_too_short',
+              notificationKind: 'ready',
+              notificationPending: true,
+              notificationRevision: { increment: 1 },
+            },
+          });
+          if (result.count === 1) {
+            await this.recordConsumedCallback(tx, session, callbackLedgerId);
+          }
+          return result;
+        });
+      } catch (error: unknown) {
+        if (await this.isConsumedCallbackError(error, callbackLedgerId)) return;
+        throw error;
+      }
+      if (rejected.count === 1) {
+        await this.enqueueNotificationSafe(
+          session.id,
+          'ready',
+          callbackId ?? `toggle-fuzzy-rejected-${session.stageRevision}`,
+          callbackId,
+        );
+      }
+      return;
+    }
+    const matchInContext =
+      action === 'toggle_context' ? !session.matchInContext : session.matchInContext;
+    const fuzzyMatch = action === 'toggle_fuzzy' ? !session.fuzzyMatch : session.fuzzyMatch;
+    const expiresAt = new Date(Date.now() + AUTHORING_WAITING_TTL_MS);
+    let changed: { count: number };
+    try {
+      changed = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.publisherAutoReplyAuthoringSession.updateMany({
+          where: { id: session.id, state: session.state, stageRevision: session.stageRevision },
+          data: {
+            stageRevision: { increment: 1 },
+            matchInContext,
+            fuzzyMatch,
+            callbackId,
+            failureCode: null,
+            notificationKind: 'ready',
+            notificationPending: true,
+            notificationRevision: { increment: 1 },
+            expiresAt,
+          },
+        });
+        if (result.count === 1) {
+          const rule = await tx.publisherAutoReplyRule.updateMany({
+            where: {
+              id: session.ruleId!,
+              chatId: session.targetChatId,
+              currentContentRevisionId: session.contentRevisionId,
+              archivedAt: { not: null },
+            },
+            data: {
+              matchInContext,
+              fuzzyMatch,
+              updatedByUserId: session.actorUserId,
+              version: { increment: 1 },
+            },
+          });
+          if (rule.count !== 1) {
+            throw new Error('Publisher auto-reply authoring draft changed before mode update');
+          }
+          await this.recordConsumedCallback(tx, session, callbackLedgerId);
+          const renewed = await this.privateFlows.renew(this.leaseFor(session, expiresAt), tx);
+          if (!renewed) throw this.flowConflict();
+        }
+        return result;
+      });
+    } catch (error: unknown) {
+      if (await this.isConsumedCallbackError(error, callbackLedgerId)) return;
+      throw error;
+    }
+    if (changed.count === 1) {
+      await this.enqueueNotificationSafe(
+        session.id,
+        'ready',
+        callbackId ?? `${action}-${session.stageRevision}`,
+        callbackId,
+      );
+    }
+  }
+
   private async resetStep(
     session: AuthoringSessionRow,
     action: Extract<AuthoringCallbackAction, 'replace_content' | 'replace_phrase'>,
@@ -583,7 +741,12 @@ export class PublisherAutoReplyAuthoringService {
             : PublisherAutoReplyAuthoringState.AWAITING_CONTENT,
           stageRevision: { increment: 1 },
           ...(phraseStep
-            ? { phrase: null, normalizedPhrase: null, phraseMessageId: null }
+            ? {
+                phrase: null,
+                normalizedPhrase: null,
+                triggerPhrases: [],
+                phraseMessageId: null,
+              }
             : { contentMessageId: null, sourceWebhookEventId: null }),
           callbackId,
           failureCode: null,
@@ -653,6 +816,77 @@ export class PublisherAutoReplyAuthoringService {
         expiresAt: { gt: new Date() },
       },
     });
+  }
+
+  private async hasConsumedCallback(callbackLedgerId: string): Promise<boolean> {
+    const row = await this.prisma.publisherAutoReplyAuthoringMessage.findUnique({
+      where: {
+        publisherBotId_messageId: {
+          publisherBotId: this.publisherBotId,
+          messageId: callbackLedgerId,
+        },
+      },
+      select: { sessionId: true },
+    });
+    return Boolean(row);
+  }
+
+  private async recoverConsumedMessageError(
+    error: unknown,
+    session: AuthoringSessionRow,
+    messageId: string,
+  ): Promise<boolean> {
+    if ((error as { code?: unknown } | null)?.code !== 'P2002') return false;
+    const consumed = await this.prisma.publisherAutoReplyAuthoringMessage.findUnique({
+      where: {
+        publisherBotId_messageId: {
+          publisherBotId: session.publisherBotId,
+          messageId,
+        },
+      },
+      select: { sessionId: true },
+    });
+    if (consumed?.sessionId !== session.id) return false;
+    const current = await this.prisma.publisherAutoReplyAuthoringSession.findUnique({
+      where: { id: session.id },
+    });
+    if (!current) return false;
+    await this.recoverSessionWork(current, messageId);
+    return true;
+  }
+
+  private async recordConsumedCallback(
+    tx: Prisma.TransactionClient,
+    session: AuthoringSessionRow,
+    callbackLedgerId: string | null,
+  ): Promise<void> {
+    if (!callbackLedgerId) return;
+    await tx.publisherAutoReplyAuthoringMessage.create({
+      data: {
+        sessionId: session.id,
+        publisherBotId: session.publisherBotId,
+        messageId: callbackLedgerId,
+        kind: 'CALLBACK',
+        stageRevision: session.stageRevision,
+      },
+    });
+  }
+
+  private async isConsumedCallbackError(
+    error: unknown,
+    callbackLedgerId: string | null,
+  ): Promise<boolean> {
+    if (!callbackLedgerId || (error as { code?: unknown } | null)?.code !== 'P2002') {
+      return false;
+    }
+    return this.hasConsumedCallback(callbackLedgerId);
+  }
+
+  private callbackLedgerId(callbackId: string | null, updateId: string): string | null {
+    const normalizedCallbackId = callbackId?.trim() ?? '';
+    if (normalizedCallbackId) return `callback-id:${normalizedCallbackId}`;
+    const normalizedUpdateId = updateId.trim();
+    return normalizedUpdateId ? `callback-update:${normalizedUpdateId}` : null;
   }
 
   private async ensureLease(session: AuthoringSessionRow): Promise<void> {
@@ -886,7 +1120,9 @@ function parseCallbackPayload(
     (action !== 'activate' &&
       action !== 'cancel' &&
       action !== 'replace_content' &&
-      action !== 'replace_phrase')
+      action !== 'replace_phrase' &&
+      action !== 'toggle_context' &&
+      action !== 'toggle_fuzzy')
   ) {
     return null;
   }
@@ -941,6 +1177,48 @@ function extractDirectPhrase(update: MaxUpdate): string | null {
       : [];
   if (attachments.length > 0) return null;
   return readText(body.text ?? body.plain ?? body.caption);
+}
+
+function parseAuthoringPhrases(
+  value: string | null,
+): Array<{ display: string; normalized: string }> | null {
+  if (!value) return null;
+  const phrases = value
+    .split(/\r?\n/gu)
+    .map((item) => normalizePublisherAutoReplyPhraseDisplay(item))
+    .filter(Boolean)
+    .map((display) => ({ display, normalized: normalizePublisherAutoReplyPhrase(display) }));
+  if (phrases.length === 0 || phrases.length > MAX_PUBLISHER_AUTO_REPLY_PHRASES) return null;
+  if (
+    phrases.some(
+      ({ display, normalized }) =>
+        display.length > MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH ||
+        normalized.length > MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH ||
+        normalized === '/start' ||
+        normalized === 'старт',
+    ) ||
+    phrases.reduce((total, item) => total + Array.from(item.normalized).length, 0) >
+      MAX_PUBLISHER_AUTO_REPLY_PHRASES_TOTAL_LENGTH ||
+    new Set(phrases.map((item) => item.normalized)).size !== phrases.length
+  ) {
+    return null;
+  }
+  return phrases;
+}
+
+function readSessionTriggerPhrases(value: unknown, fallback: string | null): string[] {
+  if (Array.isArray(value)) {
+    const phrases = value.filter(
+      (item): item is string => typeof item === 'string' && item.trim().length > 0,
+    );
+    if (phrases.length > 0) return phrases;
+  }
+  return fallback?.trim() ? [fallback.trim()] : [];
+}
+
+function isPublisherAutoReplyPhraseTooShortForFuzzy(phrase: string): boolean {
+  const characters = normalizePublisherAutoReplyPhrase(phrase).match(/[\p{L}\p{M}\p{N}]/gu);
+  return (characters?.length ?? 0) < 5;
 }
 
 function extractRawMessage(rawValue: unknown): Record<string, unknown> | null {

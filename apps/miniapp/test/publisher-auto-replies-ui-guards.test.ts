@@ -12,6 +12,10 @@ const createSheetSource = readFileSync(
   new URL('../src/components/auto-reply-create-sheet.tsx', import.meta.url),
   'utf8',
 );
+const matchTesterSource = readFileSync(
+  new URL('../src/components/auto-reply-match-tester.tsx', import.meta.url),
+  'utf8',
+);
 const composerSource = readFileSync(
   new URL('../src/components/broadcast-content-composer.tsx', import.meta.url),
   'utf8',
@@ -30,6 +34,10 @@ const pageCss = readFileSync(
 );
 const draftStorageSource = readFileSync(
   new URL('../src/lib/auto-reply-draft.ts', import.meta.url),
+  'utf8',
+);
+const draftHookSource = readFileSync(
+  new URL('../src/lib/use-auto-reply-draft.ts', import.meta.url),
   'utf8',
 );
 
@@ -57,7 +65,8 @@ test('rich editor keeps retained assets by reference and new images inline', () 
   assert.match(pageSource, /getPublisherAutoReplyAsset/u);
   assert.match(pageSource, /URL\.createObjectURL/u);
   assert.doesNotMatch(pageSource, /data:\$\{asset\.mimeType\}/u);
-  assert.match(pageSource, /<BroadcastContentComposer/u);
+  assert.match(pageSource, /import\('\.\.\/components\/broadcast-content-composer'\)/u);
+  assert.match(pageSource, /<LazyBroadcastContentComposer/u);
   assert.match(pageSource, /<MaxMarkdownPreview/u);
 });
 
@@ -82,6 +91,43 @@ test('new rules are enabled directly while edit and list keep their switches', (
   assert.match(pageSource, /rule \? \(draft\.enabled \? 'включён' : 'выключен'\) : null/u);
 });
 
+test('v2 trigger authoring exposes phrase chips, independent match switches, and server preview', () => {
+  assert.match(pageSource, /<h2 id="publisher-auto-reply-phrase-title">Фразы-триггеры<\/h2>/u);
+  assert.match(pageSource, /draft\.phrases\.map/u);
+  assert.match(pageSource, /aria-label=\{`Удалить фразу/u);
+  assert.match(pageSource, /event\.key !== 'Enter'/u);
+  assert.match(pageSource, /splitAutoReplyPhrasePaste\(value\)/u);
+  assert.match(pageSource, /<strong>Искать внутри сообщения<\/strong>/u);
+  assert.match(pageSource, /<strong>Учитывать опечатки<\/strong>/u);
+  assert.match(pageSource, /import\('\.\.\/components\/auto-reply-match-tester'\)/u);
+  assert.match(pageSource, /recoverableLazyNamedComponent<AutoReplyMatchTesterProps>/u);
+  assert.match(pageSource, /recoverableLazyNamedComponent<BroadcastContentComposerProps>/u);
+  assert.match(pageSource, /<LazyAutoReplyMatchTester/u);
+  assert.doesNotMatch(pageSource, /previewPublisherAutoReplyMatch/u);
+  assert.match(matchTesterSource, /previewPublisherAutoReplyMatch/u);
+  assert.match(matchTesterSource, /mergeAutoReplyPhrases\(draft\.phrases, \[pending\]\)/u);
+  assert.match(matchTesterSource, /validateAutoReplyTriggerDraft\(resolved\.draft\)/u);
+  assert.match(matchTesterSource, /onCommitPhrases\(resolved\.draft\.phrases\)/u);
+  assert.match(matchTesterSource, /latestRequestKeyRef/u);
+  assert.match(matchTesterSource, /result\.outcome === 'ambiguous'/u);
+  assert.match(matchTesterSource, /result\.outcome === 'no_match'/u);
+  assert.match(matchTesterSource, /result\.selected\.matchedDraft/u);
+  assert.match(appSource, /<LazyPublisherAutoRepliesPage api=\{apiClient\} userId=\{me\.userId\}/u);
+  assert.match(
+    draftStorageSource,
+    /maxim:publisher-auto-reply:v3:\$\{encodeURIComponent\(userScope\)\}/u,
+  );
+  assert.match(
+    draftHookSource,
+    /storageReadError \|\|[\s\S]*?!modifiedSinceHydrationRef\.current/u,
+  );
+  assert.match(pageSource, /publisher-auto-reply-editor__missing-images/u);
+  assert.match(pageSource, /modifiedSinceHydration \|\| composed\.draft !== draft/u);
+  assert.match(pageSource, /Не удалось восстановить черновик/u);
+  assert.match(pageSource, /onClick=\{retryHydration\}/u);
+  assert.match(pageSource, /onClick=\{\(\) => void discard\(\)\}/u);
+});
+
 test('auto-reply controls and fixed media geometry stay usable on narrow WebViews', () => {
   assert.match(pageCss, /\.auto-reply-switch \{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/u);
   assert.match(
@@ -96,6 +142,18 @@ test('auto-reply controls and fixed media geometry stay usable on narrow WebView
     /\.max-rich-text-editor__link-panel button \{[\s\S]*?min-width: 44px;[\s\S]*?height: 44px;/u,
   );
   assert.match(pageCss, /--auto-reply-primary-ink: var\(--app-page-background\)/u);
+  assert.match(
+    pageCss,
+    /\.publisher-auto-reply-editor__phrase-chip \{[\s\S]*?min-height: 44px;[\s\S]*?overflow-wrap/u,
+  );
+  assert.match(
+    pageCss,
+    /@media \(max-width: 340px\)[\s\S]*?\.publisher-auto-reply-editor__tester-row/u,
+  );
+  assert.match(
+    pageCss,
+    /html\[data-max-keyboard-open='true'\] \.publisher-auto-reply-editor__save-bar \{[\s\S]*?display: none;/u,
+  );
   assert.doesNotMatch(pageCss, /font-size:\s*(?:clamp|min|max)\([^;]*vw/u);
 });
 
@@ -103,9 +161,9 @@ test('auto-reply copy and validation stay concise and actionable', () => {
   assert.match(createSheetSource, />Создать здесь</u);
   assert.match(createSheetSource, /'Открыть Публика'/u);
   assert.match(pageSource, /<strong>Автоответы в чате<\/strong>/u);
-  assert.match(pageSource, /aria-invalid=\{Boolean\(issues\.phrase\)\}/u);
+  assert.match(pageSource, /aria-invalid=\{Boolean\(issues\.phrases\)\}/u);
   assert.match(pageSource, /aria-describedby="publisher-auto-reply-phrase-meta"/u);
-  assert.match(pageSource, /role=\{issues\.phrase \? 'alert' : undefined\}/u);
+  assert.match(pageSource, /role=\{issues\.phrases \? 'alert' : undefined\}/u);
   assert.match(composerSource, /ariaInvalid=\{Boolean\(textError\)\}/u);
   assert.match(composerSource, /ariaDescribedBy=\{textError \? textErrorId : undefined\}/u);
   assert.match(composerSource, /id=\{textErrorId\}[\s\S]*?role="alert"/u);

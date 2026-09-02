@@ -24,7 +24,7 @@ const REVIEW_TTL_MS = 20 * 60_000;
 const RESULT_TTL_MS = 24 * 60 * 60_000;
 
 type AuthoringProcessResult = 'ready' | 'failed' | 'noop';
-type AuthoringActivationResult = 'activated' | 'conflict' | 'failed' | 'noop';
+type AuthoringActivationResult = 'activated' | 'conflict' | 'failed' | 'noop' | 'ready';
 
 @Injectable()
 export class PublisherAutoReplyAuthoringProcessingService {
@@ -102,6 +102,9 @@ export class PublisherAutoReplyAuthoringProcessingService {
         sessionId: session.id,
         phrase: session.phrase,
         normalizedPhrase: session.normalizedPhrase,
+        phrases: this.readTriggerPhrases(session.triggerPhrases, session.phrase),
+        matchInContext: session.matchInContext,
+        fuzzyMatch: session.fuzzyMatch,
         content: prepared,
       });
       const reviewExpiresAt = new Date(Date.now() + REVIEW_TTL_MS);
@@ -171,11 +174,10 @@ export class PublisherAutoReplyAuthoringProcessingService {
 
     try {
       await this.policy.getEntity('chat', session.targetChatId, this.authUser(session.actorUserId));
-      await this.policy.assertBotCapabilityForFeatureEnablement(
-        'chat',
-        session.targetChatId,
-        ['enabled', 'autoRepliesEnabled'],
-      );
+      await this.policy.assertBotCapabilityForFeatureEnablement('chat', session.targetChatId, [
+        'enabled',
+        'autoRepliesEnabled',
+      ]);
       const mutationRequestId = this.activationRequestId(session.id);
       const requestHash = createHash('sha256')
         .update(
@@ -194,11 +196,23 @@ export class PublisherAutoReplyAuthoringProcessingService {
             chatId: session.targetChatId,
             currentContentRevisionId: session.contentRevisionId,
           },
-          select: { id: true, version: true, normalizedPhrase: true },
+          select: {
+            id: true,
+            version: true,
+            normalizedPhrase: true,
+            fuzzyMatch: true,
+            _count: { select: { triggers: true } },
+          },
         });
         if (!current || current.normalizedPhrase !== session.normalizedPhrase) {
           throw new Error('Publisher auto-reply authoring draft changed before activation');
         }
+        await this.autoReplies.assertTriggerActivationCapacity(tx, {
+          chatId: session.targetChatId,
+          ruleId: current.id,
+          phraseCount: current._count.triggers,
+          fuzzyMatch: current.fuzzyMatch,
+        });
         const nextVersion = current.version + 1;
         const enabled = await tx.publisherAutoReplyRule.updateMany({
           where: {
@@ -277,6 +291,11 @@ export class PublisherAutoReplyAuthoringProcessingService {
         await this.returnToReviewAfterPhraseConflict(session);
         return 'conflict';
       }
+      const capacityFailureCode = this.readCapacityFailureCode(error);
+      if (capacityFailureCode) {
+        await this.returnToReviewAfterCapacityFailure(session, capacityFailureCode);
+        return 'ready';
+      }
       if (error instanceof HttpException && error.getStatus() >= 400 && error.getStatus() < 500) {
         await this.failSavingSession(session.id, 'access_or_activation_failed');
         return 'failed';
@@ -305,6 +324,37 @@ export class PublisherAutoReplyAuthoringProcessingService {
           stageRevision: { increment: 1 },
           failureCode: 'phrase_conflict',
           notificationKind: 'conflict',
+          notificationPending: true,
+          notificationRevision: { increment: 1 },
+          expiresAt,
+        },
+      });
+      if (restored.count === 1) {
+        const renewed = await this.privateFlows.renew(this.leaseFor(session, expiresAt), tx);
+        if (!renewed) throw new Error('Publisher auto-reply authoring lease was lost');
+      }
+    });
+  }
+
+  private async returnToReviewAfterCapacityFailure(
+    session: {
+      id: string;
+      state: PublisherAutoReplyAuthoringState;
+      stageRevision: number;
+      publisherBotId: string;
+      actorUserId: string;
+    },
+    failureCode: 'trigger_capacity' | 'fuzzy_trigger_capacity',
+  ): Promise<void> {
+    const expiresAt = new Date(Date.now() + REVIEW_TTL_MS);
+    await this.prisma.$transaction(async (tx) => {
+      const restored = await tx.publisherAutoReplyAuthoringSession.updateMany({
+        where: { id: session.id, state: session.state, stageRevision: session.stageRevision },
+        data: {
+          state: PublisherAutoReplyAuthoringState.REVIEW,
+          stageRevision: { increment: 1 },
+          failureCode,
+          notificationKind: 'ready',
           notificationPending: true,
           notificationRevision: { increment: 1 },
           expiresAt,
@@ -405,34 +455,39 @@ export class PublisherAutoReplyAuthoringProcessingService {
         "chat_id",
         "auto_replies_enabled",
         "revision",
+        "auto_reply_config_revision",
         "updated_by_user_id",
         "created_at",
         "updated_at"
       )
-      VALUES (${chatId}, true, 0, ${actorUserId}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      VALUES (${chatId}, true, 0, 1, ${actorUserId}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT ("chat_id") DO UPDATE
       SET
         "auto_replies_enabled" = true,
+        "auto_reply_config_revision" =
+          "publisher_entity_settings"."auto_reply_config_revision" + 1,
         "revision" = CASE
           WHEN "publisher_entity_settings"."auto_replies_enabled"
             THEN "publisher_entity_settings"."revision"
           ELSE "publisher_entity_settings"."revision" + 1
         END,
-        "updated_by_user_id" = CASE
-          WHEN "publisher_entity_settings"."auto_replies_enabled"
-            THEN "publisher_entity_settings"."updated_by_user_id"
-          ELSE EXCLUDED."updated_by_user_id"
-        END,
-        "updated_at" = CASE
-          WHEN "publisher_entity_settings"."auto_replies_enabled"
-            THEN "publisher_entity_settings"."updated_at"
-          ELSE CURRENT_TIMESTAMP
-        END
+        "updated_by_user_id" = EXCLUDED."updated_by_user_id",
+        "updated_at" = CURRENT_TIMESTAMP
       RETURNING "revision"
     `);
     const row = rows[0];
     if (!row) throw new Error('Publisher auto-reply module settings upsert returned no row');
     return row;
+  }
+
+  private readTriggerPhrases(value: unknown, fallback: string): string[] {
+    if (Array.isArray(value)) {
+      const phrases = value.filter(
+        (item): item is string => typeof item === 'string' && item.trim().length > 0,
+      );
+      if (phrases.length > 0) return phrases;
+    }
+    return [fallback];
   }
 
   private isPhraseConflict(error: unknown): boolean {
@@ -441,9 +496,25 @@ export class PublisherAutoReplyAuthoringProcessingService {
     const serialized = JSON.stringify(metadata ?? '').toLowerCase();
     return (
       serialized.includes('publisher_auto_reply_rules_active_phrase_key') ||
+      serialized.includes('publisher_auto_reply_triggers_active_phrase_key') ||
+      serialized.includes('publisher_auto_reply_triggers_rule_normalized_phrase_key') ||
       (serialized.includes('chatid') && serialized.includes('normalizedphrase')) ||
       (serialized.includes('chat_id') && serialized.includes('normalized_phrase'))
     );
+  }
+
+  private readCapacityFailureCode(
+    error: unknown,
+  ): 'trigger_capacity' | 'fuzzy_trigger_capacity' | null {
+    if (!(error instanceof HttpException)) return null;
+    const response = error.getResponse();
+    const code =
+      typeof response === 'object' && response !== null && 'code' in response
+        ? (response as { code?: unknown }).code
+        : null;
+    if (code === 'PUBLISHER_AUTO_REPLY_TRIGGER_LIMIT') return 'trigger_capacity';
+    if (code === 'PUBLISHER_AUTO_REPLY_FUZZY_TRIGGER_LIMIT') return 'fuzzy_trigger_capacity';
+    return null;
   }
 
   private leaseFor(

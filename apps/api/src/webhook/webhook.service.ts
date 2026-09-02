@@ -963,7 +963,7 @@ export class WebhookService {
       autoReplyWebhookEventId,
       { duplicateRepair: duplicate },
     );
-    if (!autoReply?.matched) {
+    if (!autoReply || autoReply.disposition === 'no_match') {
       await this.publisherChatCommentProducer?.observeWebhook(update);
     }
   }

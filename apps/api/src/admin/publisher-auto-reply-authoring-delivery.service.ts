@@ -186,6 +186,9 @@ export class PublisherAutoReplyAuthoringDeliveryService {
     notification: PublisherAutoReplyAuthoringNotification,
     session: {
       phrase: string | null;
+      triggerPhrases: unknown;
+      matchInContext: boolean;
+      fuzzyMatch: boolean;
       failureCode: string | null;
       omissions: unknown;
       rule: {
@@ -196,17 +199,22 @@ export class PublisherAutoReplyAuthoringDeliveryService {
       } | null;
     },
   ): string {
+    const phrases = this.readTriggerPhrases(session.triggerPhrases, session.phrase);
+    const phraseSummary = this.phraseSummary(phrases);
     switch (notification) {
       case 'prompt_phrase':
         if (session.failureCode === 'phrase_conflict') {
-          return 'Такая кодовая фраза уже используется. Отправьте другую фразу.';
+          return 'Одна из этих фраз уже используется. Отправьте другой набор.';
+        }
+        if (session.failureCode === 'fuzzy_phrase_too_short') {
+          return 'Для учёта опечаток каждая фраза должна содержать не меньше 5 букв или цифр. Отправьте другой набор.';
         }
         if (session.failureCode === 'invalid_phrase') {
-          return 'Отправьте кодовую фразу одним текстовым сообщением, до 80 символов.';
+          return 'Отправьте до 10 фраз одним сообщением: каждая с новой строки и до 80 символов.';
         }
-        return 'Отправьте кодовую фразу для автоответа.';
+        return 'Отправьте фразы для автоответа, каждую с новой строки.';
       case 'prompt_content':
-        return `Фраза «${session.phrase ?? ''}» сохранена. Пришлите одним сообщением ответ, который Публик будет отправлять участникам. Можно использовать форматирование и добавить до 10 фото. Кнопки-ссылки можно добавить после сохранения в мини-приложении.`;
+        return `${phraseSummary} ${phrases.length === 1 ? 'сохранена' : 'сохранены'}. Пришлите одним сообщением ответ, который Публик будет отправлять участникам. Можно использовать форматирование и добавить до 10 фото. Кнопки-ссылки можно добавить после сохранения в мини-приложении.`;
       case 'processing':
         return 'Готовлю автоответ.';
       case 'ready': {
@@ -218,13 +226,27 @@ export class PublisherAutoReplyAuthoringDeliveryService {
           ...(imageCount ? [`Фото: ${imageCount}`] : []),
           ...(buttonCount ? [`Кнопки: ${buttonCount}`] : []),
         ];
-        const summary = `Автоответ для фразы «${session.phrase ?? ''}» готов.${details.length > 0 ? ` ${details.join('. ')}.` : ''}`;
-        return `${summary}${this.omissionText(session.omissions)}`;
+        const modes = [
+          ...(session.matchInContext ? ['поиск внутри сообщения'] : []),
+          ...(session.fuzzyMatch ? ['учёт опечаток'] : []),
+        ];
+        const summary = `Автоответ готов. ${phraseSummary}.${details.length > 0 ? ` ${details.join('. ')}.` : ''}${modes.length > 0 ? ` Режим: ${modes.join(', ')}.` : ''}`;
+        const modeWarning =
+          session.failureCode === 'fuzzy_phrase_too_short'
+            ? ' Учёт опечаток доступен для фраз от 5 букв или цифр.'
+            : '';
+        const capacityWarning =
+          session.failureCode === 'trigger_capacity'
+            ? ' В чате достигнут лимит фраз автоответов. Уменьшите набор или удалите другой автоответ в Публике.'
+            : session.failureCode === 'fuzzy_trigger_capacity'
+              ? ' Достигнут лимит фраз с учётом опечаток. Отключите «Опечатки» или уменьшите набор фраз.'
+              : '';
+        return `${summary}${modeWarning}${capacityWarning}${this.omissionText(session.omissions)}`;
       }
       case 'conflict':
-        return `Фраза «${session.phrase ?? ''}» уже занята другим автоответом. Измените её и попробуйте снова.`;
+        return `Одна из фраз (${phraseSummary}) уже занята другим автоответом. Измените набор и попробуйте снова.`;
       case 'activated':
-        return `Автоответ для фразы «${session.phrase ?? ''}» включён.`;
+        return `Автоответ (${phraseSummary}) включён.`;
       case 'failed':
         return this.failureText(session.failureCode);
       case 'canceled':
@@ -243,9 +265,33 @@ export class PublisherAutoReplyAuthoringDeliveryService {
     return notices.join('');
   }
 
+  private readTriggerPhrases(value: unknown, fallback: string | null): string[] {
+    if (Array.isArray(value)) {
+      const phrases = value.filter(
+        (item): item is string => typeof item === 'string' && item.trim().length > 0,
+      );
+      if (phrases.length > 0) return phrases;
+    }
+    return fallback?.trim() ? [fallback.trim()] : [];
+  }
+
+  private phraseSummary(phrases: string[]): string {
+    const shown = phrases.slice(0, 3).map((phrase) => `«${phrase}»`);
+    const tail = phrases.length > shown.length ? ` и ещё ${phrases.length - shown.length}` : '';
+    return phrases.length === 1
+      ? `Фраза ${shown[0] ?? ''}`
+      : `${phrases.length} фразы: ${shown.join(', ')}${tail}`;
+  }
+
   private notificationButtons(
     notification: PublisherAutoReplyAuthoringNotification,
-    session: { startToken: string; publisherBotId: string; targetChatId: string },
+    session: {
+      startToken: string;
+      publisherBotId: string;
+      targetChatId: string;
+      matchInContext: boolean;
+      fuzzyMatch: boolean;
+    },
   ): MaxMessageButton[][] {
     const callback = (action: string, text: string): MaxMessageButton => ({
       type: 'callback',
@@ -259,8 +305,16 @@ export class PublisherAutoReplyAuthoringDeliveryService {
     if (notification === 'ready' || notification === 'conflict') {
       return [
         ...(notification === 'ready' ? [[callback('activate', 'Включить')]] : []),
+        ...(notification === 'ready'
+          ? [
+              [
+                callback('toggle_context', `В тексте: ${session.matchInContext ? 'да' : 'нет'}`),
+                callback('toggle_fuzzy', `Опечатки: ${session.fuzzyMatch ? 'да' : 'нет'}`),
+              ],
+            ]
+          : []),
         [
-          callback('replace_phrase', 'Изменить фразу'),
+          callback('replace_phrase', 'Изменить фразы'),
           callback('replace_content', 'Заменить ответ'),
         ],
         [callback('cancel', 'Отмена')],

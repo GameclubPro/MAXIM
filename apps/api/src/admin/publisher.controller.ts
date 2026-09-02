@@ -92,8 +92,16 @@ export class PublisherController {
   }
 
   @Get('entities/chat/:entityId/auto-replies')
-  listAutoReplies(@Param('entityId') entityId: string, @CurrentUser() user: AuthUser) {
-    return this.autoReplyService.list(entityId, user);
+  listAutoReplies(
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('contractVersion') contractVersion?: string,
+  ) {
+    return this.autoReplyService.list(
+      entityId,
+      user,
+      this.parseAutoReplyContractVersion(contractVersion),
+    );
   }
 
   @Get('entities/chat/:entityId/auto-replies/:ruleId')
@@ -101,8 +109,28 @@ export class PublisherController {
     @Param('entityId') entityId: string,
     @Param('ruleId') ruleId: string,
     @CurrentUser() user: AuthUser,
+    @Query('contractVersion') contractVersion?: string,
   ) {
-    return this.autoReplyService.get(entityId, ruleId, user);
+    return this.autoReplyService.get(
+      entityId,
+      ruleId,
+      user,
+      this.parseAutoReplyContractVersion(contractVersion),
+    );
+  }
+
+  @Post('entities/chat/:entityId/auto-replies/match-preview')
+  previewAutoReplyMatch(
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+    @Query('contractVersion') contractVersion?: string,
+  ) {
+    const version = this.parseAutoReplyContractVersion(contractVersion);
+    if (version !== 2) {
+      throw new BadRequestException('Для проверки совпадения требуется contractVersion=2.');
+    }
+    return this.autoReplyService.previewMatch(entityId, user, body);
   }
 
   @Post('entities/chat/:entityId/auto-replies/authoring-sessions')
@@ -138,8 +166,14 @@ export class PublisherController {
     @Param('entityId') entityId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @Query('contractVersion') contractVersion?: string,
   ) {
-    return this.autoReplyService.create(entityId, user, body);
+    return this.autoReplyService.create(
+      entityId,
+      user,
+      body,
+      this.parseAutoReplyContractVersion(contractVersion),
+    );
   }
 
   @Patch('entities/chat/:entityId/auto-replies/:ruleId')
@@ -148,8 +182,15 @@ export class PublisherController {
     @Param('ruleId') ruleId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @Query('contractVersion') contractVersion?: string,
   ) {
-    return this.autoReplyService.update(entityId, ruleId, user, body);
+    return this.autoReplyService.update(
+      entityId,
+      ruleId,
+      user,
+      body,
+      this.parseAutoReplyContractVersion(contractVersion),
+    );
   }
 
   @Delete('entities/chat/:entityId/auto-replies/:ruleId')
@@ -266,5 +307,15 @@ export class PublisherController {
       return value;
     }
     throw new BadRequestException('Unsupported managed entity type');
+  }
+
+  private parseAutoReplyContractVersion(value: string | undefined): 1 | 2 {
+    if (value === undefined || value.trim() === '' || value === '1') {
+      return 1;
+    }
+    if (value === '2') {
+      return 2;
+    }
+    throw new BadRequestException('Unsupported Publisher auto-reply contract version');
   }
 }

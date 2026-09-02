@@ -1,5 +1,9 @@
 type NativeStorageArea = 'device' | 'secure';
 
+export type StorageItemReadResult =
+  | { status: 'found'; value: string }
+  | { status: 'missing' | 'unavailable' | 'error' };
+
 type NativeStorageResult = {
   key?: string;
   value?: string | null;
@@ -58,14 +62,24 @@ export function isNativeDeviceStorageAvailable(): boolean {
 }
 
 export function readLocalMirrorItem(key: string): string | null {
+  const result = readLocalMirrorItemState(key);
+  return result.status === 'found' ? result.value : null;
+}
+
+export function readLocalMirrorItemState(key: string): StorageItemReadResult {
   if (typeof window === 'undefined') {
-    return null;
+    return { status: 'unavailable' };
   }
 
   try {
-    return window.localStorage.getItem(key);
+    const storage = window.localStorage;
+    if (!storage || typeof storage.getItem !== 'function') {
+      return { status: 'unavailable' };
+    }
+    const value = storage.getItem(key);
+    return value === null ? { status: 'missing' } : { status: 'found', value };
   } catch {
-    return null;
+    return { status: 'error' };
   }
 }
 
@@ -97,15 +111,29 @@ export async function readNativeStorageItem(
   key: string,
   area: NativeStorageArea = 'device',
 ): Promise<string | null> {
+  const result = await readNativeStorageItemState(key, area);
+  return result.status === 'found' ? result.value : null;
+}
+
+export async function readNativeStorageItemState(
+  key: string,
+  area: NativeStorageArea = 'device',
+): Promise<StorageItemReadResult> {
   if (typeof window === 'undefined') {
-    return null;
+    return { status: 'unavailable' };
   }
 
   try {
-    const result = await resolveNativeStorage(area)?.getItem?.(key);
-    return typeof result?.value === 'string' ? result.value : null;
+    const storage = resolveNativeStorage(area);
+    if (typeof storage?.getItem !== 'function') {
+      return { status: 'unavailable' };
+    }
+    const result = await storage.getItem(key);
+    return typeof result?.value === 'string'
+      ? { status: 'found', value: result.value }
+      : { status: 'missing' };
   } catch {
-    return null;
+    return { status: 'error' };
   }
 }
 

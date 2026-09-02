@@ -11,6 +11,9 @@ import {
 } from './publication.js';
 
 export const MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH = 80;
+export const MAX_PUBLISHER_AUTO_REPLY_PHRASES = 10;
+export const MAX_PUBLISHER_AUTO_REPLY_PHRASES_TOTAL_LENGTH = 400;
+export const MAX_PUBLISHER_AUTO_REPLY_PREVIEW_MESSAGE_LENGTH = 4_096;
 export const MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH = MAX_PUBLICATION_TEXT_LENGTH;
 export const MAX_PUBLISHER_AUTO_REPLY_IMAGES = MAX_PUBLICATION_IMAGES;
 export const MAX_PUBLISHER_AUTO_REPLY_BUTTONS = MAX_PUBLICATION_BUTTONS;
@@ -29,7 +32,56 @@ export function normalizePublisherAutoReplyPhrase(value: string): string {
 export const publisherAutoReplyPhraseSchema = z
   .string()
   .transform(normalizePublisherAutoReplyPhraseDisplay)
-  .pipe(z.string().min(1).max(MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH));
+  .pipe(z.string().min(1).max(MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH))
+  .superRefine((phrase, context) => {
+    if (
+      Array.from(normalizePublisherAutoReplyPhrase(phrase)).length >
+      MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Нормализованная фраза слишком длинная.',
+      });
+    }
+  });
+
+export const publisherAutoReplyPhrasesSchema = z
+  .array(publisherAutoReplyPhraseSchema)
+  .min(1)
+  .max(MAX_PUBLISHER_AUTO_REPLY_PHRASES)
+  .superRefine((phrases, context) => {
+    const normalizedPhrases = phrases.map(normalizePublisherAutoReplyPhrase);
+    const seen = new Set<string>();
+    let totalNormalizedLength = 0;
+
+    normalizedPhrases.forEach((normalizedPhrase, index) => {
+      const normalizedLength = Array.from(normalizedPhrase).length;
+      totalNormalizedLength += normalizedLength;
+      if (normalizedLength > MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index],
+          message: 'Нормализованная фраза слишком длинная.',
+        });
+      }
+      if (seen.has(normalizedPhrase)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index],
+          message: 'Фразы должны отличаться.',
+        });
+      }
+      seen.add(normalizedPhrase);
+    });
+
+    if (totalNormalizedLength > MAX_PUBLISHER_AUTO_REPLY_PHRASES_TOTAL_LENGTH) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Суммарная длина фраз слишком большая.',
+      });
+    }
+  });
+export type PublisherAutoReplyPhrases = z.infer<typeof publisherAutoReplyPhrasesSchema>;
 
 export const publisherAutoReplyRequestIdSchema = z
   .string()
@@ -158,6 +210,16 @@ export const publisherAutoReplyRuleSchema = z
   .strict();
 export type PublisherAutoReplyRule = z.infer<typeof publisherAutoReplyRuleSchema>;
 
+export const publisherAutoReplyRuleV2Schema = publisherAutoReplyRuleSchema
+  .omit({ phrase: true })
+  .extend({
+    phrases: publisherAutoReplyPhrasesSchema,
+    matchInContext: z.boolean(),
+    fuzzyMatch: z.boolean(),
+  })
+  .strict();
+export type PublisherAutoReplyRuleV2 = z.infer<typeof publisherAutoReplyRuleV2Schema>;
+
 export const publisherAutoReplyListResponseSchema = z
   .object({
     items: z.array(publisherAutoReplyRuleSchema),
@@ -165,6 +227,16 @@ export const publisherAutoReplyListResponseSchema = z
   })
   .strict();
 export type PublisherAutoReplyListResponse = z.infer<typeof publisherAutoReplyListResponseSchema>;
+
+export const publisherAutoReplyListResponseV2Schema = z
+  .object({
+    items: z.array(publisherAutoReplyRuleV2Schema),
+    total: z.number().int().min(0),
+  })
+  .strict();
+export type PublisherAutoReplyListResponseV2 = z.infer<
+  typeof publisherAutoReplyListResponseV2Schema
+>;
 
 export const createPublisherAutoReplyRequestSchema = z
   .object({
@@ -181,6 +253,26 @@ export const createPublisherAutoReplyRequestSchema = z
   })
   .strict();
 export type CreatePublisherAutoReplyRequest = z.infer<typeof createPublisherAutoReplyRequestSchema>;
+
+export const createPublisherAutoReplyV2RequestSchema = z
+  .object({
+    requestId: publisherAutoReplyRequestIdSchema,
+    phrases: publisherAutoReplyPhrasesSchema,
+    matchInContext: z.boolean().default(false),
+    fuzzyMatch: z.boolean().default(false),
+    enabled: z.boolean().default(true),
+    cooldownSeconds: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS)
+      .default(DEFAULT_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS),
+    content: publisherAutoReplyContentInputSchema,
+  })
+  .strict();
+export type CreatePublisherAutoReplyV2Request = z.infer<
+  typeof createPublisherAutoReplyV2RequestSchema
+>;
 
 export const updatePublisherAutoReplyRequestSchema = z
   .object({
@@ -206,6 +298,110 @@ export const updatePublisherAutoReplyRequestSchema = z
     'Specify at least one auto-reply change',
   );
 export type UpdatePublisherAutoReplyRequest = z.infer<typeof updatePublisherAutoReplyRequestSchema>;
+
+export const updatePublisherAutoReplyV2RequestSchema = z
+  .object({
+    requestId: publisherAutoReplyRequestIdSchema,
+    expectedVersion: z.number().int().min(1),
+    phrases: publisherAutoReplyPhrasesSchema.optional(),
+    matchInContext: z.boolean().optional(),
+    fuzzyMatch: z.boolean().optional(),
+    enabled: z.boolean().optional(),
+    cooldownSeconds: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_PUBLISHER_AUTO_REPLY_COOLDOWN_SECONDS)
+      .optional(),
+    content: publisherAutoReplyContentInputSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.phrases !== undefined ||
+      value.matchInContext !== undefined ||
+      value.fuzzyMatch !== undefined ||
+      value.enabled !== undefined ||
+      value.cooldownSeconds !== undefined ||
+      value.content !== undefined,
+    'Specify at least one auto-reply change',
+  );
+export type UpdatePublisherAutoReplyV2Request = z.infer<
+  typeof updatePublisherAutoReplyV2RequestSchema
+>;
+
+export const publisherAutoReplyMatchKindSchema = z.enum([
+  'exact_full',
+  'exact_context',
+  'fuzzy_full',
+  'fuzzy_context',
+]);
+export type PublisherAutoReplyMatchKind = z.infer<typeof publisherAutoReplyMatchKindSchema>;
+
+export const publisherAutoReplyPreviewDraftSchema = z
+  .object({
+    ruleId: z.string().trim().min(1).optional(),
+    phrases: publisherAutoReplyPhrasesSchema,
+    matchInContext: z.boolean().default(false),
+    fuzzyMatch: z.boolean().default(false),
+    enabled: z.boolean().default(true),
+  })
+  .strict();
+export type PublisherAutoReplyPreviewDraft = z.infer<typeof publisherAutoReplyPreviewDraftSchema>;
+
+export const publisherAutoReplyPreviewRequestSchema = z
+  .object({
+    message: z.string().max(MAX_PUBLISHER_AUTO_REPLY_PREVIEW_MESSAGE_LENGTH),
+    draft: publisherAutoReplyPreviewDraftSchema.optional(),
+  })
+  .strict();
+export type PublisherAutoReplyPreviewRequest = z.infer<
+  typeof publisherAutoReplyPreviewRequestSchema
+>;
+
+export const publisherAutoReplyPreviewOutcomeSchema = z.enum(['no_match', 'matched', 'ambiguous']);
+export type PublisherAutoReplyPreviewOutcome = z.infer<
+  typeof publisherAutoReplyPreviewOutcomeSchema
+>;
+
+export const publisherAutoReplyPreviewSelectionSchema = z
+  .object({
+    ruleId: z.string().trim().min(1).nullable(),
+    phrase: publisherAutoReplyPhraseSchema,
+    matchKind: publisherAutoReplyMatchKindSchema,
+    distance: z.number().int().min(0),
+    matchedDraft: z.boolean(),
+  })
+  .strict();
+export type PublisherAutoReplyPreviewSelection = z.infer<
+  typeof publisherAutoReplyPreviewSelectionSchema
+>;
+
+export const publisherAutoReplyPreviewResponseSchema = z
+  .object({
+    outcome: publisherAutoReplyPreviewOutcomeSchema,
+    selected: publisherAutoReplyPreviewSelectionSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.outcome === 'matched') !== (value.selected !== null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['selected'],
+        message: 'Matched preview outcomes require one selected rule.',
+      });
+    }
+    if (value.selected && value.selected.matchedDraft !== (value.selected.ruleId === null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['selected', 'matchedDraft'],
+        message: 'Draft match provenance is inconsistent.',
+      });
+    }
+  });
+export type PublisherAutoReplyPreviewResponse = z.infer<
+  typeof publisherAutoReplyPreviewResponseSchema
+>;
 
 export const archivePublisherAutoReplyRequestSchema = z
   .object({

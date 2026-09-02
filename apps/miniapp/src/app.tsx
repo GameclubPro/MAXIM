@@ -609,7 +609,7 @@ function AppRoutes({
           >
             <Route
               path="/publisher/chat/:entityId/auto-replies"
-              element={<LazyPublisherAutoRepliesPage api={apiClient} />}
+              element={<LazyPublisherAutoRepliesPage api={apiClient} userId={me.userId} />}
             />
           </Route>
         ) : null}

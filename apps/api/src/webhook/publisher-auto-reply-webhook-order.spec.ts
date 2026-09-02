@@ -16,7 +16,9 @@ const update: MaxUpdate = {
   },
 };
 
-function createService(options: { consumed?: boolean; matched?: boolean } = {}) {
+type AutoReplyDisposition = 'no_match' | 'selected' | 'suppressed' | 'ambiguous' | 'bot_authored';
+
+function createService(options: { consumed?: boolean; disposition?: AutoReplyDisposition } = {}) {
   const prisma = {
     webhookEvent: {
       findUnique: jest.fn().mockResolvedValue({ id: 'stored-webhook-1' }),
@@ -27,8 +29,12 @@ function createService(options: { consumed?: boolean; matched?: boolean } = {}) 
   const postImport = {
     observeWebhook: jest.fn().mockResolvedValue(options.consumed ?? false),
   };
+  const disposition = options.disposition ?? 'selected';
   const autoReplies = {
-    observeWebhook: jest.fn().mockResolvedValue({ matched: options.matched ?? true }),
+    observeWebhook: jest.fn().mockResolvedValue({
+      matched: disposition !== 'no_match',
+      disposition,
+    }),
   };
   const service = new WebhookService(
     prisma as never,
@@ -82,13 +88,24 @@ describe('Publisher auto-reply webhook ordering', () => {
     expect(comments.observeWebhook).not.toHaveBeenCalled();
   });
 
-  it('allows chat-comments only when no auto-reply rule matched', async () => {
-    const { service, comments } = createService({ matched: false });
+  it('does not let a shadow-only extended match block chat-comments', async () => {
+    const { service, comments } = createService({ disposition: 'no_match' });
 
     await (service as any).observePublisherWebhook(update, 'webhook-1', false);
 
     expect(comments.observeWebhook).toHaveBeenCalledWith(update);
   });
+
+  it.each(['suppressed', 'ambiguous', 'bot_authored'] as const)(
+    'keeps chat-comments blocked for the %s disposition',
+    async (disposition) => {
+      const { service, comments } = createService({ disposition });
+
+      await (service as any).observePublisherWebhook(update, 'webhook-1', false);
+
+      expect(comments.observeWebhook).not.toHaveBeenCalled();
+    },
+  );
 
   it('passes duplicate repair context to the auto-reply producer', async () => {
     const { service, autoReplies } = createService();

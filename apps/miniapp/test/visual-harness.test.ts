@@ -442,6 +442,8 @@ test('publisher auto replies cover cold list, create sheet, editor bottom, and k
   assert.match(bottomBehavior, /scrollIntoView/u);
   assert.match(bottomBehavior, /assertLocatorWithinViewport/u);
   assert.match(captureSource, /openPublisherAutoReplyButtonsSheet/u);
+  assert.match(captureSource, /name: \/Фразы-триггеры\/u/u);
+  assert.match(captureSource, /phraseInput\.press\('Enter'\)/u);
   assert.match(captureSource, /name: 'Добавить кнопки'/u);
   assert.match(captureSource, /fill\('Открыть каталог'\)/u);
 });
