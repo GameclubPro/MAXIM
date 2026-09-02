@@ -75,7 +75,8 @@ summarize_capacity_observability() {
   local snapshot
 
   snapshot="$(
-    ./infra/scripts/vps-connect.sh exec node - "$CAPACITY_BLOCK_DEVICE" <"$CAPACITY_PROBE"
+    ./infra/scripts/vps-connect.sh exec node - "$CAPACITY_BLOCK_DEVICE" "${SERVICES[@]}" \
+      <"$CAPACITY_PROBE"
   )" || probe_status=$?
   printf '%s\n' "$snapshot" |
     node "$CAPACITY_ARCHIVER" --archive-dir "$CAPACITY_ARCHIVE_DIR" || archive_status=$?
@@ -629,6 +630,7 @@ queues=(
   moderation-default-14
   moderation-default-15
   moderation-background
+  moderation-default
   moderation-actions
   max-actions-critical
   max-actions-interactive

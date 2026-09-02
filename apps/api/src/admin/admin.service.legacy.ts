@@ -12208,78 +12208,33 @@ export class AdminService implements OnModuleDestroy {
         await sleepIfNeeded(this.manualFanoutLookupSpacingMs);
       }
 
-      const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
-        chat.id,
-        'delete_message',
-      );
-      const operationKey = this.buildManualModerationFanoutOperationKey({
-        operation: 'FANOUT_MUTE_RECORD',
-        sourceChatId,
-        targetChatId: chat.id,
-        targetUserId,
+      const preparedTarget = await this.manualModerationRuntime.prepareManualMuteFanoutTarget({
         jobId: params.jobId,
         rootIntentKey: params.rootIntentKey,
-        extra: [
-          mutePermanent ? 'permanent' : 'timed',
-          mutePermanent ? '' : muteDurationHours,
-          muteExpiresAt ? muteExpiresAt.toISOString() : '',
-        ],
-      });
-      const muteMetadata = {
-        source,
-        sourceChatId,
-        muteDurationHours,
-        muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
-        mutePermanent,
-      } satisfies Prisma.InputJsonObject;
-      const claim = await this.claimManualModerationFanoutLedgerEntry({
-        operationKey,
-        jobId: params.jobId,
-        rootIntentKey: params.rootIntentKey,
-        sourceKind: 'manual_mute_fanout',
-        operation: 'FANOUT_MUTE_RECORD',
         sourceChatId,
         targetChatId: chat.id,
         targetUserId,
         actorUserId: actor.userId,
-        logicalAction: 'MUTE',
-        botId: resolvedBotId ?? null,
-        metadata: muteMetadata,
+        muteDurationHours,
+        muteExpiresAt,
+        mutePermanent,
+        source,
       });
-      if (!claim.claimed) {
-        if (claim.row?.status === PrismaManualModerationFanoutLedgerStatus.SUCCEEDED) {
+      if (preparedTarget.kind === 'settled') {
+        if (preparedTarget.outcome === 'muted') {
           result.mutedChatIds.push(chat.id);
-        } else if (claim.row?.status === PrismaManualModerationFanoutLedgerStatus.SKIPPED) {
+        } else if (preparedTarget.outcome === 'skipped') {
           result.skippedChatIds.push(chat.id);
         } else {
           result.failedChatIds.push(chat.id);
+          if (preparedTarget.retryable) {
+            result.retryableFailedChatIds.push(chat.id);
+          }
         }
         continue;
       }
-      try {
-        await this.assertBotCanDeleteMessages(chat.id, resolvedBotId);
-      } catch (error: unknown) {
-        await this.markManualModerationFanoutLedgerFailed({
-          operationKey,
-          lockToken: claim.lockToken,
-          status: PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
-          error,
-          botId: resolvedBotId ?? null,
-          metadata: muteMetadata,
-        });
-        this.logger.warn(
-          {
-            chatId: chat.id,
-            targetUserId,
-            actorUserId: actor.userId,
-            err: this.extractHttpErrorMessage(error) || String(error),
-          },
-          'Skipped manual mute fanout because the bot cannot delete messages in chat',
-        );
-        result.failedChatIds.push(chat.id);
-        result.retryableFailedChatIds.push(chat.id);
-        continue;
-      }
+      const { botId: resolvedBotId, operationKey, metadata: muteMetadata } = preparedTarget;
+      const claim = preparedTarget;
 
       try {
         const transition = await this.moderationSanctionStateLock.runExclusive(
@@ -13313,7 +13268,12 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private isManualModerationTransientMaxError(error: unknown): boolean {
-    if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
+    const status = extractMaxErrorStatus(error);
+    if (
+      (status !== null && status >= 500 && status <= 599) ||
+      isMaxApiThrottleError(error) ||
+      isMaxApiTimeoutError(error)
+    ) {
       return true;
     }
 
@@ -20553,20 +20513,8 @@ export class AdminService implements OnModuleDestroy {
         } catch (error: unknown) {
           if (isBotAdminLookupDeniedError(error)) {
             // Try the regular route below; another runtime bot may still be able to act.
-          } else if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
-            this.logger.debug(
-              {
-                chatId: normalizedChatId,
-                action,
-                botId: preferredBotId,
-                err: error instanceof Error ? error.message : String(error),
-              },
-              'Failed to verify preferred manual moderation bot after transient MAX API pressure',
-            );
-            throw new ServiceUnavailableException(
-              'Не удалось подтвердить права бота MAX для действия модерации. Повторите попытку позже.',
-            );
           } else {
+            this.throwManualModerationTransientMaxError(error);
             this.logger.debug(
               {
                 chatId: normalizedChatId,
@@ -20611,6 +20559,7 @@ export class AdminService implements OnModuleDestroy {
         routeCandidateBotIds.add(normalizedRouteBotId);
       }
     } catch (error: unknown) {
+      this.throwManualModerationTransientMaxError(error);
       this.logger.debug(
         {
           chatId: normalizedChatId,
@@ -20726,21 +20675,7 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
-          this.logger.debug(
-            {
-              chatId: normalizedChatId,
-              action,
-              botId: candidateBotId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Stopped resolving manual moderation action bot after transient MAX API pressure',
-          );
-          throw new ServiceUnavailableException(
-            'Не удалось подтвердить права бота MAX для действия модерации. Повторите попытку позже.',
-          );
-        }
-
+        this.throwManualModerationTransientMaxError(error);
         this.logger.debug(
           {
             chatId: normalizedChatId,

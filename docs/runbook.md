@@ -75,10 +75,18 @@ local path through `MAXIM_MONITOR_CAPACITY_ARCHIVE_DIR`. Set
 `MAXIM_MONITOR_CAPACITY_BLOCK_DEVICE` when the production root filesystem does not use `vda`.
 
 The archive contains only allowlisted numeric, boolean, and fixed-enum readiness, queue-fence,
-memory, filesystem, swap, CPU, and block-device summaries. It never stores service logs, URLs,
-request data, event/job identifiers, bot/chat/user identifiers, payloads, or secrets. Full monitor
-output is not copied into this archive. By default it is written to a private random local file only
-while the monitor runs and is removed on exit. To retain it for a reviewed incident, set
+memory, filesystem, swap, CPU, block-device, aggregate action-health, and API fleet summaries.
+Action-health counts are retained only when `total = success + failure`, `critical <= failure`, and
+both rates match their counts; malformed or old snapshots use `null` rather than plausible zeroes.
+Fleet records contain only counts for the source release's expected singleton/running roles (normally
+13; supported pre-Publisher/OCR rollback releases have 11 or 12), exact `APP_SERVICE_NAME`/`APP_ROLE`
+identity plus protected-image/owned-Compose-name matches, exact-image matches, duplicates, restarts,
+and unexpected API containers split into main, scale, and manual/foreign counts. They never contain
+role names, container names or IDs, env values, image refs, or SHA values. The archive never stores
+service logs, URLs, request data, event/job
+identifiers, bot/chat/user identifiers, payloads, or secrets. Full monitor output is not copied into
+this archive. By default it is written to a private random local file only while the monitor runs and
+is removed on exit. To retain it for a reviewed incident, set
 `MAXIM_MONITOR_LOG` to an absolute, previously unused path inside an existing owner-private
 directory; the monitor creates it as `0600` and refuses existing targets. Remove a retained raw log
 as soon as the review is complete.
@@ -95,15 +103,19 @@ find "$CAPACITY_ARCHIVE_DIR" -maxdepth 1 -type f -name 'capacity-*.jsonl' -mtime
 
 Every sample prints explicit `clear`, `pending`, `firing`, or `unknown` outcomes for:
 
+- one-minute host load per CPU above 0.85 for five minutes and above 1.25 for two minutes;
 - I/O wait above 15% for five minutes and above 30% for two minutes;
 - available memory below 25% for five minutes and below 15% for two minutes;
 - swap-in activity for five minutes and swap use above 10% for five minutes;
+- block-device utilization above 80% for five minutes and above 95% for two minutes;
 - less than 40 GiB free on the Docker filesystem;
 - ingress/admin readiness, stale queue-metrics fallback, queue-metrics availability, automatic
   normal mode/no burst (a manual override warns even when set to `normal`), the allowlisted
   `healthy|queue_backlog|max_api|mixed|stabilizing|manual|unknown` condition, queue lag above 10/30
-  seconds, and a paused or owned webhook queue fence. The archive never stores the free-form
-  system-mode reason.
+  seconds, a paused or owned webhook queue fence, and a missing/stopped/duplicate/wrong-identity/
+  wrong-image API role. Any unexpected main, scale, or manual/foreign MAXIM API container also fires
+  the topology alert. Any expected API container restart is a separate warning. The archive never
+  stores the free-form system-mode reason.
 
 Sustained alerts require a continuous series with no gap above 90 seconds. Full diagnostics cannot
 delay that series because the dedicated sampler runs in its own lifecycle-bound process group. The
@@ -111,6 +123,26 @@ sampler never overlaps probes; if a capacity probe itself stalls long enough to 
 limit, the window resets instead of inventing data. A current breach remains `pending` until its full
 window is observed; missing or malformed allowlisted fields are `unknown`. Archive failure is
 reported as a failed monitor step but does not suppress the remaining read-only diagnostics.
+The slower BullMQ census includes active webhook/action/Publisher/OCR queues plus the retired
+`moderation-default` and `vk-parsing-publish` regression sentinels; non-zero sentinel work requires
+review and must never be deleted as an automatic monitoring response.
+
+For `api_fleet_topology`, use the fixed `capacity-api-fleet` counters before taking action:
+
+- `observed`, `singleton`, `running`, `identity`, `exactImage`, and `duplicates` isolate expected-role
+  absence, stopped/duplicate containers, runtime identity drift, and image drift. Review
+  `./infra/scripts/vps-connect.sh ps --all`, the current release manifest, and the queue fence before
+  choosing the normal guarded deploy or immutable rollback.
+- `unexpectedMain` is visible through `./infra/scripts/vps-connect.sh ps --all`.
+- `unexpectedScale` can be confirmed without image refs or container identifiers with
+  `./infra/scripts/vps-connect.sh exec docker compose -p infra-scale -f infra/docker-compose.scale.yml ps --all --format '{{.Service}} {{.State}}'`.
+- `unexpectedManual` covers manual, unlabelled, or foreign-project containers carrying MAXIM API
+  identity, image, protected-label, or owned-name signals. Stop automated recovery and use the
+  reviewed break-glass shell to identify the exact container; do not print that inventory into a
+  retained monitor log or delete a guessed container.
+
+For `api_fleet_restarts`, compare the archived counter trend with the bounded service log window;
+do not recreate a role merely to clear its restart counter.
 
 An interactive VPS shell and direct PostgreSQL CLIs are reviewed break-glass paths, not routine
 diagnostics. Keep the authorization in the invoking process only and supply a non-empty reason:

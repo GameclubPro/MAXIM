@@ -30,12 +30,16 @@ const EXPECTED_WEBHOOK_QUEUE_COUNT = 24;
 const GIB = 1024 ** 3;
 
 const ALERT_DEFINITIONS = Object.freeze({
+  load_per_cpu_warning_5m: { severity: 'warning', threshold: 0.85, windowSec: 300 },
+  load_per_cpu_critical_2m: { severity: 'critical', threshold: 1.25, windowSec: 120 },
   iowait_warning_5m: { severity: 'warning', threshold: 15, windowSec: 300 },
   iowait_critical_2m: { severity: 'critical', threshold: 30, windowSec: 120 },
   swap_in_sustained_5m: { severity: 'warning', threshold: 0, windowSec: 300 },
   swap_used_10pct_5m: { severity: 'warning', threshold: 10, windowSec: 300 },
   memory_available_warning_5m: { severity: 'warning', threshold: 25, windowSec: 300 },
   memory_available_critical_2m: { severity: 'critical', threshold: 15, windowSec: 120 },
+  disk_util_warning_5m: { severity: 'warning', threshold: 80, windowSec: 300 },
+  disk_util_critical_2m: { severity: 'critical', threshold: 95, windowSec: 120 },
   disk_free_40gib: { severity: 'warning', threshold: 40 * GIB, windowSec: 0 },
   readiness: { severity: 'critical', threshold: 'healthy', windowSec: 0 },
   readiness_fallback: { severity: 'warning', threshold: false, windowSec: 0 },
@@ -47,6 +51,13 @@ const ALERT_DEFINITIONS = Object.freeze({
   queue_lag_warning: { severity: 'warning', threshold: 10, windowSec: 0 },
   queue_lag_critical: { severity: 'critical', threshold: 30, windowSec: 0 },
   queue_fence: { severity: 'critical', threshold: 'unpaused/unowned', windowSec: 0 },
+  api_fleet_topology: {
+    severity: 'critical',
+    threshold:
+      'source-topology singleton/running/exact-identity/exact-image roles; no duplicates or unexpected API containers',
+    windowSec: 0,
+  },
+  api_fleet_restarts: { severity: 'warning', threshold: 0, windowSec: 0 },
 });
 
 function isRecord(value) {
@@ -76,6 +87,91 @@ function safeToken(value, allowed, fallback = 'unknown') {
   return allowed.includes(value) ? value : fallback;
 }
 
+function normalizeActionHealth(raw) {
+  if (!isRecord(raw)) return null;
+  const windowSec = integerOrNull(raw.windowSec, 1, 86_400);
+  const total = integerOrNull(raw.total);
+  const success = integerOrNull(raw.success);
+  const failure = integerOrNull(raw.failure);
+  const critical = integerOrNull(raw.critical);
+  const errorRate = numberOrNull(raw.errorRate, 0, 1);
+  const criticalRate = numberOrNull(raw.criticalRate, 0, 1);
+  if (
+    [windowSec, total, success, failure, critical, errorRate, criticalRate].some(
+      (value) => value === null,
+    ) ||
+    total !== success + failure ||
+    critical > failure
+  ) {
+    return null;
+  }
+  const expectedErrorRate = total === 0 ? 0 : failure / total;
+  const expectedCriticalRate = total === 0 ? 0 : critical / total;
+  if (
+    Math.abs(errorRate - expectedErrorRate) > 1e-9 ||
+    Math.abs(criticalRate - expectedCriticalRate) > 1e-9
+  ) {
+    return null;
+  }
+  return { windowSec, total, success, failure, critical, errorRate, criticalRate };
+}
+
+function emptyApiFleet(available = null) {
+  return {
+    available,
+    expectedRoleCount: null,
+    observedRoleCount: null,
+    singletonRoleCount: null,
+    runningRoleCount: null,
+    identityRoleCount: null,
+    exactImageRoleCount: null,
+    duplicateContainerCount: null,
+    unexpectedApiContainerCount: null,
+    unexpectedMainContainerCount: null,
+    unexpectedScaleContainerCount: null,
+    unexpectedManualContainerCount: null,
+    totalRestartCount: null,
+  };
+}
+
+function normalizeApiFleet(raw) {
+  if (!isRecord(raw)) return emptyApiFleet();
+  const available = booleanOrNull(raw.available);
+  if (available !== true) return emptyApiFleet(available);
+  const fleet = {
+    available: true,
+    expectedRoleCount: integerOrNull(raw.expectedRoleCount, 1, 128),
+    observedRoleCount: integerOrNull(raw.observedRoleCount, 0, 128),
+    singletonRoleCount: integerOrNull(raw.singletonRoleCount, 0, 128),
+    runningRoleCount: integerOrNull(raw.runningRoleCount, 0, 128),
+    identityRoleCount: integerOrNull(raw.identityRoleCount, 0, 128),
+    exactImageRoleCount: integerOrNull(raw.exactImageRoleCount, 0, 128),
+    duplicateContainerCount: integerOrNull(raw.duplicateContainerCount, 0, 128),
+    unexpectedApiContainerCount: integerOrNull(raw.unexpectedApiContainerCount, 0, 128),
+    unexpectedMainContainerCount: integerOrNull(raw.unexpectedMainContainerCount, 0, 128),
+    unexpectedScaleContainerCount: integerOrNull(raw.unexpectedScaleContainerCount, 0, 128),
+    unexpectedManualContainerCount: integerOrNull(raw.unexpectedManualContainerCount, 0, 128),
+    totalRestartCount: integerOrNull(raw.totalRestartCount, 0, 1_000_000_000),
+  };
+  const counts = Object.values(fleet).slice(1);
+  if (
+    counts.some((value) => value === null) ||
+    fleet.observedRoleCount > fleet.expectedRoleCount ||
+    fleet.singletonRoleCount > fleet.observedRoleCount ||
+    fleet.duplicateContainerCount < fleet.observedRoleCount - fleet.singletonRoleCount ||
+    fleet.runningRoleCount > fleet.singletonRoleCount ||
+    fleet.identityRoleCount > fleet.singletonRoleCount ||
+    fleet.exactImageRoleCount > fleet.singletonRoleCount ||
+    fleet.unexpectedApiContainerCount !==
+      fleet.unexpectedMainContainerCount +
+        fleet.unexpectedScaleContainerCount +
+        fleet.unexpectedManualContainerCount
+  ) {
+    return emptyApiFleet();
+  }
+  return fleet;
+}
+
 function normalizeSnapshot(raw) {
   if (!isRecord(raw) || raw.schemaVersion !== 1) {
     throw new Error('Capacity snapshot schema is invalid.');
@@ -87,6 +183,7 @@ function normalizeSnapshot(raw) {
   const readiness = isRecord(raw.readiness) ? raw.readiness : {};
   const adminReadiness = isRecord(raw.adminReadiness) ? raw.adminReadiness : {};
   const queueFence = isRecord(raw.queueFence) ? raw.queueFence : {};
+  const apiFleet = isRecord(raw.apiFleet) ? raw.apiFleet : {};
   const diskPath = disk.path === '/var/lib/docker' || disk.path === '/' ? disk.path : 'unknown';
   const diskDevice =
     typeof disk.device === 'string' && /^[A-Za-z0-9._-]{1,64}$/u.test(disk.device)
@@ -142,6 +239,7 @@ function normalizeSnapshot(raw) {
         'unknown',
       ]),
       burstActive: booleanOrNull(readiness.burstActive),
+      action: normalizeActionHealth(readiness.action),
     },
     adminReadiness: {
       available: booleanOrNull(adminReadiness.available),
@@ -157,6 +255,7 @@ function normalizeSnapshot(raw) {
       activeCount: integerOrNull(queueFence.activeCount, 0, 10_000_000),
       ownerPresent: booleanOrNull(queueFence.ownerPresent),
     },
+    apiFleet: normalizeApiFleet(apiFleet),
   };
 }
 
@@ -222,6 +321,11 @@ function evaluateAlerts(history, current) {
     const available = sample.host.memoryAvailableBytes;
     return total && available !== null ? (available / total) * 100 : null;
   };
+  const loadPerCpu = (sample) => {
+    const cpuCount = sample.host.cpuCount;
+    const load1 = sample.host.load1;
+    return cpuCount && load1 !== null ? load1 / cpuCount : null;
+  };
   const readyHealthy =
     current.readiness.available === true &&
     current.readiness.httpStatus === 200 &&
@@ -250,8 +354,31 @@ function evaluateAlerts(history, current) {
     current.queueFence.queueCount === EXPECTED_WEBHOOK_QUEUE_COUNT &&
     current.queueFence.pausedCount === 0 &&
     current.queueFence.ownerPresent === false;
+  const fleet = current.apiFleet;
+  const fleetTopologyHealthy =
+    fleet.available === true &&
+    [11, 12, 13].includes(fleet.expectedRoleCount) &&
+    fleet.observedRoleCount === fleet.expectedRoleCount &&
+    fleet.singletonRoleCount === fleet.expectedRoleCount &&
+    fleet.runningRoleCount === fleet.expectedRoleCount &&
+    fleet.identityRoleCount === fleet.expectedRoleCount &&
+    fleet.exactImageRoleCount === fleet.expectedRoleCount &&
+    fleet.duplicateContainerCount === 0 &&
+    fleet.unexpectedApiContainerCount === 0;
 
   const alerts = {
+    load_per_cpu_warning_5m: sustainedOutcome(
+      samples,
+      loadPerCpu,
+      (value) => value > ALERT_DEFINITIONS.load_per_cpu_warning_5m.threshold,
+      ALERT_DEFINITIONS.load_per_cpu_warning_5m,
+    ),
+    load_per_cpu_critical_2m: sustainedOutcome(
+      samples,
+      loadPerCpu,
+      (value) => value > ALERT_DEFINITIONS.load_per_cpu_critical_2m.threshold,
+      ALERT_DEFINITIONS.load_per_cpu_critical_2m,
+    ),
     iowait_warning_5m: sustainedOutcome(
       samples,
       (sample) => sample.host.cpuIowaitPct,
@@ -288,6 +415,18 @@ function evaluateAlerts(history, current) {
       (value) => value < 15,
       ALERT_DEFINITIONS.memory_available_critical_2m,
     ),
+    disk_util_warning_5m: sustainedOutcome(
+      samples,
+      (sample) => sample.host.disk.utilPct,
+      (value) => value > ALERT_DEFINITIONS.disk_util_warning_5m.threshold,
+      ALERT_DEFINITIONS.disk_util_warning_5m,
+    ),
+    disk_util_critical_2m: sustainedOutcome(
+      samples,
+      (sample) => sample.host.disk.utilPct,
+      (value) => value > ALERT_DEFINITIONS.disk_util_critical_2m.threshold,
+      ALERT_DEFINITIONS.disk_util_critical_2m,
+    ),
     disk_free_40gib: immediateOutcome(
       current.host.disk.availableBytes,
       (value) => value < ALERT_DEFINITIONS.disk_free_40gib.threshold,
@@ -310,12 +449,12 @@ function evaluateAlerts(history, current) {
     ),
     system_mode: immediateOutcome(
       current.readiness.mode === 'unknown' ||
-      current.readiness.condition === 'unknown' ||
-      current.readiness.burstActive === null
+        current.readiness.condition === 'unknown' ||
+        current.readiness.burstActive === null
         ? null
         : current.readiness.mode !== 'normal' ||
-          current.readiness.condition === 'manual' ||
-          current.readiness.burstActive,
+            current.readiness.condition === 'manual' ||
+            current.readiness.burstActive,
       (value) => value === true,
       ALERT_DEFINITIONS.system_mode,
     ),
@@ -355,6 +494,16 @@ function evaluateAlerts(history, current) {
       current.queueFence.available === null ? null : fenceHealthy,
       (value) => value === false,
       ALERT_DEFINITIONS.queue_fence,
+    ),
+    api_fleet_topology: immediateOutcome(
+      fleet.available === null ? null : fleetTopologyHealthy,
+      (value) => value === false,
+      ALERT_DEFINITIONS.api_fleet_topology,
+    ),
+    api_fleet_restarts: immediateOutcome(
+      fleet.available === true ? fleet.totalRestartCount : null,
+      (value) => value > ALERT_DEFINITIONS.api_fleet_restarts.threshold,
+      ALERT_DEFINITIONS.api_fleet_restarts,
     ),
   };
 
@@ -583,6 +732,27 @@ function runCli(argv = process.argv.slice(2)) {
   process.stdout.write(
     `capacity-summary status=${result.overallStatus} archive=${result.filename} retentionDays=${RETENTION_DAYS}\n`,
   );
+  const action = result.sample.readiness.action;
+  process.stdout.write(
+    `capacity-action available=${action !== null} windowSec=${action?.windowSec ?? 'unknown'} ` +
+      `total=${action?.total ?? 'unknown'} success=${action?.success ?? 'unknown'} ` +
+      `failure=${action?.failure ?? 'unknown'} critical=${action?.critical ?? 'unknown'} ` +
+      `errorRate=${action?.errorRate ?? 'unknown'} criticalRate=${action?.criticalRate ?? 'unknown'}\n`,
+  );
+  const fleet = result.sample.apiFleet;
+  process.stdout.write(
+    `capacity-api-fleet available=${fleet.available ?? 'unknown'} ` +
+      `expected=${fleet.expectedRoleCount ?? 'unknown'} observed=${fleet.observedRoleCount ?? 'unknown'} ` +
+      `singleton=${fleet.singletonRoleCount ?? 'unknown'} running=${fleet.runningRoleCount ?? 'unknown'} ` +
+      `identity=${fleet.identityRoleCount ?? 'unknown'} ` +
+      `exactImage=${fleet.exactImageRoleCount ?? 'unknown'} ` +
+      `duplicates=${fleet.duplicateContainerCount ?? 'unknown'} ` +
+      `unexpected=${fleet.unexpectedApiContainerCount ?? 'unknown'} ` +
+      `unexpectedMain=${fleet.unexpectedMainContainerCount ?? 'unknown'} ` +
+      `unexpectedScale=${fleet.unexpectedScaleContainerCount ?? 'unknown'} ` +
+      `unexpectedManual=${fleet.unexpectedManualContainerCount ?? 'unknown'} ` +
+      `restarts=${fleet.totalRestartCount ?? 'unknown'}\n`,
+  );
   for (const [id, alert] of Object.entries(result.alerts)) {
     process.stdout.write(
       `capacity-alert id=${id} outcome=${alert.outcome} severity=${alert.severity} ` +
@@ -602,6 +772,8 @@ module.exports = {
   archiveHourMs,
   archiveSnapshot,
   evaluateAlerts,
+  normalizeActionHealth,
+  normalizeApiFleet,
   normalizeSnapshot,
   rotateArchive,
 };

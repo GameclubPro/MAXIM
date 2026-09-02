@@ -3987,6 +3987,79 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
+  it('does not fan out an ambiguous exact-presence HTTP 5xx across bot candidates', async () => {
+    const retriedIntent = {
+      ...baseIntent,
+      attemptCount: 2,
+      leasedFromStatus: 'AMBIGUOUS',
+      deleteDispatchStartedAt: new Date(),
+      deleteDispatchStartedBotId: 'bot-1',
+    };
+    const stillAmbiguous = {
+      ...retriedIntent,
+      status: 'AMBIGUOUS',
+      nextAttemptAt: new Date(Date.now() + 10_000),
+      lastBotId: 'bot-1',
+      lastStatusCode: 502,
+      lastErrorCode: 'predelete_presence_unknown',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([retriedIntent])
+      .mockResolvedValueOnce([stillAmbiguous]);
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const deleteMessage = jest.fn();
+    const getExactMessagePresence = jest.fn().mockRejectedValue({
+      response: {
+        status: 502,
+        data: { code: 'server.failure', message: 'Bad Gateway' },
+        headers: { 'retry-after': '45' },
+      },
+    });
+    const getCurrentChatMemberAccess = jest.fn();
+    const resolveDeleteMessageBotRoute = jest.fn().mockResolvedValue(confirmedRoute);
+    const { service, maxBotLink } = createService(
+      { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage, getExactMessagePresence, getCurrentChatMemberAccess },
+      { resolveDeleteMessageBotRoute },
+    );
+
+    const startedAt = Date.now();
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(result).toMatchObject({ kind: 'ambiguous', confirmed: false, status: 'AMBIGUOUS' });
+    expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
+    expect(getExactMessagePresence).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).not.toHaveBeenCalled();
+
+    const retryQuery = executeRaw.mock.calls
+      .map((call) => call[0] as { strings?: readonly string[]; values?: readonly unknown[] })
+      .find((query) => query.values?.includes('predelete_presence_unknown'));
+    expect(retryQuery?.values).toEqual(
+      expect.arrayContaining(['AMBIGUOUS', 502, 'predelete_presence_unknown']),
+    );
+    const retryDates =
+      retryQuery?.values?.filter((value): value is Date => value instanceof Date) ?? [];
+    expect(retryDates.length).toBeGreaterThan(0);
+    expect(retryDates.every((value) => value.getTime() >= startedAt + 45_000)).toBe(true);
+
+    const executedSql = executeRaw.mock.calls
+      .map((call) => call[0]?.strings?.join('?') ?? '')
+      .join('\n');
+    expect(executedSql).not.toContain('"candidate_failures" =');
+    expect(executedSql).not.toContain('"delete_dispatch_started_at" = NULL');
+  });
+
   it('tries another confirmed bot when retry presence is unknown for the first candidate', async () => {
     const retriedIntent = {
       ...baseIntent,

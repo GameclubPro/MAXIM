@@ -31,19 +31,117 @@ const {
   archiveFilename,
   archiveSnapshot,
   evaluateAlerts,
+  normalizeActionHealth: normalizeArchivedActionHealth,
+  normalizeApiFleet,
   normalizeSnapshot,
 } = archiveModule;
 const {
+  DEFAULT_EXPECTED_API_SERVICES,
   calculateCounterRates,
+  normalizeActionHealth: normalizeProbedActionHealth,
   normalizeQueueFence,
   normalizeReadyProbe,
+  parseApiFleetInspection,
   parseDiskstats,
   parseMeminfo,
   parseProcStat,
   parseVmstat,
+  probeApiFleet,
+  readExpectedApiImage,
+  resolveExpectedApiServicesFromCompose,
+  summarizeApiFleet,
 } = probeModule;
 
+const apiImageSha = 'b'.repeat(40);
+const expectedApiImage = {
+  imageId: `sha256:${'a'.repeat(64)}`,
+  imageRef: `maxim-api:${apiImageSha}`,
+  sourceSha: apiImageSha,
+};
+const productionComposeSource = readFileSync(resolve(root, 'infra/docker-compose.yml'), 'utf8');
+const expectedAppRoleByService = Object.freeze({
+  'api-ingress': 'ingress',
+  'api-admin': 'admin',
+  'api-enqueue': 'enqueue',
+  'api-moderation': 'moderation',
+  'api-moderation-critical': 'moderation',
+  'api-moderation-join': 'moderation',
+  'api-moderation-realtime-b': 'moderation',
+  'api-moderation-realtime-c': 'moderation',
+  'api-moderation-realtime-d': 'moderation',
+  'api-moderation-background': 'moderation',
+  'api-media-analysis': 'moderation',
+  'api-action': 'action',
+  'api-publisher': 'publisher',
+});
+
+function inspectedContainer(index, options = {}) {
+  const service = Object.hasOwn(options, 'service')
+    ? options.service
+    : DEFAULT_EXPECTED_API_SERVICES[index];
+  const project = Object.hasOwn(options, 'project') ? options.project : 'infra';
+  const appServiceName = Object.hasOwn(options, 'appServiceName')
+    ? options.appServiceName
+    : service;
+  const appRole = Object.hasOwn(options, 'appRole')
+    ? options.appRole
+    : expectedAppRoleByService[service];
+  const labels = { ...(options.labels ?? {}) };
+  if (project !== null) labels['com.docker.compose.project'] = project;
+  if (service !== null) labels['com.docker.compose.service'] = service;
+  if (options.releaseProtected !== false) labels['com.maxim.release-protected'] = 'true';
+  const environment = ['PRIVATE_TOKEN=must-not-survive'];
+  if (appServiceName !== null && appServiceName !== undefined) {
+    environment.push(`APP_SERVICE_NAME=${appServiceName}`);
+  }
+  if (appRole !== null && appRole !== undefined) environment.push(`APP_ROLE=${appRole}`);
+  if (options.ocrVersionPresent) environment.push('COMMERCIAL_OCR_VERSION=private-version');
+  environment.push(...(options.extraEnvironment ?? []));
+  const normalizedNamePart = service ?? 'manual-worker';
+  return {
+    Id: (index + 1).toString(16).padStart(64, '0'),
+    Name: options.name ?? `/${project ?? 'manual'}-${normalizedNamePart}-1`,
+    Image: options.imageId ?? expectedApiImage.imageId,
+    RestartCount: options.restartCount ?? 0,
+    State: {
+      Running: options.running ?? true,
+      Status: options.status ?? (options.running === false ? 'exited' : 'running'),
+    },
+    Config: {
+      Env: environment,
+      Image: options.imageRef ?? expectedApiImage.imageRef,
+      Labels: labels,
+    },
+  };
+}
+
+function currentReleaseManifest(apiImage = expectedApiImage) {
+  return {
+    schemaVersion: 1,
+    releaseId: 'release-test',
+    targetSha: 'd'.repeat(40),
+    components: {
+      'api-shared': {
+        sourceSha: apiImage.sourceSha,
+        imageRef: apiImage.imageRef,
+        imageId: apiImage.imageId,
+      },
+      'miniapp-major-static': {
+        sourceSha: 'e'.repeat(40),
+        imageRef: `maxim-miniapp-major:${'e'.repeat(40)}`,
+        imageId: `sha256:${'e'.repeat(64)}`,
+      },
+      'admin-static': {
+        sourceSha: 'f'.repeat(40),
+        imageRef: `maxim-admin:${'f'.repeat(40)}`,
+        imageId: `sha256:${'f'.repeat(64)}`,
+      },
+    },
+  };
+}
+
 function sample(observedAt, overrides = {}) {
+  const hostOverrides = overrides.host ?? {};
   return {
     schemaVersion: 1,
     observedAt,
@@ -56,6 +154,7 @@ function sample(observedAt, overrides = {}) {
       swapUsedBytes: 0,
       cpuIowaitPct: 5,
       swapInPagesPerSec: 0,
+      ...hostOverrides,
       disk: {
         device: 'vda',
         path: '/var/lib/docker',
@@ -64,8 +163,8 @@ function sample(observedAt, overrides = {}) {
         usedPct: 66.67,
         utilPct: 50,
         avgQueueDepth: 2,
+        ...(hostOverrides.disk ?? {}),
       },
-      ...(overrides.host ?? {}),
     },
     readiness: {
       available: true,
@@ -81,6 +180,15 @@ function sample(observedAt, overrides = {}) {
       mode: 'normal',
       condition: 'healthy',
       burstActive: false,
+      action: {
+        windowSec: 60,
+        total: 1_659,
+        success: 1_659,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
       ...(overrides.readiness ?? {}),
     },
     adminReadiness: {
@@ -98,6 +206,22 @@ function sample(observedAt, overrides = {}) {
       activeCount: 0,
       ownerPresent: false,
       ...(overrides.queueFence ?? {}),
+    },
+    apiFleet: {
+      available: true,
+      expectedRoleCount: 13,
+      observedRoleCount: 13,
+      singletonRoleCount: 13,
+      runningRoleCount: 13,
+      identityRoleCount: 13,
+      exactImageRoleCount: 13,
+      duplicateContainerCount: 0,
+      unexpectedApiContainerCount: 0,
+      unexpectedMainContainerCount: 0,
+      unexpectedScaleContainerCount: 0,
+      unexpectedManualContainerCount: 0,
+      totalRestartCount: 0,
+      ...(overrides.apiFleet ?? {}),
     },
     privateToken: 'must-not-survive',
   };
@@ -149,7 +273,14 @@ function runMonitorLogHarness(logPath, tempRoot) {
 function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
-    return true;
+  } catch {
+    return false;
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commandEnd = stat.lastIndexOf(')');
+    const state = commandEnd >= 0 ? stat.slice(commandEnd + 2, commandEnd + 3) : '';
+    return state !== 'Z' && state !== 'X';
   } catch {
     return false;
   }
@@ -242,7 +373,10 @@ async function waitForCondition(predicate, timeoutMs) {
 
 function waitForClose(child, timeoutMs) {
   return new Promise((resolvePromise, reject) => {
-    const timer = setTimeout(() => reject(new Error('Monitor did not terminate in time.')), timeoutMs);
+    const timer = setTimeout(
+      () => reject(new Error('Monitor did not terminate in time.')),
+      timeoutMs,
+    );
     child.once('close', (code, signal) => {
       clearTimeout(timer);
       resolvePromise({ code, signal });
@@ -310,6 +444,16 @@ test('readiness and queue probes retain only allowlisted aggregate fields', () =
             condition: 'queue_backlog',
             queueLagSec: 31,
             reason: 'private detail',
+            action: {
+              windowSec: 60,
+              total: 100,
+              success: 95,
+              failure: 5,
+              critical: 5,
+              errorRate: 0.05,
+              criticalRate: 0.05,
+              privateBotIds: ['bot-private'],
+            },
           },
           checks: {
             database: true,
@@ -341,6 +485,15 @@ test('readiness and queue probes retain only allowlisted aggregate fields', () =
     mode: 'degrade',
     condition: 'queue_backlog',
     burstActive: true,
+    action: {
+      windowSec: 60,
+      total: 100,
+      success: 95,
+      failure: 5,
+      critical: 5,
+      errorRate: 0.05,
+      criticalRate: 0.05,
+    },
   });
   assert.deepEqual(
     normalizeQueueFence({
@@ -353,6 +506,270 @@ test('readiness and queue probes retain only allowlisted aggregate fields', () =
     { available: true, queueCount: 24, pausedCount: 0, activeCount: 3, ownerPresent: false },
   );
   assert.doesNotMatch(JSON.stringify(readiness), /secret|private/u);
+});
+
+test('action health snapshots require internally consistent bounded arithmetic', () => {
+  const valid = {
+    windowSec: 60,
+    total: 100,
+    success: 95,
+    failure: 5,
+    critical: 4,
+    errorRate: 0.05,
+    criticalRate: 0.04,
+    privateBreakdown: { botId: 'private' },
+  };
+  const expected = {
+    windowSec: 60,
+    total: 100,
+    success: 95,
+    failure: 5,
+    critical: 4,
+    errorRate: 0.05,
+    criticalRate: 0.04,
+  };
+  assert.deepEqual(normalizeProbedActionHealth(valid), expected);
+  assert.deepEqual(normalizeArchivedActionHealth(valid), expected);
+
+  for (const malformed of [
+    { ...valid, total: 99 },
+    { ...valid, critical: 6 },
+    { ...valid, errorRate: 0.5 },
+    { ...valid, criticalRate: Number.NaN },
+    { ...valid, success: -1 },
+  ]) {
+    assert.equal(normalizeProbedActionHealth(malformed), null);
+    assert.equal(normalizeArchivedActionHealth(malformed), null);
+  }
+});
+
+test('API fleet census checks runtime identity and exact-image roles without exposing identities', async () => {
+  const inspection = DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index));
+  const ids = inspection.map((container) => container.Id);
+  const calls = [];
+  const healthy = await probeApiFleet(DEFAULT_EXPECTED_API_SERVICES, {
+    expectedImage: expectedApiImage,
+    runBounded: async (command, args, options) => {
+      calls.push([command, args, options]);
+      if (command === 'git') return { ok: true, output: productionComposeSource };
+      return args[0] === 'ps'
+        ? { ok: true, output: `${ids.join('\n')}\n` }
+        : { ok: true, output: JSON.stringify(inspection) };
+    },
+  });
+  assert.deepEqual(healthy, {
+    available: true,
+    expectedRoleCount: 13,
+    observedRoleCount: 13,
+    singletonRoleCount: 13,
+    runningRoleCount: 13,
+    identityRoleCount: 13,
+    exactImageRoleCount: 13,
+    duplicateContainerCount: 0,
+    unexpectedApiContainerCount: 0,
+    unexpectedMainContainerCount: 0,
+    unexpectedScaleContainerCount: 0,
+    unexpectedManualContainerCount: 0,
+    totalRestartCount: 0,
+  });
+  assert.deepEqual(calls[0].slice(0, 2), [
+    'git',
+    ['show', `${apiImageSha}:infra/docker-compose.yml`],
+  ]);
+  assert.deepEqual(calls[1][1].slice(0, 2), ['ps', '-a']);
+  assert.equal(calls[2][1][0], 'inspect');
+  assert.equal(calls[2][1].length, ids.length + 1);
+  assert.equal(calls[2][2].maxOutputBytes, 16 * 1024 * 1024);
+  assert.doesNotMatch(
+    JSON.stringify(healthy),
+    /sha256|[0-9a-f]{40}|api-|must-not-survive|PRIVATE_TOKEN/u,
+  );
+
+  const containers = parseApiFleetInspection(
+    JSON.stringify([
+      inspection[0],
+      inspectedContainer(1, { appRole: 'moderation' }),
+      ...inspection.slice(2, -1),
+      inspectedContainer(12, { running: false, restartCount: 2 }),
+      inspectedContainer(20, { service: DEFAULT_EXPECTED_API_SERVICES[0] }),
+      inspectedContainer(21, {
+        service: 'api-unexpected',
+        appServiceName: null,
+        appRole: null,
+      }),
+      inspectedContainer(22, { project: 'infra-scale', service: 'api-action' }),
+      inspectedContainer(23, {
+        project: null,
+        service: null,
+        appServiceName: 'api-moderation',
+        appRole: 'moderation',
+        imageId: `sha256:${'8'.repeat(64)}`,
+        imageRef: 'private-worker:stable',
+        releaseProtected: false,
+        running: false,
+      }),
+      inspectedContainer(24, {
+        project: null,
+        service: null,
+        appServiceName: null,
+        appRole: null,
+        imageId: `sha256:${'7'.repeat(64)}`,
+        imageRef: 'private-worker:stable',
+        name: '/manual-api-worker',
+      }),
+      inspectedContainer(25, {
+        project: 'sibling',
+        service: 'api',
+        appServiceName: null,
+        appRole: null,
+        imageId: `sha256:${'6'.repeat(64)}`,
+        imageRef: 'sibling-api:stable',
+        releaseProtected: false,
+      }),
+      inspectedContainer(26, {
+        project: 'infra',
+        service: 'miniapp-major-static',
+        appServiceName: null,
+        appRole: null,
+        imageId: `sha256:${'5'.repeat(64)}`,
+        imageRef: 'maxim-miniapp-major:stable',
+        name: '/infra-miniapp-major-static-1',
+      }),
+    ]),
+  );
+  assert.doesNotMatch(JSON.stringify(containers), /must-not-survive|PRIVATE_TOKEN/u);
+  assert.deepEqual(summarizeApiFleet(DEFAULT_EXPECTED_API_SERVICES, expectedApiImage, containers), {
+    available: true,
+    expectedRoleCount: 13,
+    observedRoleCount: 13,
+    singletonRoleCount: 12,
+    runningRoleCount: 11,
+    identityRoleCount: 11,
+    exactImageRoleCount: 12,
+    duplicateContainerCount: 1,
+    unexpectedApiContainerCount: 4,
+    unexpectedMainContainerCount: 1,
+    unexpectedScaleContainerCount: 1,
+    unexpectedManualContainerCount: 2,
+    totalRestartCount: 2,
+  });
+  assert.equal(normalizeApiFleet({ ...healthy, runningRoleCount: 14 }).available, null);
+  assert.equal(
+    normalizeApiFleet({ ...healthy, unexpectedManualContainerCount: 1 }).available,
+    null,
+  );
+  const preIdentityFleet = { ...healthy };
+  delete preIdentityFleet.identityRoleCount;
+  delete preIdentityFleet.unexpectedMainContainerCount;
+  delete preIdentityFleet.unexpectedScaleContainerCount;
+  delete preIdentityFleet.unexpectedManualContainerCount;
+  assert.equal(normalizeApiFleet(preIdentityFleet).available, null);
+  assert.equal(
+    evaluateAlerts([], normalizeSnapshot(sample('2026-09-02T12:00:00.000Z', { apiFleet: healthy })))
+      .alerts.api_fleet_topology.outcome,
+    'clear',
+  );
+  assert.equal(
+    evaluateAlerts(
+      [],
+      normalizeSnapshot(
+        sample('2026-09-02T12:00:00.000Z', {
+          apiFleet: summarizeApiFleet(DEFAULT_EXPECTED_API_SERVICES, expectedApiImage, containers),
+        }),
+      ),
+    ).alerts.api_fleet_topology.outcome,
+    'firing',
+  );
+});
+
+test('API fleet expected roles fail closed on env, protected-label, and owned-name drift', () => {
+  for (const [label, defect] of [
+    ['role env', { appRole: 'admin' }],
+    ['protected label', { releaseProtected: false }],
+    ['container name', { name: '/infra-api-admin-1' }],
+  ]) {
+    const inspection = DEFAULT_EXPECTED_API_SERVICES.map((_, index) =>
+      inspectedContainer(index, index === 0 ? defect : {}),
+    );
+    const fleet = summarizeApiFleet(
+      DEFAULT_EXPECTED_API_SERVICES,
+      expectedApiImage,
+      parseApiFleetInspection(JSON.stringify(inspection)),
+    );
+    assert.equal(fleet.observedRoleCount, 13, label);
+    assert.equal(fleet.singletonRoleCount, 13, label);
+    assert.equal(fleet.runningRoleCount, 13, label);
+    assert.equal(fleet.exactImageRoleCount, 13, label);
+    assert.equal(fleet.identityRoleCount, 12, label);
+    assert.equal(
+      evaluateAlerts([], normalizeSnapshot(sample('2026-09-02T12:00:00.000Z', { apiFleet: fleet })))
+        .alerts.api_fleet_topology.outcome,
+      'firing',
+      label,
+    );
+  }
+});
+
+test('API fleet fallback topology and release manifest identity stay exact', () => {
+  const topologySource = readFileSync(
+    resolve(root, 'infra/scripts/lib/deploy-topology.sh'),
+    'utf8',
+  );
+  const topologyBlock =
+    /MAXIM_PRODUCTION_API_SERVICES=\(\n(?<services>[\s\S]*?)\n\)/u.exec(topologySource)?.groups
+      ?.services ?? '';
+  const topologyServices = [...topologyBlock.matchAll(/^\s+"(?<service>api-[a-z0-9-]+)"$/gmu)].map(
+    (match) => match.groups.service,
+  );
+  assert.deepEqual(DEFAULT_EXPECTED_API_SERVICES, topologyServices);
+  const baseServices = DEFAULT_EXPECTED_API_SERVICES.filter(
+    (service) => service !== 'api-media-analysis' && service !== 'api-publisher',
+  );
+  const legacyCompose = baseServices.map((service) => `  ${service}:`).join('\n');
+  assert.deepEqual(
+    resolveExpectedApiServicesFromCompose(DEFAULT_EXPECTED_API_SERVICES, legacyCompose),
+    baseServices,
+  );
+  assert.deepEqual(
+    resolveExpectedApiServicesFromCompose(
+      DEFAULT_EXPECTED_API_SERVICES,
+      `${legacyCompose}\n  api-media-analysis:`,
+    ),
+    DEFAULT_EXPECTED_API_SERVICES.filter((service) => service !== 'api-publisher'),
+  );
+
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-capacity-manifest-'));
+  const manifestPath = join(directory, 'current.json');
+  writeFileSync(manifestPath, JSON.stringify(currentReleaseManifest()));
+  assert.deepEqual(readExpectedApiImage(manifestPath), expectedApiImage);
+  const runtimeRollbackImage = {
+    ...expectedApiImage,
+    imageRef: `maxim-api:runtime-rollback-${apiImageSha}`,
+  };
+  writeFileSync(manifestPath, JSON.stringify(currentReleaseManifest(runtimeRollbackImage)));
+  assert.deepEqual(readExpectedApiImage(manifestPath), runtimeRollbackImage);
+  const digestImage = {
+    ...expectedApiImage,
+    imageRef: `registry.example/maxim-api@sha256:${'7'.repeat(64)}`,
+  };
+  writeFileSync(manifestPath, JSON.stringify(currentReleaseManifest(digestImage)));
+  assert.deepEqual(readExpectedApiImage(manifestPath), digestImage);
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      currentReleaseManifest({
+        ...expectedApiImage,
+        imageRef: `maxim-api:${'c'.repeat(40)}`,
+      }),
+    ),
+  );
+  assert.throws(() => readExpectedApiImage(manifestPath), /identity is invalid/u);
+  const partial = currentReleaseManifest();
+  delete partial.components['admin-static'];
+  writeFileSync(manifestPath, JSON.stringify(partial));
+  assert.throws(() => readExpectedApiImage(manifestPath), /incomplete or invalid/u);
+  writeFileSync(manifestPath, JSON.stringify({ ...currentReleaseManifest(), schemaVersion: 2 }));
+  assert.throws(() => readExpectedApiImage(manifestPath), /incomplete or invalid/u);
 });
 
 test('capacity probe resolves its sibling helper when executed through node stdin', () => {
@@ -372,19 +789,25 @@ test('capacity probe resolves its sibling helper when executed through node stdi
 test('alert windows require continuous samples and expose every requested outcome', () => {
   const high = minuteSamples('2026-09-02T12:00:00.000Z', 6, {
     host: {
+      load1: 12,
       cpuIowaitPct: 35,
       memoryAvailableBytes: 2 * 1024 ** 3,
       swapInPagesPerSec: 2,
       swapUsedBytes: 1024 ** 3,
+      disk: { utilPct: 99 },
     },
   });
   const result = evaluateAlerts(high.slice(0, -1), high.at(-1));
+  assert.equal(result.alerts.load_per_cpu_warning_5m.outcome, 'firing');
+  assert.equal(result.alerts.load_per_cpu_critical_2m.outcome, 'firing');
   assert.equal(result.alerts.iowait_warning_5m.outcome, 'firing');
   assert.equal(result.alerts.iowait_critical_2m.outcome, 'firing');
   assert.equal(result.alerts.swap_in_sustained_5m.outcome, 'firing');
   assert.equal(result.alerts.swap_used_10pct_5m.outcome, 'firing');
   assert.equal(result.alerts.memory_available_warning_5m.outcome, 'firing');
   assert.equal(result.alerts.memory_available_critical_2m.outcome, 'firing');
+  assert.equal(result.alerts.disk_util_warning_5m.outcome, 'firing');
+  assert.equal(result.alerts.disk_util_critical_2m.outcome, 'firing');
   assert.equal(result.alerts.disk_free_40gib.outcome, 'clear');
   assert.equal(result.alerts.readiness.outcome, 'clear');
   assert.equal(result.alerts.queue_metrics.outcome, 'clear');
@@ -425,6 +848,15 @@ test('immediate readiness, queue, fallback, mode, fence, and disk alerts fail cl
         burstActive: true,
       },
       queueFence: { pausedCount: 24, ownerPresent: true },
+      apiFleet: {
+        runningRoleCount: 12,
+        identityRoleCount: 12,
+        exactImageRoleCount: 12,
+        duplicateContainerCount: 1,
+        unexpectedApiContainerCount: 1,
+        unexpectedMainContainerCount: 1,
+        totalRestartCount: 2,
+      },
     }),
   );
   const result = evaluateAlerts([], current);
@@ -439,6 +871,8 @@ test('immediate readiness, queue, fallback, mode, fence, and disk alerts fail cl
     'queue_lag_warning',
     'queue_lag_critical',
     'queue_fence',
+    'api_fleet_topology',
+    'api_fleet_restarts',
   ]) {
     assert.equal(result.alerts[id].outcome, 'firing', id);
   }
@@ -494,6 +928,28 @@ test('immediate readiness, queue, fallback, mode, fence, and disk alerts fail cl
     sample('2026-09-02T12:00:00.000Z', { queueFence: { queueCount: 23 } }),
   );
   assert.equal(evaluateAlerts([], incompleteFence).alerts.queue_fence.outcome, 'firing');
+
+  const unavailableFleet = normalizeSnapshot(
+    sample('2026-09-02T12:00:00.000Z', { apiFleet: { available: false } }),
+  );
+  assert.equal(evaluateAlerts([], unavailableFleet).alerts.api_fleet_topology.outcome, 'firing');
+  assert.equal(evaluateAlerts([], unavailableFleet).alerts.api_fleet_restarts.outcome, 'unknown');
+
+  for (const expectedRoleCount of [11, 12]) {
+    const historicalFleet = normalizeSnapshot(
+      sample('2026-09-02T12:00:00.000Z', {
+        apiFleet: {
+          expectedRoleCount,
+          observedRoleCount: expectedRoleCount,
+          singletonRoleCount: expectedRoleCount,
+          runningRoleCount: expectedRoleCount,
+          identityRoleCount: expectedRoleCount,
+          exactImageRoleCount: expectedRoleCount,
+        },
+      }),
+    );
+    assert.equal(evaluateAlerts([], historicalFleet).alerts.api_fleet_topology.outcome, 'clear');
+  }
 });
 
 test('archive is private, atomic, rotated, bounded, and excludes unknown input fields', () => {
@@ -513,7 +969,10 @@ test('archive is private, atomic, rotated, bounded, and excludes unknown input f
   assert.equal(MAX_RECORDS_PER_HOUR, 240);
   assert.equal(first.filename, archiveFilename(first.sample.observedAt));
   assert.equal(content.trim().split('\n').length, 2);
-  assert.doesNotMatch(content, /must-not-survive|token|payload|secret|botId/u);
+  assert.doesNotMatch(
+    content,
+    /must-not-survive|token|payload|secret|botId|sha256:[0-9a-f]{64}|maxim-api:(?:runtime-rollback-)?[0-9a-f]{40}/u,
+  );
   assert.equal(lstatSync(directory).mode & 0o777, 0o700);
   assert.equal(lstatSync(path).mode & 0o777, 0o600);
   assert.equal(existsSync(old), false);
@@ -549,7 +1008,14 @@ test('archive rejects a symlink directory and CLI prints explicit alert outcomes
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /capacity-summary status=ok/u);
+  assert.match(result.stdout, /capacity-action available=true windowSec=60 total=1659/u);
+  assert.match(
+    result.stdout,
+    /capacity-api-fleet available=true expected=13 observed=13 singleton=13 running=13 identity=13 exactImage=13 duplicates=0 unexpected=0 unexpectedMain=0 unexpectedScale=0 unexpectedManual=0 restarts=0/u,
+  );
+  assert.match(result.stdout, /capacity-alert id=load_per_cpu_warning_5m outcome=clear/u);
   assert.match(result.stdout, /capacity-alert id=iowait_warning_5m outcome=clear/u);
+  assert.match(result.stdout, /capacity-alert id=disk_util_critical_2m outcome=clear/u);
   assert.match(result.stdout, /capacity-alert id=queue_lag_critical outcome=clear/u);
   assert.doesNotMatch(readFileSync(archivePath, 'utf8'), /\bjq\b/u);
 });
@@ -640,13 +1106,19 @@ test('archive rewrites prior alerts without preserving free-form values', () => 
 test('legacy snapshots classify a missing system condition as unknown without preserving reason', () => {
   const raw = sample('2026-09-02T12:00:00.000Z');
   delete raw.readiness.condition;
+  delete raw.readiness.action;
+  delete raw.apiFleet;
   raw.readiness.reason = 'private MAX diagnostic';
   const normalized = normalizeSnapshot(raw);
   const alerts = evaluateAlerts([], normalized).alerts;
   assert.equal(normalized.readiness.condition, 'unknown');
+  assert.equal(normalized.readiness.action, null);
+  assert.equal(normalized.apiFleet.available, null);
   assert.equal(alerts.queue_backlog_mode.outcome, 'unknown');
   assert.equal(alerts.max_api_mode.outcome, 'unknown');
   assert.equal(alerts.stabilizing_mode.outcome, 'unknown');
+  assert.equal(alerts.api_fleet_topology.outcome, 'unknown');
+  assert.equal(alerts.api_fleet_restarts.outcome, 'unknown');
   assert.doesNotMatch(JSON.stringify(normalized), /private MAX diagnostic|reason/u);
 });
 
@@ -704,7 +1176,9 @@ test('capacity scheduler runs independently at a bounded cadence without overlap
   assert.doesNotMatch(shellFunction('run_monitor'), /sample_capacity|capacity-observability/u);
   const wrapper = shellFunction('run_monitor_with_capacity_sampler');
   assert.ok(wrapper.indexOf('start_capacity_sampler') < wrapper.indexOf('start_monitor_worker'));
-  assert.ok(wrapper.indexOf('start_monitor_worker') < wrapper.indexOf('wait "$MONITOR_WORKER_PID"'));
+  assert.ok(
+    wrapper.indexOf('start_monitor_worker') < wrapper.indexOf('wait "$MONITOR_WORKER_PID"'),
+  );
 });
 
 test('occupied capacity lock fails before the heavy monitor worker starts', () => {
@@ -774,7 +1248,7 @@ test('failed heavy-worker start reaps the capacity sampler and preserves failure
   assert.equal(result.stdout, 'status=29 sampler_alive=no\n');
 });
 
-test('capacity sampler cleanup terminates and reaps its isolated process group', () => {
+test('capacity sampler cleanup terminates and reaps its isolated process group', async () => {
   const harness = [
     'set -euo pipefail',
     'child_file="$1"',
@@ -787,17 +1261,24 @@ test('capacity sampler cleanup terminates and reaps its isolated process group',
     'child_pid="$(<"$child_file")"',
     shellFunction('stop_capacity_sampler'),
     'stop_capacity_sampler',
-    '! kill -0 "$sampler_pid" 2>/dev/null',
-    '! kill -0 "$child_pid" 2>/dev/null',
+    'printf "sampler=%s child=%s\\n" "$sampler_pid" "$child_pid"',
   ].join('\n');
   const directory = mkdtempSync(join(tmpdir(), 'maxim-capacity-sampler-stop-'));
-  const result = spawnSync('bash', ['-c', harness, 'capacity-stop-harness', join(directory, 'pid')], {
-    encoding: 'utf8',
-  });
+  const result = spawnSync(
+    'bash',
+    ['-c', harness, 'capacity-stop-harness', join(directory, 'pid')],
+    {
+      encoding: 'utf8',
+    },
+  );
   assert.equal(result.status, 0, result.stderr);
+  const match = /^sampler=(\d+) child=(\d+)$/mu.exec(result.stdout);
+  assert.ok(match, result.stdout);
+  const pids = match.slice(1).map(Number);
+  await waitForCondition(() => pids.every((pid) => !isProcessAlive(pid)), 2_000);
 });
 
-test('monitor entrypoint composes sampler and ephemeral-log cleanup without losing status', () => {
+test('monitor entrypoint composes sampler and ephemeral-log cleanup without losing status', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'maxim-monitor-lifecycle-log-'));
   const processRoot = mkdtempSync(join(tmpdir(), 'maxim-monitor-lifecycle-process-'));
   const { childFile, result, samplerFile } = runMonitorLifecycleHarness(tempRoot, processRoot, 37);
@@ -805,8 +1286,8 @@ test('monitor entrypoint composes sampler and ephemeral-log cleanup without losi
   const ephemeralPath = /^path=(.+)$/mu.exec(result.stdout)?.[1];
   assert.ok(ephemeralPath);
   assert.equal(existsSync(ephemeralPath), false);
-  assert.equal(isProcessAlive(Number(readFileSync(samplerFile, 'utf8').trim())), false);
-  assert.equal(isProcessAlive(Number(readFileSync(childFile, 'utf8').trim())), false);
+  const pids = [samplerFile, childFile].map((path) => Number(readFileSync(path, 'utf8').trim()));
+  await waitForCondition(() => pids.every((pid) => !isProcessAlive(pid)), 2_000);
   const wrapper = shellFunction('run_monitor_with_capacity_sampler');
   assert.doesNotMatch(wrapper, /trap (cleanup_monitor|stop_capacity_sampler) EXIT/u);
   assert.match(monitorSource, /trap cleanup_monitor EXIT/u);
@@ -901,7 +1382,9 @@ test('TERM to only the top-level monitor PID reaps every worker and ephemeral lo
     assert.ok(ephemeralPath);
     assert.equal(existsSync(ephemeralPath), false);
     assert.equal(existsSync(dirname(ephemeralPath)), false);
-    for (const pid of [...recordedProcesses(processFile), ...recordedProcesses(teeFile)]) {
+    const recordedPids = [...recordedProcesses(processFile), ...recordedProcesses(teeFile)];
+    await waitForCondition(() => recordedPids.every((pid) => !isProcessAlive(pid)), 2_000);
+    for (const pid of recordedPids) {
       assert.equal(isProcessAlive(pid), false, `monitor process ${pid} survived top-level TERM`);
     }
     const lockProbe = spawnSync(
@@ -954,6 +1437,7 @@ test('readonly monitor archives only the allowlisted capacity probe outside raw 
   assert.match(monitor, /MAXIM_MONITOR_CAPACITY_ARCHIVE_DIR must be an absolute path/u);
   assert.match(monitor, /\)" \|\| probe_status=\$\?/u);
   assert.match(monitor, /return "\$probe_status"/u);
+  assert.match(monitor, /"\$CAPACITY_BLOCK_DEVICE" "\$\{SERVICES\[@\]\}"/u);
   assert.match(
     monitor,
     /if ! EPHEMERAL_LOG_DIR="\$\([\s\S]*mktemp -d "\$temp_root\/maxim-vps-readonly-monitor-\$\{UID\}\.XXXXXXXX"/u,

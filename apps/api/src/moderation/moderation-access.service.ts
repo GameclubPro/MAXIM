@@ -1156,7 +1156,12 @@ export class ModerationAccessService {
   }
 
   private isTransientMaxApiLookupError(error: unknown): boolean {
-    return this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error);
+    const status = this.extractStatusCode(error);
+    return (
+      (status !== null && status >= 500 && status <= 599) ||
+      this.isMaxApiThrottleError(error) ||
+      this.isMaxApiTimeoutError(error)
+    );
   }
 
   private isDeniedMaxApiLookupError(error: unknown): boolean {

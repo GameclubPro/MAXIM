@@ -25,7 +25,10 @@ import {
   ModerationSanctionStateLockUnavailableError,
 } from '../moderation/moderation-sanction-state-lock.service';
 import { withModerationReleaseButton } from '../moderation/moderation-release-callback.util';
-import { ManualModerationFanoutLedgerStatus as PrismaManualModerationFanoutLedgerStatus } from '../prisma/prisma-client';
+import {
+  ManualModerationFanoutLedgerStatus as PrismaManualModerationFanoutLedgerStatus,
+  type Prisma,
+} from '../prisma/prisma-client';
 import {
   type AdminManualBanFanoutJob,
   type AdminManualBanSourceCleanupJob,
@@ -91,6 +94,20 @@ export type ManualFanoutActorInput = {
   chatId?: string | null;
   chatTitle?: string | null;
 };
+
+export type ManualMuteFanoutTargetPreparation =
+  | {
+      kind: 'ready';
+      operationKey: string;
+      lockToken: string;
+      botId: string | undefined;
+      metadata: Prisma.InputJsonObject;
+    }
+  | {
+      kind: 'settled';
+      outcome: 'muted' | 'skipped' | 'failed';
+      retryable: boolean;
+    };
 
 export class AdminManualModerationRuntime {
   constructor(private readonly context: AdminManualModerationRuntimeContext) {}
@@ -438,6 +455,137 @@ export class AdminManualModerationRuntime {
       targetChats,
     });
     this.throwManualFanoutRetryableFailureIfNeeded(result);
+  }
+
+  async prepareManualMuteFanoutTarget(params: {
+    jobId?: string | null;
+    rootIntentKey?: string | null;
+    sourceChatId: string;
+    targetChatId: string;
+    targetUserId: string;
+    actorUserId: string;
+    muteDurationHours: number | null;
+    muteExpiresAt: Date | null;
+    mutePermanent: boolean;
+    source: ManualModerationFanoutSource;
+  }): Promise<ManualMuteFanoutTargetPreparation> {
+    const operationKey = this.context.buildManualModerationFanoutOperationKey({
+      operation: 'FANOUT_MUTE_RECORD',
+      sourceChatId: params.sourceChatId,
+      targetChatId: params.targetChatId,
+      targetUserId: params.targetUserId,
+      jobId: params.jobId,
+      rootIntentKey: params.rootIntentKey,
+      extra: [
+        params.mutePermanent ? 'permanent' : 'timed',
+        params.mutePermanent ? '' : params.muteDurationHours,
+        params.muteExpiresAt ? params.muteExpiresAt.toISOString() : '',
+      ],
+    });
+    const metadata = {
+      source: params.source,
+      sourceChatId: params.sourceChatId,
+      muteDurationHours: params.muteDurationHours,
+      muteExpiresAt: params.muteExpiresAt ? params.muteExpiresAt.toISOString() : null,
+      mutePermanent: params.mutePermanent,
+    } satisfies Prisma.InputJsonObject;
+    const claim = await this.context.claimManualModerationFanoutLedgerEntry({
+      operationKey,
+      jobId: params.jobId,
+      rootIntentKey: params.rootIntentKey,
+      sourceKind: 'manual_mute_fanout',
+      operation: 'FANOUT_MUTE_RECORD',
+      sourceChatId: params.sourceChatId,
+      targetChatId: params.targetChatId,
+      targetUserId: params.targetUserId,
+      actorUserId: params.actorUserId,
+      logicalAction: 'MUTE',
+      botId: null,
+      metadata,
+    });
+    if (!claim.claimed) {
+      return {
+        kind: 'settled',
+        outcome:
+          claim.row?.status === PrismaManualModerationFanoutLedgerStatus.SUCCEEDED
+            ? 'muted'
+            : claim.row?.status === PrismaManualModerationFanoutLedgerStatus.SKIPPED
+              ? 'skipped'
+              : 'failed',
+        retryable: false,
+      };
+    }
+
+    let botId: string | undefined;
+    try {
+      botId = await this.context.resolveManualModerationActionBotAssignment({
+        chatId: params.targetChatId,
+        action: 'delete_message',
+      });
+    } catch (error: unknown) {
+      return this.settleManualMuteFanoutPreparationFailure({
+        operationKey,
+        lockToken: claim.lockToken,
+        botId,
+        metadata,
+        error,
+        logContext: params,
+        logMessage: 'Manual mute fanout has no eligible bot route',
+      });
+    }
+
+    try {
+      await this.context.assertBotCanDeleteMessages(params.targetChatId, botId);
+    } catch (error: unknown) {
+      return this.settleManualMuteFanoutPreparationFailure({
+        operationKey,
+        lockToken: claim.lockToken,
+        botId,
+        metadata,
+        error,
+        logContext: params,
+        logMessage: 'Skipped manual mute fanout because the bot cannot delete messages in chat',
+      });
+    }
+
+    return { kind: 'ready', operationKey, lockToken: claim.lockToken, botId, metadata };
+  }
+
+  private async settleManualMuteFanoutPreparationFailure(params: {
+    operationKey: string;
+    lockToken: string;
+    botId: string | undefined;
+    metadata: Prisma.InputJsonObject;
+    error: unknown;
+    logContext: { targetChatId: string; targetUserId: string; actorUserId: string };
+    logMessage: string;
+  }): Promise<ManualMuteFanoutTargetPreparation> {
+    const retryable = this.context.isRetryableManualFanoutPreparationError(params.error);
+    const persistedError =
+      params.error && typeof params.error === 'object' && 'cause' in params.error
+        ? ((params.error as { cause?: unknown }).cause ?? params.error)
+        : params.error;
+    await this.context.markManualModerationFanoutLedgerFailed({
+      operationKey: params.operationKey,
+      lockToken: params.lockToken,
+      status: retryable
+        ? PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE
+        : PrismaManualModerationFanoutLedgerStatus.FAILED_TERMINAL,
+      error: persistedError,
+      botId: params.botId ?? null,
+      metadata: params.metadata,
+      requireClaim: true,
+    });
+    this.logger.warn(
+      {
+        chatId: params.logContext.targetChatId,
+        targetUserId: params.logContext.targetUserId,
+        actorUserId: params.logContext.actorUserId,
+        err: params.error instanceof Error ? params.error.message : String(params.error),
+      },
+      params.logMessage,
+    );
+    return { kind: 'settled', outcome: 'failed', retryable };
   }
 
   private throwManualFanoutRetryableFailureIfNeeded(result: {

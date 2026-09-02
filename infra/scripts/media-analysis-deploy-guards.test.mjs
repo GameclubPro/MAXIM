@@ -585,6 +585,7 @@ test('read-only BullMQ monitor batches counters and includes every Publisher que
   const monitor = read('infra/scripts/vps-monitor-readonly.sh');
   const queueBlock = monitor.match(/\nqueues=\(\n(?<queues>[\s\S]*?)\n\)\n/u)?.groups?.queues ?? '';
   assert.notEqual(queueBlock, '');
+  assert.equal([...queueBlock.matchAll(/^ {2}moderation-default$/gmu)].length, 1);
 
   for (const queue of [
     'publisher-binding-refresh',

@@ -1351,14 +1351,24 @@ export class ModerationDeleteIntentService {
               details.statusCode === 404 ||
               this.isDeleteAccessFailure(details) ||
               this.isDeleteMessageNotFoundFailure(details);
+            const localRetryDelayMs = waitingForCapability
+              ? this.capabilityRetryDelayMs(intent.attemptCount)
+              : this.retryDelayMs(intent.attemptCount);
             lastAccessFailure = {
               ...details,
               status: waitingForCapability ? 'WAITING_CAPABILITY' : 'AMBIGUOUS',
               errorCode: 'predelete_presence_unknown',
-              retryDelayMs: waitingForCapability
-                ? this.capabilityRetryDelayMs(intent.attemptCount)
-                : this.retryDelayMs(intent.attemptCount),
+              retryDelayMs: Math.max(details.retryDelayMs ?? 0, localRetryDelayMs),
             };
+            if (details.statusCode !== null && details.statusCode >= 500) {
+              // FLAG: A MAX server failure is not bot-specific capability evidence. Keep the
+              // dispatch marker and retry later instead of amplifying the outage across bots.
+              return this.finishRetryableAttempt(
+                { ...intent, lastBotId: botId },
+                leaseToken,
+                lastAccessFailure,
+              );
+            }
             await this.refreshCandidateAccess(intent, botId, heartbeat);
             await this.recordCandidateFailure(
               intent.id,

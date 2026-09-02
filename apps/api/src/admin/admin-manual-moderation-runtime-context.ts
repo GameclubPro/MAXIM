@@ -131,8 +131,8 @@ export type ManualModerationFanoutLedgerRowView = {
 };
 
 export type ManualModerationFanoutLedgerClaimView =
-  | { claimed: true; lockToken: string }
-  | { claimed: false };
+  | { claimed: true; lockToken: string; row?: ManualModerationFanoutLedgerRowView | null }
+  | { claimed: false; row?: ManualModerationFanoutLedgerRowView | null };
 
 export type ManualModerationFanoutOperationKeyInput = {
   operation: ManualModerationFanoutLedgerOperation;
@@ -288,10 +288,12 @@ export type AdminManualModerationRuntimeContext = {
   ): ManualModerationActionResult;
   isAmbiguousAttemptedMaxMemberMutation(error: unknown): boolean;
   isManualModerationTransientMaxError(error: unknown): boolean;
+  isRetryableManualFanoutPreparationError(error: unknown): boolean;
   isManualModerationOrderingFailure(error: unknown): boolean;
   resolveManualModerationActionBotAssignment(
     input: ManualModerationActionBotAssignmentInput,
   ): Promise<string | undefined>;
+  assertBotCanDeleteMessages(chatId: string, botId?: string): Promise<void>;
   deleteRecentTrackedMessagesForManualAction(
     chatId: string,
     targetUserId: string,
@@ -410,10 +412,14 @@ export function createAdminManualModerationRuntimeContext(
       typedTarget.isAmbiguousAttemptedMaxMemberMutation(error),
     isManualModerationTransientMaxError: (error) =>
       typedTarget.isManualModerationTransientMaxError(error),
+    isRetryableManualFanoutPreparationError: (error) =>
+      typedTarget.isRetryableManualFanoutPreparationError(error),
     isManualModerationOrderingFailure: (error) =>
       typedTarget.isManualModerationOrderingFailure(error),
     resolveManualModerationActionBotAssignment: ({ chatId, action, options }) =>
       typedTarget.resolveManualModerationActionBotAssignment(chatId, action, options),
+    assertBotCanDeleteMessages: (chatId, botId) =>
+      typedTarget.assertBotCanDeleteMessages(chatId, botId),
     deleteRecentTrackedMessagesForManualAction: (chatId, targetUserId, options) =>
       typedTarget.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, options),
     runManualBanSourceCleanup: (chatId, targetUserId, actorUserId, options) =>

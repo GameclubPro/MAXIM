@@ -902,6 +902,41 @@ describe('ModerationService chat admin access lookups', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
   });
 
+  it('backs off repeated same-chat admin lookups after an upstream MAX 5xx', async () => {
+    const upstreamError = Object.assign(new Error('Request failed with status code 502'), {
+      response: {
+        status: 502,
+        data: {
+          message: 'Request failed with status code 502',
+        },
+      },
+    });
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockRejectedValue(upstreamError),
+    };
+    const service = new ModerationAccessService({} as never, maxClient as never);
+    const warn = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+
+    await expect(service.getRemoteChatAdminAccess('chat-upstream', 'user-1')).resolves.toBeNull();
+    await expect(service.getRemoteChatAdminAccess('chat-upstream', 'user-1')).resolves.toBeNull();
+    await expect(service.getRemoteChatAdminAccess('chat-upstream', 'user-2')).resolves.toBeNull();
+    await expect(service.getRemoteChatAdminAccess('chat-other', 'user-1')).resolves.toBeNull();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMembersAccess.mock.calls.map(([chatId]) => chatId)).toEqual([
+      'chat-upstream',
+      'chat-other',
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-upstream',
+        userIds: ['user-1'],
+        backoffMs: 30_000,
+      }),
+      'Failed to resolve chat admins for moderation bypass',
+    );
+  });
+
   it('shares remote admin lookup backoff between service instances', async () => {
     const deniedError = Object.assign(new Error('Request failed with status code 403'), {
       response: {
