@@ -1499,12 +1499,12 @@ describe('SafetyDeskService', () => {
     prisma.$queryRaw
       .mockResolvedValueOnce([
         {
-          total: 51,
+          total: 181,
           due: 0,
           deferred: 0,
           leased: 0,
           staleLeases: 0,
-          manualBlocked: 51,
+          manualBlocked: 181,
           acknowledged: 0,
           oldestDueAt: null,
           oldestStaleLeaseAt: null,
@@ -1512,22 +1512,24 @@ describe('SafetyDeskService', () => {
         },
       ])
       .mockResolvedValueOnce([
-        { category: 'unsafe_prior_dispatch', count: 50 },
+        { category: 'unsafe_prior_dispatch', count: 180 },
         { category: 'no_fresh_access', count: 1 },
       ])
       .mockResolvedValueOnce(rows);
 
-    const result = await service.getNightModeTransitionRuntime();
+    const result = await service.getNightModeTransitionRuntime('50');
 
     expect(result.items).toHaveLength(50);
     expect(result.truncated).toBe(true);
+    expect(result.offset).toBe(50);
+    expect(result.nextOffset).toBe(100);
     expect(result.summary).toEqual(
       expect.objectContaining({
-        total: 51,
-        manualBlocked: 51,
+        total: 181,
+        manualBlocked: 181,
         oldestManualBlockedAt: blockedAt.toISOString(),
         categoryCounts: expect.objectContaining({
-          unsafe_prior_dispatch: 50,
+          unsafe_prior_dispatch: 180,
           no_fresh_access: 1,
         }),
       }),
@@ -1543,7 +1545,43 @@ describe('SafetyDeskService', () => {
     );
     expect(result.items[1]?.allowedActions).toEqual(['ACKNOWLEDGE']);
     expect(result.items.some((item) => 'leaseToken' in item)).toBe(false);
+    const summarySql = (prisma.$queryRaw.mock.calls[0]?.[0] as { sql?: string } | undefined)?.sql;
+    const categorySql = (prisma.$queryRaw.mock.calls[1]?.[0] as { sql?: string } | undefined)?.sql;
+    const itemQuery = prisma.$queryRaw.mock.calls[2]?.[0] as
+      | { sql?: string; values?: unknown[] }
+      | undefined;
+    expect(summarySql).not.toMatch(/\bOFFSET\b/u);
+    expect(categorySql).not.toMatch(/\bOFFSET\b/u);
+    expect(itemQuery?.sql).toMatch(/LIMIT \?\s+OFFSET \?/u);
+    expect(itemQuery?.values?.slice(-2)).toEqual([51, 50]);
   });
+
+  it.each([undefined, '0', '1000'])(
+    'accepts the bounded night-mode runtime offset %p',
+    async (offsetInput) => {
+      const { prisma, service } = createFixture();
+
+      const result = await service.getNightModeTransitionRuntime(offsetInput);
+
+      const itemQuery = prisma.$queryRaw.mock.calls[2]?.[0] as { values?: unknown[] } | undefined;
+      const expectedOffset = offsetInput === undefined ? 0 : Number(offsetInput);
+      expect(result.offset).toBe(expectedOffset);
+      expect(result.nextOffset).toBeNull();
+      expect(itemQuery?.values?.slice(-2)).toEqual([51, expectedOffset]);
+    },
+  );
+
+  it.each(['', '-1', '1.5', '1001', '1e2', ' 1 ', null, ['1']])(
+    'rejects the invalid night-mode runtime offset %p before querying',
+    async (offsetInput) => {
+      const { prisma, service } = createFixture();
+
+      await expect(service.getNightModeTransitionRuntime(offsetInput)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    },
+  );
 
   it('shows a newer tombstone generation as live work without operator actions', async () => {
     const { prisma, service } = createFixture();

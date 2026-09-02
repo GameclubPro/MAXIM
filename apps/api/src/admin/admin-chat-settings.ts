@@ -15,6 +15,7 @@ import {
   normalizeMessageLimitsBlockedWordCandidate,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
+  updateSettingsRequestSchema,
   type BroadcastLinkButton,
   type BotSpeechMedia,
   type ChatSettings,
@@ -777,7 +778,7 @@ export async function saveChatSettings(params: {
     options?: { skipManagedEntityBotRefresh?: boolean },
   ) => Promise<void>;
 }): Promise<ChatSettings> {
-  const parsed = chatSettingsSchema.safeParse(params.body);
+  const parsed = updateSettingsRequestSchema.safeParse(params.body);
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }

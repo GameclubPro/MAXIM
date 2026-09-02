@@ -12,6 +12,7 @@ import {
   resolveRequiredSubscriptionChannelResponseSchema,
   scheduleDomainRemovalRequestSchema,
   updateChatRulesRequestSchema,
+  updateSettingsRequestSchema,
   type ApplySectionToAllResponse,
   type ApplySectionTargetPreviewResponse,
   type ApplySettingsTarget,
@@ -210,9 +211,10 @@ export async function updateSettings(
   options: { recheckBotCapabilities?: boolean } = {},
 ): Promise<ChatSettings> {
   const query = options.recheckBotCapabilities ? '?recheckBotCapabilities=1' : '';
+  const requestBody = updateSettingsRequestSchema.parse(data);
   const response = await api.request(`/chats/${chatId}/settings${query}`, {
     method: 'PUT',
-    body: JSON.stringify(data),
+    body: JSON.stringify(requestBody),
   });
   return chatSettingsSchema.parse(response);
 }

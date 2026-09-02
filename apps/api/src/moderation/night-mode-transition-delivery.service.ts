@@ -19,8 +19,8 @@ import {
 } from '../max/managed-entity-access-loss.service';
 import { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import {
-  buildNightModeClosedNotice,
-  buildNightModeOpenedNotice,
+  buildNightModeClosedNoticeForDelivery,
+  buildNightModeOpenedNoticeForDelivery,
   type NightModeBotSpeechProfile,
 } from './night-mode-transition-notice.util';
 import {
@@ -200,7 +200,7 @@ export class NightModeTransitionDeliveryService {
     validateBeforeDispatch?: () => Promise<boolean>,
   ): Promise<NightModeTransitionNoticeResult> {
     const buildMessageText = (botId?: string | null) =>
-      buildNightModeClosedNotice({
+      buildNightModeClosedNoticeForDelivery({
         startMinutes: snapshot.startMinutes,
         endMinutes: snapshot.endMinutes,
         timezone: snapshot.timezone,
@@ -279,7 +279,7 @@ export class NightModeTransitionDeliveryService {
     validateBeforeDispatch?: () => Promise<boolean>,
   ): Promise<NightModeTransitionProcessResult> {
     const buildMessageText = (botId?: string | null) =>
-      buildNightModeOpenedNotice({
+      buildNightModeOpenedNoticeForDelivery({
         startMinutes: snapshot.startMinutes,
         endMinutes: snapshot.endMinutes,
         timezone: snapshot.timezone,

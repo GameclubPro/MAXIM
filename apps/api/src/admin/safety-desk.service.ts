@@ -174,6 +174,7 @@ const SAFETY_DESK_LAST_ERROR_LIMIT = 1_000;
 const DELETE_INTENT_REASON_LIMIT = 10;
 const DELETE_INTENT_MEMBERSHIP_LIMIT = 20;
 const NIGHT_MODE_TRANSITION_RUNTIME_LIMIT = 50;
+const NIGHT_MODE_TRANSITION_RUNTIME_MAX_OFFSET = 1_000;
 const NIGHT_MODE_TRANSITION_MANUAL_CATEGORIES = [
   'unsafe_prior_dispatch',
   'unsafe_prior_provenance',
@@ -776,7 +777,8 @@ export class SafetyDeskService {
     });
   }
 
-  async getNightModeTransitionRuntime() {
+  async getNightModeTransitionRuntime(offsetInput?: unknown) {
+    const offset = this.parseNightModeTransitionRuntimeOffset(offsetInput);
     const now = new Date();
     const [summaryRows, categoryRows, rows] = await Promise.all([
       this.prisma.$queryRaw<NightModeTransitionSummaryRow[]>(Prisma.sql`
@@ -926,6 +928,7 @@ export class SafetyDeskService {
           ) ASC,
           request."chat_id" ASC
         LIMIT ${NIGHT_MODE_TRANSITION_RUNTIME_LIMIT + 1}
+        OFFSET ${offset}
       `),
     ]);
     const summary = summaryRows[0];
@@ -972,8 +975,14 @@ export class SafetyDeskService {
           : [],
     }));
 
+    const truncated = rows.length > NIGHT_MODE_TRANSITION_RUNTIME_LIMIT;
+    const nextOffset = offset + NIGHT_MODE_TRANSITION_RUNTIME_LIMIT;
+
     return {
       generatedAt: now.toISOString(),
+      offset,
+      nextOffset:
+        truncated && nextOffset <= NIGHT_MODE_TRANSITION_RUNTIME_MAX_OFFSET ? nextOffset : null,
       summary: {
         total: Math.max(0, Number(summary?.total) || 0),
         due: Math.max(0, Number(summary?.due) || 0),
@@ -988,7 +997,7 @@ export class SafetyDeskService {
         oldestManualBlockedAt: summary?.oldestManualBlockedAt?.toISOString() ?? null,
       },
       items,
-      truncated: rows.length > NIGHT_MODE_TRANSITION_RUNTIME_LIMIT,
+      truncated,
     };
   }
 
@@ -1943,6 +1952,22 @@ export class SafetyDeskService {
       }
     }
     return counts;
+  }
+
+  private parseNightModeTransitionRuntimeOffset(input: unknown): number {
+    if (input === undefined) {
+      return 0;
+    }
+    const encoded =
+      typeof input === 'string' ? input : typeof input === 'number' ? String(input) : null;
+    if (encoded === null || !/^\d+$/u.test(encoded)) {
+      throw new BadRequestException('offset должен быть целым числом от 0 до 1000.');
+    }
+    const offset = Number(encoded);
+    if (!Number.isSafeInteger(offset) || offset > NIGHT_MODE_TRANSITION_RUNTIME_MAX_OFFSET) {
+      throw new BadRequestException('offset должен быть целым числом от 0 до 1000.');
+    }
+    return offset;
   }
 
   private isNightModeTransitionManualCategory(

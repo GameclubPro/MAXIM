@@ -13,8 +13,59 @@ import {
   normalizeHttpButtonUrl,
   sendBroadcastRequestSchema,
   updateChatRulesRequestSchema,
+  updateSettingsRequestSchema,
 } from '@maxim/contracts';
 import { MAX_PUBLICATION_TEXT_LENGTH } from '@maxim/contracts/publication';
+
+describe('night mode settings update validation', () => {
+  it.each(['nightModeBotMessageEnabled', 'nightModeOpenMessageEnabled'] as const)(
+    'keeps an equal-time legacy row readable but rejects saving it with %s',
+    (noticeField) => {
+      const legacySettings = {
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 23 * 60,
+        [noticeField]: true,
+      };
+
+      expect(chatSettingsSchema.safeParse(legacySettings).success).toBe(true);
+
+      const update = updateSettingsRequestSchema.safeParse(legacySettings);
+      expect(update.success).toBe(false);
+      if (update.success) {
+        throw new Error('Expected equal night mode times with notices to be rejected');
+      }
+      expect(update.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['nightModeEndTimeMinutes'],
+            message:
+              'Для сообщений ночного режима время открытия должно отличаться от времени закрытия.',
+          }),
+        ]),
+      );
+    },
+  );
+
+  it('allows equal times without boundary notices and distinct times with notices', () => {
+    expect(
+      updateSettingsRequestSchema.safeParse({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 8 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+      }).success,
+    ).toBe(true);
+    expect(
+      updateSettingsRequestSchema.safeParse({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeBotMessageEnabled: true,
+        nightModeOpenMessageEnabled: true,
+      }).success,
+    ).toBe(true);
+  });
+});
 
 describe('chatSettingsSchema duplicate flow validation', () => {
   it('normalizes strict HTTP button urls without accepting malformed nested paths', () => {

@@ -83,6 +83,38 @@ describe('night mode transition notice util', () => {
     ).toBe('   ');
   });
 
+  it.each([' \t\n ', '{user}'])(
+    'matches inherited notice copy when delivery gets an empty rendered override %#',
+    (overrideText) => {
+      const settings = {
+        nightModeEnabled: true,
+        nightModeBotMessageEnabled: true,
+        nightModeOpenMessageEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+        nightModeBotMessageText: overrideText,
+        nightModeOpenMessageText: overrideText,
+        botSpeechStyle: 'ROBOT' as const,
+      };
+
+      expect(
+        isNightModeNoticeMessage({
+          text: '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+          settings,
+          activeBotSpeechProfile,
+        }),
+      ).toBe(true);
+      expect(
+        isNightModeNoticeMessage({
+          text: 'Чат снова открыт. Можно отправлять сообщения.',
+          settings,
+          activeBotSpeechProfile,
+        }),
+      ).toBe(true);
+    },
+  );
+
   it('matches closed and opened notice messages with whitespace normalization', () => {
     const settings = {
       nightModeEnabled: true,

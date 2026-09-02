@@ -897,6 +897,30 @@ describe('AdminSettingsService chat rules', () => {
     expect(chatContextCache.invalidate).not.toHaveBeenCalled();
   });
 
+  it('keeps an enabled equal-time legacy night schedule readable for correction', async () => {
+    const { service } = createService({
+      persistedSettings: createPersistedChatSettings({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 23 * 60,
+        nightModeBotMessageEnabled: true,
+        nightModeOpenMessageEnabled: true,
+      }),
+    });
+
+    const result = await service.getSettings('chat-1', user as never);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 23 * 60,
+        nightModeBotMessageEnabled: true,
+        nightModeOpenMessageEnabled: true,
+      }),
+    );
+  });
+
   it('updates chat settings without routing through legacy updateSettings', async () => {
     const { chatContextCache, legacyAdminService, nightModeTransitionScheduler, prisma, service } =
       createService({
@@ -960,6 +984,56 @@ describe('AdminSettingsService chat rules', () => {
       expect.objectContaining({ antiSpamEnabled: false }),
     );
     expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
+  });
+
+  it('rejects an equal-time night schedule with notices before any settings write', async () => {
+    const { nightModeTransitionScheduler, prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({ nightModeEnabled: false }),
+    });
+
+    await expect(
+      service.updateSettings('chat-1', user as never, {
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 22 * 60,
+        nightModeEndTimeMinutes: 22 * 60,
+        nightModeBotMessageEnabled: true,
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        nightModeEndTimeMinutes: {
+          _errors: [
+            'Для сообщений ночного режима время открытия должно отличаться от времени закрытия.',
+          ],
+        },
+      },
+    });
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
+  });
+
+  it('allows an equal-time 24/7 night schedule when boundary notices are disabled', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({ nightModeEnabled: false }),
+    });
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 22 * 60,
+      nightModeEndTimeMinutes: 22 * 60,
+      nightModeBotMessageEnabled: false,
+      nightModeOpenMessageEnabled: false,
+    });
+
+    expect(result.nightModeEnabled).toBe(true);
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
+      expect.objectContaining({
+        nightModeStartTimeMinutes: 22 * 60,
+        nightModeEndTimeMinutes: 22 * 60,
+        nightModeBotMessageEnabled: false,
+        nightModeOpenMessageEnabled: false,
+      }),
+    );
   });
 
   it('checks every newly enabled capability before writing chat settings', async () => {
@@ -1816,6 +1890,31 @@ describe('AdminSettingsService chat rules', () => {
       requiredSubscriptionChannelIds: [],
     });
     expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(['chat-1', 'chat-2']);
+  });
+
+  it('rejects bulk application of an equal-time night schedule with notices before writes', async () => {
+    const { nightModeTransitionScheduler, prisma, service } = createService();
+    const settings = chatSettingsSchema.parse({
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 22 * 60,
+      nightModeEndTimeMinutes: 22 * 60,
+      nightModeOpenMessageEnabled: true,
+    });
+
+    await expect(
+      service.applySettingsToAllChats('chat-1', user as never, settings),
+    ).rejects.toMatchObject({
+      response: {
+        nightModeEndTimeMinutes: {
+          _errors: [
+            'Для сообщений ночного режима время открытия должно отличаться от времени закрытия.',
+          ],
+        },
+      },
+    });
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
   });
 
   it('preflights every bulk target before starting any settings transaction', async () => {

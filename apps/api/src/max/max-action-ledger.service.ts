@@ -60,6 +60,8 @@ const MAX_MEMBER_ACTION_FAILURE_ERROR_CODES = {
 const NIGHT_MODE_TRANSITION_SOURCE_TAG = 'night_mode_transition';
 const NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER =
   'Night mode open retry prepared after a definitive access rejection';
+const NIGHT_MODE_CLOSE_ACCESS_RECOVERY_MARKER =
+  'Night mode close retry prepared after a definitive access rejection';
 
 type MaxActionLedgerMutation = {
   status: MaxActionLedgerStatus;
@@ -160,7 +162,7 @@ type MaxSendLedgerPreparationError = UnrecoverableError & {
   code: MaxSendLedgerPreparationErrorCode;
 };
 
-export type NightModeOpenLedgerRecoveryResult =
+export type NightModeTransitionLedgerRecoveryResult =
   | { kind: 'ready'; jobId: string }
   | {
       kind: 'blocked';
@@ -168,19 +170,29 @@ export type NightModeOpenLedgerRecoveryResult =
       category: 'no_fresh_access' | 'unsafe_prior_provenance';
     };
 
+export type NightModeOpenLedgerRecoveryResult = NightModeTransitionLedgerRecoveryResult;
+
+export function getNightModeTransitionAccessRecoveryMarker(transition: 'close' | 'open'): string {
+  return transition === 'open'
+    ? NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER
+    : NIGHT_MODE_CLOSE_ACCESS_RECOVERY_MARKER;
+}
+
 // FLAG: Only a definitive non-delivery with fresh current admin access may become executable
 // again. The marker branch makes the PostgreSQL step replayable after a crash before BullMQ repair.
-export async function prepareDefinitivelyRejectedNightModeOpenRetry(
+export async function prepareDefinitivelyRejectedNightModeTransitionRetry(
   prisma: Pick<PrismaService, '$transaction'>,
   params: {
     chatId: string;
     sessionKey: string;
+    transition: 'close' | 'open';
     actionableBotIds?: readonly string[] | null;
   },
-): Promise<NightModeOpenLedgerRecoveryResult> {
+): Promise<NightModeTransitionLedgerRecoveryResult> {
   const chatId = params.chatId.trim();
   const sessionKey = params.sessionKey.trim();
-  const jobId = buildNightModeNoticeIdempotencyKey('open', chatId, sessionKey);
+  const jobId = buildNightModeNoticeIdempotencyKey(params.transition, chatId, sessionKey);
+  const recoveryMarker = getNightModeTransitionAccessRecoveryMarker(params.transition);
   const actionableBotIds = Array.from(
     new Set((params.actionableBotIds ?? []).map((botId) => botId.trim()).filter(Boolean)),
   );
@@ -251,7 +263,7 @@ export async function prepareDefinitivelyRejectedNightModeOpenRetry(
                   firstAttemptAt: null,
                   lastAttemptAt: null,
                   completedAt: null,
-                  lastError: NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER,
+                  lastError: recoveryMarker,
                 },
               ],
             },
@@ -266,7 +278,7 @@ export async function prepareDefinitivelyRejectedNightModeOpenRetry(
           firstAttemptAt: null,
           lastAttemptAt: null,
           completedAt: null,
-          lastError: NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER,
+          lastError: recoveryMarker,
           dispatchToken: null,
           dispatchStartedAt: null,
           dispatchBotId: null,
@@ -280,6 +292,20 @@ export async function prepareDefinitivelyRejectedNightModeOpenRetry(
   return preparation === 'ready'
     ? { kind: 'ready', jobId }
     : { kind: 'blocked', jobId, category: preparation };
+}
+
+export function prepareDefinitivelyRejectedNightModeOpenRetry(
+  prisma: Pick<PrismaService, '$transaction'>,
+  params: {
+    chatId: string;
+    sessionKey: string;
+    actionableBotIds?: readonly string[] | null;
+  },
+): Promise<NightModeOpenLedgerRecoveryResult> {
+  return prepareDefinitivelyRejectedNightModeTransitionRetry(prisma, {
+    ...params,
+    transition: 'open',
+  });
 }
 
 export function markMaxSendDispatchLedgerFinalized<T extends Error>(error: T): T {

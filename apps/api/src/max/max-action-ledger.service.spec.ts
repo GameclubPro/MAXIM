@@ -1,9 +1,11 @@
 import { UnrecoverableError } from 'bullmq';
 import {
+  getNightModeTransitionAccessRecoveryMarker,
   markMaxSendDispatchLedgerFinalized,
   MAX_SEND_LEDGER_PREPARATION_ERROR_CODES,
   MaxActionLedgerService,
   prepareDefinitivelyRejectedNightModeOpenRetry,
+  prepareDefinitivelyRejectedNightModeTransitionRetry,
 } from './max-action-ledger.service';
 import {
   ChatBotAccessState,
@@ -165,6 +167,48 @@ describe('MaxActionLedgerService', () => {
         remoteMessageId: null,
       },
     });
+  });
+
+  it('prepares an exact definitively rejected night-mode close send with its own marker', async () => {
+    const tx = {
+      chatBotMembership: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'membership-1' }),
+      },
+      maxActionLedgerEntry: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+        operation(tx),
+      ),
+    };
+
+    await expect(
+      prepareDefinitivelyRejectedNightModeTransitionRetry(prisma as never, {
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        transition: 'close',
+        actionableBotIds: ['bot-1'],
+      }),
+    ).resolves.toEqual({
+      kind: 'ready',
+      jobId: 'night-mode:close:chat-1:session:session-1',
+    });
+
+    const closeMarker = getNightModeTransitionAccessRecoveryMarker('close');
+    const update = tx.maxActionLedgerEntry.updateMany.mock.calls[0]?.[0];
+    expect(update.where.jobId).toBe('night-mode:close:chat-1:session:session-1');
+    expect(update.where.AND[1].OR[1]).toEqual(
+      expect.objectContaining({
+        status: MaxActionLedgerStatus.ENQUEUED,
+        terminal: false,
+        attemptCount: 0,
+        lastError: closeMarker,
+      }),
+    );
+    expect(update.data.lastError).toBe(closeMarker);
+    expect(closeMarker).not.toBe(getNightModeTransitionAccessRecoveryMarker('open'));
   });
 
   it('keeps unknown-code HTTP 403/404 and status-less canonical access codes recoverable', async () => {

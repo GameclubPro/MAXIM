@@ -7,7 +7,11 @@ import {
   buildMaxActionRouteQuarantinedMessage,
 } from '../max/max-action-dispatch-error';
 import { buildNightModeNoticeIdempotencyKey } from '../max/max-action-idempotency.util';
-import { prepareDefinitivelyRejectedNightModeOpenRetry } from '../max/max-action-ledger.service';
+import {
+  getNightModeTransitionAccessRecoveryMarker,
+  prepareDefinitivelyRejectedNightModeOpenRetry,
+  prepareDefinitivelyRejectedNightModeTransitionRetry,
+} from '../max/max-action-ledger.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
   ChatBotMembershipStatus,
@@ -61,8 +65,6 @@ const NIGHT_MODE_QUEUE_MUTATION_LOCK_TTL_MS = 120_000;
 const NIGHT_MODE_QUEUE_MUTATION_LOCK_HEARTBEAT_MS = 30_000;
 const NIGHT_MODE_QUEUE_MUTATION_LOCK_WAIT_MS = 4_000;
 const NIGHT_MODE_TRANSITION_SOURCE_TAG = 'night_mode_transition';
-const NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER =
-  'Night mode open retry prepared after a definitive access rejection';
 const NIGHT_MODE_RECOVERY_LEDGER_PAGE_SIZE = 20;
 
 type NightModeTransitionReconcileSnapshot = {
@@ -261,7 +263,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         const settingsRows = await this.prisma.chatSettings.findMany({
           where: {
             nightModeEnabled: true,
-            chat: this.buildActiveOrLegacyBotMembershipFilter(),
+            chat: this.buildActiveBotMembershipFilter(),
           },
           select: {
             chatId: true,
@@ -786,7 +788,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         where: {
           chatId,
           nightModeEnabled: true,
-          chat: this.buildActiveOrLegacyBotMembershipFilter(),
+          chat: this.buildActiveBotMembershipFilter(),
         },
         select: {
           chatId: true,
@@ -837,6 +839,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             botId: true,
             status: true,
             botAccessState: true,
+            permissionsSnapshot: true,
           },
           orderBy: {
             botId: 'asc',
@@ -853,9 +856,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       };
     }
 
-    const hasActionableTransitionCandidate =
-      chat.botMemberships.length === 0 ||
-      this.snapshotHasActionableTransitionCandidate(chat.botMemberships);
+    const hasActionableTransitionCandidate = this.snapshotHasActionableTransitionCandidate(
+      chat.botMemberships,
+    );
     const scheduleConfigured =
       chat.entityType === ChatEntityType.CHAT && chat.settings?.nightModeEnabled === true;
     const settings = scheduleConfigured && hasActionableTransitionCandidate ? chat.settings : null;
@@ -898,6 +901,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             botId: true,
             status: true,
             botAccessState: true,
+            permissionsSnapshot: true,
           },
         },
       },
@@ -905,10 +909,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     if (chat?.entityType !== ChatEntityType.CHAT) {
       return false;
     }
-    return (
-      chat.botMemberships.length === 0 ||
-      this.snapshotHasActionableTransitionCandidate(chat.botMemberships)
-    );
+    return this.snapshotHasActionableTransitionCandidate(chat.botMemberships);
   }
 
   private async filterEligibleSettingsRows<
@@ -932,6 +933,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             botId: true,
             status: true,
             botAccessState: true,
+            permissionsSnapshot: true,
           },
         },
       },
@@ -941,8 +943,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         .filter(
           (chat) =>
             chat.entityType === ChatEntityType.CHAT &&
-            (chat.botMemberships.length === 0 ||
-              this.snapshotHasActionableTransitionCandidate(chat.botMemberships)),
+            this.snapshotHasActionableTransitionCandidate(chat.botMemberships),
         )
         .map((chat) => chat.id),
     );
@@ -965,34 +966,25 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     return this.maxBotRegistry?.getActionableBots().map((bot) => bot.id) ?? null;
   }
 
-  private buildActiveOrLegacyBotMembershipFilter() {
+  private buildActiveBotMembershipFilter() {
     const actionableBotIds = this.getActionableBotIds();
     return {
       entityType: ChatEntityType.CHAT,
-      OR: [
-        {
-          botMemberships: {
-            some: {
-              status: ChatBotMembershipStatus.ACTIVE,
-              botAccessState: {
-                in: [...NIGHT_MODE_TRANSITION_REFRESHABLE_ACCESS_STATES],
-              },
-              ...(actionableBotIds
-                ? {
-                    botId: {
-                      in: actionableBotIds,
-                    },
-                  }
-                : {}),
-            },
+      botMemberships: {
+        some: {
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: {
+            in: [...NIGHT_MODE_TRANSITION_REFRESHABLE_ACCESS_STATES],
           },
+          ...(actionableBotIds
+            ? {
+                botId: {
+                  in: actionableBotIds,
+                },
+              }
+            : {}),
         },
-        {
-          botMemberships: {
-            none: {},
-          },
-        },
-      ],
+      },
     };
   }
 
@@ -2048,14 +2040,20 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     });
   }
 
-  private async resolveMissingBullOpenCatchUp(params: {
-    chatId: string;
-    jobId: string;
-    sessionKey: string;
-    transition: NightModeTransitionOccurrence['transition'];
-    fingerprint: string;
-  }): Promise<NightModeCurrentCatchUpResolution> {
+  private async resolveMissingBullCatchUp(
+    params: {
+      chatId: string;
+      jobId: string;
+      sessionKey: string;
+      transition: NightModeTransitionOccurrence['transition'];
+      fingerprint: string;
+    },
+    options: { durableRegistryProof: boolean },
+  ): Promise<NightModeCurrentCatchUpResolution> {
     if (typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function') {
+      if (!options.durableRegistryProof) {
+        return { kind: 'skip' };
+      }
       return {
         kind: 'blocked',
         manualReview: {
@@ -2092,8 +2090,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       },
     });
     if (!ledger) {
-      return { kind: 'enqueue' };
+      return options.durableRegistryProof ? { kind: 'enqueue' } : { kind: 'skip' };
     }
+    const accessRecoveryMarker = getNightModeTransitionAccessRecoveryMarker(params.transition);
     const exactIdentity =
       ledger.actionType === 'SEND_MESSAGE' &&
       ledger.chatId === params.chatId &&
@@ -2112,9 +2111,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       Boolean(ledger.remoteMessageId?.trim()) &&
       Boolean(ledger.dispatchBotId?.trim())
     ) {
-      return { kind: 'enqueue' };
+      return options.durableRegistryProof ? { kind: 'enqueue' } : { kind: 'skip' };
     }
     if (
+      options.durableRegistryProof &&
       exactIdentity &&
       noDispatchFence &&
       !ledger.remoteMessageId &&
@@ -2123,12 +2123,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         ledger.status === MaxActionLedgerStatus.FAILED_RETRYABLE) &&
       !ledger.terminal &&
       ledger.completedAt === null &&
-      (params.transition !== 'open' || ledger.lastError !== NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER)
+      ledger.lastError !== accessRecoveryMarker
     ) {
       return { kind: 'enqueue' };
     }
     const potentiallyRecoverable =
-      params.transition === 'open' &&
       exactIdentity &&
       noDispatchFence &&
       !ledger.remoteMessageId &&
@@ -2136,11 +2135,12 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         (ledger.status === MaxActionLedgerStatus.ENQUEUED &&
           !ledger.terminal &&
           ledger.attemptCount === 0 &&
-          ledger.lastError === NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER));
+          ledger.lastError === accessRecoveryMarker));
     if (potentiallyRecoverable) {
-      const recovery = await prepareDefinitivelyRejectedNightModeOpenRetry(this.prisma, {
+      const recovery = await prepareDefinitivelyRejectedNightModeTransitionRetry(this.prisma, {
         chatId: params.chatId,
         sessionKey: params.sessionKey,
+        transition: params.transition,
         actionableBotIds: this.getActionableBotIds(),
       });
       if (recovery.kind === 'ready') {
@@ -2213,6 +2213,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       const existing = await this.queue.getJob(params.jobId);
       if (!existing) {
         const registry = await this.findScheduledJobRegistryRow(params.chatId, params.jobId);
+        if (!registry) {
+          return this.resolveMissingBullCatchUp(params, { durableRegistryProof: false });
+        }
         const currentRuntimeRegistry =
           registry?.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
           Boolean(registry && registry.scheduled_for.getTime() >= this.runtimeStartedAtMs);
@@ -2222,10 +2225,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           }
           return { kind: 'skip' };
         }
-        return this.resolveMissingBullOpenCatchUp(params);
+        return this.resolveMissingBullCatchUp(params, { durableRegistryProof: true });
       }
       let transitionRuntimeVersion = existing.data?.transitionRuntimeVersion;
       const registry = await this.findScheduledJobRegistryRow(params.chatId, params.jobId);
+      const failedUnderCurrentV4Runtime =
+        this.isExactCurrentV4BullEnvelope(existing.data, params) &&
+        this.isExactCurrentV4Registry(registry, params);
       const existingState =
         typeof existing.getState === 'function' ? await existing.getState() : null;
       const currentRuntimeJob =
@@ -2273,8 +2279,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         return { kind: 'enqueue' };
       }
 
-      const retryablePreDispatchLedger = await this.hasExactRetryablePreDispatchLedger(params);
-      if (retryablePreDispatchLedger) {
+      const preDispatchLedger = await this.inspectExactRetryablePreDispatchLedger(params);
+      // FLAG: v4 records SEND_MESSAGE start before any remote dispatch. Only a pre-existing exact
+      // v4 Bull/SQL intent makes a missing ledger definitive pre-dispatch proof.
+      if (
+        preDispatchLedger === 'retryable' ||
+        (preDispatchLedger === 'missing' && failedUnderCurrentV4Runtime)
+      ) {
         await this.retryFailedTransitionJob(existing, params.jobId);
         return { kind: 'enqueue' };
       }
@@ -2312,7 +2323,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           `${NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX}: `,
         ) === true;
       if (retryablePostExecutionCleanupFailure) {
-        const ledgerResolution = await this.resolveMissingBullOpenCatchUp(params);
+        const ledgerResolution = await this.resolveMissingBullCatchUp(params, {
+          durableRegistryProof: true,
+        });
         if (ledgerResolution.kind === 'enqueue') {
           await this.retryFailedTransitionJob(existing, params.jobId);
           return ledgerResolution;
@@ -2431,13 +2444,59 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     return normalized.includes('user.not.admin') || normalized.includes('user is not an admin');
   }
 
-  private async hasExactRetryablePreDispatchLedger(params: {
+  private isExactCurrentV4BullEnvelope(
+    data: NightModeTransitionJob | undefined,
+    params: {
+      chatId: string;
+      sessionKey: string;
+      transition: NightModeTransitionOccurrence['transition'];
+      scheduledFor: string;
+      fingerprint: string;
+    },
+  ): boolean {
+    return (
+      data?.chatId === params.chatId &&
+      data.transition === params.transition &&
+      data.sessionKey === params.sessionKey &&
+      data.scheduledFor === params.scheduledFor &&
+      data.scheduleFingerprint === params.fingerprint &&
+      data.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION &&
+      data.recoveryOnly === undefined
+    );
+  }
+
+  private isExactCurrentV4Registry(
+    registry: NightModeScheduledJobRegistryRow | null,
+    params: {
+      chatId: string;
+      jobId: string;
+      sessionKey: string;
+      transition: NightModeTransitionOccurrence['transition'];
+      scheduledFor: string;
+      fingerprint: string;
+    },
+  ): boolean {
+    const scheduledForMs = Date.parse(params.scheduledFor);
+    return (
+      registry?.chat_id === params.chatId &&
+      registry.job_id === params.jobId &&
+      registry.transition === params.transition &&
+      registry.session_key === params.sessionKey &&
+      registry.scheduled_for instanceof Date &&
+      Number.isFinite(scheduledForMs) &&
+      registry.scheduled_for.getTime() === scheduledForMs &&
+      registry.schedule_fingerprint === params.fingerprint &&
+      registry.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION
+    );
+  }
+
+  private async inspectExactRetryablePreDispatchLedger(params: {
     chatId: string;
     sessionKey: string;
     transition: NightModeTransitionOccurrence['transition'];
-  }): Promise<boolean> {
+  }): Promise<'missing' | 'retryable' | 'unsafe'> {
     if (typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function') {
-      return false;
+      return 'unsafe';
     }
     const ledger = await this.prisma.maxActionLedgerEntry.findUnique({
       where: {
@@ -2460,8 +2519,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         remoteMessageId: true,
       },
     });
-    return (
-      ledger?.actionType === 'SEND_MESSAGE' &&
+    if (!ledger) {
+      return 'missing';
+    }
+    return ledger.actionType === 'SEND_MESSAGE' &&
       ledger.chatId === params.chatId &&
       ledger.sourceTag === NIGHT_MODE_TRANSITION_SOURCE_TAG &&
       (ledger.status === MaxActionLedgerStatus.ENQUEUED ||
@@ -2473,7 +2534,8 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       !ledger.dispatchStartedAt &&
       !ledger.dispatchBotId &&
       !ledger.remoteMessageId
-    );
+      ? 'retryable'
+      : 'unsafe';
   }
 
   private resolveTransitionOccurrences(

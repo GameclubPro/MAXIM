@@ -23,6 +23,12 @@ const SCHEDULE_FINGERPRINT = buildNightModeTransitionScheduleFingerprint({
   nightModeEndTimeMinutes: 8 * 60,
   nightModeTimezone: 'Europe/Moscow',
 });
+const ACTIVE_TRANSITION_MEMBERSHIP = {
+  botId: 'bot-1',
+  status: ChatBotMembershipStatus.ACTIVE,
+  botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+  permissionsSnapshot: null,
+} as const;
 
 function buildCloseRecoveryA(chatId: string) {
   return {
@@ -103,6 +109,55 @@ describe('NightModeTransitionSchedulerService', () => {
       expected: true,
     },
     {
+      name: 'an actionable membership has an explicit non-admin snapshot',
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          permissionsSnapshot: {
+            checkedAt: '2026-09-02T10:00:00.000Z',
+            isAdmin: false,
+            isOwner: false,
+            permissions: ['write'],
+          },
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: false,
+    },
+    {
+      name: 'an actionable membership has a null permissions snapshot',
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          permissionsSnapshot: null,
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: true,
+    },
+    {
+      name: 'an actionable membership has a valid admin snapshot without write permissions',
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          permissionsSnapshot: {
+            checkedAt: '2026-09-02T10:00:00.000Z',
+            isAdmin: true,
+            isOwner: false,
+            permissions: [],
+          },
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: true,
+    },
+    {
       name: 'an actionable confirmed membership has expired evidence for live refresh',
       memberships: [
         {
@@ -169,10 +224,10 @@ describe('NightModeTransitionSchedulerService', () => {
       expected: false,
     })),
     {
-      name: 'the chat is legacy and has no memberships',
+      name: 'the chat has no proven bot membership',
       memberships: [],
       actionableBotIds: [],
-      expected: true,
+      expected: false,
     },
   ])(
     'guards transition execution when $name',
@@ -201,7 +256,7 @@ describe('NightModeTransitionSchedulerService', () => {
     },
   );
 
-  it('bootstraps only chats with active bot membership or legacy chats without memberships', async () => {
+  it('bootstraps only chats with an active refreshable bot membership', async () => {
     const prisma = {
       chatSettings: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -223,28 +278,19 @@ describe('NightModeTransitionSchedulerService', () => {
           nightModeEnabled: true,
           chat: {
             entityType: ChatEntityType.CHAT,
-            OR: [
-              {
-                botMemberships: {
-                  some: {
-                    status: ChatBotMembershipStatus.ACTIVE,
-                    botAccessState: {
-                      in: [
-                        ChatBotAccessState.UNKNOWN,
-                        ChatBotAccessState.STALE,
-                        ChatBotAccessState.CONFIRMED_ADMIN,
-                        ChatBotAccessState.CONFIRMED_OWNER,
-                      ],
-                    },
-                  },
+            botMemberships: {
+              some: {
+                status: ChatBotMembershipStatus.ACTIVE,
+                botAccessState: {
+                  in: [
+                    ChatBotAccessState.UNKNOWN,
+                    ChatBotAccessState.STALE,
+                    ChatBotAccessState.CONFIRMED_ADMIN,
+                    ChatBotAccessState.CONFIRMED_OWNER,
+                  ],
                 },
               },
-              {
-                botMemberships: {
-                  none: {},
-                },
-              },
-            ],
+            },
           },
         },
       }),
@@ -330,24 +376,78 @@ describe('NightModeTransitionSchedulerService', () => {
       expect.objectContaining({
         where: expect.objectContaining({
           chat: expect.objectContaining({
-            OR: expect.arrayContaining([
-              expect.objectContaining({
-                botMemberships: {
-                  some: {
-                    status: ChatBotMembershipStatus.ACTIVE,
-                    botAccessState: {
-                      in: [
-                        ChatBotAccessState.UNKNOWN,
-                        ChatBotAccessState.STALE,
-                        ChatBotAccessState.CONFIRMED_ADMIN,
-                        ChatBotAccessState.CONFIRMED_OWNER,
-                      ],
-                    },
-                    botId: { in: ['bot-actionable'] },
-                  },
+            botMemberships: {
+              some: {
+                status: ChatBotMembershipStatus.ACTIVE,
+                botAccessState: {
+                  in: [
+                    ChatBotAccessState.UNKNOWN,
+                    ChatBotAccessState.STALE,
+                    ChatBotAccessState.CONFIRMED_ADMIN,
+                    ChatBotAccessState.CONFIRMED_OWNER,
+                  ],
                 },
-              }),
-            ]),
+                botId: { in: ['bot-actionable'] },
+              },
+            },
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('does not bootstrap jobs for an explicit non-admin membership snapshot', async () => {
+    const chatId = 'chat-explicit-non-admin';
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId,
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 23 * 60,
+            nightModeEndTimeMinutes: 8 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+          },
+        ]),
+      },
+      chat: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: chatId,
+            entityType: ChatEntityType.CHAT,
+            botMemberships: [
+              {
+                botId: 'bot-1',
+                status: ChatBotMembershipStatus.ACTIVE,
+                botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+                permissionsSnapshot: {
+                  checkedAt: '2026-09-02T10:00:00.000Z',
+                  isAdmin: false,
+                  isOwner: false,
+                  permissions: ['write'],
+                },
+              },
+            ],
+          },
+        ]),
+      },
+    };
+    const queue = { add: jest.fn() };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+      undefined,
+      { getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }]) } as never,
+    );
+
+    await service.bootstrapEnabledChats();
+
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(prisma.chat.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          botMemberships: expect.objectContaining({
+            select: expect.objectContaining({ permissionsSnapshot: true }),
           }),
         }),
       }),
@@ -448,7 +548,7 @@ describe('NightModeTransitionSchedulerService', () => {
     const snapshot = {
       entityType: ChatEntityType.CHAT,
       settings,
-      botMemberships: [],
+      botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
     };
     const prisma = {
       chatSettings: {
@@ -460,7 +560,7 @@ describe('NightModeTransitionSchedulerService', () => {
           {
             id: chatId,
             entityType: ChatEntityType.CHAT,
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           },
         ]),
         findUnique: jest.fn().mockResolvedValue(snapshot),
@@ -515,13 +615,13 @@ describe('NightModeTransitionSchedulerService', () => {
             settingsRows.map(({ chatId }) => ({
               id: chatId,
               entityType: ChatEntityType.CHAT,
-              botMemberships: [],
+              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
             })),
           ),
           findUnique: jest.fn(async ({ where }: { where: { id: string } }) => ({
             entityType: ChatEntityType.CHAT,
             settings: settingsRows.find((settings) => settings.chatId === where.id),
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           })),
         },
         $executeRaw: jest.fn().mockResolvedValue(1),
@@ -604,7 +704,7 @@ describe('NightModeTransitionSchedulerService', () => {
             settingsRows.map(({ chatId }) => ({
               id: chatId,
               entityType: ChatEntityType.CHAT,
-              botMemberships: [],
+              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
             })),
           ),
           findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
@@ -615,7 +715,7 @@ describe('NightModeTransitionSchedulerService', () => {
             return {
               entityType: ChatEntityType.CHAT,
               settings: settingsRows.find((settings) => settings.chatId === where.id),
-              botMemberships: [],
+              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
             };
           }),
         },
@@ -793,7 +893,7 @@ describe('NightModeTransitionSchedulerService', () => {
           {
             id: chatId,
             entityType: ChatEntityType.CHAT,
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           },
         ]),
         findUnique: jest.fn().mockResolvedValue({
@@ -836,7 +936,7 @@ describe('NightModeTransitionSchedulerService', () => {
               nightModeEndTimeMinutes: 8 * 60,
               nightModeTimezone: 'Europe/Moscow',
             },
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           })),
         },
       };
@@ -972,7 +1072,7 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('does not treat process startup before a boundary as proof of a missing current intent', async () => {
+  it('does not treat process startup before a boundary as proof without an exact ledger', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T19:55:00.000Z'));
     try {
       const chatId = 'chat-enabled-after-boundary';
@@ -1011,7 +1111,13 @@ describe('NightModeTransitionSchedulerService', () => {
       ).resolves.toEqual(expect.objectContaining({ manualReview: null }));
 
       expect(queue.getJob).toHaveBeenCalledTimes(1);
-      expect(ledgerLookup).not.toHaveBeenCalled();
+      expect(ledgerLookup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            jobId: `night-mode:close:${chatId}:session:${CLOSE_SESSION_A}`,
+          },
+        }),
+      );
       expect(queue.add).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
@@ -1819,6 +1925,118 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
+  it('clears a zero-membership schedule and restores it after active membership recovery', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T10:12:00.000Z'));
+    try {
+      const chatId = 'chat-late-membership-recovery';
+      const settings = {
+        chatId,
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const staleJobId = buildNightModeTransitionJobId(
+        chatId,
+        'close',
+        '2026-05-31T20:00:00.000Z',
+        'v1:Europe/Moscow:23:00:08:00:2026-05-31',
+      );
+      let memberships: Array<typeof ACTIVE_TRANSITION_MEMBERSHIP> = [];
+      const storedJobs = new Map<
+        string,
+        {
+          id: string;
+          data?: NightModeTransitionJob;
+          getState: jest.Mock;
+          remove: jest.Mock;
+        }
+      >();
+      const staleJob = {
+        id: staleJobId,
+        getState: jest.fn().mockResolvedValue('delayed'),
+        remove: jest.fn(async () => {
+          storedJobs.delete(staleJobId);
+        }),
+      };
+      storedJobs.set(staleJobId, staleJob);
+      const prisma = {
+        chat: {
+          findUnique: jest.fn().mockImplementation(async () => ({
+            entityType: ChatEntityType.CHAT,
+            settings,
+            botMemberships: memberships,
+          })),
+        },
+      };
+      const queue = {
+        getJob: jest.fn(async (jobId: string) => storedJobs.get(jobId) ?? null),
+        getJobs: jest.fn(),
+        add: jest.fn(
+          async (_name: string, data: NightModeTransitionJob, options: { jobId: string }) => {
+            const existing = storedJobs.get(options.jobId);
+            if (existing) {
+              return existing;
+            }
+            const job = {
+              id: options.jobId,
+              data,
+              getState: jest.fn().mockResolvedValue('waiting'),
+              remove: jest.fn(async () => {
+                storedJobs.delete(options.jobId);
+              }),
+            };
+            storedJobs.set(options.jobId, job);
+            return job;
+          },
+        ),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+        undefined,
+        { getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }]) } as never,
+      );
+      await seedRegisteredJob(service, {
+        chatId,
+        jobId: staleJobId,
+        transition: 'close',
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-31',
+        scheduledFor: '2026-05-31T20:00:00.000Z',
+      });
+
+      await expect(service.repairAccessSchedule(chatId)).resolves.toEqual({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      });
+      expect(staleJob.remove).toHaveBeenCalledTimes(1);
+      expect(queue.add).not.toHaveBeenCalled();
+      expect(storedJobs.size).toBe(0);
+
+      memberships = [ACTIVE_TRANSITION_MEMBERSHIP];
+      await expect(service.repairAccessSchedule(chatId)).resolves.toEqual({
+        queueAvailable: true,
+        scheduleEnabled: true,
+        passes: 1,
+      });
+      expect(queue.add).toHaveBeenCalledTimes(2);
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({ chatId, transition: 'close' }),
+        expect.any(Object),
+      );
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({ chatId, transition: 'open' }),
+        expect.any(Object),
+      );
+      expect(storedJobs.size).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('recovers an exact failed v4 open after definitive non-delivery and fresh access', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
@@ -2353,7 +2571,7 @@ describe('NightModeTransitionSchedulerService', () => {
               nightModeEndTimeMinutes: 8 * 60,
               nightModeTimezone: 'Europe/Moscow',
             },
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           }),
         },
       };
@@ -2405,7 +2623,7 @@ describe('NightModeTransitionSchedulerService', () => {
               nightModeEndTimeMinutes: 8 * 60,
               nightModeTimezone: 'Europe/Moscow',
             },
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           }),
         },
       };
@@ -3166,6 +3384,265 @@ describe('NightModeTransitionSchedulerService', () => {
     expect(failedJob.retry).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    {
+      name: 'exact Bull envelope',
+      slug: 'exact',
+      bullSessionKey: CLOSE_SESSION_A,
+      bullFingerprint: `sha256:${'a'.repeat(64)}`,
+      expectedKind: 'enqueue',
+    },
+    {
+      name: 'mismatched Bull session',
+      slug: 'session-mismatch',
+      bullSessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-29',
+      bullFingerprint: `sha256:${'a'.repeat(64)}`,
+      expectedKind: 'blocked',
+    },
+    {
+      name: 'mismatched Bull schedule fingerprint',
+      slug: 'fingerprint-mismatch',
+      bullSessionKey: CLOSE_SESSION_A,
+      bullFingerprint: `sha256:${'b'.repeat(64)}`,
+      expectedKind: 'blocked',
+    },
+  ])(
+    'recovers a missing ledger only with an $name',
+    async ({ slug, bullSessionKey, bullFingerprint, expectedKind }) => {
+      const chatId = `chat-safe-missing-ledger-${slug}`;
+      const sessionKey = CLOSE_SESSION_A;
+      const scheduledFor = '2026-05-30T20:00:00.000Z';
+      const fingerprint = `sha256:${'a'.repeat(64)}`;
+      const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+      const failedJob = {
+        id: jobId,
+        data: {
+          chatId,
+          transition: 'close' as const,
+          scheduledFor,
+          sessionKey: bullSessionKey,
+          transitionRuntimeVersion: 4 as const,
+          scheduleFingerprint: bullFingerprint,
+        },
+        failedReason: 'MAX API background rate limit exceeded before dispatch',
+        getState: jest.fn().mockResolvedValue('failed'),
+        retry: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        {
+          nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+          maxActionLedgerEntry: { findUnique: jest.fn().mockResolvedValue(null) },
+        } as never,
+        { getJob: jest.fn().mockResolvedValue(failedJob) } as never,
+      );
+      await seedRegisteredJob(service, {
+        chatId,
+        jobId,
+        transition: 'close',
+        sessionKey,
+        scheduledFor,
+        runtimeVersion: 4,
+      });
+
+      const resolution = await (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'close';
+            scheduledFor: string;
+            fingerprint: string;
+          }): Promise<{ kind: string; manualReview?: { category: string } }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition: 'close',
+        scheduledFor,
+        fingerprint,
+      });
+
+      expect(resolution).toEqual(
+        expectedKind === 'enqueue'
+          ? { kind: 'enqueue' }
+          : {
+              kind: 'blocked',
+              manualReview: expect.objectContaining({ category: 'unsafe_prior_dispatch' }),
+            },
+      );
+      expect(failedJob.retry).toHaveBeenCalledTimes(expectedKind === 'enqueue' ? 1 : 0);
+    },
+  );
+
+  it('keeps a pre-v4 failed envelope blocked when only the registry has been promoted to v4', async () => {
+    const chatId = 'chat-pre-v4-missing-ledger';
+    const sessionKey = CLOSE_SESSION_A;
+    const scheduledFor = '2026-05-30T20:00:00.000Z';
+    const fingerprint = `sha256:${'a'.repeat(64)}`;
+    const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+    const failedJob = {
+      id: jobId,
+      data: {
+        chatId,
+        transition: 'close' as const,
+        scheduledFor,
+        sessionKey,
+        transitionRuntimeVersion: 3 as 3 | 4,
+        scheduleFingerprint: fingerprint,
+      },
+      failedReason: 'MAX API background rate limit exceeded before dispatch',
+      getState: jest.fn().mockResolvedValue('failed'),
+      updateData: jest.fn(async (data: NightModeTransitionJob) => {
+        failedJob.data = data as typeof failedJob.data;
+      }),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: { findUnique: jest.fn().mockResolvedValue(null) },
+      } as never,
+      { getJob: jest.fn().mockResolvedValue(failedJob) } as never,
+    );
+    await seedRegisteredJob(service, {
+      chatId,
+      jobId,
+      transition: 'close',
+      sessionKey,
+      scheduledFor,
+      runtimeVersion: 4,
+    });
+
+    await expect(
+      (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'close';
+            scheduledFor: string;
+            fingerprint: string;
+          }): Promise<{ kind: string; manualReview?: { category: string } }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition: 'close',
+        scheduledFor,
+        fingerprint,
+      }),
+    ).resolves.toEqual({
+      kind: 'blocked',
+      manualReview: expect.objectContaining({ category: 'unsafe_prior_dispatch' }),
+    });
+    expect(failedJob.updateData).toHaveBeenCalledTimes(1);
+    expect(failedJob.retry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'ambiguous',
+      ledger: {
+        status: MaxActionLedgerStatus.AMBIGUOUS,
+        ambiguous: true,
+        terminal: true,
+        dispatchToken: 'dispatch-ambiguous',
+        dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: null,
+      },
+    },
+    {
+      name: 'dispatch-started',
+      ledger: {
+        status: MaxActionLedgerStatus.IN_PROGRESS,
+        ambiguous: false,
+        terminal: false,
+        dispatchToken: 'dispatch-started',
+        dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: null,
+      },
+    },
+    {
+      name: 'succeeded',
+      ledger: {
+        status: MaxActionLedgerStatus.SUCCEEDED,
+        ambiguous: false,
+        terminal: true,
+        dispatchToken: 'dispatch-succeeded',
+        dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: 'message-1',
+      },
+    },
+  ])('keeps a failed v4 boundary blocked with $name ledger provenance', async ({ ledger }) => {
+    const chatId = `chat-unsafe-ledger-${ledger.status.toLowerCase()}`;
+    const sessionKey = CLOSE_SESSION_A;
+    const scheduledFor = '2026-05-30T20:00:00.000Z';
+    const fingerprint = `sha256:${'a'.repeat(64)}`;
+    const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+    const failedJob = {
+      id: jobId,
+      data: { transitionRuntimeVersion: 4 },
+      failedReason: 'MAX API background rate limit exceeded before dispatch',
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      {
+        nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: {
+          findUnique: jest.fn().mockResolvedValue({
+            actionType: 'SEND_MESSAGE',
+            chatId,
+            sourceTag: 'night_mode_transition',
+            ...ledger,
+          }),
+        },
+      } as never,
+      { getJob: jest.fn().mockResolvedValue(failedJob) } as never,
+    );
+    await seedRegisteredJob(service, {
+      chatId,
+      jobId,
+      transition: 'close',
+      sessionKey,
+      scheduledFor,
+      runtimeVersion: 4,
+    });
+
+    await expect(
+      (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'close';
+            scheduledFor: string;
+            fingerprint: string;
+          }): Promise<{ kind: string; manualReview?: { category: string } }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition: 'close',
+        scheduledFor,
+        fingerprint,
+      }),
+    ).resolves.toEqual({
+      kind: 'blocked',
+      manualReview: expect.objectContaining({ category: 'unsafe_prior_dispatch' }),
+    });
+    expect(failedJob.retry).not.toHaveBeenCalled();
+  });
+
   it('retries a failed v4 boundary after exact pre-dispatch lock contention', async () => {
     const chatId = 'chat-lock-contention';
     const sessionKey = CLOSE_SESSION_A;
@@ -3696,6 +4173,258 @@ describe('NightModeTransitionSchedulerService', () => {
 
   it.each([
     {
+      transition: 'close' as const,
+      now: '2026-05-30T20:12:00.000Z',
+      scheduledFor: '2026-05-30T20:00:00.000Z',
+    },
+    {
+      transition: 'open' as const,
+      now: '2026-05-31T06:12:00.000Z',
+      scheduledFor: '2026-05-31T05:00:00.000Z',
+    },
+  ])(
+    'reconstructs one deterministic $transition job after Bull and registry eviction',
+    async ({ transition, now, scheduledFor }) => {
+      jest.useFakeTimers().setSystemTime(new Date(now));
+      try {
+        const chatId = `chat-evicted-access-${transition}`;
+        const sessionKey = CLOSE_SESSION_A;
+        const jobId = buildNightModeTransitionJobId(chatId, transition, scheduledFor, sessionKey);
+        const ledgerJobId = `night-mode:${transition}:${chatId}:session:${sessionKey}`;
+        const ledger = {
+          actionType: 'SEND_MESSAGE',
+          chatId,
+          sourceTag: 'night_mode_transition',
+          status: MaxActionLedgerStatus.FAILED_TERMINAL,
+          ambiguous: false,
+          terminal: true,
+          attemptCount: 1,
+          completedAt: new Date(scheduledFor),
+          lastError: 'chat denied',
+          dispatchToken: null,
+          dispatchStartedAt: null,
+          dispatchBotId: null,
+          remoteMessageId: null,
+        };
+        const tx = {
+          chatBotMembership: {
+            findFirst: jest.fn().mockResolvedValue({ id: 'membership-1' }),
+          },
+          maxActionLedgerEntry: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        };
+        const prisma = {
+          nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+          maxActionLedgerEntry: {
+            findUnique: jest.fn(async ({ where }: { where: { jobId: string } }) =>
+              where.jobId === ledgerJobId ? ledger : null,
+            ),
+          },
+          $transaction: jest.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+            operation(tx),
+          ),
+        };
+        const storedJobs = new Map<string, unknown>();
+        let logicalJobCreations = 0;
+        const queue = {
+          getJob: jest.fn(async (requestedJobId: string) => storedJobs.get(requestedJobId) ?? null),
+          add: jest.fn(
+            async (_name: string, data: NightModeTransitionJob, options: { jobId: string }) => {
+              const retained = storedJobs.get(options.jobId);
+              if (retained) {
+                return retained;
+              }
+              logicalJobCreations += 1;
+              const job = {
+                id: options.jobId,
+                data,
+                getState: jest.fn().mockResolvedValue('waiting'),
+              };
+              storedJobs.set(options.jobId, job);
+              return job;
+            },
+          ),
+        };
+        const service = new NightModeTransitionSchedulerService(
+          prisma as never,
+          queue as unknown as Queue<NightModeTransitionJob>,
+          undefined,
+          { getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }]) } as never,
+        );
+        const settings = {
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: 23 * 60,
+          nightModeEndTimeMinutes: 8 * 60,
+          nightModeTimezone: 'Europe/Moscow',
+        };
+        const enqueue = () =>
+          (
+            service as unknown as {
+              enqueueChatSettingsOccurrences(
+                targetChatId: string,
+                targetSettings: typeof settings,
+                options: {
+                  includeCurrentClose?: boolean;
+                  includeCurrentOpen?: boolean;
+                  includeFuture: boolean;
+                },
+              ): Promise<{ manualReview: unknown }>;
+            }
+          ).enqueueChatSettingsOccurrences(chatId, settings, {
+            ...(transition === 'close'
+              ? { includeCurrentClose: true }
+              : { includeCurrentOpen: true }),
+            includeFuture: false,
+          });
+
+        await expect(enqueue()).resolves.toEqual({ manualReview: null });
+        await expect(enqueue()).resolves.toEqual({ manualReview: null });
+
+        expect(tx.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(1);
+        expect(logicalJobCreations).toBe(1);
+        expect(storedJobs.size).toBe(1);
+        expect(storedJobs.has(jobId)).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: 'missing ledger',
+      transition: 'open' as const,
+      ledger: null,
+      expected: { kind: 'skip' },
+    },
+    {
+      name: 'exact completed open send',
+      transition: 'open' as const,
+      ledger: {
+        status: MaxActionLedgerStatus.SUCCEEDED,
+        ambiguous: false,
+        terminal: true,
+        attemptCount: 1,
+        completedAt: new Date('2026-05-31T05:00:01.000Z'),
+        lastError: null,
+        dispatchToken: 'completed-token',
+        dispatchStartedAt: new Date('2026-05-31T05:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: 'open-message-1',
+      },
+      expected: { kind: 'skip' },
+    },
+    {
+      name: 'exact completed close send',
+      transition: 'close' as const,
+      ledger: {
+        status: MaxActionLedgerStatus.SUCCEEDED,
+        ambiguous: false,
+        terminal: true,
+        attemptCount: 1,
+        completedAt: new Date('2026-05-30T20:00:01.000Z'),
+        lastError: null,
+        dispatchToken: 'completed-close-token',
+        dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: 'close-message-1',
+      },
+      expected: { kind: 'skip' },
+    },
+    {
+      name: 'ambiguous ledger',
+      transition: 'open' as const,
+      ledger: {
+        status: MaxActionLedgerStatus.AMBIGUOUS,
+        ambiguous: true,
+        terminal: true,
+        attemptCount: 1,
+        completedAt: new Date('2026-05-31T05:00:01.000Z'),
+        lastError: 'timeout',
+        dispatchToken: 'ambiguous-token',
+        dispatchStartedAt: new Date('2026-05-31T05:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: null,
+      },
+      expected: { kind: 'blocked', category: 'unsafe_prior_provenance' },
+    },
+    {
+      name: 'dispatch-started ledger',
+      transition: 'open' as const,
+      ledger: {
+        status: MaxActionLedgerStatus.IN_PROGRESS,
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 1,
+        completedAt: null,
+        lastError: null,
+        dispatchToken: 'dispatch-token',
+        dispatchStartedAt: new Date('2026-05-31T05:00:00.000Z'),
+        dispatchBotId: 'bot-1',
+        remoteMessageId: null,
+      },
+      expected: { kind: 'blocked', category: 'unsafe_prior_provenance' },
+    },
+  ])(
+    'fails closed without Bull or registry for $name evidence',
+    async ({ transition, ledger, expected }) => {
+      const chatId = `chat-no-durable-job-proof-${transition}`;
+      const sessionKey = CLOSE_SESSION_A;
+      const scheduledFor =
+        transition === 'open' ? '2026-05-31T05:00:00.000Z' : '2026-05-30T20:00:00.000Z';
+      const jobId = buildNightModeTransitionJobId(chatId, transition, scheduledFor, sessionKey);
+      const service = new NightModeTransitionSchedulerService(
+        {
+          nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
+          maxActionLedgerEntry: {
+            findUnique: jest.fn().mockResolvedValue(
+              ledger
+                ? {
+                    actionType: 'SEND_MESSAGE',
+                    chatId,
+                    sourceTag: 'night_mode_transition',
+                    ...ledger,
+                  }
+                : null,
+            ),
+          },
+          $transaction: jest.fn(),
+        } as never,
+        { getJob: jest.fn().mockResolvedValue(null) } as never,
+      );
+
+      const resolution = await (
+        service as unknown as {
+          canEnqueueCurrentCatchUp(params: {
+            chatId: string;
+            jobId: string;
+            sessionKey: string;
+            transition: 'close' | 'open';
+            scheduledFor: string;
+            fingerprint: string;
+          }): Promise<{ kind: string; manualReview?: { category: string } }>;
+        }
+      ).canEnqueueCurrentCatchUp({
+        chatId,
+        jobId,
+        sessionKey,
+        transition,
+        scheduledFor,
+        fingerprint: `sha256:${'a'.repeat(64)}`,
+      });
+
+      expect(resolution.kind).toBe(expected.kind);
+      if ('category' in expected) {
+        expect(resolution.manualReview?.category).toBe(expected.category);
+      } else {
+        expect(resolution).toEqual(expected);
+      }
+    },
+  );
+
+  it.each([
+    {
       name: 'an exact completed send',
       ledger: {
         actionType: 'SEND_MESSAGE',
@@ -3804,9 +4533,11 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('turns an evicted definitive access rejection into a no-fresh-access tombstone', async () => {
+  it('blocks an evicted definitive access rejection without fresh actionable access', async () => {
     const chatId = 'chat-evicted-no-access';
     const sessionKey = 'v1:Europe/Moscow:23:00:08:00:2026-05-30';
+    const scheduledFor = '2026-05-31T05:00:00.000Z';
+    const jobId = buildNightModeTransitionJobId(chatId, 'open', scheduledFor, sessionKey);
     const openLedgerJobId = `night-mode:open:${chatId}:session:${sessionKey}`;
     const prisma = {
       nightModeTransitionReconcileRequest: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -3823,6 +4554,8 @@ describe('NightModeTransitionSchedulerService', () => {
                 attemptCount: 1,
                 completedAt: new Date(),
                 lastError: 'access denied',
+                lastStatusCode: 403,
+                lastErrorCode: 'chat.denied',
                 dispatchToken: null,
                 dispatchStartedAt: null,
                 dispatchBotId: null,
@@ -3840,14 +4573,6 @@ describe('NightModeTransitionSchedulerService', () => {
       undefined,
       { getString: jest.fn().mockResolvedValue(null) } as never,
     );
-    await seedRegisteredJob(service, {
-      chatId,
-      jobId: 'evicted-open-job',
-      transition: 'open',
-      sessionKey,
-      scheduledFor: '2026-05-31T05:00:00.000Z',
-      runtimeVersion: 4,
-    });
 
     const resolution = await (
       service as unknown as {
@@ -3856,14 +4581,16 @@ describe('NightModeTransitionSchedulerService', () => {
           jobId: string;
           sessionKey: string;
           transition: 'open';
+          scheduledFor: string;
           fingerprint: string;
         }): Promise<{ kind: string; manualReview?: { category: string } }>;
       }
     ).canEnqueueCurrentCatchUp({
       chatId,
-      jobId: 'evicted-open-job',
+      jobId,
       sessionKey,
       transition: 'open',
+      scheduledFor,
       fingerprint: `sha256:${'a'.repeat(64)}`,
     });
 
@@ -3997,7 +4724,7 @@ describe('NightModeTransitionSchedulerService', () => {
             findUnique: jest.fn().mockResolvedValue({
               entityType,
               settings,
-              botMemberships: [],
+              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
             }),
           },
           maxActionLedgerEntry: {
@@ -4114,7 +4841,7 @@ describe('NightModeTransitionSchedulerService', () => {
                 nightModeEndTimeMinutes: 7 * 60,
                 nightModeTimezone: 'UTC',
               },
-              botMemberships: [],
+              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
             }),
           },
           maxActionLedgerEntry: {
@@ -4646,7 +5373,7 @@ describe('NightModeTransitionSchedulerService', () => {
     const activeSnapshot = {
       entityType: ChatEntityType.CHAT,
       settings,
-      botMemberships: [],
+      botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
     };
     const disabledSnapshot = {
       ...activeSnapshot,
@@ -4822,7 +5549,7 @@ describe('NightModeTransitionSchedulerService', () => {
         findUnique: jest.fn().mockResolvedValue({
           entityType: ChatEntityType.CHAT,
           settings,
-          botMemberships: [],
+          botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           accessEdges: [],
         }),
       },
@@ -4987,7 +5714,7 @@ describe('NightModeTransitionSchedulerService', () => {
               nightModeEndTimeMinutes: 8 * 60,
               nightModeTimezone: 'Europe/Moscow',
             },
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           })),
         },
       };
@@ -5036,7 +5763,7 @@ describe('NightModeTransitionSchedulerService', () => {
           findUnique: jest.fn().mockResolvedValue({
             entityType: ChatEntityType.CHAT,
             settings,
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           }),
         },
         $queryRaw: jest.fn().mockResolvedValue([]),
@@ -5227,7 +5954,7 @@ describe('NightModeTransitionSchedulerService', () => {
           findUnique: jest.fn().mockResolvedValue({
             entityType: ChatEntityType.CHAT,
             settings,
-            botMemberships: [],
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
           }),
         },
         $queryRaw: jest.fn().mockResolvedValueOnce([registryRow]).mockResolvedValue([]),

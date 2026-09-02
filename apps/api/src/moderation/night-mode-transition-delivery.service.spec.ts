@@ -788,6 +788,85 @@ describe('NightModeTransitionDeliveryService', () => {
     });
   });
 
+  it.each([
+    {
+      transition: 'close',
+      scenario: 'whitespace-only override',
+      settings: { nightModeBotMessageText: ' \t\n ' },
+      expectedText:
+        '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+    },
+    {
+      transition: 'open',
+      scenario: 'whitespace-only override',
+      settings: { nightModeOpenMessageText: ' \t\n ' },
+      expectedText: 'Чат снова открыт. Можно отправлять сообщения.',
+    },
+    {
+      transition: 'close',
+      scenario: 'placeholder-only override',
+      settings: { nightModeBotMessageText: '{user}' },
+      expectedText:
+        '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
+    },
+    {
+      transition: 'open',
+      scenario: 'placeholder-only override',
+      settings: { nightModeOpenMessageText: '{user}' },
+      expectedText: 'Чат снова открыт. Можно отправлять сообщения.',
+    },
+    {
+      transition: 'close',
+      scenario: 'meaningful surrounding whitespace',
+      settings: { nightModeBotMessageText: '  Свой текст закрытия.  ' },
+      expectedText: '&nbsp;&nbsp;Свой текст закрытия.&nbsp;&nbsp;',
+    },
+    {
+      transition: 'open',
+      scenario: 'meaningful surrounding whitespace',
+      settings: { nightModeOpenMessageText: '  Свой текст открытия.  ' },
+      expectedText: '&nbsp;&nbsp;Свой текст открытия.&nbsp;&nbsp;',
+    },
+  ] as const)(
+    'delivers safe $transition notice copy for $scenario when media is absent',
+    async ({ transition, settings, expectedText }) => {
+      const maxClient = {
+        sendMessage: jest.fn().mockResolvedValue({ messageId: `msg-${transition}-fallback` }),
+        deleteMessage: jest.fn(),
+      };
+      const botSpeechMediaService = {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      };
+      const service = new NightModeTransitionDeliveryService(
+        maxClient as never,
+        botSpeechMediaService as never,
+        createEventService() as never,
+      );
+      const runtimeSettings = createSettings({ ...settings });
+      const snapshot = {
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+        timezone: 'Europe/Moscow',
+        sessionKey: `session-${transition}-fallback`,
+      };
+
+      if (transition === 'close') {
+        await service.sendClosedNotice(runtimeSettings, snapshot, createAdapters());
+      } else {
+        await service.sendOpenedNotice(runtimeSettings, snapshot, createAdapters());
+      }
+
+      expect(botSpeechMediaService.resolveMedia).toHaveReturnedWith(null);
+      expect(maxClient.sendMessage).toHaveBeenCalledWith(
+        'chat-1',
+        expectedText,
+        expect.any(Object),
+        expect.any(Object),
+      );
+    },
+  );
+
   it('falls back to bounded MAX markdown when rendered night-mode HTML expands past the limit', async () => {
     const sourceText = '&'.repeat(1_000);
     const maxClient = {

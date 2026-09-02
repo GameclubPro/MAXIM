@@ -7,6 +7,7 @@ type SettingsTimeFieldsProps =
       kind: 'night';
       startMinutes: number;
       endMinutes: number;
+      error?: string;
       onChange: (key: NightModeTimeFieldKey, value: number) => void;
     }
   | {
@@ -18,6 +19,7 @@ type SettingsTimeFieldsProps =
 type NightModeTimeFieldsProps = {
   startMinutes: number;
   endMinutes: number;
+  error?: string;
   onChange: (key: NightModeTimeFieldKey, value: number) => void;
 };
 
@@ -60,7 +62,12 @@ function timeInputToMinutes(value: string, fallback: number): number {
   return hours * 60 + minutes;
 }
 
-function NightModeTimeFields({ startMinutes, endMinutes, onChange }: NightModeTimeFieldsProps) {
+function NightModeTimeFields({
+  startMinutes,
+  endMinutes,
+  error,
+  onChange,
+}: NightModeTimeFieldsProps) {
   return (
     <>
       <div className="field night-window-grid__field">
@@ -82,6 +89,7 @@ function NightModeTimeFields({ startMinutes, endMinutes, onChange }: NightModeTi
           label="Открывать в"
           value={minutesToTimeInput(endMinutes)}
           variant="embedded"
+          error={error}
           onChange={(nextValue) =>
             onChange(
               'nightModeEndTimeMinutes',
@@ -111,6 +119,7 @@ export default function SettingsTimeFields(props: SettingsTimeFieldsProps) {
     <NightModeTimeFields
       startMinutes={props.startMinutes}
       endMinutes={props.endMinutes}
+      error={props.error}
       onChange={props.onChange}
     />
   ) : (

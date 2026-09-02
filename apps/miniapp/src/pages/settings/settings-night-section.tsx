@@ -62,6 +62,7 @@ type SettingsNightSectionProps = SettingsSectionShellProps &
     nightForceCloseDaysError?: string;
     nightForceCloseHoursError?: string;
     nightHeaderSummary: string;
+    nightTimeError?: string;
     nightTimezoneError?: string;
   };
 
@@ -84,6 +85,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
     nightForceCloseDaysError,
     nightForceCloseHoursError,
     nightHeaderSummary,
+    nightTimeError,
     nightTimezoneError,
     openBotEditorKey,
     openHintKey,
@@ -169,6 +171,8 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                           current ? applyNightModeEnabledChange(current, enabled) : current,
                         );
                         clearFieldError('nightModeEnabled');
+                        clearFieldError('nightModeStartTimeMinutes');
+                        clearFieldError('nightModeEndTimeMinutes');
                         if (!enabled) {
                           clearFieldError('nightModeBotMessageEnabled');
                           clearFieldError('nightModeCommentsEnabled');
@@ -192,16 +196,24 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
               </div>
 
               {draft.nightModeEnabled ? (
-                <div className={cn('settings-native-toggle', nightTimezoneError && 'field--error')}>
+                <div
+                  className={cn(
+                    'settings-native-toggle',
+                    (nightTimeError || nightTimezoneError) && 'field--error',
+                  )}
+                >
                   <div className="night-window-grid">
                     <Suspense fallback={null}>
                       <LazySettingsTimeFields
                         kind="night"
                         startMinutes={draft.nightModeStartTimeMinutes}
                         endMinutes={draft.nightModeEndTimeMinutes}
-                        onChange={(key, nextValue) =>
-                          setFieldValue(key, nextValue as ChatSettings[typeof key])
-                        }
+                        error={nightTimeError}
+                        onChange={(key, nextValue) => {
+                          setFieldValue(key, nextValue as ChatSettings[typeof key]);
+                          clearFieldError('nightModeStartTimeMinutes');
+                          clearFieldError('nightModeEndTimeMinutes');
+                        }}
                       />
                     </Suspense>
                   </div>
@@ -277,6 +289,8 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                                 : current,
                             );
                             clearFieldError('nightModeBotMessageEnabled');
+                            clearFieldError('nightModeStartTimeMinutes');
+                            clearFieldError('nightModeEndTimeMinutes');
                             if (!enabled) {
                               clearFieldError('nightModeCommentsEnabled');
                               clearFieldError('nightModeBotButtonEnabled');
@@ -349,9 +363,11 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                         <input
                           type="checkbox"
                           checked={draft.nightModeOpenMessageEnabled}
-                          onChange={(event) =>
-                            setFieldValue('nightModeOpenMessageEnabled', event.target.checked)
-                          }
+                          onChange={(event) => {
+                            setFieldValue('nightModeOpenMessageEnabled', event.target.checked);
+                            clearFieldError('nightModeStartTimeMinutes');
+                            clearFieldError('nightModeEndTimeMinutes');
+                          }}
                         />
                         <span className="toggle-switch" aria-hidden>
                           <span className="toggle-switch__thumb" />

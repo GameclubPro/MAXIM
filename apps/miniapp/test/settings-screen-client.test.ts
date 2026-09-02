@@ -100,6 +100,26 @@ test('chat settings screen client only adds prefetch query when requested', asyn
   assert.equal(calls[1]?.init?.signal, controller.signal);
 });
 
+test('chat settings screen client reads a legacy equal-time schedule with notices', async () => {
+  const calls: ApiCall[] = [];
+  const response = createChatSettingsScreenResponse();
+  response.settings = chatSettingsSchema.parse({
+    nightModeEnabled: true,
+    nightModeStartTimeMinutes: 22 * 60,
+    nightModeEndTimeMinutes: 22 * 60,
+    nightModeBotMessageEnabled: true,
+    nightModeOpenMessageEnabled: true,
+  });
+  const api = createApiMock(response, calls);
+
+  const screen = await getSettingsScreen(api, 'chat-1');
+
+  assert.equal(screen.settings.nightModeEnabled, true);
+  assert.equal(screen.settings.nightModeStartTimeMinutes, screen.settings.nightModeEndTimeMinutes);
+  assert.equal(screen.settings.nightModeBotMessageEnabled, true);
+  assert.equal(screen.settings.nightModeOpenMessageEnabled, true);
+});
+
 test('chat settings retry requests an explicit live bot capability recheck', async () => {
   const calls: ApiCall[] = [];
   const settings = chatSettingsSchema.parse({ antiSpamEnabled: true });
@@ -110,6 +130,40 @@ test('chat settings retry requests an explicit live bot capability recheck', asy
 
   assert.equal(calls[0]?.path, '/chats/chat-1/settings');
   assert.equal(calls[1]?.path, '/chats/chat-1/settings?recheckBotCapabilities=1');
+});
+
+test('chat settings client rejects equal times with notices but allows silent 24/7 mode', async () => {
+  const calls: ApiCall[] = [];
+  const api = createApiMock(chatSettingsSchema.parse({}), calls);
+
+  for (const noticeField of [
+    'nightModeBotMessageEnabled',
+    'nightModeOpenMessageEnabled',
+  ] as const) {
+    const settings = chatSettingsSchema.parse({
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 22 * 60,
+      nightModeEndTimeMinutes: 22 * 60,
+      [noticeField]: true,
+    });
+    await assert.rejects(
+      () => updateSettings(api, 'chat-1', settings),
+      /Для сообщений ночного режима время открытия должно отличаться от времени закрытия\./u,
+    );
+  }
+
+  assert.equal(calls.length, 0);
+
+  const silentSettings = chatSettingsSchema.parse({
+    nightModeEnabled: true,
+    nightModeStartTimeMinutes: 22 * 60,
+    nightModeEndTimeMinutes: 22 * 60,
+    nightModeBotMessageEnabled: false,
+    nightModeOpenMessageEnabled: false,
+  });
+  await updateSettings(api, 'chat-1', silentSettings);
+
+  assert.equal(calls.length, 1);
 });
 
 test('chat settings client sends typed targets and preserves legacy allowlist requests', async () => {

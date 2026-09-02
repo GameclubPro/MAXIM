@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
 import { SafetyDeskService } from './safety-desk.service';
 
@@ -18,8 +18,8 @@ export class SafetyDeskController {
   }
 
   @Get('runtime/night-mode-transitions')
-  getNightModeTransitionRuntime() {
-    return this.safetyDeskService.getNightModeTransitionRuntime();
+  getNightModeTransitionRuntime(@Query('offset') offset: string | undefined) {
+    return this.safetyDeskService.getNightModeTransitionRuntime(offset);
   }
 
   @Post('runtime/night-mode-transitions/:chatId/acknowledge')

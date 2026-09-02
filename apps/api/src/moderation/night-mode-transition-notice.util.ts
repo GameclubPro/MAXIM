@@ -87,6 +87,24 @@ export function buildNightModeOpenedNotice(params: NightModeNoticeTextSettings):
   });
 }
 
+export function buildNightModeClosedNoticeForDelivery(
+  params: NightModeNoticeTextSettings,
+): string {
+  const rendered = buildNightModeClosedNotice(params);
+  return rendered.trim().length > 0
+    ? rendered
+    : buildNightModeClosedNotice({ ...params, templateText: '' });
+}
+
+export function buildNightModeOpenedNoticeForDelivery(
+  params: NightModeNoticeTextSettings,
+): string {
+  const rendered = buildNightModeOpenedNotice(params);
+  return rendered.trim().length > 0
+    ? rendered
+    : buildNightModeOpenedNotice({ ...params, templateText: '' });
+}
+
 export function isNightModeNoticeMessage(params: {
   text: string;
   settings: NightModeNoticeMatchSettings;
@@ -105,7 +123,7 @@ export function isNightModeNoticeMessage(params: {
   }
 
   if (params.settings.nightModeBotMessageEnabled) {
-    const expectedClosedNotice = buildNightModeClosedNotice({
+    const expectedClosedNotice = buildNightModeClosedNoticeForDelivery({
       startMinutes: params.settings.nightModeStartTimeMinutes,
       endMinutes: params.settings.nightModeEndTimeMinutes,
       timezone: params.settings.nightModeTimezone,
@@ -120,7 +138,7 @@ export function isNightModeNoticeMessage(params: {
   }
 
   if (params.settings.nightModeOpenMessageEnabled) {
-    const expectedOpenNotice = buildNightModeOpenedNotice({
+    const expectedOpenNotice = buildNightModeOpenedNoticeForDelivery({
       startMinutes: params.settings.nightModeStartTimeMinutes,
       endMinutes: params.settings.nightModeEndTimeMinutes,
       timezone: params.settings.nightModeTimezone,

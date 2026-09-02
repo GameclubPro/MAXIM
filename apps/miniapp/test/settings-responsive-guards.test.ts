@@ -96,6 +96,13 @@ test('settings dialogs keep stable geometry and accessible controls', () => {
   );
 });
 
+test('night schedule validation does not stretch the sibling time control', () => {
+  assert.match(
+    settingsExperienceCss,
+    /\.settings-drilldown__panel--night\s+\.night-window-grid \{\s*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);\s*align-items: start;/u,
+  );
+});
+
 test('open settings hints render above neighboring toggle rows', () => {
   assert.match(
     settingsRoutePolishCss,

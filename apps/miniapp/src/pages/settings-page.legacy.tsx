@@ -5,7 +5,7 @@ import {
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   type ApplySettingsTarget,
   chatRulesSchema,
-  chatSettingsSchema,
+  updateSettingsRequestSchema,
   normalizeNavigationAllowlistTarget,
   normalizeStoredNavigationAllowlistEntry,
   stepDeleteBotMessagesDelayMinutes,
@@ -2303,7 +2303,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function validateDraft(value: ChatSettings): ChatSettings | null {
     const normalizedValue = normalizeRequiredSubscriptionDraftSettings(value);
-    const parsed = chatSettingsSchema.safeParse(normalizedValue);
+    const parsed = updateSettingsRequestSchema.safeParse(normalizedValue);
 
     if (parsed.success) {
       const normalizedParsed = normalizeRequiredSubscriptionDraftSettings(parsed.data);
@@ -4174,6 +4174,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? validateBroadcastLinkButtons(draft?.nightModeBotButtons ?? [])
       : [];
   const hasNightBotButtonError = Boolean(fieldErrors.nightModeBotButtons);
+  const nightTimeError =
+    fieldErrors.nightModeEndTimeMinutes ?? fieldErrors.nightModeStartTimeMinutes;
   const nightTimezoneError = fieldErrors.nightModeTimezone;
   const showNightForceCloseDurationErrors = Boolean(
     draft?.nightModeForceCloseEnabled && !draft?.nightModeForceCloseForever,
@@ -7030,6 +7032,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               nightForceCloseDaysError={nightForceCloseDaysError}
               nightForceCloseHoursError={nightForceCloseHoursError}
               nightHeaderSummary={nightHeaderSummary}
+              nightTimeError={nightTimeError}
               nightTimezoneError={nightTimezoneError}
               openBotEditorKey={openBotEditorKey}
               openHintKey={openHintKey}

@@ -1940,7 +1940,19 @@ export const globalSpammerUserDiagnosticsSchema = z.object({
 });
 export type GlobalSpammerUserDiagnostics = z.infer<typeof globalSpammerUserDiagnosticsSchema>;
 
-export const updateSettingsRequestSchema = chatSettingsSchema;
+export const updateSettingsRequestSchema = chatSettingsSchema.superRefine((settings, context) => {
+  if (
+    settings.nightModeEnabled &&
+    (settings.nightModeBotMessageEnabled || settings.nightModeOpenMessageEnabled) &&
+    settings.nightModeStartTimeMinutes === settings.nightModeEndTimeMinutes
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['nightModeEndTimeMinutes'],
+      message: 'Для сообщений ночного режима время открытия должно отличаться от времени закрытия.',
+    });
+  }
+});
 
 export const addAdminRequestSchema = z.object({
   userId: z.string(),

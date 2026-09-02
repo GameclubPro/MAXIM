@@ -1,3 +1,4 @@
+import { membershipExplicitlyLacksAccess } from '../max/max-bot-access-policy.util';
 import { ChatBotAccessState, ChatBotMembershipStatus } from '../prisma/prisma-client';
 
 export const NIGHT_MODE_TRANSITION_REFRESHABLE_ACCESS_STATES = [
@@ -11,6 +12,7 @@ export type NightModeTransitionMembershipCandidate = {
   botId?: string | null;
   status?: ChatBotMembershipStatus | string | null;
   botAccessState?: ChatBotAccessState | string | null;
+  permissionsSnapshot?: unknown;
 };
 
 export function isNightModeTransitionMembershipCandidate(
@@ -23,6 +25,9 @@ export function isNightModeTransitionMembershipCandidate(
 
   const botId = normalizeBotId(membership.botId);
   if (!botId || (options.isActionableBotId && !options.isActionableBotId(botId))) {
+    return false;
+  }
+  if (membershipExplicitlyLacksAccess(membership.permissionsSnapshot)) {
     return false;
   }
 

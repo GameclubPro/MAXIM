@@ -3,7 +3,7 @@ import {
   applySectionTargetPreviewResponseSchema,
   applySectionToAllRequestSchema,
   applySectionToAllResponseSchema,
-  chatSettingsSchema,
+  updateSettingsRequestSchema,
   type ApplySectionTargetPreviewResponse,
   type ApplySectionToAllResponse,
   type ApplySettingsTarget,
@@ -128,7 +128,7 @@ export async function applySettingsToAllChats(params: {
   > | null>;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
-  const parsed = chatSettingsSchema.safeParse(params.body);
+  const parsed = updateSettingsRequestSchema.safeParse(params.body);
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }

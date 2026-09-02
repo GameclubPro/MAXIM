@@ -30,6 +30,14 @@ const speechStyleSource = readFileSync(
   new URL('../src/pages/settings/settings-speech-style-panel.tsx', import.meta.url),
   'utf8',
 );
+const settingsNightSectionSource = readFileSync(
+  new URL('../src/pages/settings/settings-night-section.tsx', import.meta.url),
+  'utf8',
+);
+const nightModeTimeFieldsSource = readFileSync(
+  new URL('../src/pages/settings/night-mode-time-fields.tsx', import.meta.url),
+  'utf8',
+);
 
 test('chat comment settings belong to Publik instead of Major settings', () => {
   assert.doesNotMatch(settingsPageSource, /handleSaveComments|mutateCommentsAsync/u);
@@ -141,6 +149,19 @@ test('manual night close wins over the disabled schedule status', () => {
     settingsPageSource,
     /const nightCardStatus = nightForceCloseSummary\s*\? 'Закрыто'\s*: draft\?\.nightModeEnabled/u,
   );
+});
+
+test('night schedule validation is shown next to the time controls', () => {
+  assert.match(
+    settingsPageSource,
+    /const parsed = updateSettingsRequestSchema\.safeParse\(normalizedValue\);/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /const nightTimeError =\s*fieldErrors\.nightModeEndTimeMinutes \?\? fieldErrors\.nightModeStartTimeMinutes;/u,
+  );
+  assert.match(settingsNightSectionSource, /error=\{nightTimeError\}/u);
+  assert.match(nightModeTimeFieldsSource, /label="Открывать в"[\s\S]*?error=\{error\}/u);
 });
 
 test('speech style opens on the selected radio and supports arrow navigation', () => {

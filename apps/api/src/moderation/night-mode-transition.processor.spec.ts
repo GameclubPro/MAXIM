@@ -310,35 +310,52 @@ describe('NightModeTransitionProcessor', () => {
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
   });
 
-  it('continues an expired confirmed route into execution so live preflight can refresh it', async () => {
-    const job = buildJob();
-    const moderationExecutionService = {
-      processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: false }),
-    };
-    const scheduler = new NightModeTransitionSchedulerService({
-      chat: {
-        findUnique: jest.fn().mockResolvedValue({
-          entityType: ChatEntityType.CHAT,
-          botMemberships: [
-            {
-              botId: 'bot-1',
-              status: ChatBotMembershipStatus.ACTIVE,
-              botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
-              botAccessExpiresAt: new Date('2026-05-30T19:00:00.000Z'),
-            },
-          ],
-        }),
+  it.each([
+    { name: 'null snapshot', permissionsSnapshot: null },
+    {
+      name: 'valid admin snapshot without write permissions',
+      permissionsSnapshot: {
+        checkedAt: '2026-05-30T19:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
       },
-    } as never);
-    const processor = new NightModeTransitionProcessor(
-      moderationExecutionService as never,
-      scheduler,
-    );
+    },
+  ])(
+    'continues an expired confirmed route with $name so live preflight can refresh it',
+    async ({ permissionsSnapshot }) => {
+      const job = buildJob();
+      const moderationExecutionService = {
+        processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: false }),
+      };
+      const scheduler = new NightModeTransitionSchedulerService({
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            entityType: ChatEntityType.CHAT,
+            botMemberships: [
+              {
+                botId: 'bot-1',
+                status: ChatBotMembershipStatus.ACTIVE,
+                botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+                botAccessExpiresAt: new Date('2026-05-30T19:00:00.000Z'),
+                permissionsSnapshot,
+              },
+            ],
+          }),
+        },
+      } as never);
+      const processor = new NightModeTransitionProcessor(
+        moderationExecutionService as never,
+        scheduler,
+      );
 
-    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+      await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
 
-    expect(moderationExecutionService.processNightModeTransitionJob).toHaveBeenCalledWith(job.data);
-  });
+      expect(moderationExecutionService.processNightModeTransitionJob).toHaveBeenCalledWith(
+        job.data,
+      );
+    },
+  );
 
   it.each([
     {
@@ -355,6 +372,20 @@ describe('NightModeTransitionProcessor', () => {
         botId: 'bot-1',
         status: ChatBotMembershipStatus.ACTIVE,
         botAccessState: ChatBotAccessState.DENIED,
+      },
+    },
+    {
+      name: 'explicit non-admin permissions snapshot',
+      membership: {
+        botId: 'bot-1',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-30T19:00:00.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: ['write'],
+        },
       },
     },
   ])('completes without execution for a $name', async ({ membership }) => {
