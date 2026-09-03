@@ -141,6 +141,22 @@ require_preconditions() {
   CONTROL_SOURCE="$(<"$QUEUE_HELPER")"
 }
 
+verify_checkout_compatible_with_active_api_source() {
+  local source_sha="$1"
+  local checkout_sha="$2"
+
+  if [[ "$source_sha" == "$checkout_sha" ]]; then
+    return 0
+  fi
+  git merge-base --is-ancestor "$source_sha" "$checkout_sha" ||
+    fail "Current checkout does not descend from the active API source."
+  git diff --quiet "$source_sha" "$checkout_sha" -- . \
+    ':(exclude)infra/scripts/vps-retire-legacy-default-webhook-queue.sh' \
+    ':(exclude)infra/scripts/legacy-default-webhook-queue-retirement.test.mjs' \
+    ':(exclude)infra/scripts/vps-retire-legacy-default-webhook-queue.test.mjs' ||
+    fail "Current checkout contains changes outside the reviewed queue-retirement operator patch."
+}
+
 resolve_release_fence() {
   local checkout_sha
   local manifest_json
@@ -161,16 +177,16 @@ resolve_release_fence() {
     const value = JSON.parse(readFileSync(0, "utf8"));
     const component = value?.components?.["api-shared"];
     const fields = [value?.targetSha, component?.sourceSha, component?.imageRef, component?.imageId];
-    if (!fields.every((field) => typeof field === "string" && !/[\\r\\n\\t]/u.test(field))) {
+    if (!fields.every((field) => typeof field === "string" && !/[\r\n\t]/u.test(field))) {
       process.exit(1);
     }
-    process.stdout.write(fields.join("\\t"));
+    process.stdout.write(fields.join("\t"));
   ')" || fail "Current API release identity is invalid."
   IFS=$'\t' read -r target_sha source_sha image_ref image_id <<<"$manifest_fields"
   checkout_sha="$(git rev-parse --verify HEAD)" || fail "Current checkout SHA is unavailable."
-  [[ "$target_sha" == "$checkout_sha" && "$source_sha" == "$checkout_sha" ]] ||
-    fail "Current checkout is not the exact active API release."
+  [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || fail "Current release target SHA is invalid."
   [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || fail "Current API source SHA is invalid."
+  verify_checkout_compatible_with_active_api_source "$source_sha" "$checkout_sha"
   [[ "$image_ref" == "maxim-api:${source_sha}" ]] ||
     fail "Current API image is not the immutable source-SHA ref."
   [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "Current API image id is invalid."

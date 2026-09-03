@@ -192,6 +192,116 @@ printf '%s\n' UNREACHABLE
   assert.doesNotMatch(result.stdout, /UNREACHABLE/u);
 });
 
+test('release fence allows only the reviewed operator patch above the active API source', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const repository = join(data.directory, 'repo');
+  const scripts = join(repository, 'infra', 'scripts');
+  const runtime = join(repository, 'apps', 'api', 'src');
+  const webhook = join(runtime, 'webhook');
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(webhook, { recursive: true });
+  writeFileSync(join(scripts, 'vps-retire-legacy-default-webhook-queue.sh'), 'base\n');
+  writeFileSync(join(scripts, 'legacy-default-webhook-queue-retirement.test.mjs'), 'base\n');
+  writeFileSync(join(scripts, 'vps-retire-legacy-default-webhook-queue.test.mjs'), 'base\n');
+  writeFileSync(join(runtime, 'runtime.ts'), 'base\n');
+  writeFileSync(
+    join(webhook, 'webhook-outbox.service.ts'),
+    "this.enabled = roleRunsEnqueue(getAppRole());\nconst jobName = 'process-webhook-event';\n",
+  );
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: repository, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git('init', '-q');
+  git('add', '.');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'base');
+  const activeSource = git('rev-parse', 'HEAD');
+  writeFileSync(join(scripts, 'vps-retire-legacy-default-webhook-queue.sh'), 'operator fix\n');
+  writeFileSync(join(scripts, 'legacy-default-webhook-queue-retirement.test.mjs'), 'test fix\n');
+  writeFileSync(
+    join(scripts, 'vps-retire-legacy-default-webhook-queue.test.mjs'),
+    'process test fix\n',
+  );
+  git('add', '.');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'operator');
+  const operatorHead = git('rev-parse', 'HEAD');
+  const invoke = (sourceSha, checkoutSha) =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `source ${JSON.stringify(wrapper)}; cd ${JSON.stringify(repository)}; ` +
+          `verify_checkout_compatible_with_active_api_source ${sourceSha} ${checkoutSha}`,
+      ],
+      { cwd: root, encoding: 'utf8', env: baseEnv(data) },
+    );
+  const releaseHelper = join(data.directory, 'release-helper.mjs');
+  writeFileSync(
+    releaseHelper,
+    `process.stdout.write(${JSON.stringify(
+      JSON.stringify({
+        targetSha: activeSource,
+        components: {
+          'api-shared': {
+            sourceSha: activeSource,
+            imageRef: `maxim-api:${activeSource}`,
+            imageId: `sha256:${'a'.repeat(64)}`,
+          },
+        },
+      }),
+    )});\n`,
+  );
+  const invokeReleaseFence = () =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `source ${JSON.stringify(wrapper)}; cd ${JSON.stringify(repository)}; ` +
+          `RELEASE_HELPER=${JSON.stringify(releaseHelper)}; ` +
+          `RELEASE_STATE_DIR=${JSON.stringify(data.directory)}; ` +
+          `SHARDING_FLOOR_SHA=${activeSource}; resolve_release_fence`,
+      ],
+      { cwd: root, encoding: 'utf8', env: baseEnv(data) },
+    );
+
+  assert.equal(invoke(activeSource, operatorHead).status, 0);
+  const allowedReleaseFence = invokeReleaseFence();
+  assert.equal(allowedReleaseFence.status, 0, allowedReleaseFence.stderr);
+  const reverseAncestry = invoke(operatorHead, activeSource);
+  assert.notEqual(reverseAncestry.status, 0);
+  assert.match(reverseAncestry.stderr, /does not descend/u);
+
+  writeFileSync(join(runtime, 'runtime.ts'), 'unstaged runtime change\n');
+  const unstaged = invokeReleaseFence();
+  assert.notEqual(unstaged.status, 0);
+  assert.match(unstaged.stderr, /Tracked VPS checkout changes/u);
+  git('restore', join('apps', 'api', 'src', 'runtime.ts'));
+
+  writeFileSync(join(runtime, 'runtime.ts'), 'staged runtime change\n');
+  git('add', join('apps', 'api', 'src', 'runtime.ts'));
+  const staged = invokeReleaseFence();
+  assert.notEqual(staged.status, 0);
+  assert.match(staged.stderr, /Staged VPS checkout changes/u);
+  git('restore', '--staged', '--worktree', join('apps', 'api', 'src', 'runtime.ts'));
+
+  const untrackedPath = join(repository, 'untracked.txt');
+  writeFileSync(untrackedPath, 'untracked\n');
+  const untracked = invokeReleaseFence();
+  assert.notEqual(untracked.status, 0);
+  assert.match(untracked.stderr, /unclean VPS checkout/u);
+  rmSync(untrackedPath, { force: true });
+
+  writeFileSync(join(runtime, 'runtime.ts'), 'runtime changed\n');
+  git('add', '.');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'runtime');
+  const unsafeHead = git('rev-parse', 'HEAD');
+  const unsafe = invoke(activeSource, unsafeHead);
+  assert.notEqual(unsafe.status, 0);
+  assert.match(unsafe.stderr, /outside the reviewed queue-retirement operator patch/u);
+});
+
 test('ambiguous local apply timeout waits for the barrier before restoring enqueue', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -223,7 +333,13 @@ main --apply
   const applyIndex = lifecycle.indexOf('remote-apply');
   const barrierIndex = lifecycle.indexOf('barrier');
   const startIndex = lifecycle.indexOf('docker-start');
-  assert.ok(applyIndex >= 0 && barrierIndex > applyIndex && startIndex > barrierIndex, lifecycle.join('\n'));
+  assert.ok(
+    applyIndex >= 0 && barrierIndex > applyIndex && startIndex > barrierIndex,
+    lifecycle.join('\n'),
+  );
   assert.equal(lifecycle.slice(startIndex + 1).filter((entry) => entry === 'health').length, 2);
-  assert.match(readFileSync(data.dockerLog, 'utf8'), /MAXIM_LEGACY_DEFAULT_QUEUE_REMOTE_DEADLINE_MS/u);
+  assert.match(
+    readFileSync(data.dockerLog, 'utf8'),
+    /MAXIM_LEGACY_DEFAULT_QUEUE_REMOTE_DEADLINE_MS/u,
+  );
 });
