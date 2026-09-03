@@ -739,13 +739,17 @@ async function runRemote(action) {
   }
   const queue = createQueue(LEGACY_DEFAULT_WEBHOOK_QUEUE, Queue, redisUrl);
   try {
-    if (action === 'snapshot') return inspectLegacyDefaultWebhookQueue(queue);
-    if (action === 'settlement') return inspectLegacyDefaultWebhookQueueSettlement(queue);
+    // FLAG: Await every queue operation inside this try block. Returning its pending promise would
+    // run finally immediately and close the shared Redis connection underneath the operation.
+    if (action === 'snapshot') return await inspectLegacyDefaultWebhookQueue(queue);
+    if (action === 'settlement') {
+      return await inspectLegacyDefaultWebhookQueueSettlement(queue);
+    }
     if (action === 'apply') {
       const deadlineAtMs = validateRemoteApplyDeadline(
         process.env.MAXIM_LEGACY_DEFAULT_QUEUE_REMOTE_DEADLINE_MS,
       );
-      return retireLegacyDefaultWebhookQueue(queue, readBoundedStdin(), deadlineAtMs);
+      return await retireLegacyDefaultWebhookQueue(queue, readBoundedStdin(), deadlineAtMs);
     }
     throw new Error('Unknown legacy default webhook queue action.');
   } finally {

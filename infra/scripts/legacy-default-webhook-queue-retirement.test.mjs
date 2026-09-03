@@ -50,6 +50,21 @@ test('failure diagnostics expose only allowlisted precondition codes', () => {
   );
 });
 
+test('remote queue actions await completion before closing the Redis connection', () => {
+  const source = readFileSync(queueHelperPath, 'utf8');
+
+  assert.match(
+    source,
+    /if \(action === 'snapshot'\) return await inspectLegacyDefaultWebhookQueue\(queue\);/u,
+  );
+  assert.match(source, /return await inspectLegacyDefaultWebhookQueueSettlement\(queue\);/u);
+  assert.match(
+    source,
+    /return await retireLegacyDefaultWebhookQueue\(queue, readBoundedStdin\(\), deadlineAtMs\);/u,
+  );
+  assert.match(source, /finally \{\s+await queue\.close\(\)\.catch/u);
+});
+
 function validRuntimeModules() {
   const appRoles = ['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action', 'publisher'];
   const runtimeServices = ['api-all', ...PRODUCTION_API_SERVICES];
