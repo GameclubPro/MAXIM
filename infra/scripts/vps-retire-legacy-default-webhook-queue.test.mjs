@@ -202,6 +202,7 @@ test('release fence allows only the reviewed operator patch above the active API
   mkdirSync(scripts, { recursive: true });
   mkdirSync(webhook, { recursive: true });
   writeFileSync(join(scripts, 'vps-retire-legacy-default-webhook-queue.sh'), 'base\n');
+  writeFileSync(join(scripts, 'legacy-default-webhook-queue-retirement.cjs'), 'base\n');
   writeFileSync(join(scripts, 'legacy-default-webhook-queue-retirement.test.mjs'), 'base\n');
   writeFileSync(join(scripts, 'vps-retire-legacy-default-webhook-queue.test.mjs'), 'base\n');
   writeFileSync(join(runtime, 'runtime.ts'), 'base\n');
@@ -219,6 +220,7 @@ test('release fence allows only the reviewed operator patch above the active API
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'base');
   const activeSource = git('rev-parse', 'HEAD');
   writeFileSync(join(scripts, 'vps-retire-legacy-default-webhook-queue.sh'), 'operator fix\n');
+  writeFileSync(join(scripts, 'legacy-default-webhook-queue-retirement.cjs'), 'helper fix\n');
   writeFileSync(join(scripts, 'legacy-default-webhook-queue-retirement.test.mjs'), 'test fix\n');
   writeFileSync(
     join(scripts, 'vps-retire-legacy-default-webhook-queue.test.mjs'),

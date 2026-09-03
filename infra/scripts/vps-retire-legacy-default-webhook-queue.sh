@@ -152,6 +152,7 @@ verify_checkout_compatible_with_active_api_source() {
     fail "Current checkout does not descend from the active API source."
   git diff --quiet "$source_sha" "$checkout_sha" -- . \
     ':(exclude)infra/scripts/vps-retire-legacy-default-webhook-queue.sh' \
+    ':(exclude)infra/scripts/legacy-default-webhook-queue-retirement.cjs' \
     ':(exclude)infra/scripts/legacy-default-webhook-queue-retirement.test.mjs' \
     ':(exclude)infra/scripts/vps-retire-legacy-default-webhook-queue.test.mjs' ||
     fail "Current checkout contains changes outside the reviewed queue-retirement operator patch."
