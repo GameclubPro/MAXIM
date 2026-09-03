@@ -143,7 +143,6 @@ require_preconditions() {
 
 resolve_release_fence() {
   local checkout_sha
-  local journal
   local manifest_json
   local manifest_fields
   local source_sha
@@ -157,10 +156,6 @@ resolve_release_fence() {
   manifest_json="$(
     node "$RELEASE_HELPER" validate-current --state-dir "$RELEASE_STATE_DIR"
   )" || fail "Current release manifest is missing, incomplete, or coexists with a journal."
-  journal="$(
-    find "$RELEASE_STATE_DIR" -maxdepth 1 -name 'current.invalid-*' -print -quit 2>/dev/null
-  )"
-  [[ -z "$journal" ]] || fail "An unresolved release transition journal blocks queue retirement."
   manifest_fields="$(printf '%s' "$manifest_json" | node -e '
     const { readFileSync } = require("node:fs");
     const value = JSON.parse(readFileSync(0, "utf8"));

@@ -522,7 +522,11 @@ test('host wrapper keeps apply behind release, database, pause, and postcheck gu
 
   assert.match(wrapper, /acquire_deploy_lock/u);
   assert.match(wrapper, /validate-current/u);
-  assert.match(wrapper, /current\.invalid-\*/u);
+  assert.doesNotMatch(
+    wrapper,
+    /find[^\n]*current\.invalid/u,
+    'release-manifest validate-current owns exact unresolved-journal classification',
+  );
   assert.match(wrapper, /git merge-base --is-ancestor "\$SHARDING_FLOOR_SHA"/u);
   assert.match(wrapper, /git grep[\s\S]*moderation-default/u);
   assert.match(wrapper, /run_database_crosscheck[\s\S]*apply_retirement/u);
