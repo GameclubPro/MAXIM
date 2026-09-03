@@ -441,11 +441,33 @@ function resolveExpectedApiServicesFromCompose(expectedServices, composeSource) 
   ) {
     throw new Error('API source Compose topology is unavailable or oversized.');
   }
+  const serviceCounts = new Map();
+  let inServices = false;
+  let servicesSectionCount = 0;
+  for (const line of composeSource.split(/\r?\n/u)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) continue;
+    if (/^services:\s*$/u.test(line)) {
+      servicesSectionCount += 1;
+      inServices = true;
+      continue;
+    }
+    if (/^\S/u.test(line)) {
+      inServices = false;
+      continue;
+    }
+    if (!inServices) continue;
+    const match = /^ {2}([a-z0-9]+(?:-[a-z0-9]+)*):\s*$/u.exec(line);
+    if (!match) continue;
+    serviceCounts.set(match[1], (serviceCounts.get(match[1]) ?? 0) + 1);
+  }
+  if (servicesSectionCount !== 1) {
+    throw new Error('API source Compose services section is missing or ambiguous.');
+  }
   const present = [];
   for (const service of expected) {
-    const matches = composeSource.match(new RegExp(`^  ${service}:\\s*$`, 'gmu')) ?? [];
-    if (matches.length > 1) throw new Error('API source Compose topology is ambiguous.');
-    if (matches.length === 1) {
+    const matches = serviceCounts.get(service) ?? 0;
+    if (matches > 1) throw new Error('API source Compose topology is ambiguous.');
+    if (matches === 1) {
       present.push(service);
     } else if (!HISTORICALLY_OPTIONAL_API_SERVICES.has(service)) {
       throw new Error('API source Compose topology is missing a required role.');
@@ -565,11 +587,8 @@ function isApiLikeContainerName(value) {
 }
 
 function isExpectedComposeServiceContainerName(value, service) {
-  return (
-    value === `/infra-${service}-1` ||
-    value === `/infra_${service}_1` ||
-    new RegExp(`^/infra(?:-|_)${service}(?:-|_)[1-9]\\d*$`, 'u').test(value)
-  );
+  const match = /^\/infra([-_])([a-z0-9][a-z0-9-]*)([-_])([1-9]\d*)$/u.exec(value);
+  return Boolean(match && match[1] === match[3] && match[2] === service);
 }
 
 function isExpectedProjectApiContainerName(value) {

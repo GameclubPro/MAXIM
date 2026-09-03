@@ -725,7 +725,7 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
   const baseServices = DEFAULT_EXPECTED_API_SERVICES.filter(
     (service) => service !== 'api-media-analysis' && service !== 'api-publisher',
   );
-  const legacyCompose = baseServices.map((service) => `  ${service}:`).join('\n');
+  const legacyCompose = `services:\n${baseServices.map((service) => `  ${service}:`).join('\n')}`;
   assert.deepEqual(
     resolveExpectedApiServicesFromCompose(DEFAULT_EXPECTED_API_SERVICES, legacyCompose),
     baseServices,
@@ -736,6 +736,28 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
       `${legacyCompose}\n  api-media-analysis:`,
     ),
     DEFAULT_EXPECTED_API_SERVICES.filter((service) => service !== 'api-publisher'),
+  );
+  assert.deepEqual(
+    resolveExpectedApiServicesFromCompose(
+      DEFAULT_EXPECTED_API_SERVICES,
+      `${legacyCompose}\nvolumes:\n  api-publisher:`,
+    ),
+    baseServices,
+  );
+  assert.deepEqual(
+    resolveExpectedApiServicesFromCompose(
+      DEFAULT_EXPECTED_API_SERVICES,
+      legacyCompose.replace('\n  api-admin:', '\n# valid root comment\n  api-admin:'),
+    ),
+    baseServices,
+  );
+  assert.throws(
+    () =>
+      resolveExpectedApiServicesFromCompose(
+        DEFAULT_EXPECTED_API_SERVICES,
+        `${legacyCompose}\nservices:\n${baseServices.map((service) => `  ${service}:`).join('\n')}`,
+      ),
+    /services section is missing or ambiguous/u,
   );
 
   const directory = mkdtempSync(join(tmpdir(), 'maxim-capacity-manifest-'));
