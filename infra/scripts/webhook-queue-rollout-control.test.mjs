@@ -12,6 +12,7 @@ const {
   WEBHOOK_QUEUE_NAMES,
   WEBHOOK_ROLLOUT_OWNER_KEY,
   controlWebhookQueues,
+  createBullQueue,
   createRedisOwnershipStore,
   parsePositiveInteger,
   validateOwnerToken,
@@ -23,11 +24,11 @@ const OWNER_TOKEN = `rollout:${'a'.repeat(64)}`;
 const OTHER_OWNER_TOKEN = `rollout:${'b'.repeat(64)}`;
 const REPLACEMENT_OWNER_TOKEN = `rollout:${'c'.repeat(64)}`;
 
-function makeQueues({ activeByName = {}, hooks = {}, paused = false } = {}) {
+function makeQueues({ activeByName = {}, hooks = {}, paused = false, pausedByName = {} } = {}) {
   const states = new Map(
     WEBHOOK_QUEUE_NAMES.map((name) => [
       name,
-      { active: activeByName[name] ?? 0, closeCalls: 0, paused },
+      { active: activeByName[name] ?? 0, closeCalls: 0, paused: pausedByName[name] ?? paused },
     ]),
   );
   const queues = new Map(
@@ -154,6 +155,7 @@ test('reports queue pause ownership without mutating queues or requiring an owne
     queueCount: 24,
     pausedCount: 0,
     activeCount: 2,
+    legacyDefaultPaused: false,
     ownerPresent: false,
   });
   assert.equal(ownership.calls.acquire, 0);
@@ -163,6 +165,26 @@ test('reports queue pause ownership without mutating queues or requiring an owne
   assert.ok(
     [...harness.states.values()].every(({ closeCalls, paused }) => closeCalls === 1 && !paused),
   );
+});
+
+test('opens absent queue handles without creating BullMQ metadata', () => {
+  let constructed;
+  class QueueProbe {
+    constructor(name, options) {
+      constructed = { name, options };
+    }
+    on() {}
+  }
+
+  createBullQueue('moderation-default', QueueProbe, 'redis://fixture', {
+    enableOfflineQueue: false,
+  });
+  assert.equal(constructed.name, 'moderation-default');
+  assert.equal(constructed.options.skipMetasUpdate, true);
+  assert.deepEqual(constructed.options.connection, {
+    url: 'redis://fixture',
+    enableOfflineQueue: false,
+  });
 });
 
 test('status exposes an existing owner and fails closed if ownership changes during inspection', async () => {
@@ -190,6 +212,40 @@ test('status exposes an existing owner and fails closed if ownership changes dur
   );
   assert.equal(racing.calls.acquire, 0);
   assert.equal(racing.calls.compareAndDelete, 0);
+});
+
+test('status identifies a sole paused retired default queue without exposing queue details', async () => {
+  const harness = makeQueues({ pausedByName: { 'moderation-default': true } });
+  const ownership = makeOwnershipStore();
+  const summary = await controlWebhookQueues(
+    'status',
+    controlOptions(harness, ownership, { ownerToken: undefined }),
+  );
+
+  assert.deepEqual(summary, {
+    queueCount: 24,
+    pausedCount: 1,
+    activeCount: 0,
+    legacyDefaultPaused: true,
+    ownerPresent: false,
+  });
+});
+
+test('status rejects an unsafe aggregate active count', async () => {
+  const harness = makeQueues({
+    activeByName: {
+      moderation: Number.MAX_SAFE_INTEGER,
+      'moderation-critical': 1,
+    },
+  });
+  const ownership = makeOwnershipStore();
+  await assert.rejects(
+    controlWebhookQueues(
+      'status',
+      controlOptions(harness, ownership, { ownerToken: undefined }),
+    ),
+    /active total is unsafe/u,
+  );
 });
 
 test('acquires ownership with SET NX semantics before pausing every queue', async () => {

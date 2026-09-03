@@ -192,6 +192,39 @@ Obliteration uses batches of 1,000 with a 120-second wrapper deadline. A timeout
 partially removed queue paused; inspect it again and repeat the same apply command after review.
 Keep the legacy queue in `monitor-readonly` as a zero-count regression sentinel after cleanup.
 
+## Legacy Default Webhook Queue Retirement
+
+After the sharded `moderation-default-0..15` release is active, preview the retired unsharded queue:
+
+```bash
+./infra/scripts/vps-connect.sh moderation-default-retire-legacy-queue
+```
+
+The preview is read-only and reports aggregate counters only. It requires the exact clean active
+post-sharding API release, the complete 13-role fleet, a released webhook queue fence, healthy
+ingress/admin endpoints, no legacy worker, an allowlisted bounded historical job cohort, unpaused
+active shards, and primary-key-bounded PostgreSQL proof that every referenced webhook event is
+`PROCESSED`, `DUPLICATE`, or absent. Review that result before applying:
+
+```bash
+./infra/scripts/vps-connect.sh moderation-default-retire-legacy-queue --apply
+```
+
+Apply holds the shared deploy lock, attests `api-enqueue` as the sole production enqueue role,
+briefly stops it, then takes a fresh private snapshot and repeats the database proof. It pauses only
+`moderation-default` before non-forced obliteration and refuses any job carrying BullMQ flow,
+parent, repeat, or dependency linkage. A referenced in-container watchdog expires before the outer
+host timeout. After an ambiguous remote exit, cleanup waits past that deadline and attempts a fresh
+Redis settlement barrier before restoring `api-enqueue`; restoration still proceeds after the
+deadline if the barrier is unavailable, while the command remains failed for operator review. The
+EXIT path requires two stable exact-fleet/readiness samples with an unchanged restart count. It
+never replays jobs, changes PostgreSQL, restarts Postgres or Redis, or touches the active shards. If
+deletion does not complete, the remaining legacy queue stays paused; if obliteration completed
+before a later postcheck failed, the queue is already absent. After either error, rerun the aggregate
+preview before reviewing the same apply command as recovery. An already absent queue is an
+idempotent success. Keep `moderation-default` in the append-only rollout queue registry and
+`monitor-readonly` census as a zero-count regression sentinel.
+
 If direct SSH is blocked after an IP change and Yandex security-group configuration is present:
 
 ```bash

@@ -64,6 +64,8 @@ Commands:
   publisher-dispatch-status   Read privacy-safe Publik dispatch rollout status
   vk-parsing-retire-legacy-queue [--apply]
                               Preview or remove the retired vk-parsing-publish queue
+  moderation-default-retire-legacy-queue [--apply]
+                              Preview or remove the retired unsharded webhook queue
   install-publisher-secrets [token-file]
                               Install initial Publik credentials over SSH stdin
   ps [services...]            Show main production docker compose status
@@ -565,6 +567,19 @@ vk_parsing_retire_legacy_queue() {
     exit 2
   fi
   local remote_args=(./infra/scripts/vps-retire-legacy-vk-publish-queue.sh)
+  if [[ "$apply" == "--apply" ]]; then
+    remote_args+=(--apply)
+  fi
+  remote_exec "$(shell_quote_args "${remote_args[@]}")"
+}
+
+moderation_default_retire_legacy_queue() {
+  local apply="${1:-}"
+  if [[ -n "$apply" && "$apply" != "--apply" ]] || [[ $# -gt 1 ]]; then
+    echo "Usage: $0 moderation-default-retire-legacy-queue [--apply]" >&2
+    exit 2
+  fi
+  local remote_args=(./infra/scripts/vps-retire-legacy-default-webhook-queue.sh)
   if [[ "$apply" == "--apply" ]]; then
     remote_args+=(--apply)
   fi
@@ -1154,6 +1169,9 @@ case "$command" in
     ;;
   vk-parsing-retire-legacy-queue)
     vk_parsing_retire_legacy_queue "$@"
+    ;;
+  moderation-default-retire-legacy-queue)
+    moderation_default_retire_legacy_queue "$@"
     ;;
   install-publisher-secrets)
     install_publisher_secrets "$@"

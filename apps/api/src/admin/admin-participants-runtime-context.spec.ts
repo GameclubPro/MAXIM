@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
 import {
   createAdminParticipantsRuntimeContext,
@@ -406,5 +407,215 @@ describe('AdminParticipantsRuntime access-loss probes', () => {
 
     expect(accessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
     expect(maxClient.getChatMembersPage).not.toHaveBeenCalled();
+  });
+});
+
+describe('AdminParticipantsRuntime transient roster failures', () => {
+  it.each([
+    [
+      'HTTP 502',
+      Object.assign(new Error('Request failed with status code 502'), {
+        response: { status: 502, data: { code: 'server.failure', message: 'Bad Gateway' } },
+      }),
+    ],
+    [
+      'HTTP 429',
+      Object.assign(new Error('Request failed with status code 429'), {
+        response: { status: 429, data: { code: 'rate.limit', message: 'Too Many Requests' } },
+      }),
+    ],
+    ['timeout', Object.assign(new Error('MAX roster timeout'), { code: 'ECONNABORTED' })],
+  ])('maps %s to an actionable 503 without recording access loss', async (_label, rosterError) => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue({ nightModeTimezone: 'Europe/Moscow' });
+    const maxClient = { getChatMembersPage: jest.fn().mockRejectedValue(rosterError) };
+    const accessLossService = { recordIfManagedEntityAccessLost: jest.fn() };
+    const runtime = new AdminParticipantsRuntime(
+      createParticipantsRuntimeContext({ prisma, maxClient, accessLossService }),
+    );
+
+    const error = await runtime
+      .getChatParticipantsPage('chat-1', participantAdmin, { limit: 10, range: '7d' })
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as ServiceUnavailableException).getStatus()).toBe(503);
+    expect((error as ServiceUnavailableException).getResponse()).toMatchObject({
+      statusCode: 503,
+      code: 'MAX_CHAT_PARTICIPANTS_TEMPORARILY_UNAVAILABLE',
+      retryable: true,
+      retryAfterMs: 5_000,
+    });
+    expect(accessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+  });
+
+  it('coalesces an in-flight failure, negative-caches it briefly, then retries after the TTL', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-03T08:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatSettings.findUnique.mockResolvedValue({ nightModeTimezone: 'Europe/Moscow' });
+      const rosterError = Object.assign(new Error('Request failed with status code 502'), {
+        response: { status: 502, data: { code: 'server.failure', message: 'Bad Gateway' } },
+      });
+      const firstAttempt = createDeferred<never>();
+      const getChatMembersPage = jest
+        .fn()
+        .mockImplementationOnce(() => firstAttempt.promise)
+        .mockResolvedValueOnce({ items: [], nextMarker: null });
+      const context = createParticipantsRuntimeContext({
+        prisma,
+        maxClient: { getChatMembersPage },
+        accessLossService: { recordIfManagedEntityAccessLost: jest.fn() },
+      });
+      const runtime = new AdminParticipantsRuntime(context);
+      const query = { limit: 10, range: '7d' as const };
+
+      const first = runtime.getChatParticipantsPage('chat-1', participantAdmin, query);
+      const concurrent = runtime.getChatParticipantsPage('chat-1', participantAdmin, query);
+      firstAttempt.reject(rosterError);
+      await expect(first).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await expect(concurrent).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await expect(
+        runtime.getChatParticipantsPage('chat-1', participantAdmin, query),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(getChatMembersPage).toHaveBeenCalledTimes(1);
+      expect(context.chatParticipantsPageCache.size).toBe(1);
+
+      jest.advanceTimersByTime(4_999);
+      expect(context.chatParticipantsPageCache.size).toBe(1);
+      jest.advanceTimersByTime(1);
+      expect(context.chatParticipantsPageCache.size).toBe(0);
+      await expect(
+        runtime.getChatParticipantsPage('chat-1', participantAdmin, query),
+      ).resolves.toMatchObject({ items: [], hasMore: false, nextCursor: null });
+      expect(getChatMembersPage).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not leak a transient negative cache entry between actor cache keys', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue({ nightModeTimezone: 'Europe/Moscow' });
+    const rosterError = Object.assign(new Error('Request failed with status code 502'), {
+      response: { status: 502, data: { code: 'server.failure', message: 'Bad Gateway' } },
+    });
+    const getChatMembersPage = jest
+      .fn()
+      .mockRejectedValueOnce(rosterError)
+      .mockResolvedValueOnce({ items: [], nextMarker: null });
+    const runtime = new AdminParticipantsRuntime(
+      createParticipantsRuntimeContext({
+        prisma,
+        maxClient: { getChatMembersPage },
+        accessLossService: { recordIfManagedEntityAccessLost: jest.fn() },
+      }),
+    );
+
+    await expect(
+      runtime.getChatParticipantsPage('chat-1', participantAdmin, { limit: 10, range: '7d' }),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(
+      runtime.getChatParticipantsPage(
+        'chat-1',
+        { ...participantAdmin, userId: 'admin-2' },
+        { limit: 10, range: '7d' },
+      ),
+    ).resolves.toMatchObject({ items: [] });
+    expect(getChatMembersPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('maps an upstream 5xx during search to the same structured 503', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue({ nightModeTimezone: 'Europe/Moscow' });
+    const rosterError = Object.assign(new Error('Request failed with status code 502'), {
+      response: { status: 502, data: { code: 'server.failure', message: 'Bad Gateway' } },
+    });
+    const maxClient = { getChatMembersPage: jest.fn().mockRejectedValue(rosterError) };
+    const accessLossService = { recordIfManagedEntityAccessLost: jest.fn() };
+    const runtime = new AdminParticipantsRuntime(
+      createParticipantsRuntimeContext({ prisma, maxClient, accessLossService }),
+    );
+
+    const error = await runtime
+      .getChatParticipantsPage('chat-1', participantAdmin, {
+        limit: 10,
+        range: '7d',
+        search: 'needle',
+      })
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as ServiceUnavailableException).getResponse()).toMatchObject({
+      statusCode: 503,
+      code: 'MAX_CHAT_PARTICIPANTS_TEMPORARILY_UNAVAILABLE',
+      retryAfterMs: 5_000,
+    });
+    expect(maxClient.getChatMembersPage).toHaveBeenCalledTimes(1);
+    expect(accessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+  });
+
+  it('does not let an old transient eviction timer delete a replacement cache promise', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-03T08:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatSettings.findUnique.mockResolvedValue({ nightModeTimezone: 'Europe/Moscow' });
+      const rosterError = Object.assign(new Error('Request failed with status code 502'), {
+        response: { status: 502, data: { code: 'server.failure', message: 'Bad Gateway' } },
+      });
+      const context = createParticipantsRuntimeContext({
+        prisma,
+        maxClient: { getChatMembersPage: jest.fn().mockRejectedValue(rosterError) },
+        accessLossService: { recordIfManagedEntityAccessLost: jest.fn() },
+      });
+      const runtime = new AdminParticipantsRuntime(context);
+
+      await expect(
+        runtime.getChatParticipantsPage('chat-1', participantAdmin, { limit: 10, range: '7d' }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      const cacheKey = [...context.chatParticipantsPageCache.keys()][0];
+      expect(cacheKey).toEqual(expect.any(String));
+      const replacementPromise = Promise.resolve({
+        items: [],
+        totalCount: 0,
+        hasMore: false,
+        nextCursor: null,
+      });
+      context.chatParticipantsPageCache.set(cacheKey!, {
+        expiresAtMs: Date.now() + 30_000,
+        promise: replacementPromise,
+      });
+
+      jest.advanceTimersByTime(5_000);
+
+      expect(context.chatParticipantsPageCache.get(cacheKey!)?.promise).toBe(replacementPromise);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not negative-cache non-transient roster errors', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue({ nightModeTimezone: 'Europe/Moscow' });
+    const rosterError = Object.assign(new Error('Request failed with status code 422'), {
+      response: { status: 422, data: { code: 'invalid.request', message: 'Invalid request' } },
+    });
+    const getChatMembersPage = jest.fn().mockRejectedValue(rosterError);
+    const runtime = new AdminParticipantsRuntime(
+      createParticipantsRuntimeContext({
+        prisma,
+        maxClient: { getChatMembersPage },
+        accessLossService: { recordIfManagedEntityAccessLost: jest.fn() },
+      }),
+    );
+    const query = { limit: 10, range: '7d' as const };
+
+    await expect(runtime.getChatParticipantsPage('chat-1', participantAdmin, query)).rejects.toBe(
+      rosterError,
+    );
+    await expect(runtime.getChatParticipantsPage('chat-1', participantAdmin, query)).rejects.toBe(
+      rosterError,
+    );
+    expect(getChatMembersPage).toHaveBeenCalledTimes(2);
   });
 });

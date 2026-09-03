@@ -20238,7 +20238,7 @@ describe('AdminService.getChatParticipantsPage', () => {
     expect(secondPage.hasMore).toBe(false);
   });
 
-  it('returns a retry cursor instead of failing participant search on MAX API throttling', async () => {
+  it('returns a structured 503 when participant search is throttled by MAX', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'chat-1',
@@ -20278,16 +20278,18 @@ describe('AdminService.getChatParticipantsPage', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.getChatParticipantsPage(
-      'chat-1',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
-      { limit: 10, range: '7d', search: 'тимо' },
-    );
+    const error = await service
+      .getChatParticipantsPage(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { limit: 10, range: '7d', search: 'тимо' },
+      )
+      .catch((cause: unknown) => cause);
 
     expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
       'chat-1',
@@ -20302,15 +20304,14 @@ describe('AdminService.getChatParticipantsPage', () => {
         timeoutMs: 700,
       }),
     );
-    expect(result).toEqual({
-      items: [],
-      totalCount: 1200,
-      hasMore: true,
-      nextCursor: expect.any(String),
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as ServiceUnavailableException).getResponse()).toMatchObject({
+      code: 'MAX_CHAT_PARTICIPANTS_TEMPORARILY_UNAVAILABLE',
+      retryAfterMs: 5_000,
     });
   });
 
-  it('returns a retry cursor instead of failing participant search on MAX API timeout', async () => {
+  it('returns a structured 503 when participant search times out against MAX', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'chat-1',
@@ -20353,16 +20354,18 @@ describe('AdminService.getChatParticipantsPage', () => {
     };
     (service as any).managedEntityAccessLossService = accessLossService;
 
-    const result = await service.getChatParticipantsPage(
-      'chat-1',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
-      { limit: 10, range: '7d', search: 'тимо' },
-    );
+    const error = await service
+      .getChatParticipantsPage(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { limit: 10, range: '7d', search: 'тимо' },
+      )
+      .catch((cause: unknown) => cause);
 
     expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
       'chat-1',
@@ -20377,11 +20380,10 @@ describe('AdminService.getChatParticipantsPage', () => {
         timeoutMs: 700,
       }),
     );
-    expect(result).toEqual({
-      items: [],
-      totalCount: 1200,
-      hasMore: true,
-      nextCursor: expect.any(String),
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as ServiceUnavailableException).getResponse()).toMatchObject({
+      code: 'MAX_CHAT_PARTICIPANTS_TEMPORARILY_UNAVAILABLE',
+      retryAfterMs: 5_000,
     });
     expect(accessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
   });

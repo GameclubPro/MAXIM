@@ -11,6 +11,11 @@ AUDIT_LOCK_FILE=/tmp/maxim-postgres-audit.lock
 QUEUE_SAMPLE_CAP=2000
 MONITOR_SAMPLE_CAP=2000
 POSTGRES_AUDIT_ROLE=maxim_audit
+LEGACY_DEFAULT_DB_AUDIT_HELPER="$ROOT_DIR/infra/scripts/legacy-default-webhook-db-audit.mjs"
+LEGACY_DEFAULT_SNAPSHOT_PATH=''
+AUDIT_SQL_FILE=''
+AUDIT_STDERR_FILE=''
+AUDIT_BACKEND_MAY_EXIST=0
 POSTGRES_AUDIT_APP_NAME="maxim-bounded-audit-$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID}-${RANDOM}"
 POSTGRES_AUDIT_OPTIONS='-c default_transaction_read_only=on -c statement_timeout=2500ms -c lock_timeout=250ms -c idle_in_transaction_session_timeout=4s -c idle_session_timeout=60s -c max_parallel_workers_per_gather=0 -c enable_seqscan=off -c jit=off -c work_mem=1MB'
 
@@ -71,6 +76,16 @@ case "$AUDIT_MODE" in
       exit 2
     fi
     SIGNAL_WINDOW_MIN="$2"
+    ;;
+  legacy-default-webhook-jobs)
+    if [[ "${MAXIM_INTERNAL_LEGACY_DEFAULT_WEBHOOK_AUDIT:-}" != "1" || $# -ne 2 ||
+          "$2" != /* || ! -f "$LEGACY_DEFAULT_DB_AUDIT_HELPER" ]]; then
+      echo "Internal legacy default webhook audit invocation is invalid." >&2
+      exit 2
+    fi
+    LEGACY_DEFAULT_SNAPSHOT_PATH="$2"
+    node "$LEGACY_DEFAULT_DB_AUDIT_HELPER" \
+      validate-snapshot "$LEGACY_DEFAULT_SNAPSHOT_PATH" >/dev/null
     ;;
   *)
     echo "Unknown PostgreSQL audit mode: $AUDIT_MODE" >&2
@@ -481,6 +496,10 @@ CROSS JOIN duplicate_summary;
 SQL
 }
 
+emit_legacy_default_webhook_audit() {
+  node "$LEGACY_DEFAULT_DB_AUDIT_HELPER" emit-sql "$LEGACY_DEFAULT_SNAPSHOT_PATH"
+}
+
 emit_sql() {
   emit_prelude
   case "$AUDIT_MODE" in
@@ -497,8 +516,40 @@ emit_sql() {
     monitor-signals)
       emit_monitor_signals_audit
       ;;
+    legacy-default-webhook-jobs)
+      emit_legacy_default_webhook_audit
+      ;;
   esac
   printf '%s\n' 'COMMIT;'
+}
+
+prepare_audit_sql() {
+  local temp_root="${TMPDIR:-/tmp}"
+
+  if [[ "$temp_root" != /* || ! -d "$temp_root" || "$temp_root" == *$'\n'* ]]; then
+    echo "TMPDIR must be an existing absolute directory." >&2
+    return 1
+  fi
+  AUDIT_SQL_FILE="$(mktemp "$temp_root/maxim-postgres-audit-sql.XXXXXXXX")" || {
+    echo "Could not create the private PostgreSQL audit input." >&2
+    return 1
+  }
+  chmod 0600 "$AUDIT_SQL_FILE"
+  if ! emit_sql >"$AUDIT_SQL_FILE"; then
+    echo "Could not generate the bounded PostgreSQL audit." >&2
+    return 1
+  fi
+  if [[ ! -s "$AUDIT_SQL_FILE" || -L "$AUDIT_SQL_FILE" ]]; then
+    echo "Generated PostgreSQL audit input is invalid." >&2
+    return 1
+  fi
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
+    AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
+      echo "Could not create the private PostgreSQL audit diagnostics file." >&2
+      return 1
+    }
+    chmod 0600 "$AUDIT_STDERR_FILE"
+  fi
 }
 
 psql_command=(
@@ -507,7 +558,7 @@ psql_command=(
   -e "PGAPPNAME=$POSTGRES_AUDIT_APP_NAME"
   -e "PGOPTIONS=$POSTGRES_AUDIT_OPTIONS"
   postgres
-  psql -X --no-password -qAt -v ON_ERROR_STOP=1
+  psql -X --no-password -qAt -v ON_ERROR_STOP=1 -v ECHO=none -v VERBOSITY=terse -v SHOW_CONTEXT=never
   -U "$POSTGRES_AUDIT_ROLE" -d maxim
 )
 
@@ -581,7 +632,17 @@ cleanup() {
 
   trap - EXIT HUP INT TERM
   terminate_local_audit
-  cleanup_backend
+  if [[ "$AUDIT_BACKEND_MAY_EXIST" -eq 1 ]]; then
+    cleanup_backend
+  fi
+  if [[ -n "$AUDIT_SQL_FILE" && -f "$AUDIT_SQL_FILE" && ! -L "$AUDIT_SQL_FILE" ]]; then
+    rm -f -- "$AUDIT_SQL_FILE"
+  fi
+  AUDIT_SQL_FILE=''
+  if [[ -n "$AUDIT_STDERR_FILE" && -f "$AUDIT_STDERR_FILE" && ! -L "$AUDIT_STDERR_FILE" ]]; then
+    rm -f -- "$AUDIT_STDERR_FILE"
+  fi
+  AUDIT_STDERR_FILE=''
   exit "$status"
 }
 
@@ -590,8 +651,16 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-timeout --signal=TERM --kill-after=2s \
-  "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" < <(emit_sql) &
+prepare_audit_sql
+AUDIT_BACKEND_MAY_EXIST=1
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
+  timeout --signal=TERM --kill-after=2s \
+    "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
+    2>"$AUDIT_STDERR_FILE" &
+else
+  timeout --signal=TERM --kill-after=2s \
+    "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" &
+fi
 AUDIT_PROCESS_PID=$!
 set +e
 wait "$AUDIT_PROCESS_PID"
@@ -601,5 +670,7 @@ AUDIT_PROCESS_PID=''
 
 if [[ "$status" -eq 124 ]]; then
   echo "Bounded PostgreSQL audit exceeded ${AUDIT_WALL_TIMEOUT_SEC}s and was terminated." >&2
+elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then
+  echo "Bounded legacy default webhook database audit failed closed." >&2
 fi
 exit "$status"

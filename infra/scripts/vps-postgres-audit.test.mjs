@@ -49,6 +49,10 @@ fi
 printf '%s\n' "$@" >"$MOCK_DOCKER_ARGS"
 cat >"$MOCK_AUDIT_SQL"
 : >"$MOCK_AUDIT_STARTED"
+if [[ "\${MOCK_AUDIT_FAIL:-0}" == "1" ]]; then
+  printf '%s\n' 'ERROR near fixture-event-0001' >&2
+  exit 7
+fi
 printf '%s' "$$" >"$MOCK_DOCKER_PID"
 sleep "\${MOCK_AUDIT_SLEEP_SEC:-0}" &
 sleep_pid="$!"
@@ -110,7 +114,44 @@ function baseEnv(data) {
   };
   delete env.MAXIM_VPS_DATABASE_BREAK_GLASS;
   delete env.MAXIM_VPS_DATABASE_BREAK_GLASS_REASON;
+  delete env.MAXIM_INTERNAL_LEGACY_DEFAULT_WEBHOOK_AUDIT;
   return env;
+}
+
+function writeLegacyDefaultWebhookSnapshot(data) {
+  const snapshot = join(data.directory, 'legacy-default-webhook-snapshot.json');
+  const timestamp = Date.parse('2026-03-30T12:00:00.000Z');
+  const records = [
+    { id: 'fixture-event-0001', state: 'prioritized', timestamp, priority: 5 },
+    { id: 'fixture-event-0002', state: 'failed', timestamp: timestamp + 1, priority: 5 },
+  ];
+  writeFileSync(
+    snapshot,
+    JSON.stringify({
+      version: 1,
+      queue: 'moderation-default',
+      libraryVersion: 'bullmq:5.77.6',
+      records,
+      summary: {
+        paused: false,
+        workerCount: 0,
+        jobSchedulerCount: 0,
+        counts: {
+          waiting: 0,
+          active: 0,
+          delayed: 0,
+          failed: 1,
+          completed: 0,
+          paused: 0,
+          prioritized: 1,
+          'waiting-children': 0,
+        },
+      },
+    }),
+    { mode: 0o600 },
+  );
+  chmodSync(snapshot, 0o600);
+  return snapshot;
 }
 
 function runAudit(data, args, extraEnv = {}) {
@@ -149,6 +190,9 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(args, /jit=off/u);
   assert.match(args, /work_mem=1MB/u);
   assert.match(args, /--no-password/u);
+  assert.match(args, /ECHO=none/u);
+  assert.match(args, /VERBOSITY=terse/u);
+  assert.match(args, /SHOW_CONTEXT=never/u);
 
   const sql = readFileSync(data.sql, 'utf8');
   assert.match(sql, /^BEGIN READ ONLY;$/mu);
@@ -245,6 +289,58 @@ test('audit modes reject arbitrary SQL and unsafe monitor windows before Docker'
     assert.equal(result.status, 2, `${args.join(' ')}: ${result.stderr}`);
     assert.equal(existsSync(data.dockerArgs), false, args.join(' '));
   }
+});
+
+test('internal legacy queue audit is capability-gated and emits a bounded primary-key query', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const snapshot = writeLegacyDefaultWebhookSnapshot(data);
+
+  const denied = runAudit(data, ['legacy-default-webhook-jobs', snapshot]);
+  assert.equal(denied.status, 2, denied.stderr);
+  assert.equal(existsSync(data.dockerArgs), false);
+
+  const allowed = runAudit(data, ['legacy-default-webhook-jobs', snapshot], {
+    MAXIM_INTERNAL_LEGACY_DEFAULT_WEBHOOK_AUDIT: '1',
+  });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout.trim(), '{"mock":true}');
+
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /^BEGIN READ ONLY;$/mu);
+  assert.match(sql, /requested\(id\) AS MATERIALIZED \(\s*VALUES/u);
+  assert.equal([...sql.matchAll(/::text\)/gu)].length, 2);
+  assert.match(
+    sql,
+    /LEFT JOIN public\.webhook_events AS webhook_events ON webhook_events\.id = requested\.id/u,
+  );
+  assert.match(sql, /requested_count/u);
+  assert.match(sql, /absent_count/u);
+  assert.match(sql, /processed_count/u);
+  assert.match(sql, /duplicate_count/u);
+  assert.match(sql, /received_count/u);
+  assert.match(sql, /queued_count/u);
+  assert.match(sql, /failed_count/u);
+  assert.match(sql, /quarantined_count/u);
+  assert.match(sql, /retryable_failed_count/u);
+  assert.match(sql, /^COMMIT;$/mu);
+  assert.match(sql, /FROM pg_constraint AS primary_constraint/u);
+  assert.match(sql, /JOIN pg_index AS primary_index/u);
+  assert.match(sql, /primary_constraint\.contype = 'p'/u);
+  assert.match(sql, /primary_index\.indisprimary/u);
+  assert.match(sql, /primary_index\.indisvalid/u);
+
+  const auditSource = readFileSync(audit, 'utf8');
+  assert.match(auditSource, /prepare_audit_sql[\s\S]*<"\$AUDIT_SQL_FILE"/u);
+  assert.doesNotMatch(auditSource, /< <\(emit_sql\)/u);
+
+  const failed = runAudit(data, ['legacy-default-webhook-jobs', snapshot], {
+    MAXIM_INTERNAL_LEGACY_DEFAULT_WEBHOOK_AUDIT: '1',
+    MOCK_AUDIT_FAIL: '1',
+  });
+  assert.equal(failed.status, 7, failed.stderr);
+  assert.match(failed.stderr, /failed closed/u);
+  assert.doesNotMatch(failed.stderr, /fixture-event/u);
 });
 
 test('global audit flock rejects an overlapping diagnostic before Docker', async (t) => {
@@ -515,10 +611,14 @@ test('vps postgres-audit accepts only public fixed modes and needs no bypass', (
   assert.match(sshArgs, /vps-postgres-audit\.sh/u);
   assert.match(sshArgs, /queue/u);
 
-  rmSync(data.sshArgs, { force: true });
-  const denied = runConnect(data, ['postgres-audit', 'monitor-signals']);
-  assert.equal(denied.status, 2, denied.stderr);
-  assert.equal(existsSync(data.sshArgs), false);
+  for (const privateMode of ['monitor-signals', 'legacy-default-webhook-jobs']) {
+    rmSync(data.sshArgs, { force: true });
+    const denied = runConnect(data, ['postgres-audit', privateMode], {
+      MAXIM_INTERNAL_LEGACY_DEFAULT_WEBHOOK_AUDIT: '1',
+    });
+    assert.equal(denied.status, 2, denied.stderr);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
 });
 
 test('vps audit-role provisioning is preview-only by default and accepts only --apply', (t) => {

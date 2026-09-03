@@ -16,7 +16,12 @@ import {
   type ChatParticipantsQuery,
   type ManagedEntityType,
 } from '@maxim/contracts';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpStatus,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MAX_API_SOURCE_TAGS,
@@ -48,6 +53,21 @@ import {
 
 const UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_LIMIT = 100;
 const UNAVAILABLE_PARTICIPANT_CLEANUP_PAGE_SAFETY_CAP = 500;
+const CHAT_PARTICIPANTS_TRANSIENT_FAILURE_CACHE_TTL_MS = 5_000;
+
+class ChatParticipantsTemporarilyUnavailableException extends ServiceUnavailableException {
+  constructor() {
+    super({
+      statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+      error: 'Service Unavailable',
+      code: 'MAX_CHAT_PARTICIPANTS_TEMPORARILY_UNAVAILABLE',
+      message: 'MAX временно не отвечает. Повторите загрузку участников через несколько секунд.',
+      retryable: true,
+      retryAfterMs: CHAT_PARTICIPANTS_TRANSIENT_FAILURE_CACHE_TTL_MS,
+    });
+    this.name = 'ChatParticipantsTemporarilyUnavailableException';
+  }
+}
 
 export function matchesChatParticipantRoleFilter(
   member: Pick<MaxChatRosterMember, 'isBot' | 'role'>,
@@ -719,7 +739,21 @@ export class AdminParticipantsRuntime {
           })
     ).catch(async (error: unknown) => {
       if (!this.isTerminalChatParticipantsRosterAccessError(error)) {
-        throw error;
+        if (!this.isTransientChatParticipantsRosterError(error)) {
+          throw error;
+        }
+
+        this.logger.warn(
+          {
+            chatId,
+            entityType,
+            search: search ? true : undefined,
+            statusCode: this.extractHttpStatusCode(error),
+            code: this.extractMaxApiErrorCode(error),
+          },
+          'Participant roster is temporarily unavailable from MAX',
+        );
+        throw new ChatParticipantsTemporarilyUnavailableException();
       }
 
       if (rosterProbeStartedAt) {
@@ -933,40 +967,13 @@ export class AdminParticipantsRuntime {
 
     while (true) {
       const currentMarker = marker;
-      let membersPage: { items: MaxChatRosterMember[]; nextMarker: string | null };
-      try {
-        membersPage = await this.loadChatParticipantsMembersPage(
-          chatId,
-          100,
-          currentMarker,
-          resolvedBotId,
-          { search: true, onAttemptStarted },
-        );
-      } catch (error: unknown) {
-        if (!this.isTransientChatParticipantsSearchError(error)) {
-          throw error;
-        }
-
-        this.logger.log(
-          {
-            chatId,
-            marker: currentMarker,
-            itemsReturned: items.length,
-            scannedRemotePages,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Paused participant search page scan after MAX API throttling or timeout',
-        );
-        return {
-          items,
-          nextMarker: this.encodeChatParticipantsSearchCursor({
-            marker: currentMarker,
-            skip,
-            search,
-            roleFilter: query.roleFilter,
-          }),
-        };
-      }
+      const membersPage = await this.loadChatParticipantsMembersPage(
+        chatId,
+        100,
+        currentMarker,
+        resolvedBotId,
+        { search: true, onAttemptStarted },
+      );
       scannedRemotePages += 1;
       const matches = membersPage.items.filter(
         (member) =>
@@ -1076,8 +1083,13 @@ export class AdminParticipantsRuntime {
     );
   }
 
-  private isTransientChatParticipantsSearchError(error: unknown): boolean {
-    return isMaxApiThrottleError(error) || isMaxApiTimeoutError(error);
+  private isTransientChatParticipantsRosterError(error: unknown): boolean {
+    const status = this.extractHttpStatusCode(error);
+    return (
+      (status !== null && status >= 500 && status <= 599) ||
+      isMaxApiThrottleError(error) ||
+      isMaxApiTimeoutError(error)
+    );
   }
 
   private normalizeChatParticipantsSearchText(value: string): string {
@@ -1167,7 +1179,18 @@ export class AdminParticipantsRuntime {
       (error: unknown) => {
         const current = this.chatParticipantsPageCache.get(cacheKey);
         if (current?.promise === pending) {
-          this.chatParticipantsPageCache.delete(cacheKey);
+          if (error instanceof ChatParticipantsTemporarilyUnavailableException) {
+            current.expiresAtMs = Date.now() + CHAT_PARTICIPANTS_TRANSIENT_FAILURE_CACHE_TTL_MS;
+            const failedPromise = current.promise;
+            const evictionTimer = setTimeout(() => {
+              if (this.chatParticipantsPageCache.get(cacheKey)?.promise === failedPromise) {
+                this.chatParticipantsPageCache.delete(cacheKey);
+              }
+            }, CHAT_PARTICIPANTS_TRANSIENT_FAILURE_CACHE_TTL_MS);
+            evictionTimer.unref?.();
+          } else {
+            this.chatParticipantsPageCache.delete(cacheKey);
+          }
         }
         throw error;
       },

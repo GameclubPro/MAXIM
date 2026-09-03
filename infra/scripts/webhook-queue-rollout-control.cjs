@@ -140,7 +140,7 @@ function createRedisOwnershipStore(redis, key = WEBHOOK_ROLLOUT_OWNER_KEY) {
   };
 }
 
-async function readSummary(queues) {
+async function readSummary(queues, includeLegacyDefaultState = false) {
   const results = await Promise.allSettled(
     queues.map(async ({ name, queue }) => {
       const [paused, active] = await Promise.all([queue.isPaused(), queue.getActiveCount()]);
@@ -153,11 +153,19 @@ async function readSummary(queues) {
   const failure = results.find(({ status }) => status === 'rejected');
   if (failure) throw failure.reason;
   const states = results.map((result) => result.value);
-  return {
+  const activeCount = states.reduce((total, { active }) => total + active, 0);
+  if (!Number.isSafeInteger(activeCount)) {
+    throw new Error('Webhook queue rollout active total is unsafe.');
+  }
+  const summary = {
     queueCount: states.length,
     pausedCount: states.filter(({ paused }) => paused).length,
-    activeCount: states.reduce((total, { active }) => total + active, 0),
+    activeCount,
   };
+  if (!includeLegacyDefaultState) return summary;
+  const legacyDefault = states.find(({ name }) => name === LEGACY_DEFAULT_WEBHOOK_QUEUE);
+  if (!legacyDefault) throw new Error('Legacy default webhook queue is missing from the registry.');
+  return { ...summary, legacyDefaultPaused: legacyDefault.paused };
 }
 
 async function assertOwnership(ownershipStore, ownerToken) {
@@ -177,7 +185,7 @@ async function readOwnedSummary(queues, ownershipStore, ownerToken) {
 
 async function readStatusSummary(queues, ownershipStore) {
   const ownerBefore = await ownershipStore.getOwner();
-  const summary = await readSummary(queues);
+  const summary = await readSummary(queues, true);
   const ownerAfter = await ownershipStore.getOwner();
   if (ownerBefore !== ownerAfter) {
     throw new Error('Webhook rollout pause ownership changed during status inspection.');
@@ -353,6 +361,15 @@ async function controlWebhookQueues(action, options) {
   }
 }
 
+function createBullQueue(name, Queue, redisUrl, connectionOptions) {
+  const queue = new Queue(name, {
+    skipMetasUpdate: true,
+    connection: { url: redisUrl, ...connectionOptions },
+  });
+  queue.on('error', () => undefined);
+  return queue;
+}
+
 async function main() {
   const { Queue } = require('bullmq');
   const Redis = require('ioredis');
@@ -381,13 +398,7 @@ async function main() {
     drainTimeoutMs,
     ownerToken: process.env.MAXIM_WEBHOOK_ROLLOUT_OWNER_TOKEN,
     ownershipStore: createRedisOwnershipStore(redis),
-    createQueue: (name) => {
-      const queue = new Queue(name, {
-        connection: { url: redisUrl, ...connectionOptions },
-      });
-      queue.on('error', () => undefined);
-      return queue;
-    },
+    createQueue: (name) => createBullQueue(name, Queue, redisUrl, connectionOptions),
   });
   process.stdout.write(`${JSON.stringify(summary)}\n`);
 }
@@ -402,6 +413,7 @@ module.exports = {
   assertOwnership,
   claimPauseOwnership,
   controlWebhookQueues,
+  createBullQueue,
   createRedisOwnershipStore,
   parsePositiveInteger,
   readStatusSummary,

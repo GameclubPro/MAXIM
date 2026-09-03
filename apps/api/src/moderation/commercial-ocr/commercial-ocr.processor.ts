@@ -189,7 +189,7 @@ export class CommercialOcrProcessor extends WorkerHost {
     identity: CommercialOcrJobIdentity,
     result: CommercialOcrDeferResult,
     deadlineAtMs: number,
-  ): Promise<never> {
+  ): Promise<void> {
     if (!token) {
       await this.releaseIfFinalAttempt(job, identity);
       throw new Error(`Commercial OCR job deferred without a lock token: ${result.reason}`);
@@ -198,6 +198,11 @@ export class CommercialOcrProcessor extends WorkerHost {
     if (deferUntilMs >= deadlineAtMs) {
       this.metrics.recordCounter(`bullmq.job.deadline_exhausted.${result.reason}`);
       await this.releaseAdmission(identity);
+      // FLAG: Governor-denied heavy work remains fail-open and terminal. Returning only prevents
+      // the controlled expiry from entering BullMQ failed retention after admission is tombstoned.
+      if (result.reason === 'governor_pressure') {
+        return;
+      }
       throw new UnrecoverableError(`Commercial OCR job deadline exhausted: ${result.reason}`);
     }
     try {

@@ -329,7 +329,43 @@ describe('CommercialOcrProcessor', () => {
     },
   );
 
-  it.each(['source_not_ready', 'governor_pressure', 'admission_pending'] as const)(
+  it('completes terminal governor pressure after recording it and releasing admission', async () => {
+    jest.mocked(Date.now).mockReturnValue(deadlineAtMs - 5_000);
+    const harness = createHarness({
+      result: { kind: 'defer', delayMs: 5_000, reason: 'governor_pressure' },
+    });
+
+    await expect(harness.processor.process(harness.job, 'lock-1')).resolves.toBeUndefined();
+
+    expect(harness.metrics.recordCounter).toHaveBeenCalledWith(
+      'bullmq.job.deadline_exhausted.governor_pressure',
+    );
+    const counterCallIndex = harness.metrics.recordCounter.mock.calls.findIndex(
+      ([counter]) => counter === 'bullmq.job.deadline_exhausted.governor_pressure',
+    );
+    expect(counterCallIndex).toBeGreaterThanOrEqual(0);
+    expect(harness.metrics.recordCounter.mock.invocationCallOrder[counterCallIndex]).toBeLessThan(
+      harness.admissionStore.release.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(harness.metrics.recordCounter).not.toHaveBeenCalledWith('bullmq.job.completed');
+    expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
+    expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
+  });
+
+  it('keeps terminal governor pressure fail-open when admission release is unavailable', async () => {
+    jest.mocked(Date.now).mockReturnValue(deadlineAtMs - 5_000);
+    const harness = createHarness({
+      result: { kind: 'defer', delayMs: 5_000, reason: 'governor_pressure' },
+      releaseResult: false,
+    });
+
+    await expect(harness.processor.process(harness.job, 'lock-1')).resolves.toBeUndefined();
+
+    expect(harness.admissionStore.release).toHaveBeenCalledTimes(1);
+    expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it.each(['source_not_ready', 'admission_pending'] as const)(
     'counts a terminal %s defer without changing the deadline failure',
     async (reason) => {
       jest.mocked(Date.now).mockReturnValue(deadlineAtMs - 5_000);
@@ -357,6 +393,25 @@ describe('CommercialOcrProcessor', () => {
       expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
     },
   );
+
+  it('keeps a missing defer lock token as a retryable failure with final-attempt cleanup', async () => {
+    const harness = createHarness({
+      result: { kind: 'defer', delayMs: 5_000, reason: 'governor_pressure' },
+      attemptsMade: 2,
+      attempts: 3,
+    });
+
+    const error = await harness.processor.process(harness.job).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(UnrecoverableError);
+    expect(error).toHaveProperty(
+      'message',
+      'Commercial OCR job deferred without a lock token: governor_pressure',
+    );
+    expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
+    expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
+  });
 
   it('does not release admission after an ordinary retryable failure', async () => {
     const originalError = new Error('temporary failure');
@@ -430,9 +485,11 @@ describe('CommercialOcrProcessor', () => {
     });
     (harness.job.moveToDelayed as jest.Mock).mockRejectedValue(new Error('lock lost'));
 
-    await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toThrow(
-      'Commercial OCR job defer failed: governor_pressure',
-    );
+    const error = await harness.processor.process(harness.job, 'lock-1').catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(UnrecoverableError);
+    expect(error).toHaveProperty('message', 'Commercial OCR job defer failed: governor_pressure');
     expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
   });
 
