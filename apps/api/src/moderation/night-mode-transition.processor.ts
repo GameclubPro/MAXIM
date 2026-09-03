@@ -8,9 +8,12 @@ import {
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { ModerationExecutionService } from './moderation-execution.service';
+import { NightModeRouteVerificationService } from './night-mode-route-verification.service';
 import {
+  buildNightModeRouteVerificationJobId,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_QUEUE,
+  parseNightModeRouteVerification,
   type NightModeTransitionJob,
   type NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
@@ -33,6 +36,8 @@ export class NightModeTransitionProcessor extends WorkerHost {
     private readonly moderationExecutionService: ModerationExecutionService,
     private readonly scheduler: NightModeTransitionSchedulerService,
     @Optional() private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
+    @Optional()
+    private readonly nightModeRouteVerificationService?: NightModeRouteVerificationService,
   ) {
     super();
   }
@@ -40,6 +45,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
   async process(job: Job<NightModeTransitionJob>, token?: string): Promise<void> {
     if (!roleRunsModeration(getAppRole())) {
       return;
+    }
+    if (job.data.routeVerification !== undefined) {
+      return this.processRouteVerification(job, token);
     }
     if (job.data.recoveryOnly) {
       const recoveryPreflight = await this.scheduler.inspectRecoveryOnlyTransition(job.data);
@@ -154,6 +162,53 @@ export class NightModeTransitionProcessor extends WorkerHost {
     throw new DelayedError();
   }
 
+  private async processRouteVerification(
+    job: Job<NightModeTransitionJob>,
+    token?: string,
+  ): Promise<void> {
+    const verification = parseNightModeRouteVerification(job.data.routeVerification);
+    const expectedJobId = verification
+      ? buildNightModeRouteVerificationJobId(job.data.chatId, verification)
+      : null;
+    if (
+      !verification ||
+      job.id !== expectedJobId ||
+      job.data.transition !== 'close' ||
+      job.data.sessionKey !== verification.sessionKey ||
+      job.data.scheduledFor !== verification.sentAt
+    ) {
+      throw new UnrecoverableError(
+        `Night mode route verification proof is invalid (${job.data.chatId})`,
+      );
+    }
+    if (!this.nightModeRouteVerificationService) {
+      throw new Error(`Night mode route verification service is unavailable (${job.data.chatId})`);
+    }
+
+    const result = await this.nightModeRouteVerificationService.process(
+      job.data.chatId,
+      verification,
+    );
+    if (result.kind === 'complete') {
+      return;
+    }
+    if (result.kind === 'terminal') {
+      throw new UnrecoverableError(
+        `Night mode route verification ended without stable presence: ${result.reason} (${job.data.chatId})`,
+      );
+    }
+    if (typeof job.updateData !== 'function') {
+      throw new Error(`Night mode route verification job cannot be updated (${job.data.chatId})`);
+    }
+    await job.updateData({ ...job.data, routeVerification: result.verification });
+    return this.deferTransition(
+      job,
+      token,
+      result.retryAtMs,
+      new Error(`Night mode route verification retry could not be delayed (${job.data.chatId})`),
+    );
+  }
+
   private async requestAccessRefresh(job: Job<NightModeTransitionJob>): Promise<void> {
     if (!this.maxChatAdminRosterSyncService) {
       return;
@@ -198,6 +253,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
 
   @OnWorkerEvent('completed')
   async onCompleted(job: Job<NightModeTransitionJob>): Promise<void> {
+    if (job.data.routeVerification !== undefined) {
+      return;
+    }
     if (job.data.recoveryOnly) {
       try {
         await this.scheduler.requestJobReconcile(job.data);
@@ -230,6 +288,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   async onFailed(job: Job<NightModeTransitionJob> | undefined, error: Error): Promise<void> {
     if (!job || error instanceof DelayedError) {
+      return;
+    }
+    if (job.data.routeVerification !== undefined) {
       return;
     }
 

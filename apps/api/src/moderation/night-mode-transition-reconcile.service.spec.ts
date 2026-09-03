@@ -42,6 +42,7 @@ describe('NightModeTransitionReconcileService', () => {
     repair?: jest.Mock;
     queryRaw?: jest.Mock;
     executeRaw?: jest.Mock;
+    scheduleRouteVerification?: jest.Mock;
     redisCounter?: {
       acquireLock: jest.Mock;
       renewLock: jest.Mock;
@@ -57,11 +58,16 @@ describe('NightModeTransitionReconcileService', () => {
           if (statement.includes('WITH candidates AS')) {
             return requests;
           }
+          if (statement.includes('WITH membership_page AS MATERIALIZED')) {
+            return [];
+          }
           return [{ chat_id: String(extractSqlValues(query)[1] ?? '') }];
         }),
       $executeRaw: params?.executeRaw ?? jest.fn().mockResolvedValue(1),
     };
     const scheduler = {
+      scheduleRouteVerification:
+        params?.scheduleRouteVerification ?? jest.fn().mockResolvedValue(undefined),
       repairAccessSchedule:
         params?.repair ??
         jest.fn().mockResolvedValue({
@@ -134,13 +140,31 @@ describe('NightModeTransitionReconcileService', () => {
     };
   }
 
+  function buildRouteVerificationRecoveryRow(
+    chatId: string,
+    botId: string,
+    id: string,
+    completedAt = new Date('2026-05-30T20:00:01.000Z'),
+  ) {
+    const sessionKey = 'v1:Europe/Moscow:23:00:08:00:2026-05-30';
+    return {
+      chatId,
+      botId,
+      ledgerId: id,
+      ledgerJobId: `night-mode:close:${chatId}:session:${sessionKey}`,
+      completedAt,
+      remoteMessageId: `close-${id}`,
+      dispatchBotId: botId,
+    };
+  }
+
   it('uses an exact bounded SQL anti-join and stops after existing events exhaust discovery', async () => {
     const queryRaw = jest
       .fn()
       .mockResolvedValue([
         { ...buildLegacyRecoveryRow('chat-event-exists', 'event-exists'), eventExists: true },
       ]);
-    const { service } = createService({ queryRaw });
+    const { scheduler, service } = createService({ queryRaw });
     const discover = () =>
       (
         service as unknown as {
@@ -152,6 +176,7 @@ describe('NightModeTransitionReconcileService', () => {
     await expect(discover()).resolves.toBe(0);
 
     expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(scheduler.scheduleRouteVerification).not.toHaveBeenCalled();
     const statement = extractSqlText(queryRaw.mock.calls[0]?.[0]);
     expect(statement).toContain('WITH ledger_page AS MATERIALIZED');
     expect(statement).toContain('FROM "max_action_ledger" ledger');
@@ -167,6 +192,114 @@ describe('NightModeTransitionReconcileService', () => {
     expect(statement).toContain('event."metadata" ->> \'sessionKey\'');
     expect(statement).toContain('ORDER BY ledger."completed_at" DESC, ledger."id" DESC');
     expect(statement).toContain('LIMIT');
+  });
+
+  it('rematerializes a missing verifier from a bounded membership page independently of the close event', async () => {
+    const completedAt = new Date('2026-05-30T20:00:01.000Z');
+    const row = buildRouteVerificationRecoveryRow(
+      'chat-verifier-recovery',
+      'bot-1',
+      'verifier-recovery',
+      completedAt,
+    );
+    const queryRaw = jest.fn().mockResolvedValue([row]);
+    const scheduleRouteVerification = jest.fn().mockResolvedValue(undefined);
+    const { prisma, scheduler, service } = createService({
+      queryRaw,
+      scheduleRouteVerification,
+    });
+
+    await expect(
+      (
+        service as unknown as {
+          discoverRouteVerificationRecoveriesPage(): Promise<number>;
+        }
+      ).discoverRouteVerificationRecoveriesPage(),
+    ).resolves.toBe(1);
+
+    expect(scheduler.scheduleRouteVerification).toHaveBeenCalledWith({
+      chatId: 'chat-verifier-recovery',
+      sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      messageId: 'close-verifier-recovery',
+      botId: 'bot-1',
+      sentAt: completedAt,
+    });
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    const statement = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+    expect(statement).toContain('WITH membership_page AS MATERIALIZED');
+    expect(statement).toContain('FROM "chat_bot_memberships" membership');
+    expect(statement).toContain('ORDER BY membership."chat_id" ASC, membership."bot_id" ASC');
+    expect(statement).toContain('LEFT JOIN LATERAL');
+    expect(statement).toContain('ledger."terminal" = true');
+    expect(statement).toContain('ledger."status" = \'SUCCEEDED\'');
+    expect(statement).toContain('ledger."source_tag" = \'night_mode_transition\'');
+    expect(statement).toContain('ledger."completed_at" > page."failureAt"');
+    expect(statement).toContain('ledger."completed_at" <= page."quarantinedUntil"');
+    expect(statement).toContain('page."quarantinedUntil" <=');
+    expect(statement).toContain('ledger."metadata" #>> \'{routing,sendRouteHalfOpenProbe}\' =');
+    expect(statement).not.toContain('FROM "moderation_events" event');
+    expect(extractSqlValues(queryRaw.mock.calls[0]?.[0])).toContain(6 * 60 * 60);
+  });
+
+  it('retries the same membership page when verifier rematerialization fails', async () => {
+    const row = buildRouteVerificationRecoveryRow('chat-verifier-retry', 'bot-1', 'verifier-retry');
+    const queryRaw = jest.fn().mockResolvedValue([row]);
+    const scheduleRouteVerification = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('verification queue unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const { service } = createService({ queryRaw, scheduleRouteVerification });
+    const discover = () =>
+      (
+        service as unknown as {
+          discoverRouteVerificationRecoveriesPage(): Promise<number>;
+        }
+      ).discoverRouteVerificationRecoveriesPage();
+
+    await expect(discover()).rejects.toThrow('verification queue unavailable');
+    expect(
+      (service as unknown as { routeVerificationRecoveryCursor: unknown })
+        .routeVerificationRecoveryCursor,
+    ).toBeNull();
+    await expect(discover()).resolves.toBe(1);
+
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(scheduleRouteVerification).toHaveBeenCalledTimes(2);
+  });
+
+  it('cyclically rescans old exact proofs to recover a verifier lost without an API restart', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:00:00.000Z'));
+    try {
+      const row = buildRouteVerificationRecoveryRow(
+        'chat-verifier-cycle',
+        'bot-1',
+        'verifier-cycle',
+      );
+      const queryRaw = jest.fn().mockResolvedValue([row]);
+      const scheduleRouteVerification = jest.fn().mockResolvedValue(undefined);
+      const { service } = createService({ queryRaw, scheduleRouteVerification });
+      const discover = () =>
+        (
+          service as unknown as {
+            discoverRouteVerificationRecoveriesPage(): Promise<number>;
+          }
+        ).discoverRouteVerificationRecoveriesPage();
+
+      await expect(discover()).resolves.toBe(1);
+      await expect(discover()).resolves.toBe(0);
+      jest.advanceTimersByTime(5 * 60_000 + 1);
+      await expect(discover()).resolves.toBe(1);
+
+      await expect(discover()).resolves.toBe(0);
+      expect(scheduleRouteVerification).toHaveBeenCalledTimes(2);
+      const scanQueries = queryRaw.mock.calls.map((call) => call[0]);
+      expect(scanQueries).toHaveLength(2);
+      expect(extractSqlText(scanQueries[1])).not.toContain(
+        '(membership."chat_id", membership."bot_id") >',
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('retries the same legacy discovery page when durable request persistence fails', async () => {

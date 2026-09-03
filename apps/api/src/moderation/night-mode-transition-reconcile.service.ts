@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildNightModeNoticeIdempotencyKey } from '../max/max-action-idempotency.util';
+import { MAX_SEND_ROUTE_QUARANTINE_MS } from '../max/max-send-route-health';
 import { resolveRuntimeServiceProfile } from '../runtime/runtime-topology';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import type { NightModeTransitionManualReview } from './night-mode-transition-scheduler.service';
@@ -27,6 +28,10 @@ const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_RETRY_MS = 5_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_DELAY_MS = 1_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_INCREMENTAL_MS = 60_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_OVERLAP_MS = 5 * 60_000;
+const NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_PAGE_SIZE = 100;
+const NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_PAGE_DELAY_MS = 1_000;
+const NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_CYCLE_MS = 5 * 60_000;
+const NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_RETRY_MS = 5_000;
 const NIGHT_MODE_RECONCILE_LEADER_LOCK_KEY = 'night-mode:transition-reconcile:leader:v1';
 const NIGHT_MODE_RECONCILE_LEADER_LOCK_TTL_MS = 120_000;
 const NIGHT_MODE_RECONCILE_LEADER_RENEW_MS = 30_000;
@@ -64,6 +69,21 @@ type NightModeLegacyRecoveryCursor = {
   id: string;
 };
 
+type NightModeRouteVerificationRecoveryCursor = {
+  chatId: string;
+  botId: string;
+};
+
+type NightModeRouteVerificationRecoveryRow = {
+  chatId: string;
+  botId: string;
+  ledgerId: string | null;
+  ledgerJobId: string | null;
+  completedAt: Date | null;
+  remoteMessageId: string | null;
+  dispatchBotId: string | null;
+};
+
 @Injectable()
 export class NightModeTransitionReconcileService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NightModeTransitionReconcileService.name);
@@ -77,6 +97,8 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
   private legacyRecoveryDiscoveryNextAttemptAt = 0;
   private legacyRecoveryCursor: NightModeLegacyRecoveryCursor | null = null;
   private legacyRecoveryHeadCursor: NightModeLegacyRecoveryCursor | null = null;
+  private routeVerificationRecoveryCursor: NightModeRouteVerificationRecoveryCursor | null = null;
+  private routeVerificationRecoveryNextAttemptAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -142,6 +164,14 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         this.logger.warn(
           { error: error instanceof Error ? error.message : String(error) },
           'Failed to discover historical night mode close-event recovery candidates',
+        );
+      });
+      await this.discoverRouteVerificationRecoveriesPage().catch((error: unknown) => {
+        this.routeVerificationRecoveryNextAttemptAt =
+          Date.now() + NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_RETRY_MS;
+        this.logger.warn(
+          { error: error instanceof Error ? error.message : String(error) },
+          'Failed to rematerialize night mode route verification jobs',
         );
       });
       await this.reconcileBatch();
@@ -215,7 +245,12 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         LIMIT ${NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_SIZE}
       )
       SELECT
-        page.*,
+        page."id",
+        page."jobId",
+        page."chatId",
+        page."completedAt",
+        page."remoteMessageId",
+        page."dispatchBotId",
         EXISTS (
           SELECT 1
           FROM "moderation_events" event
@@ -249,10 +284,12 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         !Number.isFinite(row.completedAt.getTime()) ||
         !row.remoteMessageId.trim() ||
         !row.dispatchBotId.trim() ||
-        row.eventExists ||
         !parseNightModeTransitionSessionKey(sessionKey) ||
         row.jobId !== buildNightModeNoticeIdempotencyKey('close', chatId, sessionKey)
       ) {
+        continue;
+      }
+      if (row.eventExists) {
         continue;
       }
       pageCandidates.set(`${chatId}\u0000${sessionKey}`, {
@@ -349,6 +386,141 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         Date.now() + NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_DELAY_MS;
     }
     return new Set(candidates.map((candidate) => candidate.chatId)).size;
+  }
+
+  private async discoverRouteVerificationRecoveriesPage(): Promise<number> {
+    if (Date.now() < this.routeVerificationRecoveryNextAttemptAt) {
+      return 0;
+    }
+    const cursorPredicate = this.routeVerificationRecoveryCursor
+      ? Prisma.sql`
+          WHERE (membership."chat_id", membership."bot_id") >
+            (${this.routeVerificationRecoveryCursor.chatId}, ${this.routeVerificationRecoveryCursor.botId})
+        `
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<NightModeRouteVerificationRecoveryRow[]>(Prisma.sql`
+      WITH membership_page AS MATERIALIZED (
+        SELECT
+          membership."chat_id" AS "chatId",
+          membership."bot_id" AS "botId",
+          membership."status",
+          membership."send_route_failure_count" AS "failureCount",
+          membership."send_route_last_failure_code" AS "failureCode",
+          membership."send_route_last_failure_at" AS "failureAt",
+          membership."send_route_quarantined_until" AS "quarantinedUntil"
+        FROM "chat_bot_memberships" membership
+        ${cursorPredicate}
+        ORDER BY membership."chat_id" ASC, membership."bot_id" ASC
+        LIMIT ${NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_PAGE_SIZE}
+      )
+      SELECT
+        page."chatId",
+        page."botId",
+        ledger."id" AS "ledgerId",
+        ledger."job_id" AS "ledgerJobId",
+        ledger."completed_at" AS "completedAt",
+        ledger."remote_message_id" AS "remoteMessageId",
+        ledger."dispatch_bot_id" AS "dispatchBotId"
+      FROM membership_page page
+      LEFT JOIN LATERAL (
+        SELECT
+          ledger."id",
+          ledger."job_id",
+          ledger."completed_at",
+          ledger."remote_message_id",
+          ledger."dispatch_bot_id"
+        FROM "max_action_ledger" ledger
+        WHERE page."status" = 'ACTIVE'
+          AND page."failureCount" = 1
+          AND page."failureCode" = 'PUBLICATION_MESSAGE_DISAPPEARED'
+          AND page."failureAt" IS NOT NULL
+          AND page."quarantinedUntil" IS NOT NULL
+          AND ledger."chat_id" = page."chatId"
+          AND ledger."dispatch_bot_id" = page."botId"
+          AND ledger."terminal" = true
+          AND ledger."completed_at" IS NOT NULL
+          AND ledger."status" = 'SUCCEEDED'
+          AND ledger."ambiguous" = false
+          AND ledger."action_type" = 'SEND_MESSAGE'
+          AND ledger."source_tag" = 'night_mode_transition'
+          AND ledger."remote_message_id" IS NOT NULL
+          AND BTRIM(ledger."remote_message_id") <> ''
+          AND BTRIM(ledger."dispatch_bot_id") <> ''
+          AND ledger."job_id" LIKE 'night-mode:close:%'
+          AND LEFT(
+            ledger."job_id",
+            CHAR_LENGTH('night-mode:close:' || ledger."chat_id" || ':session:')
+          ) = 'night-mode:close:' || ledger."chat_id" || ':session:'
+          AND ledger."completed_at" > page."failureAt"
+          AND ledger."completed_at" <= page."quarantinedUntil"
+          AND page."quarantinedUntil" <=
+            ledger."completed_at" + make_interval(secs => ${MAX_SEND_ROUTE_QUARANTINE_MS / 1_000})
+          AND ledger."metadata" #>> '{routing,sendRouteHalfOpenProbe}' =
+            'publication_exact_verification'
+        ORDER BY ledger."completed_at" DESC, ledger."id" DESC
+        LIMIT 1
+      ) ledger ON TRUE
+      ORDER BY page."chatId" ASC, page."botId" ASC
+    `);
+
+    const proofs = new Map<
+      string,
+      { chatId: string; sessionKey: string; messageId: string; botId: string; sentAt: Date }
+    >();
+    for (const row of rows) {
+      const chatId = typeof row.chatId === 'string' ? row.chatId.trim() : '';
+      const botId = typeof row.botId === 'string' ? row.botId.trim() : '';
+      const ledgerJobId = typeof row.ledgerJobId === 'string' ? row.ledgerJobId.trim() : '';
+      const messageId = typeof row.remoteMessageId === 'string' ? row.remoteMessageId.trim() : '';
+      const dispatchBotId = typeof row.dispatchBotId === 'string' ? row.dispatchBotId.trim() : '';
+      const jobIdPrefix = buildNightModeNoticeIdempotencyKey('close', chatId, '');
+      const sessionKey = ledgerJobId.startsWith(jobIdPrefix)
+        ? ledgerJobId.slice(jobIdPrefix.length)
+        : '';
+      if (
+        !chatId ||
+        !botId ||
+        !row.ledgerId?.trim() ||
+        !(row.completedAt instanceof Date) ||
+        !Number.isFinite(row.completedAt.getTime()) ||
+        !messageId ||
+        dispatchBotId !== botId ||
+        !parseNightModeTransitionSessionKey(sessionKey) ||
+        ledgerJobId !== buildNightModeNoticeIdempotencyKey('close', chatId, sessionKey)
+      ) {
+        continue;
+      }
+      proofs.set(`${chatId}\u0000${botId}`, {
+        chatId,
+        sessionKey,
+        messageId,
+        botId,
+        sentAt: row.completedAt,
+      });
+    }
+
+    for (const proof of proofs.values()) {
+      await this.scheduler.scheduleRouteVerification(proof);
+    }
+
+    const lastRow = rows[rows.length - 1];
+    if (lastRow) {
+      const chatId = typeof lastRow.chatId === 'string' ? lastRow.chatId.trim() : '';
+      const botId = typeof lastRow.botId === 'string' ? lastRow.botId.trim() : '';
+      if (!chatId || !botId) {
+        throw new Error('Night mode route verification recovery cursor is invalid');
+      }
+      this.routeVerificationRecoveryCursor = { chatId, botId };
+    }
+    if (rows.length < NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_PAGE_SIZE) {
+      this.routeVerificationRecoveryCursor = null;
+      this.routeVerificationRecoveryNextAttemptAt =
+        Date.now() + NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_CYCLE_MS;
+    } else {
+      this.routeVerificationRecoveryNextAttemptAt =
+        Date.now() + NIGHT_MODE_ROUTE_VERIFICATION_RECOVERY_PAGE_DELAY_MS;
+    }
+    return proofs.size;
   }
 
   private buildLegacyRecoveryOverlapCursor(

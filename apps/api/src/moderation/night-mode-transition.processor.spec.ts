@@ -10,9 +10,12 @@ import {
 } from '../prisma/prisma-client';
 import { NightModeTransitionProcessor } from './night-mode-transition.processor';
 import {
+  buildNightModeRouteVerificationJobId,
   buildNightModeTransitionJobId,
+  NIGHT_MODE_ROUTE_VERIFICATION_KIND,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
+  type NightModeRouteVerification,
   type NightModeTransitionJob,
 } from './night-mode-transition.queue';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
@@ -28,6 +31,17 @@ describe('NightModeTransitionProcessor', () => {
     startMinutes: 23 * 60,
     endMinutes: 8 * 60,
   };
+  const routeVerification = {
+    kind: NIGHT_MODE_ROUTE_VERIFICATION_KIND,
+    version: 1 as const,
+    sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+    messageId: 'close-message-1',
+    botId: 'bot-1',
+    sentAt: '2026-05-30T20:00:00.000Z',
+    attemptCount: 0,
+    presentCount: 0,
+    absentCount: 0,
+  } satisfies NightModeRouteVerification;
   const buildJob = (
     overrides: {
       data?: Partial<NightModeTransitionJob>;
@@ -47,11 +61,146 @@ describe('NightModeTransitionProcessor', () => {
       },
       attemptsMade: overrides.attemptsMade ?? 0,
       opts: { attempts: overrides.attempts ?? 3 },
+      updateData: jest.fn().mockResolvedValue(undefined),
       moveToDelayed: jest.fn().mockResolvedValue(undefined),
     }) as unknown as Job<NightModeTransitionJob>;
+  const buildRouteVerificationJob = (
+    overrides: Partial<NightModeRouteVerification> = {},
+  ): Job<NightModeTransitionJob> => {
+    const verification = { ...routeVerification, ...overrides };
+    return buildJob({
+      id: buildNightModeRouteVerificationJobId('chat-1', verification),
+      data: {
+        transition: 'close',
+        scheduledFor: verification.sentAt,
+        sessionKey: verification.sessionKey,
+        routeVerification: verification,
+      },
+    });
+  };
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('runs a valid deterministic route verification without entering transition runtime or scheduler', async () => {
+    const job = buildRouteVerificationJob();
+    const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
+    const scheduler = {
+      inspectTransitionExecution: jest.fn(),
+      inspectRecoveryOnlyTransition: jest.fn(),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const verificationService = {
+      process: jest.fn().mockResolvedValue({ kind: 'complete', routeHealthChanged: true }),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+      undefined,
+      verificationService as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+
+    expect(job.id).toBe(buildNightModeRouteVerificationJobId('chat-1', routeVerification));
+    expect(verificationService.process).toHaveBeenCalledWith('chat-1', routeVerification);
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+    expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
+    expect(scheduler.inspectRecoveryOnlyTransition).not.toHaveBeenCalled();
+    expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
+    expect(job.updateData).not.toHaveBeenCalled();
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('persists route verification retry progress before delaying the same job', async () => {
+    const job = buildRouteVerificationJob();
+    const retryAtMs = new Date('2026-05-30T20:02:00.000Z').getTime();
+    const nextVerification = {
+      ...routeVerification,
+      attemptCount: 1,
+      presentCount: 1,
+    };
+    const operationOrder: string[] = [];
+    (job.updateData as jest.Mock).mockImplementation(async () => {
+      operationOrder.push('update');
+    });
+    (job.moveToDelayed as jest.Mock).mockImplementation(async () => {
+      operationOrder.push('delay');
+    });
+    const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
+    const scheduler = {
+      inspectTransitionExecution: jest.fn(),
+      inspectRecoveryOnlyTransition: jest.fn(),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const verificationService = {
+      process: jest.fn().mockResolvedValue({
+        kind: 'retry',
+        retryAtMs,
+        verification: nextVerification,
+      }),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+      undefined,
+      verificationService as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(DelayedError);
+
+    expect(job.updateData).toHaveBeenCalledWith({
+      ...job.data,
+      routeVerification: nextVerification,
+    });
+    expect(job.moveToDelayed).toHaveBeenCalledWith(retryAtMs, 'lock-token');
+    expect(operationOrder).toEqual(['update', 'delay']);
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+    expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
+  });
+
+  it('makes a terminal route verification result unrecoverable', async () => {
+    const job = buildRouteVerificationJob();
+    const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
+    const scheduler = {
+      inspectTransitionExecution: jest.fn(),
+      inspectRecoveryOnlyTransition: jest.fn(),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const verificationService = {
+      process: jest.fn().mockResolvedValue({ kind: 'terminal', reason: 'absent' }),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+      undefined,
+      verificationService as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(job.updateData).not.toHaveBeenCalled();
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+    expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
+  });
+
+  it('does not mutate the transition registry or request reconcile for route verification events', async () => {
+    const job = buildRouteVerificationJob();
+    const scheduler = {
+      completeScheduledJob: jest.fn(),
+      requestJobReconcile: jest.fn(),
+    };
+    const processor = new NightModeTransitionProcessor({} as never, scheduler as never);
+
+    await expect(processor.onCompleted(job)).resolves.toBeUndefined();
+    await expect(
+      processor.onFailed(job, new Error('verification failed')),
+    ).resolves.toBeUndefined();
+
+    expect(scheduler.completeScheduledJob).not.toHaveBeenCalled();
+    expect(scheduler.requestJobReconcile).not.toHaveBeenCalled();
   });
 
   it('does not enqueue the next transition after access-loss processing result', async () => {

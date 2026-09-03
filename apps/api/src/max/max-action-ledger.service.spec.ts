@@ -1781,6 +1781,9 @@ describe('MaxActionLedgerService', () => {
       completedAt,
       dispatchBotId: 'bot-survivor',
       remoteMessageId: 'mid-night-close-1',
+      metadata: {
+        routing: { sendRouteHalfOpenProbe: 'publication_exact_verification' },
+      },
     });
 
     await expect(
@@ -1794,6 +1797,8 @@ describe('MaxActionLedgerService', () => {
       jobId: 'night-mode:close:chat-1:session:session-1',
       remoteMessageId: 'mid-night-close-1',
       dispatchBotId: 'bot-survivor',
+      completedAt,
+      routeHalfOpenProbe: true,
     });
     expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith({
       where: { jobId: 'night-mode:close:chat-1:session:session-1' },
@@ -1807,6 +1812,7 @@ describe('MaxActionLedgerService', () => {
         completedAt: true,
         dispatchBotId: true,
         remoteMessageId: true,
+        metadata: true,
       },
     });
   });

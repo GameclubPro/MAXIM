@@ -14,6 +14,10 @@ import {
 } from '../max/max-action-ledger.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
+  MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+  MAX_SEND_ROUTE_QUARANTINE_MS,
+} from '../max/max-send-route-health';
+import {
   ChatBotMembershipStatus,
   ChatEntityType,
   MaxActionLedgerStatus,
@@ -27,14 +31,20 @@ import {
   NIGHT_MODE_TRANSITION_REFRESHABLE_ACCESS_STATES,
 } from './night-mode-transition-eligibility.util';
 import {
+  buildNightModeRouteVerificationJobId,
   buildNightModeTransitionJobId,
   buildNightModeTransitionRecoveryJobId,
+  NIGHT_MODE_ROUTE_VERIFICATION_JOB_NAME,
+  NIGHT_MODE_ROUTE_VERIFICATION_KIND,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
   NIGHT_MODE_TRANSITION_JOB_NAME,
   NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_QUEUE,
+  parseNightModeRouteVerification,
   parseNightModeTransitionRecoveryOnly,
+  type NightModeRouteVerification,
+  type NightModeRouteVerificationProof,
   type NightModeTransitionJob,
   type NightModeTransitionRecoveryOnly,
 } from './night-mode-transition.queue';
@@ -57,6 +67,7 @@ import { RedisCounterService } from './redis-counter.service';
 
 const NIGHT_MODE_TRANSITION_JOB_ATTEMPTS = 3;
 const NIGHT_MODE_TRANSITION_JOB_BACKOFF_MS = 15_000;
+const NIGHT_MODE_ROUTE_VERIFICATION_FIRST_DELAY_MS = 15_000;
 const NIGHT_MODE_TRANSITION_RUNTIME_VERSION = 4 as const;
 const NIGHT_MODE_TRANSITION_BOOTSTRAP_BATCH_SIZE = 200;
 const NIGHT_MODE_TRANSITION_BOOTSTRAP_RETRY_MS = 30_000;
@@ -254,6 +265,118 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
     }
+  }
+
+  isRouteVerificationSchedulingAvailable(): boolean {
+    return Boolean(this.queue);
+  }
+
+  async scheduleRouteVerification(proof: NightModeRouteVerificationProof): Promise<void> {
+    if (!this.queue) {
+      throw new Error('Night mode route verification queue is unavailable');
+    }
+    const chatId = proof.chatId.trim();
+    const sessionKey = proof.sessionKey.trim();
+    const messageId = proof.messageId.trim();
+    const botId = proof.botId.trim();
+    if (
+      !chatId ||
+      !sessionKey ||
+      !messageId ||
+      !botId ||
+      !Number.isFinite(proof.sentAt.getTime())
+    ) {
+      throw new Error('Exact night mode route verification proof is required');
+    }
+
+    const halfOpenMembership = await this.prisma.chatBotMembership.findFirst({
+      where: {
+        chatId,
+        botId,
+        status: ChatBotMembershipStatus.ACTIVE,
+        sendRouteFailureCount: 1,
+        sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+        sendRouteLastFailureAt: { lt: proof.sentAt },
+        sendRouteQuarantinedUntil: {
+          gte: proof.sentAt,
+          lte: new Date(proof.sentAt.getTime() + MAX_SEND_ROUTE_QUARANTINE_MS),
+        },
+      },
+      select: { botId: true },
+    });
+    if (!halfOpenMembership) {
+      return;
+    }
+
+    const sentAt = proof.sentAt.toISOString();
+    const verification: NightModeRouteVerification = {
+      kind: NIGHT_MODE_ROUTE_VERIFICATION_KIND,
+      version: 1,
+      sessionKey,
+      messageId,
+      botId,
+      sentAt,
+      attemptCount: 0,
+      presentCount: 0,
+      absentCount: 0,
+    };
+    const jobId = buildNightModeRouteVerificationJobId(chatId, verification);
+    const existing = await this.queue.getJob(jobId);
+    if (existing) {
+      const existingVerification = parseNightModeRouteVerification(
+        existing.data?.routeVerification,
+      );
+      if (
+        existing.name !== NIGHT_MODE_ROUTE_VERIFICATION_JOB_NAME ||
+        existing.data?.chatId !== chatId ||
+        existing.data?.transition !== 'close' ||
+        existing.data?.scheduledFor !== sentAt ||
+        existing.data?.sessionKey !== sessionKey ||
+        !existingVerification ||
+        existingVerification.sessionKey !== sessionKey ||
+        existingVerification.messageId !== messageId ||
+        existingVerification.botId !== botId ||
+        existingVerification.sentAt !== sentAt
+      ) {
+        throw new Error(`Night mode route verification job identity is unsafe (${chatId})`);
+      }
+      if (typeof existing.getState !== 'function') {
+        throw new Error(`Night mode route verification job state is unavailable (${chatId})`);
+      }
+      const state = await existing.getState();
+      if (
+        state === 'active' ||
+        state === 'delayed' ||
+        state === 'waiting' ||
+        state === 'waiting-children' ||
+        state === 'prioritized'
+      ) {
+        return;
+      }
+      if ((state !== 'failed' && state !== 'completed') || typeof existing.remove !== 'function') {
+        throw new Error(`Night mode route verification job state is unsafe (${chatId})`);
+      }
+      await existing.remove();
+    }
+    await this.queue.add(
+      NIGHT_MODE_ROUTE_VERIFICATION_JOB_NAME,
+      {
+        chatId,
+        transition: 'close',
+        scheduledFor: sentAt,
+        sessionKey,
+        routeVerification: verification,
+        createdAt: new Date().toISOString(),
+      },
+      {
+        jobId,
+        delay: NIGHT_MODE_ROUTE_VERIFICATION_FIRST_DELAY_MS,
+        attempts: NIGHT_MODE_TRANSITION_JOB_ATTEMPTS,
+        backoff: { type: 'fixed', delay: NIGHT_MODE_TRANSITION_JOB_BACKOFF_MS },
+        removeOnComplete: true,
+        removeOnFail: 1_000,
+      },
+    );
   }
 
   async bootstrapEnabledChats(): Promise<void> {

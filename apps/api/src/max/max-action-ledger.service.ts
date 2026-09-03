@@ -125,6 +125,8 @@ export type ExactCompletedNightModeCloseNoticeDispatch = {
   jobId: string;
   remoteMessageId: string;
   dispatchBotId: string;
+  completedAt: Date;
+  routeHalfOpenProbe: boolean;
 };
 
 export type NightModeCloseNoticeLedgerLookup =
@@ -922,6 +924,7 @@ export class MaxActionLedgerService {
         completedAt: true,
         dispatchBotId: true,
         remoteMessageId: true,
+        metadata: true,
       },
     });
     if (!row) {
@@ -949,6 +952,8 @@ export class MaxActionLedgerService {
       jobId,
       remoteMessageId,
       dispatchBotId,
+      completedAt: row.completedAt,
+      routeHalfOpenProbe: this.hasPublicationExactVerificationRoute(row.metadata),
     };
   }
 
@@ -979,6 +984,8 @@ export class MaxActionLedgerService {
       jobId: lookup.jobId,
       remoteMessageId: lookup.remoteMessageId,
       dispatchBotId: lookup.dispatchBotId,
+      completedAt: lookup.completedAt,
+      routeHalfOpenProbe: lookup.routeHalfOpenProbe,
     };
   }
 
@@ -1496,6 +1503,20 @@ export class MaxActionLedgerService {
       return sourceTag !== 'moderation_notice';
     }
     return this.readVerifiedSendAutoDeleteMarker(metadata) !== null;
+  }
+
+  private hasPublicationExactVerificationRoute(metadata: unknown): boolean {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return false;
+    }
+    const routing = (metadata as Record<string, unknown>).routing;
+    return Boolean(
+      routing &&
+      typeof routing === 'object' &&
+      !Array.isArray(routing) &&
+      (routing as Record<string, unknown>).sendRouteHalfOpenProbe ===
+        'publication_exact_verification',
+    );
   }
 
   private readVerifiedSendAutoDeleteMarker(metadata: unknown): Record<string, unknown> | null {

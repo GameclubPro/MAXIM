@@ -1,11 +1,27 @@
 import {
+  buildNightModeRouteVerificationJobId,
   buildNightModeTransitionJobId,
   buildNightModeTransitionJobIdPrefix,
   buildNightModeTransitionRecoveryJobId,
+  NIGHT_MODE_ROUTE_VERIFICATION_KIND,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+  parseNightModeRouteVerification,
   parseNightModeTransitionRecoveryOnly,
+  type NightModeRouteVerification,
   type NightModeTransitionJob,
 } from './night-mode-transition.queue';
+
+const ROUTE_VERIFICATION: NightModeRouteVerification = {
+  kind: NIGHT_MODE_ROUTE_VERIFICATION_KIND,
+  version: 1,
+  sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+  messageId: 'close-message-1',
+  botId: 'bot-1',
+  sentAt: '2026-05-30T20:00:01.000Z',
+  attemptCount: 0,
+  presentCount: 0,
+  absentCount: 0,
+};
 
 describe('night mode transition queue', () => {
   it('builds BullMQ-safe custom job ids', () => {
@@ -64,5 +80,60 @@ describe('night mode transition queue', () => {
         endMinutes: 8 * 60,
       }),
     ).toBeNull();
+  });
+
+  it('builds a deterministic route-verification id from immutable send proof', () => {
+    const first = buildNightModeRouteVerificationJobId('chat-1', ROUTE_VERIFICATION);
+    const retriedVerification: NightModeRouteVerification = {
+      ...ROUTE_VERIFICATION,
+      attemptCount: 6,
+      presentCount: 2,
+      absentCount: 3,
+    };
+    const second = buildNightModeRouteVerificationJobId('chat-1', retriedVerification);
+
+    expect(first).toBe(second);
+    expect(first).toBe(
+      'night-mode-transition__3ba2855dd7d11593805afe04781fa9ea35302ee1__verify__b9ce0cb5ab58dc813f8ad780c99fb2c1b083379a667ce4ed150a014a58c94103',
+    );
+    expect(first).not.toContain(':');
+    expect(
+      buildNightModeRouteVerificationJobId('chat-1', {
+        ...ROUTE_VERIFICATION,
+        messageId: 'close-message-2',
+      }),
+    ).not.toBe(first);
+  });
+
+  it('parses a canonical bounded route-verification envelope', () => {
+    expect(parseNightModeRouteVerification(ROUTE_VERIFICATION)).toEqual(ROUTE_VERIFICATION);
+    expect(
+      parseNightModeRouteVerification({
+        ...ROUTE_VERIFICATION,
+        sessionKey: ` ${ROUTE_VERIFICATION.sessionKey} `,
+        messageId: ' close-message-1 ',
+        botId: ' bot-1 ',
+      }),
+    ).toEqual(ROUTE_VERIFICATION);
+  });
+
+  it.each([
+    ['wrong kind', { kind: 'close_notice_event' }],
+    ['wrong version', { version: 2 }],
+    ['empty session', { sessionKey: ' ' }],
+    ['non-canonical sentAt', { sentAt: '2026-05-30T20:00:01Z' }],
+    ['invalid sentAt', { sentAt: 'not-a-date' }],
+    ['negative attempt count', { attemptCount: -1 }],
+    ['excess attempt count', { attemptCount: 7 }],
+    ['excess present count', { presentCount: 3 }],
+    ['excess absent count', { absentCount: 4 }],
+    ['present count ahead of attempts', { attemptCount: 0, presentCount: 1 }],
+    ['absent count ahead of attempts', { attemptCount: 1, absentCount: 2 }],
+    [
+      'simultaneous present and absent observations',
+      { attemptCount: 2, presentCount: 1, absentCount: 1 },
+    ],
+  ])('rejects route verification with %s', (_label, override) => {
+    expect(parseNightModeRouteVerification({ ...ROUTE_VERIFICATION, ...override })).toBeNull();
   });
 });

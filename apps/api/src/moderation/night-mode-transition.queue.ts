@@ -7,6 +7,8 @@ import {
 
 export const NIGHT_MODE_TRANSITION_QUEUE = 'night-mode-transitions';
 export const NIGHT_MODE_TRANSITION_JOB_NAME = 'night-mode-transition';
+export const NIGHT_MODE_ROUTE_VERIFICATION_JOB_NAME = 'night-mode-route-verification';
+export const NIGHT_MODE_ROUTE_VERIFICATION_KIND = 'close_notice_presence' as const;
 export const NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY = 'close_notice_event' as const;
 export const NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX =
   'Night mode transition post-execution scheduling failed';
@@ -23,6 +25,26 @@ export type NightModeTransitionRecoveryOnly = {
   endMinutes: number;
 };
 
+export type NightModeRouteVerification = {
+  kind: typeof NIGHT_MODE_ROUTE_VERIFICATION_KIND;
+  version: 1;
+  sessionKey: string;
+  messageId: string;
+  botId: string;
+  sentAt: string;
+  attemptCount: number;
+  presentCount: number;
+  absentCount: number;
+};
+
+export type NightModeRouteVerificationProof = {
+  chatId: string;
+  sessionKey: string;
+  messageId: string;
+  botId: string;
+  sentAt: Date;
+};
+
 export type NightModeTransitionJob = QueueJobEnvelope<
   {
     chatId: string;
@@ -36,6 +58,7 @@ export type NightModeTransitionJob = QueueJobEnvelope<
     transitionRuntimeVersion?: 2 | 3 | 4;
     scheduleFingerprint?: string;
     recoveryOnly?: NightModeTransitionRecoveryOnly;
+    routeVerification?: NightModeRouteVerification;
   }
 >;
 
@@ -87,6 +110,29 @@ export function buildNightModeTransitionRecoveryJobId(
     )
     .digest('hex');
   return `${buildNightModeTransitionJobIdPrefix(chatId)}recovery__${digest}`;
+}
+
+export function buildNightModeRouteVerificationJobId(
+  chatId: string,
+  verification: Pick<
+    NightModeRouteVerification,
+    'kind' | 'version' | 'sessionKey' | 'messageId' | 'botId' | 'sentAt'
+  >,
+): string {
+  const digest = createHash('sha256')
+    .update(
+      [
+        chatId.trim(),
+        verification.kind,
+        verification.version,
+        verification.sessionKey,
+        verification.messageId,
+        verification.botId,
+        verification.sentAt,
+      ].join('\u001f'),
+    )
+    .digest('hex');
+  return `${buildNightModeTransitionJobIdPrefix(chatId)}verify__${digest}`;
 }
 
 export function parseNightModeTransitionRecoveryOnly(
@@ -144,10 +190,64 @@ export function parseNightModeTransitionRecoveryOnly(
   };
 }
 
+export function parseNightModeRouteVerification(value: unknown): NightModeRouteVerification | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const sessionKey = boundedString(record.sessionKey, 512);
+  const messageId = boundedString(record.messageId, 256);
+  const botId = boundedString(record.botId, 256);
+  const sentAt = boundedString(record.sentAt, 64);
+  const sentAtMs = sentAt ? Date.parse(sentAt) : Number.NaN;
+  const attemptCount = boundedCounter(record.attemptCount, 6);
+  const presentCount = boundedCounter(record.presentCount, 2);
+  const absentCount = boundedCounter(record.absentCount, 3);
+  if (
+    record.kind !== NIGHT_MODE_ROUTE_VERIFICATION_KIND ||
+    record.version !== 1 ||
+    !sessionKey ||
+    !messageId ||
+    !botId ||
+    !sentAt ||
+    !Number.isFinite(sentAtMs) ||
+    new Date(sentAtMs).toISOString() !== sentAt ||
+    attemptCount === null ||
+    presentCount === null ||
+    absentCount === null
+  ) {
+    return null;
+  }
+  if (
+    presentCount > attemptCount ||
+    absentCount > attemptCount ||
+    (presentCount > 0 && absentCount > 0)
+  ) {
+    return null;
+  }
+  return {
+    kind: NIGHT_MODE_ROUTE_VERIFICATION_KIND,
+    version: 1,
+    sessionKey,
+    messageId,
+    botId,
+    sentAt,
+    attemptCount,
+    presentCount,
+    absentCount,
+  };
+}
+
 function boundedString(value: unknown, maxLength: number): string | null {
   if (typeof value !== 'string') {
     return null;
   }
   const normalized = value.trim();
   return normalized && normalized.length <= maxLength ? normalized : null;
+}
+
+function boundedCounter(value: unknown, max: number): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= max
+    ? value
+    : null;
 }

@@ -44,6 +44,7 @@ import {
 import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
 import { NightModeTransitionStaleStateError } from './night-mode-transition-stale-state-error';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
+import { NightModeRouteVerificationService } from './night-mode-route-verification.service';
 import {
   NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
   type NightModeCloseNoticeCleanupBinding,
@@ -85,6 +86,8 @@ export class NightModeTransitionDeliveryService {
     private readonly moderationDeleteIntentService?: ModerationDeleteIntentService,
     @Optional()
     private readonly maxActionLedgerService?: MaxActionLedgerService,
+    @Optional()
+    private readonly nightModeRouteVerificationService?: NightModeRouteVerificationService,
   ) {}
 
   createHooks(adapters: NightModeTransitionDeliveryAdapters): NightModeTransitionRuntimeHooks {
@@ -173,8 +176,22 @@ export class NightModeTransitionDeliveryService {
 
   private async ensureRecoveredCloseNoticeEvent(
     params: NightModeRecoverCloseNoticeEventFromLedgerParams,
-    proof: { remoteMessageId: string; dispatchBotId: string },
+    proof: {
+      remoteMessageId: string;
+      dispatchBotId: string;
+      completedAt: Date;
+      routeHalfOpenProbe: boolean;
+    },
   ): Promise<NightModeRecoveredCloseNoticeEvent> {
+    if (proof.routeHalfOpenProbe) {
+      await this.scheduleCloseRouteVerification({
+        chatId: params.chatId,
+        sessionKey: params.sessionKey,
+        messageId: proof.remoteMessageId,
+        botId: proof.dispatchBotId,
+        sentAt: proof.completedAt,
+      });
+    }
     const event = await this.nightModeTransitionEventService.ensureTransitionEvent({
       chatId: params.chatId,
       messageId: proof.remoteMessageId,
@@ -226,6 +243,7 @@ export class NightModeTransitionDeliveryService {
         messageOptions,
         mediaSettings: settings,
         mediaFieldKey: 'nightModeBotMessageText',
+        allowHalfOpenProbe: this.canScheduleCloseRouteVerification(),
         adapters,
         validateBeforeDispatch,
         onDispatchAttempt: (botId, startedAt) => {
@@ -251,6 +269,29 @@ export class NightModeTransitionDeliveryService {
       throw error;
     }
 
+    if (sent.messageId && sent.botId && this.canScheduleCloseRouteVerification()) {
+      const proof =
+        await this.maxActionLedgerService!.getExactCompletedNightModeCloseNoticeDispatch({
+          chatId: settings.chatId,
+          sessionKey: snapshot.sessionKey,
+          messageId: sent.messageId,
+          dispatchBotId: sent.botId,
+        });
+      if (!proof) {
+        throw new ServiceUnavailableException(
+          `Exact completed night mode close send is not proven for route verification (${settings.chatId})`,
+        );
+      }
+      if (proof.routeHalfOpenProbe) {
+        await this.scheduleCloseRouteVerification({
+          chatId: settings.chatId,
+          sessionKey: snapshot.sessionKey,
+          messageId: proof.remoteMessageId,
+          botId: proof.dispatchBotId,
+          sentAt: proof.completedAt,
+        });
+      }
+    }
     await this.createEventAfterAcceptedNotice({
       chatId: settings.chatId,
       messageId: sent.messageId,
@@ -345,6 +386,7 @@ export class NightModeTransitionDeliveryService {
     messageOptions: MaxSendMessageOptions | null | undefined;
     mediaSettings: { botSpeechMedia?: unknown };
     mediaFieldKey: 'nightModeBotMessageText' | 'nightModeOpenMessageText';
+    allowHalfOpenProbe?: boolean;
     adapters: NightModeTransitionDeliveryAdapters;
     validateBeforeDispatch?: () => Promise<boolean>;
     onDispatchAttempt: (botId: string | null, startedAt: Date) => void;
@@ -385,6 +427,9 @@ export class NightModeTransitionDeliveryService {
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
         ignoreFailureMetricStatuses: [403, 404],
+        ...(params.allowHalfOpenProbe
+          ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }
+          : {}),
         prepareAttempt: async ({ botId }) => {
           const message = prepareMessage(params.resolveMessageText?.(botId) ?? params.messageText);
           return {
@@ -464,6 +509,28 @@ export class NightModeTransitionDeliveryService {
       }
       throw error;
     }
+  }
+
+  private canScheduleCloseRouteVerification(): boolean {
+    return Boolean(
+      this.nightModeRouteVerificationService?.isSchedulingAvailable() &&
+      this.maxActionLedgerService &&
+      typeof this.maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch ===
+        'function',
+    );
+  }
+
+  private async scheduleCloseRouteVerification(params: {
+    chatId: string;
+    sessionKey: string;
+    messageId: string;
+    botId: string;
+    sentAt: Date;
+  }): Promise<void> {
+    if (!this.canScheduleCloseRouteVerification()) {
+      return;
+    }
+    await this.nightModeRouteVerificationService!.schedule(params);
   }
 
   async deleteClosedNotice(

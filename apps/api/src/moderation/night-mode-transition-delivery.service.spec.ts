@@ -91,6 +91,7 @@ function createEventService() {
 
 describe('NightModeTransitionDeliveryService', () => {
   it('recovers a close event only from exact completed ledger proof without MAX calls', async () => {
+    const completedAt = new Date('2026-05-30T20:00:01.000Z');
     const maxClient = {
       sendMessage: jest.fn(),
       deleteMessage: jest.fn(),
@@ -104,7 +105,13 @@ describe('NightModeTransitionDeliveryService', () => {
         jobId: 'night-mode:close:chat-1:session:session-1',
         remoteMessageId: 'mid-close-1',
         dispatchBotId: 'bot-survivor',
+        completedAt,
+        routeHalfOpenProbe: true,
       }),
+    };
+    const routeVerificationService = {
+      isSchedulingAvailable: jest.fn().mockReturnValue(true),
+      schedule: jest.fn().mockResolvedValue(undefined),
     };
     const service = new NightModeTransitionDeliveryService(
       maxClient as never,
@@ -114,6 +121,7 @@ describe('NightModeTransitionDeliveryService', () => {
       undefined,
       undefined,
       maxActionLedgerService as never,
+      routeVerificationService as never,
     );
 
     await expect(
@@ -151,8 +159,71 @@ describe('NightModeTransitionDeliveryService', () => {
       startMinutes: 23 * 60,
       endMinutes: 8 * 60,
     });
+    expect(routeVerificationService.schedule).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      sessionKey: 'session-1',
+      messageId: 'mid-close-1',
+      botId: 'bot-survivor',
+      sentAt: completedAt,
+    });
+    expect(routeVerificationService.schedule.mock.invocationCallOrder[0]).toBeLessThan(
+      eventService.ensureTransitionEvent.mock.invocationCallOrder[0]!,
+    );
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not persist a recovered close event when route verification scheduling fails', async () => {
+    const completedAt = new Date('2026-05-30T20:00:01.000Z');
+    const schedulingError = new Error('verification queue unavailable');
+    const eventService = {
+      createTransitionEvent: jest.fn(),
+      ensureTransitionEvent: jest.fn(),
+    };
+    const maxActionLedgerService = {
+      getExactCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue({
+        jobId: 'night-mode:close:chat-1:session:session-1',
+        remoteMessageId: 'mid-close-1',
+        dispatchBotId: 'bot-survivor',
+        completedAt,
+        routeHalfOpenProbe: true,
+      }),
+    };
+    const routeVerificationService = {
+      isSchedulingAvailable: jest.fn().mockReturnValue(true),
+      schedule: jest.fn().mockRejectedValue(schedulingError),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      { sendMessage: jest.fn(), deleteMessage: jest.fn() } as never,
+      {} as never,
+      eventService as never,
+      undefined,
+      undefined,
+      undefined,
+      maxActionLedgerService as never,
+      routeVerificationService as never,
+    );
+
+    await expect(
+      service.recoverClosedNoticeEvent({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        messageId: 'mid-close-1',
+        botId: 'bot-survivor',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      }),
+    ).rejects.toBe(schedulingError);
+
+    expect(routeVerificationService.schedule).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      sessionKey: 'session-1',
+      messageId: 'mid-close-1',
+      botId: 'bot-survivor',
+      sentAt: completedAt,
+    });
+    expect(eventService.ensureTransitionEvent).not.toHaveBeenCalled();
   });
 
   it('retains recovery failure when exact completed ledger proof is missing', async () => {
@@ -297,6 +368,7 @@ describe('NightModeTransitionDeliveryService', () => {
   });
 
   it('routes a scheduled close notice with a stable session key and bot-scoped media preparation', async () => {
+    const completedAt = new Date('2026-07-11T20:00:01.000Z');
     const maxClient = {
       sendMessage: jest.fn(),
       deleteMessage: jest.fn(),
@@ -344,12 +416,28 @@ describe('NightModeTransitionDeliveryService', () => {
       }),
     };
     const eventService = createEventService();
+    const maxActionLedgerService = {
+      getExactCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue({
+        jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-07-11',
+        remoteMessageId: 'msg-routed-close-1',
+        dispatchBotId: 'bot-survivor',
+        completedAt,
+        routeHalfOpenProbe: true,
+      }),
+    };
+    const routeVerificationService = {
+      isSchedulingAvailable: jest.fn().mockReturnValue(true),
+      schedule: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new NightModeTransitionDeliveryService(
       maxClient as never,
       botSpeechMediaService as never,
       eventService as never,
       undefined,
       maxRoutedPublicationService as never,
+      undefined,
+      maxActionLedgerService as never,
+      routeVerificationService as never,
     );
     const adapters = createAdapters();
 
@@ -381,6 +469,7 @@ describe('NightModeTransitionDeliveryService', () => {
         actionHealthLane: 'background',
         sourceTag: 'night_mode_transition',
         ignoreFailureMetricStatuses: [403, 404],
+        sendRouteHalfOpenProbe: 'publication_exact_verification',
       }),
     );
     expect(botSpeechMediaService.withMediaOptions).toHaveBeenCalledWith(
@@ -396,6 +485,139 @@ describe('NightModeTransitionDeliveryService', () => {
         chatId: 'chat-1',
         messageId: 'msg-routed-close-1',
         sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+      }),
+    );
+    expect(routeVerificationService.schedule).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+      messageId: 'msg-routed-close-1',
+      botId: 'bot-survivor',
+      sentAt: completedAt,
+    });
+    expect(routeVerificationService.schedule.mock.invocationCallOrder[0]).toBeLessThan(
+      eventService.createTransitionEvent.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('does not persist a freshly accepted close event when verification scheduling fails', async () => {
+    const completedAt = new Date('2026-07-11T20:00:01.000Z');
+    const schedulingError = new Error('verification queue unavailable');
+    const eventService = createEventService();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockResolvedValue({
+        messageId: 'msg-routed-close-1',
+        url: null,
+        botId: 'bot-survivor',
+        candidateBotIds: ['bot-survivor'],
+        routingVersion: 11,
+      }),
+    };
+    const maxActionLedgerService = {
+      getExactCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue({
+        jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-07-11',
+        remoteMessageId: 'msg-routed-close-1',
+        dispatchBotId: 'bot-survivor',
+        completedAt,
+        routeHalfOpenProbe: true,
+      }),
+    };
+    const routeVerificationService = {
+      isSchedulingAvailable: jest.fn().mockReturnValue(true),
+      schedule: jest.fn().mockRejectedValue(schedulingError),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      { sendMessage: jest.fn(), deleteMessage: jest.fn() } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      eventService as never,
+      undefined,
+      maxRoutedPublicationService as never,
+      undefined,
+      maxActionLedgerService as never,
+      routeVerificationService as never,
+    );
+
+    await expect(
+      service.sendClosedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+        },
+        createAdapters(),
+      ),
+    ).rejects.toBe(schedulingError);
+
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledTimes(1);
+    expect(routeVerificationService.schedule).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+      messageId: 'msg-routed-close-1',
+      botId: 'bot-survivor',
+      sentAt: completedAt,
+    });
+    expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
+  });
+
+  it('never opts an opening notice into send-route half-open probing', async () => {
+    const eventService = createEventService();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockResolvedValue({
+        messageId: 'msg-routed-open-1',
+        url: null,
+        botId: 'bot-survivor',
+        candidateBotIds: ['bot-survivor'],
+        routingVersion: 11,
+      }),
+    };
+    const maxActionLedgerService = {
+      getExactCompletedNightModeCloseNoticeDispatch: jest.fn(),
+    };
+    const routeVerificationService = {
+      isSchedulingAvailable: jest.fn().mockReturnValue(true),
+      schedule: jest.fn(),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      { sendMessage: jest.fn(), deleteMessage: jest.fn() } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      eventService as never,
+      undefined,
+      maxRoutedPublicationService as never,
+      undefined,
+      maxActionLedgerService as never,
+      routeVerificationService as never,
+    );
+
+    await expect(
+      service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+        },
+        createAdapters(),
+      ),
+    ).resolves.toEqual({ shouldEnqueueNext: true });
+
+    const request = maxRoutedPublicationService.publish.mock.calls[0]![0];
+    expect(request).not.toHaveProperty('sendRouteHalfOpenProbe');
+    expect(routeVerificationService.schedule).not.toHaveBeenCalled();
+    expect(
+      maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch,
+    ).not.toHaveBeenCalled();
+    expect(eventService.createTransitionEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'msg-routed-open-1',
+        ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
       }),
     );
   });
