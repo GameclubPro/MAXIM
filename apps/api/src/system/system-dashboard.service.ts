@@ -55,6 +55,7 @@ const VK_PARSING_SOURCE_FAILURE_WARNING_COUNT = 3;
 const VK_PARSING_MEDIA_FAILURE_WARNING_RATIO = 0.2;
 const VK_PARSING_PUBLISH_BACKLOG_WARNING_SEC = 10 * 60;
 const DELIVERY_LEDGER_STALE_ACTION_MS = 15 * 60_000;
+const DELIVERY_LEDGER_AUTO_DELETE_ACCESS_AMBIGUOUS_WINDOW_MS = 24 * 60 * 60_000;
 const DELIVERY_LEDGER_STALE_BROADCAST_SENDING_MS = 5 * 60_000;
 const DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS = 2 * 60_000;
 const SUGGESTION_PUBLICATION_STALE_MS = 15 * 60_000;
@@ -87,6 +88,8 @@ type DeliveryLedgerRiskSnapshot = {
   actionStaleInProgress: number;
   actionStaleRetryable: number;
   actionOldestRiskAgeSec: number;
+  actionRecentAutoDeleteAccessAmbiguous: number;
+  actionOldestAutoDeleteAccessAmbiguousAgeSec: number;
   broadcastAmbiguous: number;
   broadcastStaleSending: number;
   broadcastRiskBroadcasts: number;
@@ -1143,6 +1146,9 @@ export class SystemDashboardService {
 
     const checkedAt = new Date();
     const staleActionSince = new Date(checkedAt.getTime() - DELIVERY_LEDGER_STALE_ACTION_MS);
+    const autoDeleteAccessAmbiguousSince = new Date(
+      checkedAt.getTime() - DELIVERY_LEDGER_AUTO_DELETE_ACCESS_AMBIGUOUS_WINDOW_MS,
+    );
     const staleBroadcastSendingSince = new Date(
       checkedAt.getTime() - DELIVERY_LEDGER_STALE_BROADCAST_SENDING_MS,
     );
@@ -1175,6 +1181,24 @@ export class SystemDashboardService {
                    and updated_at < ${staleActionSince}
                  )
             )))::int as "actionOldestRiskAgeSec"
+            , count(*) filter (
+              where action_type = 'DELETE_MESSAGE'
+                and status = 'FAILED_RETRYABLE'
+                and terminal = true
+                and ambiguous = false
+                and source_tag = 'moderation_notice'
+                and last_error_code = 'send_auto_delete_exact_verification_access_ambiguous'
+                and updated_at >= ${autoDeleteAccessAmbiguousSince}
+            )::int as "actionRecentAutoDeleteAccessAmbiguous"
+            , extract(epoch from (now() - min(updated_at) filter (
+              where action_type = 'DELETE_MESSAGE'
+                and status = 'FAILED_RETRYABLE'
+                and terminal = true
+                and ambiguous = false
+                and source_tag = 'moderation_notice'
+                and last_error_code = 'send_auto_delete_exact_verification_access_ambiguous'
+                and updated_at >= ${autoDeleteAccessAmbiguousSince}
+            )))::int as "actionOldestAutoDeleteAccessAmbiguousAgeSec"
           from max_action_ledger
           where status = 'AMBIGUOUS'
              or (status = 'IN_PROGRESS' and updated_at < ${staleActionSince})
@@ -1182,6 +1206,15 @@ export class SystemDashboardService {
                status = 'FAILED_RETRYABLE'
                and terminal = false
                and updated_at < ${staleActionSince}
+             )
+             or (
+               action_type = 'DELETE_MESSAGE'
+               and status = 'FAILED_RETRYABLE'
+               and terminal = true
+               and ambiguous = false
+               and source_tag = 'moderation_notice'
+               and last_error_code = 'send_auto_delete_exact_verification_access_ambiguous'
+               and updated_at >= ${autoDeleteAccessAmbiguousSince}
              )
         `,
         this.prisma.$queryRaw<Array<Record<string, unknown>>>`
@@ -1327,6 +1360,12 @@ export class SystemDashboardService {
         actionStaleInProgress: this.readNumber(action.actionStaleInProgress),
         actionStaleRetryable: this.readNumber(action.actionStaleRetryable),
         actionOldestRiskAgeSec: this.readNumber(action.actionOldestRiskAgeSec),
+        actionRecentAutoDeleteAccessAmbiguous: this.readNumber(
+          action.actionRecentAutoDeleteAccessAmbiguous,
+        ),
+        actionOldestAutoDeleteAccessAmbiguousAgeSec: this.readNumber(
+          action.actionOldestAutoDeleteAccessAmbiguousAgeSec,
+        ),
         broadcastAmbiguous: this.readNumber(broadcast.broadcastAmbiguous),
         broadcastStaleSending: this.readNumber(broadcast.broadcastStaleSending),
         broadcastRiskBroadcasts: this.readNumber(broadcast.broadcastRiskBroadcasts),
@@ -1856,8 +1895,10 @@ export class SystemDashboardService {
       return null;
     }
 
-    const actionRisk =
+    const standardActionRisk =
       snapshot.actionAmbiguous + snapshot.actionStaleInProgress + snapshot.actionStaleRetryable;
+    const autoDeleteAccessAmbiguousRisk = snapshot.actionRecentAutoDeleteAccessAmbiguous;
+    const actionRisk = standardActionRisk + autoDeleteAccessAmbiguousRisk;
     const broadcastRisk = snapshot.broadcastAmbiguous + snapshot.broadcastStaleSending;
     const suggestionRisk =
       snapshot.suggestionAmbiguous +
@@ -1869,8 +1910,11 @@ export class SystemDashboardService {
     }
 
     const details = [
-      actionRisk > 0
+      standardActionRisk > 0
         ? `MAX action ledger: ambiguous ${snapshot.actionAmbiguous}, stale in-progress ${snapshot.actionStaleInProgress}, stale retryable ${snapshot.actionStaleRetryable}, oldest ${snapshot.actionOldestRiskAgeSec} сек`
+        : null,
+      autoDeleteAccessAmbiguousRisk > 0
+        ? `MAX auto-delete verification за 24 ч: access-ambiguous ${autoDeleteAccessAmbiguousRisk}, oldest ${snapshot.actionOldestAutoDeleteAccessAmbiguousAgeSec} сек`
         : null,
       broadcastRisk > 0
         ? `managed broadcast delivery: ambiguous ${snapshot.broadcastAmbiguous}, stale sending ${snapshot.broadcastStaleSending}, broadcasts ${snapshot.broadcastRiskBroadcasts}, oldest ${snapshot.broadcastOldestRiskAgeSec} сек`
@@ -1888,8 +1932,14 @@ export class SystemDashboardService {
       level: 'warning',
       title: 'Есть хвост доставок, требующий ручной сверки',
       detail: details.join('; '),
-      recommendedAction:
+      recommendedAction: [
         'Для safely expirable delete-intent дождитесь reconciler и проверьте снижение счётчика. Сверьте MAX/логи/remoteMessageId перед любыми повторами; ambiguous send/delete/member actions и managed broadcast deliveries не ретрайте автоматически.',
+        autoDeleteAccessAmbiguousRisk > 0
+          ? 'Выполните bounded dry-run auto-delete recovery: npm run moderation:repair-bot-auto-delete-presence --workspace @maxim/api -- --discover-access-ambiguous --json.'
+          : null,
+      ]
+        .filter((item): item is string => item !== null)
+        .join(' '),
     };
   }
 

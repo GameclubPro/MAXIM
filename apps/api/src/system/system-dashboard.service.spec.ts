@@ -576,6 +576,8 @@ describe('SystemDashboardService', () => {
           actionStaleInProgress: 29,
           actionStaleRetryable: 8,
           actionOldestRiskAgeSec: 86_400,
+          actionRecentAutoDeleteAccessAmbiguous: 4,
+          actionOldestAutoDeleteAccessAmbiguousAgeSec: 7_200,
         },
       ])
       .mockResolvedValueOnce([
@@ -778,9 +780,15 @@ describe('SystemDashboardService', () => {
     });
     expect(alert?.detail).toContain('managed broadcast delivery: ambiguous 3');
     expect(alert?.detail).toContain(
+      'MAX auto-delete verification за 24 ч: access-ambiguous 4, oldest 7200 сек',
+    );
+    expect(alert?.detail).toContain(
       'moderation delete intents: safely expirable 476, stale expired in-progress 2',
     );
     expect(alert?.detail).not.toContain('publishing');
+    expect(alert?.recommendedAction).toContain(
+      'npm run moderation:repair-bot-auto-delete-presence --workspace @maxim/api -- --discover-access-ambiguous --json',
+    );
 
     expect(snapshot.alerts).toEqual(
       expect.arrayContaining([
@@ -800,6 +808,28 @@ describe('SystemDashboardService', () => {
 
     const findQuery = (fragment: string) =>
       queryRaw.mock.calls.find((call) => extractSqlText(call).includes(fragment));
+    const actionLedgerQuery = findQuery('from max_action_ledger');
+    const actionLedgerSql = extractSqlText(actionLedgerQuery);
+    expect(actionLedgerSql).toContain("action_type = 'DELETE_MESSAGE'");
+    expect(actionLedgerSql).toContain("status = 'FAILED_RETRYABLE'");
+    expect(actionLedgerSql).toContain('terminal = true');
+    expect(actionLedgerSql).toContain('ambiguous = false');
+    expect(actionLedgerSql).toContain("source_tag = 'moderation_notice'");
+    expect(actionLedgerSql).toContain(
+      "last_error_code = 'send_auto_delete_exact_verification_access_ambiguous'",
+    );
+    expect(actionLedgerSql).toContain('updated_at >=');
+    const actionLedgerDates = readRawSqlValues(actionLedgerQuery ?? []).filter(
+      (value): value is Date => value instanceof Date,
+    );
+    const newestActionLedgerDateMs = Math.max(...actionLedgerDates.map((value) => value.getTime()));
+    const autoDeleteCutoffDates = actionLedgerDates.filter(
+      (value) => value.getTime() < newestActionLedgerDateMs,
+    );
+    expect(autoDeleteCutoffDates).toHaveLength(3);
+    expect(newestActionLedgerDateMs - autoDeleteCutoffDates[0]!.getTime()).toBe(
+      24 * 60 * 60_000 - 15 * 60_000,
+    );
     const suggestionPublishingQuery = findQuery('with publishing_candidates as materialized');
     const suggestionPublishingSql = extractSqlText(suggestionPublishingQuery);
     expect(suggestionPublishingSql).toContain("audit.payload->>'reviewStatus' = 'publishing'");
@@ -1406,6 +1436,8 @@ describe('SystemDashboardService', () => {
         actionStaleInProgress: 0,
         actionStaleRetryable: 0,
         actionOldestRiskAgeSec: 0,
+        actionRecentAutoDeleteAccessAmbiguous: 0,
+        actionOldestAutoDeleteAccessAmbiguousAgeSec: 0,
         broadcastAmbiguous: 0,
         broadcastStaleSending: 0,
         broadcastRiskBroadcasts: 0,
@@ -1457,6 +1489,8 @@ describe('SystemDashboardService', () => {
         actionStaleInProgress: 0,
         actionStaleRetryable: 0,
         actionOldestRiskAgeSec: 0,
+        actionRecentAutoDeleteAccessAmbiguous: 0,
+        actionOldestAutoDeleteAccessAmbiguousAgeSec: 0,
         broadcastAmbiguous: 0,
         broadcastStaleSending: 0,
         broadcastRiskBroadcasts: 0,
@@ -1616,6 +1650,8 @@ describe('SystemDashboardService', () => {
               actionStaleInProgress: 0,
               actionStaleRetryable: 0,
               actionOldestRiskAgeSec: 0,
+              actionRecentAutoDeleteAccessAmbiguous: 0,
+              actionOldestAutoDeleteAccessAmbiguousAgeSec: 0,
             },
           ])
           .mockResolvedValueOnce([

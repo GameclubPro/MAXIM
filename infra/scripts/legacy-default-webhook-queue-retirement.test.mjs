@@ -13,10 +13,7 @@ import {
 } from './legacy-default-webhook-db-audit.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
-const queueHelperPath = resolve(
-  root,
-  'infra/scripts/legacy-default-webhook-queue-retirement.cjs',
-);
+const queueHelperPath = resolve(root, 'infra/scripts/legacy-default-webhook-queue-retirement.cjs');
 const {
   LEGACY_DEFAULT_WEBHOOK_QUEUE,
   LEGACY_JOB_MIN_TIMESTAMP_MS,
@@ -28,6 +25,7 @@ const {
   LegacyDefaultQueuePreconditionError,
   armRemoteApplyWatchdog,
   attestWebhookProducerRuntime,
+  formatFailureDiagnostic,
   inspectDefaultWebhookShards,
   inspectLegacyDefaultWebhookQueue,
   inspectLegacyDefaultWebhookQueueSettlement,
@@ -36,6 +34,21 @@ const {
   validatePrivateSnapshot,
   validateRemoteApplyDeadline,
 } = queueModule;
+
+test('failure diagnostics expose only allowlisted precondition codes', () => {
+  assert.equal(
+    formatFailureDiagnostic(new LegacyDefaultQueuePreconditionError('legacy_job_shape_invalid')),
+    'Legacy default webhook queue retirement failed closed. code=legacy_job_shape_invalid\n',
+  );
+  assert.equal(
+    formatFailureDiagnostic(new LegacyDefaultQueuePreconditionError('private-job-id')),
+    'Legacy default webhook queue retirement failed closed.\n',
+  );
+  assert.equal(
+    formatFailureDiagnostic(new Error('sensitive failure detail')),
+    'Legacy default webhook queue retirement failed closed.\n',
+  );
+});
 
 function validRuntimeModules() {
   const appRoles = ['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action', 'publisher'];
@@ -258,7 +271,10 @@ test('rejects BullMQ parent, repeat, and dependency linkage before obliteration'
 
   for (const job of linkedJobs) {
     const queue = new FakeQueue({ prioritized: [job] });
-    await assert.rejects(inspectLegacyDefaultWebhookQueue(queue), LegacyDefaultQueuePreconditionError);
+    await assert.rejects(
+      inspectLegacyDefaultWebhookQueue(queue),
+      LegacyDefaultQueuePreconditionError,
+    );
     assert.equal(queue.pauseCalls, 0);
     assert.deepEqual(queue.obliterateCalls, []);
   }
@@ -448,7 +464,10 @@ test('database audit is primary-key bounded and allows only terminal or absent r
 
   assert.match(sql, /webhook_events_pkey/u);
   assert.match(sql, /requested\(id\) AS MATERIALIZED/u);
-  assert.match(sql, /LEFT JOIN public\.webhook_events AS webhook_events ON webhook_events\.id = requested\.id/u);
+  assert.match(
+    sql,
+    /LEFT JOIN public\.webhook_events AS webhook_events ON webhook_events\.id = requested\.id/u,
+  );
   assert.match(sql, /status = 'RECEIVED'/u);
   assert.match(sql, /status = 'QUEUED'/u);
   assert.match(sql, /status = 'FAILED'/u);
@@ -568,7 +587,10 @@ test('host wrapper keeps apply behind release, database, pause, and postcheck gu
   );
   assert.match(wrapper, /node -e "\$CONTROL_SOURCE" apply <"\$PRIVATE_SNAPSHOT"/u);
   assert.match(wrapper, /inspect_active_shards[\s\S]*run_readiness_smokes/u);
-  assert.match(wrapper, /MAXIM_LEGACY_DEFAULT_QUEUE_RETIRE_TIMEOUT_SEC must be between 30 and 120/u);
+  assert.match(
+    wrapper,
+    /MAXIM_LEGACY_DEFAULT_QUEUE_RETIRE_TIMEOUT_SEC must be between 30 and 120/u,
+  );
   assert.match(postgresAudit, /MAXIM_INTERNAL_LEGACY_DEFAULT_WEBHOOK_AUDIT/u);
   assert.match(postgresAudit, /legacy-default-webhook-jobs/u);
   assert.match(connect, /moderation-default-retire-legacy-queue/u);

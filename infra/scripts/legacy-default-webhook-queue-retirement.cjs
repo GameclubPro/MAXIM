@@ -33,8 +33,9 @@ const PRODUCTION_API_SERVICES = Object.freeze([
 const EXPECTED_ACTIVE_WEBHOOK_QUEUES = Object.freeze([
   'moderation-critical',
   ...Array.from({ length: 4 }, (_, index) => `moderation-join-${index}`),
-  ...Array.from({ length: DEFAULT_WEBHOOK_SHARD_COUNT }, (_, index) =>
-    `moderation-default-${index}`,
+  ...Array.from(
+    { length: DEFAULT_WEBHOOK_SHARD_COUNT },
+    (_, index) => `moderation-default-${index}`,
   ),
   'moderation-background',
 ]);
@@ -62,6 +63,42 @@ class LegacyDefaultQueuePreconditionError extends Error {
     this.code = code;
     this.summary = summary;
   }
+}
+
+const SAFE_PRECONDITION_CODES = new Set([
+  ...QUEUE_STATES.flatMap((state) => [`invalid_${state}_count`, `missing_${state}_count`]),
+  'active_jobs_after_pause',
+  'active_jobs_before_pause',
+  'duplicate_legacy_job_id',
+  'invalid_job_scheduler_count',
+  'invalid_worker_count',
+  'legacy_job_cap_exceeded',
+  'legacy_job_count_mismatch',
+  'legacy_job_dependencies_present',
+  'legacy_job_dependency_counts_invalid',
+  'legacy_job_dependency_probe_missing',
+  'legacy_job_shape_invalid',
+  'legacy_job_snapshot_incomplete',
+  'legacy_queue_settlement_unstable',
+  'legacy_queue_snapshot_changed',
+  'legacy_queue_version_missing',
+  'obliterate_not_confirmed',
+  'pause_not_confirmed',
+  'queue_metadata_invalid',
+  'remote_apply_deadline_invalid',
+  'remote_apply_deadline_reached',
+  'unexpected_legacy_job_scheduler',
+  'unexpected_legacy_job_state',
+  'workers_present_after_pause',
+  'workers_present_before_pause',
+]);
+
+function formatFailureDiagnostic(error) {
+  const suffix =
+    error instanceof LegacyDefaultQueuePreconditionError && SAFE_PRECONDITION_CODES.has(error.code)
+      ? ` code=${error.code}`
+      : '';
+  return `Legacy default webhook queue retirement failed closed.${suffix}\n`;
 }
 
 function isRecord(value) {
@@ -219,9 +256,7 @@ async function assertNoLegacyJobDependencies(job) {
     Object.keys(counts).length !== fields.length ||
     fields.some(
       (field) =>
-        !Object.hasOwn(counts, field) ||
-        !Number.isSafeInteger(counts[field]) ||
-        counts[field] < 0,
+        !Object.hasOwn(counts, field) || !Number.isSafeInteger(counts[field]) || counts[field] < 0,
     )
   ) {
     throw new LegacyDefaultQueuePreconditionError('legacy_job_dependency_counts_invalid');
@@ -244,7 +279,10 @@ function validateQueue(queue, expectedName = LEGACY_DEFAULT_WEBHOOK_QUEUE) {
     'pause',
     'waitUntilReady',
   ];
-  if (queue?.name !== expectedName || methods.some((method) => typeof queue?.[method] !== 'function')) {
+  if (
+    queue?.name !== expectedName ||
+    methods.some((method) => typeof queue?.[method] !== 'function')
+  ) {
     throw new Error('Legacy default webhook queue handle is invalid.');
   }
 }
@@ -306,7 +344,11 @@ function buildSnapshotSummary({
   const totalJobs = Object.values(counts).reduce((sum, value) => sum + value, 0);
   return Object.freeze({
     present:
-      libraryVersion !== null || paused || workerCount > 0 || jobSchedulerCount > 0 || totalJobs > 0,
+      libraryVersion !== null ||
+      paused ||
+      workerCount > 0 ||
+      jobSchedulerCount > 0 ||
+      totalJobs > 0,
     paused,
     workerCount,
     jobSchedulerCount,
@@ -617,10 +659,7 @@ async function inspectDefaultWebhookShards(createQueue) {
         if (typeof paused !== 'boolean' || !isRecord(counts)) {
           throw new Error('Webhook shard queue returned invalid state.');
         }
-        const totalJobs = QUEUE_STATES.reduce(
-          (sum, state) => sum + readOwnCount(counts, state),
-          0,
-        );
+        const totalJobs = QUEUE_STATES.reduce((sum, state) => sum + readOwnCount(counts, state), 0);
         if (!Number.isSafeInteger(totalJobs)) {
           throw new Error('Webhook shard queue returned an unsafe job total.');
         }
@@ -722,7 +761,9 @@ async function main() {
     return;
   }
   if (action === 'summarize') {
-    process.stdout.write(`${JSON.stringify(summarizeSnapshot(readPrivateSnapshotFile(process.argv[offset + 1])))}\n`);
+    process.stdout.write(
+      `${JSON.stringify(summarizeSnapshot(readPrivateSnapshotFile(process.argv[offset + 1])))}\n`,
+    );
     return;
   }
   const result = await runRemote(action);
@@ -751,6 +792,7 @@ module.exports = {
   armRemoteApplyWatchdog,
   assertNoLegacyJobDependencies,
   attestWebhookProducerRuntime,
+  formatFailureDiagnostic,
   assertSnapshotUnchanged,
   inspectDefaultWebhookShards,
   inspectLegacyDefaultWebhookQueue,
@@ -764,8 +806,8 @@ module.exports = {
 };
 
 if (require.main === module || __filename === '[eval]') {
-  main().catch(() => {
-    process.stderr.write('Legacy default webhook queue retirement failed closed.\n');
+  main().catch((error) => {
+    process.stderr.write(formatFailureDiagnostic(error));
     process.exitCode = 1;
   });
 }

@@ -8,6 +8,7 @@ import {
   MaxClientService,
   markMaxMemberMutationAttempted,
   normalizeMaxActionIdempotencyKeyPart,
+  type MaxActionJob,
   wasMaxMemberMutationAttempted,
   wasMaxMemberMutationConfirmed,
   wasMaxMessageSendAttempted,
@@ -783,7 +784,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       actionHealthLane: undefined,
       sourceTag: undefined,
       timeoutMs: undefined,
-      ignoreFailureMetricStatuses: undefined,
+      ignoreFailureMetricStatuses: [403, 404],
       bypassCache: true,
     });
     expect(httpService.request).not.toHaveBeenCalled();
@@ -929,6 +930,149 @@ describe('MaxClientService inline keyboard guardrails', () => {
       /chat-1|mid-auto-delete-unknown-1|MAX message unavailable/iu,
     );
     expect(httpService.request).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it.each([403, 404])(
+    'ignores auto-delete verification GET HTTP %s in action health metrics',
+    async (status) => {
+      const lookupError = Object.assign(new Error('MAX message unavailable'), {
+        response: {
+          status,
+          data: {
+            code: status === 403 ? 'access.denied' : 'message.not.found',
+            message: 'Message unavailable',
+          },
+        },
+      });
+      const httpService = {
+        request: jest.fn().mockReturnValue(throwError(() => lookupError)),
+      };
+      const service = createService(httpService);
+      jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+      const actionHealthService = (service as any).actionHealthService;
+
+      await expect(
+        service.executeActionJob({
+          actionType: 'DELETE_MESSAGE',
+          chatId: 'chat-1',
+          botId: '777000_bot',
+          messageId: 'mid-auto-delete-verification-metric',
+          actionHealthLane: 'background',
+          sendAutoDelete: {
+            version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+            sourceSendJobId: 'send-job-1',
+            sourceSendCompletedAt: null,
+            requestedDelayMs: 60_000,
+            originBotId: '777000_bot',
+          },
+          attempt: 1,
+          idempotencyKey: 'delete-auto-delete-verification-metric',
+          createdAt: '2026-09-03T08:01:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        name: 'MaxSendAutoDeleteVerificationError',
+        maxSendAutoDeleteVerificationDiagnostic: {
+          kind: 'access_ambiguous',
+          statusCode: status,
+        },
+      });
+
+      expect(actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
+      expect(httpService.request).toHaveBeenCalled();
+      for (const [request] of httpService.request.mock.calls) {
+        expect(request.method).toBe('get');
+      }
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('keeps production auto-delete GET suppressions scoped away from the DELETE metric', async () => {
+    const deleteError = Object.assign(new Error('Delete failed'), {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    });
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                {
+                  body: { mid: 'mid-auto-delete-delete-metric' },
+                  recipient: { chat_id: 'chat-1' },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(throwError(() => deleteError)),
+    };
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createService(httpService, {}, actionQueue);
+    const actionHealthService = (service as any).actionHealthService;
+
+    await service.ensureSendAutoDeleteScheduled(
+      {
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        botId: '777000_bot',
+        text: 'Moderation notice',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        ignoreFailureMetricStatuses: [403, 404],
+        autoDeleteDelayMs: 60_000,
+        attempt: 1,
+        idempotencyKey: 'send-auto-delete-production-metrics',
+        createdAt: '2026-09-03T08:00:00.000Z',
+      },
+      {
+        remoteMessageId: 'mid-auto-delete-delete-metric',
+        dispatchBotId: '777000_bot',
+        completedAt: new Date('2026-09-03T08:00:00.000Z'),
+      },
+    );
+    const autoDeleteJob = actionQueue.add.mock.calls[0]?.[1] as MaxActionJob;
+    const presence = jest.spyOn(service, 'getExactMessagePresence');
+
+    await expect(service.executeActionJob(autoDeleteJob)).rejects.toBe(deleteError);
+
+    expect(autoDeleteJob).toEqual(
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'mid-auto-delete-delete-metric',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+      }),
+    );
+    expect(autoDeleteJob).not.toEqual(
+      expect.objectContaining({ ignoreFailureMetricStatuses: expect.anything() }),
+    );
+    expect(presence).toHaveBeenCalledWith('chat-1', 'mid-auto-delete-delete-metric', {
+      botId: '777000_bot',
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      sourceTag: undefined,
+      timeoutMs: undefined,
+      ignoreFailureMetricStatuses: [403, 404],
+      bypassCache: true,
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ method: 'delete' }),
+    );
+    expect(actionHealthService.recordFailureForLane).toHaveBeenCalledTimes(1);
+    expect(actionHealthService.recordFailureForLane).toHaveBeenCalledWith(
+      'background',
+      false,
+      '777000_bot',
+    );
     await service.onModuleDestroy();
   });
 
@@ -1750,7 +1894,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
       timeoutMs: 1_234,
       autoDeleteDelayMs: 60_000,
-      ignoreFailureMetricStatuses: [404],
+      ignoreFailureMetricStatuses: [403, 404, 409],
       attempt: 1,
       idempotencyKey: 'send-auto-delete-context',
       createdAt: new Date().toISOString(),
@@ -1774,7 +1918,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
         timeoutMs: 1_234,
-        ignoreFailureMetricStatuses: [404],
+        ignoreFailureMetricStatuses: [409],
         sendAutoDelete: {
           version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
           sourceSendJobId: 'send-auto-delete-context',
@@ -2055,7 +2199,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('inherits immediate send dispatch context when scheduling auto-delete', async () => {
+  it('keeps interactive traffic priority but backgrounds auto-delete action health', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
         of({
@@ -2075,11 +2219,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.sendMessage('chat-1', 'hello', undefined, {
       immediate: true,
       autoDeleteDelayMs: 30_000,
-      trafficClass: 'background',
-      actionHealthLane: 'background',
+      trafficClass: 'interactive',
+      actionHealthLane: 'interactive',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
       timeoutMs: 2_345,
-      ignoreFailureMetricStatuses: [404],
+      ignoreFailureMetricStatuses: [409],
       botId: '777000_bot',
     });
 
@@ -2090,11 +2234,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
         chatId: 'chat-1',
         messageId: 'mid-immediate-1',
         botId: '777000_bot',
-        trafficClass: 'background',
+        trafficClass: 'interactive',
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
         timeoutMs: 2_345,
-        ignoreFailureMetricStatuses: [404],
+        ignoreFailureMetricStatuses: [409],
       }),
       expect.objectContaining({
         delay: 30_000,

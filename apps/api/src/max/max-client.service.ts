@@ -6490,16 +6490,16 @@ export class MaxClientService implements OnModuleDestroy {
     const timeoutMs = this.normalizeTimeoutMs(action.timeoutMs);
     const ignoreFailureMetricStatuses = this.normalizeFailureMetricStatuses(
       action.ignoreFailureMetricStatuses,
-    );
+    )?.filter((status) => status !== 403 && status !== 404);
 
     return {
       delayMs,
       botId,
       ...(action.trafficClass ? { trafficClass: action.trafficClass } : {}),
-      ...(action.actionHealthLane ? { actionHealthLane: action.actionHealthLane } : {}),
+      actionHealthLane: 'background',
       ...(sourceTag ? { sourceTag } : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
-      ...(ignoreFailureMetricStatuses ? { ignoreFailureMetricStatuses } : {}),
+      ...(ignoreFailureMetricStatuses?.length ? { ignoreFailureMetricStatuses } : {}),
     };
   }
 
@@ -6535,11 +6535,17 @@ export class MaxClientService implements OnModuleDestroy {
     boundBotId: string,
     requestOptions: MaxApiRequestOptions,
   ): Promise<MaxExactMessagePresence> {
+    const verificationIgnoreFailureMetricStatuses = this.normalizeFailureMetricStatuses([
+      ...(requestOptions.ignoreFailureMetricStatuses ?? []),
+      403,
+      404,
+    ]);
     try {
       return await this.getExactMessagePresence(action.chatId, messageId, {
         ...requestOptions,
         botId: boundBotId,
         bypassCache: true,
+        ignoreFailureMetricStatuses: verificationIgnoreFailureMetricStatuses,
       });
     } catch (cause: unknown) {
       const error = createMaxSendAutoDeleteVerificationError(cause);

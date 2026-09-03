@@ -2427,6 +2427,44 @@ describe('MaxActionLedgerService', () => {
     },
   );
 
+  it('terminalizes an exhausted access-ambiguous auto-delete verification as repairable', async () => {
+    const { service, prisma } = createService();
+    const job = createJob({
+      actionType: 'DELETE_MESSAGE',
+      text: undefined,
+      messageId: 'mid-private-exhausted',
+      sendAutoDelete: {
+        version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+        sourceSendJobId: 'send-private-exhausted',
+        sourceSendCompletedAt: '2026-09-03T08:00:00.000Z',
+        requestedDelayMs: 60_000,
+        originBotId: 'bot-1',
+      },
+    });
+    const verificationError = createMaxSendAutoDeleteVerificationError({
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message unavailable' },
+      },
+    });
+
+    await service.recordFailed(job, verificationError, { exhausted: true });
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+          ambiguous: false,
+          terminal: true,
+          completedAt: expect.any(Date),
+          lastStatusCode: null,
+          lastErrorCode: 'send_auto_delete_exact_verification_access_ambiguous',
+          lastError: 'Send-side auto-delete exact presence verification failed (access_ambiguous)',
+        }),
+      }),
+    );
+  });
+
   it('terminally classifies deterministic local payload and definitive member failures', async () => {
     const { service, prisma } = createService();
 

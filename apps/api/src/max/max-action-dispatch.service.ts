@@ -28,6 +28,7 @@ import {
   shouldEnforceMaxRoutedMutation,
   type MaxRoutedMutationMode,
 } from './max-routed-mutation-rollout.util';
+import { readMaxSendAutoDeleteVerificationDiagnostic } from './max-send-auto-delete-verification-error';
 
 type TerminalManagedEntityOutcome =
   | {
@@ -344,6 +345,20 @@ export class MaxActionDispatchService {
       } catch (error: unknown) {
         if (!dispatchAttemptStartedAt) {
           await releaseHalfOpenClaim();
+        }
+        // FLAG: Ambiguous verification is not deletion success. Stop BullMQ retries only after
+        // the durable ledger owns the terminal, manually repairable outcome.
+        if (
+          attemptJob.actionType === 'DELETE_MESSAGE' &&
+          Boolean(attemptJob.sendAutoDelete) &&
+          readMaxSendAutoDeleteVerificationDiagnostic(error)?.kind === 'access_ambiguous'
+        ) {
+          if (await this.persistAccessAmbiguousAutoDeleteFailure(attemptJob, error)) {
+            throw new UnrecoverableError(
+              'MAX send-side auto-delete exact presence verification is access-ambiguous',
+            );
+          }
+          throw error;
         }
         if (wasMaxPreDispatchGuardRejected(error)) {
           await releaseHalfOpenClaim();
@@ -1034,6 +1049,26 @@ export class MaxActionDispatchService {
         },
         'Failed to record failed MAX action ledger outcome',
       );
+    }
+  }
+
+  private async persistAccessAmbiguousAutoDeleteFailure(
+    job: MaxActionJob,
+    error: unknown,
+  ): Promise<boolean> {
+    if (!this.actionLedgerService) {
+      return false;
+    }
+
+    try {
+      await this.actionLedgerService.recordFailed(job, error, { exhausted: true });
+      return true;
+    } catch {
+      this.logger.warn(
+        { actionType: job.actionType },
+        'Failed to terminalize access-ambiguous send-side auto-delete verification in the ledger',
+      );
+      return false;
     }
   }
 

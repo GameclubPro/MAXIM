@@ -18,6 +18,7 @@ import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
   MaxMediaUploadValidationError,
 } from './max-media-upload-validation';
+import { createMaxSendAutoDeleteVerificationError } from './max-send-auto-delete-verification-error';
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
   return Object.assign(new Error(message), {
@@ -29,6 +30,25 @@ function createMaxApiError(status: number, message: string, code?: string): Erro
       },
     },
   });
+}
+
+function createSendAutoDeleteJob(): MaxActionJob {
+  return {
+    actionType: 'DELETE_MESSAGE',
+    chatId: 'chat-sensitive',
+    botId: 'bot-1',
+    messageId: 'message-sensitive',
+    sendAutoDelete: {
+      version: MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+      sourceSendJobId: 'send-job-sensitive',
+      sourceSendCompletedAt: '2026-09-03T08:00:00.000Z',
+      requestedDelayMs: 60_000,
+      originBotId: 'bot-1',
+    },
+    attempt: 1,
+    idempotencyKey: 'auto-delete-job-sensitive',
+    createdAt: '2026-09-03T08:01:00.000Z',
+  } as MaxActionJob;
 }
 
 describe('MaxActionDispatchService', () => {
@@ -311,6 +331,164 @@ describe('MaxActionDispatchService', () => {
     expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
   });
+
+  it('stops access-ambiguous auto-delete retries only after terminal ledger persistence', async () => {
+    const verificationError = createMaxSendAutoDeleteVerificationError(
+      createMaxApiError(404, 'Message message-sensitive not found', 'message.not.found'),
+    );
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(verificationError),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = createSendAutoDeleteJob();
+
+    let thrown: unknown;
+    try {
+      await service.execute(job);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(UnrecoverableError);
+    expect((thrown as Error).message).toBe(
+      'MAX send-side auto-delete exact presence verification is access-ambiguous',
+    );
+    expect((thrown as Error).message).not.toMatch(
+      /chat-sensitive|message-sensitive|send-job-sensitive/,
+    );
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, verificationError, {
+      exhausted: true,
+    });
+  });
+
+  it('keeps access-ambiguous auto-delete verification retryable without a ledger service', async () => {
+    const verificationError = createMaxSendAutoDeleteVerificationError(
+      createMaxApiError(403, 'Access denied', 'access.denied'),
+    );
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(verificationError),
+    };
+    const service = new MaxActionDispatchService(maxClient as never);
+
+    await expect(service.execute(createSendAutoDeleteJob())).rejects.toBe(verificationError);
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps access-ambiguous auto-delete verification retryable when ledger persistence fails', async () => {
+    const verificationError = createMaxSendAutoDeleteVerificationError(
+      createMaxApiError(404, 'Message unavailable', 'message.not.found'),
+    );
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(verificationError),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockRejectedValue(new Error('ledger unavailable')),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    const job = createSendAutoDeleteJob();
+
+    await expect(service.execute(job)).rejects.toBe(verificationError);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, verificationError, {
+      exhausted: true,
+    });
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a branded access-ambiguous ordinary DELETE retryable', async () => {
+    const verificationError = createMaxSendAutoDeleteVerificationError(
+      createMaxApiError(404, 'Message unavailable', 'message.not.found'),
+    );
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(verificationError),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      messageId: 'message-1',
+      attempt: 1,
+      idempotencyKey: 'ordinary-delete-job',
+      createdAt: '2026-09-03T08:01:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job)).rejects.toBe(verificationError);
+    expect(verificationError).not.toBeInstanceOf(UnrecoverableError);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, verificationError, {
+      exhausted: false,
+    });
+  });
+
+  it.each([
+    {
+      label: 'upstream 502',
+      cause: createMaxApiError(502, 'Upstream unavailable', 'server.failure'),
+      expectedKind: 'upstream_5xx',
+    },
+    {
+      label: 'timeout',
+      cause: Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' }),
+      expectedKind: 'timeout',
+    },
+    {
+      label: 'rate limit 429',
+      cause: createMaxApiError(429, 'Too many requests', 'too.many.requests'),
+      expectedKind: 'rate_limit',
+    },
+    {
+      label: 'open circuit',
+      cause: new MaxApiCircuitOpenError('bot-1', 750),
+      expectedKind: 'circuit_open',
+    },
+  ])(
+    'keeps $label auto-delete verification failures retryable',
+    async ({ cause, expectedKind }) => {
+      const verificationError = createMaxSendAutoDeleteVerificationError(cause);
+      const maxClient = {
+        executeActionJob: jest.fn().mockRejectedValue(verificationError),
+      };
+      const actionLedgerService = {
+        recordStarted: jest.fn().mockResolvedValue(undefined),
+        recordFailed: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new MaxActionDispatchService(
+        maxClient as never,
+        undefined,
+        actionLedgerService as never,
+      );
+      const job = createSendAutoDeleteJob();
+
+      await expect(service.execute(job)).rejects.toBe(verificationError);
+      expect(verificationError).not.toBeInstanceOf(UnrecoverableError);
+      expect(verificationError.maxSendAutoDeleteVerificationDiagnostic.kind).toBe(expectedKind);
+      expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, verificationError, {
+        exhausted: false,
+      });
+    },
+  );
 
   it('retries a DELETE-confirmed auto-delete when its durable v2 receipt cannot be recorded', async () => {
     const ledgerError = new Error('ledger write failed');

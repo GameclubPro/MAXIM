@@ -167,6 +167,30 @@ The first command is preview-only; `--apply` is the explicit database mutation:
 The role has exact table grants, aggregate activity visibility, read-only resource defaults, and a
 single connection. It does not receive `pg_read_all_data`.
 
+## Bot Auto-Delete Access-Ambiguity Recovery
+
+When the closed dashboard reports recent auto-delete `access-ambiguous` ledger rows, run the
+admin-only bounded discovery as a dry-run in the `api-admin` runtime environment:
+
+```bash
+npm run moderation:repair-bot-auto-delete-presence --workspace @maxim/api -- --discover-access-ambiguous --json
+```
+
+The command examines at most 20 `moderation_notice` rows from the last 24 hours, verifies each exact
+DELETE-to-SEND ledger chain, and performs a fresh exact MAX message lookup. Treat its output as
+sensitive because the explicit operator command includes target identifiers. Apply only after the
+dry-run contains the expected candidates and production is healthy:
+
+```bash
+MAXIM_REPAIR_ACTOR_ID='reviewed-operator-id'
+npm run moderation:repair-bot-auto-delete-presence --workspace @maxim/api -- --discover-access-ambiguous --apply --actor-user-id "$MAXIM_REPAIR_ACTOR_ID" --json
+```
+
+Apply rechecks and locks both ledger rows before creating the audited durable delete intent. A
+changed ledger, unavailable MAX lookup, missing active origin membership, or unsupported candidate
+fails closed. Keep `MAXIM_REPAIR_ACTOR_ID` in the invoking shell only, rerun the dry-run after apply,
+and never retry the terminal action-ledger job directly.
+
 ## Legacy VK Publish Queue Retirement
 
 After the release that removes every `vk-parsing-publish` producer and worker is active, preview the

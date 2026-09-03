@@ -15,6 +15,11 @@ import {
   MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
   MAX_SEND_FENCE_STALE_MS,
 } from '../max/max-send-ambiguity.util';
+import {
+  isMaxSendAutoDeleteMarker,
+  MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+  readMaxSendAutoDeleteConfirmation,
+} from '../max/max-send-auto-delete-marker';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -103,6 +108,15 @@ export const BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION =
   'OPERATOR_CREATE_MISSING_BOT_MESSAGE_AUTO_DELETE_INTENT';
 export const BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_INTENT_AUDIT_ACTION =
   'OPERATOR_CREATE_EXPLICIT_BOT_MESSAGE_CLEANUP_INTENT';
+export const BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE =
+  'terminal_auto_delete_access_ambiguous_ledger';
+export const BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION = 1;
+export const BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE =
+  'send_auto_delete_exact_verification_access_ambiguous';
+export const BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_HANDOFF_ERROR_CODE =
+  'send_auto_delete_access_ambiguous_operator_handoff';
+export const BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_HANDOFF_AUDIT_ACTION =
+  'OPERATOR_ACK_AUTO_DELETE_ACCESS_AMBIGUOUS_HANDOFF';
 const NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE = 'night_mode_close_notice_cleanup_stale';
 const DELETE_QUEUE_PRIORITY_INTERACTIVE = 1;
 const DELETE_QUEUE_PRIORITY_BACKGROUND = 10;
@@ -257,6 +271,31 @@ export type BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence = {
   jobCreatedAt: Date;
 };
 
+export type BotMessageAutoDeleteAccessAmbiguousLedgerEvidence = {
+  deleteLedgerId: string;
+  deleteJobId: string;
+  chatId: string;
+  messageId: string;
+  originBotId: string;
+  sourceTag: string | null;
+  trafficClass: string | null;
+  actionHealthLane: string | null;
+  attemptCount: number;
+  enqueuedAt: Date;
+  firstAttemptAt: Date;
+  lastAttemptAt: Date;
+  completedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  sourceSendLedgerId: string;
+  sourceSendJobId: string;
+  sourceSendEnqueuedAt: Date;
+  sourceSendCompletedAt: Date;
+  sourceSendCreatedAt: Date;
+  sourceSendUpdatedAt: Date;
+  requestedDelayMs: number;
+};
+
 export type BotMessageAutoDeleteRepairIntentAuditOptions =
   | (BotMessageAutoDeleteRepairIntentAuditBaseOptions & {
       kind?: 'legacy_missing_intent';
@@ -268,6 +307,12 @@ export type BotMessageAutoDeleteRepairIntentAuditOptions =
       operatorReason: string;
       expectedPolicy: BotMessageAutoDeleteExplicitOperatorCleanupPolicy;
       expectedSend: BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence;
+    })
+  | (BotMessageAutoDeleteRepairIntentAuditBaseOptions & {
+      kind: 'access_ambiguous_ledger';
+      expectedLedger: BotMessageAutoDeleteAccessAmbiguousLedgerEvidence;
+      operatorReason?: never;
+      expectedPolicy?: never;
     });
 
 export type EnsureBotMessageAutoDeleteRepairIntentResult = {
@@ -276,6 +321,12 @@ export type EnsureBotMessageAutoDeleteRepairIntentResult = {
   rollout: 'execute';
   status: BotMessageAutoDeleteRepairActiveStatus;
 };
+
+export type BotMessageAutoDeleteAccessAmbiguousHandoffResult =
+  | 'created'
+  | 'reconciled_existing'
+  | 'reopened'
+  | 'already_absent';
 
 export type ModerationDeleteIntentAttemptOptions = {
   /** Fences this inline attempt only; the persisted intent remains the durable recovery owner. */
@@ -295,6 +346,15 @@ export class BotMessageAutoDeleteExplicitCleanupPolicyConflictError extends BotM
   constructor() {
     super('Current bot-message cleanup policy no longer matches the authorized snapshot');
     this.name = 'BotMessageAutoDeleteExplicitCleanupPolicyConflictError';
+  }
+}
+
+export class BotMessageAutoDeleteAccessAmbiguousLedgerConflictError extends Error {
+  readonly code = 'access_ambiguous_ledger_conflict';
+
+  constructor() {
+    super('Terminal auto-delete access-ambiguous ledger evidence changed before commit');
+    this.name = 'BotMessageAutoDeleteAccessAmbiguousLedgerConflictError';
   }
 }
 
@@ -606,7 +666,11 @@ export class ModerationDeleteIntentService {
     ) {
       throw new Error('auditPayload must be a JSON object for bot-message auto-delete repair');
     }
-    if (repairKind !== 'legacy_missing_intent' && repairKind !== 'explicit_operator_cleanup') {
+    if (
+      repairKind !== 'legacy_missing_intent' &&
+      repairKind !== 'explicit_operator_cleanup' &&
+      repairKind !== 'access_ambiguous_ledger'
+    ) {
       throw new Error('Unsupported bot-message auto-delete repair kind');
     }
     if (
@@ -635,6 +699,8 @@ export class ModerationDeleteIntentService {
             expectedSend: options.expectedSend,
           }
         : null;
+    const accessAmbiguousLedger =
+      options.kind === 'access_ambiguous_ledger' ? options.expectedLedger : null;
     if (explicitCleanup) {
       const policy = explicitCleanup.expectedPolicy;
       const send = explicitCleanup.expectedSend;
@@ -691,11 +757,45 @@ export class ModerationDeleteIntentService {
         );
       }
     }
+    if (accessAmbiguousLedger) {
+      const evidence = accessAmbiguousLedger;
+      if (
+        !evidence.deleteLedgerId.trim() ||
+        !evidence.deleteJobId.trim() ||
+        evidence.chatId !== normalized.chatId ||
+        evidence.messageId !== normalized.messageId ||
+        evidence.originBotId !== normalized.originBotId ||
+        evidence.sourceTag !== MAX_API_SOURCE_TAGS.MODERATION_NOTICE ||
+        evidence.attemptCount < 1 ||
+        !evidence.sourceSendLedgerId.trim() ||
+        !evidence.sourceSendJobId.trim() ||
+        !isValidDeleteBotMessagesDelayMinutes(evidence.requestedDelayMs / 60_000) ||
+        [
+          evidence.enqueuedAt,
+          evidence.firstAttemptAt,
+          evidence.lastAttemptAt,
+          evidence.completedAt,
+          evidence.createdAt,
+          evidence.updatedAt,
+          evidence.sourceSendEnqueuedAt,
+          evidence.sourceSendCompletedAt,
+          evidence.sourceSendCreatedAt,
+          evidence.sourceSendUpdatedAt,
+        ].some((value) => !Number.isFinite(value.getTime()))
+      ) {
+        throw new Error(
+          'Access-ambiguous repair requires valid exact DELETE and SEND ledger evidence',
+        );
+      }
+    }
 
-    // FLAG: Only exact legacy evidence or an explicit operator-authorized cleanup may create
-    // deletion ownership. Policy fencing, persistence, classifier verification, and audit must
-    // remain one atomic transaction.
+    // FLAG: Only exact legacy evidence, exact terminal access-ambiguous ledger evidence, or an
+    // explicit operator-authorized cleanup may create deletion ownership. Evidence/policy
+    // fencing, persistence, classifier verification, and audit must remain one transaction.
     return this.runSerializableTransaction(async (tx) => {
+      if (accessAmbiguousLedger) {
+        await this.assertAccessAmbiguousLedgerEvidenceUnchanged(tx, accessAmbiguousLedger);
+      }
       if (explicitCleanup) {
         const expectedPolicy = explicitCleanup.expectedPolicy;
         const policyRows = await tx.$queryRaw<
@@ -923,6 +1023,20 @@ export class ModerationDeleteIntentService {
                     sendJobCreatedAt: explicitCleanup.expectedPolicy.sendJobCreatedAt.toISOString(),
                   }
                 : {}),
+              ...(accessAmbiguousLedger
+                ? {
+                    evidenceVersion:
+                      BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
+                    evidenceSource: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
+                    deleteLedgerId: accessAmbiguousLedger.deleteLedgerId,
+                    deleteLedgerJobId: accessAmbiguousLedger.deleteJobId,
+                    deleteLedgerStatus: 'FAILED_RETRYABLE',
+                    deleteLedgerErrorCode:
+                      BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE,
+                    sourceSendLedgerId: accessAmbiguousLedger.sourceSendLedgerId,
+                    sourceSendLedgerJobId: accessAmbiguousLedger.sourceSendJobId,
+                  }
+                : {}),
               repairKind,
               intentId: current.id,
               messageId: current.messageId,
@@ -940,6 +1054,228 @@ export class ModerationDeleteIntentService {
         status: current.status as BotMessageAutoDeleteRepairActiveStatus,
       };
     });
+  }
+
+  async acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff(
+    expected: BotMessageAutoDeleteAccessAmbiguousLedgerEvidence,
+    params: {
+      actorUserId: string;
+      result: BotMessageAutoDeleteAccessAmbiguousHandoffResult;
+      intentId: string | null;
+    },
+  ): Promise<void> {
+    const actorUserId = params.actorUserId.trim();
+    if (!actorUserId) {
+      throw new Error('actorUserId is required for access-ambiguous ledger acknowledgement');
+    }
+
+    await this.runSerializableTransaction(async (tx) => {
+      await this.assertAccessAmbiguousLedgerEvidenceUnchanged(tx, expected);
+      const acknowledged = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        UPDATE "max_action_ledger" ledger
+        SET
+          "last_error_code" = ${BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_HANDOFF_ERROR_CODE},
+          "last_error" = 'Terminal access-ambiguous auto-delete handed off to operator repair',
+          "updated_at" = CURRENT_TIMESTAMP
+        WHERE ledger."id" = ${expected.deleteLedgerId}
+          AND ledger."status" = CAST('FAILED_RETRYABLE' AS "MaxActionLedgerStatus")
+          AND ledger."terminal" = TRUE
+          AND ledger."ambiguous" = FALSE
+          AND ledger."last_error_code" = ${BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE}
+        RETURNING ledger."id"
+      `);
+      if (acknowledged[0]?.id !== expected.deleteLedgerId) {
+        throw new BotMessageAutoDeleteAccessAmbiguousLedgerConflictError();
+      }
+
+      await tx.auditLog.create({
+        data: {
+          chatId: expected.chatId,
+          actorUserId,
+          action: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_HANDOFF_AUDIT_ACTION,
+          payload: {
+            evidenceVersion: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
+            evidenceSource: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
+            deleteLedgerId: expected.deleteLedgerId,
+            deleteLedgerJobId: expected.deleteJobId,
+            sourceSendLedgerId: expected.sourceSendLedgerId,
+            sourceSendLedgerJobId: expected.sourceSendJobId,
+            previousStatus: 'FAILED_RETRYABLE',
+            previousErrorCode: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE,
+            handoffErrorCode: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_HANDOFF_ERROR_CODE,
+            result: params.result,
+            intentId: params.intentId,
+          },
+        },
+      });
+    });
+  }
+
+  private async assertAccessAmbiguousLedgerEvidenceUnchanged(
+    tx: Prisma.TransactionClient,
+    expected: BotMessageAutoDeleteAccessAmbiguousLedgerEvidence,
+  ): Promise<void> {
+    const deleteRows = await tx.$queryRaw<
+      Array<{
+        id: string;
+        jobId: string;
+        actionType: string;
+        chatId: string;
+        botId: string | null;
+        messageId: string | null;
+        sourceTag: string | null;
+        trafficClass: string | null;
+        actionHealthLane: string | null;
+        status: string;
+        ambiguous: boolean;
+        terminal: boolean;
+        attemptCount: number;
+        lastStatusCode: number | null;
+        lastErrorCode: string | null;
+        metadata: Prisma.JsonValue | null;
+        enqueuedAt: Date | null;
+        firstAttemptAt: Date | null;
+        lastAttemptAt: Date | null;
+        completedAt: Date | null;
+        createdAt: Date;
+        updatedAt: Date;
+      }>
+    >(Prisma.sql`
+      SELECT
+        ledger."id",
+        ledger."job_id" AS "jobId",
+        ledger."action_type" AS "actionType",
+        ledger."chat_id" AS "chatId",
+        ledger."bot_id" AS "botId",
+        ledger."message_id" AS "messageId",
+        ledger."source_tag" AS "sourceTag",
+        ledger."traffic_class" AS "trafficClass",
+        ledger."action_health_lane" AS "actionHealthLane",
+        ledger."status"::text AS "status",
+        ledger."ambiguous",
+        ledger."terminal",
+        ledger."attempt_count" AS "attemptCount",
+        ledger."last_status_code" AS "lastStatusCode",
+        ledger."last_error_code" AS "lastErrorCode",
+        ledger."metadata",
+        ledger."enqueued_at" AS "enqueuedAt",
+        ledger."first_attempt_at" AS "firstAttemptAt",
+        ledger."last_attempt_at" AS "lastAttemptAt",
+        ledger."completed_at" AS "completedAt",
+        ledger."created_at" AS "createdAt",
+        ledger."updated_at" AS "updatedAt"
+      FROM "max_action_ledger" ledger
+      WHERE ledger."id" = ${expected.deleteLedgerId}
+      LIMIT 1
+      FOR UPDATE
+    `);
+    const deletion = deleteRows[0];
+    const deleteMetadata =
+      deletion?.metadata &&
+      typeof deletion.metadata === 'object' &&
+      !Array.isArray(deletion.metadata)
+        ? (deletion.metadata as Record<string, unknown>)
+        : null;
+    const marker = deleteMetadata?.sendAutoDelete;
+    if (
+      !deletion ||
+      deletion.id !== expected.deleteLedgerId ||
+      deletion.jobId !== expected.deleteJobId ||
+      deletion.actionType !== 'DELETE_MESSAGE' ||
+      deletion.chatId !== expected.chatId ||
+      deletion.botId !== expected.originBotId ||
+      deletion.messageId !== expected.messageId ||
+      deletion.sourceTag !== expected.sourceTag ||
+      deletion.trafficClass !== expected.trafficClass ||
+      deletion.actionHealthLane !== expected.actionHealthLane ||
+      deletion.status !== 'FAILED_RETRYABLE' ||
+      deletion.ambiguous ||
+      !deletion.terminal ||
+      deletion.attemptCount !== expected.attemptCount ||
+      deletion.lastStatusCode !== null ||
+      deletion.lastErrorCode !== BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE ||
+      deletion.enqueuedAt?.getTime() !== expected.enqueuedAt.getTime() ||
+      deletion.firstAttemptAt?.getTime() !== expected.firstAttemptAt.getTime() ||
+      deletion.lastAttemptAt?.getTime() !== expected.lastAttemptAt.getTime() ||
+      deletion.completedAt?.getTime() !== expected.completedAt.getTime() ||
+      deletion.createdAt.getTime() !== expected.createdAt.getTime() ||
+      deletion.updatedAt.getTime() !== expected.updatedAt.getTime() ||
+      !isMaxSendAutoDeleteMarker(marker) ||
+      marker.version !== MAX_SEND_AUTO_DELETE_MARKER_VERSION ||
+      readMaxSendAutoDeleteConfirmation(marker) !== null ||
+      marker.sourceSendJobId !== expected.sourceSendJobId ||
+      marker.sourceSendCompletedAt !== expected.sourceSendCompletedAt.toISOString() ||
+      marker.requestedDelayMs !== expected.requestedDelayMs ||
+      marker.originBotId !== expected.originBotId
+    ) {
+      throw new BotMessageAutoDeleteAccessAmbiguousLedgerConflictError();
+    }
+
+    const sendRows = await tx.$queryRaw<
+      Array<{
+        id: string;
+        jobId: string;
+        actionType: string;
+        chatId: string;
+        remoteMessageId: string | null;
+        sourceTag: string | null;
+        status: string;
+        ambiguous: boolean;
+        terminal: boolean;
+        dispatchBotId: string | null;
+        metadata: Prisma.JsonValue | null;
+        enqueuedAt: Date | null;
+        completedAt: Date | null;
+        createdAt: Date;
+        updatedAt: Date;
+      }>
+    >(Prisma.sql`
+      SELECT
+        ledger."id",
+        ledger."job_id" AS "jobId",
+        ledger."action_type" AS "actionType",
+        ledger."chat_id" AS "chatId",
+        ledger."remote_message_id" AS "remoteMessageId",
+        ledger."source_tag" AS "sourceTag",
+        ledger."status"::text AS "status",
+        ledger."ambiguous",
+        ledger."terminal",
+        ledger."dispatch_bot_id" AS "dispatchBotId",
+        ledger."metadata",
+        ledger."enqueued_at" AS "enqueuedAt",
+        ledger."completed_at" AS "completedAt",
+        ledger."created_at" AS "createdAt",
+        ledger."updated_at" AS "updatedAt"
+      FROM "max_action_ledger" ledger
+      WHERE ledger."id" = ${expected.sourceSendLedgerId}
+      LIMIT 1
+      FOR UPDATE
+    `);
+    const send = sendRows[0];
+    const sendMetadata =
+      send?.metadata && typeof send.metadata === 'object' && !Array.isArray(send.metadata)
+        ? (send.metadata as Record<string, unknown>)
+        : null;
+    if (
+      !send ||
+      send.id !== expected.sourceSendLedgerId ||
+      send.jobId !== expected.sourceSendJobId ||
+      send.actionType !== 'SEND_MESSAGE' ||
+      send.chatId !== expected.chatId ||
+      send.remoteMessageId !== expected.messageId ||
+      send.sourceTag !== MAX_API_SOURCE_TAGS.MODERATION_NOTICE ||
+      send.status !== 'SUCCEEDED' ||
+      send.ambiguous ||
+      !send.terminal ||
+      send.dispatchBotId !== expected.originBotId ||
+      sendMetadata?.autoDeleteDelayMs !== expected.requestedDelayMs ||
+      send.enqueuedAt?.getTime() !== expected.sourceSendEnqueuedAt.getTime() ||
+      send.completedAt?.getTime() !== expected.sourceSendCompletedAt.getTime() ||
+      send.createdAt.getTime() !== expected.sourceSendCreatedAt.getTime() ||
+      send.updatedAt.getTime() !== expected.sourceSendUpdatedAt.getTime()
+    ) {
+      throw new BotMessageAutoDeleteAccessAmbiguousLedgerConflictError();
+    }
   }
 
   async ensureIntentWithMessageActionClaim(params: {

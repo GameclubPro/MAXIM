@@ -9,6 +9,11 @@ import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { canExecuteActionsForBotState } from '../max/max-bot-state.util';
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
 import {
+  isMaxSendAutoDeleteMarker,
+  MAX_SEND_AUTO_DELETE_MARKER_VERSION,
+  readMaxSendAutoDeleteConfirmation,
+} from '../max/max-send-auto-delete-marker';
+import {
   BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
   BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
   BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON,
@@ -22,9 +27,15 @@ import {
   buildModerationMessageViolationProcessingClaimKey,
 } from '../moderation/moderation-message-action-claim';
 import type {
+  BotMessageAutoDeleteAccessAmbiguousLedgerEvidence,
   BotMessageAutoDeleteExplicitOperatorCleanupPolicy,
   BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence,
   ModerationDeleteIntentService,
+} from '../moderation/moderation-delete-intent.service';
+import {
+  BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE,
+  BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
+  BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
 } from '../moderation/moderation-delete-intent.service';
 import { Prisma, type ModerationDeleteIntentStatus } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -34,6 +45,7 @@ const BOT_MESSAGE_AUTO_DELETE_RULE_CODE = 'BOT_MESSAGE_AUTO_DELETE';
 const REPAIR_AUDIT_ACTION = 'OPERATOR_REOPEN_BOT_MESSAGE_AUTO_DELETE_PRESENT';
 const MAX_TARGETS = 20;
 const MAX_ID_LENGTH = 256;
+const ACCESS_AMBIGUOUS_DISCOVERY_WINDOW_MS = 24 * 60 * 60_000;
 const REPAIR_RETRY_HORIZON_MS = 24 * 60 * 60_000;
 const REPAIR_PRESENCE_TIMEOUT_MS = 5_000;
 const LEGACY_EVIDENCE_LIVE_MESSAGE_WINDOW_MS = 10 * 60_000;
@@ -203,6 +215,7 @@ export type BotAutoDeletePresenceRepairOptions = {
   apply: boolean;
   help: boolean;
   json: boolean;
+  discoverAccessAmbiguous: boolean;
   actorUserId: string | null;
   allowExplicitOperatorCleanup: boolean;
   operatorReason: string | null;
@@ -243,9 +256,13 @@ type IneligibleReason =
   | 'legacy_live_message_unparseable'
   | 'legacy_live_message_identity_mismatch'
   | 'legacy_live_sender_mismatch'
-  | 'legacy_live_timestamp_mismatch';
+  | 'legacy_live_timestamp_mismatch'
+  | 'access_ambiguous_ledger_invalid'
+  | 'access_ambiguous_source_send_missing'
+  | 'access_ambiguous_source_send_invalid';
 
 export type BotAutoDeletePresenceRepairOutcome = BotAutoDeletePresenceRepairTarget & {
+  ledgerId?: string;
   intentId: string | null;
   result:
     | 'would_reopen'
@@ -288,11 +305,15 @@ type RepairDependencies = {
   botRegistry: Pick<MaxBotRegistryService, 'getBotById' | 'resolveBotIdFromUserId'>;
   intentService: Pick<
     ModerationDeleteIntentService,
+    | 'acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff'
     | 'enqueueCurrentIntentWakeupStrict'
     | 'ensureBotMessageAutoDeleteRepairIntentWithAudit'
     | 'getRolloutForRuleCodes'
   >;
 };
+
+const ACCESS_AMBIGUOUS_HANDOFF_RESULTS: ReadonlySet<BotAutoDeletePresenceRepairOutcome['result']> =
+  new Set(['created', 'reconciled_existing', 'reopened', 'already_absent']);
 
 type IntentEligibility =
   | { eligible: true; intent: BotAutoDeletePresenceRepairIntent; originBotId: string }
@@ -303,7 +324,8 @@ type MissingIntentEvidence = {
     | 'legacy_claim'
     | 'outbound_send_ledger'
     | 'outbound_delete_ledger'
-    | 'explicit_operator_cleanup';
+    | 'explicit_operator_cleanup'
+    | 'terminal_auto_delete_access_ambiguous_ledger';
   originBotId: string;
   expectedUserId: string | null;
   expectedMessageAt: Date;
@@ -313,6 +335,7 @@ type MissingIntentEvidence = {
     expectedPolicy: BotMessageAutoDeleteExplicitOperatorCleanupPolicy;
     expectedSend: BotMessageAutoDeleteExplicitOperatorCleanupSendEvidence;
   };
+  accessAmbiguousLedger?: BotMessageAutoDeleteAccessAmbiguousLedgerEvidence;
 };
 
 const MISSING_INTENT_EVIDENCE_DETAILS = {
@@ -328,6 +351,10 @@ const MISSING_INTENT_EVIDENCE_DETAILS = {
     version: 3,
     repairSource: 'exact_outbound_scheduled_delete_ledger',
   },
+  [BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE]: {
+    version: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
+    repairSource: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
+  },
   [BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE]: {
     version: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_VERSION,
     repairSource: BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE,
@@ -337,10 +364,11 @@ const MISSING_INTENT_EVIDENCE_DETAILS = {
 export const BOT_AUTO_DELETE_PRESENCE_REPAIR_USAGE = [
   'Usage:',
   '  --target <chatId> <messageId> [--target <chatId> <messageId> ...] [--dry-run] [--json]',
+  '  --discover-access-ambiguous [--dry-run|--apply --actor-user-id <id>] [--json]',
   '  --apply --actor-user-id <id> --target <chatId> <messageId> [--target ...] [--json]',
   '  --allow-explicit-operator-cleanup --operator-reason <reason> --target <chatId> <messageId> [--dry-run|--apply]',
   '',
-  `Dry-run is the default. Between 1 and ${MAX_TARGETS} unique exact target pairs are required.`,
+  `Dry-run is the default. Explicit targets or up to ${MAX_TARGETS} terminal access-ambiguous ledger rows from the last 24 hours are accepted.`,
   'Both dry-run and apply perform an exact live MAX presence lookup with the original bot.',
   'Apply is restricted to APP_ROLE=admin and BOT_MESSAGE_AUTO_DELETE-only repairable intents.',
   'Explicit operator cleanup is non-retroactive policy repair and is allowed only when the current enabled policy is newer than the original SEND job.',
@@ -367,6 +395,7 @@ export function readBotAutoDeletePresenceRepairOptions(
   let explicitDryRun = false;
   let help = false;
   let json = false;
+  let discoverAccessAmbiguous = false;
   let actorUserId: string | null = null;
   let allowExplicitOperatorCleanup = false;
   let operatorReason: string | null = null;
@@ -386,6 +415,13 @@ export function readBotAutoDeletePresenceRepairOptions(
     }
     if (arg === '--json') {
       json = true;
+      continue;
+    }
+    if (arg === '--discover-access-ambiguous') {
+      if (discoverAccessAmbiguous) {
+        throw new Error('--discover-access-ambiguous may be provided only once');
+      }
+      discoverAccessAmbiguous = true;
       continue;
     }
     if (arg === '--help' || arg === '-h') {
@@ -429,6 +465,7 @@ export function readBotAutoDeletePresenceRepairOptions(
       apply,
       help,
       json,
+      discoverAccessAmbiguous,
       actorUserId,
       allowExplicitOperatorCleanup,
       operatorReason,
@@ -438,8 +475,13 @@ export function readBotAutoDeletePresenceRepairOptions(
   if (apply && explicitDryRun) {
     throw new Error('--apply cannot be combined with --dry-run');
   }
-  if (targets.length === 0) {
-    throw new Error('At least one explicit --target <chatId> <messageId> pair is required');
+  if (targets.length === 0 && !discoverAccessAmbiguous) {
+    throw new Error(
+      'At least one explicit --target <chatId> <messageId> pair or --discover-access-ambiguous is required',
+    );
+  }
+  if (targets.length > 0 && discoverAccessAmbiguous) {
+    throw new Error('--discover-access-ambiguous cannot be combined with --target');
   }
   if (targets.length > MAX_TARGETS) {
     throw new Error(`At most ${MAX_TARGETS} --target pairs are allowed`);
@@ -456,6 +498,11 @@ export function readBotAutoDeletePresenceRepairOptions(
   if (!allowExplicitOperatorCleanup && operatorReason) {
     throw new Error('--operator-reason requires --allow-explicit-operator-cleanup');
   }
+  if (discoverAccessAmbiguous && allowExplicitOperatorCleanup) {
+    throw new Error(
+      '--discover-access-ambiguous cannot be combined with --allow-explicit-operator-cleanup',
+    );
+  }
   if (operatorReason && !isValidBotMessageExplicitOperatorCleanupReason(operatorReason)) {
     throw new Error(
       `--operator-reason must be ${BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON_MIN_LENGTH}..${BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_REASON_MAX_LENGTH} printable characters`,
@@ -466,6 +513,7 @@ export function readBotAutoDeletePresenceRepairOptions(
     apply,
     help,
     json,
+    discoverAccessAmbiguous,
     actorUserId,
     allowExplicitOperatorCleanup,
     operatorReason,
@@ -603,6 +651,171 @@ function readOutboundDeleteSchedule(metadata: Prisma.JsonValue | null): {
     : null;
 }
 
+type AccessAmbiguousRepairCandidate = {
+  target: BotAutoDeletePresenceRepairTarget;
+  ledgerId: string | null;
+  evidence?: BotMessageAutoDeleteAccessAmbiguousLedgerEvidence;
+  reason?: Extract<
+    IneligibleReason,
+    | 'access_ambiguous_ledger_invalid'
+    | 'access_ambiguous_source_send_missing'
+    | 'access_ambiguous_source_send_invalid'
+  >;
+};
+
+function readAccessAmbiguousDeleteEvidence(
+  deletion: BotAutoDeletePresenceRepairLegacyOutboundDelete,
+): Omit<
+  BotMessageAutoDeleteAccessAmbiguousLedgerEvidence,
+  'sourceSendLedgerId' | 'sourceSendEnqueuedAt' | 'sourceSendCreatedAt' | 'sourceSendUpdatedAt'
+> | null {
+  const messageId = deletion.messageId?.trim() ?? '';
+  const originBotId = deletion.botId?.trim() ?? '';
+  const metadata = asJsonRecord(deletion.metadata);
+  const marker = metadata?.sendAutoDelete;
+  if (
+    deletion.actionType !== 'DELETE_MESSAGE' ||
+    !deletion.chatId.trim() ||
+    !messageId ||
+    !originBotId ||
+    deletion.sourceTag !== MAX_API_SOURCE_TAGS.MODERATION_NOTICE ||
+    deletion.status !== 'FAILED_RETRYABLE' ||
+    deletion.ambiguous ||
+    !deletion.terminal ||
+    deletion.attemptCount < 1 ||
+    deletion.lastStatusCode !== null ||
+    deletion.lastErrorCode !== BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE ||
+    !(deletion.enqueuedAt instanceof Date) ||
+    !(deletion.firstAttemptAt instanceof Date) ||
+    !(deletion.lastAttemptAt instanceof Date) ||
+    !(deletion.completedAt instanceof Date) ||
+    deletion.lastAttemptAt < deletion.firstAttemptAt ||
+    deletion.completedAt < deletion.lastAttemptAt ||
+    deletion.updatedAt < deletion.completedAt ||
+    !isMaxSendAutoDeleteMarker(marker) ||
+    marker.version !== MAX_SEND_AUTO_DELETE_MARKER_VERSION ||
+    readMaxSendAutoDeleteConfirmation(marker) !== null ||
+    marker.originBotId !== originBotId ||
+    !isValidDeleteBotMessagesDelayMinutes(marker.requestedDelayMs / 60_000)
+  ) {
+    return null;
+  }
+  const sourceSendCompletedAt = readCanonicalIsoDate(
+    marker.sourceSendCompletedAt as Prisma.JsonValue | undefined,
+  );
+  if (!sourceSendCompletedAt) {
+    return null;
+  }
+  return {
+    deleteLedgerId: deletion.id,
+    deleteJobId: deletion.jobId,
+    chatId: deletion.chatId,
+    messageId,
+    originBotId,
+    sourceTag: deletion.sourceTag,
+    trafficClass: deletion.trafficClass,
+    actionHealthLane: deletion.actionHealthLane,
+    attemptCount: deletion.attemptCount,
+    enqueuedAt: deletion.enqueuedAt,
+    firstAttemptAt: deletion.firstAttemptAt,
+    lastAttemptAt: deletion.lastAttemptAt,
+    completedAt: deletion.completedAt,
+    createdAt: deletion.createdAt,
+    updatedAt: deletion.updatedAt,
+    sourceSendJobId: marker.sourceSendJobId,
+    sourceSendCompletedAt,
+    requestedDelayMs: marker.requestedDelayMs,
+  };
+}
+
+async function discoverAccessAmbiguousRepairCandidates(
+  dependencies: RepairDependencies,
+  now: () => Date,
+): Promise<AccessAmbiguousRepairCandidate[]> {
+  const cutoff = new Date(now().getTime() - ACCESS_AMBIGUOUS_DISCOVERY_WINDOW_MS);
+  const rows: BotAutoDeletePresenceRepairLegacyOutboundDelete[] =
+    await dependencies.prisma.maxActionLedgerEntry.findMany({
+      where: {
+        status: 'FAILED_RETRYABLE',
+        terminal: true,
+        ambiguous: false,
+        updatedAt: { gte: cutoff },
+        actionType: 'DELETE_MESSAGE',
+        sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+        lastErrorCode: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE,
+      },
+      select: LEGACY_OUTBOUND_DELETE_SELECT,
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+      take: MAX_TARGETS,
+    });
+
+  const candidates: AccessAmbiguousRepairCandidate[] = [];
+  for (const deletion of rows) {
+    const target = {
+      chatId: deletion.chatId,
+      messageId: deletion.messageId?.trim() ?? '',
+    };
+    const base = readAccessAmbiguousDeleteEvidence(deletion);
+    if (!base) {
+      candidates.push({
+        target,
+        ledgerId: deletion.id,
+        reason: 'access_ambiguous_ledger_invalid',
+      });
+      continue;
+    }
+    const send: BotAutoDeletePresenceRepairLegacyOutboundSend | null =
+      await dependencies.prisma.maxActionLedgerEntry.findUnique({
+        where: { jobId: base.sourceSendJobId },
+        select: LEGACY_OUTBOUND_SEND_SELECT,
+      });
+    if (!send) {
+      candidates.push({
+        target,
+        ledgerId: deletion.id,
+        reason: 'access_ambiguous_source_send_missing',
+      });
+      continue;
+    }
+    const sendMetadata = asJsonRecord(send.metadata);
+    if (
+      send.actionType !== 'SEND_MESSAGE' ||
+      send.chatId !== base.chatId ||
+      send.remoteMessageId !== base.messageId ||
+      send.sourceTag !== MAX_API_SOURCE_TAGS.MODERATION_NOTICE ||
+      send.status !== 'SUCCEEDED' ||
+      send.ambiguous ||
+      !send.terminal ||
+      send.dispatchBotId?.trim() !== base.originBotId ||
+      sendMetadata?.autoDeleteDelayMs !== base.requestedDelayMs ||
+      !(send.enqueuedAt instanceof Date) ||
+      !(send.completedAt instanceof Date) ||
+      send.completedAt.getTime() !== base.sourceSendCompletedAt.getTime() ||
+      send.updatedAt < send.completedAt
+    ) {
+      candidates.push({
+        target,
+        ledgerId: deletion.id,
+        reason: 'access_ambiguous_source_send_invalid',
+      });
+      continue;
+    }
+    candidates.push({
+      target,
+      ledgerId: deletion.id,
+      evidence: {
+        ...base,
+        sourceSendLedgerId: send.id,
+        sourceSendEnqueuedAt: send.enqueuedAt,
+        sourceSendCompletedAt: send.completedAt,
+        sourceSendCreatedAt: send.createdAt,
+        sourceSendUpdatedAt: send.updatedAt,
+      },
+    });
+  }
+  return candidates;
+}
+
 async function repairMissingIntentFromEvidence(
   dependencies: RepairDependencies,
   options: BotAutoDeletePresenceRepairOptions,
@@ -616,11 +829,21 @@ async function repairMissingIntentFromEvidence(
     evidence.source === BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE
       ? evidence.explicitCleanup
       : null;
+  const accessAmbiguousLedger =
+    evidence.source === BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE
+      ? evidence.accessAmbiguousLedger
+      : null;
   if (
     evidence.source === BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_EVIDENCE_SOURCE &&
     !explicitCleanup
   ) {
     throw new Error('Explicit operator cleanup evidence is missing its authorization context');
+  }
+  if (
+    evidence.source === BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE &&
+    !accessAmbiguousLedger
+  ) {
+    throw new Error('Access-ambiguous ledger evidence is missing its authorization context');
   }
   const repairKindFields = explicitCleanup
     ? ({ repairKind: 'explicit_operator_cleanup' } as const)
@@ -798,28 +1021,46 @@ async function repairMissingIntentFromEvidence(
               originBotId,
             },
           }
-        : {
-            actorUserId: options.actorUserId!,
-            auditPayload: {
-              repairVersion: 1,
-              evidenceVersion: evidenceDetails.version,
-              evidenceSource: evidence.source,
-              ...evidence.auditPayload,
-              liveMessageId: liveMessage.messageId,
-              liveSenderId,
-              liveMessageAt: liveMessageAt.toISOString(),
-              presenceCheckedAt: presenceCheckedAt.toISOString(),
-              originBotId,
+        : accessAmbiguousLedger
+          ? {
+              kind: 'access_ambiguous_ledger',
+              actorUserId: options.actorUserId!,
+              expectedLedger: accessAmbiguousLedger,
+              auditPayload: {
+                repairVersion: 1,
+                evidenceVersion: evidenceDetails.version,
+                evidenceSource: evidence.source,
+                ...evidence.auditPayload,
+                liveMessageId: liveMessage.messageId,
+                liveSenderId,
+                liveMessageAt: liveMessageAt.toISOString(),
+                presenceCheckedAt: presenceCheckedAt.toISOString(),
+                originBotId,
+              },
+            }
+          : {
+              actorUserId: options.actorUserId!,
+              auditPayload: {
+                repairVersion: 1,
+                evidenceVersion: evidenceDetails.version,
+                evidenceSource: evidence.source,
+                ...evidence.auditPayload,
+                liveMessageId: liveMessage.messageId,
+                liveSenderId,
+                liveMessageAt: liveMessageAt.toISOString(),
+                presenceCheckedAt: presenceCheckedAt.toISOString(),
+                originBotId,
+              },
             },
-          },
     );
   } catch (error: unknown) {
     if (
-      explicitCleanup &&
+      (explicitCleanup || accessAmbiguousLedger) &&
       error &&
       typeof error === 'object' &&
       'code' in error &&
-      error.code === 'explicit_operator_cleanup_conflict'
+      (error.code === 'explicit_operator_cleanup_conflict' ||
+        error.code === 'access_ambiguous_ledger_conflict')
     ) {
       return {
         ...target,
@@ -1381,6 +1622,7 @@ async function repairOne(
   options: BotAutoDeletePresenceRepairOptions,
   target: BotAutoDeletePresenceRepairTarget,
   now: () => Date,
+  accessAmbiguousLedger?: BotMessageAutoDeleteAccessAmbiguousLedgerEvidence,
 ): Promise<BotAutoDeletePresenceRepairOutcome> {
   const storedIntent = await dependencies.prisma.moderationDeleteIntent.findUnique({
     where: {
@@ -1400,6 +1642,26 @@ async function repairOne(
     };
   }
   if (!storedIntent) {
+    if (accessAmbiguousLedger) {
+      return repairMissingIntentFromEvidence(dependencies, options, target, now, {
+        source: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
+        originBotId: accessAmbiguousLedger.originBotId,
+        expectedUserId: null,
+        expectedMessageAt: accessAmbiguousLedger.sourceSendCompletedAt,
+        accessAmbiguousLedger,
+        auditPayload: {
+          deleteLedgerId: accessAmbiguousLedger.deleteLedgerId,
+          deleteLedgerJobId: accessAmbiguousLedger.deleteJobId,
+          deleteLedgerCompletedAt: accessAmbiguousLedger.completedAt.toISOString(),
+          deleteLedgerUpdatedAt: accessAmbiguousLedger.updatedAt.toISOString(),
+          deleteLedgerErrorCode: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_ERROR_CODE,
+          sourceSendLedgerId: accessAmbiguousLedger.sourceSendLedgerId,
+          sourceSendLedgerJobId: accessAmbiguousLedger.sourceSendJobId,
+          sourceSendCompletedAt: accessAmbiguousLedger.sourceSendCompletedAt.toISOString(),
+          requestedDelayMs: accessAmbiguousLedger.requestedDelayMs,
+        },
+      });
+    }
     return repairMissingLegacyIntent(dependencies, options, target, now);
   }
   const eligibility = classifyBotAutoDeletePresenceRepairIntent(storedIntent);
@@ -1525,14 +1787,66 @@ async function runBotAutoDeletePresenceRepairPass(
   dependencies: RepairDependencies,
   options: BotAutoDeletePresenceRepairOptions,
   now: () => Date,
+  discoveredCandidates?: AccessAmbiguousRepairCandidate[],
 ): Promise<BotAutoDeletePresenceRepairOutcome[]> {
   const outcomes: BotAutoDeletePresenceRepairOutcome[] = [];
-  for (const target of options.targets) {
+  const candidates: AccessAmbiguousRepairCandidate[] =
+    discoveredCandidates ?? options.targets.map((target) => ({ target, ledgerId: null }));
+  for (const candidate of candidates) {
+    const { target } = candidate;
+    if (candidate.reason) {
+      outcomes.push({
+        ...target,
+        ...(candidate.ledgerId ? { ledgerId: candidate.ledgerId } : {}),
+        intentId: null,
+        result: 'ineligible',
+        reason: candidate.reason,
+        previousStatus: null,
+        presenceBotId: candidate.evidence?.originBotId ?? null,
+      });
+      continue;
+    }
     try {
-      outcomes.push(await repairOne(dependencies, options, target, now));
+      let outcome = await repairOne(dependencies, options, target, now, candidate.evidence);
+      if (
+        options.apply &&
+        candidate.evidence &&
+        ACCESS_AMBIGUOUS_HANDOFF_RESULTS.has(outcome.result)
+      ) {
+        try {
+          await dependencies.intentService.acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff(
+            candidate.evidence,
+            {
+              actorUserId: options.actorUserId!,
+              result: outcome.result as
+                | 'created'
+                | 'reconciled_existing'
+                | 'reopened'
+                | 'already_absent',
+              intentId: outcome.intentId,
+            },
+          );
+        } catch (error: unknown) {
+          const conflict =
+            error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            error.code === 'access_ambiguous_ledger_conflict';
+          outcome = {
+            ...outcome,
+            result: conflict ? 'cas_conflict' : 'error',
+            error: `Ledger handoff acknowledgement failed: ${normalizeError(error)}`,
+          };
+        }
+      }
+      outcomes.push({
+        ...outcome,
+        ...(candidate.ledgerId ? { ledgerId: candidate.ledgerId } : {}),
+      });
     } catch (error: unknown) {
       outcomes.push({
         ...target,
+        ...(candidate.ledgerId ? { ledgerId: candidate.ledgerId } : {}),
         intentId: null,
         result: 'error',
         reason: null,
@@ -1575,6 +1889,9 @@ export async function runBotAutoDeletePresenceRepair(
   options: BotAutoDeletePresenceRepairOptions,
   now: () => Date = () => new Date(),
 ): Promise<BotAutoDeletePresenceRepairSummary> {
+  const discoveredCandidates = options.discoverAccessAmbiguous
+    ? await discoverAccessAmbiguousRepairCandidates(dependencies, now)
+    : undefined;
   if (options.apply && options.allowExplicitOperatorCleanup) {
     const preflightOutcomes = await runBotAutoDeletePresenceRepairPass(
       dependencies,
@@ -1597,6 +1914,7 @@ export async function runBotAutoDeletePresenceRepair(
       ? { ...options, requiredRepairKind: 'explicit_operator_cleanup' }
       : options,
     now,
+    discoveredCandidates,
   );
   return summarizeBotAutoDeletePresenceRepair(options.apply, outcomes);
 }

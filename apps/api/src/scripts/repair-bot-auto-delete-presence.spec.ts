@@ -96,6 +96,44 @@ function legacyOutboundDelete(
   };
 }
 
+function accessAmbiguousOutboundDelete(
+  overrides: Partial<BotAutoDeletePresenceRepairLegacyOutboundDelete> = {},
+): BotAutoDeletePresenceRepairLegacyOutboundDelete {
+  return legacyOutboundDelete({
+    status: 'FAILED_RETRYABLE',
+    terminal: true,
+    lastStatusCode: null,
+    lastErrorCode: 'send_auto_delete_exact_verification_access_ambiguous',
+    lastError: 'Send-side auto-delete exact presence verification failed (access_ambiguous)',
+    metadata: {
+      createdAt: '2026-08-31T15:05:58.000Z',
+      scheduledFor: '2026-08-31T15:05:58.000Z',
+      routing: null,
+      candidateBotIds: [],
+      attemptedBotIds: [],
+      autoDeleteDelayMs: null,
+      sendAutoDelete: {
+        version: 2,
+        sourceSendJobId: 'send-job-1',
+        sourceSendCompletedAt: LEGACY_MESSAGE_AT.toISOString(),
+        requestedDelayMs: 120_000,
+        originBotId: 'bot-1',
+      },
+      hasText: false,
+      textLength: 0,
+      hasOptions: false,
+      optionKeys: [],
+    },
+    createdAt: new Date('2026-08-31T15:05:58.000Z'),
+    enqueuedAt: new Date('2026-08-31T15:05:58.100Z'),
+    firstAttemptAt: new Date('2026-08-31T15:06:00.500Z'),
+    lastAttemptAt: new Date('2026-08-31T15:06:00.500Z'),
+    completedAt: new Date('2026-08-31T15:06:01.000Z'),
+    updatedAt: new Date('2026-08-31T15:06:01.000Z'),
+    ...overrides,
+  });
+}
+
 function legacyChatSettings(
   overrides: Partial<BotAutoDeletePresenceRepairLegacyChatSettings> = {},
 ): BotAutoDeletePresenceRepairLegacyChatSettings {
@@ -182,6 +220,7 @@ function options(
     apply: false,
     help: false,
     json: false,
+    discoverAccessAmbiguous: false,
     actorUserId: null,
     allowExplicitOperatorCleanup: false,
     operatorReason: null,
@@ -228,11 +267,16 @@ function fixture(
         .mockResolvedValue(params.claim === undefined ? legacyClaim() : params.claim),
     },
     maxActionLedgerEntry: {
-      findMany: jest.fn((args: { where?: { actionType?: string } }) =>
+      findMany: jest.fn((args: { where?: { actionType?: string }; take?: number }) =>
         Promise.resolve(
           args.where?.actionType === 'DELETE_MESSAGE'
             ? (params.outboundDeletes ?? [])
             : (params.outboundSends ?? []),
+        ),
+      ),
+      findUnique: jest.fn((args: { where?: { jobId?: string } }) =>
+        Promise.resolve(
+          (params.outboundSends ?? []).find((row) => row.jobId === args.where?.jobId) ?? null,
         ),
       ),
     },
@@ -277,6 +321,7 @@ function fixture(
   };
   const intentService = {
     getRolloutForRuleCodes: jest.fn().mockReturnValue('execute'),
+    acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff: jest.fn().mockResolvedValue(undefined),
     ensureBotMessageAutoDeleteRepairIntentWithAudit: jest.fn().mockResolvedValue({
       created: true,
       intentId: 'intent-created-1',
@@ -318,6 +363,7 @@ describe('bot auto-delete exact-presence repair', () => {
       apply: false,
       help: false,
       json: false,
+      discoverAccessAmbiguous: false,
       actorUserId: null,
       allowExplicitOperatorCleanup: false,
       operatorReason: null,
@@ -415,6 +461,25 @@ describe('bot auto-delete exact-presence repair', () => {
       `message-${index}`,
     ]).flat();
     expect(() => readBotAutoDeletePresenceRepairOptions(argv)).toThrow('At most 20');
+  });
+
+  it('accepts bounded access-ambiguous discovery as an exclusive target source', () => {
+    expect(
+      readBotAutoDeletePresenceRepairOptions(['--discover-access-ambiguous', '--json']),
+    ).toMatchObject({
+      apply: false,
+      discoverAccessAmbiguous: true,
+      json: true,
+      targets: [],
+    });
+    expect(() =>
+      readBotAutoDeletePresenceRepairOptions([
+        '--discover-access-ambiguous',
+        '--target',
+        'chat-1',
+        'message-1',
+      ]),
+    ).toThrow('cannot be combined with --target');
   });
 
   it('accepts only repairable BOT_MESSAGE_AUTO_DELETE-only origin-pinned bot chat intents', () => {
@@ -726,6 +791,174 @@ describe('bot auto-delete exact-presence repair', () => {
     expect(maxClient.getExactMessagePresence).toHaveBeenCalledTimes(1);
     expect(auditCreate).toHaveBeenCalledTimes(1);
     expect(intentService.enqueueCurrentIntentWakeupStrict).toHaveBeenCalledWith('intent-1');
+  });
+
+  it('discovers a bounded terminal access-ambiguous DELETE and links its exact source SEND', async () => {
+    const deletion = accessAmbiguousOutboundDelete();
+    const send = legacyOutboundSend();
+    const { dependencies, prisma, maxClient, transaction, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundDeletes: [deletion],
+      outboundSends: [send],
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({
+          apply: true,
+          actorUserId: 'operator-1',
+          discoverAccessAmbiguous: true,
+          targets: [],
+        }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      apply: true,
+      requested: 1,
+      created: 1,
+      outcomes: [
+        expect.objectContaining({
+          ledgerId: 'delete-ledger-1',
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          result: 'created',
+        }),
+      ],
+    });
+
+    expect(prisma.maxActionLedgerEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'FAILED_RETRYABLE',
+          terminal: true,
+          ambiguous: false,
+          actionType: 'DELETE_MESSAGE',
+          sourceTag: 'moderation_notice',
+          lastErrorCode: 'send_auto_delete_exact_verification_access_ambiguous',
+        }),
+        orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+        take: 20,
+      }),
+    );
+    expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { jobId: 'send-job-1' },
+        select: expect.any(Object),
+      }),
+    );
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+    expect(
+      intentService.ensureBotMessageAutoDeleteRepairIntentWithAudit.mock.calls[0]?.[1],
+    ).toMatchObject({
+      kind: 'access_ambiguous_ledger',
+      actorUserId: 'operator-1',
+      expectedLedger: expect.objectContaining({
+        deleteLedgerId: 'delete-ledger-1',
+        sourceSendLedgerId: 'send-ledger-1',
+        sourceSendJobId: 'send-job-1',
+      }),
+    });
+    expect(
+      intentService.acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff,
+    ).toHaveBeenCalledWith(expect.objectContaining({ deleteLedgerId: 'delete-ledger-1' }), {
+      actorUserId: 'operator-1',
+      result: 'created',
+      intentId: 'intent-created-1',
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('advances beyond the first 20 discovered rows after successful handoff acknowledgements', async () => {
+    const sends = Array.from({ length: 21 }, (_, index) =>
+      legacyOutboundSend({ id: `send-ledger-${index}`, jobId: `send-job-${index}` }),
+    );
+    let pending = Array.from({ length: 21 }, (_, index) => {
+      const base = accessAmbiguousOutboundDelete();
+      return accessAmbiguousOutboundDelete({
+        id: `delete-ledger-${index}`,
+        jobId: `delete-job-${index}`,
+        metadata: {
+          ...(base.metadata as Record<string, unknown>),
+          sendAutoDelete: {
+            version: 2,
+            sourceSendJobId: `send-job-${index}`,
+            sourceSendCompletedAt: LEGACY_MESSAGE_AT.toISOString(),
+            requestedDelayMs: 120_000,
+            originBotId: 'bot-1',
+          },
+        },
+      });
+    });
+    const { dependencies, prisma, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundSends: sends,
+    });
+    prisma.maxActionLedgerEntry.findMany.mockImplementation(
+      (args: { where?: { actionType?: string }; take?: number }) =>
+        Promise.resolve(pending.slice(0, args.take ?? 20)),
+    );
+    prisma.maxActionLedgerEntry.findUnique.mockImplementation(
+      (args: { where?: { jobId?: string } }) =>
+        Promise.resolve(sends.find((row) => row.jobId === args.where?.jobId) ?? null),
+    );
+    intentService.acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff.mockImplementation(
+      (evidence: { deleteLedgerId: string }) => {
+        pending = pending.filter((row) => row.id !== evidence.deleteLedgerId);
+        return Promise.resolve();
+      },
+    );
+    const discoveryOptions = options({
+      apply: true,
+      actorUserId: 'operator-1',
+      discoverAccessAmbiguous: true,
+      targets: [],
+    });
+
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, discoveryOptions, () => NOW),
+    ).resolves.toMatchObject({ requested: 20, created: 20, errors: 0, casConflicts: 0 });
+    await expect(
+      runBotAutoDeletePresenceRepair(dependencies, discoveryOptions, () => NOW),
+    ).resolves.toMatchObject({ requested: 1, created: 1, errors: 0, casConflicts: 0 });
+
+    expect(
+      intentService.acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff,
+    ).toHaveBeenCalledTimes(21);
+    expect(pending).toHaveLength(0);
+  });
+
+  it('does not acknowledge a discovered ledger row when strict enqueue handoff fails', async () => {
+    const { dependencies, intentService } = fixture({
+      storedIntent: null,
+      claim: null,
+      outboundDeletes: [accessAmbiguousOutboundDelete()],
+      outboundSends: [legacyOutboundSend()],
+    });
+    intentService.enqueueCurrentIntentWakeupStrict.mockRejectedValueOnce(
+      new Error('redis unavailable'),
+    );
+
+    await expect(
+      runBotAutoDeletePresenceRepair(
+        dependencies,
+        options({
+          apply: true,
+          actorUserId: 'operator-1',
+          discoverAccessAmbiguous: true,
+          targets: [],
+        }),
+        () => NOW,
+      ),
+    ).resolves.toMatchObject({
+      errors: 1,
+      outcomes: [expect.objectContaining({ result: 'created_enqueue_failed' })],
+    });
+    expect(
+      intentService.acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff,
+    ).not.toHaveBeenCalled();
   });
 
   it('requires an exact legacy claim or bounded outbound send ledger evidence', async () => {

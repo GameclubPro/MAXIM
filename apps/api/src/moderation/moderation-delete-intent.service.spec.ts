@@ -15,6 +15,8 @@ import {
   CommercialOcrDeleteGuardRejectedError,
 } from './commercial-ocr/commercial-ocr-delete-guard.service';
 import {
+  BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
+  BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
   BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
   BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_INTENT_AUDIT_ACTION,
   BotMessageAutoDeleteExplicitCleanupPolicyConflictError,
@@ -29,6 +31,10 @@ import {
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
 
 type ServiceInternals = {
+  assertAccessAmbiguousLedgerEvidenceUnchanged(
+    tx: { $queryRaw: (query: unknown) => Promise<unknown> },
+    expected: ReturnType<typeof accessAmbiguousLedgerEvidence>,
+  ): Promise<void>;
   classifyDeleteError(
     error: unknown,
     attemptCount: number,
@@ -462,9 +468,166 @@ function explicitOperatorCleanupSendRow() {
   };
 }
 
+function accessAmbiguousLedgerEvidence() {
+  return {
+    deleteLedgerId: 'delete-ledger-1',
+    deleteJobId: 'delete-job-1',
+    chatId: 'chat-1',
+    messageId: 'message-1',
+    originBotId: 'bot-1',
+    sourceTag: 'moderation_notice',
+    trafficClass: 'background',
+    actionHealthLane: 'background',
+    attemptCount: 1,
+    enqueuedAt: new Date('2026-08-31T12:01:59.200Z'),
+    firstAttemptAt: new Date('2026-08-31T12:02:00.000Z'),
+    lastAttemptAt: new Date('2026-08-31T12:02:00.000Z'),
+    completedAt: new Date('2026-08-31T12:02:01.000Z'),
+    createdAt: new Date('2026-08-31T12:01:59.100Z'),
+    updatedAt: new Date('2026-08-31T12:02:01.000Z'),
+    sourceSendLedgerId: 'send-ledger-1',
+    sourceSendJobId: 'send-job-1',
+    sourceSendEnqueuedAt: new Date('2026-08-31T11:59:59.200Z'),
+    sourceSendCompletedAt: new Date('2026-08-31T12:00:00.000Z'),
+    sourceSendCreatedAt: new Date('2026-08-31T11:59:59.100Z'),
+    sourceSendUpdatedAt: new Date('2026-08-31T12:00:01.000Z'),
+    requestedDelayMs: 120_000,
+  };
+}
+
+function accessAmbiguousDeleteRow() {
+  const expected = accessAmbiguousLedgerEvidence();
+  return {
+    id: expected.deleteLedgerId,
+    jobId: expected.deleteJobId,
+    actionType: 'DELETE_MESSAGE',
+    chatId: expected.chatId,
+    botId: expected.originBotId,
+    messageId: expected.messageId,
+    sourceTag: expected.sourceTag,
+    trafficClass: expected.trafficClass,
+    actionHealthLane: expected.actionHealthLane,
+    status: 'FAILED_RETRYABLE',
+    ambiguous: false,
+    terminal: true,
+    attemptCount: expected.attemptCount,
+    lastStatusCode: null,
+    lastErrorCode: 'send_auto_delete_exact_verification_access_ambiguous',
+    metadata: {
+      sendAutoDelete: {
+        version: 2,
+        sourceSendJobId: expected.sourceSendJobId,
+        sourceSendCompletedAt: expected.sourceSendCompletedAt.toISOString(),
+        requestedDelayMs: expected.requestedDelayMs,
+        originBotId: expected.originBotId,
+      },
+    },
+    enqueuedAt: expected.enqueuedAt,
+    firstAttemptAt: expected.firstAttemptAt,
+    lastAttemptAt: expected.lastAttemptAt,
+    completedAt: expected.completedAt,
+    createdAt: expected.createdAt,
+    updatedAt: expected.updatedAt,
+  };
+}
+
+function accessAmbiguousSourceSendRow() {
+  const expected = accessAmbiguousLedgerEvidence();
+  return {
+    id: expected.sourceSendLedgerId,
+    jobId: expected.sourceSendJobId,
+    actionType: 'SEND_MESSAGE',
+    chatId: expected.chatId,
+    remoteMessageId: expected.messageId,
+    sourceTag: 'moderation_notice',
+    status: 'SUCCEEDED',
+    ambiguous: false,
+    terminal: true,
+    dispatchBotId: expected.originBotId,
+    metadata: { autoDeleteDelayMs: expected.requestedDelayMs },
+    enqueuedAt: expected.sourceSendEnqueuedAt,
+    completedAt: expected.sourceSendCompletedAt,
+    createdAt: expected.sourceSendCreatedAt,
+    updatedAt: expected.sourceSendUpdatedAt,
+  };
+}
+
 describe('ModerationDeleteIntentService', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('rechecks exact access-ambiguous DELETE and source SEND ledger rows under locks', async () => {
+    const expected = accessAmbiguousLedgerEvidence();
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([accessAmbiguousDeleteRow()])
+      .mockResolvedValueOnce([accessAmbiguousSourceSendRow()]);
+    const { service } = createService();
+
+    await expect(
+      (service as unknown as ServiceInternals).assertAccessAmbiguousLedgerEvidenceUnchanged(
+        { $queryRaw: queryRaw },
+        expected,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    for (const [query] of queryRaw.mock.calls) {
+      expect((query as { strings?: readonly string[] }).strings?.join('?')).toContain('FOR UPDATE');
+    }
+
+    const changedSource = jest
+      .fn()
+      .mockResolvedValueOnce([accessAmbiguousDeleteRow()])
+      .mockResolvedValueOnce([{ ...accessAmbiguousSourceSendRow(), status: 'FAILED_RETRYABLE' }]);
+    await expect(
+      (service as unknown as ServiceInternals).assertAccessAmbiguousLedgerEvidenceUnchanged(
+        { $queryRaw: changedSource },
+        expected,
+      ),
+    ).rejects.toMatchObject({ code: 'access_ambiguous_ledger_conflict' });
+  });
+
+  it('atomically acknowledges a successful access-ambiguous operator handoff with audit', async () => {
+    const expected = accessAmbiguousLedgerEvidence();
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([accessAmbiguousDeleteRow()])
+      .mockResolvedValueOnce([accessAmbiguousSourceSendRow()])
+      .mockResolvedValueOnce([{ id: expected.deleteLedgerId }]);
+    const auditCreate = jest.fn().mockResolvedValue({ id: 'audit-1' });
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({ $queryRaw: queryRaw, auditLog: { create: auditCreate } }),
+    );
+    const { service } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.acknowledgeBotMessageAutoDeleteAccessAmbiguousHandoff(expected, {
+        actorUserId: ' operator-1 ',
+        result: 'already_absent',
+        intentId: null,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(queryRaw).toHaveBeenCalledTimes(3);
+    const update = queryRaw.mock.calls[2]?.[0] as { values?: readonly unknown[] };
+    expect(update.values).toContain('send_auto_delete_access_ambiguous_operator_handoff');
+    expect(auditCreate).toHaveBeenCalledWith({
+      data: {
+        chatId: 'chat-1',
+        actorUserId: 'operator-1',
+        action: 'OPERATOR_ACK_AUTO_DELETE_ACCESS_AMBIGUOUS_HANDOFF',
+        payload: expect.objectContaining({
+          evidenceSource: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
+          evidenceVersion: BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
+          deleteLedgerId: 'delete-ledger-1',
+          sourceSendLedgerId: 'send-ledger-1',
+          result: 'already_absent',
+          intentId: null,
+        }),
+      },
+    });
   });
 
   it('atomically creates and audits a missing BOT_MESSAGE_AUTO_DELETE repair intent', async () => {
