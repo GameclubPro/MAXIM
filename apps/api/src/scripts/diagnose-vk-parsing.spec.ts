@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { PublicationDispatchProfile, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import {
   loadOwnedPublishDatabaseSnapshot,
+  loadPublishBacklog,
   loadRecentPublishSuccess,
   loadSchedulePolicyDiagnostics,
   readCliOptions,
@@ -129,6 +130,22 @@ describe('diagnose-vk-parsing script helpers', () => {
         select: expect.objectContaining({ requiredBotId: true }),
       }),
     );
+  });
+
+  it('builds syntactically balanced publish backlog SQL', async () => {
+    const row = { queuedPosts: 3, dueQueuedPosts: 0, secondsToNext: 120 };
+    const queryRaw = jest.fn().mockResolvedValue([row]);
+
+    await expect(
+      loadPublishBacklog({ $queryRaw: queryRaw } as never, PUBLISHER_BOT_ID),
+    ).resolves.toEqual(row);
+
+    const queryText = (queryRaw.mock.calls[0]?.[0] as TemplateStringsArray).join('?');
+    const openingParentheses = queryText.match(/\(/gu)?.length ?? 0;
+    const closingParentheses = queryText.match(/\)/gu)?.length ?? 0;
+
+    expect(openingParentheses).toBe(closingParentheses);
+    expect(queryText).toContain('end as "secondsToNext"');
   });
 
   it('groups only allowlisted dispatch blocker codes without exposing row identifiers', () => {

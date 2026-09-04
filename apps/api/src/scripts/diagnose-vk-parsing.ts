@@ -564,7 +564,10 @@ async function loadSyncPerformance(prisma: PrismaClient, since: Date): Promise<u
   return rows[0] ?? {};
 }
 
-async function loadPublishBacklog(prisma: PrismaClient, publisherBotId: string): Promise<unknown> {
+export async function loadPublishBacklog(
+  prisma: PrismaClient,
+  publisherBotId: string,
+): Promise<unknown> {
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     select
       count(*) filter (where publish_queued_at is not null)::int as "queuedPosts",
@@ -612,7 +615,7 @@ async function loadPublishBacklog(prisma: PrismaClient, publisherBotId: string):
                 and publish_scheduled_at > now()
             ) - now()
           ))
-        )::int
+        ))::int
       end as "secondsToNext"
     from vk_parsing_posts
     where (publish_queued_at is not null or publish_locked_at is not null)
