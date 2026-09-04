@@ -1,4 +1,5 @@
 import { UnrecoverableError } from 'bullmq';
+import { buildNightModeTransitionScheduleFingerprint } from '../moderation/night-mode-transition-generation.util';
 import {
   getNightModeTransitionAccessRecoveryMarker,
   markMaxSendDispatchLedgerFinalized,
@@ -25,6 +26,13 @@ import {
 } from './max-media-upload-validation';
 import { markMaxMemberMutationAttempted } from './max-member-error.util';
 import { createMaxSendAutoDeleteVerificationError } from './max-send-auto-delete-verification-error';
+
+const FUTURE_NIGHT_SCHEDULE_FINGERPRINT = buildNightModeTransitionScheduleFingerprint({
+  nightModeEnabled: true,
+  nightModeStartTimeMinutes: 23 * 60,
+  nightModeEndTimeMinutes: 8 * 60,
+  nightModeTimezone: 'Europe/Moscow',
+});
 
 function createJob(overrides: Partial<MaxActionJob> = {}): MaxActionJob {
   return {
@@ -1799,6 +1807,7 @@ describe('MaxActionLedgerService', () => {
       dispatchBotId: 'bot-survivor',
       completedAt,
       routeHalfOpenProbe: true,
+      stickyRouteHalfOpenProbe: false,
     });
     expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith({
       where: { jobId: 'night-mode:close:chat-1:session:session-1' },
@@ -1814,6 +1823,50 @@ describe('MaxActionLedgerService', () => {
         remoteMessageId: true,
         metadata: true,
       },
+    });
+  });
+
+  it('preserves exact future-night sticky probe provenance in the close ledger proof', async () => {
+    const completedAt = new Date('2026-08-21T20:00:01.000Z');
+    const failureBefore = '2026-08-21T20:00:00.000Z';
+    const { service } = createService({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      sourceTag: 'night_mode_transition',
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      completedAt,
+      dispatchBotId: 'bot-1',
+      remoteMessageId: 'mid-night-sticky-1',
+      metadata: {
+        routing: {
+          sendRouteHalfOpenProbe: 'publication_exact_verification',
+          sendRouteStickyProbe: {
+            kind: 'future_night_close_v1',
+            authorizedAt: '2026-08-21T19:55:00.000Z',
+            failureBefore,
+            sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-08-21',
+            scheduleFingerprint: FUTURE_NIGHT_SCHEDULE_FINGERPRINT,
+          },
+        },
+      },
+    });
+
+    await expect(
+      service.getExactCompletedNightModeCloseNoticeDispatch({
+        chatId: 'chat-1',
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-08-21',
+        messageId: 'mid-night-sticky-1',
+        dispatchBotId: 'bot-1',
+      }),
+    ).resolves.toEqual({
+      jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-08-21',
+      remoteMessageId: 'mid-night-sticky-1',
+      dispatchBotId: 'bot-1',
+      completedAt,
+      routeHalfOpenProbe: true,
+      stickyRouteHalfOpenProbe: true,
     });
   });
 

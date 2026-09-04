@@ -15,6 +15,10 @@ import type {
 } from './max-client.service';
 import { MaxClientService } from './max-client.service';
 import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
+import {
+  parseMaxFutureNightStickyRouteProbe,
+  type MaxFutureNightStickyRouteProbe,
+} from './max-send-route-sticky-probe';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { isPublisherBotId } from '../publisher/publisher-bot-descriptor';
 
@@ -39,6 +43,7 @@ export type MaxRoutedPublicationRequest = {
   /** Exact publisher route already validated against PublisherEntityBinding by the caller. */
   publisherExactBotId?: string;
   sendRouteHalfOpenProbe?: 'publication_exact_verification';
+  sendRouteStickyProbe?: MaxFutureNightStickyRouteProbe;
   timeoutMs?: number;
   ignoreFailureMetricStatuses?: readonly number[];
   prepareAttempt?: (context: MaxRoutedPublicationAttemptContext) => Promise<{
@@ -174,6 +179,9 @@ export class MaxRoutedPublicationService {
         ...(request.sendRouteHalfOpenProbe
           ? { sendRouteHalfOpenProbe: request.sendRouteHalfOpenProbe }
           : {}),
+        ...(request.sendRouteStickyProbe
+          ? { sendRouteStickyProbe: request.sendRouteStickyProbe }
+          : {}),
       },
     };
     const executionOptions: MaxActionDispatchExecutionOptions = {
@@ -274,11 +282,33 @@ export class MaxRoutedPublicationService {
       }
       return this.hydrateManagedPollRoute(chatId, route, request);
     }
+    const stickyRouteProbe = this.readFutureNightStickyProbe(
+      request,
+      request.logicalIdempotencyKey.trim(),
+    );
     return this.maxBotLinkService.resolveBotRoute({
       purpose: 'send_message',
       chatId,
       fallbackToPrimary: true,
       allowHalfOpenProbe: request.sendRouteHalfOpenProbe === 'publication_exact_verification',
+      ...(stickyRouteProbe
+        ? { stickyHalfOpenProbeFailureBefore: stickyRouteProbe.failureBefore }
+        : {}),
+    });
+  }
+
+  private readFutureNightStickyProbe(
+    request: MaxRoutedPublicationRequest,
+    logicalIdempotencyKey: string,
+  ): MaxFutureNightStickyRouteProbe | null {
+    if (request.sendRouteHalfOpenProbe !== 'publication_exact_verification') {
+      return null;
+    }
+    return parseMaxFutureNightStickyRouteProbe(request.sendRouteStickyProbe, {
+      chatId: request.entityId,
+      idempotencyKey: logicalIdempotencyKey,
+      sourceTag: request.sourceTag,
+      occurredAt: new Date(),
     });
   }
 

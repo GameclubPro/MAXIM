@@ -26,6 +26,7 @@ import {
 import {
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
   NIGHT_MODE_TRANSITION_PROCESS_STOP,
+  type NightModeStickyRouteProbe,
   type NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
 import type {
@@ -60,6 +61,7 @@ export type NightModeTransitionDeliverySnapshot = {
   endMinutes: number;
   timezone: string;
   sessionKey: string;
+  stickyRouteProbe?: NightModeStickyRouteProbe;
 };
 
 export type NightModeTransitionDeliveryAdapters = {
@@ -226,6 +228,7 @@ export class NightModeTransitionDeliveryService {
         activeBotSpeechProfile: adapters.getBotSpeechProfile(botId),
       });
     const messageOptions = adapters.buildClosedNoticeOptions(settings);
+    const canScheduleCloseRouteVerification = this.canScheduleCloseRouteVerification();
 
     let sent: { messageId: string | null; botId: string | null };
     let attemptedBotId: string | null = null;
@@ -243,7 +246,8 @@ export class NightModeTransitionDeliveryService {
         messageOptions,
         mediaSettings: settings,
         mediaFieldKey: 'nightModeBotMessageText',
-        allowHalfOpenProbe: this.canScheduleCloseRouteVerification(),
+        allowHalfOpenProbe: canScheduleCloseRouteVerification,
+        stickyRouteProbe: canScheduleCloseRouteVerification ? snapshot.stickyRouteProbe : undefined,
         adapters,
         validateBeforeDispatch,
         onDispatchAttempt: (botId, startedAt) => {
@@ -269,7 +273,7 @@ export class NightModeTransitionDeliveryService {
       throw error;
     }
 
-    if (sent.messageId && sent.botId && this.canScheduleCloseRouteVerification()) {
+    if (sent.messageId && sent.botId && canScheduleCloseRouteVerification) {
       const proof =
         await this.maxActionLedgerService!.getExactCompletedNightModeCloseNoticeDispatch({
           chatId: settings.chatId,
@@ -387,6 +391,7 @@ export class NightModeTransitionDeliveryService {
     mediaSettings: { botSpeechMedia?: unknown };
     mediaFieldKey: 'nightModeBotMessageText' | 'nightModeOpenMessageText';
     allowHalfOpenProbe?: boolean;
+    stickyRouteProbe?: NightModeStickyRouteProbe;
     adapters: NightModeTransitionDeliveryAdapters;
     validateBeforeDispatch?: () => Promise<boolean>;
     onDispatchAttempt: (botId: string | null, startedAt: Date) => void;
@@ -429,6 +434,17 @@ export class NightModeTransitionDeliveryService {
         ignoreFailureMetricStatuses: [403, 404],
         ...(params.allowHalfOpenProbe
           ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }
+          : {}),
+        ...(params.allowHalfOpenProbe && params.stickyRouteProbe
+          ? {
+              sendRouteStickyProbe: {
+                kind: 'future_night_close_v1' as const,
+                authorizedAt: params.stickyRouteProbe.authorizedAt,
+                failureBefore: params.stickyRouteProbe.scheduledFor,
+                sessionKey: params.stickyRouteProbe.sessionKey,
+                scheduleFingerprint: params.stickyRouteProbe.scheduleFingerprint,
+              },
+            }
           : {}),
         prepareAttempt: async ({ botId }) => {
           const message = prepareMessage(params.resolveMessageText?.(botId) ?? params.messageText);

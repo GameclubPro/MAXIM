@@ -82,6 +82,7 @@ export class NightModeRouteVerificationService {
       chatId,
       botId: verification.botId,
       sentAt,
+      allowStickyRoute: ledgerProof.stickyRouteHalfOpenProbe,
     });
     if (!pendingClaim) {
       return { kind: 'complete', routeHealthChanged: false };
@@ -122,6 +123,7 @@ export class NightModeRouteVerificationService {
           sentAt,
           observedAt: now,
           claimedUntil: pendingClaim.claimedUntil,
+          allowStickyRoute: ledgerProof.stickyRouteHalfOpenProbe,
         });
         return { kind: 'complete', routeHealthChanged };
       }
@@ -141,6 +143,7 @@ export class NightModeRouteVerificationService {
         sentAt,
         observedAt: now,
         claimedUntil: pendingClaim.claimedUntil,
+        allowStickyRoute: ledgerProof.stickyRouteHalfOpenProbe,
       });
       this.logger.warn(
         {
@@ -182,6 +185,7 @@ export class NightModeRouteVerificationService {
     sentAt: Date;
     observedAt: Date;
     claimedUntil: Date;
+    allowStickyRoute: boolean;
   }): Promise<boolean> {
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw(
@@ -192,7 +196,7 @@ export class NightModeRouteVerificationService {
           chatId: params.chatId,
           botId: params.botId,
           status: ChatBotMembershipStatus.ACTIVE,
-          sendRouteFailureCount: 1,
+          sendRouteFailureCount: params.allowStickyRoute ? { gte: 1 } : 1,
           sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
           sendRouteQuarantinedUntil: params.claimedUntil,
           sendRouteLastFailureAt: { lt: params.sentAt },
@@ -219,6 +223,7 @@ export class NightModeRouteVerificationService {
     sentAt: Date;
     observedAt: Date;
     claimedUntil: Date;
+    allowStickyRoute: boolean;
   }): Promise<boolean> {
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw(
@@ -229,14 +234,14 @@ export class NightModeRouteVerificationService {
           chatId: params.chatId,
           botId: params.botId,
           status: ChatBotMembershipStatus.ACTIVE,
-          sendRouteFailureCount: 1,
+          sendRouteFailureCount: params.allowStickyRoute ? { gte: 1 } : 1,
           sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
           sendRouteQuarantinedUntil: params.claimedUntil,
           sendRouteLastFailureAt: { lt: params.sentAt },
           OR: [{ sendRouteLastSuccessAt: null }, { sendRouteLastSuccessAt: { lt: params.sentAt } }],
         },
         data: {
-          sendRouteFailureCount: 2,
+          sendRouteFailureCount: { increment: 1 },
           sendRouteQuarantinedUntil: new Date(
             params.observedAt.getTime() + MAX_SEND_ROUTE_QUARANTINE_MS,
           ),
@@ -252,13 +257,14 @@ export class NightModeRouteVerificationService {
     chatId: string;
     botId: string;
     sentAt: Date;
+    allowStickyRoute: boolean;
   }): Promise<{ claimedUntil: Date } | null> {
     const membership = await this.prisma.chatBotMembership.findFirst({
       where: {
         chatId: params.chatId,
         botId: params.botId,
         status: ChatBotMembershipStatus.ACTIVE,
-        sendRouteFailureCount: 1,
+        sendRouteFailureCount: params.allowStickyRoute ? { gte: 1 } : 1,
         sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
         sendRouteLastFailureAt: { lt: params.sentAt },
         sendRouteQuarantinedUntil: {

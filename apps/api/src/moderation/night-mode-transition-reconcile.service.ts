@@ -431,7 +431,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
           ledger."dispatch_bot_id"
         FROM "max_action_ledger" ledger
         WHERE page."status" = 'ACTIVE'
-          AND page."failureCount" = 1
+          AND page."failureCount" >= 1
           AND page."failureCode" = 'PUBLICATION_MESSAGE_DISAPPEARED'
           AND page."failureAt" IS NOT NULL
           AND page."quarantinedUntil" IS NOT NULL
@@ -457,6 +457,14 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
             ledger."completed_at" + make_interval(secs => ${MAX_SEND_ROUTE_QUARANTINE_MS / 1_000})
           AND ledger."metadata" #>> '{routing,sendRouteHalfOpenProbe}' =
             'publication_exact_verification'
+          AND (
+            page."failureCount" = 1
+            OR (
+              ledger."metadata" #>> '{routing,sendRouteStickyProbe,kind}' =
+                'future_night_close_v1'
+              AND ledger."metadata" #>> '{routing,sendRouteStickyProbe,failureBefore}' IS NOT NULL
+            )
+          )
         ORDER BY ledger."completed_at" DESC, ledger."id" DESC
         LIMIT 1
       ) ledger ON TRUE

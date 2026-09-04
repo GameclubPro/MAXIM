@@ -236,7 +236,10 @@ describe('NightModeTransitionReconcileService', () => {
     expect(statement).toContain('ledger."completed_at" > page."failureAt"');
     expect(statement).toContain('ledger."completed_at" <= page."quarantinedUntil"');
     expect(statement).toContain('page."quarantinedUntil" <=');
+    expect(statement).toContain('page."failureCount" >= 1');
     expect(statement).toContain('ledger."metadata" #>> \'{routing,sendRouteHalfOpenProbe}\' =');
+    expect(statement).toContain('ledger."metadata" #>> \'{routing,sendRouteStickyProbe,kind}\' =');
+    expect(statement).toContain('future_night_close_v1');
     expect(statement).not.toContain('FROM "moderation_events" event');
     expect(extractSqlValues(queryRaw.mock.calls[0]?.[0])).toContain(6 * 60 * 60);
   });

@@ -45,6 +45,7 @@ import {
   wasMaxMemberMutationAttempted,
 } from './max-member-error.util';
 import { isAmbiguousMaxMutationError, isAmbiguousMaxSendError } from './max-send-ambiguity.util';
+import type { MaxFutureNightStickyRouteProbe } from './max-send-route-sticky-probe';
 import {
   MAX_AUDIO_UPLOAD_MAX_BYTES,
   MAX_FILE_UPLOAD_MAX_BYTES,
@@ -456,6 +457,7 @@ export type MaxActionRoutingMetadata = {
   action?: 'delete_message' | 'moderate_member';
   routingVersion?: number | null;
   sendRouteHalfOpenProbe?: 'publication_exact_verification';
+  sendRouteStickyProbe?: MaxFutureNightStickyRouteProbe;
   requiredBotId?: string;
 };
 

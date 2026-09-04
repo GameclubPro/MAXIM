@@ -196,6 +196,7 @@ export type MaxBotRouteRequest =
       chatId: string;
       fallbackToPrimary?: boolean;
       allowHalfOpenProbe?: boolean;
+      stickyHalfOpenProbeFailureBefore?: string;
     }
   | {
       purpose: 'moderation_action';
@@ -273,6 +274,7 @@ type ResolvedChatRouteMembership = {
   capabilities: unknown;
   sendRouteFailureCount: number;
   sendRouteQuarantinedUntil: Date | null;
+  sendRouteLastFailureAt: Date | null;
   sendRouteLastFailureCode: string | null;
 };
 
@@ -426,6 +428,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
           request.chatId,
           request.fallbackToPrimary,
           request.allowHalfOpenProbe,
+          request.stickyHalfOpenProbeFailureBefore,
         );
       case 'member_access':
         return this.resolveMemberAccessBotRoute(request.chatId);
@@ -460,6 +463,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     chatId: string;
     botId: string;
     claimedAt?: Date;
+    stickyProbeFailureBefore?: string;
   }): Promise<Date | null> {
     const chatId = params.chatId.trim();
     const botId = params.botId.trim();
@@ -468,18 +472,45 @@ export class MaxBotLinkService implements OnModuleDestroy {
     }
     const claimedAt = params.claimedAt ?? new Date();
     const quarantinedUntil = new Date(claimedAt.getTime() + MAX_SEND_ROUTE_QUARANTINE_MS);
+    const parsedStickyProbeFailureBefore = this.parseStrictIsoDate(params.stickyProbeFailureBefore);
+    const stickyProbeFailureBefore =
+      parsedStickyProbeFailureBefore && parsedStickyProbeFailureBefore <= claimedAt
+        ? parsedStickyProbeFailureBefore
+        : null;
     const claimed = await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId,
-        status: ChatBotMembershipStatus.ACTIVE,
-        sendRouteFailureCount: 1,
-        sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
-        OR: [
-          { sendRouteQuarantinedUntil: null },
-          { sendRouteQuarantinedUntil: { lte: claimedAt } },
-        ],
-      },
+      where: stickyProbeFailureBefore
+        ? {
+            chatId,
+            botId,
+            status: ChatBotMembershipStatus.ACTIVE,
+            sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+            OR: [
+              { sendRouteFailureCount: 1 },
+              {
+                sendRouteFailureCount: { gte: SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD },
+                sendRouteLastFailureAt: { lt: stickyProbeFailureBefore },
+              },
+            ],
+            AND: [
+              {
+                OR: [
+                  { sendRouteQuarantinedUntil: null },
+                  { sendRouteQuarantinedUntil: { lte: claimedAt } },
+                ],
+              },
+            ],
+          }
+        : {
+            chatId,
+            botId,
+            status: ChatBotMembershipStatus.ACTIVE,
+            sendRouteFailureCount: 1,
+            sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+            OR: [
+              { sendRouteQuarantinedUntil: null },
+              { sendRouteQuarantinedUntil: { lte: claimedAt } },
+            ],
+          },
       data: {
         sendRouteQuarantinedUntil: quarantinedUntil,
       },
@@ -491,21 +522,42 @@ export class MaxBotLinkService implements OnModuleDestroy {
     chatId: string;
     botId: string;
     claimedUntil: Date;
+    stickyProbeFailureBefore?: string;
   }): Promise<boolean> {
     const chatId = params.chatId.trim();
     const botId = params.botId.trim();
     if (!chatId || !botId) {
       return false;
     }
+    const parsedStickyProbeFailureBefore = this.parseStrictIsoDate(params.stickyProbeFailureBefore);
+    const stickyProbeFailureBefore =
+      parsedStickyProbeFailureBefore && parsedStickyProbeFailureBefore <= params.claimedUntil
+        ? parsedStickyProbeFailureBefore
+        : null;
     const released = await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId,
-        status: ChatBotMembershipStatus.ACTIVE,
-        sendRouteFailureCount: 1,
-        sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
-        sendRouteQuarantinedUntil: params.claimedUntil,
-      },
+      where: stickyProbeFailureBefore
+        ? {
+            chatId,
+            botId,
+            status: ChatBotMembershipStatus.ACTIVE,
+            sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+            sendRouteQuarantinedUntil: params.claimedUntil,
+            OR: [
+              { sendRouteFailureCount: 1 },
+              {
+                sendRouteFailureCount: { gte: SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD },
+                sendRouteLastFailureAt: { lt: stickyProbeFailureBefore },
+              },
+            ],
+          }
+        : {
+            chatId,
+            botId,
+            status: ChatBotMembershipStatus.ACTIVE,
+            sendRouteFailureCount: 1,
+            sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+            sendRouteQuarantinedUntil: params.claimedUntil,
+          },
       data: { sendRouteQuarantinedUntil: null },
     });
     return released.count === 1;
@@ -2547,6 +2599,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     chatId: string,
     fallbackToPrimary?: boolean,
     allowHalfOpenProbe?: boolean,
+    stickyHalfOpenProbeFailureBefore?: string,
   ): Promise<MaxBotRoute> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
@@ -2569,6 +2622,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       state,
       fallbackToPrimary !== false,
       allowHalfOpenProbe === true,
+      stickyHalfOpenProbeFailureBefore,
     );
     const selectedBotId = candidates.candidateBotIds[0] ?? null;
     return this.buildRoute({
@@ -2711,6 +2765,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
             capabilities: true,
             sendRouteFailureCount: true,
             sendRouteQuarantinedUntil: true,
+            sendRouteLastFailureAt: true,
             sendRouteLastFailureCode: true,
           },
           orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
@@ -2893,6 +2948,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     state: ResolvedChatRouteState,
     candidateBotIds: string[],
     allowHalfOpenProbe = false,
+    stickyHalfOpenProbeFailureBefore?: string,
   ): {
     candidateBotIds: string[];
     quarantinedCandidateBotIds: string[];
@@ -2900,14 +2956,16 @@ export class MaxBotLinkService implements OnModuleDestroy {
     retryAt: Date | null;
   } {
     const nowMs = Date.now();
+    const stickyFailureBeforeMs =
+      this.parseStrictIsoDate(stickyHalfOpenProbeFailureBefore)?.getTime() ?? Number.NaN;
     const membershipsByBotId = new Map(
       state.activeActionableMemberships.map((membership) => [membership.botId, membership]),
     );
     // FLAG: A disappearance quarantine is an execution fence, not a preference. Falling back to
     // the only quarantined bot would repeat a send that MAX accepted but did not retain. The
     // repeated-disappearance circuit stays open after its minimum TTL until a newer stable
-    // observation (or controlled operator recovery) clears the failure code. A first failure gets
-    // one half-open attempt after the TTL; the publication scheduler spaces those attempts.
+    // observation, controlled operator recovery, or an exact newer night session authorizes one
+    // verified probe. A first failure gets one half-open attempt after the TTL.
     const executableCandidateBotIds: string[] = [];
     const halfOpenCandidateBotIds: string[] = [];
     const quarantinedCandidateBotIds: string[] = [];
@@ -2918,12 +2976,20 @@ export class MaxBotLinkService implements OnModuleDestroy {
       const stickyDisappearance =
         membership?.sendRouteLastFailureCode === MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE &&
         membership.sendRouteFailureCount >= SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD;
+      const stickyHalfOpenDisappearance =
+        stickyDisappearance &&
+        allowHalfOpenProbe &&
+        Number.isFinite(stickyFailureBeforeMs) &&
+        stickyFailureBeforeMs <= nowMs &&
+        membership?.sendRouteLastFailureAt instanceof Date &&
+        membership.sendRouteLastFailureAt.getTime() < stickyFailureBeforeMs &&
+        quarantinedUntilMs <= nowMs;
       const halfOpenDisappearance =
         membership?.sendRouteLastFailureCode === MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE &&
         membership.sendRouteFailureCount === 1 &&
         quarantinedUntilMs <= nowMs;
       const activeTimedQuarantine = quarantinedUntilMs > nowMs;
-      if (halfOpenDisappearance) {
+      if (halfOpenDisappearance || stickyHalfOpenDisappearance) {
         if (allowHalfOpenProbe) {
           halfOpenCandidateBotIds.push(botId);
         } else {
@@ -3002,6 +3068,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     state: ResolvedChatRouteState,
     fallbackToPrimary = true,
     allowHalfOpenProbe = false,
+    stickyHalfOpenProbeFailureBefore?: string,
   ): {
     candidateBotIds: string[];
     quarantinedCandidateBotIds: string[];
@@ -3102,7 +3169,24 @@ export class MaxBotLinkService implements OnModuleDestroy {
       pushFallbackCandidate(state.activeActionableMemberships[0]?.botId ?? null);
     }
 
-    return this.orderSendMessageCandidatesByRouteHealth(state, candidateBotIds, allowHalfOpenProbe);
+    return this.orderSendMessageCandidatesByRouteHealth(
+      state,
+      candidateBotIds,
+      allowHalfOpenProbe,
+      stickyHalfOpenProbeFailureBefore,
+    );
+  }
+
+  private parseStrictIsoDate(value: string | undefined): Date | null {
+    if (!value) {
+      return null;
+    }
+    const parsedMs = Date.parse(value);
+    if (!Number.isFinite(parsedMs)) {
+      return null;
+    }
+    const parsed = new Date(parsedMs);
+    return parsed.toISOString() === value ? parsed : null;
   }
 
   private buildCapabilityCandidateBotIdsFromState(

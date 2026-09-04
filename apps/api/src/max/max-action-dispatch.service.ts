@@ -29,6 +29,7 @@ import {
   type MaxRoutedMutationMode,
 } from './max-routed-mutation-rollout.util';
 import { readMaxSendAutoDeleteVerificationDiagnostic } from './max-send-auto-delete-verification-error';
+import { parseMaxFutureNightStickyRouteProbe } from './max-send-route-sticky-probe';
 
 type TerminalManagedEntityOutcome =
   | {
@@ -585,11 +586,13 @@ export class MaxActionDispatchService {
           chatId: job.chatId,
           error: this.extractErrorMessage(error),
         },
-        options.enforceFreshRoute
+        options.enforceFreshRoute || options.allowHalfOpenProbe
           ? 'Failed to refresh routed MAX action candidates in worker; retrying before dispatch'
           : 'Failed to refresh routed MAX action candidates in shadow mode; using queued candidates',
       );
-      if (options.enforceFreshRoute) {
+      // FLAG: A half-open candidate is executable only with authoritative route state and its
+      // atomic claim. Falling back to a stored candidate would bypass the quarantine fence.
+      if (options.enforceFreshRoute || options.allowHalfOpenProbe) {
         throw error;
       }
       return { candidateBotIds: storedCandidates, halfOpenCandidateBotIds: [], retryAt: null };
@@ -597,6 +600,7 @@ export class MaxActionDispatchService {
   }
 
   private buildRouteRequest(job: MaxActionJob): MaxBotRouteRequest {
+    const stickyProbeFailureBefore = this.readFutureNightStickyProbeFailureBefore(job);
     return job.routing?.purpose === 'send_message' || job.routing?.purpose === 'channel_poll'
       ? {
           purpose: 'send_message',
@@ -604,6 +608,9 @@ export class MaxActionDispatchService {
           fallbackToPrimary: true,
           allowHalfOpenProbe:
             job.routing?.sendRouteHalfOpenProbe === 'publication_exact_verification',
+          ...(stickyProbeFailureBefore
+            ? { stickyHalfOpenProbeFailureBefore: stickyProbeFailureBefore }
+            : {}),
         }
       : {
           purpose: 'moderation_action',
@@ -624,7 +631,12 @@ export class MaxActionDispatchService {
     if (typeof claim !== 'function' || !this.maxBotLinkService) {
       return null;
     }
-    return claim.call(this.maxBotLinkService, { chatId: job.chatId, botId });
+    const stickyProbeFailureBefore = this.readFutureNightStickyProbeFailureBefore(job);
+    return claim.call(this.maxBotLinkService, {
+      chatId: job.chatId,
+      botId,
+      ...(stickyProbeFailureBefore ? { stickyProbeFailureBefore } : {}),
+    });
   }
 
   private async releaseSendRouteHalfOpenSafely(
@@ -643,10 +655,12 @@ export class MaxActionDispatchService {
       return;
     }
     try {
+      const stickyProbeFailureBefore = this.readFutureNightStickyProbeFailureBefore(job);
       await release.call(this.maxBotLinkService, {
         chatId: job.chatId,
         botId,
         claimedUntil,
+        ...(stickyProbeFailureBefore ? { stickyProbeFailureBefore } : {}),
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -803,6 +817,24 @@ export class MaxActionDispatchService {
       state.candidateBotIds.add(botId);
     }
     state.retryAt = resolution.retryAt;
+  }
+
+  private readFutureNightStickyProbeFailureBefore(job: MaxActionJob): string | undefined {
+    if (
+      job.actionType !== 'SEND_MESSAGE' ||
+      job.routing?.purpose !== 'send_message' ||
+      job.routing.sendRouteHalfOpenProbe !== 'publication_exact_verification'
+    ) {
+      return undefined;
+    }
+    return (
+      parseMaxFutureNightStickyRouteProbe(job.routing.sendRouteStickyProbe, {
+        chatId: job.chatId,
+        idempotencyKey: job.idempotencyKey,
+        sourceTag: job.sourceTag,
+        occurredAt: job.createdAt,
+      })?.failureBefore ?? undefined
+    );
   }
 
   private resolveAccessSnapshotMaxAgeMs(actionType: MaxActionJob['actionType']): number | null {

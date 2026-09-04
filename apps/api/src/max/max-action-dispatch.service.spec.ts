@@ -1,4 +1,5 @@
 import { UnrecoverableError } from 'bullmq';
+import { buildNightModeTransitionScheduleFingerprint } from '../moderation/night-mode-transition-generation.util';
 import {
   isMaxActionNoExecutableRouteError,
   isMaxActionRouteQuarantinedError,
@@ -19,6 +20,13 @@ import {
   MaxMediaUploadValidationError,
 } from './max-media-upload-validation';
 import { createMaxSendAutoDeleteVerificationError } from './max-send-auto-delete-verification-error';
+
+const FUTURE_NIGHT_SCHEDULE_FINGERPRINT = buildNightModeTransitionScheduleFingerprint({
+  nightModeEnabled: true,
+  nightModeStartTimeMinutes: 23 * 60,
+  nightModeEndTimeMinutes: 8 * 60,
+  nightModeTimezone: 'Europe/Moscow',
+});
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
   return Object.assign(new Error(message), {
@@ -2430,6 +2438,42 @@ describe('MaxActionDispatchService', () => {
     expect(maxClient.executeActionJob).not.toHaveBeenCalled();
   });
 
+  it('never falls back to an unclaimed stored half-open candidate after route refresh fails', async () => {
+    const routeError = new Error('route refresh unavailable');
+    const maxClient = { executeActionJob: jest.fn() };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockRejectedValue(routeError),
+      claimSendRouteHalfOpen: jest.fn(),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routing: {
+          purpose: 'send_message',
+          sendRouteHalfOpenProbe: 'publication_exact_verification',
+        },
+        text: 'night close',
+        attempt: 1,
+        idempotencyKey: 'night-mode:close:chat-1:session:session-1',
+        createdAt: '2026-07-27T20:00:01.000Z',
+      }),
+    ).rejects.toBe(routeError);
+
+    expect(maxBotLinkService.claimSendRouteHalfOpen).not.toHaveBeenCalled();
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+  });
+
   it('claims a half-open route only after a Publication attempt is prepared', async () => {
     const claimedUntil = new Date('2026-07-27T18:00:00.000Z');
     const maxClient = {
@@ -2491,6 +2535,131 @@ describe('MaxActionDispatchService', () => {
       expect.objectContaining({ text: 'prepared publication', botId: 'bot-1' }),
     );
     expect(maxBotLinkService.releaseSendRouteHalfOpen).not.toHaveBeenCalled();
+  });
+
+  it('propagates a validated future night boundary through route refresh and sticky claim', async () => {
+    const failureBefore = '2026-07-27T20:00:00.000Z';
+    const claimedUntil = new Date('2026-07-28T02:00:01.000Z');
+    const maxClient = {
+      executeActionJob: jest.fn().mockResolvedValue({ messageId: 'mid-night-1', url: null }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        quarantinedCandidateBotIds: [],
+        halfOpenCandidateBotIds: ['bot-1'],
+        retryAt: null,
+        reason: 'primary_confirmed',
+      }),
+      claimSendRouteHalfOpen: jest.fn().mockResolvedValue(claimedUntil),
+      releaseSendRouteHalfOpen: jest.fn(),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        routing: {
+          purpose: 'send_message',
+          sendRouteHalfOpenProbe: 'publication_exact_verification',
+          sendRouteStickyProbe: {
+            kind: 'future_night_close_v1',
+            authorizedAt: '2026-07-27T19:55:00.000Z',
+            failureBefore,
+            sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-27',
+            scheduleFingerprint: FUTURE_NIGHT_SCHEDULE_FINGERPRINT,
+          },
+        },
+        sourceTag: 'night_mode_transition',
+        text: 'night close',
+        attempt: 1,
+        idempotencyKey: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-07-27',
+        createdAt: '2026-07-27T20:00:01.000Z',
+      }),
+    ).resolves.toEqual({ messageId: 'mid-night-1', url: null, botId: 'bot-1' });
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      fallbackToPrimary: true,
+      allowHalfOpenProbe: true,
+      stickyHalfOpenProbeFailureBefore: failureBefore,
+    });
+    expect(maxBotLinkService.claimSendRouteHalfOpen).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      stickyProbeFailureBefore: failureBefore,
+    });
+    expect(maxBotLinkService.releaseSendRouteHalfOpen).not.toHaveBeenCalled();
+  });
+
+  it('does not grant sticky probing to a non-night action with forged route metadata', async () => {
+    const maxClient = {
+      executeActionJob: jest.fn().mockResolvedValue({ messageId: 'mid-generic-1', url: null }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        quarantinedCandidateBotIds: [],
+        halfOpenCandidateBotIds: [],
+        retryAt: null,
+        reason: 'primary_confirmed',
+      }),
+      claimSendRouteHalfOpen: jest.fn(),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        routing: {
+          purpose: 'send_message',
+          sendRouteHalfOpenProbe: 'publication_exact_verification',
+          sendRouteStickyProbe: {
+            kind: 'future_night_close_v1',
+            authorizedAt: '2026-07-27T19:55:00.000Z',
+            failureBefore: '2026-07-27T20:00:00.000Z',
+            sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-27',
+            scheduleFingerprint: FUTURE_NIGHT_SCHEDULE_FINGERPRINT,
+          },
+        },
+        sourceTag: 'managed_broadcast',
+        text: 'generic message',
+        attempt: 1,
+        idempotencyKey: 'generic-message-1',
+        createdAt: '2026-07-27T20:00:01.000Z',
+      }),
+    ).resolves.toEqual({ messageId: 'mid-generic-1', url: null, botId: 'bot-1' });
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      fallbackToPrimary: true,
+      allowHalfOpenProbe: true,
+    });
+    expect(maxBotLinkService.claimSendRouteHalfOpen).not.toHaveBeenCalled();
   });
 
   it('releases a claimed Publication half-open route after a proven pre-dispatch failure', async () => {

@@ -1,4 +1,5 @@
 import { MaxActionNoExecutableRouteError } from '../max/max-action-dispatch-error';
+import { buildNightModeTransitionScheduleFingerprint } from './night-mode-transition-generation.util';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
@@ -8,6 +9,13 @@ import type { NightModeTransitionDeliveryAdapters } from './night-mode-transitio
 import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
 import type { NightModeTransitionRuntimeSettings } from './night-mode-transition-runtime.service';
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
+
+const NIGHT_SCHEDULE_FINGERPRINT = buildNightModeTransitionScheduleFingerprint({
+  nightModeEnabled: true,
+  nightModeStartTimeMinutes: 23 * 60,
+  nightModeEndTimeMinutes: 8 * 60,
+  nightModeTimezone: 'Europe/Moscow',
+});
 
 const CLEANUP_BINDING: NightModeCloseNoticeCleanupBinding = {
   version: 1,
@@ -451,6 +459,14 @@ describe('NightModeTransitionDeliveryService', () => {
           endMinutes: 8 * 60,
           timezone: 'Europe/Moscow',
           sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+          stickyRouteProbe: {
+            kind: 'future_night_close',
+            version: 1,
+            authorizedAt: '2026-07-11T19:55:00.000Z',
+            scheduledFor: '2026-07-11T20:00:00.000Z',
+            sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+            scheduleFingerprint: NIGHT_SCHEDULE_FINGERPRINT,
+          },
         },
         adapters,
       ),
@@ -470,6 +486,13 @@ describe('NightModeTransitionDeliveryService', () => {
         sourceTag: 'night_mode_transition',
         ignoreFailureMetricStatuses: [403, 404],
         sendRouteHalfOpenProbe: 'publication_exact_verification',
+        sendRouteStickyProbe: {
+          kind: 'future_night_close_v1',
+          authorizedAt: '2026-07-11T19:55:00.000Z',
+          failureBefore: '2026-07-11T20:00:00.000Z',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
+          scheduleFingerprint: NIGHT_SCHEDULE_FINGERPRINT,
+        },
       }),
     );
     expect(botSpeechMediaService.withMediaOptions).toHaveBeenCalledWith(
@@ -553,6 +576,8 @@ describe('NightModeTransitionDeliveryService', () => {
     ).rejects.toBe(schedulingError);
 
     expect(maxRoutedPublicationService.publish).toHaveBeenCalledTimes(1);
+    const publicationRequest = maxRoutedPublicationService.publish.mock.calls[0]![0];
+    expect(publicationRequest).not.toHaveProperty('sendRouteStickyProbe');
     expect(routeVerificationService.schedule).toHaveBeenCalledWith({
       chatId: 'chat-1',
       sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-07-11',
@@ -610,6 +635,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
     const request = maxRoutedPublicationService.publish.mock.calls[0]![0];
     expect(request).not.toHaveProperty('sendRouteHalfOpenProbe');
+    expect(request).not.toHaveProperty('sendRouteStickyProbe');
     expect(routeVerificationService.schedule).not.toHaveBeenCalled();
     expect(
       maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch,

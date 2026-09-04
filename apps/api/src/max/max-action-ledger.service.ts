@@ -12,6 +12,7 @@ import { buildMaxActionNoExecutableRouteMessage } from './max-action-dispatch-er
 import { buildNightModeNoticeIdempotencyKey } from './max-action-idempotency.util';
 import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
 import type { MaxActionJob, MaxActionType } from './max-client.service';
+import { parseMaxFutureNightStickyRouteProbe } from './max-send-route-sticky-probe';
 import {
   hasMaxInsufficientRightsMessage,
   wasMaxMemberMutationAttempted,
@@ -127,6 +128,7 @@ export type ExactCompletedNightModeCloseNoticeDispatch = {
   dispatchBotId: string;
   completedAt: Date;
   routeHalfOpenProbe: boolean;
+  stickyRouteHalfOpenProbe: boolean;
 };
 
 export type NightModeCloseNoticeLedgerLookup =
@@ -954,6 +956,12 @@ export class MaxActionLedgerService {
       dispatchBotId,
       completedAt: row.completedAt,
       routeHalfOpenProbe: this.hasPublicationExactVerificationRoute(row.metadata),
+      stickyRouteHalfOpenProbe: this.hasFutureNightStickyRouteProbe(row.metadata, {
+        chatId,
+        idempotencyKey: jobId,
+        sourceTag: row.sourceTag,
+        completedAt: row.completedAt,
+      }),
     };
   }
 
@@ -986,6 +994,7 @@ export class MaxActionLedgerService {
       dispatchBotId: lookup.dispatchBotId,
       completedAt: lookup.completedAt,
       routeHalfOpenProbe: lookup.routeHalfOpenProbe,
+      stickyRouteHalfOpenProbe: lookup.stickyRouteHalfOpenProbe,
     };
   }
 
@@ -1487,6 +1496,7 @@ export class MaxActionLedgerService {
             action: job.routing.action ?? null,
             routingVersion: job.routing.routingVersion ?? null,
             sendRouteHalfOpenProbe: job.routing.sendRouteHalfOpenProbe ?? null,
+            sendRouteStickyProbe: job.routing.sendRouteStickyProbe ?? null,
             requiredBotId: job.routing.requiredBotId ?? null,
           }
         : null,
@@ -1516,6 +1526,36 @@ export class MaxActionLedgerService {
       !Array.isArray(routing) &&
       (routing as Record<string, unknown>).sendRouteHalfOpenProbe ===
         'publication_exact_verification',
+    );
+  }
+
+  private hasFutureNightStickyRouteProbe(
+    metadata: unknown,
+    context: {
+      chatId: string;
+      idempotencyKey: string;
+      sourceTag: string;
+      completedAt: Date;
+    },
+  ): boolean {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return false;
+    }
+    const routing = (metadata as Record<string, unknown>).routing;
+    if (!routing || typeof routing !== 'object' || Array.isArray(routing)) {
+      return false;
+    }
+    const route = routing as Record<string, unknown>;
+    if (route.sendRouteHalfOpenProbe !== 'publication_exact_verification') {
+      return false;
+    }
+    return Boolean(
+      parseMaxFutureNightStickyRouteProbe(route.sendRouteStickyProbe, {
+        chatId: context.chatId,
+        idempotencyKey: context.idempotencyKey,
+        sourceTag: context.sourceTag,
+        occurredAt: context.completedAt,
+      }),
     );
   }
 

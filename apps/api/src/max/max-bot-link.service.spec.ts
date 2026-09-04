@@ -40,6 +40,7 @@ type MutableMembership = {
   permissionsHash?: string | null;
   sendRouteFailureCount?: number;
   sendRouteQuarantinedUntil?: Date | null;
+  sendRouteLastFailureAt?: Date | null;
   sendRouteLastFailureCode?: string | null;
   lifecycleEventAt?: Date | null;
   lifecycleEventType?: string | null;
@@ -187,6 +188,7 @@ function createServiceFixture() {
       'botAccessExpiresAt',
       'sendRouteFailureCount',
       'sendRouteQuarantinedUntil',
+      'sendRouteLastFailureAt',
       'sendRouteLastFailureCode',
       'lifecycleEventAt',
       'lifecycleEventType',
@@ -308,6 +310,7 @@ function createServiceFixture() {
                   : (membership.permissionsSnapshot ?? null),
               sendRouteFailureCount: membership.sendRouteFailureCount ?? 0,
               sendRouteQuarantinedUntil: membership.sendRouteQuarantinedUntil ?? null,
+              sendRouteLastFailureAt: membership.sendRouteLastFailureAt ?? null,
               sendRouteLastFailureCode: membership.sendRouteLastFailureCode ?? null,
             })),
         };
@@ -1743,6 +1746,102 @@ describe('MaxBotLinkService', () => {
           botId: primaryBotId,
           candidateBotIds: [primaryBotId],
         }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('allows one expired sticky route claim only for a newer future night boundary', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-28T00:00:01.000Z'));
+    try {
+      const fixture = createServiceFixture();
+      const chatId = 'chat-future-night-sticky-probe';
+      const primaryBotId = ROUTE_MATRIX_BOT_IDS[0];
+      const failureBefore = '2026-07-28T00:00:00.000Z';
+      fixture.chats.set(chatId, {
+        id: chatId,
+        title: 'Future night sticky probe',
+        botId: primaryBotId,
+        primaryBotId,
+        entityType: ChatEntityType.CHAT,
+      });
+      fixture.memberships.push(
+        createActiveMembership(chatId, primaryBotId, 0, {
+          sendRouteFailureCount: 3,
+          sendRouteQuarantinedUntil: new Date('2026-07-27T23:59:59.000Z'),
+          sendRouteLastFailureAt: new Date('2026-07-27T00:00:00.000Z'),
+          sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+        }),
+      );
+
+      await expect(
+        fixture.service.resolveBotRoute({
+          purpose: 'send_message',
+          chatId,
+          allowHalfOpenProbe: true,
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          candidateBotIds: [],
+          halfOpenCandidateBotIds: [],
+        }),
+      );
+      await expect(
+        fixture.service.resolveBotRoute({
+          purpose: 'send_message',
+          chatId,
+          allowHalfOpenProbe: true,
+          stickyHalfOpenProbeFailureBefore: failureBefore,
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          botId: primaryBotId,
+          candidateBotIds: [primaryBotId],
+          halfOpenCandidateBotIds: [primaryBotId],
+        }),
+      );
+
+      const claimedUntil = new Date('2026-07-28T06:00:01.000Z');
+      await expect(
+        fixture.service.claimSendRouteHalfOpen({
+          chatId,
+          botId: primaryBotId,
+          stickyProbeFailureBefore: failureBefore,
+        }),
+      ).resolves.toEqual(claimedUntil);
+      expect(fixture.memberships[0]).toEqual(
+        expect.objectContaining({
+          sendRouteFailureCount: 3,
+          sendRouteQuarantinedUntil: claimedUntil,
+        }),
+      );
+      await expect(
+        fixture.service.claimSendRouteHalfOpen({
+          chatId,
+          botId: primaryBotId,
+          stickyProbeFailureBefore: failureBefore,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        fixture.service.releaseSendRouteHalfOpen({
+          chatId,
+          botId: primaryBotId,
+          claimedUntil,
+          stickyProbeFailureBefore: failureBefore,
+        }),
+      ).resolves.toBe(true);
+
+      fixture.memberships[0]!.sendRouteLastFailureAt = new Date(failureBefore);
+      await expect(
+        fixture.service.resolveBotRoute({
+          purpose: 'send_message',
+          chatId,
+          allowHalfOpenProbe: true,
+          stickyHalfOpenProbeFailureBefore: failureBefore,
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({ candidateBotIds: [], halfOpenCandidateBotIds: [] }),
       );
     } finally {
       jest.useRealTimers();

@@ -152,6 +152,7 @@
 
 ## Bounded Operational Commands
 
+- Audit fleet-wide close-notice readiness inside `api-admin` with `npm run night-mode:audit-close-notices --workspace @maxim/api -- --json`; it keyset-scans enabled bot-message settings, includes zero-membership chats, and uses exact bounded registry/ledger lookups. Use `--max-chats`, `--page-size`, and `--after` for resumable production reads; the command rejects `api-publisher` and performs no MAX calls or mutations.
 - Audit profanity and chat stop-word decisions with `npm run moderation:audit-profanity --workspace @maxim/api -- --since <iso> --until <iso> --limit <1..5000> --sample <0..100> --json`; text is omitted unless the reviewed `--include-sanitized-text` flag is present.
 - Preview expired global-spammer cleanup before deletion: `npm run spammers:archive-expired --workspace @maxim/api -- --dry-run --json`.
 - Audit commercial decisions locally with `npm run moderation:audit-commercial --workspace @maxim/api -- --since <iso> --until <iso> --limit <n>`.

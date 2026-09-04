@@ -36,15 +36,18 @@ import {
   buildNightModeTransitionRecoveryJobId,
   NIGHT_MODE_ROUTE_VERIFICATION_JOB_NAME,
   NIGHT_MODE_ROUTE_VERIFICATION_KIND,
+  NIGHT_MODE_STICKY_ROUTE_PROBE_KIND,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
   NIGHT_MODE_TRANSITION_JOB_NAME,
   NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_QUEUE,
   parseNightModeRouteVerification,
+  parseNightModeStickyRouteProbe,
   parseNightModeTransitionRecoveryOnly,
   type NightModeRouteVerification,
   type NightModeRouteVerificationProof,
+  type NightModeStickyRouteProbe,
   type NightModeTransitionJob,
   type NightModeTransitionRecoveryOnly,
 } from './night-mode-transition.queue';
@@ -155,6 +158,7 @@ type NightModeScheduledJobRegistryRow = {
   scheduled_for: Date;
   schedule_fingerprint: string;
   runtime_version?: number;
+  created_at?: Date;
 };
 
 type NightModeCloseLedgerRow = {
@@ -294,7 +298,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         chatId,
         botId,
         status: ChatBotMembershipStatus.ACTIVE,
-        sendRouteFailureCount: 1,
+        sendRouteFailureCount: { gte: 1 },
         sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
         sendRouteLastFailureAt: { lt: proof.sentAt },
         sendRouteQuarantinedUntil: {
@@ -577,12 +581,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     if (actualJobId !== expectedJobId) {
       return 'unsafe';
     }
+    let registry: NightModeScheduledJobRegistryRow | null = null;
     if (job.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION) {
       const scheduleFingerprint = job.scheduleFingerprint?.trim() ?? '';
       if (!scheduleFingerprint) {
         return 'unsafe';
       }
-      const registry = await this.findScheduledJobRegistryRow(chatId, actualJobId);
+      registry = await this.findScheduledJobRegistryRow(chatId, actualJobId);
       if (
         !registry ||
         registry.transition !== job.transition ||
@@ -593,6 +598,23 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       ) {
         return 'unsafe';
       }
+    }
+    const stickyRouteProbe = parseNightModeStickyRouteProbe(job.stickyRouteProbe);
+    if (
+      job.stickyRouteProbe !== undefined &&
+      (!stickyRouteProbe ||
+        job.transitionRuntimeVersion !== NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
+        !registry?.created_at ||
+        !Number.isFinite(registry.created_at.getTime()) ||
+        registry.created_at.getTime() >= scheduledFor.getTime() ||
+        registry.created_at.getTime() > Date.parse(stickyRouteProbe.authorizedAt) ||
+        job.transition !== 'close' ||
+        job.recoveryOnly !== undefined ||
+        stickyRouteProbe.scheduledFor !== job.scheduledFor ||
+        stickyRouteProbe.sessionKey !== job.sessionKey ||
+        stickyRouteProbe.scheduleFingerprint !== job.scheduleFingerprint)
+    ) {
+      return 'unsafe';
     }
 
     const chat = await this.prisma.chat.findUnique({
@@ -650,6 +672,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   async inspectRecoveryOnlyTransition(
     job: NightModeTransitionJob,
   ): Promise<NightModeRecoveryOnlyPreflight> {
+    if (job.stickyRouteProbe !== undefined) {
+      return 'unsafe';
+    }
     const recovery = parseNightModeTransitionRecoveryOnly(job.recoveryOnly);
     if (!recovery || job.chatId.trim().length === 0) {
       return 'unsafe';
@@ -1311,8 +1336,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         options.reconcileFence,
       );
       try {
+        const stickyRouteProbe = this.buildFutureStickyRouteProbe(occurrence, scheduleFingerprint);
         if (!isCurrentCatchUp) {
-          await this.promoteFutureTransitionJob(jobId, scheduleFingerprint);
+          await this.promoteFutureTransitionJob(jobId, scheduleFingerprint, stickyRouteProbe);
         }
         await this.queue.add(
           NIGHT_MODE_TRANSITION_JOB_NAME,
@@ -1324,6 +1350,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             retryPolicyName: 'night-mode-transition',
             transitionRuntimeVersion: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
             scheduleFingerprint,
+            ...(stickyRouteProbe ? { stickyRouteProbe } : {}),
             createdAt: new Date().toISOString(),
           },
           {
@@ -1393,15 +1420,25 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     );
 
     const expectedJobs = await Promise.all(futureJobIds.map((jobId) => queue.getJob(jobId)));
-    const futureScheduleComplete = expectedJobs.every(
+    const futureRegistryRows = await this.listScheduledJobRegistryRows([settings.chatId]);
+    const futureRegistryByJobId = new Map(futureRegistryRows.map((row) => [row.job_id, row]));
+    const futureSchedulePresent = expectedJobs.every(
       (job) =>
         Boolean(job) &&
         (job?.data === undefined ||
           job.data.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION),
     );
+    const futureScheduleComplete = expectedJobs.every((job, index) =>
+      this.isCompleteFutureTransitionJob(
+        job,
+        futureJobIds[index]!,
+        buildNightModeTransitionScheduleFingerprint(settings),
+        futureRegistryByJobId.get(futureJobIds[index]!),
+      ),
+    );
     const currentCatchUpRequired =
       recovery.blocksCurrentCatchUp ||
-      ((await this.isCurrentCatchUpRequired(settings)) ?? !futureScheduleComplete);
+      ((await this.isCurrentCatchUpRequired(settings)) ?? !futureSchedulePresent);
     const currentOccurrence =
       currentCatchUpRequired && !recovery.blocksCurrentCatchUp
         ? (resolveCurrentNightModeCloseOccurrence(settings) ??
@@ -1468,11 +1505,25 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     const futureJobs = await Promise.all(
       expectation.futureJobIds.map((jobId) => queue.getJob(jobId)),
     );
+    const futureRegistryRows = await this.listScheduledJobRegistryRows([settings.chatId]);
+    const futureRegistryByJobId = new Map(futureRegistryRows.map((row) => [row.job_id, row]));
     for (const [index, jobId] of expectation.futureJobIds.entries()) {
       const job = futureJobs[index];
       if (!job) {
         throw new Error(
           `Night mode transition future job disappeared during durable repair (${jobId})`,
+        );
+      }
+      if (
+        !this.isCompleteFutureTransitionJob(
+          job,
+          jobId,
+          buildNightModeTransitionScheduleFingerprint(settings),
+          futureRegistryByJobId.get(jobId),
+        )
+      ) {
+        throw new Error(
+          `Night mode transition future job proof is incomplete during durable repair (${jobId})`,
         );
       }
       if (typeof job.getState === 'function' && (await job.getState()) === 'failed') {
@@ -3077,7 +3128,8 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           "session_key",
           "scheduled_for",
           "schedule_fingerprint",
-          "runtime_version"
+          "runtime_version",
+          "created_at"
         FROM "night_mode_transition_scheduled_jobs"
         WHERE "chat_id" IN (${Prisma.join(chatIds)})
         ORDER BY "chat_id" ASC, "scheduled_for" ASC, "job_id" ASC
@@ -3213,13 +3265,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       return retained > 0;
     }
 
-    this.fallbackScheduledJobRegistry.set(
-      this.buildScheduledJobRegistryKey(row.chat_id, row.job_id),
-      {
-        ...row,
-        runtime_version: row.runtime_version ?? 3,
-      },
-    );
+    const registryKey = this.buildScheduledJobRegistryKey(row.chat_id, row.job_id);
+    const existingRegistryRow = this.fallbackScheduledJobRegistry.get(registryKey);
+    this.fallbackScheduledJobRegistry.set(registryKey, {
+      ...row,
+      runtime_version: row.runtime_version ?? 3,
+      created_at: row.created_at ?? existingRegistryRow?.created_at ?? new Date(),
+    });
     return false;
   }
 
@@ -3270,22 +3322,179 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     return `${chatId}\u0000${jobId}`;
   }
 
-  private async promoteFutureTransitionJob(jobId: string, fingerprint: string): Promise<void> {
+  private buildFutureStickyRouteProbe(
+    occurrence: NightModeTransitionOccurrence,
+    scheduleFingerprint: string,
+  ): NightModeStickyRouteProbe | undefined {
+    const authorizedAt = new Date();
+    if (occurrence.transition !== 'close' || occurrence.dueAt.getTime() <= authorizedAt.getTime()) {
+      return undefined;
+    }
+    return {
+      kind: NIGHT_MODE_STICKY_ROUTE_PROBE_KIND,
+      version: 1,
+      authorizedAt: authorizedAt.toISOString(),
+      scheduledFor: occurrence.dueAt.toISOString(),
+      sessionKey: occurrence.sessionKey,
+      scheduleFingerprint,
+    };
+  }
+
+  private async promoteFutureTransitionJob(
+    jobId: string,
+    fingerprint: string,
+    requestedStickyRouteProbe?: NightModeStickyRouteProbe,
+  ): Promise<void> {
     if (!this.queue || typeof this.queue.getJob !== 'function') {
       return;
     }
     const existing = await this.queue.getJob(jobId);
-    if (
-      !existing ||
-      existing.data === undefined ||
-      existing.data?.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION
-    ) {
+    if (!existing || existing.data === undefined) {
       return;
     }
     if (typeof existing.getState === 'function' && (await existing.getState()) === 'active') {
       return;
     }
-    await this.promoteTransitionJob(existing, { jobId, fingerprint });
+    const currentStickyRouteProbe = parseNightModeStickyRouteProbe(existing.data.stickyRouteProbe);
+    const registry = await this.findScheduledJobRegistryRow(existing.data.chatId, jobId);
+    const jobIdentityMatches =
+      existing.data.transition === 'close' &&
+      buildNightModeTransitionJobId(
+        existing.data.chatId,
+        existing.data.transition,
+        existing.data.scheduledFor,
+        existing.data.sessionKey,
+      ) === jobId;
+    const currentAuthorizationMatches = Boolean(
+      currentStickyRouteProbe &&
+      jobIdentityMatches &&
+      this.registryAuthorizesFutureStickyProbe(
+        registry,
+        existing.data,
+        jobId,
+        fingerprint,
+        currentStickyRouteProbe,
+      ) &&
+      currentStickyRouteProbe.scheduledFor === existing.data.scheduledFor &&
+      currentStickyRouteProbe.sessionKey === existing.data.sessionKey &&
+      currentStickyRouteProbe.scheduleFingerprint === fingerprint,
+    );
+    const normalizedRequestedStickyRouteProbe =
+      requestedStickyRouteProbe &&
+      registry?.created_at &&
+      registry.created_at.getTime() > Date.parse(requestedStickyRouteProbe.authorizedAt)
+        ? { ...requestedStickyRouteProbe, authorizedAt: registry.created_at.toISOString() }
+        : requestedStickyRouteProbe;
+    const requestedAuthorizationMatches = Boolean(
+      normalizedRequestedStickyRouteProbe &&
+      parseNightModeStickyRouteProbe(normalizedRequestedStickyRouteProbe) &&
+      jobIdentityMatches &&
+      this.registryAuthorizesFutureStickyProbe(
+        registry,
+        existing.data,
+        jobId,
+        fingerprint,
+        normalizedRequestedStickyRouteProbe,
+      ) &&
+      existing.data.scheduledFor === normalizedRequestedStickyRouteProbe.scheduledFor &&
+      existing.data.sessionKey === normalizedRequestedStickyRouteProbe.sessionKey &&
+      normalizedRequestedStickyRouteProbe.scheduleFingerprint === fingerprint &&
+      Date.parse(existing.data.scheduledFor) > Date.now(),
+    );
+    const stickyRouteProbe = currentAuthorizationMatches
+      ? currentStickyRouteProbe!
+      : requestedAuthorizationMatches
+        ? normalizedRequestedStickyRouteProbe
+        : undefined;
+    if (
+      existing.data.transitionRuntimeVersion === NIGHT_MODE_TRANSITION_RUNTIME_VERSION &&
+      existing.data.scheduleFingerprint === fingerprint &&
+      (stickyRouteProbe
+        ? currentAuthorizationMatches
+        : existing.data.stickyRouteProbe === undefined)
+    ) {
+      return;
+    }
+    await this.promoteTransitionJob(existing, { jobId, fingerprint, stickyRouteProbe });
+  }
+
+  private isCompleteFutureTransitionJob(
+    job: { data?: NightModeTransitionJob } | null | undefined,
+    jobId: string,
+    scheduleFingerprint: string,
+    registry: NightModeScheduledJobRegistryRow | undefined,
+  ): boolean {
+    const data = job?.data;
+    if (
+      !data ||
+      data.transitionRuntimeVersion !== NIGHT_MODE_TRANSITION_RUNTIME_VERSION ||
+      data.scheduleFingerprint !== scheduleFingerprint ||
+      data.recoveryOnly !== undefined ||
+      data.routeVerification !== undefined ||
+      buildNightModeTransitionJobId(
+        data.chatId,
+        data.transition,
+        data.scheduledFor,
+        data.sessionKey,
+      ) !== jobId
+    ) {
+      return false;
+    }
+    if (!this.registryMatchesFutureTransition(registry, data, jobId, scheduleFingerprint)) {
+      return false;
+    }
+    if (data.transition !== 'close') {
+      return data.stickyRouteProbe === undefined;
+    }
+    const marker = parseNightModeStickyRouteProbe(data.stickyRouteProbe);
+    return Boolean(
+      marker &&
+      this.registryAuthorizesFutureStickyProbe(
+        registry,
+        data,
+        jobId,
+        scheduleFingerprint,
+        marker,
+      ) &&
+      marker.scheduledFor === data.scheduledFor &&
+      marker.sessionKey === data.sessionKey &&
+      marker.scheduleFingerprint === scheduleFingerprint,
+    );
+  }
+
+  private registryMatchesFutureTransition(
+    registry: NightModeScheduledJobRegistryRow | null | undefined,
+    job: NightModeTransitionJob,
+    jobId: string,
+    scheduleFingerprint: string,
+  ): registry is NightModeScheduledJobRegistryRow & { created_at: Date } {
+    const scheduledForMs = Date.parse(job.scheduledFor);
+    return Boolean(
+      registry &&
+      registry.created_at instanceof Date &&
+      Number.isFinite(registry.created_at.getTime()) &&
+      Number.isFinite(scheduledForMs) &&
+      registry.created_at.getTime() < scheduledForMs &&
+      registry.job_id === jobId &&
+      registry.transition === job.transition &&
+      registry.session_key === job.sessionKey &&
+      registry.scheduled_for.getTime() === scheduledForMs &&
+      registry.schedule_fingerprint === scheduleFingerprint &&
+      registry.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
+    );
+  }
+
+  private registryAuthorizesFutureStickyProbe(
+    registry: NightModeScheduledJobRegistryRow | null | undefined,
+    job: NightModeTransitionJob,
+    jobId: string,
+    scheduleFingerprint: string,
+    marker: NightModeStickyRouteProbe,
+  ): boolean {
+    return Boolean(
+      this.registryMatchesFutureTransition(registry, job, jobId, scheduleFingerprint) &&
+      registry.created_at.getTime() <= Date.parse(marker.authorizedAt),
+    );
   }
 
   private normalizeChatIds(chatIds: readonly string[]): string[] {
@@ -3329,15 +3538,21 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       data?: NightModeTransitionJob;
       updateData?: (data: NightModeTransitionJob) => Promise<void>;
     },
-    params: { jobId: string; fingerprint: string },
+    params: {
+      jobId: string;
+      fingerprint: string;
+      stickyRouteProbe?: NightModeStickyRouteProbe;
+    },
   ): Promise<void> {
     if (!job.data || typeof job.updateData !== 'function') {
       throw new Error(`Night mode future job cannot be promoted in place (${params.jobId})`);
     }
+    const { stickyRouteProbe: _previousStickyRouteProbe, ...data } = job.data;
     await job.updateData({
-      ...job.data,
+      ...data,
       transitionRuntimeVersion: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
       scheduleFingerprint: params.fingerprint,
+      ...(params.stickyRouteProbe ? { stickyRouteProbe: params.stickyRouteProbe } : {}),
     });
   }
 

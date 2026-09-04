@@ -1,5 +1,6 @@
 import type { MaxActionJob } from './max-client.service';
 import { UnrecoverableError } from 'bullmq';
+import { buildNightModeTransitionScheduleFingerprint } from '../moderation/night-mode-transition-generation.util';
 import { MaxActionNoExecutableRouteError } from './max-action-dispatch-error';
 import { MaxRoutedPublicationService } from './max-routed-publication.service';
 
@@ -83,6 +84,68 @@ describe('MaxRoutedPublicationService', () => {
     expect(
       (maxActionDispatchService.execute.mock.calls[0]?.[0] as MaxActionJob).idempotencyKey,
     ).not.toContain('bot-1');
+  });
+
+  it('exposes sticky routing only from an exact future-night session proof', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-27T20:00:01.000Z'));
+    const sessionKey = 'v1:Europe/Moscow:23:00:08:00:2026-07-27';
+    const failureBefore = '2026-07-27T20:00:00.000Z';
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        reason: 'primary_confirmed',
+        routingVersion: 7,
+      }),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn().mockResolvedValue({ messageId: 'mid-night-1', url: null, botId: 'bot-1' }),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      { resolveMessageLink: jest.fn().mockResolvedValue(null) } as never,
+    );
+
+    await service.publish({
+      entityId: 'chat-1',
+      logicalIdempotencyKey: `night-mode:close:chat-1:session:${sessionKey}`,
+      text: 'night close',
+      trafficClass: 'background',
+      sourceTag: 'night_mode_transition',
+      sendRouteHalfOpenProbe: 'publication_exact_verification',
+      sendRouteStickyProbe: {
+        kind: 'future_night_close_v1',
+        authorizedAt: '2026-07-27T19:55:00.000Z',
+        failureBefore,
+        sessionKey,
+        scheduleFingerprint: buildNightModeTransitionScheduleFingerprint({
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: 23 * 60,
+          nightModeEndTimeMinutes: 8 * 60,
+          nightModeTimezone: 'Europe/Moscow',
+        }),
+      },
+    });
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowHalfOpenProbe: true,
+        stickyHalfOpenProbeFailureBefore: failureBefore,
+      }),
+    );
+    expect(maxActionDispatchService.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routing: expect.objectContaining({
+          sendRouteStickyProbe: expect.objectContaining({ sessionKey, failureBefore }),
+        }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it('restricts a bot-scoped publication to its required executable token owner', async () => {

@@ -41,6 +41,7 @@ function createFixture(
     ledgerProof?: unknown;
     routeUpdateCount?: number;
     halfOpenRoute?: boolean;
+    stickyRoute?: boolean;
     queue?: { add: jest.Mock; getJob?: jest.Mock };
   } = {},
 ) {
@@ -82,6 +83,7 @@ function createFixture(
           dispatchBotId: BOT_ID,
           completedAt: SENT_AT,
           routeHalfOpenProbe: true,
+          stickyRouteHalfOpenProbe: params.stickyRoute === true,
         }
       : params.ledgerProof,
   );
@@ -138,7 +140,7 @@ describe('NightModeRouteVerificationService', () => {
         chatId: CHAT_ID,
         botId: BOT_ID,
         status: ChatBotMembershipStatus.ACTIVE,
-        sendRouteFailureCount: 1,
+        sendRouteFailureCount: { gte: 1 },
         sendRouteLastFailureCode: 'PUBLICATION_MESSAGE_DISAPPEARED',
         sendRouteLastFailureAt: { lt: SENT_AT },
         sendRouteQuarantinedUntil: {
@@ -189,7 +191,7 @@ describe('NightModeRouteVerificationService', () => {
         chatId: CHAT_ID,
         botId: BOT_ID,
         status: ChatBotMembershipStatus.ACTIVE,
-        sendRouteFailureCount: 1,
+        sendRouteFailureCount: { gte: 1 },
         sendRouteLastFailureCode: 'PUBLICATION_MESSAGE_DISAPPEARED',
         sendRouteLastFailureAt: { lt: SENT_AT },
         sendRouteQuarantinedUntil: {
@@ -484,6 +486,46 @@ describe('NightModeRouteVerificationService', () => {
     );
   });
 
+  it('clears an exact sticky future-night claim after stable presence', async () => {
+    const fixture = createFixture({ presence: 'present', stickyRoute: true });
+
+    await expect(
+      fixture.service.process(
+        CHAT_ID,
+        createVerification({ attemptCount: 1, presentCount: 1 }),
+        STABLE_AT,
+      ),
+    ).resolves.toEqual({ kind: 'complete', routeHealthChanged: true });
+
+    expect(fixture.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        chatId: CHAT_ID,
+        botId: BOT_ID,
+        sendRouteFailureCount: { gte: 1 },
+        sendRouteQuarantinedUntil: {
+          gte: SENT_AT,
+          lte: new Date(SENT_AT.getTime() + 6 * 60 * 60_000),
+        },
+      }),
+      select: { sendRouteQuarantinedUntil: true },
+    });
+    expect(fixture.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        chatId: CHAT_ID,
+        botId: BOT_ID,
+        sendRouteFailureCount: { gte: 1 },
+        sendRouteQuarantinedUntil: CLAIMED_UNTIL,
+        sendRouteLastFailureAt: { lt: SENT_AT },
+      }),
+      data: {
+        sendRouteFailureCount: 0,
+        sendRouteQuarantinedUntil: null,
+        sendRouteLastFailureCode: null,
+        sendRouteLastSuccessAt: SENT_AT,
+      },
+    });
+  });
+
   it('retires a stale verifier without probing or clearing a route outside its exact claim', async () => {
     const fixture = createFixture({ presence: 'present', halfOpenRoute: false });
 
@@ -559,7 +601,33 @@ describe('NightModeRouteVerificationService', () => {
         OR: [{ sendRouteLastSuccessAt: null }, { sendRouteLastSuccessAt: { lt: SENT_AT } }],
       },
       data: {
-        sendRouteFailureCount: 2,
+        sendRouteFailureCount: { increment: 1 },
+        sendRouteQuarantinedUntil: new Date(STABLE_AT.getTime() + 6 * 60 * 60_000),
+        sendRouteLastFailureAt: SENT_AT,
+        sendRouteLastFailureCode: 'PUBLICATION_MESSAGE_DISAPPEARED',
+      },
+    });
+  });
+
+  it('keeps a future-night sticky route closed when the exact probe disappears', async () => {
+    const fixture = createFixture({ presence: 'absent', stickyRoute: true });
+
+    await expect(
+      fixture.service.process(
+        CHAT_ID,
+        createVerification({ attemptCount: 2, absentCount: 2 }),
+        STABLE_AT,
+      ),
+    ).resolves.toEqual({ kind: 'terminal', reason: 'absent' });
+
+    expect(fixture.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        sendRouteFailureCount: { gte: 1 },
+        sendRouteQuarantinedUntil: CLAIMED_UNTIL,
+        sendRouteLastFailureAt: { lt: SENT_AT },
+      }),
+      data: {
+        sendRouteFailureCount: { increment: 1 },
         sendRouteQuarantinedUntil: new Date(STABLE_AT.getTime() + 6 * 60 * 60_000),
         sendRouteLastFailureAt: SENT_AT,
         sendRouteLastFailureCode: 'PUBLICATION_MESSAGE_DISAPPEARED',

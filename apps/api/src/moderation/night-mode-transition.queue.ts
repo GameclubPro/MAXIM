@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 import {
   buildNightModeTransitionSessionKey,
+  parseNightModeTransitionSessionKey,
+  resolveNightModeTransitionSessionCloseAt,
   type NightModeTransitionKind,
 } from './night-mode-transition-time.util';
 
@@ -10,6 +12,7 @@ export const NIGHT_MODE_TRANSITION_JOB_NAME = 'night-mode-transition';
 export const NIGHT_MODE_ROUTE_VERIFICATION_JOB_NAME = 'night-mode-route-verification';
 export const NIGHT_MODE_ROUTE_VERIFICATION_KIND = 'close_notice_presence' as const;
 export const NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY = 'close_notice_event' as const;
+export const NIGHT_MODE_STICKY_ROUTE_PROBE_KIND = 'future_night_close' as const;
 export const NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX =
   'Night mode transition post-execution scheduling failed';
 export const NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX = 'Night mode transition lock is busy';
@@ -45,6 +48,15 @@ export type NightModeRouteVerificationProof = {
   sentAt: Date;
 };
 
+export type NightModeStickyRouteProbe = {
+  kind: typeof NIGHT_MODE_STICKY_ROUTE_PROBE_KIND;
+  version: 1;
+  authorizedAt: string;
+  scheduledFor: string;
+  sessionKey: string;
+  scheduleFingerprint: string;
+};
+
 export type NightModeTransitionJob = QueueJobEnvelope<
   {
     chatId: string;
@@ -57,6 +69,7 @@ export type NightModeTransitionJob = QueueJobEnvelope<
     createdAt?: string;
     transitionRuntimeVersion?: 2 | 3 | 4;
     scheduleFingerprint?: string;
+    stickyRouteProbe?: NightModeStickyRouteProbe;
     recoveryOnly?: NightModeTransitionRecoveryOnly;
     routeVerification?: NightModeRouteVerification;
   }
@@ -238,6 +251,52 @@ export function parseNightModeRouteVerification(value: unknown): NightModeRouteV
   };
 }
 
+export function parseNightModeStickyRouteProbe(value: unknown): NightModeStickyRouteProbe | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 6 ||
+    keys.join('\u0000') !==
+      ['authorizedAt', 'kind', 'scheduleFingerprint', 'scheduledFor', 'sessionKey', 'version'].join(
+        '\u0000',
+      )
+  ) {
+    return null;
+  }
+  const authorizedAt = canonicalIsoDate(record.authorizedAt);
+  const scheduledFor = canonicalIsoDate(record.scheduledFor);
+  const sessionKey = boundedString(record.sessionKey, 512);
+  const scheduleFingerprint = boundedString(record.scheduleFingerprint, 80);
+  const session = sessionKey ? parseNightModeTransitionSessionKey(sessionKey) : null;
+  const sessionCloseAt = sessionKey ? resolveNightModeTransitionSessionCloseAt(sessionKey) : null;
+  if (
+    record.kind !== NIGHT_MODE_STICKY_ROUTE_PROBE_KIND ||
+    record.version !== 1 ||
+    !authorizedAt ||
+    !scheduledFor ||
+    Date.parse(authorizedAt) >= Date.parse(scheduledFor) ||
+    !sessionKey ||
+    !session ||
+    !sessionCloseAt ||
+    sessionCloseAt.toISOString() !== scheduledFor ||
+    !scheduleFingerprint ||
+    !/^sha256:[a-f0-9]{64}$/u.test(scheduleFingerprint)
+  ) {
+    return null;
+  }
+  return {
+    kind: NIGHT_MODE_STICKY_ROUTE_PROBE_KIND,
+    version: 1,
+    authorizedAt,
+    scheduledFor,
+    sessionKey,
+    scheduleFingerprint,
+  };
+}
+
 function boundedString(value: unknown, maxLength: number): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -250,4 +309,13 @@ function boundedCounter(value: unknown, max: number): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= max
     ? value
     : null;
+}
+
+function canonicalIsoDate(value: unknown): string | null {
+  const normalized = boundedString(value, 64);
+  if (!normalized) {
+    return null;
+  }
+  const time = Date.parse(normalized);
+  return Number.isFinite(time) && new Date(time).toISOString() === normalized ? normalized : null;
 }

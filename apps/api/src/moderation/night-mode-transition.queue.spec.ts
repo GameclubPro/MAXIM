@@ -4,8 +4,10 @@ import {
   buildNightModeTransitionJobIdPrefix,
   buildNightModeTransitionRecoveryJobId,
   NIGHT_MODE_ROUTE_VERIFICATION_KIND,
+  NIGHT_MODE_STICKY_ROUTE_PROBE_KIND,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
   parseNightModeRouteVerification,
+  parseNightModeStickyRouteProbe,
   parseNightModeTransitionRecoveryOnly,
   type NightModeRouteVerification,
   type NightModeTransitionJob,
@@ -21,6 +23,15 @@ const ROUTE_VERIFICATION: NightModeRouteVerification = {
   attemptCount: 0,
   presentCount: 0,
   absentCount: 0,
+};
+
+const STICKY_ROUTE_PROBE = {
+  kind: NIGHT_MODE_STICKY_ROUTE_PROBE_KIND,
+  version: 1 as const,
+  authorizedAt: '2026-05-30T19:59:00.000Z',
+  scheduledFor: '2026-05-30T20:00:00.000Z',
+  sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+  scheduleFingerprint: `sha256:${'a'.repeat(64)}`,
 };
 
 describe('night mode transition queue', () => {
@@ -135,5 +146,22 @@ describe('night mode transition queue', () => {
     ],
   ])('rejects route verification with %s', (_label, override) => {
     expect(parseNightModeRouteVerification({ ...ROUTE_VERIFICATION, ...override })).toBeNull();
+  });
+
+  it('parses an exact future close sticky-route probe authorization', () => {
+    expect(parseNightModeStickyRouteProbe(STICKY_ROUTE_PROBE)).toEqual(STICKY_ROUTE_PROBE);
+  });
+
+  it.each([
+    ['wrong kind', { kind: 'current_night_close' }],
+    ['wrong version', { version: 2 }],
+    ['non-canonical authorization time', { authorizedAt: '2026-05-30T19:59:00Z' }],
+    ['authorization at the boundary', { authorizedAt: STICKY_ROUTE_PROBE.scheduledFor }],
+    ['scheduled time outside the session close', { scheduledFor: '2026-05-30T20:01:00.000Z' }],
+    ['invalid session', { sessionKey: 'session-1' }],
+    ['invalid fingerprint', { scheduleFingerprint: 'sha256:not-a-digest' }],
+    ['unexpected field', { unexpected: true }],
+  ])('rejects sticky-route probe authorization with %s', (_label, override) => {
+    expect(parseNightModeStickyRouteProbe({ ...STICKY_ROUTE_PROBE, ...override })).toBeNull();
   });
 });

@@ -7,7 +7,9 @@ import {
   NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
   NIGHT_MODE_TRANSITION_PROCESS_STOP,
+  parseNightModeStickyRouteProbe,
   parseNightModeTransitionRecoveryOnly,
+  type NightModeStickyRouteProbe,
   type NightModeTransitionJob,
   type NightModeTransitionProcessResult,
   type NightModeTransitionRecoveryOnly,
@@ -51,6 +53,10 @@ type NightModeTransitionExecutionFence = {
 export type NightModeTransitionNoticeResult = NightModeTransitionProcessResult & {
   messageId: string | null;
   botId: string | null;
+};
+
+type NightModeTransitionExecutionSnapshot = NightModeTransitionSnapshot & {
+  stickyRouteProbe?: NightModeStickyRouteProbe;
 };
 
 export type NightModeRecoverCloseNoticeEventParams = {
@@ -120,6 +126,7 @@ export type NightModeTransitionRuntimeHooks = {
       endMinutes: number;
       timezone: string;
       sessionKey: string;
+      stickyRouteProbe?: NightModeStickyRouteProbe;
     },
     validateBeforeDispatch?: () => Promise<boolean>,
   ): Promise<NightModeTransitionNoticeResult>;
@@ -268,7 +275,7 @@ export class NightModeTransitionRuntimeService {
       return this.processNightModeTransitionForChat(
         settings,
         hooks,
-        scheduledSnapshot,
+        this.withStickyRouteProbeAuthorization(job, scheduledSnapshot),
         executionFence,
       );
     }
@@ -360,7 +367,7 @@ export class NightModeTransitionRuntimeService {
   async processNightModeTransitionForChat(
     settings: NightModeTransitionRuntimeSettings,
     hooks: NightModeTransitionRuntimeHooks,
-    providedSnapshot?: NightModeTransitionSnapshot,
+    providedSnapshot?: NightModeTransitionExecutionSnapshot,
     executionFence?: NightModeTransitionExecutionFence | null,
   ): Promise<NightModeTransitionProcessResult> {
     const snapshot = providedSnapshot ?? this.resolveNightModeTransitionSnapshot(settings);
@@ -808,6 +815,31 @@ export class NightModeTransitionRuntimeService {
       ),
       sessionKey: job.sessionKey,
       fingerprint,
+    };
+  }
+
+  private withStickyRouteProbeAuthorization(
+    job: NightModeTransitionJob,
+    snapshot: NightModeTransitionSnapshot,
+  ): NightModeTransitionExecutionSnapshot {
+    const marker = parseNightModeStickyRouteProbe(job.stickyRouteProbe);
+    if (
+      !marker ||
+      job.transition !== 'close' ||
+      job.recoveryOnly !== undefined ||
+      job.routeVerification !== undefined ||
+      job.transitionRuntimeVersion !== 4 ||
+      marker.scheduledFor !== job.scheduledFor ||
+      marker.sessionKey !== job.sessionKey ||
+      marker.scheduleFingerprint !== job.scheduleFingerprint ||
+      marker.sessionKey !== snapshot.sessionKey ||
+      !snapshot.isCloseBoundary
+    ) {
+      return snapshot;
+    }
+    return {
+      ...snapshot,
+      stickyRouteProbe: marker,
     };
   }
 

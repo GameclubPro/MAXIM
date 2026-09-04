@@ -299,6 +299,74 @@ describe('NightModeTransitionRuntimeService', () => {
     }
   });
 
+  it('passes the exact future-close sticky probe boundary to close delivery', async () => {
+    jest.setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
+    const hooks = createHooks();
+    const service = new NightModeTransitionRuntimeService(
+      createPrisma() as unknown as PrismaService,
+      createRedisCounterMock() as never,
+    );
+
+    await expect(
+      service.processNightModeTransitionJob(
+        {
+          ...CLOSE_JOB,
+          stickyRouteProbe: {
+            kind: 'future_night_close',
+            version: 1,
+            authorizedAt: '2026-05-30T19:55:00.000Z',
+            scheduledFor: CLOSE_JOB.scheduledFor,
+            sessionKey: CLOSE_JOB.sessionKey,
+            scheduleFingerprint: SCHEDULE_FINGERPRINT,
+          },
+        },
+        hooks,
+      ),
+    ).resolves.toEqual(NIGHT_MODE_TRANSITION_PROCESS_CONTINUE);
+
+    expect(hooks.sendClosedNotice).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        sessionKey: CLOSE_JOB.sessionKey,
+        stickyRouteProbe: expect.objectContaining({
+          kind: 'future_night_close',
+          scheduledFor: CLOSE_JOB.scheduledFor,
+          sessionKey: CLOSE_JOB.sessionKey,
+        }),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it('does not pass a sticky probe boundary from a mismatched marker', async () => {
+    jest.setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
+    const hooks = createHooks();
+    const service = new NightModeTransitionRuntimeService(
+      createPrisma() as unknown as PrismaService,
+      createRedisCounterMock() as never,
+    );
+
+    await expect(
+      service.processNightModeTransitionJob(
+        {
+          ...CLOSE_JOB,
+          stickyRouteProbe: {
+            kind: 'future_night_close',
+            version: 1,
+            authorizedAt: '2026-05-30T19:55:00.000Z',
+            scheduledFor: CLOSE_JOB.scheduledFor,
+            sessionKey: CLOSE_JOB.sessionKey,
+            scheduleFingerprint: `sha256:${'b'.repeat(64)}`,
+          },
+        },
+        hooks,
+      ),
+    ).resolves.toEqual(NIGHT_MODE_TRANSITION_PROCESS_CONTINUE);
+
+    const deliverySnapshot = (hooks.sendClosedNotice as jest.Mock).mock.calls[0]?.[1];
+    expect(deliverySnapshot).not.toHaveProperty('stickyRouteProbe');
+  });
+
   it('executes an overdue pre-v4 boundary only with an exact durable v4 intent', async () => {
     const jobId = buildNightModeTransitionJobId(
       OPEN_JOB.chatId,
