@@ -3,9 +3,13 @@ import { resolve } from 'node:path';
 import { PublicationDispatchProfile, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import {
   loadOwnedPublishDatabaseSnapshot,
+  loadRecentPublishSuccess,
+  loadSchedulePolicyDiagnostics,
   readCliOptions,
   reconcilePublishQueueSnapshots,
   renderTextDiagnostics,
+  summarizeDispatchBlockers,
+  summarizeSchedulePolicies,
 } from './diagnose-vk-parsing';
 
 const PUBLISHER_BOT_ID = 'publisher-bot';
@@ -36,6 +40,39 @@ function createEmptyPublishQueueReconciliation() {
     ownedJobs: [],
     sampleLimit: 20,
   });
+}
+
+function createEmptyOperationalAggregates() {
+  return {
+    recentPublishSuccess: {
+      scope: 'autopublish' as const,
+      count: 0,
+      latestAt: null,
+      complete: true,
+      sourceCap: 1_000,
+      scannedSourceCount: 0,
+      sourcesTruncated: false,
+    },
+    dispatchBlockers: { totalBlockedPosts: 0, complete: true, codes: [] },
+    schedulePolicies: {
+      sourceCap: 1_000,
+      totalSourceCount: 0,
+      scannedSourceCount: 0,
+      truncated: false,
+      sourceSnapshotConsistent: true,
+      queuedCountsComplete: true,
+      runtimeStates: {
+        runnableSourceCount: 0,
+        globalAutoDisabledSourceCount: 0,
+        globalAutoIncompleteSourceCount: 0,
+        killSwitchPausedSourceCount: 0,
+        settingsMissingSourceCount: 0,
+      },
+      groupCap: 200,
+      groupsTruncated: false,
+      groups: [],
+    },
+  };
 }
 
 describe('diagnose-vk-parsing script helpers', () => {
@@ -94,6 +131,349 @@ describe('diagnose-vk-parsing script helpers', () => {
     );
   });
 
+  it('groups only allowlisted dispatch blocker codes without exposing row identifiers', () => {
+    const summary = summarizeDispatchBlockers({
+      totalRows: 4,
+      cap: 100,
+      truncated: false,
+      consistent: true,
+      rows: [
+        {
+          id: 'post-secret-1',
+          chatId: 'chat-secret',
+          sourceId: 'source-secret',
+          status: 'FAILED',
+          publishReason: 'autopublish',
+          publishQueuedAt: new Date('2026-09-04T09:00:00.000Z'),
+          publishScheduledAt: new Date('2026-09-04T10:00:00.000Z'),
+          publishLockedAt: null,
+          publishIdempotencyKey: 'key-secret-1',
+          requiredBotId: PUBLISHER_BOT_ID,
+          dispatchBlockerCode: 'publisher_runtime_unavailable',
+          dispatchBlockedAt: new Date('2026-09-04T10:00:00.000Z'),
+        },
+        {
+          id: 'post-secret-2',
+          chatId: 'chat-secret',
+          sourceId: 'source-secret',
+          status: 'FAILED',
+          publishReason: 'autopublish',
+          publishQueuedAt: new Date('2026-09-04T09:00:00.000Z'),
+          publishScheduledAt: new Date('2026-09-04T10:00:00.000Z'),
+          publishLockedAt: null,
+          publishIdempotencyKey: 'key-secret-2',
+          requiredBotId: PUBLISHER_BOT_ID,
+          dispatchBlockerCode: 'publisher_runtime_unavailable',
+          dispatchBlockedAt: new Date('2026-09-04T10:05:00.000Z'),
+        },
+        {
+          id: 'post-secret-3',
+          chatId: 'chat-secret',
+          sourceId: 'source-secret',
+          status: 'FAILED',
+          publishReason: 'manual-retry',
+          publishQueuedAt: new Date('2026-09-04T09:00:00.000Z'),
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: 'key-secret-3',
+          requiredBotId: PUBLISHER_BOT_ID,
+          dispatchBlockerCode: 'unexpected_internal_detail',
+          dispatchBlockedAt: new Date('2026-09-04T10:04:00.000Z'),
+        },
+        {
+          id: 'post-secret-4',
+          chatId: 'chat-secret',
+          sourceId: 'source-secret',
+          status: 'FAILED',
+          publishReason: 'manual-retry',
+          publishQueuedAt: new Date('2026-09-04T09:00:00.000Z'),
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: 'key-secret-4',
+          requiredBotId: PUBLISHER_BOT_ID,
+          dispatchBlockerCode: 'dialog_context_unavailable',
+          dispatchBlockedAt: new Date('2026-09-04T10:03:00.000Z'),
+        },
+      ],
+    });
+
+    expect(summary).toEqual({
+      totalBlockedPosts: 4,
+      complete: true,
+      codes: [
+        {
+          code: 'publisher_runtime_unavailable',
+          count: 2,
+          latestAt: '2026-09-04T10:05:00.000Z',
+        },
+        {
+          code: 'dialog_context_unavailable',
+          count: 1,
+          latestAt: '2026-09-04T10:03:00.000Z',
+        },
+        { code: 'other', count: 1, latestAt: '2026-09-04T10:04:00.000Z' },
+      ],
+    });
+    expect(JSON.stringify(summary)).not.toMatch(
+      /post-secret|chat-secret|source-secret|key-secret/u,
+    );
+  });
+
+  it('loads recent autopublish success through a capped source and indexed time range', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      {
+        count: 17,
+        latestAt: new Date('2026-09-04T11:59:00.000Z'),
+        scannedSourceCount: 1_000,
+        sourcesTruncated: true,
+      },
+    ]);
+
+    const result = await loadRecentPublishSuccess(
+      { $queryRaw: queryRaw } as never,
+      new Date('2026-09-04T06:00:00.000Z'),
+      PUBLISHER_BOT_ID,
+    );
+
+    expect(result).toEqual({
+      scope: 'autopublish',
+      count: 17,
+      latestAt: '2026-09-04T11:59:00.000Z',
+      complete: false,
+      sourceCap: 1_000,
+      scannedSourceCount: 1_000,
+      sourcesTruncated: true,
+    });
+    const queryText = (queryRaw.mock.calls[0]?.[0] as TemplateStringsArray).join('?');
+    expect(queryText).toContain('limit ?');
+    expect(queryText).toContain('post.chat_id = source.chat_id');
+    expect(queryText).toContain('post.source_id = source.id');
+    expect(queryText).toContain('post.auto_published_at >= ?');
+    expect(queryText).toContain('count(*)::int as source_count');
+    expect(queryText).toContain('coalesce(sum(source_count), 0)::int');
+    expect(queryText).toContain('offset 0');
+    expect(queryText).not.toContain('published_at_max');
+  });
+
+  it('summarizes schedule policies, queue depth, and daily-cap saturation without IDs', () => {
+    const generatedAt = new Date('2026-09-04T12:00:00.000Z');
+    const baseQueuedPost = {
+      chatId: 'chat-secret',
+      status: 'NEW',
+      publishReason: 'autopublish',
+      publishQueuedAt: generatedAt,
+      publishLockedAt: null,
+      publishIdempotencyKey: 'key-secret',
+      requiredBotId: PUBLISHER_BOT_ID,
+    } as const;
+    const summary = summarizeSchedulePolicies({
+      generatedAt,
+      sources: [
+        {
+          id: 'source-secret-1',
+          chatId: 'chat-secret',
+          publishIntervalMinutes: 30,
+          minPublishIntervalMinutes: 10,
+          dailyLimit: 3,
+          publishMode: 'QUEUE',
+        },
+        {
+          id: 'source-secret-2',
+          chatId: 'chat-secret',
+          publishIntervalMinutes: 30,
+          minPublishIntervalMinutes: 10,
+          dailyLimit: 3,
+          publishMode: 'queue',
+        },
+        {
+          id: 'source-secret-without-queue',
+          chatId: 'chat-secret',
+          publishIntervalMinutes: 30,
+          minPublishIntervalMinutes: 10,
+          dailyLimit: 3,
+          publishMode: 'QUEUE',
+        },
+        {
+          id: 'source-secret-paused',
+          chatId: 'chat-secret',
+          publishIntervalMinutes: 30,
+          minPublishIntervalMinutes: 10,
+          dailyLimit: 3,
+          publishMode: 'QUEUE',
+          runtimeState: 'kill_switch_paused',
+        },
+      ],
+      queuedPosts: [
+        {
+          ...baseQueuedPost,
+          id: 'post-secret-1',
+          sourceId: 'source-secret-1',
+          publishScheduledAt: new Date('2026-09-04T12:30:00.000Z'),
+        },
+        {
+          ...baseQueuedPost,
+          id: 'post-secret-2',
+          sourceId: 'source-secret-1',
+          publishScheduledAt: new Date('2026-09-04T13:00:00.000Z'),
+        },
+        {
+          ...baseQueuedPost,
+          id: 'post-secret-3',
+          sourceId: 'source-secret-2',
+          publishScheduledAt: new Date('2026-09-04T12:45:00.000Z'),
+        },
+        {
+          ...baseQueuedPost,
+          id: 'post-secret-paused',
+          sourceId: 'source-secret-paused',
+          publishScheduledAt: new Date('2026-09-04T13:30:00.000Z'),
+        },
+      ],
+      dailyPublishedCounts: new Map([
+        ['source-secret-1', 3],
+        ['source-secret-2', 2],
+        ['source-secret-without-queue', 3],
+        ['source-secret-paused', 3],
+      ]),
+      sourceCap: 100,
+      totalSourceCount: 4,
+      sourceSnapshotConsistent: true,
+      queuedCountsComplete: true,
+    });
+
+    expect(summary).toEqual({
+      sourceCap: 100,
+      totalSourceCount: 4,
+      scannedSourceCount: 4,
+      truncated: false,
+      sourceSnapshotConsistent: true,
+      queuedCountsComplete: true,
+      runtimeStates: {
+        runnableSourceCount: 3,
+        globalAutoDisabledSourceCount: 0,
+        globalAutoIncompleteSourceCount: 0,
+        killSwitchPausedSourceCount: 1,
+        settingsMissingSourceCount: 0,
+      },
+      groupCap: 200,
+      groupsTruncated: false,
+      groups: [
+        {
+          publishIntervalMinutes: 30,
+          minPublishIntervalMinutes: 10,
+          dailyLimit: 3,
+          publishMode: 'QUEUE',
+          sourceCount: 4,
+          queuedCount: 4,
+          dailyCapReachedSourceCount: 1,
+          earliestNextScheduledAt: '2026-09-04T12:30:00.000Z',
+          secondsToEarliestNext: 1_800,
+        },
+      ],
+    });
+    expect(JSON.stringify(summary)).not.toMatch(
+      /post-secret|chat-secret|source-secret|key-secret/u,
+    );
+  });
+
+  it('uses DST-aware local-day bounds and clamps the schedule source scan cap', async () => {
+    const sourceCount = jest.fn().mockResolvedValue(2);
+    const sourceFindMany = jest.fn().mockResolvedValue([
+      {
+        id: 'source-secret',
+        chatId: 'chat-secret',
+        publishIntervalMinutes: 30,
+        minPublishIntervalMinutes: 10,
+        dailyLimit: 1,
+        publishMode: 'IMMEDIATE',
+      },
+      {
+        id: 'source-incomplete',
+        chatId: 'chat-incomplete',
+        publishIntervalMinutes: 30,
+        minPublishIntervalMinutes: 10,
+        dailyLimit: 1,
+        publishMode: 'IMMEDIATE',
+      },
+    ]);
+    const settingsFindMany = jest.fn().mockResolvedValue([
+      {
+        chatId: 'chat-secret',
+        schedulerTimezone: 'America/New_York',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-03-01T12:00:00.000Z'),
+        autoPublishKillSwitchEnabled: false,
+      },
+      {
+        chatId: 'chat-incomplete',
+        schedulerTimezone: 'America/New_York',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: null,
+        autoPublishKillSwitchEnabled: false,
+      },
+    ]);
+    const groupBy = jest
+      .fn()
+      .mockResolvedValue([{ sourceId: 'source-secret', _count: { _all: 1 } }]);
+    const prisma = {
+      vkParsingSource: { count: sourceCount, findMany: sourceFindMany },
+      vkParsingSettings: { findMany: settingsFindMany },
+      vkParsingPost: { groupBy },
+    };
+    const ownedSnapshot = {
+      totalRows: 1,
+      rows: [
+        {
+          id: 'post-secret',
+          chatId: 'chat-secret',
+          sourceId: 'source-secret',
+          status: 'NEW',
+          publishReason: 'autopublish',
+          publishQueuedAt: new Date('2026-03-08T11:00:00.000Z'),
+          publishScheduledAt: new Date('2026-03-08T13:00:00.000Z'),
+          publishLockedAt: null,
+          publishIdempotencyKey: 'key-secret',
+          requiredBotId: PUBLISHER_BOT_ID,
+        },
+      ],
+      cap: 5_000,
+      truncated: false,
+      consistent: true,
+    };
+
+    const summary = await loadSchedulePolicyDiagnostics(
+      prisma as never,
+      PUBLISHER_BOT_ID,
+      new Date('2026-03-08T12:00:00.000Z'),
+      ownedSnapshot,
+      50_000,
+    );
+
+    expect(sourceFindMany).toHaveBeenCalledWith(expect.objectContaining({ take: 1_000 }));
+    expect(groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: { in: ['chat-secret', 'chat-incomplete'] },
+          autoPublishedAt: {
+            gte: new Date('2026-03-08T05:00:00.000Z'),
+            lt: new Date('2026-03-09T04:00:00.000Z'),
+          },
+        }),
+      }),
+    );
+    expect(summary.groups[0]).toMatchObject({
+      publishMode: 'IMMEDIATE',
+      dailyCapReachedSourceCount: 1,
+    });
+    expect(summary.runtimeStates).toEqual({
+      runnableSourceCount: 1,
+      globalAutoDisabledSourceCount: 0,
+      globalAutoIncompleteSourceCount: 1,
+      killSwitchPausedSourceCount: 0,
+      settingsMissingSourceCount: 0,
+    });
+  });
+
   it('renders a compact operational summary', () => {
     const rendered = renderTextDiagnostics({
       generatedAt: '2026-05-27T22:55:03.204Z',
@@ -119,7 +499,10 @@ describe('diagnose-vk-parsing script helpers', () => {
         unstampedSchedulePosts: 0,
         staleLockedPosts: 0,
         oldestDueQueuedAgeSec: 45,
+        nextScheduledAt: new Date('2026-05-27T23:00:03.204Z'),
+        secondsToNext: 300,
       },
+      ...createEmptyOperationalAggregates(),
       stuckPublishPosts: [],
       recentPublishFailures: [],
       mediaStatus: [{ status: 'READY', count: 100, withIdentity: 80 }],
@@ -138,6 +521,12 @@ describe('diagnose-vk-parsing script helpers', () => {
     expect(rendered).toContain('1 stale locks');
     expect(rendered).toContain('Publish backlog: 1 due / 2 queued');
     expect(rendered).toContain('0 pending schedule reconciliation');
+    expect(rendered).toContain('Next canonical publish: 2026-05-27T23:00:03.204Z, countdown 300s');
+    expect(rendered).toContain(
+      'Recent successful VK autopublishes: 0, latest none, complete=true, sources=0/1000, truncated=false',
+    );
+    expect(rendered).toContain('Active dispatch blockers: 0, complete=true, codes=[]');
+    expect(rendered).toContain('Schedule policies: 0/0 sources scanned (cap 1000)');
     expect(rendered).toContain('sync={"waiting":0}');
     expect(rendered).toContain('Publish reconciliation: 0/0 DB-owned scanned');
   });
@@ -151,6 +540,7 @@ describe('diagnose-vk-parsing script helpers', () => {
       noisySources: [],
       syncPerformance: {},
       publishBacklog: { dueQueuedPosts: 2, queuedPosts: 2 },
+      ...createEmptyOperationalAggregates(),
       stuckPublishPosts: [],
       recentPublishFailures: [],
       mediaStatus: [],

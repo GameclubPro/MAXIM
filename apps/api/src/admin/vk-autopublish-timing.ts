@@ -6,6 +6,7 @@ export const VK_AUTOPUBLISH_CHAT_SLOT_CLEARANCE_MS = 60_000;
 
 const DEFAULT_PUBLISH_INTERVAL_MINUTES = 60;
 const DEFAULT_MIN_PUBLISH_INTERVAL_MINUTES = 30;
+const DEFAULT_DAILY_LIMIT = 3;
 const DEFAULT_WORK_HOURS_START = '09:00';
 const DEFAULT_WORK_HOURS_END = '22:00';
 const ALLOWED_SLOT_LOOKAHEAD_MINUTES = 8 * 24 * 60;
@@ -22,6 +23,7 @@ export type VkAutoPublishTimingSettings = {
 
 export type VkAutoPublishTimingSource = {
   publishIntervalMinutes?: number | null;
+  dailyLimit?: number | null;
   minPublishIntervalMinutes?: number | null;
   quietHoursStart?: string | null;
   quietHoursEnd?: string | null;
@@ -38,9 +40,20 @@ export type PlanVkAutoPublishSourceSlotsOptions = {
   now: Date;
   lastSourceAt?: Date | null;
   existingChatSlots?: readonly Date[];
+  existingSourceQuotaSlots?: readonly Date[];
+  currentLocalDayPublishedCount?: number;
+  currentLocalDayPublishedAt?: Date;
   settings: VkAutoPublishTimingSettings;
   source: VkAutoPublishTimingSource;
   chatSlotClearanceMs?: number;
+  sourceSpacingMsOverride?: number;
+};
+
+export type ProjectVkAutoPublishSourceQuotaSlotsOptions = Omit<
+  PlanVkAutoPublishSourceSlotsOptions,
+  'count' | 'existingChatSlots' | 'existingSourceQuotaSlots' | 'chatSlotClearanceMs'
+> & {
+  slots: readonly Date[];
 };
 
 type ParsedDailyRange = {
@@ -162,8 +175,20 @@ export function planVkAutoPublishSourceSlots(options: PlanVkAutoPublishSourceSlo
 
   const nowMs = readDate(options.now, 'now');
   const lastSourceMs = options.lastSourceAt ? readDate(options.lastSourceAt, 'lastSourceAt') : null;
-  const spacingMs = resolveVkAutoPublishSourceSpacingMs(options.settings, options.source);
+  const spacingMs =
+    options.sourceSpacingMsOverride === undefined
+      ? resolveVkAutoPublishSourceSpacingMs(options.settings, options.source)
+      : readNonNegativeNumber(options.sourceSpacingMsOverride, 'sourceSpacingMsOverride');
   const clearanceMs = readClearance(options.chatSlotClearanceMs);
+  const timezone = normalizeVkAutoPublishTimezone(options.settings.schedulerTimezone);
+  const dailyLimit = readPositiveInteger(options.source.dailyLimit, DEFAULT_DAILY_LIMIT);
+  const quotaUsage = buildQuotaUsage(
+    nowMs,
+    timezone,
+    options.currentLocalDayPublishedCount,
+    options.currentLocalDayPublishedAt,
+    options.existingSourceQuotaSlots ?? [],
+  );
   const occupiedMs = options.settings.roundRobinEnabled
     ? readDates(options.existingChatSlots ?? [], 'existingChatSlots').sort(
         (left, right) => left - right,
@@ -179,17 +204,72 @@ export function planVkAutoPublishSourceSlots(options: PlanVkAutoPublishSourceSlo
       clearanceMs,
       options.settings,
       options.source,
+      { dailyLimit, timezone, usage: quotaUsage },
     );
     if (!slot) {
       throw new RangeError('VK autopublish timing rules do not contain an available slot.');
     }
 
     slots.push(slot);
-    insertSortedNumber(occupiedMs, slot.getTime());
+    if (options.settings.roundRobinEnabled) {
+      insertSortedNumber(occupiedMs, slot.getTime());
+    }
+    incrementQuotaUsage(quotaUsage, resolveLocalDayKey(slot.getTime(), timezone));
     earliestMs = slot.getTime() + spacingMs;
   }
 
   return slots;
+}
+
+export function projectVkAutoPublishSourceQuotaSlots(
+  options: ProjectVkAutoPublishSourceQuotaSlotsOptions,
+): Date[] {
+  if (options.slots.length === 0) {
+    return [];
+  }
+
+  const nowMs = readDate(options.now, 'now');
+  const timezone = normalizeVkAutoPublishTimezone(options.settings.schedulerTimezone);
+  const dailyLimit = readPositiveInteger(options.source.dailyLimit, DEFAULT_DAILY_LIMIT);
+  const spacingMs =
+    options.sourceSpacingMsOverride === undefined
+      ? resolveVkAutoPublishSourceSpacingMs(options.settings, options.source)
+      : readNonNegativeNumber(options.sourceSpacingMsOverride, 'sourceSpacingMsOverride');
+  const quotaUsage = buildQuotaUsage(
+    nowMs,
+    timezone,
+    options.currentLocalDayPublishedCount,
+    options.currentLocalDayPublishedAt,
+    [],
+  );
+  const sourceSlots = readDates(options.slots, 'slots').sort((left, right) => left - right);
+  const projected: Date[] = [];
+  let previousMs = options.lastSourceAt ? readDate(options.lastSourceAt, 'lastSourceAt') : null;
+
+  for (const sourceSlotMs of sourceSlots) {
+    const earliestMs = Math.max(
+      nowMs,
+      sourceSlotMs,
+      previousMs === null ? Number.NEGATIVE_INFINITY : previousMs + spacingMs,
+    );
+    const slot = resolveCollisionFreeAllowedSlot(
+      earliestMs,
+      [],
+      0,
+      options.settings,
+      options.source,
+      { dailyLimit, timezone, usage: quotaUsage },
+    );
+    if (!slot) {
+      throw new RangeError('VK autopublish timing rules do not contain an available quota slot.');
+    }
+
+    projected.push(slot);
+    incrementQuotaUsage(quotaUsage, resolveLocalDayKey(slot.getTime(), timezone));
+    previousMs = slot.getTime();
+  }
+
+  return projected;
 }
 
 function resolveCollisionFreeAllowedSlot(
@@ -198,13 +278,20 @@ function resolveCollisionFreeAllowedSlot(
   clearanceMs: number,
   settings: PlanVkAutoPublishSourceSlotsOptions['settings'],
   source: PlanVkAutoPublishSourceSlotsOptions['source'],
+  quota: { dailyLimit: number; timezone: string; usage: Map<string, number> },
 ): Date | null {
   let candidateMs = earliestMs;
+  const attemptLimit = occupiedMs.length + quota.usage.size + 2;
 
-  for (let attempt = 0; attempt <= occupiedMs.length + 1; attempt += 1) {
+  for (let attempt = 0; attempt <= attemptLimit; attempt += 1) {
     const allowed = resolveNextAllowedVkAutoPublishAt(new Date(candidateMs), settings, source);
     if (!allowed) {
       return null;
+    }
+    const quotaDayKey = resolveLocalDayKey(allowed.getTime(), quota.timezone);
+    if ((quota.usage.get(quotaDayKey) ?? 0) >= quota.dailyLimit) {
+      candidateMs = resolveNextLocalDayStartMs(allowed.getTime(), quota.timezone);
+      continue;
     }
 
     const nextCollisionFreeMs = advancePastChatSlotCollisions(
@@ -219,6 +306,45 @@ function resolveCollisionFreeAllowedSlot(
   }
 
   return null;
+}
+
+function buildQuotaUsage(
+  nowMs: number,
+  timezone: string,
+  currentLocalDayPublishedCount: number | undefined,
+  currentLocalDayPublishedAt: Date | undefined,
+  existingSourceQuotaSlots: readonly Date[],
+): Map<string, number> {
+  const usage = new Map<string, number>();
+  const publishedCount = readNonNegativeInteger(
+    currentLocalDayPublishedCount,
+    'currentLocalDayPublishedCount',
+  );
+  if (publishedCount > 0) {
+    const publishedDayMs = currentLocalDayPublishedAt
+      ? readDate(currentLocalDayPublishedAt, 'currentLocalDayPublishedAt')
+      : nowMs;
+    usage.set(resolveLocalDayKey(publishedDayMs, timezone), publishedCount);
+  }
+  for (const slotMs of readDates(existingSourceQuotaSlots, 'existingSourceQuotaSlots')) {
+    incrementQuotaUsage(usage, resolveLocalDayKey(slotMs, timezone));
+  }
+  return usage;
+}
+
+function incrementQuotaUsage(usage: Map<string, number>, dayKey: string): void {
+  usage.set(dayKey, (usage.get(dayKey) ?? 0) + 1);
+}
+
+function resolveLocalDayKey(timestamp: number, timezone: string): string {
+  return DateTime.fromMillis(timestamp, { zone: timezone }).toISODate()!;
+}
+
+function resolveNextLocalDayStartMs(timestamp: number, timezone: string): number {
+  return DateTime.fromMillis(timestamp, { zone: timezone })
+    .startOf('day')
+    .plus({ days: 1 })
+    .toMillis();
 }
 
 function advancePastChatSlotCollisions(
@@ -342,6 +468,27 @@ function readFiniteNumber(
   fallback: number,
 ): number {
   return typeof value === 'number' && Number.isFinite(value) && predicate(value) ? value : fallback;
+}
+
+function readPositiveInteger(value: number | null | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function readNonNegativeInteger(value: number | undefined, field: string): number {
+  if (value === undefined) {
+    return 0;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`VK autopublish ${field} must be a non-negative integer.`);
+  }
+  return value;
+}
+
+function readNonNegativeNumber(value: number, field: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`VK autopublish ${field} must be non-negative.`);
+  }
+  return value;
 }
 
 function readDate(value: Date, field: string): number {

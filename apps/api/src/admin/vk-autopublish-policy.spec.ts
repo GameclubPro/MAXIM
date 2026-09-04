@@ -1,6 +1,13 @@
-import { buildVkAutoPublishScheduleFingerprint } from './vk-autopublish-policy';
+import {
+  buildVkAutoPublishScheduleFingerprint,
+  VK_AUTOPUBLISH_SCHEDULE_FINGERPRINT_VERSION,
+} from './vk-autopublish-policy';
 
 describe('VK autopublish schedule policy', () => {
+  it('uses the quota-aware schedule fingerprint version', () => {
+    expect(VK_AUTOPUBLISH_SCHEDULE_FINGERPRINT_VERSION).toBe(2);
+  });
+
   const settings = {
     schedulerTimezone: 'Europe/Moscow',
     quietHoursStart: null,

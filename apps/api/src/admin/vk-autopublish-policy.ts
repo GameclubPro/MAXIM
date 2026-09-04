@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT = 'pending:v1';
+export const VK_AUTOPUBLISH_SCHEDULE_FINGERPRINT_VERSION = 2;
 
 export type VkAutoPublishTimingSettings = {
   schedulerTimezone: string;
@@ -29,7 +30,7 @@ export function buildVkAutoPublishScheduleFingerprint(
   return createHash('sha256')
     .update(
       JSON.stringify({
-        version: 1,
+        version: VK_AUTOPUBLISH_SCHEDULE_FINGERPRINT_VERSION,
         settings: {
           schedulerTimezone: settings.schedulerTimezone,
           quietHoursStart: settings.quietHoursStart,

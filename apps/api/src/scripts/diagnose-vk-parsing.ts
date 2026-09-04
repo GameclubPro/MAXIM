@@ -1,4 +1,5 @@
 import { Queue, type ConnectionOptions, type Job } from 'bullmq';
+import { publisherReadinessBlockerCodeSchema } from '@maxim/contracts/publisher';
 import {
   createPrismaClient,
   PublicationDispatchProfile,
@@ -6,6 +7,7 @@ import {
   VkParsingOwnerProfile,
 } from '../prisma/prisma-client';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
+import { getVkAutoPublishLocalDayRange } from '../admin/vk-autopublish-timing';
 
 type CliOptions = {
   json: boolean;
@@ -50,6 +52,80 @@ export type OwnedPublishRow = {
   publishLockedAt: Date | null;
   publishIdempotencyKey: string | null;
   requiredBotId: string | null;
+  dispatchBlockerCode?: string | null;
+  dispatchBlockedAt?: Date | null;
+};
+
+type VkPublishSuccessSummary = {
+  scope: 'autopublish';
+  count: number;
+  latestAt: string | null;
+  complete: boolean;
+  sourceCap: number;
+  scannedSourceCount: number;
+  sourcesTruncated: boolean;
+};
+
+type VkDispatchBlockerSummary = {
+  totalBlockedPosts: number;
+  complete: boolean;
+  codes: Array<{
+    code: string;
+    count: number;
+    latestAt: string | null;
+  }>;
+};
+
+type VkSchedulePolicySource = {
+  id: string;
+  chatId: string;
+  publishIntervalMinutes: number;
+  minPublishIntervalMinutes: number;
+  dailyLimit: number;
+  publishMode: string;
+  runtimeState?:
+    | 'runnable'
+    | 'global_auto_disabled'
+    | 'global_auto_incomplete'
+    | 'kill_switch_paused'
+    | 'settings_missing';
+};
+
+type VkSchedulePolicySettings = {
+  chatId: string;
+  schedulerTimezone: string;
+  autoPublishEnabled: boolean;
+  autoPublishEnabledAt: Date | null;
+  autoPublishKillSwitchEnabled: boolean;
+};
+
+type VkSchedulePolicySummary = {
+  sourceCap: number;
+  totalSourceCount: number;
+  scannedSourceCount: number;
+  truncated: boolean;
+  sourceSnapshotConsistent: boolean;
+  queuedCountsComplete: boolean;
+  runtimeStates: {
+    runnableSourceCount: number;
+    globalAutoDisabledSourceCount: number;
+    globalAutoIncompleteSourceCount: number;
+    killSwitchPausedSourceCount: number;
+    settingsMissingSourceCount: number;
+  };
+  groupCap: number;
+  groupsTruncated: boolean;
+  groups: Array<{
+    publishIntervalMinutes: number;
+    minPublishIntervalMinutes: number;
+    dailyLimit: number;
+    publishMode: string;
+    sourceCount: number;
+    queuedCount: number;
+    dailyCapReachedSourceCount: number;
+    earliestNextScheduledAt: string | null;
+    secondsToEarliestNext: number | null;
+  }>;
 };
 
 export type OwnedPublishDatabaseSnapshot = {
@@ -174,6 +250,9 @@ type VkParsingDiagnostics = {
   noisySources: unknown[];
   syncPerformance: unknown;
   publishBacklog: unknown;
+  recentPublishSuccess: VkPublishSuccessSummary;
+  dispatchBlockers: VkDispatchBlockerSummary;
+  schedulePolicies: VkSchedulePolicySummary;
   stuckPublishPosts: unknown[];
   recentPublishFailures: unknown[];
   mediaStatus: unknown[];
@@ -199,6 +278,9 @@ const QUEUE_COMMAND_TIMEOUT_MS = 5_000;
 const SCHEDULE_DRIFT_TOLERANCE_MS = 5_000;
 const DEFAULT_WINDOW_HOURS = 6;
 const MAX_WINDOW_HOURS = 24 * 7;
+const SCHEDULE_POLICY_SOURCE_CAP = 1_000;
+const SCHEDULE_POLICY_GROUP_CAP = 200;
+const RECENT_PUBLISH_SUCCESS_SOURCE_CAP = 1_000;
 const VK_SYNC_QUEUE = 'vk-parsing-sync';
 const VK_PUBLISHER_QUEUE = 'vk-parsing-publisher';
 const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
@@ -213,6 +295,15 @@ const QUEUE_RECONCILIATION_STATES = [
   'waiting-children',
 ] as const;
 const OWNED_JOB_STATE_KEYS = [...QUEUE_RECONCILIATION_STATES, 'unknown', 'missing'] as const;
+const ALLOWED_DISPATCH_BLOCKER_CODES = new Set<string>([
+  ...publisherReadinessBlockerCodeSchema.options,
+  'publisher_auth_paused',
+  'publisher_route_invalid',
+  'publisher_bot_changed',
+  'publisher_setup_required',
+  'dialog_context_unavailable',
+]);
+const ALLOWED_PUBLISH_MODES = new Set(['QUEUE', 'IMMEDIATE', 'REVIEW']);
 
 export function readCliOptions(argv: readonly string[], env = process.env): CliOptions {
   const limit = readPositiveIntOption(argv, '--limit') ?? DEFAULT_LIMIT;
@@ -280,6 +371,7 @@ export async function loadVkParsingDiagnostics(
     noisySources,
     syncPerformance,
     publishBacklog,
+    recentPublishSuccess,
     stuckPublishPosts,
     recentPublishFailures,
     mediaStatus,
@@ -291,7 +383,8 @@ export async function loadVkParsingDiagnostics(
     loadSourceHealth(prisma),
     loadNoisySources(prisma, options.limit),
     loadSyncPerformance(prisma, since),
-    loadPublishBacklog(prisma),
+    loadPublishBacklog(prisma, options.publisherBotId),
+    loadRecentPublishSuccess(prisma, since, options.publisherBotId),
     loadStuckPublishPosts(prisma, options.limit),
     loadRecentPublishFailures(prisma, since, options.limit),
     loadMediaStatus(prisma),
@@ -299,13 +392,21 @@ export async function loadVkParsingDiagnostics(
     loadRecentMediaFailures(prisma, since, options.limit),
     loadOwnedPublishDatabaseSnapshot(prisma, options.reconcileCap, options.publisherBotId),
   ]);
-  const { queues, publishQueueReconciliation } = await loadQueueDiagnostics(
-    options.redisUrl,
-    options.limit,
-    buildPublishReferenceJobIds(stuckPublishPosts),
-    ownedPublishDatabase,
-    generatedAt,
-  );
+  const [schedulePolicies, { queues, publishQueueReconciliation }] = await Promise.all([
+    loadSchedulePolicyDiagnostics(
+      prisma,
+      options.publisherBotId,
+      generatedAt,
+      ownedPublishDatabase,
+    ),
+    loadQueueDiagnostics(
+      options.redisUrl,
+      options.limit,
+      buildPublishReferenceJobIds(stuckPublishPosts),
+      ownedPublishDatabase,
+      generatedAt,
+    ),
+  ]);
 
   return {
     generatedAt: generatedAt.toISOString(),
@@ -315,6 +416,9 @@ export async function loadVkParsingDiagnostics(
     noisySources,
     syncPerformance,
     publishBacklog,
+    recentPublishSuccess,
+    dispatchBlockers: summarizeDispatchBlockers(ownedPublishDatabase),
+    schedulePolicies,
     stuckPublishPosts,
     recentPublishFailures,
     mediaStatus,
@@ -460,7 +564,7 @@ async function loadSyncPerformance(prisma: PrismaClient, since: Date): Promise<u
   return rows[0] ?? {};
 }
 
-async function loadPublishBacklog(prisma: PrismaClient): Promise<unknown> {
+async function loadPublishBacklog(prisma: PrismaClient, publisherBotId: string): Promise<unknown> {
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     select
       count(*) filter (where publish_queued_at is not null)::int as "queuedPosts",
@@ -490,11 +594,92 @@ async function loadPublishBacklog(prisma: PrismaClient): Promise<unknown> {
       min(publish_queued_at) filter (
         where publish_queued_at is not null
           and coalesce(publish_scheduled_at, publish_queued_at) <= now()
-      ) as "oldestDueQueuedAt"
+      ) as "oldestDueQueuedAt",
+      min(publish_scheduled_at) filter (
+        where publish_queued_at is not null
+          and publish_scheduled_at > now()
+      ) as "nextScheduledAt",
+      case
+        when min(publish_scheduled_at) filter (
+          where publish_queued_at is not null
+            and publish_scheduled_at > now()
+        ) is null then null
+        else greatest(
+          0,
+          floor(extract(epoch from (
+            min(publish_scheduled_at) filter (
+              where publish_queued_at is not null
+                and publish_scheduled_at > now()
+            ) - now()
+          ))
+        )::int
+      end as "secondsToNext"
     from vk_parsing_posts
-    where publish_queued_at is not null or publish_locked_at is not null
+    where (publish_queued_at is not null or publish_locked_at is not null)
+      and owner_profile = ${VkParsingOwnerProfile.PUBLISHER}::"VkParsingOwnerProfile"
+      and owner_bot_id = ${publisherBotId}
+      and dispatch_profile = ${PublicationDispatchProfile.PUBLIK_V1}::"PublicationDispatchProfile"
+      and required_bot_id = ${publisherBotId}
   `;
   return rows[0] ?? {};
+}
+
+export async function loadRecentPublishSuccess(
+  prisma: PrismaClient,
+  since: Date,
+  publisherBotId: string,
+): Promise<VkPublishSuccessSummary> {
+  const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
+    with bounded_sources as materialized (
+      select id, chat_id
+      from vk_parsing_sources
+      where owner_profile = ${VkParsingOwnerProfile.PUBLISHER}::"VkParsingOwnerProfile"
+        and owner_bot_id = ${publisherBotId}
+      limit ${RECENT_PUBLISH_SUCCESS_SOURCE_CAP + 1}
+    ),
+    scanned_sources as materialized (
+      select id, chat_id
+      from bounded_sources
+      limit ${RECENT_PUBLISH_SUCCESS_SOURCE_CAP}
+    ),
+    recent_success_by_source as materialized (
+      select recent.source_count, recent.latest_at
+      from scanned_sources source
+      cross join lateral (
+        select
+          count(*)::int as source_count,
+          max(post.auto_published_at) as latest_at
+        from vk_parsing_posts post
+        where post.chat_id = source.chat_id
+          and post.source_id = source.id
+          and post.auto_published_at >= ${since}
+          and post.owner_profile = ${VkParsingOwnerProfile.PUBLISHER}::"VkParsingOwnerProfile"
+          and post.owner_bot_id = ${publisherBotId}
+        offset 0
+      ) recent
+    )
+    select
+      coalesce(sum(source_count), 0)::int as "count",
+      max(latest_at) as "latestAt",
+      least(
+        (select count(*) from bounded_sources),
+        ${RECENT_PUBLISH_SUCCESS_SOURCE_CAP}
+      )::int as "scannedSourceCount",
+      ((select count(*) from bounded_sources) > ${RECENT_PUBLISH_SUCCESS_SOURCE_CAP})
+        as "sourcesTruncated"
+    from recent_success_by_source
+  `;
+  const row = rows[0] ?? {};
+  const sourcesTruncated = row.sourcesTruncated === true;
+  return {
+    scope: 'autopublish',
+    count: readNumber(row.count),
+    latestAt: dateValueToIso(row.latestAt),
+    complete: !sourcesTruncated,
+    sourceCap: RECENT_PUBLISH_SUCCESS_SOURCE_CAP,
+    scannedSourceCount: readNumber(row.scannedSourceCount),
+    sourcesTruncated,
+  };
 }
 
 async function loadStuckPublishPosts(prisma: PrismaClient, limit: number): Promise<unknown[]> {
@@ -642,6 +827,8 @@ export async function loadOwnedPublishDatabaseSnapshot(
         publishLockedAt: true,
         publishIdempotencyKey: true,
         requiredBotId: true,
+        dispatchBlockerCode: true,
+        dispatchBlockedAt: true,
       },
       orderBy: { id: 'asc' },
       take,
@@ -668,6 +855,289 @@ export async function loadOwnedPublishDatabaseSnapshot(
       totalRowsBefore === totalRowsAfter &&
       (rows.length === totalRowsAfter || (rows.length === cap && totalRowsAfter >= cap)),
   };
+}
+
+export function summarizeDispatchBlockers(
+  database: OwnedPublishDatabaseSnapshot,
+): VkDispatchBlockerSummary {
+  const grouped = new Map<string, { count: number; latestAt: Date | null }>();
+  for (const row of database.rows) {
+    const rawCode = row.dispatchBlockerCode?.trim() ?? '';
+    if (!rawCode) {
+      continue;
+    }
+    const code = ALLOWED_DISPATCH_BLOCKER_CODES.has(rawCode) ? rawCode : 'other';
+    const current = grouped.get(code) ?? { count: 0, latestAt: null };
+    current.count += 1;
+    if (
+      row.dispatchBlockedAt &&
+      (!current.latestAt || row.dispatchBlockedAt.getTime() > current.latestAt.getTime())
+    ) {
+      current.latestAt = row.dispatchBlockedAt;
+    }
+    grouped.set(code, current);
+  }
+
+  const codes = [...grouped.entries()]
+    .map(([code, summary]) => ({
+      code,
+      count: summary.count,
+      latestAt: summary.latestAt?.toISOString() ?? null,
+    }))
+    .sort((left, right) => right.count - left.count || left.code.localeCompare(right.code));
+  return {
+    totalBlockedPosts: codes.reduce((total, entry) => total + entry.count, 0),
+    complete: database.consistent && !database.truncated,
+    codes,
+  };
+}
+
+export async function loadSchedulePolicyDiagnostics(
+  prisma: PrismaClient,
+  publisherBotId: string,
+  generatedAt: Date,
+  ownedPublishDatabase: OwnedPublishDatabaseSnapshot,
+  sourceCap = SCHEDULE_POLICY_SOURCE_CAP,
+): Promise<VkSchedulePolicySummary> {
+  const requestedSourceCap =
+    Number.isSafeInteger(sourceCap) && sourceCap > 0 ? sourceCap : SCHEDULE_POLICY_SOURCE_CAP;
+  const boundedSourceCap = Math.min(requestedSourceCap, SCHEDULE_POLICY_SOURCE_CAP);
+  const sourceWhere = {
+    ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+    ownerBotId: publisherBotId,
+    status: 'ACTIVE',
+    importEnabled: true,
+    autoPublishEnabled: true,
+    autoPublishPausedAt: null,
+    publishMode: { not: 'REVIEW' },
+  } as const;
+  const totalSourcesBefore = await prisma.vkParsingSource.count({ where: sourceWhere });
+  const sources: VkSchedulePolicySource[] = await prisma.vkParsingSource.findMany({
+    where: sourceWhere,
+    select: {
+      id: true,
+      chatId: true,
+      publishIntervalMinutes: true,
+      minPublishIntervalMinutes: true,
+      dailyLimit: true,
+      publishMode: true,
+    },
+    orderBy: { id: 'asc' },
+    take: boundedSourceCap,
+  });
+  const totalSourcesAfter = await prisma.vkParsingSource.count({ where: sourceWhere });
+  const chatIds = [...new Set(sources.map((source) => source.chatId))];
+  const settings: VkSchedulePolicySettings[] =
+    chatIds.length === 0
+      ? []
+      : await prisma.vkParsingSettings.findMany({
+          where: {
+            chatId: { in: chatIds },
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: publisherBotId,
+          },
+          select: {
+            chatId: true,
+            schedulerTimezone: true,
+            autoPublishEnabled: true,
+            autoPublishEnabledAt: true,
+            autoPublishKillSwitchEnabled: true,
+          },
+        });
+  const settingsByChat = new Map(settings.map((row) => [row.chatId, row]));
+  const dailyRangeGroups = new Map<
+    string,
+    { start: Date; end: Date; sourceIds: string[]; chatIds: Set<string> }
+  >();
+  for (const source of sources) {
+    const range = getVkAutoPublishLocalDayRange(
+      generatedAt,
+      settingsByChat.get(source.chatId)?.schedulerTimezone,
+    );
+    const key = `${range.start.toISOString()}|${range.end.toISOString()}`;
+    const current = dailyRangeGroups.get(key) ?? {
+      start: range.start,
+      end: range.end,
+      sourceIds: [],
+      chatIds: new Set<string>(),
+    };
+    current.sourceIds.push(source.id);
+    current.chatIds.add(source.chatId);
+    dailyRangeGroups.set(key, current);
+  }
+
+  const dailyPublishedCounts = new Map<string, number>();
+  for (const range of dailyRangeGroups.values()) {
+    const counts = await prisma.vkParsingPost.groupBy({
+      by: ['sourceId'],
+      where: {
+        chatId: { in: [...range.chatIds] },
+        sourceId: { in: range.sourceIds },
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: publisherBotId,
+        autoPublishedAt: { gte: range.start, lt: range.end },
+      },
+      _count: { _all: true },
+    });
+    for (const row of counts) {
+      dailyPublishedCounts.set(row.sourceId, row._count._all);
+    }
+  }
+
+  const totalSourceCount = Math.max(totalSourcesBefore, totalSourcesAfter, sources.length);
+  const sourcesWithRuntimeState = sources.map((source): VkSchedulePolicySource => {
+    const sourceSettings = settingsByChat.get(source.chatId);
+    const runtimeState: NonNullable<VkSchedulePolicySource['runtimeState']> = !sourceSettings
+      ? 'settings_missing'
+      : !sourceSettings.autoPublishEnabled
+        ? 'global_auto_disabled'
+        : !sourceSettings.autoPublishEnabledAt
+          ? 'global_auto_incomplete'
+          : sourceSettings.autoPublishKillSwitchEnabled
+            ? 'kill_switch_paused'
+            : 'runnable';
+    return { ...source, runtimeState };
+  });
+  return summarizeSchedulePolicies({
+    generatedAt,
+    sources: sourcesWithRuntimeState,
+    queuedPosts: ownedPublishDatabase.rows,
+    dailyPublishedCounts,
+    sourceCap: boundedSourceCap,
+    totalSourceCount,
+    sourceSnapshotConsistent: totalSourcesBefore === totalSourcesAfter,
+    queuedCountsComplete: ownedPublishDatabase.consistent && !ownedPublishDatabase.truncated,
+  });
+}
+
+export function summarizeSchedulePolicies(params: {
+  generatedAt: Date;
+  sources: readonly VkSchedulePolicySource[];
+  queuedPosts: readonly OwnedPublishRow[];
+  dailyPublishedCounts: ReadonlyMap<string, number>;
+  sourceCap: number;
+  totalSourceCount: number;
+  sourceSnapshotConsistent: boolean;
+  queuedCountsComplete: boolean;
+}): VkSchedulePolicySummary {
+  const queuedBySource = new Map<string, { count: number; earliestNext: Date | null }>();
+  for (const post of params.queuedPosts) {
+    if (post.publishReason !== 'autopublish') {
+      continue;
+    }
+    const current = queuedBySource.get(post.sourceId) ?? { count: 0, earliestNext: null };
+    current.count += 1;
+    if (
+      post.publishScheduledAt &&
+      post.publishScheduledAt.getTime() > params.generatedAt.getTime() &&
+      (!current.earliestNext || post.publishScheduledAt < current.earliestNext)
+    ) {
+      current.earliestNext = post.publishScheduledAt;
+    }
+    queuedBySource.set(post.sourceId, current);
+  }
+
+  type MutableGroup = VkSchedulePolicySummary['groups'][number] & {
+    earliestNextMs: number | null;
+  };
+  const grouped = new Map<string, MutableGroup>();
+  const runtimeStates: VkSchedulePolicySummary['runtimeStates'] = {
+    runnableSourceCount: 0,
+    globalAutoDisabledSourceCount: 0,
+    globalAutoIncompleteSourceCount: 0,
+    killSwitchPausedSourceCount: 0,
+    settingsMissingSourceCount: 0,
+  };
+  for (const source of params.sources) {
+    const publishIntervalMinutes = normalizeDiagnosticInteger(source.publishIntervalMinutes, 60, 1);
+    const minPublishIntervalMinutes = normalizeDiagnosticInteger(
+      source.minPublishIntervalMinutes,
+      30,
+      0,
+    );
+    const dailyLimit = normalizeDiagnosticInteger(source.dailyLimit, 3, 1);
+    const normalizedMode = source.publishMode.trim().toUpperCase();
+    const publishMode = ALLOWED_PUBLISH_MODES.has(normalizedMode) ? normalizedMode : 'OTHER';
+    const key = [publishIntervalMinutes, minPublishIntervalMinutes, dailyLimit, publishMode].join(
+      '|',
+    );
+    const current = grouped.get(key) ?? {
+      publishIntervalMinutes,
+      minPublishIntervalMinutes,
+      dailyLimit,
+      publishMode,
+      sourceCount: 0,
+      queuedCount: 0,
+      dailyCapReachedSourceCount: 0,
+      earliestNextScheduledAt: null,
+      secondsToEarliestNext: null,
+      earliestNextMs: null,
+    };
+    const queued = queuedBySource.get(source.id);
+    const runtimeState = source.runtimeState ?? 'runnable';
+    if (runtimeState === 'global_auto_disabled') {
+      runtimeStates.globalAutoDisabledSourceCount += 1;
+    } else if (runtimeState === 'global_auto_incomplete') {
+      runtimeStates.globalAutoIncompleteSourceCount += 1;
+    } else if (runtimeState === 'kill_switch_paused') {
+      runtimeStates.killSwitchPausedSourceCount += 1;
+    } else if (runtimeState === 'settings_missing') {
+      runtimeStates.settingsMissingSourceCount += 1;
+    } else {
+      runtimeStates.runnableSourceCount += 1;
+    }
+    current.sourceCount += 1;
+    current.queuedCount += queued?.count ?? 0;
+    if (
+      runtimeState === 'runnable' &&
+      (queued?.count ?? 0) > 0 &&
+      (params.dailyPublishedCounts.get(source.id) ?? 0) >= dailyLimit
+    ) {
+      current.dailyCapReachedSourceCount += 1;
+    }
+    const earliestNextMs = queued?.earliestNext?.getTime() ?? null;
+    if (
+      earliestNextMs !== null &&
+      (current.earliestNextMs === null || earliestNextMs < current.earliestNextMs)
+    ) {
+      current.earliestNextMs = earliestNextMs;
+    }
+    grouped.set(key, current);
+  }
+
+  const allGroups = [...grouped.values()]
+    .sort(
+      (left, right) =>
+        left.publishIntervalMinutes - right.publishIntervalMinutes ||
+        left.minPublishIntervalMinutes - right.minPublishIntervalMinutes ||
+        left.dailyLimit - right.dailyLimit ||
+        left.publishMode.localeCompare(right.publishMode),
+    )
+    .map(({ earliestNextMs, ...group }) => ({
+      ...group,
+      earliestNextScheduledAt:
+        earliestNextMs === null ? null : new Date(earliestNextMs).toISOString(),
+      secondsToEarliestNext:
+        earliestNextMs === null
+          ? null
+          : Math.max(0, Math.floor((earliestNextMs - params.generatedAt.getTime()) / 1_000)),
+    }));
+  return {
+    sourceCap: params.sourceCap,
+    totalSourceCount: params.totalSourceCount,
+    scannedSourceCount: params.sources.length,
+    truncated: params.sources.length < params.totalSourceCount,
+    sourceSnapshotConsistent: params.sourceSnapshotConsistent,
+    queuedCountsComplete: params.queuedCountsComplete,
+    runtimeStates,
+    groupCap: SCHEDULE_POLICY_GROUP_CAP,
+    groupsTruncated: allGroups.length > SCHEDULE_POLICY_GROUP_CAP,
+    groups: allGroups.slice(0, SCHEDULE_POLICY_GROUP_CAP),
+  };
+}
+
+function normalizeDiagnosticInteger(value: number, fallback: number, minimum: number): number {
+  return Number.isSafeInteger(value) && value >= minimum ? value : fallback;
 }
 
 type QueueDiagnosticsResult = {
@@ -1334,6 +1804,17 @@ function timestampToIso(value: number | null | undefined): string | null {
     : null;
 }
 
+function dateValueToIso(value: unknown): string | null {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function readNumber(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -1353,6 +1834,7 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
   const publishBacklog = diagnostics.publishBacklog as Record<string, unknown>;
   const syncPerformance = diagnostics.syncPerformance as Record<string, unknown>;
   const reconciliation = diagnostics.publishQueueReconciliation;
+  const nextScheduledAt = dateValueToIso(publishBacklog.nextScheduledAt);
   const referencedPublishStateCounts = (diagnostics.queues.publish?.referencedJobs ?? []).reduce<
     Record<string, number>
   >((counts, job) => {
@@ -1393,6 +1875,28 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
     )} pending schedule reconciliation, ${readNumber(
       publishBacklog.staleLockedPosts,
     )} stale locked, oldest due ${readNumber(publishBacklog.oldestDueQueuedAgeSec)}s`,
+    `Next canonical publish: ${nextScheduledAt ?? 'none'}, countdown ${
+      nextScheduledAt ? `${readNumber(publishBacklog.secondsToNext)}s` : 'n/a'
+    }`,
+    `Recent successful VK autopublishes: ${diagnostics.recentPublishSuccess.count}, latest ${
+      diagnostics.recentPublishSuccess.latestAt ?? 'none'
+    }, complete=${diagnostics.recentPublishSuccess.complete}, sources=${
+      diagnostics.recentPublishSuccess.scannedSourceCount
+    }/${diagnostics.recentPublishSuccess.sourceCap}, truncated=${
+      diagnostics.recentPublishSuccess.sourcesTruncated
+    }`,
+    `Active dispatch blockers: ${diagnostics.dispatchBlockers.totalBlockedPosts}, complete=${
+      diagnostics.dispatchBlockers.complete
+    }, codes=${JSON.stringify(diagnostics.dispatchBlockers.codes)}`,
+    `Schedule policies: ${diagnostics.schedulePolicies.scannedSourceCount}/${
+      diagnostics.schedulePolicies.totalSourceCount
+    } sources scanned (cap ${diagnostics.schedulePolicies.sourceCap}), truncated=${
+      diagnostics.schedulePolicies.truncated
+    }, sourceSnapshotConsistent=${diagnostics.schedulePolicies.sourceSnapshotConsistent}, queuedCountsComplete=${
+      diagnostics.schedulePolicies.queuedCountsComplete
+    }, runtimeStates=${JSON.stringify(
+      diagnostics.schedulePolicies.runtimeStates,
+    )}, groups=${JSON.stringify(diagnostics.schedulePolicies.groups)}`,
     '',
     `Source status: ${JSON.stringify(diagnostics.sourceStatus)}`,
     `Media status: ${JSON.stringify(diagnostics.mediaStatus)}`,

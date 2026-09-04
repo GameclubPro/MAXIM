@@ -422,6 +422,20 @@
     background: var(--vk-soft);
   }
 
+  .vk-tempo-controls {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(108px, 132px);
+    align-items: end;
+    gap: 6px;
+  }
+
+  .vk-tempo-controls__frequency {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+  }
+
   .vk-segmented-buttons button,
   .vk-quick-preset-row button,
   .vk-source-preset,
@@ -2226,6 +2240,10 @@
   }
 
   @media (max-width: 520px) {
+    .vk-tempo-controls {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .vk-source-card__summary-row {
       grid-template-columns: minmax(0, 1fr);
       gap: 7px;

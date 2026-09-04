@@ -9,8 +9,12 @@ import type {
 import { cn } from '../../lib/cn';
 import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
+import { CommittedNumberField } from './committed-number-field';
 import {
   buildVkParsingAutopostModeUpdate,
+  buildVkParsingSourceIntervalUpdate,
+  resolveCommonVkParsingSourceValue,
+  resolveVkParsingCommonNumericInput,
   resolveVkParsingAutopostMode,
   type VkParsingAutopostMode,
 } from './model';
@@ -24,7 +28,7 @@ type SchedulerPanelProps = {
   isSaving: boolean;
   isSavingSource: boolean;
   onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => Promise<boolean>;
-  onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => void;
+  onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => Promise<boolean>;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
 };
 
@@ -112,14 +116,6 @@ function SwitchRow({
   );
 }
 
-function resolveCommonValue<T>(values: T[]): T | null {
-  if (values.length === 0) {
-    return null;
-  }
-  const [first] = values;
-  return values.every((value) => value === first) ? first : null;
-}
-
 function resolveFrequencyPreset(minutes: number | null): FrequencyOption {
   if (minutes === null) {
     return 'CUSTOM';
@@ -153,10 +149,15 @@ export function SchedulerPanel({
   onApplyPreset,
 }: SchedulerPanelProps) {
   const sourceIds = sources.map((source) => source.id);
-  const sourceMode = resolveCommonValue(sources.map((source) => source.publishMode));
-  const commonInterval = resolveCommonValue(sources.map((source) => source.publishIntervalMinutes));
+  const sourceMode = resolveCommonVkParsingSourceValue(sources.map((source) => source.publishMode));
+  const intervalInput = resolveVkParsingCommonNumericInput(
+    sources.map((source) => source.publishIntervalMinutes),
+  );
+  const commonInterval = intervalInput.value === '' ? null : intervalInput.value;
+  const dailyLimitInput = resolveVkParsingCommonNumericInput(
+    sources.map((source) => source.dailyLimit),
+  );
   const frequencyPreset = commonInterval === null ? null : resolveFrequencyPreset(commonInterval);
-  const customInterval = commonInterval ?? CUSTOM_FREQUENCY_MINUTES;
   const sourceControlsDisabled = sourceIds.length === 0 || isSavingSource;
   const presetDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
   const autopostMode: VkParsingAutopostMode = resolveVkParsingAutopostMode(settings, sources);
@@ -236,7 +237,9 @@ export function SchedulerPanel({
                     type="button"
                     className={cn(sourceMode === option.value && 'is-active')}
                     disabled={sourceControlsDisabled}
-                    onClick={() => onUpdateSources(sourceIds, { publishMode: option.value })}
+                    onClick={() => {
+                      void onUpdateSources(sourceIds, { publishMode: option.value });
+                    }}
                   >
                     {option.label}
                   </button>
@@ -247,41 +250,57 @@ export function SchedulerPanel({
 
           <section className="vk-advanced-group">
             <h3>Темп</h3>
-            <div className="vk-quick-setup__row">
-              <div className="vk-segmented-buttons" role="group" aria-label="Темп публикации">
-                {FREQUENCY_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={cn(frequencyPreset === option.value && 'is-active')}
-                    disabled={sourceControlsDisabled}
-                    onClick={() =>
-                      onUpdateSources(sourceIds, {
-                        publishIntervalMinutes: option.minutes ?? CUSTOM_FREQUENCY_MINUTES,
-                      })
-                    }
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              {frequencyPreset === 'CUSTOM' ? (
-                <label className="vk-quick-custom-field">
-                  <span>Интервал, мин</span>
-                  <input
-                    type="number"
+            <div className="vk-tempo-controls">
+              <div className="vk-tempo-controls__frequency">
+                <div className="vk-segmented-buttons" role="group" aria-label="Темп публикации">
+                  {FREQUENCY_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={cn(frequencyPreset === option.value && 'is-active')}
+                      disabled={sourceControlsDisabled}
+                      onClick={() => {
+                        void onUpdateSources(
+                          sourceIds,
+                          buildVkParsingSourceIntervalUpdate(
+                            option.minutes ?? CUSTOM_FREQUENCY_MINUTES,
+                          ),
+                        );
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                {frequencyPreset === 'CUSTOM' || intervalInput.mixed ? (
+                  <CommittedNumberField
+                    className="vk-quick-custom-field"
+                    label="Интервал, мин"
+                    ariaLabel="Интервал публикаций в минутах"
+                    value={intervalInput.value}
+                    mixed={intervalInput.mixed}
                     min={5}
                     max={10080}
-                    value={customInterval}
-                    disabled={sourceControlsDisabled}
-                    onChange={(event) =>
-                      onUpdateSources(sourceIds, {
-                        publishIntervalMinutes: Number(event.target.value),
-                      })
+                    available={sourceIds.length > 0}
+                    disabled={isSavingSource}
+                    onCommit={(publishIntervalMinutes) =>
+                      onUpdateSources(sourceIds, { publishIntervalMinutes })
                     }
                   />
-                </label>
-              ) : null}
+                ) : null}
+              </div>
+              <CommittedNumberField
+                className="vk-quick-custom-field vk-tempo-controls__daily-limit"
+                label="Лимит в день"
+                ariaLabel="Лимит публикаций в день"
+                value={dailyLimitInput.value}
+                mixed={dailyLimitInput.mixed}
+                min={1}
+                max={500}
+                available={sourceIds.length > 0}
+                disabled={isSavingSource}
+                onCommit={(dailyLimit) => onUpdateSources(sourceIds, { dailyLimit })}
+              />
             </div>
           </section>
 

@@ -616,17 +616,30 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     }
   }
 
-  function updateSources(sourceIds: string[], payload: UpdateVkParsingSourceRequest) {
+  async function updateSources(
+    sourceIds: string[],
+    payload: UpdateVkParsingSourceRequest,
+  ): Promise<boolean> {
     if (
       updateSourceMutation.isPending ||
       updateSourcesMutation.isPending ||
       sourceUpdateInFlightRef.current ||
       sourceIds.length === 0
     ) {
-      return;
+      return false;
     }
 
-    updateSourcesMutation.mutate({ sourceIds, payload });
+    sourceUpdateInFlightRef.current = true;
+    setIsSourceUpdateInFlight(true);
+    try {
+      await updateSourcesMutation.mutateAsync({ sourceIds, payload });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      sourceUpdateInFlightRef.current = false;
+      setIsSourceUpdateInFlight(false);
+    }
   }
 
   function toggleHint(key: VkParsingHintKey) {

@@ -78,6 +78,7 @@ import { buildVkAutoPublishScheduleFingerprint } from './vk-autopublish-policy';
 import {
   getVkAutoPublishLocalDayRange,
   planVkAutoPublishSourceSlots,
+  projectVkAutoPublishSourceQuotaSlots,
   resolveNextAllowedVkAutoPublishAt,
   resolveVkAutoPublishSourceSpacingMs,
   VK_AUTOPUBLISH_CHAT_SLOT_CLEARANCE_MS,
@@ -248,6 +249,13 @@ class VkAutoPublishOccupiedSlotScanBudgetExceededError extends Error {
   constructor() {
     super('VK autopublish occupied-slot scan exceeded its bounded page budget.');
     this.name = 'VkAutoPublishOccupiedSlotScanBudgetExceededError';
+  }
+}
+
+class VkAutoPublishSourceQuotaScanBudgetExceededError extends Error {
+  constructor() {
+    super('VK autopublish source quota scan exceeded its bounded page budget.');
+    this.name = 'VkAutoPublishSourceQuotaScanBudgetExceededError';
   }
 }
 
@@ -507,10 +515,20 @@ export class VkPublishService {
                   chatId,
                   sourceId: source.id,
                   ...ownerScope,
+                  dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+                  requiredBotId: ownerScope.ownerBotId,
                   status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+                  publishReason: 'autopublish',
                   publishQueuedAt: { not: null },
                   publishScheduledAt: { not: null },
-                  publishScheduleFingerprint: fingerprint,
+                  AND: [
+                    {
+                      OR: [
+                        { publishScheduleFingerprint: fingerprint },
+                        { publishAttemptCount: { gt: 0 } },
+                      ],
+                    },
+                  ],
                   id: { notIn: sourcePosts.map((post) => post.id) },
                 },
                 _max: { publishScheduledAt: true },
@@ -3514,10 +3532,20 @@ export class VkPublishService {
               sourceId: post.sourceId,
               ownerProfile: post.ownerProfile,
               ownerBotId: post.ownerBotId,
+              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+              requiredBotId: post.ownerBotId,
               id: { not: post.id },
+              publishReason: 'autopublish',
               publishQueuedAt: { not: null },
-              publishScheduleFingerprint: scheduleFingerprint,
               status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+              AND: [
+                {
+                  OR: [
+                    { publishScheduleFingerprint: scheduleFingerprint },
+                    { publishAttemptCount: { gt: 0 } },
+                  ],
+                },
+              ],
             },
             _max: { publishScheduledAt: true },
           });
@@ -3550,19 +3578,80 @@ export class VkPublishService {
     settings: VkParsingSettingsLike;
     source: VkParsingPostWithSource['source'];
   }): Promise<Date[]> {
+    const scheduleFingerprint = buildVkAutoPublishScheduleFingerprint(
+      options.settings,
+      options.source,
+    );
+    const { start: currentLocalDayStart, end: currentLocalDayEnd } = getVkAutoPublishLocalDayRange(
+      options.now,
+      options.settings.schedulerTimezone,
+    );
+    const [currentLocalDayPublishedCount, canonicalSourceQuotaSlots] = await Promise.all([
+      this.prisma.vkParsingPost.count({
+        where: {
+          chatId: options.chatId,
+          sourceId: options.source.id,
+          ...options.ownerScope,
+          autoPublishedAt: { gte: currentLocalDayStart, lt: currentLocalDayEnd },
+        },
+      }),
+      this.loadCanonicalSourceQuotaSlots({
+        chatId: options.chatId,
+        sourceId: options.source.id,
+        ownerScope: options.ownerScope,
+        excludedPostIds: options.excludedPostIds,
+        scheduleFingerprint,
+      }),
+    ]);
+    const minPublishIntervalMinutes =
+      typeof options.source.minPublishIntervalMinutes === 'number' &&
+      Number.isFinite(options.source.minPublishIntervalMinutes) &&
+      options.source.minPublishIntervalMinutes >= 0
+        ? options.source.minPublishIntervalMinutes
+        : 30;
+    const existingSourceQuotaSlots = this.projectAutoPublishSourceQuotaSlots({
+      slots: canonicalSourceQuotaSlots,
+      now: options.now,
+      lastSourceAt: options.source.lastAutoPublishedAt,
+      currentLocalDayPublishedCount,
+      currentLocalDayPublishedAt: options.now,
+      settings: options.settings,
+      source: options.source,
+      sourceSpacingMsOverride:
+        options.source.publishMode === VK_SOURCE_PUBLISH_MODE_IMMEDIATE
+          ? 0
+          : minPublishIntervalMinutes * 60_000,
+    });
+    const projectedSourceTail = existingSourceQuotaSlots.at(-1) ?? null;
+    const effectiveLastSourceAt =
+      projectedSourceTail &&
+      (!options.lastSourceAt || projectedSourceTail.getTime() > options.lastSourceAt.getTime())
+        ? projectedSourceTail
+        : options.lastSourceAt;
     if (options.source.publishMode === VK_SOURCE_PUBLISH_MODE_IMMEDIATE) {
-      const scheduledAt = this.resolveAllowedScheduleAt(
-        options.now,
-        options.settings,
-        options.source,
-      );
-      return Array.from({ length: options.count }, () => new Date(scheduledAt));
+      return this.planAutoPublishTimingSlots({
+        count: options.count,
+        now: options.now,
+        existingSourceQuotaSlots,
+        currentLocalDayPublishedCount,
+        currentLocalDayPublishedAt: options.now,
+        settings: {
+          ...options.settings,
+          distributeEvenlyEnabled: false,
+          roundRobinEnabled: false,
+        },
+        source: options.source,
+        sourceSpacingMsOverride: 0,
+      });
     }
     if (!options.settings.roundRobinEnabled) {
       return this.planAutoPublishTimingSlots({
         count: options.count,
         now: options.now,
-        lastSourceAt: options.lastSourceAt,
+        lastSourceAt: effectiveLastSourceAt,
+        existingSourceQuotaSlots,
+        currentLocalDayPublishedCount,
+        currentLocalDayPublishedAt: options.now,
         settings: options.settings,
         source: options.source,
       });
@@ -3573,8 +3662,8 @@ export class VkPublishService {
     const plannedSlots: Date[] = [];
     const sourceSpacingMs = resolveVkAutoPublishSourceSpacingMs(options.settings, options.source);
     const occupiedFrom = new Date(options.now.getTime() - VK_AUTOPUBLISH_CHAT_SLOT_CLEARANCE_MS);
-    let earliestMs = options.lastSourceAt
-      ? Math.max(options.now.getTime(), options.lastSourceAt.getTime() + sourceSpacingMs)
+    let earliestMs = effectiveLastSourceAt
+      ? Math.max(options.now.getTime(), effectiveLastSourceAt.getTime() + sourceSpacingMs)
       : options.now.getTime();
     let occupiedBuffer: Date[] = [];
     let cursor: { publishScheduledAt: Date; id: string } | null = null;
@@ -3586,37 +3675,38 @@ export class VkPublishService {
       if (loadedPageCount >= VK_AUTOPUBLISH_OCCUPIED_SLOT_MAX_PAGES) {
         throw new VkAutoPublishOccupiedSlotScanBudgetExceededError();
       }
-      const page = await this.prisma.vkParsingPost.findMany({
-        where: {
-          chatId: options.chatId,
-          ...options.ownerScope,
-          status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
-          publishQueuedAt: { not: null },
-          publishScheduledAt: { gte: occupiedFrom },
-          ...(excludedPostIds.length > 0 ? { id: { notIn: excludedPostIds } } : {}),
-          ...(cursor
-            ? {
-                OR: [
-                  { publishScheduledAt: { gt: cursor.publishScheduledAt } },
-                  {
-                    publishScheduledAt: cursor.publishScheduledAt,
-                    id: { gt: cursor.id },
-                  },
-                ],
-              }
-            : {}),
-        },
-        select: { id: true, publishScheduledAt: true },
-        orderBy: [{ publishScheduledAt: 'asc' }, { id: 'asc' }],
-        take: VK_AUTOPUBLISH_OCCUPIED_SLOT_PAGE_SIZE,
-      });
+      const page: Array<{ id: string; publishScheduledAt: Date | null }> =
+        await this.prisma.vkParsingPost.findMany({
+          where: {
+            chatId: options.chatId,
+            ...options.ownerScope,
+            status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+            publishQueuedAt: { not: null },
+            publishScheduledAt: { gte: occupiedFrom },
+            ...(excludedPostIds.length > 0 ? { id: { notIn: excludedPostIds } } : {}),
+            ...(cursor
+              ? {
+                  OR: [
+                    { publishScheduledAt: { gt: cursor.publishScheduledAt } },
+                    {
+                      publishScheduledAt: cursor.publishScheduledAt,
+                      id: { gt: cursor.id },
+                    },
+                  ],
+                }
+              : {}),
+          },
+          select: { id: true, publishScheduledAt: true },
+          orderBy: [{ publishScheduledAt: 'asc' }, { id: 'asc' }],
+          take: VK_AUTOPUBLISH_OCCUPIED_SLOT_PAGE_SIZE,
+        });
       if (page.length === 0) {
         exhausted = true;
         return;
       }
       loadedPageCount += 1;
 
-      const last = page.at(-1)!;
+      const last: { id: string; publishScheduledAt: Date | null } = page.at(-1)!;
       if (!last.publishScheduledAt) {
         throw new Error('Queued VK autopublish slot is missing its schedule.');
       }
@@ -3645,6 +3735,9 @@ export class VkPublishService {
           count: 1,
           now: new Date(candidateFloorMs),
           existingChatSlots: [...occupiedBuffer, ...reservedChatSlots, ...plannedSlots],
+          existingSourceQuotaSlots: [...existingSourceQuotaSlots, ...plannedSlots],
+          currentLocalDayPublishedCount,
+          currentLocalDayPublishedAt: options.now,
           settings: options.settings,
           source: options.source,
         })[0]!;
@@ -3663,11 +3756,95 @@ export class VkPublishService {
     return plannedSlots;
   }
 
+  private async loadCanonicalSourceQuotaSlots(options: {
+    chatId: string;
+    sourceId: string;
+    ownerScope: VkParsingOwnerScope;
+    excludedPostIds: readonly string[];
+    scheduleFingerprint: string;
+  }): Promise<Date[]> {
+    const excludedPostIds = [...new Set(options.excludedPostIds.filter(Boolean))];
+    const slots: Date[] = [];
+    let cursor: { publishScheduledAt: Date; id: string } | null = null;
+
+    for (let pageIndex = 0; pageIndex < VK_AUTOPUBLISH_OCCUPIED_SLOT_MAX_PAGES; pageIndex += 1) {
+      const page: Array<{ id: string; publishScheduledAt: Date | null }> =
+        await this.prisma.vkParsingPost.findMany({
+          where: {
+            chatId: options.chatId,
+            sourceId: options.sourceId,
+            ...options.ownerScope,
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            requiredBotId: options.ownerScope.ownerBotId,
+            status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+            publishReason: 'autopublish',
+            publishQueuedAt: { not: null },
+            publishScheduledAt: { not: null },
+            ...(excludedPostIds.length > 0 ? { id: { notIn: excludedPostIds } } : {}),
+            AND: [
+              {
+                OR: [
+                  { publishScheduleFingerprint: options.scheduleFingerprint },
+                  { publishAttemptCount: { gt: 0 } },
+                ],
+              },
+              ...(cursor
+                ? [
+                    {
+                      OR: [
+                        { publishScheduledAt: { gt: cursor.publishScheduledAt } },
+                        {
+                          publishScheduledAt: cursor.publishScheduledAt,
+                          id: { gt: cursor.id },
+                        },
+                      ],
+                    },
+                  ]
+                : []),
+            ],
+          },
+          select: { id: true, publishScheduledAt: true },
+          orderBy: [{ publishScheduledAt: 'asc' }, { id: 'asc' }],
+          take: VK_AUTOPUBLISH_OCCUPIED_SLOT_PAGE_SIZE,
+        });
+      if (page.length === 0) {
+        return slots;
+      }
+
+      for (const row of page) {
+        if (!row.publishScheduledAt) {
+          throw new Error('Queued VK autopublish quota slot is missing its schedule.');
+        }
+        slots.push(row.publishScheduledAt);
+      }
+      if (page.length < VK_AUTOPUBLISH_OCCUPIED_SLOT_PAGE_SIZE) {
+        return slots;
+      }
+      const last: { id: string; publishScheduledAt: Date | null } = page.at(-1)!;
+      cursor = { publishScheduledAt: last.publishScheduledAt!, id: last.id };
+    }
+
+    throw new VkAutoPublishSourceQuotaScanBudgetExceededError();
+  }
+
   private planAutoPublishTimingSlots(
     options: Parameters<typeof planVkAutoPublishSourceSlots>[0],
   ): Date[] {
     try {
       return planVkAutoPublishSourceSlots(options);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw new VkAutoPublishScheduleUnavailableError();
+      }
+      throw error;
+    }
+  }
+
+  private projectAutoPublishSourceQuotaSlots(
+    options: Parameters<typeof projectVkAutoPublishSourceQuotaSlots>[0],
+  ): Date[] {
+    try {
+      return projectVkAutoPublishSourceQuotaSlots(options);
     } catch (error) {
       if (error instanceof RangeError) {
         throw new VkAutoPublishScheduleUnavailableError();

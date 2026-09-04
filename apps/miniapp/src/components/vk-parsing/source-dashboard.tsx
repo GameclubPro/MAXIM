@@ -17,6 +17,7 @@ import type {
 import { cn } from '../../lib/cn';
 import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
+import { CommittedNumberField } from './committed-number-field';
 import { formatVkSourceProblem } from './format';
 import { buildVkParsingSourceMetrics } from './model';
 
@@ -482,37 +483,29 @@ export function SourceDashboard({
                           </div>
                         </div>
                         {frequencyPreset === 'CUSTOM' ? (
-                          <label>
-                            <span>Интервал, мин</span>
-                            <input
-                              type="number"
-                              min={5}
-                              max={10080}
-                              value={source.publishIntervalMinutes}
-                              disabled={isSavingSource}
-                              onChange={(event) =>
-                                onUpdateSource(source.id, {
-                                  publishIntervalMinutes: Number(event.target.value),
-                                })
-                              }
-                            />
-                          </label>
-                        ) : null}
-                        <label>
-                          <span>Минимальная пауза</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={1440}
-                            value={source.minPublishIntervalMinutes}
+                          <CommittedNumberField
+                            label="Интервал, мин"
+                            ariaLabel={`Интервал публикаций для ${source.title}, минут`}
+                            value={source.publishIntervalMinutes}
+                            min={5}
+                            max={10080}
                             disabled={isSavingSource}
-                            onChange={(event) =>
-                              onUpdateSource(source.id, {
-                                minPublishIntervalMinutes: Number(event.target.value),
-                              })
+                            onCommit={(publishIntervalMinutes) =>
+                              onUpdateSource(source.id, { publishIntervalMinutes })
                             }
                           />
-                        </label>
+                        ) : null}
+                        <CommittedNumberField
+                          label="Минимальная пауза"
+                          ariaLabel={`Минимальная пауза для ${source.title}, минут`}
+                          value={source.minPublishIntervalMinutes}
+                          min={0}
+                          max={1440}
+                          disabled={isSavingSource}
+                          onCommit={(minPublishIntervalMinutes) =>
+                            onUpdateSource(source.id, { minPublishIntervalMinutes })
+                          }
+                        />
                       </div>
                     </section>
 
@@ -555,21 +548,15 @@ export function SourceDashboard({
                     <section className="vk-source-control-group">
                       <h4>Лимиты</h4>
                       <div className="vk-source-controls">
-                        <label>
-                          <span>Лимит в день</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={500}
-                            value={source.dailyLimit}
-                            disabled={isSavingSource}
-                            onChange={(event) =>
-                              onUpdateSource(source.id, {
-                                dailyLimit: Number(event.target.value),
-                              })
-                            }
-                          />
-                        </label>
+                        <CommittedNumberField
+                          label="Лимит в день"
+                          ariaLabel={`Лимит публикаций для ${source.title} в день`}
+                          value={source.dailyLimit}
+                          min={1}
+                          max={500}
+                          disabled={isSavingSource}
+                          onCommit={(dailyLimit) => onUpdateSource(source.id, { dailyLimit })}
+                        />
                         <label>
                           <span>Приоритет</span>
                           <select
