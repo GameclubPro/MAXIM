@@ -593,6 +593,7 @@ test('read-only BullMQ monitor batches counters and includes every Publisher que
     'publisher-auto-replies',
     'publisher-auto-reply-authoring',
     'publisher-post-import',
+    'publisher-publication-wakeup',
     'publisher-suggestion-publication',
     'publisher-suggestion-admin',
     'vk-parsing-publisher',

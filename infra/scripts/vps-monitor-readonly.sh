@@ -650,6 +650,7 @@ queues=(
   publisher-auto-replies
   publisher-auto-reply-authoring
   publisher-post-import
+  publisher-publication-wakeup
   publisher-suggestion-publication
   publisher-suggestion-admin
   vk-parsing-sync
