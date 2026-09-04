@@ -3547,7 +3547,8 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     if (!job.data || typeof job.updateData !== 'function') {
       throw new Error(`Night mode future job cannot be promoted in place (${params.jobId})`);
     }
-    const { stickyRouteProbe: _previousStickyRouteProbe, ...data } = job.data;
+    const data = { ...job.data };
+    delete data.stickyRouteProbe;
     await job.updateData({
       ...data,
       transitionRuntimeVersion: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,

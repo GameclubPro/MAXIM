@@ -6768,7 +6768,8 @@ describe('NightModeTransitionSchedulerService', () => {
       };
       const storedJobs = buildExactFutureJobs(chatId, settings);
       const closeJob = [...storedJobs.values()].find((job) => job.data.transition === 'close')!;
-      const { stickyRouteProbe: _stickyRouteProbe, ...markerlessCloseData } = closeJob.data;
+      const markerlessCloseData = { ...closeJob.data };
+      delete markerlessCloseData.stickyRouteProbe;
       closeJob.data = markerlessCloseData;
       const queue = {
         getJob: jest.fn(async (jobId: string) => storedJobs.get(jobId) ?? null),
