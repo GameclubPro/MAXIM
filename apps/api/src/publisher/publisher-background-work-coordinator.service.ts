@@ -85,7 +85,13 @@ export class PublisherBackgroundWorkCoordinatorService implements OnModuleDestro
       this.rejectWaiters();
       return;
     }
-    const next = this.waiters.shift();
+    // FLAG: Deadline work may overtake queued recovery lanes, but never interrupts active work and
+    // never changes FIFO ordering among the lower-priority recovery waiters.
+    const deadlineIndex = this.waiters.findIndex(
+      (waiter) => waiter.lane === 'publication_deadline',
+    );
+    const next =
+      deadlineIndex >= 0 ? this.waiters.splice(deadlineIndex, 1)[0] : this.waiters.shift();
     if (next) {
       this.activeLane = next.lane;
       next.resolve();

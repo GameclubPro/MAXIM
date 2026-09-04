@@ -29,6 +29,8 @@ describe('ManagedBroadcastService', () => {
       retryChannelManagedBroadcast: jest.fn().mockResolvedValue({ id: 'broadcast-1' }),
       processDueManagedBroadcasts: jest.fn().mockResolvedValue(undefined),
       processDueImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
+      processTargetedImmediatePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
+      processTargetedDeadlinePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
       processDueDeadlinePublicationBroadcasts: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -171,6 +173,28 @@ describe('ManagedBroadcastService', () => {
     await service.processDueDeadlinePublicationBroadcasts(7);
 
     expect(runtime.processDueDeadlinePublicationBroadcasts).toHaveBeenCalledWith(7);
+  });
+
+  it('delegates a targeted Publisher NOW wake directly to the runtime', async () => {
+    const { runtime, service } = createService();
+
+    await service.processTargetedImmediatePublicationBroadcasts('publication-1', 'occurrence-1');
+
+    expect(runtime.processTargetedImmediatePublicationBroadcasts).toHaveBeenCalledWith(
+      'publication-1',
+      'occurrence-1',
+    );
+  });
+
+  it('delegates a targeted Publisher deadline wake directly to the runtime', async () => {
+    const { runtime, service } = createService();
+
+    await service.processTargetedDeadlinePublicationBroadcasts('publication-1', 'occurrence-1');
+
+    expect(runtime.processTargetedDeadlinePublicationBroadcasts).toHaveBeenCalledWith(
+      'publication-1',
+      'occurrence-1',
+    );
   });
 
   it('forwards one shared verification budget across publication execution lanes', async () => {

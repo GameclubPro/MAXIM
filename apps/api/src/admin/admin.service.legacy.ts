@@ -8397,6 +8397,22 @@ export class AdminService implements OnModuleDestroy {
     return this.managedBroadcastRuntime.processDueImmediatePublicationBroadcasts(...args);
   }
 
+  processTargetedImmediatePublicationBroadcasts(
+    ...args: Parameters<
+      AdminManagedBroadcastRuntime['processTargetedImmediatePublicationBroadcasts']
+    >
+  ): ReturnType<AdminManagedBroadcastRuntime['processTargetedImmediatePublicationBroadcasts']> {
+    return this.managedBroadcastRuntime.processTargetedImmediatePublicationBroadcasts(...args);
+  }
+
+  processTargetedDeadlinePublicationBroadcasts(
+    ...args: Parameters<
+      AdminManagedBroadcastRuntime['processTargetedDeadlinePublicationBroadcasts']
+    >
+  ): ReturnType<AdminManagedBroadcastRuntime['processTargetedDeadlinePublicationBroadcasts']> {
+    return this.managedBroadcastRuntime.processTargetedDeadlinePublicationBroadcasts(...args);
+  }
+
   processDueDeadlinePublicationBroadcasts(
     ...args: Parameters<AdminManagedBroadcastRuntime['processDueDeadlinePublicationBroadcasts']>
   ): ReturnType<AdminManagedBroadcastRuntime['processDueDeadlinePublicationBroadcasts']> {

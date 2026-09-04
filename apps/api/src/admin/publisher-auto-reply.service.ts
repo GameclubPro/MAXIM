@@ -1173,7 +1173,7 @@ export class PublisherAutoReplyService {
     nextFuzzyMatch: boolean,
     current?: { phraseCount: number; fuzzyMatch: boolean },
   ): Promise<void> {
-    await tx.$queryRaw(Prisma.sql`
+    await tx.$executeRaw(Prisma.sql`
       SELECT pg_advisory_xact_lock(hashtext(${`publisher-auto-reply-config:${chatId}`}))
     `);
     const exclusion = excludedRuleId ? { ruleId: { not: excludedRuleId } } : {};

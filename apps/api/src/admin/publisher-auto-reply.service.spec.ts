@@ -100,7 +100,7 @@ function createFixture(
         ),
     },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
-    $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(1),
   };
   const prisma = {
     publisherAutoReplyRule: {
@@ -275,6 +275,7 @@ describe('PublisherAutoReplyService', () => {
 
   it('creates a v2 rule with aliases, matching modes, and one config revision bump', async () => {
     const fixture = createFixture({ moduleEnabled: true });
+    const joinLink = 'https://max.ru/join/test_invite-token_123';
     fixture.prisma.publisherAutoReplyRule.findFirst.mockResolvedValue(
       ruleRow({
         phrase: 'Каталог',
@@ -294,7 +295,7 @@ describe('PublisherAutoReplyService', () => {
           phrases: [' Каталог ', ' Стоимость '],
           matchInContext: true,
           fuzzyMatch: true,
-          content: { text: 'Ответ' },
+          content: { text: joinLink },
         },
         2,
       ),
@@ -304,7 +305,11 @@ describe('PublisherAutoReplyService', () => {
       fuzzyMatch: true,
     });
 
-    expect(fixture.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.publisherAutoReplyContentRevision.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ text: joinLink }),
+      select: { id: true },
+    });
     expect(fixture.tx.publisherAutoReplyTrigger.count).toHaveBeenCalledTimes(2);
     expect(fixture.tx.publisherAutoReplyRule.create).toHaveBeenCalledWith({
       data: expect.objectContaining({

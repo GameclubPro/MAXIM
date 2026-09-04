@@ -3,7 +3,10 @@ import {
   ManagedBroadcastStatus,
   Prisma,
   PublicationDispatchProfile,
+  PublicationLifecycle,
+  PublicationOccurrenceStatus,
   PublicationScheduleMode,
+  PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
@@ -11,6 +14,7 @@ import { buildManagedBroadcastAutoRetryableFailureWhere } from './admin-managed-
 import {
   buildPublicationDeliveryAutomatedVerificationWhere,
   buildPublicationDeliveryUnenrolledVerificationWhere,
+  PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
 } from './publication-delivery-verification-state';
 import {
   MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS,
@@ -28,6 +32,167 @@ type DueManagedBroadcastRow = { id: string };
 type PriorityHalfOpenPublicationVerificationRow = DueManagedBroadcastRow & {
   deliveryId: string;
 };
+
+export type TargetedPublisherImmediatePublicationScope = {
+  publicationId: string;
+  occurrenceId?: string;
+};
+
+export function selectTargetedPublisherImmediatePublicationBroadcastBatch(
+  prisma: Pick<PrismaService, 'managedBroadcast'>,
+  scope: TargetedPublisherImmediatePublicationScope,
+): Promise<{ dueRows: DueManagedBroadcastRow[]; staleLockBefore: Date }> {
+  return selectTargetedPublisherPublicationBroadcastBatch(prisma, scope, [
+    PublicationScheduleMode.NOW,
+  ]);
+}
+
+export async function selectTargetedPublisherPublicationBroadcastBatch(
+  prisma: Pick<PrismaService, 'managedBroadcast'>,
+  scope: TargetedPublisherImmediatePublicationScope,
+  scheduleModes: readonly PublicationScheduleMode[],
+): Promise<{ dueRows: DueManagedBroadcastRow[]; staleLockBefore: Date }> {
+  const publicationId = scope.publicationId.trim();
+  const occurrenceId = scope.occurrenceId?.trim();
+  if (!publicationId) {
+    throw new Error('Targeted Publisher publication wake requires a publication id');
+  }
+
+  const now = new Date();
+  const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
+  // FLAG: The wake queue may bypass an older global NOW backlog, but it may claim only the exact
+  // active PUBLIK execution. The runtime rechecks revision/lifecycle state after its lease CAS.
+  const dueRows = await prisma.managedBroadcast.findMany({
+    where: {
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      status: ManagedBroadcastStatus.ACTIVE,
+      nextSendAt: { lte: now },
+      OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+      publicationOccurrence: {
+        is: {
+          ...(occurrenceId ? { id: occurrenceId } : {}),
+          publicationId,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          status: {
+            in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
+          },
+          publication: {
+            is: {
+              id: publicationId,
+              lifecycle: PublicationLifecycle.ACTIVE,
+              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            },
+          },
+          schedule: {
+            is: {
+              status: PublicationScheduleStatus.ACTIVE,
+              mode: { in: [...scheduleModes] },
+            },
+          },
+        },
+      },
+      deliveries: {
+        some: {
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          OR: [
+            {
+              status: ManagedBroadcastDeliveryStatus.PENDING,
+              dispatchBlockerCode: null,
+              OR: [
+                { lastErrorCode: null },
+                { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
+              ],
+            },
+            {
+              status: ManagedBroadcastDeliveryStatus.SENDING,
+              OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+            },
+          ],
+        },
+        none: {
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          lockedAt: { gte: staleLockBefore },
+        },
+      },
+    },
+    orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+    select: { id: true },
+  });
+
+  return { dueRows, staleLockBefore };
+}
+
+export type PendingPublisherPublicationDeadline = {
+  id: string;
+  nextSendAt: Date;
+};
+
+export async function selectNextPendingPublisherPublicationDeadline(
+  prisma: Pick<PrismaService, 'managedBroadcast'>,
+  now = new Date(),
+): Promise<PendingPublisherPublicationDeadline | null> {
+  const staleDeliveryLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
+  // FLAG: Exact wakeups are only for ACTIVE executable delivery work. PARTIAL/FAILED anomalies,
+  // blocked, verification-only, and fresh in-flight rows stay on the recovery poll so a
+  // deterministic failure cannot create a rapid timer loop.
+  const row = await prisma.managedBroadcast.findFirst({
+    where: {
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      status: ManagedBroadcastStatus.ACTIVE,
+      nextSendAt: { not: null },
+      lockedAt: null,
+      publicationOccurrence: {
+        is: {
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          status: {
+            in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
+          },
+          publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+          schedule: {
+            is: {
+              status: PublicationScheduleStatus.ACTIVE,
+              mode: {
+                in: [
+                  PublicationScheduleMode.ONCE,
+                  PublicationScheduleMode.SLOTS,
+                  PublicationScheduleMode.RECURRENCE,
+                ],
+              },
+            },
+          },
+        },
+      },
+      deliveries: {
+        some: {
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          OR: [
+            {
+              status: ManagedBroadcastDeliveryStatus.PENDING,
+              dispatchBlockerCode: null,
+              OR: [
+                { lastErrorCode: null },
+                { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
+              ],
+            },
+            {
+              status: ManagedBroadcastDeliveryStatus.SENDING,
+              OR: [{ lockedAt: null }, { lockedAt: { lt: staleDeliveryLockBefore } }],
+            },
+          ],
+        },
+        none: {
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          lockedAt: { gte: staleDeliveryLockBefore },
+        },
+      },
+    },
+    orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    select: { id: true, nextSendAt: true },
+  });
+
+  return row?.nextSendAt ? { id: row.id, nextSendAt: row.nextSendAt } : null;
+}
 
 export async function selectPriorityHalfOpenPublicationVerificationBatch(
   prisma: Pick<PrismaService, '$queryRaw'>,

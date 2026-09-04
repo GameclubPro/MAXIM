@@ -194,8 +194,17 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
   broadcastId: string;
   occurrenceIndex: number;
   extraWhere?: Prisma.ManagedBroadcastDeliveryWhereInput;
+  forcePendingAmbiguous?: boolean;
 }): Promise<void> {
-  const { prisma, messageRuntime, broadcastId, occurrenceIndex, extraWhere } = options;
+  const {
+    prisma,
+    messageRuntime,
+    broadcastId,
+    occurrenceIndex,
+    extraWhere,
+    forcePendingAmbiguous = false,
+  } = options;
+  const mutationFence = forcePendingAmbiguous ? extraWhere : undefined;
   const broadcast = await prisma.managedBroadcast.findUnique({ where: { id: broadcastId } });
   if (!broadcast) return;
 
@@ -278,7 +287,11 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
     } else if (recovery.kind === 'completed') {
       completedDeliveries.push({ delivery, ledger: recovery.ledger });
     } else if (recovery.kind === 'pending') {
-      pendingDeliveries.push(delivery);
+      if (forcePendingAmbiguous) {
+        ambiguousDeliveryIds.push(delivery.id);
+      } else {
+        pendingDeliveries.push(delivery);
+      }
     } else {
       failedDeliveries.push({
         deliveryId: delivery.id,
@@ -297,6 +310,7 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
         id: delivery.id,
         status: ManagedBroadcastDeliveryStatus.SENDING,
         remoteMessageId: null,
+        ...(mutationFence ?? {}),
       },
       data: {
         status: ManagedBroadcastDeliveryStatus.SENT,
@@ -336,6 +350,7 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
         status: ManagedBroadcastDeliveryStatus.SENDING,
         remoteMessageId: null,
         ...recoveryUpdate.where,
+        ...(mutationFence ?? {}),
       },
       data: { status: ManagedBroadcastDeliveryStatus.PENDING, ...recoveryUpdate.data },
     });
@@ -346,6 +361,7 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
         id: failedDelivery.deliveryId,
         status: ManagedBroadcastDeliveryStatus.SENDING,
         remoteMessageId: null,
+        ...(mutationFence ?? {}),
       },
       data: {
         status: ManagedBroadcastDeliveryStatus.FAILED,
@@ -363,6 +379,7 @@ export async function reconcileRoutedManagedBroadcastSendingDeliveries(options: 
         id: { in: ambiguousDeliveryIds },
         status: ManagedBroadcastDeliveryStatus.SENDING,
         remoteMessageId: null,
+        ...(mutationFence ?? {}),
       },
       data: {
         status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,

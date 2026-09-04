@@ -21,6 +21,7 @@ import { PUBLISHER_AUTO_REPLY_QUEUE } from '../publisher/publisher-auto-reply.qu
 import { PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE } from '../publisher/publisher-auto-reply-authoring.queue';
 import { PUBLISHER_SUGGESTION_ADMIN_QUEUE } from '../publisher/publisher-suggestion-admin.queue';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
+import { PUBLISHER_PUBLICATION_WAKEUP_QUEUE } from '../admin/publisher-publication-wakeup.queue';
 
 function createQueueMock(counts: {
   waiting: number;
@@ -464,6 +465,14 @@ describe('QueueMetricsService', () => {
         failed: 4,
         completed: 12,
       }),
+      [getQueueToken(PUBLISHER_PUBLICATION_WAKEUP_QUEUE)]: createQueueMock({
+        waiting: 2,
+        prioritized: 3,
+        active: 1,
+        delayed: 4,
+        failed: 1,
+        completed: 14,
+      }),
       [getQueueToken(PUBLISHER_SUGGESTION_ADMIN_QUEUE)]: createQueueMock({
         waiting: 3,
         prioritized: 1,
@@ -695,6 +704,12 @@ describe('QueueMetricsService', () => {
       waiting: 9,
       active: 1,
       failed: 4,
+    });
+    expect(snapshot.auxiliaryQueues[PUBLISHER_PUBLICATION_WAKEUP_QUEUE]).toMatchObject({
+      waiting: 2,
+      prioritized: 3,
+      active: 1,
+      failed: 1,
     });
     expect(snapshot.auxiliaryQueues[PUBLISHER_SUGGESTION_ADMIN_QUEUE]).toMatchObject({
       waiting: 3,

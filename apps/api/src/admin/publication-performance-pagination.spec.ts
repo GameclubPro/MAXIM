@@ -70,6 +70,7 @@ function createPublicationService(prisma: Record<string, unknown>) {
     {} as never,
     {} as never,
     publisherRouting as never,
+    { enqueueAfterCommittedMutation: jest.fn().mockResolvedValue(undefined) } as never,
   );
   return { presenter, publisherRouting, service };
 }

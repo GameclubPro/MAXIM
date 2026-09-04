@@ -1,11 +1,21 @@
-import { ManagedBroadcastDeliveryStatus } from '../prisma/prisma-client';
+import {
+  ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
+  PublicationLifecycle,
+  PublicationOccurrenceStatus,
+  PublicationScheduleStatus,
+} from '../prisma/prisma-client';
+import { ConflictException } from '@nestjs/common';
 import { MaxActionRouteQuarantinedError } from '../max/max-action-dispatch-error';
 import {
+  deferPublicationAfterPreDispatchPrismaError,
   deferPublicationDeliveryAfterPreDispatchThrottle,
   deferPublicationDeliveryAfterRouteQuarantine,
+  ensureManagedBroadcastPublicationExecutionActive,
   PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
   selectManagedBroadcastDeliveryCandidates,
   syncPublicationBroadcastAfterDeliveryResolution,
+  syncResolvedPublicationOccurrence,
 } from './publication-execution-recovery';
 
 describe('publication execution recovery', () => {
@@ -33,6 +43,39 @@ describe('publication execution recovery', () => {
       error,
     };
   }
+
+  it('reuses the active occurrence read for deadline timing metadata', async () => {
+    const scheduledAt = new Date('2026-09-04T10:30:00.000Z');
+    const findUnique = jest.fn().mockResolvedValue({
+      status: PublicationOccurrenceStatus.IN_PROGRESS,
+      scheduledAt,
+      scheduleRevision: 3,
+      contentRevisionId: 'content-1',
+      publication: { lifecycle: PublicationLifecycle.ACTIVE },
+      schedule: { revision: 3, status: PublicationScheduleStatus.ACTIVE },
+    });
+    const onOccurrenceScheduledAt = jest.fn();
+
+    await expect(
+      ensureManagedBroadcastPublicationExecutionActive({
+        prisma: { publicationOccurrence: { findUnique } } as never,
+        row: {
+          id: 'broadcast-1',
+          lockToken: 'lease-1',
+          publicationOccurrenceId: 'occurrence-1',
+          publicationContentRevisionId: 'content-1',
+        },
+        occurrenceIndex: 1,
+        onOccurrenceScheduledAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(onOccurrenceScheduledAt).toHaveBeenCalledWith(scheduledAt);
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'occurrence-1' },
+      select: expect.objectContaining({ scheduledAt: true }),
+    });
+  });
 
   it('prioritizes ready Publication targets ahead of quarantined targets', () => {
     const updatedAt = new Date('2026-07-27T12:00:00.000Z');
@@ -128,6 +171,127 @@ describe('publication execution recovery', () => {
       jest.useRealTimers();
     }
   });
+
+  it.each(['P2024', 'P2028'])(
+    'atomically recycles an attempt-zero delivery after a pre-dispatch Prisma %s failure',
+    async (code) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-04T12:00:00.000Z'));
+      try {
+        const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+        const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+        const deliveryCount = jest.fn();
+        const tx = {
+          managedBroadcast: { updateMany: broadcastUpdateMany },
+          managedBroadcastDelivery: { updateMany: deliveryUpdateMany, count: deliveryCount },
+        };
+        const transaction = jest.fn(async (callback) => callback(tx));
+        const logger = { warn: jest.fn() };
+        const error = Object.assign(new Error(`${code} transient database failure`), { code });
+
+        await expect(
+          deferPublicationAfterPreDispatchPrismaError({
+            context: { prisma: { $transaction: transaction }, logger } as never,
+            row: {
+              id: 'broadcast-1',
+              publicationOccurrenceId: 'occurrence-1',
+              status: ManagedBroadcastStatus.ACTIVE,
+            },
+            occurrenceIndex: 1,
+            broadcastLockToken: 'broadcast-lock-1',
+            delivery: {
+              id: 'delivery-1',
+              targetChatId: 'chat-1',
+              attemptCount: 0,
+              lockToken: 'delivery-lock-1',
+            },
+            sendAttemptStarted: false,
+            error,
+          }),
+        ).resolves.toEqual(new Date('2026-09-04T12:00:01.000Z'));
+
+        expect(deliveryUpdateMany).toHaveBeenCalledWith({
+          where: {
+            id: 'delivery-1',
+            broadcastId: 'broadcast-1',
+            occurrenceIndex: 1,
+            status: ManagedBroadcastDeliveryStatus.SENDING,
+            attemptCount: 1,
+            remoteMessageId: null,
+            lockToken: 'delivery-lock-1',
+          },
+          data: expect.objectContaining({
+            status: ManagedBroadcastDeliveryStatus.PENDING,
+            attemptCount: { decrement: 1 },
+            botId: null,
+            remoteMessageId: null,
+            lockedAt: null,
+            lockToken: null,
+            lastErrorCode: null,
+            lastError: null,
+            dispatchBlockerCode: null,
+            dispatchBlockedAt: null,
+          }),
+        });
+        expect(deliveryCount).not.toHaveBeenCalled();
+        expect(broadcastUpdateMany).toHaveBeenCalledWith({
+          where: {
+            id: 'broadcast-1',
+            publicationOccurrenceId: 'occurrence-1',
+            status: ManagedBroadcastStatus.ACTIVE,
+            lockToken: 'broadcast-lock-1',
+          },
+          data: {
+            nextSendAt: new Date('2026-09-04T12:00:01.000Z'),
+            lockedAt: null,
+            lockToken: null,
+            lastError: null,
+          },
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    ['a marked MAX attempt', ManagedBroadcastStatus.ACTIVE, true],
+    ['a terminal envelope', ManagedBroadcastStatus.FAILED, false],
+    ['a partial envelope', ManagedBroadcastStatus.PARTIAL, false],
+  ])(
+    'does not recycle %s after a transient Prisma failure',
+    async (_label, status, sendStarted) => {
+      const transaction = jest.fn();
+      const error = Object.assign(new Error('pool timeout'), {
+        code: 'P2024',
+        managedBroadcastSendStarted: sendStarted,
+      });
+
+      await expect(
+        deferPublicationAfterPreDispatchPrismaError({
+          context: {
+            prisma: { $transaction: transaction },
+            logger: { warn: jest.fn() },
+          } as never,
+          row: {
+            id: 'broadcast-1',
+            publicationOccurrenceId: 'occurrence-1',
+            status,
+          },
+          occurrenceIndex: 1,
+          broadcastLockToken: 'broadcast-lock-1',
+          delivery: {
+            id: 'delivery-1',
+            targetChatId: 'chat-1',
+            attemptCount: 0,
+            lockToken: 'delivery-lock-1',
+          },
+          sendAttemptStarted: sendStarted,
+          error,
+        }),
+      ).resolves.toBeNull();
+      expect(transaction).not.toHaveBeenCalled();
+    },
+  );
 
   it('honors a longer Retry-After on an exact external HTTP 429 rejection', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:30.000Z'));
@@ -501,4 +665,173 @@ describe('publication execution recovery', () => {
       jest.useRealTimers();
     }
   });
+
+  it('rejects a stale atomic occurrence rollup as a retryable conflict', async () => {
+    const updatedAt = new Date('2026-09-04T09:00:00.000Z');
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const tx = {
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-1',
+          publicationId: 'publication-1',
+          status: PublicationOccurrenceStatus.AMBIGUOUS,
+          updatedAt,
+          scheduleId: 'schedule-1',
+          scheduleRevision: 2,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2020-09-04T08:00:00.000Z'),
+          publication: { lifecycle: PublicationLifecycle.ACTIVE },
+          schedule: { revision: 2, status: PublicationScheduleStatus.ACTIVE },
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.ACTIVE,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.PENDING,
+                  remoteMessageId: null,
+                  remoteMessageVerifiedAt: null,
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany,
+      },
+    };
+
+    await expect(
+      syncResolvedPublicationOccurrence(tx as never, 'occurrence-1'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-1',
+        publicationId: 'publication-1',
+        status: PublicationOccurrenceStatus.AMBIGUOUS,
+        updatedAt,
+        scheduleId: 'schedule-1',
+        scheduleRevision: 2,
+        contentRevisionId: 'content-1',
+        publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+        schedule: {
+          is: { revision: 2, status: PublicationScheduleStatus.ACTIVE },
+        },
+      },
+      data: { status: PublicationOccurrenceStatus.IN_PROGRESS },
+    });
+  });
+
+  it('locks an unchanged runnable occurrence before reactivating error parents', async () => {
+    const updatedAt = new Date('2026-09-04T09:00:00.000Z');
+    const updateOccurrence = jest.fn().mockResolvedValue({ count: 1 });
+    const updatePublication = jest.fn().mockResolvedValue({ count: 1 });
+    const updateSchedule = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      publicationOccurrence: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'occurrence-1',
+          publicationId: 'publication-1',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt,
+          scheduleId: 'schedule-1',
+          scheduleRevision: 2,
+          contentRevisionId: 'content-1',
+          scheduledAt: new Date('2020-09-04T08:00:00.000Z'),
+          publication: { lifecycle: PublicationLifecycle.ERROR },
+          schedule: { revision: 2, status: PublicationScheduleStatus.ERROR },
+          legacyBroadcasts: [
+            {
+              status: ManagedBroadcastStatus.ACTIVE,
+              deliveries: [
+                {
+                  status: ManagedBroadcastDeliveryStatus.PENDING,
+                  remoteMessageId: null,
+                  remoteMessageVerifiedAt: null,
+                },
+              ],
+            },
+          ],
+        }),
+        updateMany: updateOccurrence,
+      },
+      publication: { updateMany: updatePublication },
+      publicationSchedule: { updateMany: updateSchedule },
+    };
+
+    await syncResolvedPublicationOccurrence(tx as never, 'occurrence-1');
+
+    expect(updateOccurrence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'occurrence-1',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt,
+        }),
+        data: { status: PublicationOccurrenceStatus.IN_PROGRESS },
+      }),
+    );
+    expect(updateOccurrence.mock.invocationCallOrder[0]).toBeLessThan(
+      updatePublication.mock.invocationCallOrder[0]!,
+    );
+    expect(updatePublication).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { lifecycle: PublicationLifecycle.ACTIVE } }),
+    );
+    expect(updateSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: PublicationScheduleStatus.ACTIVE, lastError: null },
+      }),
+    );
+  });
+
+  it.each([
+    [PublicationLifecycle.PAUSED, PublicationScheduleStatus.PAUSED],
+    [PublicationLifecycle.CANCELED, PublicationScheduleStatus.CANCELED],
+  ])(
+    'keeps %s/%s parent state while resolving the occurrence',
+    async (lifecycle, scheduleStatus) => {
+      const updateOccurrence = jest.fn().mockResolvedValue({ count: 1 });
+      const updatePublication = jest.fn();
+      const updateSchedule = jest.fn();
+      const tx = {
+        publicationOccurrence: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'occurrence-1',
+            publicationId: 'publication-1',
+            status: PublicationOccurrenceStatus.AMBIGUOUS,
+            updatedAt: new Date('2026-09-04T09:00:00.000Z'),
+            scheduleId: 'schedule-1',
+            scheduleRevision: 2,
+            contentRevisionId: 'content-1',
+            scheduledAt: new Date('2020-09-04T08:00:00.000Z'),
+            publication: { lifecycle },
+            schedule: { revision: 2, status: scheduleStatus },
+            legacyBroadcasts: [
+              {
+                status: ManagedBroadcastStatus.ACTIVE,
+                deliveries: [
+                  {
+                    status: ManagedBroadcastDeliveryStatus.PENDING,
+                    remoteMessageId: null,
+                    remoteMessageVerifiedAt: null,
+                  },
+                ],
+              },
+            ],
+          }),
+          updateMany: updateOccurrence,
+        },
+        publication: { updateMany: updatePublication },
+        publicationSchedule: { updateMany: updateSchedule },
+      };
+
+      await expect(
+        syncResolvedPublicationOccurrence(tx as never, 'occurrence-1'),
+      ).resolves.toBeUndefined();
+
+      expect(updateOccurrence).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { status: PublicationOccurrenceStatus.IN_PROGRESS } }),
+      );
+      expect(updatePublication).not.toHaveBeenCalled();
+      expect(updateSchedule).not.toHaveBeenCalled();
+    },
+  );
 });

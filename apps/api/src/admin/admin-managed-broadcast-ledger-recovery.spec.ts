@@ -204,6 +204,7 @@ describe('managed broadcast ledger rollout recovery', () => {
   async function reconcilePublikDelivery(options: {
     lastErrorCode: string | null;
     ledgerOverrides?: Partial<ManagedBroadcastLedgerRecoveryRow>;
+    forcePendingAmbiguous?: boolean;
   }) {
     const lockedAt = new Date('2026-09-01T10:00:00.000Z');
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
@@ -247,11 +248,20 @@ describe('managed broadcast ledger rollout recovery', () => {
       maxRoutedPublicationService: {},
     } as never);
 
-    await (runtime as any).reconcileStaleManagedBroadcastDeliveries(
-      publikBroadcast.id,
-      1,
-      new Date('2026-09-01T10:05:00.000Z'),
-    );
+    if (options.forcePendingAmbiguous) {
+      await (runtime as any).reconcileRoutedManagedBroadcastSendingDeliveries(
+        publikBroadcast.id,
+        1,
+        { id: 'publik-delivery-1', lockToken: 'stale-publik-lock' },
+        true,
+      );
+    } else {
+      await (runtime as any).reconcileStaleManagedBroadcastDeliveries(
+        publikBroadcast.id,
+        1,
+        new Date('2026-09-01T10:05:00.000Z'),
+      );
+    }
 
     return { lockedAt, updateMany };
   }
@@ -281,6 +291,39 @@ describe('managed broadcast ledger rollout recovery', () => {
         lockToken: null,
         lastErrorCode: null,
         lastError: null,
+      },
+    });
+  });
+
+  it.each([
+    ['without a ledger row', undefined],
+    ['with a pending ledger row', {}],
+  ])('forces an exact post-attempt Publik claim ambiguous %s', async (_label, ledgerOverrides) => {
+    const { updateMany } = await reconcilePublikDelivery({
+      lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER,
+      ledgerOverrides,
+      forcePendingAmbiguous: true,
+    });
+
+    expect(
+      updateMany.mock.calls.some(
+        ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.PENDING,
+      ),
+    ).toBe(false);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'publik-delivery-1',
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        remoteMessageId: null,
+        lockToken: 'stale-publik-lock',
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: null,
+        lastError:
+          'Прошлая попытка была прервана после старта отправки. Проверьте чат вручную перед повтором.',
       },
     });
   });

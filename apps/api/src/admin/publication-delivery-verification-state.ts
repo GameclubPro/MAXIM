@@ -56,6 +56,11 @@ const PUBLICATION_VERIFICATION_RUNNABLE_BROADCAST_STATUSES = new Set<ManagedBroa
   ManagedBroadcastStatus.FAILED,
 ]);
 
+const PUBLICATION_RETRYABLE_TERMINAL_BROADCAST_STATUSES = new Set<ManagedBroadcastStatus>([
+  ManagedBroadcastStatus.PARTIAL,
+  ManagedBroadcastStatus.FAILED,
+]);
+
 // FLAG: The all-null/all-zero state is not automatically enrolled. It contains historical rows
 // and may contain a reviewed rollout-gap cohort; classify or enroll those only through a bounded
 // operator flow. Every new send must set remoteMessageVerificationNextAt explicitly.
@@ -108,7 +113,19 @@ export function resolvePublicationOccurrenceRollupStatus(
   const failed = count(ManagedBroadcastDeliveryStatus.FAILED);
   const ambiguous = count(ManagedBroadcastDeliveryStatus.AMBIGUOUS);
   const canceled = count(ManagedBroadcastDeliveryStatus.CANCELED);
-  const pending = deliveries.length - sent - failed - ambiguous - canceled;
+  const sending = count(ManagedBroadcastDeliveryStatus.SENDING);
+  const pending = count(ManagedBroadcastDeliveryStatus.PENDING);
+  const retryableTerminalPending = broadcasts.reduce(
+    (total, broadcast) =>
+      total +
+      (PUBLICATION_RETRYABLE_TERMINAL_BROADCAST_STATUSES.has(broadcast.status)
+        ? broadcast.deliveries.filter(
+            (delivery) => delivery.status === ManagedBroadcastDeliveryStatus.PENDING,
+          ).length
+        : 0),
+    0,
+  );
+  const activePending = pending - retryableTerminalPending;
   const broadcastsWithArmedVerification = broadcasts.filter((broadcast) =>
     broadcast.deliveries.some(
       (delivery) =>
@@ -125,7 +142,7 @@ export function resolvePublicationOccurrenceRollupStatus(
     (broadcast) => !PUBLICATION_VERIFICATION_RUNNABLE_BROADCAST_STATUSES.has(broadcast.status),
   );
 
-  if (pending > 0 || verificationStillActive) {
+  if (sending > 0 || activePending > 0 || verificationStillActive) {
     return scheduledAt > now
       ? PublicationOccurrenceStatus.SCHEDULED
       : PublicationOccurrenceStatus.IN_PROGRESS;
@@ -133,7 +150,7 @@ export function resolvePublicationOccurrenceRollupStatus(
   if (ambiguous > 0 || stoppedWithUnverifiedDelivery) {
     return PublicationOccurrenceStatus.AMBIGUOUS;
   }
-  if (failed + canceled > 0) {
+  if (failed + canceled + retryableTerminalPending > 0) {
     return sent > 0 ? PublicationOccurrenceStatus.PARTIAL : PublicationOccurrenceStatus.FAILED;
   }
   return sent === deliveries.length

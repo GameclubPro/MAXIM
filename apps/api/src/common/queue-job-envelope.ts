@@ -10,6 +10,7 @@ export type QueueRetryPolicyName =
   | 'photo-duplicate'
   | 'vk-parsing-sync'
   | 'vk-parsing-publish'
+  | 'publisher-publication-wakeup'
   | 'publisher-chat-comment';
 
 export type QueueJobMetadata = {

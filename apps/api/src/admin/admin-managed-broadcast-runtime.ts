@@ -377,17 +377,13 @@ import {
 import {
   buildManagedBroadcastDeliveryActionKey as buildManagedBroadcastDeliveryActionKeyValue,
   buildManagedBroadcastFailureMessage,
-  buildManagedBroadcastTransientQuarantineMessage,
   createManagedBroadcastDeliverySnapshot as createManagedBroadcastDeliverySnapshotValue,
   isManagedBroadcastAutoRetryableDeliveryFailureMessage,
   isAmbiguousManagedBroadcastSendError,
   isManagedBroadcastPermanentTargetDeliveryFailure,
-  isManagedBroadcastTransientDeliveryFailureMessage,
   isManagedBroadcastTransientQuarantineFailureMessage,
   resolveManagedBroadcastFatalProcessingErrorMessage,
-  resolveManagedBroadcastFatalProcessingFailureMessage,
   markManagedBroadcastSendPhase,
-  shouldAutoRetryManagedBroadcastDeliveryFailure,
 } from './admin-managed-broadcast-reconciliation';
 import {
   PUBLIK_LEDGER_DISPATCH_MARKER,
@@ -397,6 +393,7 @@ import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcas
 import {
   cancelPublicationDeliveryBeforeStoppedDispatch,
   buildCapacityDeferredPublicationOccurrenceResult,
+  deferClaimedPublicationEnvelopeAfterTransientPrismaError,
   deferManagedBroadcastWithFreshDeliveryLocks,
   deferPublicationDeliveryAfterPreDispatchThrottle,
   deferPublicationDeliveryAfterRouteQuarantine,
@@ -404,6 +401,7 @@ import {
   ManagedBroadcastPublicationExecutionStopped,
   selectManagedBroadcastDeliveryCandidates,
 } from './publication-execution-recovery';
+import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 import {
   buildPublicationDeliveryVerificationScheduledData,
   hasPublicationDeliveryAutomatedVerificationState,
@@ -416,6 +414,15 @@ import {
   selectPublicationManagedBroadcastDueBatch,
 } from './admin-managed-broadcast-due-selection';
 import { processPriorityHalfOpenPublicationVerifications } from './admin-managed-broadcast-priority-verification';
+import {
+  prepareManagedBroadcastAutomaticExecution,
+  resolveManagedBroadcastTransientQuarantineMessage,
+} from './admin-managed-broadcast-automatic-recovery';
+import {
+  recoverPublicationExecutionError,
+  type PublicationDeliveryAttemptRecoveryState,
+} from './publication-execution-error-recovery';
+import { processTargetedPublisherPublicationBroadcasts } from './publisher-publication-targeted-dispatch';
 import {
   PUBLICATION_MAX_VIDEO_BYTES,
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
@@ -460,8 +467,6 @@ import {
   MANAGED_BROADCAST_LOCK_STALE_MS,
   MANAGED_BROADCAST_LOCK_HEARTBEAT_MS,
   PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE,
-  MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES,
-  MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS,
   MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX,
   MANAGED_BROADCAST_DEGRADE_PAUSE_RETRY_MS,
   MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS,
@@ -1045,6 +1050,58 @@ export class AdminManagedBroadcastRuntime {
       );
     }
     return verificationBudget;
+  }
+
+  async processTargetedImmediatePublicationBroadcasts(
+    publicationId: string,
+    occurrenceId?: string,
+    sharedVerificationBudget?: ManagedBroadcastPublicationVerificationBudget,
+  ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    return processTargetedPublisherPublicationBroadcasts({
+      context: this.context,
+      dispatchProfile: this.publicationExecutorProfile,
+      publicationId,
+      ...(occurrenceId ? { occurrenceId } : {}),
+      reason: 'immediate',
+      ...(sharedVerificationBudget ? { sharedVerificationBudget } : {}),
+      processOccurrence: (params) =>
+        this.processManagedBroadcastOccurrence(
+          params.broadcastId,
+          params.reason,
+          params.staleLockBefore,
+          [PrismaManagedBroadcastStatus.ACTIVE],
+          undefined,
+          params.verificationBudget,
+          params.automaticDeliveryQuantum,
+          params.rethrowPreDispatchPrismaError,
+        ),
+    });
+  }
+
+  async processTargetedDeadlinePublicationBroadcasts(
+    publicationId: string,
+    occurrenceId?: string,
+    sharedVerificationBudget?: ManagedBroadcastPublicationVerificationBudget,
+  ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    return processTargetedPublisherPublicationBroadcasts({
+      context: this.context,
+      dispatchProfile: this.publicationExecutorProfile,
+      publicationId,
+      ...(occurrenceId ? { occurrenceId } : {}),
+      reason: 'deadline',
+      ...(sharedVerificationBudget ? { sharedVerificationBudget } : {}),
+      processOccurrence: (params) =>
+        this.processManagedBroadcastOccurrence(
+          params.broadcastId,
+          params.reason,
+          params.staleLockBefore,
+          [PrismaManagedBroadcastStatus.ACTIVE],
+          undefined,
+          params.verificationBudget,
+          params.automaticDeliveryQuantum,
+          params.rethrowPreDispatchPrismaError,
+        ),
+    });
   }
 
   async processDueDeadlinePublicationBroadcasts(
@@ -3103,51 +3160,70 @@ export class AdminManagedBroadcastRuntime {
     allowedStatuses: PrismaManagedBroadcastStatus[],
     preclaimedLease?: ManagedBroadcastLease,
     publicationVerificationBudget?: ManagedBroadcastPublicationVerificationBudget,
+    automaticDeliveryQuantumOverride?: number,
+    rethrowPreDispatchPrismaError = false,
   ): Promise<BroadcastOccurrenceResult> {
     const claimedAt = preclaimedLease?.lockedAt ?? new Date();
     const claimToken = preclaimedLease?.lockToken ?? this.createManagedBroadcastLockToken();
     let lease = preclaimedLease ?? null;
-    if (!lease) {
-      const claim = await this.prisma.managedBroadcast.updateMany({
-        where: {
-          id: broadcastId,
-          status: { in: allowedStatuses },
-          dispatchProfile: this.publicationExecutorProfile,
-          nextSendAt: { lte: claimedAt },
-          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-        },
-        data: {
+    let row: PersistedManagedBroadcast | null;
+    try {
+      if (!lease) {
+        const claim = await this.prisma.managedBroadcast.updateMany({
+          where: {
+            id: broadcastId,
+            status: { in: allowedStatuses },
+            dispatchProfile: this.publicationExecutorProfile,
+            nextSendAt: { lte: claimedAt },
+            OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+          },
+          data: {
+            lockedAt: claimedAt,
+            lockToken: claimToken,
+          },
+        });
+        if (claim.count === 0) {
+          const current = await this.prisma.managedBroadcast.findUnique({
+            where: { id: broadcastId },
+          });
+          return {
+            status: current?.status ?? PrismaManagedBroadcastStatus.FAILED,
+            currentOccurrence: current ? getCurrentManagedBroadcastOccurrence(current) : 1,
+            sentChatIds: [],
+            failedChatIds: [],
+            pendingChatIds: [],
+            canRetry: false,
+            firstSendError: null,
+            nextSendAt: current?.nextSendAt ?? null,
+          };
+        }
+
+        lease = {
           lockedAt: claimedAt,
           lockToken: claimToken,
-        },
-      });
-      if (claim.count === 0) {
-        const row = await this.prisma.managedBroadcast.findUnique({
-          where: { id: broadcastId },
-        });
-        return {
-          status: row?.status ?? PrismaManagedBroadcastStatus.FAILED,
-          currentOccurrence: row ? getCurrentManagedBroadcastOccurrence(row) : 1,
-          sentChatIds: [],
-          failedChatIds: [],
-          pendingChatIds: [],
-          canRetry: false,
-          firstSendError: null,
-          nextSendAt: row?.nextSendAt ?? null,
+          lastHeartbeatAt: claimedAt,
         };
       }
 
-      lease = {
-        lockedAt: claimedAt,
-        lockToken: claimToken,
-        lastHeartbeatAt: claimedAt,
-      };
+      row = await this.prisma.managedBroadcast.findUnique({
+        where: { id: broadcastId },
+      });
+    } catch (error: unknown) {
+      if (
+        this.publicationExecutorProfile === PrismaPublicationDispatchProfile.PUBLIK_V1 &&
+        isTransientPublicationPrismaError(error)
+      ) {
+        await deferClaimedPublicationEnvelopeAfterTransientPrismaError({
+          context: this.context,
+          broadcastId,
+          broadcastLockToken: claimToken,
+          error,
+        });
+      }
+      throw error;
     }
 
     const activeLease = lease;
-    const row = await this.prisma.managedBroadcast.findUnique({
-      where: { id: broadcastId },
-    });
     const rowDispatchProfile =
       row?.dispatchProfile ?? PrismaPublicationDispatchProfile.LEGACY_ROUTED;
     if (
@@ -3175,20 +3251,29 @@ export class AdminManagedBroadcastRuntime {
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
     const isPublikExecution = rowDispatchProfile === PrismaPublicationDispatchProfile.PUBLIK_V1;
     const requiredPublisherBotId = isPublikExecution ? (row.requiredBotId?.trim() ?? null) : null;
-    if (isPublikExecution && !requiredPublisherBotId) {
-      throw new ServiceUnavailableException({
-        code: PUBLISHER_SETUP_REQUIRED_CODE,
-        message: 'Маршрут Публика повреждён: не сохранён обязательный бот.',
-      });
-    }
-    const maxApiOptions = this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions(reason);
-    const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
+    const publicationTiming = { scheduledAt: null as Date | null };
+    let targetChatIds: string[] = [];
+    let activeDeliveryClaim: PublicationDeliveryAttemptRecoveryState | undefined;
     try {
+      if (isPublikExecution && !requiredPublisherBotId) {
+        throw new ServiceUnavailableException({
+          code: PUBLISHER_SETUP_REQUIRED_CODE,
+          message: 'Маршрут Публика повреждён: не сохранён обязательный бот.',
+        });
+      }
+      const maxApiOptions =
+        this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions(reason);
+      const resolvedTargets = this.resolveManagedBroadcastTargetsFromRow(row);
+      const targetMode = resolvedTargets.targetMode;
+      targetChatIds = resolvedTargets.targetChatIds;
       if (
         !(await this.ensureManagedBroadcastPublicationExecutionActive(
           row,
           currentOccurrence,
           staleLockBefore,
+          (scheduledAt) => {
+            publicationTiming.scheduledAt = scheduledAt;
+          },
         ))
       ) {
         return {
@@ -3233,7 +3318,7 @@ export class AdminManagedBroadcastRuntime {
         );
         if (!boundary.ready) {
           if ('leaseLost' in boundary && boundary.leaseLost) {
-            return this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], null);
+            return await this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], null);
           }
           return {
             status: PrismaManagedBroadcastStatus.ACTIVE,
@@ -3265,21 +3350,56 @@ export class AdminManagedBroadcastRuntime {
       if (accessResult) {
         return accessResult;
       }
-      let initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: currentOccurrence,
-        },
-        orderBy: [{ targetChatId: 'asc' }],
+      const automaticPreparation = await prepareManagedBroadcastAutomaticExecution({
+        context: this.context,
+        verification: this.publicationVerification,
+        row,
+        occurrenceIndex: currentOccurrence,
+        reason,
+        maxApiOptions,
+        ...(publicationVerificationBudget
+          ? { verificationBudget: publicationVerificationBudget }
+          : {}),
+        lease: activeLease,
+        heartbeat: () =>
+          this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease),
+        finalize: () =>
+          this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null, {
+            lease: activeLease,
+          }),
+        readResult: ({ sentChatIds, failedChatIds, pendingChatIds, canRetryOverride }) =>
+          this.readManagedBroadcastOccurrenceResult(
+            row.id,
+            sentChatIds,
+            failedChatIds,
+            pendingChatIds,
+            null,
+            canRetryOverride,
+          ),
       });
+      if (!automaticPreparation.continueExecution) {
+        return automaticPreparation.result;
+      }
+      let initialDeliveries = automaticPreparation.deliveries;
+
       initialDeliveries = await this.ensureManagedBroadcastDeliveryRows(
         row,
         currentOccurrence,
         targetChatIds,
         initialDeliveries,
       );
+      const firstDeadlineScheduledAt =
+        reason === 'deadline' &&
+        isPublikExecution &&
+        row.publicationOccurrenceId &&
+        initialDeliveries.some(
+          (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING,
+        ) &&
+        initialDeliveries.every((delivery: any) => delivery.attemptCount === 0)
+          ? publicationTiming.scheduledAt
+          : null;
+      let firstDeadlineClaimLogged = false;
       const requestMedia = await this.mediaRuntime.loadManagedBroadcastRequestMedia(row);
-
       const request: PreparedManagedBroadcastRequest = {
         payload: {
           text: row.text,
@@ -3357,59 +3477,6 @@ export class AdminManagedBroadcastRuntime {
         }
       };
 
-      if (reason === 'startup' || reason === 'scheduled') {
-        initialDeliveries = await this.recoverManagedBroadcastDeliveriesForAutomaticRun(
-          row.id,
-          currentOccurrence,
-          initialDeliveries,
-        );
-      }
-
-      const recoveredUnconfirmedChatIds = await this.publicationVerification.verifyAfterSend(
-        row,
-        currentOccurrence,
-        maxApiOptions,
-        () => this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease),
-        publicationVerificationBudget,
-      );
-      if (recoveredUnconfirmedChatIds.size > 0) {
-        initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
-          where: {
-            broadcastId: row.id,
-            occurrenceIndex: currentOccurrence,
-          },
-          orderBy: [{ targetChatId: 'asc' }],
-        });
-      }
-
-      const fatalRecoveredDelivery = initialDeliveries.find((delivery: any) => {
-        if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
-          return false;
-        }
-        return resolveManagedBroadcastFatalProcessingFailureMessage(delivery.lastError) !== null;
-      });
-      if (fatalRecoveredDelivery) {
-        const fatalProcessingErrorMessage =
-          resolveManagedBroadcastFatalProcessingFailureMessage(fatalRecoveredDelivery.lastError) ??
-          'Не удалось обработать автопостинг.';
-        await this.failManagedBroadcastAfterFatalProcessingError(
-          row,
-          currentOccurrence,
-          fatalProcessingErrorMessage,
-          activeLease,
-        );
-        return {
-          status: PrismaManagedBroadcastStatus.FAILED,
-          currentOccurrence,
-          sentChatIds: [],
-          failedChatIds: [fatalRecoveredDelivery.targetChatId],
-          pendingChatIds: [],
-          canRetry: true,
-          firstSendError: new BadRequestException(fatalProcessingErrorMessage),
-          nextSendAt: null,
-        };
-      }
-
       const hasFailedInitialDelivery = initialDeliveries.some(
         (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
       );
@@ -3419,7 +3486,7 @@ export class AdminManagedBroadcastRuntime {
           delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
       );
       if (hasFailedInitialDelivery && !hasUnfinishedInitialDelivery) {
-        return this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null, {
+        return await this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null, {
           lease: activeLease,
         });
       }
@@ -3712,9 +3779,10 @@ export class AdminManagedBroadcastRuntime {
       };
 
       const automaticDeliveryQuantum =
-        reason === 'startup' || reason === 'scheduled' || reason === 'deadline'
+        automaticDeliveryQuantumOverride ??
+        (reason === 'startup' || reason === 'scheduled' || reason === 'deadline'
           ? MANAGED_BROADCAST_AUTOMATIC_DELIVERY_QUANTUM
-          : Number.POSITIVE_INFINITY;
+          : Number.POSITIVE_INFINITY);
       const deliveryCandidates = selectManagedBroadcastDeliveryCandidates(
         initialDeliveries,
         Boolean(row.publicationOccurrenceId),
@@ -3722,6 +3790,7 @@ export class AdminManagedBroadcastRuntime {
       let claimedDeliveryCount = 0;
       let pendingNotBefore: Date | null = null;
       for (const delivery of deliveryCandidates) {
+        activeDeliveryClaim = undefined;
         if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.PENDING) {
           continue;
         }
@@ -3759,6 +3828,17 @@ export class AdminManagedBroadcastRuntime {
         await this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease);
         const deliveryAttemptCount = delivery.attemptCount + 1;
         const deliveryLockToken = this.createManagedBroadcastLockToken();
+        activeDeliveryClaim = {
+          id: delivery.id,
+          targetChatId: delivery.targetChatId,
+          attemptCount: delivery.attemptCount,
+          lockToken: deliveryLockToken,
+          sendAttemptStarted: false,
+          sentMessage: null,
+          resolvedBotId: null,
+          sentAt: null,
+          responseTargetMismatch: null,
+        };
         const deliveryClaim = await this.prisma.managedBroadcastDelivery.updateMany({
           where: {
             id: delivery.id,
@@ -3775,9 +3855,24 @@ export class AdminManagedBroadcastRuntime {
           },
         });
         if (deliveryClaim.count === 0) {
+          activeDeliveryClaim = undefined;
           continue;
         }
         claimedDeliveryCount += 1;
+        if (!firstDeadlineClaimLogged && firstDeadlineScheduledAt) {
+          firstDeadlineClaimLogged = true;
+          const deadlineClaimedAt = new Date();
+          this.logger.log(
+            {
+              broadcastId: row.id,
+              publicationOccurrenceId: row.publicationOccurrenceId,
+              scheduledAt: firstDeadlineScheduledAt.toISOString(),
+              claimedAt: deadlineClaimedAt.toISOString(),
+              lagMs: Math.max(0, deadlineClaimedAt.getTime() - firstDeadlineScheduledAt.getTime()),
+            },
+            'Publik publication deadline delivery claimed',
+          );
+        }
 
         let sentMessage: MaxPublishedMessage | null = null;
         let resolvedBotId: string | undefined;
@@ -3830,6 +3925,9 @@ export class AdminManagedBroadcastRuntime {
                     dialogContext: delivery.publisherDialogContext,
                     onAttemptStarted: (startedAt) => {
                       directSendAttemptStartedAt = startedAt;
+                      if (activeDeliveryClaim) {
+                        activeDeliveryClaim.sendAttemptStarted = true;
+                      }
                     },
                   },
                 );
@@ -3857,6 +3955,9 @@ export class AdminManagedBroadcastRuntime {
                   });
                   return sendDeliveryWithBot(delivery.targetChatId, resolvedBotId, (startedAt) => {
                     directSendAttemptStartedAt = startedAt;
+                    if (activeDeliveryClaim) {
+                      activeDeliveryClaim.sendAttemptStarted = true;
+                    }
                   });
                 })();
           if (!deliveryAttempt) {
@@ -3879,6 +3980,11 @@ export class AdminManagedBroadcastRuntime {
           sentMessage = deliveryAttempt.sentMessage;
           commentDialogReference = deliveryAttempt.commentDialogReference;
           resolvedBotId = deliveryAttempt.botId ?? undefined;
+          if (activeDeliveryClaim) {
+            activeDeliveryClaim.sendAttemptStarted = true;
+            activeDeliveryClaim.sentMessage = deliveryAttempt.sentMessage;
+            activeDeliveryClaim.resolvedBotId = deliveryAttempt.botId ?? null;
+          }
           if (isPublikExecution) {
             await this.publisherDispatch.recordSuccess(
               delivery.targetChatId,
@@ -3886,6 +3992,42 @@ export class AdminManagedBroadcastRuntime {
             );
           }
         } catch (error: unknown) {
+          const sendAttemptStarted =
+            activeDeliveryClaim?.sendAttemptStarted === true ||
+            (error as { managedBroadcastSendStarted?: unknown })?.managedBroadcastSendStarted ===
+              true;
+          if (
+            row.publicationOccurrenceId &&
+            isTransientPublicationPrismaError(error) &&
+            !sendAttemptStarted
+          ) {
+            throw error;
+          }
+          if (
+            row.publicationOccurrenceId &&
+            isTransientPublicationPrismaError(error) &&
+            sendAttemptStarted &&
+            activeDeliveryClaim
+          ) {
+            const interruptedDelivery = activeDeliveryClaim;
+            await this.reconcileManagedBroadcastSendingDeliveries(
+              row.id,
+              currentOccurrence,
+              { id: interruptedDelivery.id, lockToken: interruptedDelivery.lockToken },
+              true,
+            );
+            activeDeliveryClaim = undefined;
+            return await this.finalizeManagedBroadcastOccurrence(
+              row,
+              currentOccurrence,
+              [],
+              [],
+              error,
+              {
+                lease: activeLease,
+              },
+            );
+          }
           if (error instanceof ManagedBroadcastPublicationExecutionStopped) {
             await cancelPublicationDeliveryBeforeStoppedDispatch(
               this.prisma,
@@ -4246,6 +4388,14 @@ export class AdminManagedBroadcastRuntime {
         }
 
         const sentAt = new Date();
+        if (activeDeliveryClaim) {
+          activeDeliveryClaim.sentAt = sentAt;
+          activeDeliveryClaim.responseTargetMismatch =
+            this.publicationVerification.findResponseTargetMismatch(
+              delivery.targetChatId,
+              sentMessage,
+            );
+        }
         const persistedMismatch = await this.publicationVerification.persistResponseTargetMismatch({
           broadcastId: row.id,
           occurrenceIndex: currentOccurrence,
@@ -4286,6 +4436,7 @@ export class AdminManagedBroadcastRuntime {
             continue;
           }
           await markDeliverySentInMemory(delivery, sentMessage, commentDialogReference);
+          activeDeliveryClaim = undefined;
         } catch (error: unknown) {
           if (!firstSendError) {
             firstSendError = error;
@@ -4325,10 +4476,12 @@ export class AdminManagedBroadcastRuntime {
             continue;
           }
           await markDeliverySentInMemory(delivery, sentMessage, commentDialogReference);
+          activeDeliveryClaim = undefined;
           continue;
         }
       }
 
+      activeDeliveryClaim = undefined;
       const unconfirmedChatIds = await this.publicationVerification.verifyAfterSend(
         row,
         currentOccurrence,
@@ -4346,7 +4499,7 @@ export class AdminManagedBroadcastRuntime {
         }
       }
 
-      return this.finalizeManagedBroadcastOccurrence(
+      return await this.finalizeManagedBroadcastOccurrence(
         row,
         currentOccurrence,
         sentChatIds,
@@ -4355,6 +4508,41 @@ export class AdminManagedBroadcastRuntime {
         { lease: activeLease, pendingNotBefore },
       );
     } catch (error: unknown) {
+      const transientRecovery = await recoverPublicationExecutionError({
+        context: this.context,
+        row,
+        dispatchProfile: rowDispatchProfile,
+        occurrenceIndex: currentOccurrence,
+        broadcastLockToken: activeLease.lockToken,
+        targetChatIds,
+        ...(activeDeliveryClaim ? { activeDeliveryClaim } : {}),
+        error,
+        rethrowPreDispatchPrismaError,
+        clearActiveDeliveryClaim: () => {
+          activeDeliveryClaim = undefined;
+        },
+        reconcileAttemptedDelivery: (delivery) =>
+          this.reconcileManagedBroadcastSendingDeliveries(
+            row.id,
+            currentOccurrence,
+            delivery,
+            true,
+          ),
+        finalize: ({ sentChatIds, failedChatIds, error: recoveryError }) =>
+          this.finalizeManagedBroadcastOccurrence(
+            row,
+            currentOccurrence,
+            sentChatIds,
+            failedChatIds,
+            recoveryError,
+            { lease: activeLease },
+          ),
+        readCurrentResult: (recoveryError) =>
+          this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], recoveryError),
+      });
+      if (transientRecovery) {
+        return transientRecovery;
+      }
       const fatalProcessingErrorMessage = resolveManagedBroadcastFatalProcessingErrorMessage(error);
       if (fatalProcessingErrorMessage) {
         await this.failManagedBroadcastAfterFatalProcessingError(
@@ -4416,6 +4604,7 @@ export class AdminManagedBroadcastRuntime {
     row: PersistedManagedBroadcast,
     currentOccurrence: number,
     staleLockBefore?: Date,
+    onOccurrenceScheduledAt?: (scheduledAt: Date) => void,
   ): Promise<boolean> {
     return ensurePublicationExecutionActive({
       prisma: this.prisma,
@@ -4431,6 +4620,7 @@ export class AdminManagedBroadcastRuntime {
               ),
           }
         : {}),
+      ...(onOccurrenceScheduledAt ? { onOccurrenceScheduledAt } : {}),
     });
   }
 
@@ -5254,148 +5444,6 @@ export class AdminManagedBroadcastRuntime {
     });
   }
 
-  private async recoverManagedBroadcastDeliveriesForAutomaticRun(
-    broadcastId: string,
-    occurrenceIndex: number,
-    deliveries: PersistedManagedBroadcastDelivery[],
-  ): Promise<PersistedManagedBroadcastDelivery[]> {
-    let mutated = false;
-
-    for (const delivery of deliveries) {
-      if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
-        continue;
-      }
-
-      const failureMessage = delivery.lastError?.trim() ?? '';
-      if (isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
-        await cancelManagedBroadcastTargetDeliveries(this.prisma, broadcastId, occurrenceIndex, {
-          targetChatId: delivery.targetChatId,
-          currentDeliveryId: delivery.id,
-          lastError:
-            failureMessage || 'Чат больше недоступен для бота, дальнейшие доставки пропущены.',
-        });
-        mutated = true;
-        continue;
-      }
-      const transientQuarantineMessage =
-        await this.resolveManagedBroadcastTransientQuarantineMessage(
-          broadcastId,
-          occurrenceIndex,
-          delivery.targetChatId,
-          delivery.attemptCount,
-          failureMessage,
-        );
-      if (transientQuarantineMessage) {
-        await cancelManagedBroadcastTargetDeliveries(this.prisma, broadcastId, occurrenceIndex, {
-          targetChatId: delivery.targetChatId,
-          currentDeliveryId: delivery.id,
-          lastError: transientQuarantineMessage,
-        });
-        this.logger.warn(
-          {
-            broadcastId,
-            targetChatId: delivery.targetChatId,
-            occurrenceIndex,
-            attempts: delivery.attemptCount,
-            err: failureMessage,
-          },
-          'Managed broadcast target was quarantined during automatic recovery after repeated transient failures',
-        );
-        mutated = true;
-        continue;
-      }
-
-      if (!shouldAutoRetryManagedBroadcastDeliveryFailure(delivery)) {
-        continue;
-      }
-
-      const resetResult = await this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          id: delivery.id,
-          status: PrismaManagedBroadcastDeliveryStatus.FAILED,
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-          lockedAt: null,
-          lockToken: null,
-          lastErrorCode: null,
-          lastError: null,
-        },
-      });
-      mutated ||= resetResult.count > 0;
-    }
-
-    if (!mutated) {
-      return deliveries;
-    }
-
-    return this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId,
-        occurrenceIndex,
-      },
-      orderBy: [{ targetChatId: 'asc' }],
-    });
-  }
-
-  private async resolveManagedBroadcastTransientQuarantineMessage(
-    broadcastId: string,
-    occurrenceIndex: number,
-    targetChatId: string,
-    currentAttemptCount: number,
-    failureMessage: string,
-  ): Promise<string | null> {
-    if (!isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
-      return null;
-    }
-
-    if (
-      currentAttemptCount < MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS &&
-      occurrenceIndex < MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
-    ) {
-      return null;
-    }
-
-    const history = await this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId,
-        targetChatId,
-        occurrenceIndex: { lte: occurrenceIndex },
-      },
-      orderBy: [{ occurrenceIndex: 'asc' }],
-    });
-
-    let transientFailureAttempts = 0;
-    const transientFailureOccurrences = new Set<number>();
-    for (const delivery of history) {
-      const isCurrentOccurrence = delivery.occurrenceIndex === occurrenceIndex;
-      const effectiveFailureMessage = isCurrentOccurrence
-        ? failureMessage
-        : (delivery.lastError ?? '').trim();
-      if (!isManagedBroadcastTransientDeliveryFailureMessage(effectiveFailureMessage)) {
-        continue;
-      }
-
-      transientFailureOccurrences.add(delivery.occurrenceIndex);
-      transientFailureAttempts += isCurrentOccurrence
-        ? Math.max(1, currentAttemptCount)
-        : Math.max(1, delivery.attemptCount);
-    }
-
-    if (
-      transientFailureAttempts < MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS &&
-      transientFailureOccurrences.size < MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
-    ) {
-      return null;
-    }
-
-    return buildManagedBroadcastTransientQuarantineMessage(
-      transientFailureAttempts,
-      transientFailureOccurrences.size,
-      failureMessage,
-    );
-  }
-
   private async reconcileStaleManagedBroadcastDeliveries(
     broadcastId: string,
     occurrenceIndex: number,
@@ -5406,6 +5454,23 @@ export class AdminManagedBroadcastRuntime {
       occurrenceIndex,
       this.buildStaleManagedBroadcastDeliveryLockWhere(staleLockBefore),
     );
+  }
+
+  private async resolveManagedBroadcastTransientQuarantineMessage(
+    broadcastId: string,
+    occurrenceIndex: number,
+    targetChatId: string,
+    currentAttemptCount: number,
+    failureMessage: string,
+  ): Promise<string | null> {
+    return resolveManagedBroadcastTransientQuarantineMessage({
+      prisma: this.prisma,
+      broadcastId,
+      occurrenceIndex,
+      targetChatId,
+      currentAttemptCount,
+      failureMessage,
+    });
   }
 
   private async reconcileInterruptedManagedBroadcastDeliveries(
@@ -5568,6 +5633,7 @@ export class AdminManagedBroadcastRuntime {
     broadcastId: string,
     occurrenceIndex: number,
     extraWhere?: Prisma.ManagedBroadcastDeliveryWhereInput,
+    forcePendingAmbiguous = false,
   ): Promise<void> {
     const reconciledAt = new Date();
     await this.prisma.managedBroadcastDelivery.updateMany({
@@ -5596,6 +5662,7 @@ export class AdminManagedBroadcastRuntime {
         broadcastId,
         occurrenceIndex,
         extraWhere,
+        forcePendingAmbiguous,
       );
       return;
     }
@@ -5621,6 +5688,7 @@ export class AdminManagedBroadcastRuntime {
     broadcastId: string,
     occurrenceIndex: number,
     extraWhere?: Prisma.ManagedBroadcastDeliveryWhereInput,
+    forcePendingAmbiguous = false,
   ): Promise<void> {
     await reconcileRoutedManagedBroadcastSendingDeliveriesValue({
       prisma: this.prisma,
@@ -5628,6 +5696,7 @@ export class AdminManagedBroadcastRuntime {
       broadcastId,
       occurrenceIndex,
       extraWhere,
+      ...(forcePendingAmbiguous ? { forcePendingAmbiguous: true } : {}),
     });
   }
 

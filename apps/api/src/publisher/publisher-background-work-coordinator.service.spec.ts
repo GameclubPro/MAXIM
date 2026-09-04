@@ -58,6 +58,43 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
     expect(secondOperation).toHaveBeenCalledTimes(1);
   });
 
+  it('prioritizes a queued publication deadline while preserving recovery FIFO order', async () => {
+    const coordinator = new PublisherBackgroundWorkCoordinatorService();
+    const events: string[] = [];
+    let releaseActive!: () => void;
+    const activeGate = new Promise<void>((resolve) => {
+      releaseActive = resolve;
+    });
+
+    const active = coordinator.runExclusive('binding_refresh', async () => {
+      events.push('active:start');
+      await activeGate;
+      events.push('active:end');
+    });
+    const firstRecovery = coordinator.runExclusive('chat_comment_recovery', async () => {
+      events.push('recovery:first');
+    });
+    const deadline = coordinator.runExclusive('publication_deadline', async () => {
+      events.push('deadline');
+    });
+    const secondRecovery = coordinator.runExclusive('suggestion_recovery', async () => {
+      events.push('recovery:second');
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(['active:start']);
+    releaseActive();
+    await Promise.all([active, firstRecovery, deadline, secondRecovery]);
+
+    expect(events).toEqual([
+      'active:start',
+      'active:end',
+      'deadline',
+      'recovery:first',
+      'recovery:second',
+    ]);
+  });
+
   it('coalesces duplicate lane requests into one bounded run', async () => {
     const coordinator = new PublisherBackgroundWorkCoordinatorService();
     let release!: () => void;

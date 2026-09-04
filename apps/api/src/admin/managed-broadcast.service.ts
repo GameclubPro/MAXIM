@@ -33,6 +33,8 @@ type ManagedBroadcastRuntimePort = Pick<
   | 'cancelChannelManagedBroadcast'
   | 'processDueManagedBroadcasts'
   | 'processDueImmediatePublicationBroadcasts'
+  | 'processTargetedImmediatePublicationBroadcasts'
+  | 'processTargetedDeadlinePublicationBroadcasts'
   | 'processDueDeadlinePublicationBroadcasts'
 >;
 
@@ -198,6 +200,34 @@ export class ManagedBroadcastService {
     return verificationBudget
       ? this.runtime.processDueImmediatePublicationBroadcasts(verificationBudget)
       : this.runtime.processDueImmediatePublicationBroadcasts();
+  }
+
+  processTargetedImmediatePublicationBroadcasts(
+    publicationId: string,
+    occurrenceId?: string,
+    verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
+  ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    return verificationBudget
+      ? this.runtime.processTargetedImmediatePublicationBroadcasts(
+          publicationId,
+          occurrenceId,
+          verificationBudget,
+        )
+      : this.runtime.processTargetedImmediatePublicationBroadcasts(publicationId, occurrenceId);
+  }
+
+  processTargetedDeadlinePublicationBroadcasts(
+    publicationId: string,
+    occurrenceId?: string,
+    verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
+  ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    return verificationBudget
+      ? this.runtime.processTargetedDeadlinePublicationBroadcasts(
+          publicationId,
+          occurrenceId,
+          verificationBudget,
+        )
+      : this.runtime.processTargetedDeadlinePublicationBroadcasts(publicationId, occurrenceId);
   }
 
   processDueDeadlinePublicationBroadcasts(

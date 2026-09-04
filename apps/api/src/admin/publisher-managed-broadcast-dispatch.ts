@@ -14,6 +14,7 @@ import {
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 import { publisherConnectedBindingWhere } from '../publisher/publisher-entity-connection.util';
+import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const PUBLISHER_RUNTIME_BLOCKER = 'PUBLISHER_RUNTIME_UNAVAILABLE';
@@ -96,6 +97,9 @@ export class PublisherManagedBroadcastDispatch {
       }
     } catch (error: unknown) {
       if (error instanceof PublisherDeliveryDeferredError) {
+        throw error;
+      }
+      if (isTransientPublicationPrismaError(error)) {
         throw error;
       }
       const blockerCode =
@@ -206,6 +210,9 @@ export class PublisherManagedBroadcastDispatch {
       });
       return null;
     } catch (error: unknown) {
+      if (isTransientPublicationPrismaError(error)) {
+        throw error;
+      }
       const blockerCode =
         error instanceof PublisherDeliveryDeferredError
           ? error.blockerCode

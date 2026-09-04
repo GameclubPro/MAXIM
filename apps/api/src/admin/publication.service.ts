@@ -82,20 +82,27 @@ import {
 import {
   reconcileOrphanedPublicationOccurrences as reconcilePublicationOrphans,
   syncPublicationBroadcastAfterDeliveryResolution,
+  syncResolvedPublicationOccurrence,
 } from './publication-execution-recovery';
+import {
+  buildPublisherPublicationWakeDispatch,
+  dispatchScheduledPublicationOccurrences,
+  type PublicationOccurrenceDispatchScope,
+} from './publication-occurrence-dispatcher';
+import { PublicationOccurrenceRollupScanner } from './publication-occurrence-rollup-scanner';
 import { PublicationPresenterService } from './publication-presenter.service';
+import { PublisherPublicationWakeupQueueService } from './publisher-publication-wakeup.queue';
 import {
   buildEffectiveDeliveryListWhere,
   buildManualReviewDeliveryWhere,
-  buildRetryableFailedPublicationDeliveryWhere,
   resolveEffectivePublicationDeliveryStatus,
 } from './publication-legacy-automated-absence';
+import * as publicationManualRetrySafety from './publication-manual-retry-safety';
 import { expandPublicationSchedule } from './publication-recurrence';
 import { normalizePublicationSchedule } from './publication-schedule-normalization';
 
 const PUBLICATION_RECURRENCE_HORIZON_MS = 14 * 24 * 60 * 60_000;
 const PUBLICATION_RECURRENCE_LOOKAHEAD_MS = 450 * 24 * 60 * 60_000;
-const PUBLICATION_EXECUTION_HORIZON_MS = 5 * 60_000;
 const PUBLICATION_RECURRENCE_REFRESH_MS = 12 * 60 * 60_000;
 const PUBLICATION_PAST_GRACE_MS = 5 * 60_000;
 const PUBLICATION_MATERIALIZE_BATCH = 50;
@@ -138,6 +145,7 @@ class StalePublicationRollupError extends Error {}
 export class PublicationService {
   private readonly logger = new Logger(PublicationService.name);
   private throttleLogAtMs = 0;
+  private readonly activeOccurrenceRollups = new PublicationOccurrenceRollupScanner();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -148,6 +156,7 @@ export class PublicationService {
     private readonly backgroundRuntimeGovernorService: BackgroundRuntimeGovernorService,
     private readonly systemModeService: SystemModeService,
     private readonly publisherRouting: PublicationPublisherRoutingService,
+    private readonly publisherPublicationWakeupQueue: PublisherPublicationWakeupQueueService,
   ) {}
 
   async list(
@@ -577,6 +586,11 @@ export class PublicationService {
     const requestHash = this.hashMutationRequest(request);
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
+      await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+        publicationId: replay.publicationId,
+        mutationRequestId: request.requestId,
+        reason: 'create',
+      });
       return this.get(replay.publicationId, user, dispatchProfile);
     }
     const dispatchRoute = this.publisherRouting.requireNewRoute();
@@ -712,12 +726,22 @@ export class PublicationService {
           requestHash,
         );
         if (concurrentReplay) {
+          await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+            publicationId: concurrentReplay.publicationId,
+            mutationRequestId: request.requestId,
+            reason: 'create',
+          });
           return this.get(concurrentReplay.publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
 
+    await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+      publicationId,
+      mutationRequestId: request.requestId,
+      reason: 'create',
+    });
     return this.get(publicationId, user, dispatchProfile);
   }
 
@@ -736,6 +760,11 @@ export class PublicationService {
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
+      await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+        publicationId,
+        mutationRequestId: request.requestId,
+        reason: 'update',
+      });
       return this.get(publicationId, user, dispatchProfile);
     }
 
@@ -1104,12 +1133,22 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
+          await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+            publicationId,
+            mutationRequestId: request.requestId,
+            reason: 'update',
+          });
           return this.get(publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
 
+    await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+      publicationId,
+      mutationRequestId: request.requestId,
+      reason: 'update',
+    });
     return this.get(publicationId, user, dispatchProfile);
   }
 
@@ -1263,6 +1302,12 @@ export class PublicationService {
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
+      await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+        publicationId,
+        mutationRequestId: parsed.data.requestId,
+        occurrenceId,
+        reason: 'retry',
+      });
       return this.get(publicationId, user, dispatchProfile);
     }
     const publication = await this.assertPublicationOwner(
@@ -1292,26 +1337,24 @@ export class PublicationService {
     if (!occurrence) {
       throw new NotFoundException('Запуск публикации не найден.');
     }
-    if (
-      occurrence.status !== PublicationOccurrenceStatus.FAILED &&
-      occurrence.status !== PublicationOccurrenceStatus.PARTIAL
-    ) {
+    if (!publicationManualRetrySafety.isRetryablePublicationOccurrenceStatus(occurrence.status)) {
       throw new ConflictException('Этот запуск больше нельзя повторить. Обновите экран.');
     }
-    const retryableFailedDeliveryWhere = buildRetryableFailedPublicationDeliveryWhere();
-    const failedCount = await this.prisma.managedBroadcastDelivery.count({
+    const retryableDeliveryWhere =
+      publicationManualRetrySafety.buildRetryablePublicationDeliveryWhere();
+    const retryableDeliveryCount = await this.prisma.managedBroadcastDelivery.count({
       where: {
         publicationOccurrenceId: occurrenceId,
-        ...retryableFailedDeliveryWhere,
+        ...retryableDeliveryWhere,
       },
     });
     const retryWithoutExecutionEnvelope =
-      failedCount === 0 &&
+      retryableDeliveryCount === 0 &&
       occurrence.status === PublicationOccurrenceStatus.FAILED &&
       occurrence.legacyBroadcastId === null &&
       occurrence._count.deliveries === 0 &&
       occurrence._count.legacyBroadcasts === 0;
-    if (failedCount === 0 && !retryWithoutExecutionEnvelope) {
+    if (retryableDeliveryCount === 0 && !retryWithoutExecutionEnvelope) {
       throw new ConflictException(
         'Нет доставок, которые можно безопасно повторить. Неоднозначные отправки сначала нужно проверить.',
       );
@@ -1361,9 +1404,10 @@ export class PublicationService {
 
     try {
       await this.prisma.$transaction(async (tx: any) => {
-        // FLAG: Delivery retry changes only failed targets. SENT and AMBIGUOUS deliveries retain
-        // their recorded content revision. A missing-envelope retry is allowed only when both
-        // execution broadcasts and deliveries are still absent under the transaction lock.
+        // FLAG: Delivery retry changes only definitively failed or provably untouched PENDING
+        // targets. SENT and AMBIGUOUS deliveries retain their recorded content revision. A
+        // missing-envelope retry is allowed only when both execution broadcasts and deliveries
+        // are still absent under the transaction lock.
         await this.lockPublicationCalendar(tx);
         const retryLockToken = `publication-retry:${randomUUID()}`;
         const retryLockedAt = new Date();
@@ -1372,10 +1416,11 @@ export class PublicationService {
           const retryableBroadcasts = await tx.managedBroadcast.findMany({
             where: {
               publicationOccurrenceId: occurrenceId,
+              status: { in: publicationManualRetrySafety.RETRYABLE_PUBLICATION_BROADCAST_STATUSES },
               deliveries: {
                 some: {
                   publicationOccurrenceId: occurrenceId,
-                  ...retryableFailedDeliveryWhere,
+                  ...retryableDeliveryWhere,
                 },
               },
             },
@@ -1391,21 +1436,27 @@ export class PublicationService {
             where: {
               id: { in: retryableBroadcastIds },
               publicationOccurrenceId: occurrenceId,
+              status: { in: publicationManualRetrySafety.RETRYABLE_PUBLICATION_BROADCAST_STATUSES },
               lockedAt: null,
               lockToken: null,
               deliveries: {
                 some: {
                   publicationOccurrenceId: occurrenceId,
-                  ...retryableFailedDeliveryWhere,
+                  ...retryableDeliveryWhere,
                 },
                 none: {
                   publicationOccurrenceId: occurrenceId,
-                  status: {
-                    in: [
-                      ManagedBroadcastDeliveryStatus.SENDING,
-                      ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-                    ],
-                  },
+                  OR: [
+                    {
+                      status: {
+                        in: [
+                          ManagedBroadcastDeliveryStatus.SENDING,
+                          ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+                        ],
+                      },
+                    },
+                    publicationManualRetrySafety.buildUnsafePendingPublicationDeliveryWhere(),
+                  ],
                 },
               },
             },
@@ -1498,7 +1549,7 @@ export class PublicationService {
           where: {
             publicationOccurrenceId: occurrenceId,
             broadcastId: { in: retryableBroadcastIds },
-            ...retryableFailedDeliveryWhere,
+            ...retryableDeliveryWhere,
           },
           data: {
             status: ManagedBroadcastDeliveryStatus.PENDING,
@@ -1511,6 +1562,8 @@ export class PublicationService {
             lockToken: null,
             lastErrorCode: null,
             lastError: null,
+            dispatchBlockerCode: null,
+            dispatchBlockedAt: null,
             contentRevisionId: retryContentRevisionId,
           },
         });
@@ -1524,6 +1577,7 @@ export class PublicationService {
           where: {
             id: { in: retryableBroadcastIds },
             publicationOccurrenceId: occurrenceId,
+            status: { in: publicationManualRetrySafety.RETRYABLE_PUBLICATION_BROADCAST_STATUSES },
             lockToken: retryLockToken,
             lockedAt: retryLockedAt,
           },
@@ -1574,11 +1628,23 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
+          await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+            publicationId,
+            mutationRequestId: parsed.data.requestId,
+            occurrenceId,
+            reason: 'retry',
+          });
           return this.get(publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
+    await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+      publicationId,
+      mutationRequestId: parsed.data.requestId,
+      occurrenceId,
+      reason: 'retry',
+    });
     return this.get(publicationId, user, dispatchProfile);
   }
 
@@ -1594,10 +1660,17 @@ export class PublicationService {
       throw new BadRequestException(parsed.error.format());
     }
     const requestHash = this.hashMutationRequest({ publicationId, occurrenceId, ...parsed.data });
+    const wakeup = this.publisherPublicationWakeupQueue;
+    const finishResolution = async (): Promise<PublicationDetails> => {
+      await this.rollupOccurrence(occurrenceId);
+      await this.rollupPublicationLifecycle(publicationId);
+      await wakeup.enqueueResolution(publicationId, occurrenceId, parsed.data.requestId);
+      return this.get(publicationId, user, dispatchProfile);
+    };
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
-      return this.get(publicationId, user, dispatchProfile);
+      return finishResolution();
     }
     const publication = await this.assertPublicationOwner(
       publicationId,
@@ -1624,9 +1697,9 @@ export class PublicationService {
       throw new ConflictException('Эта доставка больше не требует ручной проверки.');
     }
     const resolutionAt = new Date();
-
     try {
       await this.prisma.$transaction(async (tx: any) => {
+        await this.lockPublicationCalendar(tx);
         const resolved = await tx.managedBroadcastDelivery.updateMany({
           where: manualReviewWhere,
           data:
@@ -1652,11 +1725,12 @@ export class PublicationService {
         if (resolved.count === 0) {
           throw new ConflictException('Эта доставка уже обработана.');
         }
-        await this.syncBroadcastAfterDeliveryResolution(
+        await syncPublicationBroadcastAfterDeliveryResolution(
           tx,
           delivery.broadcastId,
           delivery.occurrenceIndex,
         );
+        await syncResolvedPublicationOccurrence(tx, occurrenceId);
         await tx.publicationMutationRecord.create({
           data: {
             actorUserId: user.userId,
@@ -1676,14 +1750,12 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
-          return this.get(publicationId, user, dispatchProfile);
+          return finishResolution();
         }
       }
       throw error;
     }
-    await this.rollupOccurrence(occurrenceId);
-    await this.rollupPublicationLifecycle(publicationId);
-    return this.get(publicationId, user, dispatchProfile);
+    return finishResolution();
   }
 
   async processDuePublications(reason: 'startup' | 'scheduled'): Promise<void> {
@@ -1727,6 +1799,23 @@ export class PublicationService {
     );
     await this.rollupActiveOccurrences();
     await this.rollupPublicationLifecycles();
+  }
+
+  async processPublisherPublicationWake(
+    publicationId: string,
+    options: { allowPastScheduled: boolean; occurrenceId?: string },
+  ): Promise<void> {
+    const wake = buildPublisherPublicationWakeDispatch(
+      publicationId,
+      options,
+      new Date(),
+      PUBLICATION_PAST_GRACE_MS,
+    );
+    await this.dispatchScheduledOccurrences(
+      PUBLICATION_DISPATCH_BATCH,
+      wake.scheduleModes,
+      wake.scope,
+    );
   }
 
   private async normalizeStalePublicationOccurrences(limit: number): Promise<void> {
@@ -1912,14 +2001,6 @@ export class PublicationService {
     }
   }
 
-  private async syncBroadcastAfterDeliveryResolution(
-    tx: any,
-    broadcastId: string,
-    occurrenceIndex: number,
-  ): Promise<void> {
-    return syncPublicationBroadcastAfterDeliveryResolution(tx, broadcastId, occurrenceIndex);
-  }
-
   private async materializeRecurringSchedules(limit: number): Promise<void> {
     const now = new Date();
     const schedules = await this.prisma.publicationSchedule.findMany({
@@ -2084,122 +2165,24 @@ export class PublicationService {
   private async dispatchScheduledOccurrences(
     limit: number,
     scheduleModes?: PublicationScheduleMode[],
+    scope: PublicationOccurrenceDispatchScope = {},
   ): Promise<void> {
-    const now = new Date();
-    const horizon = new Date(now.getTime() + PUBLICATION_EXECUTION_HORIZON_MS);
-    const blockedRetryBefore = this.publisherRouting.blockedRetryBefore(now);
-    const occurrences = await this.prisma.publicationOccurrence.findMany({
-      where: {
-        status: PublicationOccurrenceStatus.SCHEDULED,
-        scheduledAt: { lte: horizon },
-        publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
-        schedule: {
-          is: {
-            status: PublicationScheduleStatus.ACTIVE,
-            ...(scheduleModes ? { mode: { in: scheduleModes } } : {}),
-          },
-        },
-        legacyBroadcasts: { none: {} },
-        OR: [{ dispatchBlockerCode: null }, { dispatchBlockedAt: { lte: blockedRetryBefore } }],
+    await dispatchScheduledPublicationOccurrences(
+      {
+        prisma: this.prisma,
+        publisherRouting: this.publisherRouting,
+        logger: this.logger,
+        resolveTargets: (publication) => this.resolveOccurrenceTargets(publication),
+        createExecution: (occurrence, targets, schedule) =>
+          this.createOccurrenceExecution(occurrence, targets, schedule),
+        lockCalendar: (tx) => this.lockPublicationCalendar(tx),
+        cancelFutureWork: (tx, publicationId, now) =>
+          this.cancelFuturePublicationWork(tx, publicationId, now),
       },
-      orderBy: { scheduledAt: 'asc' },
-      take: limit,
-      include: {
-        schedule: true,
-        contentRevision: true,
-        publication: {
-          include: {
-            targets: { orderBy: { position: 'asc' } },
-          },
-        },
-      },
-    });
-
-    for (const occurrence of occurrences) {
-      try {
-        if (occurrence.scheduleRevision !== occurrence.schedule.revision) {
-          await this.prisma.publicationOccurrence.updateMany({
-            where: {
-              id: occurrence.id,
-              scheduleRevision: occurrence.scheduleRevision,
-              status: PublicationOccurrenceStatus.SCHEDULED,
-              deliveries: {
-                none: {
-                  status: {
-                    in: [
-                      ManagedBroadcastDeliveryStatus.SENDING,
-                      ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-                    ],
-                  },
-                },
-              },
-            },
-            data: { status: PublicationOccurrenceStatus.CANCELED },
-          });
-          continue;
-        }
-        const targets = await publicationBackgroundAccess.execution(
-          () => this.resolveOccurrenceTargets(occurrence.publication),
-          this.logger,
-          occurrence,
-        );
-        if (targets === null) continue;
-        if (targets.length === 0) {
-          throw new Error('Нет доступных чатов или каналов для публикации.');
-        }
-        const scheduleRule = publicationScheduleInputSchema.parse(occurrence.schedule.rule);
-        await this.createOccurrenceExecution(occurrence, targets, scheduleRule);
-      } catch (error: unknown) {
-        if (await this.publisherRouting.deferOccurrenceIfBlocked(occurrence, error)) {
-          continue;
-        }
-        const message =
-          error instanceof ConflictException
-            ? 'В выбранное время уже запланирована другая публикация.'
-            : error instanceof Error
-              ? error.message
-              : String(error);
-        await this.prisma.$transaction(async (tx: any) => {
-          await this.lockPublicationCalendar(tx);
-          const failedSchedule = await tx.publicationSchedule.updateMany({
-            where: {
-              id: occurrence.scheduleId,
-              revision: occurrence.scheduleRevision,
-              status: PublicationScheduleStatus.ACTIVE,
-            },
-            data: {
-              status: PublicationScheduleStatus.ERROR,
-              nextMaterializeAt: null,
-              lastError: message,
-            },
-          });
-          if (failedSchedule.count === 0) {
-            return;
-          }
-          await tx.publicationOccurrence.updateMany({
-            where: {
-              id: occurrence.id,
-              scheduleRevision: occurrence.scheduleRevision,
-              status: PublicationOccurrenceStatus.SCHEDULED,
-              legacyBroadcasts: { none: {} },
-            },
-            data: { status: PublicationOccurrenceStatus.FAILED },
-          });
-          await tx.publication.updateMany({
-            where: {
-              id: occurrence.publicationId,
-              lifecycle: PublicationLifecycle.ACTIVE,
-            },
-            data: { lifecycle: PublicationLifecycle.ERROR },
-          });
-          await this.cancelFuturePublicationWork(tx, occurrence.publicationId, new Date());
-        });
-        this.logger.warn(
-          { occurrenceId: occurrence.id, publicationId: occurrence.publicationId, err: message },
-          'Failed to prepare publication execution',
-        );
-      }
-    }
+      limit,
+      scheduleModes,
+      scope,
+    );
   }
 
   private async createOccurrenceExecution(
@@ -2370,20 +2353,18 @@ export class PublicationService {
   }
 
   private async rollupActiveOccurrences(): Promise<void> {
-    const rows = await this.prisma.publicationOccurrence.findMany({
-      where: {
-        status: {
-          in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
-        },
-        legacyBroadcasts: { some: { deliveries: { some: {} } } },
-      },
-      orderBy: { updatedAt: 'asc' },
-      take: 200,
-      select: { id: true },
+    await this.activeOccurrenceRollups.scan({
+      prisma: this.prisma,
+      rollup: (occurrenceId) => this.rollupOccurrence(occurrenceId),
+      onError: (occurrenceId, error) =>
+        this.logger.warn(
+          {
+            occurrenceId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to roll up publication occurrence',
+        ),
     });
-    for (const row of rows) {
-      await this.rollupOccurrence(row.id);
-    }
   }
 
   private async rollupOccurrence(occurrenceId: string): Promise<void> {
@@ -2709,6 +2690,13 @@ export class PublicationService {
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
+      if (action === 'resume') {
+        await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+          publicationId,
+          mutationRequestId: parsed.data.requestId,
+          reason: 'resume',
+        });
+      }
       return this.get(publicationId, user, dispatchProfile);
     }
     const publication = await this.assertPublicationOwner(
@@ -2875,10 +2863,24 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
+          if (action === 'resume') {
+            await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+              publicationId,
+              mutationRequestId: parsed.data.requestId,
+              reason: 'resume',
+            });
+          }
           return this.get(publicationId, user, dispatchProfile);
         }
       }
       throw error;
+    }
+    if (action === 'resume') {
+      await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
+        publicationId,
+        mutationRequestId: parsed.data.requestId,
+        reason: 'resume',
+      });
     }
     return this.get(publicationId, user, dispatchProfile);
   }
@@ -3826,7 +3828,9 @@ export class PublicationService {
     }[mode];
   }
 
-  private async resolveBackgroundDecision(reason: 'startup' | 'scheduled'): Promise<'run' | 'slow' | 'pause'> {
+  private async resolveBackgroundDecision(
+    reason: 'startup' | 'scheduled',
+  ): Promise<'run' | 'slow' | 'pause'> {
     const decision = await this.backgroundRuntimeGovernorService.decide({
       component: 'publication-materializer',
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,

@@ -2,18 +2,167 @@ import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   PublicationDispatchProfile,
+  PublicationLifecycle,
+  PublicationOccurrenceStatus,
   PublicationScheduleMode,
+  PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import {
+  selectNextPendingPublisherPublicationDeadline,
   selectPriorityHalfOpenPublicationVerificationBatch,
   selectPublicationManagedBroadcastDueBatch,
+  selectTargetedPublisherImmediatePublicationBroadcastBatch,
 } from './admin-managed-broadcast-due-selection';
 import {
   buildPublicationDeliveryVerificationScheduledData,
   hasPublicationDeliveryAutomatedVerificationState,
+  PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
 } from './publication-delivery-verification-state';
 
 describe('publication managed broadcast due selection', () => {
+  it('selects only the exact active PUBLIK NOW execution for a wake', async () => {
+    const now = new Date('2026-09-04T10:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const findMany = jest.fn().mockResolvedValue([{ id: 'broadcast-target' }]);
+
+      await expect(
+        selectTargetedPublisherImmediatePublicationBroadcastBatch(
+          { managedBroadcast: { findMany } } as never,
+          { publicationId: ' publication-target ', occurrenceId: ' occurrence-target ' },
+        ),
+      ).resolves.toEqual({
+        dueRows: [{ id: 'broadcast-target' }],
+        staleLockBefore: new Date('2026-09-04T09:55:00.000Z'),
+      });
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 10,
+          where: expect.objectContaining({
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            status: ManagedBroadcastStatus.ACTIVE,
+            nextSendAt: { lte: now },
+            publicationOccurrence: {
+              is: expect.objectContaining({
+                id: 'occurrence-target',
+                publicationId: 'publication-target',
+                dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+                publication: {
+                  is: {
+                    id: 'publication-target',
+                    lifecycle: PublicationLifecycle.ACTIVE,
+                    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+                  },
+                },
+                schedule: {
+                  is: {
+                    status: PublicationScheduleStatus.ACTIVE,
+                    mode: { in: [PublicationScheduleMode.NOW] },
+                  },
+                },
+              }),
+            },
+            deliveries: expect.objectContaining({
+              none: {
+                status: ManagedBroadcastDeliveryStatus.SENDING,
+                lockedAt: { gte: new Date('2026-09-04T09:55:00.000Z') },
+              },
+            }),
+          }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('selects the nearest executable PUBLIK deadline without fresh in-flight siblings', async () => {
+    const now = new Date('2026-09-04T10:00:00.000Z');
+    const nextSendAt = new Date('2026-09-04T10:30:00.000Z');
+    const findFirst = jest.fn().mockResolvedValue({ id: 'broadcast-next', nextSendAt });
+
+    const result = await selectNextPendingPublisherPublicationDeadline(
+      {
+        managedBroadcast: { findFirst },
+      } as never,
+      now,
+    );
+
+    expect(result).toEqual({ id: 'broadcast-next', nextSendAt });
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        status: ManagedBroadcastStatus.ACTIVE,
+        nextSendAt: { not: null },
+        lockedAt: null,
+        publicationOccurrence: {
+          is: {
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            status: {
+              in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
+            },
+            publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+            schedule: {
+              is: {
+                status: PublicationScheduleStatus.ACTIVE,
+                mode: {
+                  in: [
+                    PublicationScheduleMode.ONCE,
+                    PublicationScheduleMode.SLOTS,
+                    PublicationScheduleMode.RECURRENCE,
+                  ],
+                },
+              },
+            },
+          },
+        },
+        deliveries: {
+          some: {
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            OR: [
+              {
+                status: ManagedBroadcastDeliveryStatus.PENDING,
+                dispatchBlockerCode: null,
+                OR: [
+                  { lastErrorCode: null },
+                  {
+                    lastErrorCode: {
+                      not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+                    },
+                  },
+                ],
+              },
+              {
+                status: ManagedBroadcastDeliveryStatus.SENDING,
+                OR: [
+                  { lockedAt: null },
+                  { lockedAt: { lt: new Date('2026-09-04T09:55:00.000Z') } },
+                ],
+              },
+            ],
+          },
+          none: {
+            status: ManagedBroadcastDeliveryStatus.SENDING,
+            lockedAt: { gte: new Date('2026-09-04T09:55:00.000Z') },
+          },
+        },
+      },
+      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, nextSendAt: true },
+    });
+  });
+
+  it('returns no exact deadline wakeup when no executable pending envelope exists', async () => {
+    const findFirst = jest.fn().mockResolvedValue(null);
+
+    await expect(
+      selectNextPendingPublisherPublicationDeadline({
+        managedBroadcast: { findFirst },
+      } as never),
+    ).resolves.toBeNull();
+  });
+
   it('selects only bounded due half-open canaries without excluding pending siblings', async () => {
     const now = new Date('2026-08-07T15:00:00.000Z');
     jest.useFakeTimers().setSystemTime(now);

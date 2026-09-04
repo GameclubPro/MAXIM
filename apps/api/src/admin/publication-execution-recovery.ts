@@ -1,4 +1,4 @@
-import type { Logger } from '@nestjs/common';
+import { ConflictException, type Logger } from '@nestjs/common';
 import {
   ChatBotMembershipStatus,
   type ManagedBroadcast,
@@ -6,6 +6,7 @@ import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   Prisma,
+  PublicationDispatchProfile,
   PublicationDeliveryVerificationSource,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
@@ -22,12 +23,15 @@ import {
 } from './admin.service.support';
 import { buildUnsafePublicationExecutionDeliveryWhere } from './publication-execution-safety';
 import {
+  buildPublicationDeliveryVerificationScheduledData,
   buildPublicationRouteAdvisoryLockKey,
   hasPublicationDeliveryAutomatedVerificationState,
   PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
   PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+  resolvePublicationOccurrenceRollupStatus,
   resolvePublicationVerificationNextSendAt,
 } from './publication-delivery-verification-state';
+import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 
 export { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 
@@ -41,9 +45,11 @@ export class ManagedBroadcastPublicationExecutionStopped extends Error {
 const PUBLICATION_ROUTE_RECOVERY_SPACING_MS = 15 * 60_000;
 const PUBLICATION_RATE_LIMIT_RETRY_STEP_MS = 60_000;
 const PUBLICATION_RATE_LIMIT_MAX_RETRY_AFTER_MS = 60 * 60_000;
+const PUBLICATION_PRISMA_RETRY_DELAY_MS = 1_000;
 
 class StalePublicationRouteQuarantineDeferralError extends Error {}
 class StalePublicationRateLimitDeferralError extends Error {}
+class StalePublicationPrismaDeferralError extends Error {}
 
 function collectPublicationRateLimitErrorChain(error: unknown): unknown[] {
   const chain: unknown[] = [];
@@ -170,6 +176,7 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
   >;
   occurrenceIndex: number;
   reconcileStaleDeliveries?: () => Promise<void>;
+  onOccurrenceScheduledAt?: (scheduledAt: Date) => void;
 }): Promise<boolean> {
   if (!options.row.publicationOccurrenceId) {
     return true;
@@ -179,12 +186,16 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
     where: { id: options.row.publicationOccurrenceId },
     select: {
       status: true,
+      scheduledAt: true,
       scheduleRevision: true,
       contentRevisionId: true,
       publication: { select: { lifecycle: true } },
       schedule: { select: { revision: true, status: true } },
     },
   });
+  if (occurrence) {
+    options.onOccurrenceScheduledAt?.(occurrence.scheduledAt);
+  }
   const executionStateActive = Boolean(
     occurrence &&
     occurrence.publication.lifecycle === PublicationLifecycle.ACTIVE &&
@@ -310,6 +321,222 @@ export async function cancelPublicationDeliveryBeforeStoppedDispatch(
       lastError: 'Публикация остановлена до отправки.',
     },
   });
+}
+
+export async function deferClaimedPublicationEnvelopeAfterTransientPrismaError(options: {
+  context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'logger'>;
+  broadcastId: string;
+  broadcastLockToken: string;
+  error: unknown;
+}): Promise<Date | null> {
+  if (!isTransientPublicationPrismaError(options.error)) {
+    return null;
+  }
+
+  const retryAt = new Date(Date.now() + PUBLICATION_PRISMA_RETRY_DELAY_MS);
+  const deferred = await options.context.prisma.managedBroadcast.updateMany({
+    where: {
+      id: options.broadcastId,
+      publicationOccurrenceId: { not: null },
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      status: ManagedBroadcastStatus.ACTIVE,
+      lockToken: options.broadcastLockToken,
+    },
+    data: {
+      nextSendAt: retryAt,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+    },
+  });
+  if (deferred.count !== 1) {
+    return null;
+  }
+
+  options.context.logger.warn(
+    {
+      broadcastId: options.broadcastId,
+      retryAt: retryAt.toISOString(),
+      err: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+    'Released a claimed publication envelope after a transient database failure',
+  );
+  return retryAt;
+}
+
+export async function deferPublicationAfterPreDispatchPrismaError(options: {
+  context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'logger'>;
+  row: Pick<ManagedBroadcast, 'id' | 'publicationOccurrenceId' | 'status'>;
+  occurrenceIndex: number;
+  broadcastLockToken: string;
+  delivery?: Pick<ManagedBroadcastDelivery, 'attemptCount' | 'id' | 'targetChatId'> & {
+    lockToken: string;
+  };
+  sendAttemptStarted: boolean;
+  error: unknown;
+}): Promise<Date | null> {
+  // FLAG: Only a transient database failure proven to precede MAX dispatch may recycle the exact
+  // delivery claim. A send-attempt marker, remote id, foreign token, or terminal envelope fences it.
+  if (
+    !options.row.publicationOccurrenceId ||
+    options.row.status !== ManagedBroadcastStatus.ACTIVE ||
+    options.sendAttemptStarted ||
+    (options.error as { managedBroadcastSendStarted?: unknown })?.managedBroadcastSendStarted ===
+      true ||
+    !isTransientPublicationPrismaError(options.error)
+  ) {
+    return null;
+  }
+
+  const retryAt = new Date(Date.now() + PUBLICATION_PRISMA_RETRY_DELAY_MS);
+  try {
+    const deferred = await options.context.prisma.$transaction(async (tx) => {
+      if (options.delivery) {
+        const resetDelivery = await tx.managedBroadcastDelivery.updateMany({
+          where: {
+            id: options.delivery.id,
+            broadcastId: options.row.id,
+            occurrenceIndex: options.occurrenceIndex,
+            status: ManagedBroadcastDeliveryStatus.SENDING,
+            attemptCount: options.delivery.attemptCount + 1,
+            remoteMessageId: null,
+            lockToken: options.delivery.lockToken,
+          },
+          data: {
+            status: ManagedBroadcastDeliveryStatus.PENDING,
+            attemptCount: { decrement: 1 },
+            botId: null,
+            remoteMessageId: null,
+            ...PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+            legacySentWithoutRemoteId: false,
+            sentAt: null,
+            lockedAt: null,
+            lockToken: null,
+            lastErrorCode: null,
+            lastError: null,
+            dispatchBlockerCode: null,
+            dispatchBlockedAt: null,
+          },
+        });
+        if (resetDelivery.count !== 1) {
+          const untouchedDelivery = await tx.managedBroadcastDelivery.count({
+            where: {
+              id: options.delivery.id,
+              broadcastId: options.row.id,
+              occurrenceIndex: options.occurrenceIndex,
+              status: ManagedBroadcastDeliveryStatus.PENDING,
+              attemptCount: options.delivery.attemptCount,
+              remoteMessageId: null,
+              lockedAt: null,
+              lockToken: null,
+            },
+          });
+          if (untouchedDelivery !== 1) {
+            throw new StalePublicationPrismaDeferralError();
+          }
+        }
+      }
+
+      const broadcastDeferred = await tx.managedBroadcast.updateMany({
+        where: {
+          id: options.row.id,
+          publicationOccurrenceId: options.row.publicationOccurrenceId,
+          status: ManagedBroadcastStatus.ACTIVE,
+          lockToken: options.broadcastLockToken,
+        },
+        data: {
+          nextSendAt: retryAt,
+          lockedAt: null,
+          lockToken: null,
+          lastError: null,
+        },
+      });
+      if (broadcastDeferred.count !== 1) {
+        throw new StalePublicationPrismaDeferralError();
+      }
+      return true;
+    });
+    if (!deferred) {
+      return null;
+    }
+  } catch (error: unknown) {
+    if (error instanceof StalePublicationPrismaDeferralError) {
+      return null;
+    }
+    throw error;
+  }
+
+  options.context.logger.warn(
+    {
+      broadcastId: options.row.id,
+      occurrenceIndex: options.occurrenceIndex,
+      deliveryId: options.delivery?.id ?? null,
+      targetChatId: options.delivery?.targetChatId ?? null,
+      retryAt: retryAt.toISOString(),
+      err: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+    'Deferred publication execution after a transient pre-dispatch database failure',
+  );
+  return retryAt;
+}
+
+export async function settlePublicationDeliveryAfterAttemptPersistenceError(options: {
+  context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'logger'>;
+  broadcastId: string;
+  occurrenceIndex: number;
+  delivery: Pick<ManagedBroadcastDelivery, 'attemptCount' | 'id' | 'targetChatId'> & {
+    lockToken: string;
+  };
+  botId: string | null;
+  remoteMessageId: string;
+  sentAt: Date;
+  responseTargetMismatch: string | null;
+  error: unknown;
+}): Promise<'sent' | 'ambiguous' | 'lost'> {
+  const status = options.responseTargetMismatch
+    ? ManagedBroadcastDeliveryStatus.AMBIGUOUS
+    : ManagedBroadcastDeliveryStatus.SENT;
+  const settled = await options.context.prisma.managedBroadcastDelivery.updateMany({
+    where: {
+      id: options.delivery.id,
+      broadcastId: options.broadcastId,
+      occurrenceIndex: options.occurrenceIndex,
+      status: ManagedBroadcastDeliveryStatus.SENDING,
+      attemptCount: options.delivery.attemptCount + 1,
+      lockToken: options.delivery.lockToken,
+    },
+    data: {
+      status,
+      botId: options.botId,
+      remoteMessageId: options.remoteMessageId,
+      ...(status === ManagedBroadcastDeliveryStatus.SENT
+        ? buildPublicationDeliveryVerificationScheduledData(options.sentAt)
+        : PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA),
+      legacySentWithoutRemoteId: false,
+      sentAt: options.sentAt,
+      lockedAt: null,
+      lockToken: null,
+      lastErrorCode: null,
+      lastError: options.responseTargetMismatch,
+    },
+  });
+  if (settled.count !== 1) {
+    return 'lost';
+  }
+
+  options.context.logger.warn(
+    {
+      broadcastId: options.broadcastId,
+      occurrenceIndex: options.occurrenceIndex,
+      deliveryId: options.delivery.id,
+      targetChatId: options.delivery.targetChatId,
+      remoteMessageId: options.remoteMessageId,
+      status,
+      err: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+    'Recovered a known MAX response after publication delivery persistence failed',
+  );
+  return status === ManagedBroadcastDeliveryStatus.SENT ? 'sent' : 'ambiguous';
 }
 
 export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: {
@@ -826,5 +1053,134 @@ export async function syncPublicationBroadcastAfterDeliveryResolution(
       where: { broadcastId, occurrenceIndex },
       data: { status: ManagedBroadcastStatus.COMPLETED },
     });
+  }
+}
+
+export async function syncResolvedPublicationOccurrence(
+  tx: Prisma.TransactionClient,
+  occurrenceId: string,
+): Promise<void> {
+  const occurrence = await tx.publicationOccurrence.findUnique({
+    where: { id: occurrenceId },
+    select: {
+      id: true,
+      publicationId: true,
+      status: true,
+      updatedAt: true,
+      scheduleId: true,
+      scheduleRevision: true,
+      contentRevisionId: true,
+      scheduledAt: true,
+      publication: { select: { lifecycle: true } },
+      schedule: { select: { revision: true, status: true } },
+      legacyBroadcasts: {
+        select: {
+          status: true,
+          deliveries: {
+            select: {
+              status: true,
+              remoteMessageId: true,
+              remoteMessageVerifiedAt: true,
+              remoteMessageVerificationAttemptCount: true,
+              remoteMessageVerificationAbsentCount: true,
+              remoteMessageVerificationPresentCount: true,
+              remoteMessageVerificationAttemptedAt: true,
+              remoteMessageVerificationNextAt: true,
+              remoteMessageVerificationSource: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!occurrence || occurrence.status === PublicationOccurrenceStatus.CANCELED) {
+    return;
+  }
+  const deliveries = occurrence.legacyBroadcasts.flatMap((broadcast) => broadcast.deliveries);
+  if (deliveries.length === 0) {
+    return;
+  }
+  const nextStatus = resolvePublicationOccurrenceRollupStatus(
+    occurrence.legacyBroadcasts,
+    occurrence.scheduledAt,
+  );
+  const runnable =
+    nextStatus === PublicationOccurrenceStatus.SCHEDULED ||
+    nextStatus === PublicationOccurrenceStatus.IN_PROGRESS;
+  const canReactivateParents =
+    runnable &&
+    (occurrence.publication.lifecycle === PublicationLifecycle.ACTIVE ||
+      occurrence.publication.lifecycle === PublicationLifecycle.ERROR) &&
+    (occurrence.schedule.status === PublicationScheduleStatus.ACTIVE ||
+      occurrence.schedule.status === PublicationScheduleStatus.ERROR);
+  const throwConflict = (): never => {
+    throw new ConflictException('Запуск публикации уже изменился. Обновите экран и повторите.');
+  };
+
+  // FLAG: A manual delivery decision, its envelope rollup, and its occurrence rollup are one
+  // commit. Run the CAS even for an unchanged status so its row lock fences concurrent rollups.
+  const updated = await tx.publicationOccurrence.updateMany({
+    where: {
+      id: occurrence.id,
+      publicationId: occurrence.publicationId,
+      status: occurrence.status,
+      updatedAt: occurrence.updatedAt,
+      scheduleId: occurrence.scheduleId,
+      scheduleRevision: occurrence.scheduleRevision,
+      contentRevisionId: occurrence.contentRevisionId,
+      publication: { is: { lifecycle: occurrence.publication.lifecycle } },
+      schedule: {
+        is: {
+          revision: occurrence.schedule.revision,
+          status: occurrence.schedule.status,
+        },
+      },
+    },
+    data: { status: nextStatus },
+  });
+  if (updated.count !== 1) {
+    throwConflict();
+  }
+  if (!canReactivateParents) {
+    return;
+  }
+  if (occurrence.schedule.revision !== occurrence.scheduleRevision) {
+    throwConflict();
+  }
+
+  const activatedPublication = await tx.publication.updateMany({
+    where: {
+      id: occurrence.publicationId,
+      lifecycle: occurrence.publication.lifecycle,
+      schedule: {
+        is: {
+          id: occurrence.scheduleId,
+          revision: occurrence.scheduleRevision,
+          status: occurrence.schedule.status,
+        },
+      },
+    },
+    data: { lifecycle: PublicationLifecycle.ACTIVE },
+  });
+  if (activatedPublication.count !== 1) {
+    throwConflict();
+  }
+  const activatedSchedule = await tx.publicationSchedule.updateMany({
+    where: {
+      id: occurrence.scheduleId,
+      publicationId: occurrence.publicationId,
+      revision: occurrence.scheduleRevision,
+      status: occurrence.schedule.status,
+      publication: {
+        is: {
+          id: occurrence.publicationId,
+          lifecycle: PublicationLifecycle.ACTIVE,
+        },
+      },
+    },
+    data: { status: PublicationScheduleStatus.ACTIVE, lastError: null },
+  });
+  if (activatedSchedule.count !== 1) {
+    throwConflict();
   }
 }

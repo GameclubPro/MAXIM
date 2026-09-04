@@ -37,9 +37,544 @@ const createPublicationEnvelopeRow = () => ({
   publicationContentRevisionId: 'content-access-check',
 });
 
+function createPublicationPrismaSendFailureHarness(error: Error | null, dispatchStarted: boolean) {
+  const row = {
+    ...createPublicationEnvelopeRow(),
+    id: 'broadcast-prisma-failure',
+    text: 'Publication',
+    textFormat: 'plain',
+    buttons: [],
+    buttonEnabled: false,
+    buttonUrl: '',
+    buttonText: 'Open',
+    imageEnabled: false,
+    imageBase64: '',
+    imageMimeType: '',
+    imageFileName: '',
+    mediaType: null,
+    mediaPayload: null,
+    mediaMimeType: '',
+    mediaFileName: '',
+    scheduleTimezone: 'Europe/Moscow',
+    cycleEnabled: false,
+    cycleEveryHours: 1,
+    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    requiredBotId: 'publisher-bot',
+    publicationOccurrenceId: 'occurrence-prisma-failure',
+    publicationContentRevisionId: 'content-prisma-failure',
+  };
+  const delivery = {
+    id: 'delivery-prisma-failure',
+    broadcastId: row.id,
+    occurrenceIndex: 1,
+    targetChatId: 'chat-target',
+    botId: null,
+    status: ManagedBroadcastDeliveryStatus.PENDING,
+    attemptCount: 0,
+    remoteMessageId: null,
+    lastErrorCode: null,
+    lastError: null,
+    sentAt: null,
+    lockedAt: null,
+    lockToken: null,
+    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    requiredBotId: 'publisher-bot',
+    dialogBotId: 'publisher-bot',
+    publisherDialogContext: null,
+    updatedAt: new Date('2026-09-04T11:59:00.000Z'),
+  };
+  const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+  const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+  const recoveryBroadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+  const recoveryDeliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+  const recoveryDeliveryCount = jest.fn().mockResolvedValue(0);
+  const recoveryTx = {
+    managedBroadcast: { updateMany: recoveryBroadcastUpdateMany },
+    managedBroadcastDelivery: {
+      updateMany: recoveryDeliveryUpdateMany,
+      count: recoveryDeliveryCount,
+    },
+  };
+  const transaction = jest.fn(async (callback) => callback(recoveryTx));
+  const publish = jest.fn(async (request: any) => {
+    if (dispatchStarted) {
+      request.onDispatchAttempt?.({ botId: 'publisher-bot', job: {} });
+    }
+    if (error) {
+      throw error;
+    }
+    return {
+      botId: 'publisher-bot',
+      messageId: 'mid-known-after-dispatch',
+      url: null,
+    };
+  });
+  const runtime = new AdminManagedBroadcastRuntime(
+    {
+      prisma: {
+        $transaction: transaction,
+        managedBroadcast: {
+          updateMany: broadcastUpdateMany,
+          findUnique: jest.fn().mockResolvedValue(row),
+        },
+        managedBroadcastDelivery: {
+          findMany: jest.fn().mockResolvedValue([delivery]),
+          updateMany: deliveryUpdateMany,
+        },
+      },
+      maxRoutedPublicationService: { publish },
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never,
+    PublicationDispatchProfile.PUBLIK_V1,
+  );
+  jest
+    .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+    .mockResolvedValue(true);
+  jest
+    .spyOn(runtime as any, 'reconcileStaleManagedBroadcastDeliveries')
+    .mockResolvedValue(undefined);
+  jest
+    .spyOn(runtime as any, 'deferManagedBroadcastOccurrenceWithFreshSendingDeliveries')
+    .mockResolvedValue(false);
+  jest
+    .spyOn((runtime as any).publisherDispatch, 'ensureRuntimeBoundary')
+    .mockResolvedValue({ ready: true });
+  jest
+    .spyOn((runtime as any).publisherDispatch, 'ensureActorAdminAccess')
+    .mockResolvedValue({ ready: true });
+  jest.spyOn((runtime as any).publisherDispatch, 'deferUnreadyBeforeClaim').mockResolvedValue(null);
+  jest
+    .spyOn((runtime as any).publisherDispatch, 'assertDeliveryReady')
+    .mockResolvedValue(undefined);
+  jest.spyOn((runtime as any).publisherDispatch, 'recordFailure').mockResolvedValue('transient');
+  jest.spyOn(runtime as any, 'resolveManagedBroadcastTargetsFromRow').mockReturnValue({
+    targetMode: 'selected',
+    targetChatIds: ['chat-target'],
+  });
+  jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue([delivery]);
+  jest
+    .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
+    .mockResolvedValue({});
+  jest
+    .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
+    .mockResolvedValue(new Set());
+  jest
+    .spyOn(runtime as any, 'loadManagedBroadcastLedgerCommentDialogContext')
+    .mockResolvedValue({ found: false, reference: null });
+  jest
+    .spyOn(runtime as any, 'heartbeatManagedBroadcastProcessingLock')
+    .mockResolvedValue(undefined);
+  jest.spyOn(runtime as any, 'resolveManagedBroadcastSendRetryDelayMs').mockReturnValue(null);
+  jest
+    .spyOn(runtime as any, 'resolveManagedBroadcastTransientQuarantineMessage')
+    .mockResolvedValue(null);
+  jest.spyOn(runtime as any, 'finalizeManagedBroadcastOccurrence').mockResolvedValue({
+    status: ManagedBroadcastStatus.FAILED,
+    currentOccurrence: 1,
+    sentChatIds: [],
+    failedChatIds: ['chat-target'],
+    pendingChatIds: [],
+    canRetry: true,
+    firstSendError: error,
+    nextSendAt: null,
+  });
+
+  return {
+    runtime,
+    row,
+    delivery,
+    publish,
+    transaction,
+    broadcastUpdateMany,
+    deliveryUpdateMany,
+    recoveryBroadcastUpdateMany,
+    recoveryDeliveryUpdateMany,
+    recoveryDeliveryCount,
+  };
+}
+
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it.each(['P2024', 'P2028'])(
+    'releases its exact ACTIVE envelope lease when the post-claim read fails with Prisma %s',
+    async (code) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-04T12:00:00.000Z'));
+      const error = Object.assign(new Error(`${code} transient database failure`), { code });
+      const broadcastUpdateMany = jest
+        .fn()
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 1 });
+      const deliveryUpdateMany = jest.fn();
+      const publish = jest.fn();
+      const logger = { warn: jest.fn() };
+      const runtime = new AdminManagedBroadcastRuntime(
+        {
+          prisma: {
+            managedBroadcast: {
+              updateMany: broadcastUpdateMany,
+              findUnique: jest.fn().mockRejectedValue(error),
+            },
+            managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+          },
+          maxRoutedPublicationService: { publish },
+          logger,
+        } as never,
+        PublicationDispatchProfile.PUBLIK_V1,
+      );
+
+      await expect(
+        (runtime as any).processManagedBroadcastOccurrence(
+          'broadcast-1',
+          'deadline',
+          new Date('2026-09-04T11:55:00.000Z'),
+          [ManagedBroadcastStatus.ACTIVE],
+          undefined,
+          undefined,
+          undefined,
+          true,
+        ),
+      ).rejects.toBe(error);
+
+      expect(broadcastUpdateMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          where: {
+            id: 'broadcast-1',
+            publicationOccurrenceId: { not: null },
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            status: ManagedBroadcastStatus.ACTIVE,
+            lockToken: expect.any(String),
+          },
+          data: {
+            nextSendAt: new Date('2026-09-04T12:00:01.000Z'),
+            lockedAt: null,
+            lockToken: null,
+            lastError: null,
+          },
+        }),
+      );
+      expect(deliveryUpdateMany).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(
+        broadcastUpdateMany.mock.calls.some(
+          ([query]) => query.data?.status === ManagedBroadcastStatus.FAILED,
+        ),
+      ).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ retryAt: '2026-09-04T12:00:01.000Z' }),
+        expect.any(String),
+      );
+    },
+  );
+
+  it.each(['P2024', 'P2028'])(
+    'requeues the exact attempt-zero delivery and rethrows Prisma %s before MAX dispatch',
+    async (code) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-04T12:00:00.000Z'));
+      const error = Object.assign(new Error(`${code} transient database failure`), { code });
+      const harness = createPublicationPrismaSendFailureHarness(error, false);
+
+      await expect(
+        (harness.runtime as any).processManagedBroadcastOccurrence(
+          harness.row.id,
+          'deadline',
+          new Date('2026-09-04T11:55:00.000Z'),
+          [ManagedBroadcastStatus.ACTIVE],
+          undefined,
+          undefined,
+          undefined,
+          true,
+        ),
+      ).rejects.toBe(error);
+
+      expect(harness.publish).toHaveBeenCalledTimes(1);
+      expect(harness.recoveryDeliveryUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: harness.delivery.id,
+            status: ManagedBroadcastDeliveryStatus.SENDING,
+            attemptCount: 1,
+            remoteMessageId: null,
+            lockToken: expect.any(String),
+          }),
+          data: expect.objectContaining({
+            status: ManagedBroadcastDeliveryStatus.PENDING,
+            attemptCount: { decrement: 1 },
+            botId: null,
+            lockedAt: null,
+            lockToken: null,
+          }),
+        }),
+      );
+      expect(harness.recoveryDeliveryCount).not.toHaveBeenCalled();
+      expect(harness.recoveryBroadcastUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: harness.row.id,
+            status: ManagedBroadcastStatus.ACTIVE,
+            lockToken: expect.any(String),
+          }),
+          data: expect.objectContaining({
+            nextSendAt: new Date('2026-09-04T12:00:01.000Z'),
+            lockedAt: null,
+            lockToken: null,
+          }),
+        }),
+      );
+      expect(
+        harness.deliveryUpdateMany.mock.calls.some(
+          ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.FAILED,
+        ),
+      ).toBe(false);
+      expect(
+        harness.broadcastUpdateMany.mock.calls.some(
+          ([query]) => query.data?.status === ManagedBroadcastStatus.FAILED,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it('marks a transient Prisma error ambiguous once MAX dispatch was attempted', async () => {
+    const error = Object.assign(new Error('P2024 after dispatch attempt'), { code: 'P2024' });
+    const harness = createPublicationPrismaSendFailureHarness(error, true);
+
+    await expect(
+      (harness.runtime as any).processManagedBroadcastOccurrence(
+        harness.row.id,
+        'deadline',
+        new Date('2026-09-04T11:55:00.000Z'),
+        [ManagedBroadcastStatus.ACTIVE],
+        undefined,
+        undefined,
+        undefined,
+        true,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ status: ManagedBroadcastStatus.FAILED }));
+
+    expect(harness.transaction).not.toHaveBeenCalled();
+    expect(harness.recoveryDeliveryUpdateMany).not.toHaveBeenCalled();
+    expect(harness.deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: harness.delivery.id }),
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+          lockedAt: null,
+          lockToken: null,
+        }),
+      }),
+    );
+    expect(
+      harness.deliveryUpdateMany.mock.calls.some(
+        ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.PENDING,
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps transient Prisma failures on the legacy non-publication delivery path', async () => {
+    const error = Object.assign(new Error('P2024 before legacy MAX dispatch'), { code: 'P2024' });
+    const harness = createPublicationPrismaSendFailureHarness(error, false);
+    (harness.row as any).publicationOccurrenceId = null;
+    (harness.row as any).publicationContentRevisionId = null;
+    (harness.row as any).dispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED;
+    (harness.row as any).requiredBotId = null;
+    (harness.delivery as any).dispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED;
+    (harness.delivery as any).requiredBotId = null;
+    (harness.runtime as any).publicationExecutorProfile = PublicationDispatchProfile.LEGACY_ROUTED;
+
+    await expect(
+      (harness.runtime as any).processManagedBroadcastOccurrence(
+        harness.row.id,
+        'scheduled',
+        new Date('2026-09-04T11:55:00.000Z'),
+        [ManagedBroadcastStatus.ACTIVE],
+      ),
+    ).resolves.toEqual(expect.objectContaining({ status: ManagedBroadcastStatus.FAILED }));
+
+    expect(harness.publish).toHaveBeenCalledTimes(1);
+    expect(harness.transaction).not.toHaveBeenCalled();
+    expect(harness.deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: harness.delivery.id,
+          status: ManagedBroadcastDeliveryStatus.SENDING,
+          lockToken: expect.any(String),
+        }),
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.FAILED,
+          lockedAt: null,
+          lockToken: null,
+        }),
+      }),
+    );
+  });
+
+  it('releases the exact envelope lease when occurrence finalization hits transient Prisma failure', async () => {
+    const error = Object.assign(new Error('P2024 during occurrence finalization'), {
+      code: 'P2024',
+    });
+    const harness = createPublicationPrismaSendFailureHarness(
+      new Error('MAX dispatch must not run'),
+      false,
+    );
+    const alreadySentDelivery = {
+      ...harness.delivery,
+      status: ManagedBroadcastDeliveryStatus.SENT,
+      attemptCount: 1,
+      remoteMessageId: 'mid-already-sent',
+      sentAt: new Date('2026-09-04T11:59:30.000Z'),
+    };
+    (harness.runtime as any).ensureManagedBroadcastDeliveryRows.mockResolvedValue([
+      alreadySentDelivery,
+    ]);
+    (harness.runtime as any).finalizeManagedBroadcastOccurrence.mockRejectedValue(error);
+
+    await expect(
+      (harness.runtime as any).processManagedBroadcastOccurrence(
+        harness.row.id,
+        'deadline',
+        new Date('2026-09-04T11:55:00.000Z'),
+        [ManagedBroadcastStatus.ACTIVE],
+        undefined,
+        undefined,
+        undefined,
+        true,
+      ),
+    ).rejects.toBe(error);
+
+    expect(harness.publish).not.toHaveBeenCalled();
+    expect(harness.transaction).toHaveBeenCalledTimes(1);
+    expect(harness.recoveryDeliveryUpdateMany).not.toHaveBeenCalled();
+    expect(harness.recoveryBroadcastUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: harness.row.id,
+          publicationOccurrenceId: harness.row.publicationOccurrenceId,
+          status: ManagedBroadcastStatus.ACTIVE,
+          lockToken: expect.any(String),
+        }),
+        data: expect.objectContaining({
+          lockedAt: null,
+          lockToken: null,
+          lastError: null,
+        }),
+      }),
+    );
+    expect(
+      harness.broadcastUpdateMany.mock.calls.some(
+        ([query]) => query.data?.status === ManagedBroadcastStatus.FAILED,
+      ),
+    ).toBe(false);
+  });
+
+  it('preserves a terminal publication status when automatic finalization hits transient Prisma failure', async () => {
+    const error = Object.assign(new Error('P2024 during terminal occurrence finalization'), {
+      code: 'P2024',
+    });
+    const harness = createPublicationPrismaSendFailureHarness(
+      new Error('MAX dispatch must not run'),
+      false,
+    );
+    (harness.row as any).status = ManagedBroadcastStatus.PARTIAL;
+    (harness.delivery as any).status = ManagedBroadcastDeliveryStatus.FAILED;
+    (harness.delivery as any).lastError = 'Reviewed terminal delivery failure';
+    (harness.runtime as any).finalizeManagedBroadcastOccurrence.mockRejectedValue(error);
+
+    await expect(
+      (harness.runtime as any).processManagedBroadcastOccurrence(
+        harness.row.id,
+        'deadline',
+        new Date('2026-09-04T11:55:00.000Z'),
+        [ManagedBroadcastStatus.PARTIAL],
+        undefined,
+        undefined,
+        undefined,
+        true,
+      ),
+    ).rejects.toBe(error);
+
+    expect(harness.publish).not.toHaveBeenCalled();
+    expect(harness.transaction).not.toHaveBeenCalled();
+    expect(harness.broadcastUpdateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: harness.row.id,
+        publicationOccurrenceId: harness.row.publicationOccurrenceId,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        status: ManagedBroadcastStatus.PARTIAL,
+        lockToken: expect.any(String),
+      },
+      data: { lockedAt: null, lockToken: null },
+    });
+    expect(
+      harness.broadcastUpdateMany.mock.calls.some(
+        ([query]) => query.data?.status === ManagedBroadcastStatus.FAILED,
+      ),
+    ).toBe(false);
+  });
+
+  it('releases the ACTIVE envelope if known-response recovery finalization also hits Prisma failure', async () => {
+    const persistenceError = Object.assign(new Error('P2024 after the known MAX response'), {
+      code: 'P2024',
+    });
+    const finalizationError = Object.assign(new Error('P2028 during recovery finalization'), {
+      code: 'P2028',
+    });
+    const harness = createPublicationPrismaSendFailureHarness(null, true);
+    (harness.runtime as any).publicationVerification.persistResponseTargetMismatch = jest
+      .fn()
+      .mockRejectedValue(persistenceError);
+    (harness.runtime as any).finalizeManagedBroadcastOccurrence.mockRejectedValue(
+      finalizationError,
+    );
+
+    await expect(
+      (harness.runtime as any).processManagedBroadcastOccurrence(
+        harness.row.id,
+        'deadline',
+        new Date('2026-09-04T11:55:00.000Z'),
+        [ManagedBroadcastStatus.ACTIVE],
+        undefined,
+        undefined,
+        undefined,
+        true,
+      ),
+    ).rejects.toBe(finalizationError);
+
+    expect(harness.publish).toHaveBeenCalledTimes(1);
+    expect(harness.deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: harness.delivery.id,
+          lockToken: expect.any(String),
+        }),
+        data: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          remoteMessageId: 'mid-known-after-dispatch',
+          lockedAt: null,
+          lockToken: null,
+        }),
+      }),
+    );
+    expect(harness.broadcastUpdateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: harness.row.id,
+          publicationOccurrenceId: { not: null },
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          status: ManagedBroadcastStatus.ACTIVE,
+          lockToken: expect.any(String),
+        }),
+        data: expect.objectContaining({ lockedAt: null, lockToken: null }),
+      }),
+    );
+    expect(
+      harness.deliveryUpdateMany.mock.calls.some(
+        ([query]) => query.data?.status === ManagedBroadcastDeliveryStatus.PENDING,
+      ),
+    ).toBe(false);
   });
 
   it('persists a structured access-loss code for the current and future target deliveries', async () => {
@@ -1583,6 +2118,167 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(managedBroadcast.findMany).toHaveBeenCalledTimes(3);
   });
 
+  it('drains a targeted NOW envelope in bounded quanta behind a full older global page', async () => {
+    const globalBacklog = Array.from({ length: 10 }, (_, index) => ({
+      id: `older-broadcast-${index + 1}`,
+    }));
+    let targetedSelectionPass = 0;
+    const managedBroadcast = {
+      findMany: jest.fn(async (request: any) => {
+        if (request.where?.publicationOccurrence?.is?.publicationId !== 'publication-target') {
+          return globalBacklog;
+        }
+        targetedSelectionPass += 1;
+        return targetedSelectionPass <= 2 ? [{ id: 'broadcast-target' }] : [];
+      }),
+    };
+    const runtime = new AdminManagedBroadcastRuntime(
+      {
+        prisma: { managedBroadcast },
+        logger: { log: jest.fn(), warn: jest.fn() },
+      } as never,
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+    const processSpy = jest
+      .spyOn(runtime as any, 'processManagedBroadcastOccurrence')
+      .mockResolvedValueOnce({
+        status: ManagedBroadcastStatus.ACTIVE,
+        currentOccurrence: 1,
+        sentChatIds: ['chat-1', 'chat-2', 'chat-3', 'chat-4'],
+        failedChatIds: [],
+        pendingChatIds: ['chat-5'],
+        canRetry: false,
+        firstSendError: null,
+        nextSendAt: new Date(),
+      })
+      .mockResolvedValueOnce({
+        status: ManagedBroadcastStatus.COMPLETED,
+        currentOccurrence: 1,
+        sentChatIds: ['chat-5'],
+        failedChatIds: [],
+        pendingChatIds: [],
+        canRetry: false,
+        firstSendError: null,
+        nextSendAt: null,
+      });
+
+    await runtime.processTargetedImmediatePublicationBroadcasts(
+      'publication-target',
+      'occurrence-target',
+    );
+
+    expect(processSpy).toHaveBeenCalledTimes(2);
+    for (const call of processSpy.mock.calls) {
+      expect(call).toEqual([
+        'broadcast-target',
+        'immediate',
+        expect.any(Date),
+        [ManagedBroadcastStatus.ACTIVE],
+        undefined,
+        { remaining: PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE },
+        4,
+        true,
+      ]);
+    }
+    expect(managedBroadcast.findMany).toHaveBeenCalledTimes(3);
+    for (const [request] of managedBroadcast.findMany.mock.calls) {
+      expect(request.where.publicationOccurrence.is).toEqual(
+        expect.objectContaining({
+          id: 'occurrence-target',
+          publicationId: 'publication-target',
+        }),
+      );
+    }
+    expect(processSpy).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^older-broadcast-/u),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('bypasses a full older deadline page for an exact retry occurrence', async () => {
+    const olderDeadlineBacklog = Array.from({ length: 25 }, (_, index) => ({
+      id: `older-deadline-${index + 1}`,
+    }));
+    let targetedSelectionPass = 0;
+    const managedBroadcast = {
+      findMany: jest.fn(async (request: any) => {
+        if (request.where?.publicationOccurrence?.is?.publicationId !== 'publication-target') {
+          return olderDeadlineBacklog;
+        }
+        targetedSelectionPass += 1;
+        return targetedSelectionPass === 1 ? [{ id: 'broadcast-target' }] : [];
+      }),
+    };
+    const runtime = new AdminManagedBroadcastRuntime(
+      {
+        prisma: { managedBroadcast },
+        logger: { log: jest.fn(), warn: jest.fn() },
+      } as never,
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+    const processSpy = jest
+      .spyOn(runtime as any, 'processManagedBroadcastOccurrence')
+      .mockResolvedValue({
+        status: ManagedBroadcastStatus.COMPLETED,
+        currentOccurrence: 1,
+        sentChatIds: ['chat-1'],
+        failedChatIds: [],
+        pendingChatIds: [],
+        canRetry: false,
+        firstSendError: null,
+        nextSendAt: null,
+      });
+
+    await runtime.processTargetedDeadlinePublicationBroadcasts(
+      'publication-target',
+      'occurrence-target',
+    );
+
+    expect(processSpy).toHaveBeenCalledWith(
+      'broadcast-target',
+      'deadline',
+      expect.any(Date),
+      [ManagedBroadcastStatus.ACTIVE],
+      undefined,
+      { remaining: PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE },
+      4,
+      true,
+    );
+    expect(managedBroadcast.findMany).toHaveBeenCalledTimes(2);
+    expect(managedBroadcast.findMany.mock.calls[0]?.[0]?.where.publicationOccurrence.is).toEqual(
+      expect.objectContaining({
+        id: 'occurrence-target',
+        publicationId: 'publication-target',
+        schedule: {
+          is: {
+            status: PublicationScheduleStatus.ACTIVE,
+            mode: {
+              in: [
+                PublicationScheduleMode.ONCE,
+                PublicationScheduleMode.SLOTS,
+                PublicationScheduleMode.RECURRENCE,
+              ],
+            },
+          },
+        },
+      }),
+    );
+    expect(processSpy).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^older-deadline-/u),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('delivers exact due scheduled publication envelopes through the deadline entry point', async () => {
     const managedBroadcast = {
       findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-once' }]),
@@ -2126,6 +2822,124 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(finalizeSpy).toHaveBeenCalledTimes(1);
   });
 
+  it.each([ManagedBroadcastStatus.PARTIAL, ManagedBroadcastStatus.FAILED])(
+    'keeps a mixed %s NOW envelope verification-only during automatic recovery',
+    async (status) => {
+      const nextSendAt = new Date('2026-09-01T10:00:00.000Z');
+      const pendingDeliveries = Array.from({ length: 98 }, (_, index) => ({
+        id: `delivery-pending-${index + 1}`,
+        targetChatId: `chat-${index + 2}`,
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        attemptCount: 0,
+      }));
+      const deliveries = [
+        {
+          id: 'delivery-sent',
+          targetChatId: 'chat-1',
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          attemptCount: 1,
+          remoteMessageId: 'message-1',
+          remoteMessageVerifiedAt: null,
+          remoteMessageVerificationNextAt: new Date('2026-09-01T10:00:15.000Z'),
+          remoteMessageVerificationAttemptedAt: null,
+          remoteMessageVerificationSource: null,
+          remoteMessageVerificationAttemptCount: 0,
+          remoteMessageVerificationAbsentCount: 0,
+          remoteMessageVerificationPresentCount: 0,
+        },
+        ...pendingDeliveries,
+      ];
+      const targetChatIds = deliveries.map((delivery) => delivery.targetChatId);
+      const row = {
+        ...createPublicationEnvelopeRow(),
+        id: `broadcast-${status.toLowerCase()}`,
+        targetChatIds,
+        nextSendAt,
+        status,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: 'publisher-bot',
+      };
+      const publish = jest.fn();
+      const managedBroadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const deliveryUpdateMany = jest.fn();
+      const runtime = new AdminManagedBroadcastRuntime(
+        {
+          prisma: {
+            managedBroadcast: {
+              updateMany: managedBroadcastUpdateMany,
+              findUnique: jest.fn().mockResolvedValue(row),
+            },
+            managedBroadcastDelivery: {
+              findMany: jest.fn().mockResolvedValue(deliveries),
+              updateMany: deliveryUpdateMany,
+            },
+          },
+          maxRoutedPublicationService: { publish },
+          logger: { log: jest.fn(), warn: jest.fn() },
+        } as never,
+        PublicationDispatchProfile.PUBLIK_V1,
+      );
+      jest
+        .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+        .mockResolvedValue(true);
+      jest
+        .spyOn(runtime as any, 'reconcileStaleManagedBroadcastDeliveries')
+        .mockResolvedValue(undefined);
+      jest
+        .spyOn(runtime as any, 'deferManagedBroadcastOccurrenceWithFreshSendingDeliveries')
+        .mockResolvedValue(false);
+      jest
+        .spyOn((runtime as any).publisherDispatch, 'ensureRuntimeBoundary')
+        .mockResolvedValue({ ready: true });
+      jest
+        .spyOn((runtime as any).publisherDispatch, 'ensureActorAdminAccess')
+        .mockResolvedValue({ ready: true });
+      jest.spyOn(runtime as any, 'resolveManagedBroadcastTargetsFromRow').mockReturnValue({
+        targetMode: 'selected',
+        targetChatIds,
+      });
+      const ensureDeliveryRows = jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows');
+      const loadMedia = jest.spyOn(
+        (runtime as any).mediaRuntime,
+        'loadManagedBroadcastRequestMedia',
+      );
+      jest
+        .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
+        .mockResolvedValue(new Set());
+      const finalize = jest.spyOn(runtime as any, 'finalizeManagedBroadcastOccurrence');
+
+      const result = await (runtime as any).processManagedBroadcastOccurrence(
+        row.id,
+        'immediate',
+        new Date('2026-09-01T09:55:00.000Z'),
+        [
+          ManagedBroadcastStatus.ACTIVE,
+          ManagedBroadcastStatus.PARTIAL,
+          ManagedBroadcastStatus.FAILED,
+        ],
+      );
+
+      expect(result).toMatchObject({
+        status,
+        pendingChatIds: pendingDeliveries.map((delivery) => delivery.targetChatId),
+        canRetry: true,
+      });
+      expect(publish).not.toHaveBeenCalled();
+      expect(deliveryUpdateMany).not.toHaveBeenCalled();
+      expect(ensureDeliveryRows).not.toHaveBeenCalled();
+      expect(loadMedia).not.toHaveBeenCalled();
+      expect(finalize).not.toHaveBeenCalled();
+      expect(
+        managedBroadcastUpdateMany.mock.calls.some(
+          ([request]) => request.data?.status === ManagedBroadcastStatus.ACTIVE,
+        ),
+      ).toBe(false);
+      expect(managedBroadcastUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { lockedAt: null, lockToken: null } }),
+      );
+    },
+  );
+
   it('defers a deadline delivery when MAX capacity rejects it before dispatch', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-12T10:00:30.000Z'));
     const nextSendAt = new Date('2026-07-12T10:00:00.000Z');
@@ -2413,6 +3227,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     });
     const assertDispatchAllowed = jest.fn().mockResolvedValue(undefined);
     const recordSendSuccess = jest.fn().mockResolvedValue(undefined);
+    const logger = { log: jest.fn(), warn: jest.fn() };
     const actorAccessFindMany = jest.fn().mockResolvedValue([
       {
         chatId: 'chat-1',
@@ -2454,13 +3269,17 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
           recordSendFailure: jest.fn().mockResolvedValue('transient'),
         },
         assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
-        logger: { log: jest.fn(), warn: jest.fn() },
+        logger,
       } as never,
       PublicationDispatchProfile.PUBLIK_V1,
     );
     const executionActive = jest
       .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
-      .mockResolvedValue(true);
+      .mockImplementation(async (...args: unknown[]) => {
+        const onOccurrenceScheduledAt = args[3] as ((scheduledAt: Date) => void) | undefined;
+        onOccurrenceScheduledAt?.(nextSendAt);
+        return true;
+      });
     jest
       .spyOn(runtime as any, 'reconcileStaleManagedBroadcastDeliveries')
       .mockResolvedValue(undefined);
@@ -2584,6 +3403,20 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(executionChecksAfterMutation).toBe(executionChecksBeforeMutation + 1);
     expect(assertDispatchAllowed).toHaveBeenCalledTimes(assertEntityReady.mock.calls.length);
     expect(recordSendSuccess).toHaveBeenCalledWith('chat-1', expect.any(Date));
+    expect(logger.log).toHaveBeenCalledWith(
+      {
+        broadcastId: 'broadcast-publik',
+        publicationOccurrenceId: 'occurrence-publik',
+        scheduledAt: nextSendAt.toISOString(),
+        claimedAt: expect.any(String),
+        lagMs: expect.any(Number),
+      },
+      'Publik publication deadline delivery claimed',
+    );
+    const deadlineClaim = logger.log.mock.calls.find(
+      ([, message]) => message === 'Publik publication deadline delivery claimed',
+    )?.[0];
+    expect(deadlineClaim?.lagMs).toBeGreaterThanOrEqual(0);
     expect(deliveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

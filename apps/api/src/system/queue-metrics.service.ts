@@ -9,6 +9,7 @@ import { ADMIN_MANUAL_FANOUT_QUEUE } from '../admin/admin-manual-fanout.queue';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from '../admin/admin-suggestion-delivery.queue';
 import { ADMIN_SUPER_BAN_QUEUE } from '../admin/admin-super-ban.queue';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
+import { PUBLISHER_PUBLICATION_WAKEUP_QUEUE } from '../admin/publisher-publication-wakeup.queue';
 import { VK_PARSING_PUBLISHER_QUEUE, VK_PARSING_SYNC_QUEUE } from '../admin/vk-parsing.queue';
 import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from '../max/max-chat-admin-roster-sync.queue';
 import {
@@ -67,6 +68,7 @@ export const AUXILIARY_QUEUE_NAMES = [
   PUBLISHER_AUTO_REPLY_QUEUE,
   PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE,
   PUBLISHER_SUGGESTION_PUBLICATION_QUEUE,
+  PUBLISHER_PUBLICATION_WAKEUP_QUEUE,
   PUBLISHER_SUGGESTION_ADMIN_QUEUE,
   NIGHT_MODE_TRANSITION_QUEUE,
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,

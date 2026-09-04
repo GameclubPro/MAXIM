@@ -60,6 +60,11 @@ import { PublicationService } from './publication.service';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherPublicationDispatchRunnerService } from './publisher-publication-dispatch-runner.service';
+import { PublisherPublicationWakeupProcessor } from './publisher-publication-wakeup.processor';
+import {
+  PUBLISHER_PUBLICATION_WAKEUP_QUEUE,
+  PublisherPublicationWakeupQueueService,
+} from './publisher-publication-wakeup.queue';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { VkParsingPublisherProcessor } from './vk-parsing-publisher.processor';
@@ -110,6 +115,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     BullModule.registerQueue({ name: VK_PARSING_PUBLISHER_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_PUBLICATION_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_ADMIN_QUEUE }),
+    BullModule.registerQueue({ name: PUBLISHER_PUBLICATION_WAKEUP_QUEUE }),
     AuthModule,
     MaxModule,
     ChatContextModule,
@@ -177,6 +183,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherDialogContextService,
     PublicationRunnerService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherPublicationDispatchRunnerService] : []),
+    PublisherPublicationWakeupQueueService,
+    ...(roleRunsPublisher(getAppRole()) ? [PublisherPublicationWakeupProcessor] : []),
     PublisherPolicyService,
     PublisherSuggestionService,
     PublisherAutoReplyService,
