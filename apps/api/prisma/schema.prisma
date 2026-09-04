@@ -3065,6 +3065,7 @@ model VkParsingPost {
   publishAttemptCount       Int                        @default(0) @map("publish_attempt_count")
   publishIdempotencyKey     String?                    @unique(map: "vk_parsing_posts_publish_idempotency_key_key") @map("publish_idempotency_key")
   publishReason             String?                    @map("publish_reason")
+  publishScheduleFingerprint String?                   @map("publish_schedule_fingerprint")
   dispatchProfile           PublicationDispatchProfile @default(LEGACY_ROUTED) @map("dispatch_profile")
   requiredBotId             String?                    @map("required_bot_id")
   dialogBotId               String?                    @map("dialog_bot_id")

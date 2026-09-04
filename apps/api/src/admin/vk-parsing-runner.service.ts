@@ -19,7 +19,7 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
     if (!this.runtimeBoundary.dispatchEnabled) {
       return;
     }
-    const intervalMs = this.vkParsingService.getSyncIntervalMs();
+    const intervalMs = this.vkParsingService.getSchedulerIntervalMs();
     this.timer = setInterval(() => void this.run('scheduled'), intervalMs);
     this.timer.unref?.();
     setTimeout(() => void this.run('startup'), Math.min(30_000, intervalMs)).unref?.();
@@ -44,6 +44,12 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
         await this.vkParsingService.syncDueSources(reason);
       } catch (error) {
         this.logger.warn({ err: error, reason }, 'VK parsing source scheduling failed');
+      }
+
+      try {
+        await this.vkParsingService.reconcileAutoPublishSchedules();
+      } catch (error) {
+        this.logger.warn({ err: error, reason }, 'VK autopublish schedule reconciliation failed');
       }
 
       try {

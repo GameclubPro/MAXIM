@@ -8,6 +8,10 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, type VkParsingOwnerProfile } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { VkParsingTextFormat } from './vk-parsing-content';
+import {
+  VK_MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
+  VK_MAX_SEND_CONFIRMED_PERSISTENCE_ERROR_PREFIX,
+} from './vk-publish-quarantine';
 
 export type ExistingVkPostImportState = {
   id: string;
@@ -16,6 +20,11 @@ export type ExistingVkPostImportState = {
   status: string;
   contentHash: string;
   publishedContentHash: string | null;
+  publishQueuedAt: Date | null;
+  publishIdempotencyKey: string | null;
+  publishReason: string | null;
+  publishCancelledAt: Date | null;
+  publishScheduleFingerprint: string | null;
 };
 
 export type VkParsingPostImportSource = {
@@ -49,11 +58,17 @@ export type VkParsingNormalizedPostForImport = {
 export type PreparedVkPostImport = {
   post: VkParsingNormalizedPostForImport;
   status: string;
+  publishScheduleFingerprint: string | null;
 };
 
 export type VkMissingPostSpotCheck = (
   posts: Array<{ vkOwnerId: number; vkPostId: number }>,
 ) => Promise<Set<string> | null>;
+
+export type VkParsingPostImportDatabase = Pick<
+  Prisma.TransactionClient,
+  'vkParsingPost' | '$executeRaw'
+>;
 
 const VK_POST_STATUS_NEW = 'NEW';
 const VK_POST_STATUS_FAILED = 'FAILED';
@@ -73,9 +88,10 @@ export class VkParsingPostImportRepository {
   async findExistingPosts(
     source: VkParsingPostImportSource,
     posts: VkParsingNormalizedPostForImport[],
+    database: VkParsingPostImportDatabase = this.prisma,
   ): Promise<ExistingVkPostImportState[]> {
     return posts.length
-      ? this.prisma.vkParsingPost.findMany({
+      ? database.vkParsingPost.findMany({
           where: {
             chatId: source.chatId,
             ownerProfile: source.ownerProfile,
@@ -90,6 +106,11 @@ export class VkParsingPostImportRepository {
             status: true,
             contentHash: true,
             publishedContentHash: true,
+            publishQueuedAt: true,
+            publishIdempotencyKey: true,
+            publishReason: true,
+            publishCancelledAt: true,
+            publishScheduleFingerprint: true,
           },
         })
       : [];
@@ -99,9 +120,10 @@ export class VkParsingPostImportRepository {
     source: VkParsingPostImportSource,
     posts: PreparedVkPostImport[],
     seenAt: Date,
+    database: VkParsingPostImportDatabase = this.prisma,
   ): Promise<void> {
     for (const chunk of this.chunkItems(posts, VK_POST_IMPORT_CHUNK_SIZE)) {
-      await this.persistImportedPostsChunk(source, chunk, seenAt);
+      await this.persistImportedPostsChunk(source, chunk, seenAt, database);
     }
   }
 
@@ -231,6 +253,39 @@ export class VkParsingPostImportRepository {
           ownerProfile: source.ownerProfile,
           ownerBotId: source.ownerBotId,
           status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
+          publishLockedAt: null,
+          rollbackQueuedAt: null,
+          rollbackLockedAt: null,
+          rollbackIdempotencyKey: null,
+          AND: [
+            {
+              OR: [
+                { lastError: null },
+                {
+                  AND: [
+                    {
+                      NOT: {
+                        lastError: { startsWith: VK_MAX_SEND_AMBIGUOUS_ERROR_PREFIX },
+                      },
+                    },
+                    {
+                      NOT: {
+                        lastError: {
+                          startsWith: VK_MAX_SEND_CONFIRMED_PERSISTENCE_ERROR_PREFIX,
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              NOT: {
+                publishIdempotencyKey: { not: null },
+                publishAttemptCount: { gt: 0 },
+              },
+            },
+          ],
         },
         data: {
           status: VK_POST_STATUS_UNAVAILABLE,
@@ -242,6 +297,7 @@ export class VkParsingPostImportRepository {
           publishLockedAt: null,
           publishIdempotencyKey: null,
           publishReason: null,
+          publishScheduleFingerprint: null,
         },
       });
     }
@@ -251,13 +307,14 @@ export class VkParsingPostImportRepository {
     source: VkParsingPostImportSource,
     posts: PreparedVkPostImport[],
     seenAt: Date,
+    database: VkParsingPostImportDatabase,
   ): Promise<void> {
     if (posts.length === 0) {
       return;
     }
 
     const rows = posts.map(
-      ({ post, status }) =>
+      ({ post, status, publishScheduleFingerprint }) =>
         Prisma.sql`(
         ${this.createDatabaseId('vkpost')},
         ${source.id},
@@ -282,13 +339,16 @@ export class VkParsingPostImportRepository {
         ${this.toJsonbSql(post.raw)},
         ${post.contentHash},
         ${status},
+        ${publishScheduleFingerprint},
         ${seenAt},
         ${seenAt},
         ${seenAt}
       )`,
     );
 
-    await this.prisma.$executeRaw(Prisma.sql`
+    // FLAG: An active intent owns one immutable content revision. Once its key is cleared, a
+    // later sync may import a newer VK revision and classify it against the published hash.
+    await database.$executeRaw(Prisma.sql`
       INSERT INTO "vk_parsing_posts" (
         "id",
         "source_id",
@@ -313,6 +373,7 @@ export class VkParsingPostImportRepository {
         "raw",
         "content_hash",
         "status",
+        "publish_schedule_fingerprint",
         "last_seen_at",
         "last_availability_checked_at",
         "updated_at"
@@ -395,6 +456,7 @@ export class VkParsingPostImportRepository {
           ELSE "vk_parsing_posts"."last_error"
         END,
         "updated_at" = CURRENT_TIMESTAMP
+      WHERE "vk_parsing_posts"."publish_idempotency_key" IS NULL
     `);
   }
 

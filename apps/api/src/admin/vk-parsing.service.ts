@@ -15,14 +15,32 @@ import {
   type VkParsingHealthSummary,
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
+import type { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
+import {
+  isValidVkAutoPublishTimezone,
+  resolveNextAllowedVkAutoPublishAt,
+} from './vk-autopublish-timing';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
-import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
+import {
+  type VkParsingOwnerScope,
+  VkParsingOwnershipService,
+} from './vk-parsing-ownership.service';
 import type { VkParsingSyncReason } from './vk-parsing.queue';
-import { VkPublishService } from './vk-publish.service';
+import { type VkParsingPublishProcessingResult, VkPublishService } from './vk-publish.service';
+import {
+  isVkMaxSendAmbiguous,
+  isVkMaxSendConfirmedPersistencePending,
+} from './vk-publish-quarantine';
 import { VkSourceService } from './vk-source.service';
 import { VkSyncService } from './vk-sync.service';
 
@@ -32,12 +50,39 @@ const VK_PARSING_AVAILABLE_CAPABILITY: VkParsingCapability = {
   reasonCode: null,
   reason: null,
 };
-const MAX_SEND_AMBIGUOUS_ERROR_PREFIX = '[max.send_ambiguous]';
 const MAX_SEND_AMBIGUOUS_DRAFT_BLOCK_MESSAGE =
   'MAX мог уже принять эту публикацию. Сначала сверьте сообщение в MAX вручную; сохранение черновика заблокировано.';
+const MAX_SEND_CONFIRMED_PERSISTENCE_DRAFT_BLOCK_MESSAGE =
+  'MAX уже подтвердил эту публикацию, но результат ещё не сохранён. Изменение черновика заблокировано до восстановления.';
+const MAX_SEND_ATTEMPT_DRAFT_BLOCK_MESSAGE =
+  'Предыдущая попытка публикации ещё восстанавливается. Изменение черновика пока недоступно.';
+const ACTIVE_ROLLBACK_DRAFT_BLOCK_MESSAGE =
+  'Удаление предыдущей публикации ещё выполняется. Изменение черновика пока недоступно.';
+const VK_AUTOPUBLISH_GLOBAL_SCHEDULE_KEYS = new Set([
+  'schedulerTimezone',
+  'quietHoursStart',
+  'quietHoursEnd',
+  'workHoursStart',
+  'workHoursEnd',
+  'distributeEvenlyEnabled',
+  'roundRobinEnabled',
+]);
+const VK_AUTOPUBLISH_SOURCE_SCHEDULE_KEYS = new Set([
+  'publishIntervalMinutes',
+  'dailyLimit',
+  'minPublishIntervalMinutes',
+  'publishMode',
+  'priority',
+  'quietHoursStart',
+  'quietHoursEnd',
+]);
+const VK_AUTOPUBLISH_SCHEDULE_VALIDATION_PAGE_SIZE = 500;
+const VK_AUTOPUBLISH_SCHEDULE_VALIDATION_MAX_SOURCES = 5_000;
 
 @Injectable()
 export class VkParsingService {
+  private readonly logger = new Logger(VkParsingService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accessService: VkParsingAccessService,
@@ -50,6 +95,10 @@ export class VkParsingService {
 
   getSyncIntervalMs(): number {
     return this.syncService.getSyncIntervalMs();
+  }
+
+  getSchedulerIntervalMs(): number {
+    return this.syncService.getSchedulerIntervalMs();
   }
 
   async getCapability(chatId: string, user: AuthUser): Promise<VkParsingCapability> {
@@ -71,6 +120,12 @@ export class VkParsingService {
     const parsed = updateVkParsingSettingsRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
+    }
+    if (
+      parsed.data.schedulerTimezone !== undefined &&
+      !isValidVkAutoPublishTimezone(parsed.data.schedulerTimezone)
+    ) {
+      throw new BadRequestException('Укажите корректный часовой пояс IANA.');
     }
 
     const ownerScope = this.ownership.getPublisherScope();
@@ -119,6 +174,43 @@ export class VkParsingService {
       const now = new Date();
       const nextAutoPublishEnabled =
         settingsPatch.autoPublishEnabled ?? existingSettings?.autoPublishEnabled ?? false;
+      const shouldCascadeSourceAutoEnable =
+        resolvedAutoPublishMode === 'AUTO' &&
+        !(
+          existingSettings?.autoPublishEnabled === true &&
+          existingSettings.autoPublishKillSwitchEnabled === true
+        );
+      if (
+        nextAutoPublishEnabled &&
+        (this.hasAnyKey(settingsPatch, VK_AUTOPUBLISH_GLOBAL_SCHEDULE_KEYS) ||
+          resolvedAutoPublishMode === 'AUTO')
+      ) {
+        const timingSettings = {
+          schedulerTimezone:
+            settingsPatch.schedulerTimezone ??
+            existingSettings?.schedulerTimezone ??
+            'Europe/Moscow',
+          quietHoursStart:
+            settingsPatch.quietHoursStart !== undefined
+              ? settingsPatch.quietHoursStart
+              : (existingSettings?.quietHoursStart ?? null),
+          quietHoursEnd:
+            settingsPatch.quietHoursEnd !== undefined
+              ? settingsPatch.quietHoursEnd
+              : (existingSettings?.quietHoursEnd ?? null),
+          workHoursStart:
+            settingsPatch.workHoursStart ?? existingSettings?.workHoursStart ?? '09:00',
+          workHoursEnd: settingsPatch.workHoursEnd ?? existingSettings?.workHoursEnd ?? '22:00',
+        };
+        await this.assertAutoPublishScheduleAvailable(
+          tx,
+          chatId,
+          ownerScope,
+          now,
+          timingSettings,
+          shouldCascadeSourceAutoEnable,
+        );
+      }
       const nextAppendChannelLinkEnabled =
         settingsPatch.appendChannelLinkEnabled ??
         existingSettings?.appendChannelLinkEnabled ??
@@ -174,13 +266,7 @@ export class VkParsingService {
         update: updateData,
       });
 
-      if (
-        resolvedAutoPublishMode === 'AUTO' &&
-        !(
-          existingSettings?.autoPublishEnabled === true &&
-          existingSettings.autoPublishKillSwitchEnabled === true
-        )
-      ) {
+      if (shouldCascadeSourceAutoEnable) {
         await tx.vkParsingSource.updateMany({
           where: {
             chatId,
@@ -237,6 +323,10 @@ export class VkParsingService {
       });
     });
 
+    if (this.hasAnyKey(settingsPatch, VK_AUTOPUBLISH_GLOBAL_SCHEDULE_KEYS)) {
+      await this.reconcileAutoPublishSchedulesAfterMutation({ chatId, force: true });
+    }
+
     return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY, {}, ownerScope);
   }
 
@@ -266,7 +356,21 @@ export class VkParsingService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    return this.sourceService.updateSource(chatId, sourceId, user, parsed.data);
+    const feed = await this.sourceService.updateSource(chatId, sourceId, user, parsed.data);
+    if (!this.hasAnyKey(parsed.data, VK_AUTOPUBLISH_SOURCE_SCHEDULE_KEYS)) {
+      return feed;
+    }
+    await this.reconcileAutoPublishSchedulesAfterMutation({
+      chatId,
+      sourceIds: [sourceId],
+      force: true,
+    });
+    return this.feedService.buildFeed(
+      chatId,
+      VK_PARSING_AVAILABLE_CAPABILITY,
+      {},
+      this.ownership.getPublisherScope(),
+    );
   }
 
   async applySourcePreset(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
@@ -275,14 +379,24 @@ export class VkParsingService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const feed = await this.sourceService.applyBulkPreset(chatId, user, parsed.data);
+    await this.sourceService.applyBulkPreset(chatId, user, parsed.data);
+    await this.reconcileAutoPublishSchedulesAfterMutation({
+      chatId,
+      sourceIds: parsed.data.sourceIds,
+      force: true,
+    });
     if (parsed.data.preset === 'CLEAN') {
       return this.updateSettings(chatId, user, {
         stripLinksEnabled: true,
         skipAdsEnabled: true,
       });
     }
-    return feed;
+    return this.feedService.buildFeed(
+      chatId,
+      VK_PARSING_AVAILABLE_CAPABILITY,
+      {},
+      this.ownership.getPublisherScope(),
+    );
   }
 
   async refresh(chatId: string, user: AuthUser): Promise<VkParsingRefreshResult> {
@@ -305,6 +419,10 @@ export class VkParsingService {
 
   async recoverStalePublishJobs(): Promise<number> {
     return this.publishService.recoverStalePublishJobs();
+  }
+
+  async reconcileAutoPublishSchedules(): Promise<number> {
+    return this.publishService.reconcileAutoPublishSchedules();
   }
 
   async recoverStalePublisherRollbackJobs(): Promise<number> {
@@ -348,8 +466,17 @@ export class VkParsingService {
     if (post.status === 'PUBLISHED' || post.status === 'UNAVAILABLE' || post.status === 'SKIPPED') {
       throw new BadRequestException('Этот пост уже нельзя вернуть на модерацию.');
     }
-    if (post.lastError?.trim().startsWith(MAX_SEND_AMBIGUOUS_ERROR_PREFIX) === true) {
+    if (isVkMaxSendConfirmedPersistencePending(post.lastError)) {
+      throw new BadRequestException(MAX_SEND_CONFIRMED_PERSISTENCE_DRAFT_BLOCK_MESSAGE);
+    }
+    if (isVkMaxSendAmbiguous(post.lastError)) {
       throw new BadRequestException(MAX_SEND_AMBIGUOUS_DRAFT_BLOCK_MESSAGE);
+    }
+    if (post.publishIdempotencyKey && post.publishAttemptCount > 0) {
+      throw new BadRequestException(MAX_SEND_ATTEMPT_DRAFT_BLOCK_MESSAGE);
+    }
+    if (post.rollbackQueuedAt || post.rollbackLockedAt || post.rollbackIdempotencyKey) {
+      throw new BadRequestException(ACTIVE_ROLLBACK_DRAFT_BLOCK_MESSAGE);
     }
 
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
@@ -368,6 +495,13 @@ export class VkParsingService {
         updatedAt: post.updatedAt,
         publishCancelledAt: null,
         publishLockedAt: null,
+        publishAttemptCount: post.publishAttemptCount,
+        publishIdempotencyKey: post.publishIdempotencyKey,
+        publishReason: post.publishReason,
+        lastError: post.lastError,
+        rollbackQueuedAt: null,
+        rollbackLockedAt: null,
+        rollbackIdempotencyKey: null,
         source: { ...this.ownership.getPublisherScope(), publishMode: 'REVIEW' },
       },
       data: {
@@ -383,6 +517,7 @@ export class VkParsingService {
         publishScheduledAt: null,
         publishIdempotencyKey: null,
         publishReason: null,
+        publishScheduleFingerprint: null,
         lastError: null,
         autoPublishError: null,
       },
@@ -471,14 +606,113 @@ export class VkParsingService {
 
   async processPublishPostJob(
     params: Parameters<VkPublishService['processPublishPostJob']>[0],
-  ): Promise<void> {
-    return this.publishService.processPublishPostJob(params);
+    beforeDispatch?: () => Promise<void>,
+  ): Promise<VkParsingPublishProcessingResult | undefined> {
+    return this.publishService.processPublishPostJob(params, beforeDispatch);
   }
 
   async processPublisherRollbackJob(
     params: Parameters<VkPublishService['processPublisherRollbackJob']>[0],
   ): Promise<void> {
     return this.publishService.processPublisherRollbackJob(params);
+  }
+
+  private async reconcileAutoPublishSchedulesAfterMutation(params: {
+    chatId: string;
+    sourceIds?: readonly string[];
+    force: true;
+  }): Promise<void> {
+    try {
+      await this.publishService.reconcileAutoPublishSchedules(params);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          sourceCount: params.sourceIds?.length ?? null,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'VK autopublish settings were saved but schedule reconciliation was deferred',
+      );
+    }
+  }
+
+  private hasAnyKey(value: object, keys: ReadonlySet<string>): boolean {
+    return Object.keys(value).some((key) => keys.has(key));
+  }
+
+  private async assertAutoPublishScheduleAvailable(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    ownerScope: VkParsingOwnerScope,
+    now: Date,
+    timingSettings: Parameters<typeof resolveNextAllowedVkAutoPublishAt>[1],
+    includeAutoEnableCandidates = false,
+  ): Promise<void> {
+    const assertSourceSchedule = (source: {
+      quietHoursStart: string | null;
+      quietHoursEnd: string | null;
+    }): void => {
+      if (!resolveNextAllowedVkAutoPublishAt(now, timingSettings, source)) {
+        throw new BadRequestException('Рабочее время полностью перекрыто паузами публикации.');
+      }
+    };
+    assertSourceSchedule({ quietHoursStart: null, quietHoursEnd: null });
+
+    let cursorId: string | null = null;
+    let validatedSourceCount = 0;
+    while (true) {
+      const remainingSourceBudget =
+        VK_AUTOPUBLISH_SCHEDULE_VALIDATION_MAX_SOURCES - validatedSourceCount;
+      const sources: Array<{
+        id: string;
+        quietHoursStart: string | null;
+        quietHoursEnd: string | null;
+      }> = await tx.vkParsingSource.findMany({
+        where: {
+          chatId,
+          ...ownerScope,
+          status: 'ACTIVE',
+          importEnabled: true,
+          publishMode: { not: 'REVIEW' },
+          quietHoursStart: { not: null },
+          quietHoursEnd: { not: null },
+          ...(includeAutoEnableCandidates
+            ? {
+                OR: [
+                  { autoPublishEnabled: true, autoPublishPausedAt: null },
+                  {
+                    autoPublishEnabled: false,
+                    syncStatus: { not: 'ERROR' },
+                    terminalFailureCount: 0,
+                    circuitOpenedAt: null,
+                    OR: [
+                      { autoPublishPausedReason: null },
+                      { autoPublishPausedReason: { in: ['manual', 'preset'] } },
+                    ],
+                  },
+                ],
+              }
+            : { autoPublishEnabled: true, autoPublishPausedAt: null }),
+          ...(cursorId ? { id: { gt: cursorId } } : {}),
+        },
+        select: { id: true, quietHoursStart: true, quietHoursEnd: true },
+        orderBy: { id: 'asc' },
+        take: Math.min(VK_AUTOPUBLISH_SCHEDULE_VALIDATION_PAGE_SIZE, remainingSourceBudget + 1),
+      });
+      if (sources.length > remainingSourceBudget) {
+        throw new ServiceUnavailableException(
+          'Проверка расписания временно недоступна для такого количества источников.',
+        );
+      }
+      for (const source of sources) {
+        assertSourceSchedule(source);
+      }
+      validatedSourceCount += sources.length;
+      if (sources.length < VK_AUTOPUBLISH_SCHEDULE_VALIDATION_PAGE_SIZE) {
+        return;
+      }
+      cursorId = sources.at(-1)!.id;
+    }
   }
 
   private async writeAuditLog(

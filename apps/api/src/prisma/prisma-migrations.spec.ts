@@ -1179,4 +1179,49 @@ describe('Prisma migrations', () => {
       /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
     );
   });
+
+  it('adds a nullable VK autopublish schedule fingerprint without rewriting existing posts', () => {
+    const migration = readMigration('20260904130000_add_vk_publish_schedule_fingerprint');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+    const schema = readSchema();
+
+    expect(schema).toContain(
+      'publishScheduleFingerprint String?                   @map("publish_schedule_fingerprint")',
+    );
+    expect(compact).toBe(
+      'ALTER TABLE "vk_parsing_posts" ADD COLUMN "publish_schedule_fingerprint" TEXT;',
+    );
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE)\b/i,
+    );
+  });
+
+  it('indexes only actionable pending VK autopublish recovery rows', () => {
+    const migration = readMigration('20260904131000_index_vk_pending_autopublish_recovery');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "vk_parsing_posts_pending_autopublish_recovery_idx" ON "vk_parsing_posts" ( "source_id", "vk_published_at", "created_at", "id" )',
+    );
+    for (const predicate of [
+      '"status" = \'NEW\'',
+      '"publish_schedule_fingerprint" IS NOT NULL',
+      '"publish_queued_at" IS NULL',
+      '"publish_scheduled_at" IS NULL',
+      '"publish_locked_at" IS NULL',
+      '"publish_attempt_count" = 0',
+      '"publish_idempotency_key" IS NULL',
+      '"publish_reason" IS NULL',
+      '"publish_cancelled_at" IS NULL',
+      '"publish_cancelled_by_user_id" IS NULL',
+      '"publish_actor_user_id" IS NULL',
+      '"dispatch_blocker_code" IS NULL',
+      '"dispatch_blocked_at" IS NULL',
+    ]) {
+      expect(compact).toContain(predicate);
+    }
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE)\b/i,
+    );
+  });
 });

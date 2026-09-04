@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import type { Job } from 'bullmq';
+import { DelayedError, type Job } from 'bullmq';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import {
@@ -45,8 +45,7 @@ export class VkParsingPublisherProcessor extends WorkerHost {
       typeof job.data === 'object' && job.data !== null
         ? (job.data as Partial<VkParsingPublisherJob>)
         : null;
-    const requiredBotId =
-      typeof data?.requiredBotId === 'string' ? data.requiredBotId.trim() : '';
+    const requiredBotId = typeof data?.requiredBotId === 'string' ? data.requiredBotId.trim() : '';
     if (!requiredBotId) {
       throw new Error('Publik VK queue job is missing requiredBotId');
     }
@@ -91,19 +90,30 @@ export class VkParsingPublisherProcessor extends WorkerHost {
     ) {
       throw new Error('Publik VK publish job has an invalid route payload');
     }
-    await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
-    await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
-    await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
-
-    await this.vkParsingService.processPublishPostJob({
-      postId: data.postId,
-      chatId: data.chatId,
-      reason: data.reason,
-      idempotencyKey: data.idempotencyKey,
-      dispatchProfile: data.dispatchProfile,
-      requiredBotId,
-      attemptsMade: job.attemptsMade,
-      maxAttempts: typeof job.opts.attempts === 'number' ? job.opts.attempts : undefined,
-    });
+    const result = await this.vkParsingService.processPublishPostJob(
+      {
+        postId: data.postId,
+        chatId: data.chatId,
+        reason: data.reason,
+        idempotencyKey: data.idempotencyKey,
+        dispatchProfile: data.dispatchProfile,
+        requiredBotId,
+        attemptsMade: job.attemptsMade,
+        maxAttempts: typeof job.opts.attempts === 'number' ? job.opts.attempts : undefined,
+      },
+      async () => {
+        await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
+        await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
+        await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
+      },
+    );
+    if (result?.deferUntil) {
+      const lockToken = token?.trim() || job.token?.trim();
+      if (!lockToken) {
+        throw new Error('Cannot delay a VK publish job without its worker lock token');
+      }
+      await job.moveToDelayed(result.deferUntil.getTime(), lockToken);
+      throw new DelayedError();
+    }
   }
 }

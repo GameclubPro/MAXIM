@@ -116,6 +116,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         queuedPosts: 2,
         dueQueuedPosts: 1,
         futureScheduledPosts: 1,
+        unstampedSchedulePosts: 0,
         staleLockedPosts: 0,
         oldestDueQueuedAgeSec: 45,
       },
@@ -136,6 +137,7 @@ describe('diagnose-vk-parsing script helpers', () => {
     expect(rendered).toContain('Sources: 59/59 healthy');
     expect(rendered).toContain('1 stale locks');
     expect(rendered).toContain('Publish backlog: 1 due / 2 queued');
+    expect(rendered).toContain('0 pending schedule reconciliation');
     expect(rendered).toContain('sync={"waiting":0}');
     expect(rendered).toContain('Publish reconciliation: 0/0 DB-owned scanned');
   });

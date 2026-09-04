@@ -14,6 +14,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkApiClientService } from './vk-api-client.service';
+import { resolveNextAllowedVkAutoPublishAt } from './vk-autopublish-timing';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import {
   type VkParsingOwnerScope,
@@ -33,6 +34,8 @@ type VkWallGetResponse = {
   items?: unknown[];
   groups?: unknown[];
 };
+
+type VkSyncJobRecoveryOutcome = 'missing' | 'healthy' | 'recovered' | 'conflict' | 'unavailable';
 
 type NormalizedVkSourceInput = {
   domain: string;
@@ -232,10 +235,48 @@ export class VkSourceService {
           : undefined;
       const importEnabled = parsed.data.importEnabled ?? source.importEnabled;
       const shouldQueueSync = parsed.data.importEnabled === true && !source.importEnabled;
+      const normalizedSchedulePatch =
+        parsed.data.publishIntervalMinutes !== undefined &&
+        parsed.data.minPublishIntervalMinutes === undefined &&
+        source.minPublishIntervalMinutes > parsed.data.publishIntervalMinutes
+          ? { minPublishIntervalMinutes: parsed.data.publishIntervalMinutes }
+          : {};
+      const nextAutoPublishEnabled = parsed.data.autoPublishEnabled ?? source.autoPublishEnabled;
+      const nextPublishMode = parsed.data.publishMode ?? source.publishMode;
+      const nextAutoPublishPausedAt =
+        parsed.data.autoPublishEnabled === true ? null : source.autoPublishPausedAt;
+      if (
+        importEnabled &&
+        nextAutoPublishEnabled &&
+        nextAutoPublishPausedAt === null &&
+        nextPublishMode !== VK_SOURCE_PUBLISH_MODE_REVIEW
+      ) {
+        const settings = await tx.vkParsingSettings.findUnique({
+          where: {
+            chatId_ownerProfile_ownerBotId: {
+              chatId,
+              ...ownerScope,
+            },
+          },
+        });
+        if (settings?.autoPublishEnabled) {
+          this.assertAutoPublishScheduleAvailable(now, settings, {
+            quietHoursStart:
+              parsed.data.quietHoursStart !== undefined
+                ? parsed.data.quietHoursStart
+                : source.quietHoursStart,
+            quietHoursEnd:
+              parsed.data.quietHoursEnd !== undefined
+                ? parsed.data.quietHoursEnd
+                : source.quietHoursEnd,
+          });
+        }
+      }
       await tx.vkParsingSource.update({
         where: { id: source.id },
         data: {
           ...parsed.data,
+          ...normalizedSchedulePatch,
           status: VK_SOURCE_STATUS_ACTIVE,
           importEnabled,
           ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
@@ -282,7 +323,7 @@ export class VkSourceService {
             ...ownerScope,
             sourceId: source.id,
             before: this.pickAuditedSourceSettings(source),
-            after: parsed.data,
+            after: { ...parsed.data, ...normalizedSchedulePatch },
           }),
         },
       });
@@ -373,6 +414,21 @@ export class VkSourceService {
             },
           })
         : [];
+      if (preset.autoPublishEnabled && updatedSources.length > 0) {
+        const settings = await tx.vkParsingSettings.findUnique({
+          where: {
+            chatId_ownerProfile_ownerBotId: {
+              chatId,
+              ...ownerScope,
+            },
+          },
+        });
+        if (settings?.autoPublishEnabled) {
+          for (const source of updatedSources) {
+            this.assertAutoPublishScheduleAvailable(now, settings, source);
+          }
+        }
+      }
       if (parsed.data.preset === 'REVIEW') {
         await this.clearQueuedAutoPublishForSources(tx, chatId, sourceIds, ownerScope);
       }
@@ -570,14 +626,26 @@ export class VkSourceService {
     const job = this.buildSyncJob(sourceId, reason, now, ownerScope.ownerBotId);
     const jobId = this.buildSyncJobId(sourceId);
     const recovered = await this.recoverExistingSyncJob(jobId, job);
-    if (recovered !== null) {
-      return recovered ? 1 : 0;
+    if (recovered !== 'missing') {
+      return recovered === 'conflict' ? 0 : 1;
     }
 
-    await this.syncQueue.add(VK_SYNC_JOB_NAME, job, {
-      jobId,
-      ...VK_PARSING_SYNC_RETRY_POLICY,
-    });
+    try {
+      await this.syncQueue.add(VK_SYNC_JOB_NAME, job, {
+        jobId,
+        ...VK_PARSING_SYNC_RETRY_POLICY,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          jobId,
+          sourceId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to enqueue VK parsing sync job after marking its source queued',
+      );
+    }
 
     return 1;
   }
@@ -601,11 +669,11 @@ export class VkSourceService {
   private async recoverExistingSyncJob(
     jobId: string,
     job: VkParsingSyncJob,
-  ): Promise<boolean | null> {
+  ): Promise<VkSyncJobRecoveryOutcome> {
     try {
       const existingJob = await this.syncQueue.getJob(jobId);
       if (!existingJob) {
-        return null;
+        return 'missing';
       }
 
       const state = await existingJob.getState();
@@ -615,7 +683,7 @@ export class VkSourceService {
           { jobId, sourceId: job.sourceId },
           'Removed orphaned VK parsing sync job before recovery',
         );
-        return null;
+        return 'missing';
       }
       const existingData =
         typeof existingJob.data === 'object' && existingJob.data !== null
@@ -632,14 +700,14 @@ export class VkSourceService {
             { jobId, sourceId: job.sourceId, state },
             'Quarantined active VK parsing sync job with mismatched ownership payload',
           );
-          return false;
+          return 'conflict';
         }
         await existingJob.remove();
         this.logger.warn(
           { jobId, sourceId: job.sourceId, state },
           'Removed inactive VK parsing sync job with mismatched ownership payload',
         );
-        return null;
+        return 'missing';
       }
       if (state === 'failed' || state === 'completed') {
         await existingJob.updateData(job);
@@ -647,9 +715,10 @@ export class VkSourceService {
           resetAttemptsMade: true,
           resetAttemptsStarted: true,
         });
+        return 'recovered';
       }
 
-      return true;
+      return 'healthy';
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -659,12 +728,28 @@ export class VkSourceService {
         },
         'Failed to recover VK parsing sync job',
       );
-      return false;
+      return 'unavailable';
     }
   }
 
   private buildSyncJobId(sourceId: string): string {
     return `vk-parsing-sync__${sourceId}`;
+  }
+
+  private assertAutoPublishScheduleAvailable(
+    now: Date,
+    settings: {
+      schedulerTimezone: string;
+      workHoursStart: string;
+      workHoursEnd: string;
+      quietHoursStart: string | null;
+      quietHoursEnd: string | null;
+    },
+    source: { quietHoursStart: string | null; quietHoursEnd: string | null },
+  ): void {
+    if (!resolveNextAllowedVkAutoPublishAt(now, settings, source)) {
+      throw new BadRequestException('Рабочее время полностью перекрыто паузами публикации.');
+    }
   }
 
   private resolvePresetSettings(preset: string) {
@@ -755,13 +840,30 @@ export class VkSourceService {
         ...ownerScope,
         sourceId: { in: uniqueSourceIds },
         status: { in: ['NEW', 'FAILED'] },
-        publishReason: 'autopublish',
+        publishLockedAt: null,
+        publishAttemptCount: 0,
         OR: [
-          { publishQueuedAt: { not: null } },
-          { publishLockedAt: { not: null } },
-          { publishIdempotencyKey: { not: null } },
-          { publishReason: { not: null } },
-          { publishScheduledAt: { not: null } },
+          {
+            publishReason: 'autopublish',
+            OR: [
+              { publishQueuedAt: { not: null } },
+              { publishIdempotencyKey: { not: null } },
+              { publishScheduledAt: { not: null } },
+            ],
+          },
+          {
+            publishScheduleFingerprint: { not: null },
+            publishQueuedAt: null,
+            publishLockedAt: null,
+            publishIdempotencyKey: null,
+            publishReason: null,
+            publishScheduledAt: null,
+            publishCancelledAt: null,
+            publishCancelledByUserId: null,
+            publishActorUserId: null,
+            dispatchBlockerCode: null,
+            dispatchBlockedAt: null,
+          },
         ],
       },
       data: {
@@ -770,6 +872,7 @@ export class VkSourceService {
         publishIdempotencyKey: null,
         publishReason: null,
         publishScheduledAt: null,
+        publishScheduleFingerprint: null,
       },
     });
   }

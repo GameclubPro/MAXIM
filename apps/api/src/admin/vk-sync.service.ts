@@ -21,12 +21,14 @@ import {
   classifyVkParsingSyncError,
   VkApiRequestError,
 } from './vk-parsing-errors';
+import { VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT } from './vk-autopublish-policy';
 import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
 import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import {
   VkParsingPostImportRepository,
   type ExistingVkPostImportState,
   type PreparedVkPostImport,
+  type VkParsingPostImportDatabase,
 } from './vk-parsing-post-import.repository';
 import { type VkParsingSyncReason } from './vk-parsing.queue';
 import { VkPublishService } from './vk-publish.service';
@@ -81,12 +83,16 @@ const VK_SOURCE_SYNC_STATUS_IDLE = 'IDLE';
 const VK_SOURCE_SYNC_STATUS_SYNCING = 'SYNCING';
 const VK_SOURCE_SYNC_STATUS_BACKOFF = 'BACKOFF';
 const VK_SOURCE_SYNC_STATUS_ERROR = 'ERROR';
+const VK_SOURCE_PUBLISH_MODE_REVIEW = 'REVIEW';
 const VK_POST_STATUS_NEW = 'NEW';
 const VK_POST_STATUS_PUBLISHED = 'PUBLISHED';
 const VK_POST_STATUS_CHANGED_AFTER_PUBLISH = 'CHANGED_AFTER_PUBLISH';
 const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
 const VK_POST_STATUS_SKIPPED = 'SKIPPED';
 const VK_PARSING_WARNING_DEDUPE_MS = 60_000;
+const VK_AUTOPUBLISH_PENDING_RECOVERY_BATCH_SIZE = 100;
+const VK_IMPORT_POLICY_TRANSACTION_MAX_WAIT_MS = 5_000;
+const VK_IMPORT_POLICY_TRANSACTION_TIMEOUT_MS = 15_000;
 
 @Injectable()
 export class VkSyncService {
@@ -138,6 +144,10 @@ export class VkSyncService {
     return this.syncIntervalMs;
   }
 
+  getSchedulerIntervalMs(): number {
+    return Math.min(this.syncIntervalMs, this.minSyncIntervalMs);
+  }
+
   async processSyncSourceJob(
     sourceId: string,
     reason: VkParsingSyncReason = 'scheduled',
@@ -165,11 +175,15 @@ export class VkSyncService {
       if (!(await this.recordSourceHeartbeat(source.id))) {
         return 0;
       }
-      const importResult = await this.upsertPostsBatch(source, posts, startedAt);
+      const importResult = await this.importPostsWithPolicyFence(source, posts, startedAt, reason);
+      await this.postImportRepository.markMissingPostsUnavailable(source, posts, startedAt, {
+        missingConfirmationThreshold: this.missingConfirmationThreshold,
+        spotCheckMissingPosts: (missingPosts) => this.spotCheckMissingPosts(missingPosts),
+      });
       if (!(await this.recordSourceHeartbeat(source.id))) {
         return 0;
       }
-      if (this.shouldAutoPublishImportedPosts(source, reason)) {
+      if (importResult.publishCandidates.length > 0) {
         await this.publishService.enqueueAutoPublishImportedPosts(
           source.chatId,
           importResult.publishCandidates,
@@ -365,10 +379,7 @@ export class VkSyncService {
     const newestAgeMs = newestPost?.vkPublishedAt
       ? Math.max(0, now.getTime() - newestPost.vkPublishedAt.getTime())
       : Number.POSITIVE_INFINITY;
-    const sourceIntervalMs =
-      typeof source.publishIntervalMinutes === 'number' && source.publishIntervalMinutes > 0
-        ? source.publishIntervalMinutes * 60_000
-        : this.syncIntervalMs;
+    const sourceIntervalMs = this.syncIntervalMs;
     let baseMs = sourceIntervalMs;
     if (newestAgeMs <= 60 * 60_000) {
       baseMs = this.minSyncIntervalMs;
@@ -390,58 +401,122 @@ export class VkSyncService {
     return Math.floor((ratio - 0.5) * Math.min(30_000, this.syncIntervalMs * 0.1));
   }
 
+  private async importPostsWithPolicyFence(
+    source: VkParsingSourceRow,
+    posts: NormalizedVkPost[],
+    seenAt: Date,
+    reason: VkParsingSyncReason,
+  ): Promise<ImportedPostsBatchResult> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const lockedChats = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chat."id"
+          FROM "chats" AS chat
+          WHERE chat."id" = ${source.chatId}
+          FOR UPDATE OF chat
+        `);
+        if (lockedChats.length !== 1) {
+          return this.emptyImportedPostsBatchResult();
+        }
+
+        const currentSource = await tx.vkParsingSource.findFirst({
+          where: {
+            id: source.id,
+            chatId: source.chatId,
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
+          },
+        });
+        if (!currentSource) {
+          return this.emptyImportedPostsBatchResult();
+        }
+
+        const autoPublishImportBaseline = await this.resolveAutoPublishImportBaseline(
+          currentSource,
+          reason,
+          tx,
+        );
+        return this.upsertPostsBatch(currentSource, posts, seenAt, autoPublishImportBaseline, tx);
+      },
+      {
+        maxWait: VK_IMPORT_POLICY_TRANSACTION_MAX_WAIT_MS,
+        timeout: VK_IMPORT_POLICY_TRANSACTION_TIMEOUT_MS,
+      },
+    );
+  }
+
+  private emptyImportedPostsBatchResult(): ImportedPostsBatchResult {
+    return {
+      imported: 0,
+      importedPosts: [],
+      publishCandidates: [],
+      mediaPreflightPosts: [],
+    };
+  }
+
   private async upsertPostsBatch(
     source: VkParsingSourceRow,
     posts: NormalizedVkPost[],
     seenAt: Date,
+    autoPublishImportBaseline: Date | null,
+    database: VkParsingPostImportDatabase = this.prisma,
   ): Promise<ImportedPostsBatchResult> {
-    const existingRows = await this.postImportRepository.findExistingPosts(source, posts);
+    const existingRows = await this.postImportRepository.findExistingPosts(source, posts, database);
     const existingByPostKey = new Map(
       existingRows.map((row) => [this.buildPostKey(row.vkOwnerId, row.vkPostId), row]),
     );
 
-    const autoPublishCandidatePostKeys = new Set<string>();
     const mediaPreflightPosts: NormalizedVkPost[] = [];
     const preparedPosts = posts.map((post): PreparedVkPostImport => {
       const existing = existingByPostKey.get(this.buildPostKey(post.vkOwnerId, post.vkPostId));
       const status = this.resolveImportedPostStatus(existing ?? null, post);
-      const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
-      if (!existing) {
-        autoPublishCandidatePostKeys.add(postKey);
-      }
       if (!existing || existing.contentHash !== post.contentHash) {
         mediaPreflightPosts.push(post);
       }
-      return { post, status };
+      return {
+        post,
+        status,
+        publishScheduleFingerprint: existing
+          ? (existing.publishScheduleFingerprint ?? null)
+          : this.isNewPostEligibleForAutoPublish(post, autoPublishImportBaseline)
+            ? VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT
+            : null,
+      };
     });
 
-    await this.postImportRepository.persistImportedPosts(source, preparedPosts, seenAt);
-    await this.postImportRepository.markMissingPostsUnavailable(source, posts, seenAt, {
-      missingConfirmationThreshold: this.missingConfirmationThreshold,
-      spotCheckMissingPosts: (missingPosts) => this.spotCheckMissingPosts(missingPosts),
-    });
+    await this.postImportRepository.persistImportedPosts(source, preparedPosts, seenAt, database);
 
-    const importedNormalizedPosts = posts.filter((post) =>
-      autoPublishCandidatePostKeys.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
-    );
     const importedCount = posts.filter(
       (post) => !existingByPostKey.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
     ).length;
-    const importedPosts =
-      importedNormalizedPosts.length > 0
-        ? await this.prisma.vkParsingPost.findMany({
-            where: {
-              chatId: source.chatId,
-              ownerProfile: source.ownerProfile,
-              ownerBotId: source.ownerBotId,
-              vkOwnerId: source.wallOwnerId,
-              vkPostId: { in: importedNormalizedPosts.map((post) => post.vkPostId) },
-              status: VK_POST_STATUS_NEW,
-            },
-            include: { source: true },
-            orderBy: [{ vkPublishedAt: 'asc' }, { createdAt: 'asc' }],
-          })
-        : [];
+    const importedPosts = autoPublishImportBaseline
+      ? await database.vkParsingPost.findMany({
+          where: {
+            sourceId: source.id,
+            chatId: source.chatId,
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
+            vkOwnerId: source.wallOwnerId,
+            status: VK_POST_STATUS_NEW,
+            publishQueuedAt: null,
+            publishScheduledAt: null,
+            publishLockedAt: null,
+            publishAttemptCount: 0,
+            publishIdempotencyKey: null,
+            publishReason: null,
+            publishCancelledAt: null,
+            publishCancelledByUserId: null,
+            publishActorUserId: null,
+            dispatchBlockerCode: null,
+            dispatchBlockedAt: null,
+            publishScheduleFingerprint: { not: null },
+            vkPublishedAt: { gte: autoPublishImportBaseline },
+          },
+          include: { source: true },
+          orderBy: [{ vkPublishedAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+          take: VK_AUTOPUBLISH_PENDING_RECOVERY_BATCH_SIZE,
+        })
+      : [];
 
     return {
       imported: importedCount,
@@ -561,11 +636,65 @@ export class VkSyncService {
     }
   }
 
-  private shouldAutoPublishImportedPosts(
-    source: Pick<VkParsingSourceRow, 'lastSuccessAt'>,
+  private async resolveAutoPublishImportBaseline(
+    source: Pick<
+      VkParsingSourceRow,
+      | 'chatId'
+      | 'ownerProfile'
+      | 'ownerBotId'
+      | 'status'
+      | 'importEnabled'
+      | 'autoPublishEnabled'
+      | 'autoPublishEnabledAt'
+      | 'autoPublishPausedAt'
+      | 'publishMode'
+      | 'lastSuccessAt'
+    >,
     reason: VkParsingSyncReason,
+    database: Pick<Prisma.TransactionClient, 'vkParsingSettings'> = this.prisma,
+  ): Promise<Date | null> {
+    if (
+      reason === 'source-added' ||
+      !source.lastSuccessAt ||
+      source.status !== VK_SOURCE_STATUS_ACTIVE ||
+      source.importEnabled !== true ||
+      source.autoPublishEnabled !== true ||
+      Boolean(source.autoPublishPausedAt) ||
+      source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+    ) {
+      return null;
+    }
+
+    const settings = await database.vkParsingSettings.findUnique({
+      where: {
+        chatId_ownerProfile_ownerBotId: {
+          chatId: source.chatId,
+          ownerProfile: source.ownerProfile,
+          ownerBotId: source.ownerBotId,
+        },
+      },
+      select: {
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: true,
+      },
+    });
+    if (settings?.autoPublishEnabled !== true || !settings.autoPublishEnabledAt) {
+      return null;
+    }
+
+    const sourceBaseline = source.autoPublishEnabledAt ?? settings.autoPublishEnabledAt;
+    return sourceBaseline.getTime() > settings.autoPublishEnabledAt.getTime()
+      ? sourceBaseline
+      : settings.autoPublishEnabledAt;
+  }
+
+  private isNewPostEligibleForAutoPublish(
+    post: Pick<NormalizedVkPost, 'vkPublishedAt'>,
+    baseline: Date | null,
   ): boolean {
-    return reason !== 'source-added' && Boolean(source.lastSuccessAt);
+    return Boolean(
+      baseline && post.vkPublishedAt && post.vkPublishedAt.getTime() >= baseline.getTime(),
+    );
   }
 
   private resolveSyncBackoffMs(failureCount: number): number {

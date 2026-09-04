@@ -20,13 +20,18 @@ describe('VkParsingRunnerService', () => {
   function createFixture(dispatchEnabled = true) {
     const vkParsingService = {
       getSyncIntervalMs: jest.fn().mockReturnValue(600_000),
+      getSchedulerIntervalMs: jest.fn().mockReturnValue(120_000),
       syncDueSources: jest.fn().mockResolvedValue(0),
+      reconcileAutoPublishSchedules: jest.fn().mockResolvedValue(0),
       recoverStalePublishJobs: jest.fn().mockResolvedValue(0),
       recoverStalePublisherRollbackJobs: jest.fn().mockResolvedValue(0),
     };
-    const runner = new VkParsingRunnerService(vkParsingService as never, {
-      dispatchEnabled,
-    } as never);
+    const runner = new VkParsingRunnerService(
+      vkParsingService as never,
+      {
+        dispatchEnabled,
+      } as never,
+    );
     const run = (reason: 'startup' | 'scheduled' = 'scheduled') =>
       (
         runner as unknown as {
@@ -44,6 +49,7 @@ describe('VkParsingRunnerService', () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(vkParsingService.recoverStalePublishJobs).toHaveBeenCalledTimes(1);
+    expect(vkParsingService.reconcileAutoPublishSchedules).toHaveBeenCalledTimes(1);
     expect(vkParsingService.recoverStalePublisherRollbackJobs).toHaveBeenCalledTimes(1);
   });
 
@@ -54,7 +60,9 @@ describe('VkParsingRunnerService', () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(vkParsingService.getSyncIntervalMs).not.toHaveBeenCalled();
+    expect(vkParsingService.getSchedulerIntervalMs).not.toHaveBeenCalled();
     expect(vkParsingService.syncDueSources).not.toHaveBeenCalled();
+    expect(vkParsingService.reconcileAutoPublishSchedules).not.toHaveBeenCalled();
     expect(vkParsingService.recoverStalePublishJobs).not.toHaveBeenCalled();
     expect(vkParsingService.recoverStalePublisherRollbackJobs).not.toHaveBeenCalled();
   });
@@ -66,5 +74,6 @@ describe('VkParsingRunnerService', () => {
 
     expect(() => runner.onModuleInit()).toThrow('only run inside api-publisher');
     expect(vkParsingService.getSyncIntervalMs).not.toHaveBeenCalled();
+    expect(vkParsingService.getSchedulerIntervalMs).not.toHaveBeenCalled();
   });
 });

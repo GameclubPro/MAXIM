@@ -473,6 +473,11 @@ async function loadPublishBacklog(prisma: PrismaClient): Promise<unknown> {
           and publish_scheduled_at > now()
       )::int as "futureScheduledPosts",
       count(*) filter (
+        where publish_queued_at is not null
+          and publish_reason = 'autopublish'
+          and publish_schedule_fingerprint is null
+      )::int as "unstampedSchedulePosts",
+      count(*) filter (
         where publish_locked_at is not null
           and publish_locked_at < now() - interval '5 minutes'
       )::int as "staleLockedPosts",
@@ -1384,6 +1389,8 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
     `Publish backlog: ${readNumber(publishBacklog.dueQueuedPosts)} due / ${readNumber(
       publishBacklog.queuedPosts,
     )} queued, ${readNumber(publishBacklog.futureScheduledPosts)} scheduled later, ${readNumber(
+      publishBacklog.unstampedSchedulePosts,
+    )} pending schedule reconciliation, ${readNumber(
       publishBacklog.staleLockedPosts,
     )} stale locked, oldest due ${readNumber(publishBacklog.oldestDueQueuedAgeSec)}s`,
     '',

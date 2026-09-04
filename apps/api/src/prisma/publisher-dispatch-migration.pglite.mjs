@@ -455,6 +455,73 @@ try {
     /active VK publish intent route is immutable/u,
   );
 
+  await assert.rejects(
+    db.query(
+      `UPDATE "vk_parsing_posts"
+       SET "publish_actor_user_id" = 'admin-2'
+       WHERE "id" = 'vk-publisher-owned'`,
+    ),
+    /active VK publish intent route is immutable/u,
+  );
+
+  await db.exec('BEGIN');
+  try {
+    await db.query(
+      `UPDATE "vk_parsing_posts"
+       SET "publish_idempotency_key" = NULL
+       WHERE "id" = 'vk-publisher-owned'
+         AND "publish_idempotency_key" = 'vk-publisher-owned-intent-1'`,
+    );
+    await db.query(
+      `UPDATE "vk_parsing_posts"
+       SET "publish_idempotency_key" = 'vk-publisher-owned-manual-intent-2',
+           "publish_actor_user_id" = 'admin-2'
+       WHERE "id" = 'vk-publisher-owned'
+         AND "publish_idempotency_key" IS NULL`,
+    );
+    await db.exec('COMMIT');
+  } catch (error) {
+    await db.exec('ROLLBACK');
+    throw error;
+  }
+  const replacedVkIntent = await db.query(`
+    SELECT "publish_idempotency_key", "publish_actor_user_id"
+    FROM "vk_parsing_posts"
+    WHERE "id" = 'vk-publisher-owned'
+  `);
+  assert.deepEqual(replacedVkIntent.rows[0], {
+    publish_idempotency_key: 'vk-publisher-owned-manual-intent-2',
+    publish_actor_user_id: 'admin-2',
+  });
+
+  await db.exec('BEGIN');
+  try {
+    await db.query(
+      `UPDATE "vk_parsing_posts"
+       SET "publish_idempotency_key" = NULL
+       WHERE "id" = 'vk-publisher-owned'
+         AND "publish_idempotency_key" = 'vk-publisher-owned-manual-intent-2'`,
+    );
+    await assert.rejects(
+      db.query(
+        `UPDATE "vk_parsing_posts"
+         SET "publish_idempotency_key" = 'vk-publisher-owned-invalid-intent',
+             "publish_actor_user_id" = ''
+         WHERE "id" = 'vk-publisher-owned'
+           AND "publish_idempotency_key" IS NULL`,
+      ),
+      /vk_parsing_posts_publish_actor_user_id_check/u,
+    );
+  } finally {
+    await db.exec('ROLLBACK');
+  }
+  const rolledBackVkIntent = await db.query(`
+    SELECT "publish_idempotency_key", "publish_actor_user_id"
+    FROM "vk_parsing_posts"
+    WHERE "id" = 'vk-publisher-owned'
+  `);
+  assert.deepEqual(rolledBackVkIntent.rows[0], replacedVkIntent.rows[0]);
+
   await db.query(
     `UPDATE "vk_parsing_posts"
      SET "published_message_id" = 'message-1',

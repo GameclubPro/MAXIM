@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import {
@@ -33,6 +34,17 @@ function createPublisherDialogContext() {
       dialogBotId: 'publisher-bot',
     },
   };
+}
+
+function buildPublisherRollbackIdempotencyKey(
+  postId: string,
+  messageId: string,
+  requiredBotId: string,
+): string {
+  return createHash('sha256')
+    .update(`${postId}:${messageId}:${requiredBotId}`)
+    .digest('hex')
+    .slice(0, 32);
 }
 
 function createPost(overrides: Record<string, unknown> = {}) {
@@ -141,7 +153,11 @@ function createFixture() {
     channelAudienceSnapshot: { findFirst: jest.fn().mockResolvedValue(null) },
     managedBotChatCatalog: { findFirst: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
+    $transaction: jest.fn(),
   };
+  prisma.$transaction.mockImplementation(async (operation: (tx: typeof prisma) => unknown) =>
+    operation(prisma),
+  );
   const accessService = {
     resolvePublicationEntityType: jest.fn().mockResolvedValue(ChatEntityType.CHANNEL),
   };
@@ -256,13 +272,23 @@ describe('VK Publik routing', () => {
     );
   });
 
-  it('does not scan any VK recovery work while Publisher dispatch is paused', async () => {
+  it('scans only confirmed receipt recovery while Publisher dispatch is paused', async () => {
     const fixture = createFixture();
     fixture.health.isGloballyPaused.mockResolvedValue(true);
 
     await expect(fixture.service.recoverStalePublishJobs()).resolves.toBe(0);
 
-    expect(fixture.prisma.vkParsingPost.findMany).not.toHaveBeenCalled();
+    expect(fixture.prisma.vkParsingPost.findMany).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          lastError: { startsWith: '[max.send_confirmed_persistence_pending]' },
+        }),
+      }),
+    );
     expect(fixture.publisherQueue.add).not.toHaveBeenCalled();
   });
 
@@ -356,6 +382,46 @@ describe('VK Publik routing', () => {
       dialogBotId: 'publisher-bot',
       customButtons: [],
     });
+  });
+
+  it('removes the exact delayed Publisher job after a schedule is cancelled', async () => {
+    const fixture = createFixture();
+    const post = createPost({
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'publisher-bot',
+      publicationPolicyRevision: 4,
+      publishQueuedAt: new Date('2026-09-04T10:00:00.000Z'),
+      publishScheduledAt: new Date('2026-09-05T10:00:00.000Z'),
+      publishIdempotencyKey: 'manual-schedule-key',
+      publishReason: 'manual-schedule',
+      publishActorUserId: 'admin-1',
+    });
+    const delayedJob = {
+      data: {
+        kind: 'publish',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+        postId: post.id,
+        chatId: post.chatId,
+        reason: 'manual-schedule',
+        idempotencyKey: 'manual-schedule-key',
+      },
+      getState: jest.fn().mockResolvedValue('delayed'),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    fixture.prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    fixture.publisherQueue.getJob.mockResolvedValue(delayedJob);
+
+    await expect(
+      fixture.service.cancelScheduledPost('channel-1', post.id, 'admin-1'),
+    ).resolves.toMatchObject({ queued: 0 });
+
+    expect(fixture.publisherQueue.getJob).toHaveBeenCalledWith(
+      'vk-parsing-publish__post-1__manual-schedule-key',
+    );
+    expect(delayedJob.remove).toHaveBeenCalledTimes(1);
   });
 
   it('resolves Publisher channel links only from the exact Publisher catalog or token', async () => {
@@ -487,7 +553,19 @@ describe('VK Publik routing', () => {
       publishIdempotencyKey: 'intent-1',
       publishReason: 'manual-retry',
     });
-    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    let claimedPost = post;
+    fixture.prisma.vkParsingPost.findFirst.mockImplementation(async (query: any) =>
+      query.select?.sourceId ? { sourceId: post.sourceId } : claimedPost,
+    );
+    fixture.prisma.vkParsingPost.updateMany.mockImplementation(async (query: any) => {
+      if (
+        query.data.publishLockedAt instanceof Date &&
+        query.data.publishReason === 'manual-retry'
+      ) {
+        claimedPost = { ...post, publishLockedAt: query.data.publishLockedAt };
+      }
+      return { count: 1 };
+    });
     let preparedOptions: Record<string, unknown> | undefined;
     fixture.maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
       const context = { botId: 'publisher-bot', job: {} };
@@ -793,6 +871,84 @@ describe('VK Publik routing', () => {
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
+  it('does not arm rollback when a manual publish intent wins after the candidate read', async () => {
+    const fixture = createFixture();
+    const post = createPost({
+      id: 'publisher-post',
+      status: 'PUBLISHED',
+      autoPublishedAt: new Date('2026-08-26T10:00:00.000Z'),
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'publisher-bot',
+      publicationPolicyRevision: 4,
+      publishedBotId: 'publisher-bot',
+      publishedMessageId: 'publisher-message',
+    });
+    fixture.prisma.vkParsingPost.findMany.mockResolvedValue([post]);
+    fixture.prisma.vkParsingPost.updateMany.mockImplementation(async (query: any) => {
+      expect(query.where).toEqual(
+        expect.objectContaining({
+          id: post.id,
+          publishedBotId: 'publisher-bot',
+          publishedMessageId: 'publisher-message',
+          status: { in: ['PUBLISHED', 'CHANGED_AFTER_PUBLISH'] },
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        }),
+      );
+      return { count: 0 };
+    });
+
+    const result = await fixture.service.rollbackAutoPublished('channel-1', 'admin-1', {
+      since: '2026-08-26T09:00:00.000Z',
+      until: '2026-08-26T11:00:00.000Z',
+      deleteMessages: true,
+    });
+
+    expect(result).toMatchObject({ matched: 1, queued: 0, deleted: 0, failed: 1 });
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledTimes(1);
+    expect(fixture.publisherQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not execute a legacy armed rollback after a manual publish intent becomes active', async () => {
+    const fixture = createFixture();
+    const postId = 'publisher-post';
+    const messageId = 'publisher-message';
+    const requiredBotId = 'publisher-bot';
+    const idempotencyKey = buildPublisherRollbackIdempotencyKey(postId, messageId, requiredBotId);
+    fixture.prisma.vkParsingPost.updateMany.mockImplementation(async (query: any) => {
+      expect(query.where).toEqual(
+        expect.objectContaining({
+          id: postId,
+          publishedBotId: requiredBotId,
+          publishedMessageId: messageId,
+          status: { in: ['PUBLISHED', 'CHANGED_AFTER_PUBLISH'] },
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+          rollbackIdempotencyKey: idempotencyKey,
+        }),
+      );
+      return { count: 0 };
+    });
+
+    await fixture.service.processPublisherRollbackJob({
+      postId,
+      chatId: 'channel-1',
+      messageId,
+      requiredBotId,
+      idempotencyKey,
+    });
+
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
   it('reports a conflicting active publisher rollback owner without replacing it', async () => {
     const fixture = createFixture();
     const post = createPost({
@@ -866,6 +1022,11 @@ describe('VK Publik routing', () => {
 
   it('executes a queued rollback only with its persisted Publik origin', async () => {
     const fixture = createFixture();
+    const idempotencyKey = buildPublisherRollbackIdempotencyKey(
+      'publisher-post',
+      'publisher-message',
+      'publisher-bot',
+    );
     fixture.maxClient.deleteMessage.mockImplementation(
       async (
         _chatId: unknown,
@@ -881,7 +1042,7 @@ describe('VK Publik routing', () => {
       chatId: 'channel-1',
       messageId: 'publisher-message',
       requiredBotId: 'publisher-bot',
-      idempotencyKey: 'rollback-key',
+      idempotencyKey,
     });
 
     expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
@@ -890,7 +1051,7 @@ describe('VK Publik routing', () => {
       expect.objectContaining({
         immediate: true,
         botId: 'publisher-bot',
-        idempotencyKey: 'vk-parsing:publisher-rollback:rollback-key',
+        idempotencyKey: `vk-parsing:publisher-rollback:${idempotencyKey}`,
       }),
     );
     expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
@@ -904,6 +1065,77 @@ describe('VK Publik routing', () => {
       }),
     );
     expect(fixture.health.recordSendSuccess).toHaveBeenCalledWith('channel-1', expect.any(Date));
+  });
+
+  it('binds rollback success persistence to the exact published message and bot', async () => {
+    const fixture = createFixture();
+    const postId = 'publisher-post';
+    const messageId = 'publisher-message';
+    const requiredBotId = 'publisher-bot';
+    const idempotencyKey = buildPublisherRollbackIdempotencyKey(postId, messageId, requiredBotId);
+
+    await fixture.service.processPublisherRollbackJob({
+      postId,
+      chatId: 'channel-1',
+      messageId,
+      requiredBotId,
+      idempotencyKey,
+    });
+
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: postId,
+          publishedBotId: requiredBotId,
+          publishedMessageId: messageId,
+          status: { in: ['PUBLISHED', 'CHANGED_AFTER_PUBLISH'] },
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+          rollbackIdempotencyKey: idempotencyKey,
+          rollbackLockedAt: expect.any(Date),
+        }),
+      }),
+    );
+  });
+
+  it('does not let a stale pre-claim blocker release a newer rollback lock', async () => {
+    const fixture = createFixture();
+    const postId = 'publisher-post';
+    const messageId = 'publisher-message';
+    const requiredBotId = 'publisher-bot';
+    const idempotencyKey = buildPublisherRollbackIdempotencyKey(postId, messageId, requiredBotId);
+    fixture.health.assertDispatchAllowed.mockRejectedValue(
+      new Error('Publisher health unavailable'),
+    );
+    fixture.prisma.vkParsingPost.updateMany.mockImplementation(async (query: any) => {
+      expect(query).toEqual({
+        where: {
+          id: postId,
+          rollbackIdempotencyKey: idempotencyKey,
+          rollbackLockedAt: null,
+        },
+        data: {
+          rollbackLockedAt: null,
+          rollbackLastError: '[publisher.blocked] publisher_runtime_unavailable',
+        },
+      });
+      return { count: 0 };
+    });
+
+    await fixture.service.processPublisherRollbackJob({
+      postId,
+      chatId: 'channel-1',
+      messageId,
+      requiredBotId,
+      idempotencyKey,
+    });
+
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('ignores a rollback job addressed to a different Publisher bot', async () => {
