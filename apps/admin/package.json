@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@maxim/contracts": "0.1.0",
-    "iconoir-react": "^7.11.0",
+    "iconoir-react": "^7.12.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },
