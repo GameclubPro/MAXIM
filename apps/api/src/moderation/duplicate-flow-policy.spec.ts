@@ -73,6 +73,48 @@ describe('duplicate flow policy', () => {
     });
   });
 
+  it('keeps every enabled sanction reachable inside the shared threshold ceiling', () => {
+    const boundedSettings = settings({
+      duplicateBotMessageEnabled: false,
+      duplicateWarnMaxCount: 20,
+      duplicateMuteMaxCount: 20,
+      duplicateBanMaxCount: 20,
+    });
+
+    expect(resolveDuplicateFlowConfig(boundedSettings).allowedCount).toBe(17);
+    expect(
+      [18, 19, 20].map(
+        (repeatCount) =>
+          resolveDuplicateFlowOutcome({
+            settings: boundedSettings,
+            repeatCount,
+            hash: 'bounded-ladder',
+            fingerprintType: 'exact',
+          }).decision?.action,
+      ),
+    ).toEqual(['WARN', 'MUTE', 'BAN']);
+  });
+
+  it('preserves a WARN-only threshold of 20', () => {
+    const warnOnlySettings = settings({
+      duplicateBotMessageEnabled: false,
+      duplicateWarnEnabled: true,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+      duplicateWarnMaxCount: 20,
+    });
+
+    expect(resolveDuplicateFlowConfig(warnOnlySettings).allowedCount).toBe(19);
+    expect(
+      resolveDuplicateFlowOutcome({
+        settings: warnOnlySettings,
+        repeatCount: 20,
+        hash: 'warn-only-20',
+        fingerprintType: 'exact',
+      }).decision?.action,
+    ).toBe('WARN');
+  });
+
   it('detects changes to the window, threshold or reaction ladder', () => {
     const original = resolveDuplicateFlowConfig(settings());
     expect(duplicateFlowConfigsEqual(original, resolveDuplicateFlowConfig(settings()))).toBe(true);

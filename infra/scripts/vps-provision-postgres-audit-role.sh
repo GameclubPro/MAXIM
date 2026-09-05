@@ -19,7 +19,8 @@ The apply step creates or hardens the passwordless maxim_audit login intended fo
 local Docker-socket access under the production pg_hba rules, with:
   - NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION, NOBYPASSRLS
   - connection limit 1 and no password
-  - SELECT only on webhook_events/moderation_events and pg_read_all_stats membership
+  - table SELECT only on webhook_events/moderation_events
+  - exact Antiduplicate column SELECT grants and pg_read_all_stats membership
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
 
@@ -98,9 +99,54 @@ REVOKE ALL PRIVILEGES ON SCHEMA public FROM maxim_audit;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM maxim_audit;
 REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM maxim_audit;
 
+DO $revoke_audit_columns$
+DECLARE
+  target RECORD;
+BEGIN
+  FOR target IN
+    SELECT
+      table_name,
+      string_agg(format('%I', column_name), ', ' ORDER BY ordinal_position) AS column_list
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name IN (
+        'chat_settings',
+        'moderation_delete_intents',
+        'moderation_delete_intent_reasons'
+      )
+    GROUP BY table_name
+  LOOP
+    EXECUTE format(
+      'REVOKE SELECT (%1$s), INSERT (%1$s), UPDATE (%1$s), REFERENCES (%1$s) '
+        || 'ON TABLE public.%2$I FROM maxim_audit',
+      target.column_list,
+      target.table_name
+    );
+  END LOOP;
+END
+$revoke_audit_columns$;
+
 GRANT CONNECT ON DATABASE maxim TO maxim_audit;
 GRANT USAGE ON SCHEMA public TO maxim_audit;
 GRANT SELECT ON TABLE public.webhook_events, public.moderation_events TO maxim_audit;
+GRANT SELECT (
+  id,
+  anti_duplicate_enabled,
+  duplicate_photo_enabled,
+  duplicate_detection_preset,
+  duplicate_photo_match_preset,
+  duplicate_photo_scope
+) ON TABLE public.chat_settings TO maxim_audit;
+GRANT SELECT (
+  id,
+  status,
+  updated_at
+) ON TABLE public.moderation_delete_intents TO maxim_audit;
+GRANT SELECT (
+  intent_id,
+  reason_key,
+  rule_code
+) ON TABLE public.moderation_delete_intent_reasons TO maxim_audit;
 GRANT pg_read_all_stats TO maxim_audit;
 
 ALTER ROLE maxim_audit RESET ALL;
@@ -111,6 +157,7 @@ ALTER ROLE maxim_audit SET lock_timeout = '1s';
 ALTER ROLE maxim_audit SET idle_in_transaction_session_timeout = '5s';
 ALTER ROLE maxim_audit SET idle_session_timeout = '60s';
 ALTER ROLE maxim_audit SET max_parallel_workers_per_gather = 0;
+ALTER ROLE maxim_audit SET enable_bitmapscan = off;
 ALTER ROLE maxim_audit SET jit = off;
 ALTER ROLE maxim_audit SET work_mem = '1MB';
 ALTER ROLE maxim_audit SET temp_file_limit = '8MB';
@@ -123,6 +170,13 @@ BEGIN
     OR has_schema_privilege('maxim_audit', 'public', 'CREATE')
     OR NOT has_table_privilege('maxim_audit', 'public.webhook_events', 'SELECT')
     OR NOT has_table_privilege('maxim_audit', 'public.moderation_events', 'SELECT')
+    OR has_table_privilege('maxim_audit', 'public.chat_settings', 'SELECT')
+    OR has_table_privilege('maxim_audit', 'public.moderation_delete_intents', 'SELECT')
+    OR has_table_privilege(
+      'maxim_audit',
+      'public.moderation_delete_intent_reasons',
+      'SELECT'
+    )
   THEN
     RAISE EXCEPTION 'maxim_audit privilege attestation failed';
   END IF;
@@ -151,6 +205,101 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit has unexpected direct table privileges';
   END IF;
 
+  IF 12 <> (
+    SELECT count(DISTINCT (table_name, column_name, privilege_type))
+    FROM information_schema.role_column_grants
+    WHERE grantee = 'maxim_audit'
+      AND table_schema = 'public'
+      AND table_name IN (
+        'chat_settings',
+        'moderation_delete_intents',
+        'moderation_delete_intent_reasons'
+      )
+      AND privilege_type = 'SELECT'
+  ) OR EXISTS (
+    SELECT 1
+    FROM information_schema.role_column_grants
+    WHERE grantee = 'maxim_audit'
+      AND table_schema = 'public'
+      AND table_name IN (
+        'chat_settings',
+        'moderation_delete_intents',
+        'moderation_delete_intent_reasons'
+      )
+      AND NOT (
+        privilege_type = 'SELECT'
+        AND (
+          (
+            table_name = 'chat_settings'
+            AND column_name IN (
+              'id',
+              'anti_duplicate_enabled',
+              'duplicate_photo_enabled',
+              'duplicate_detection_preset',
+              'duplicate_photo_match_preset',
+              'duplicate_photo_scope'
+            )
+          )
+          OR (
+            table_name = 'moderation_delete_intents'
+            AND column_name IN ('id', 'status', 'updated_at')
+          )
+          OR (
+            table_name = 'moderation_delete_intent_reasons'
+            AND column_name IN ('intent_id', 'reason_key', 'rule_code')
+          )
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit Antiduplicate column privileges are not exact';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class restricted_relation
+    JOIN pg_namespace restricted_namespace
+      ON restricted_namespace.oid = restricted_relation.relnamespace
+    JOIN pg_attribute restricted_attribute
+      ON restricted_attribute.attrelid = restricted_relation.oid
+    WHERE restricted_namespace.nspname = 'public'
+      AND restricted_relation.relname IN (
+        'chat_settings',
+        'moderation_delete_intents',
+        'moderation_delete_intent_reasons'
+      )
+      AND restricted_attribute.attnum > 0
+      AND NOT restricted_attribute.attisdropped
+      AND has_column_privilege(
+        'maxim_audit',
+        restricted_relation.oid,
+        restricted_attribute.attnum,
+        'SELECT'
+      )
+      AND NOT (
+        (
+          restricted_relation.relname = 'chat_settings'
+          AND restricted_attribute.attname IN (
+            'id',
+            'anti_duplicate_enabled',
+            'duplicate_photo_enabled',
+            'duplicate_detection_preset',
+            'duplicate_photo_match_preset',
+            'duplicate_photo_scope'
+          )
+        )
+        OR (
+          restricted_relation.relname = 'moderation_delete_intents'
+          AND restricted_attribute.attname IN ('id', 'status', 'updated_at')
+        )
+        OR (
+          restricted_relation.relname = 'moderation_delete_intent_reasons'
+          AND restricted_attribute.attname IN ('intent_id', 'reason_key', 'rule_code')
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit has unexpected effective Antiduplicate column privileges';
+  END IF;
+
   IF EXISTS (
     SELECT 1
     FROM pg_class relation
@@ -162,7 +311,13 @@ BEGIN
         (
           NOT (
             namespace.nspname = 'public'
-            AND relation.relname IN ('webhook_events', 'moderation_events')
+            AND relation.relname IN (
+              'webhook_events',
+              'moderation_events',
+              'chat_settings',
+              'moderation_delete_intents',
+              'moderation_delete_intent_reasons'
+            )
           )
           AND (
             has_table_privilege('maxim_audit', relation.oid, 'SELECT')

@@ -1,3 +1,4 @@
+import { resolveDuplicateFlowAllowedCount } from '@maxim/contracts/settings';
 import type { ChatSettings } from '../prisma/prisma-client';
 import type {
   DuplicateAction,
@@ -17,13 +18,6 @@ export type DuplicateFlowConfig = {
 };
 
 export function resolveDuplicateFlowConfig(settings: ChatSettings): DuplicateFlowConfig {
-  const firstThreshold = settings.duplicateWarnEnabled
-    ? settings.duplicateWarnMaxCount
-    : settings.duplicateMuteEnabled
-      ? settings.duplicateMuteMaxCount
-      : settings.duplicateBanEnabled
-        ? settings.duplicateBanMaxCount
-        : settings.duplicateWarnMaxCount;
   const windowSec = settings.duplicateWarnEnabled
     ? settings.duplicateWarnWindowSec
     : settings.duplicateMuteEnabled
@@ -46,7 +40,7 @@ export function resolveDuplicateFlowConfig(settings: ChatSettings): DuplicateFlo
   }
 
   return {
-    allowedCount: Math.max(0, firstThreshold - (settings.duplicateBotMessageEnabled ? 2 : 1)),
+    allowedCount: resolveDuplicateFlowAllowedCount(settings),
     windowSec,
     reactions,
   };

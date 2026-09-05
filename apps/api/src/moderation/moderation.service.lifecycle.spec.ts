@@ -42,6 +42,7 @@ import {
 } from './moderation.service.spec-support';
 import { MAX_SEND_FENCE_STALE_MS } from '../max/max-send-ambiguity.util';
 import { WebhookParser } from '../webhook/webhook.parser';
+import { hasPersistedTerminalDuplicateSanction } from './moderation-message-action-claim';
 
 function userMentionHtml(displayName: string, userId: string): string {
   return `<a href="max://user/${userId}">${displayName}</a>`;
@@ -628,6 +629,31 @@ describe('ModerationService', () => {
     expect(terminalSnapshots).toEqual([false, true]);
     expect(persistModerationEvent).toHaveBeenCalledTimes(1);
     lockSpy.mockRestore();
+  });
+
+  it('does not treat an unapplied duplicate decision with action NONE as a terminal sanction', async () => {
+    const findFirst = jest.fn().mockResolvedValue(null);
+
+    await expect(
+      hasPersistedTerminalDuplicateSanction({
+        model: { findFirst },
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+      }),
+    ).resolves.toBe(false);
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        ruleCode: { in: ['DUPLICATE_WARN', 'DUPLICATE_MUTE', 'DUPLICATE_BAN'] },
+        operator: 'BOT',
+        action: { in: ['WARN', 'MUTE', 'BAN'] },
+      },
+      select: { id: true },
+    });
   });
 
   it('stops an observed duplicate delete when photo authorization is revoked pre-dispatch', async () => {

@@ -1,5 +1,6 @@
 import type { ChatSettings } from '@maxim/contracts';
 import type { BotSpeechMediaFieldKey } from '@maxim/contracts/bot-speech';
+import { normalizeDuplicateFlowSettings } from './settings/settings-duplicate-flow';
 
 export type ApplySectionKey =
   | 'links'
@@ -137,6 +138,36 @@ export function normalizeRequiredSubscriptionDraftSettings(settings: ChatSetting
     requiredSubscriptionBotMessageEnabled: requiredSubscriptionChannelIds.length > 0,
     requiredSubscriptionExpiresAt: '',
   };
+}
+
+export function normalizeSectionDraftSettings(
+  settings: ChatSettings,
+  section: ApplySectionKey,
+): ChatSettings {
+  if (section === 'requiredSubscription') {
+    return normalizeRequiredSubscriptionDraftSettings(settings);
+  }
+  if (section === 'duplicates') {
+    return normalizeDuplicateFlowSettings(settings);
+  }
+  return settings;
+}
+
+export function serializeChatSettingsDraft(settings: ChatSettings): string {
+  return JSON.stringify(settings);
+}
+
+export function shouldHydrateSettingsDraftFromServer(
+  currentSnapshot: string,
+  previousServerSnapshot: string,
+  nextServerSnapshot: string,
+): boolean {
+  return (
+    !currentSnapshot ||
+    !previousServerSnapshot ||
+    currentSnapshot === previousServerSnapshot ||
+    currentSnapshot === nextServerSnapshot
+  );
 }
 
 export const BOT_SPEECH_SYNC_SETTING_KEYS = ['botSpeechStyle'] as const satisfies ReadonlyArray<
@@ -395,6 +426,16 @@ export function hasSectionBotSpeechMediaChanges(
       saved.botSpeechMedia[mediaKey],
     );
   });
+}
+
+export function hasSectionSettingChanges(
+  draft: ChatSettings,
+  saved: ChatSettings,
+  section: ApplySectionKey,
+): boolean {
+  return SECTION_SETTING_KEYS[section].some(
+    (key) => JSON.stringify(draft[key]) !== JSON.stringify(saved[key]),
+  );
 }
 
 export const COMMENTS_SETTING_KEYS = [

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { PGlite } from '@electric-sql/pglite';
 
 const root = resolve(import.meta.dirname, '../..');
 const audit = resolve(root, 'infra/scripts/vps-postgres-audit.sh');
@@ -170,6 +171,52 @@ function runConnect(data, args, extraEnv = {}) {
   });
 }
 
+function extractDuplicateReportSql(sql) {
+  const startMarker = '\\if :duplicate_audit_ready\n';
+  const endMarker = '\n\\else\n';
+  const start = sql.indexOf(startMarker);
+  const end = sql.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return sql.slice(start + startMarker.length, end);
+}
+
+function extractDuplicateReadinessSql(sql) {
+  const startMarker = 'WITH required_duplicate_indexes(';
+  const endMarker = 'END AS duplicate_audit_ready';
+  const start = sql.indexOf(startMarker);
+  const end = sql.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return `${sql.slice(start, end + endMarker.length)};`;
+}
+
+function extractAuditColumnResetSql() {
+  const source = readFileSync(provision, 'utf8');
+  const revokeStart = source.indexOf('DO $revoke_audit_columns$');
+  const revokeEndMarker = '$revoke_audit_columns$;';
+  const revokeEnd = source.indexOf(revokeEndMarker, revokeStart) + revokeEndMarker.length;
+  const grantStart = source.indexOf('GRANT SELECT (', revokeEnd);
+  const grantEndMarker = ') ON TABLE public.moderation_delete_intent_reasons TO maxim_audit;';
+  const grantEnd = source.indexOf(grantEndMarker, grantStart) + grantEndMarker.length;
+  assert.notEqual(revokeStart, -1);
+  assert.ok(revokeEnd >= revokeEndMarker.length);
+  assert.notEqual(grantStart, -1);
+  assert.ok(grantEnd >= grantEndMarker.length);
+  return `${source.slice(revokeStart, revokeEnd)}\n${source.slice(grantStart, grantEnd)}`;
+}
+
+function extractProvisionVerificationSql() {
+  const source = readFileSync(provision, 'utf8');
+  const startMarker = 'DO $verify$';
+  const endMarker = '$verify$;';
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return source.slice(start, end + endMarker.length);
+}
+
 test('queue audit uses the dedicated role and a hard read-only resource envelope', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -187,6 +234,7 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(args, /idle_session_timeout=60s/u);
   assert.match(args, /max_parallel_workers_per_gather=0/u);
   assert.match(args, /enable_seqscan=off/u);
+  assert.match(args, /enable_bitmapscan=off/u);
   assert.match(args, /jit=off/u);
   assert.match(args, /work_mem=1MB/u);
   assert.match(args, /--no-password/u);
@@ -208,6 +256,9 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
     /has_table_privilege\([\s\S]*INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER/u,
   );
   assert.match(sql, /has_column_privilege\([\s\S]*INSERT,UPDATE,REFERENCES/u);
+  assert.match(sql, /restricted_relation[\s\S]*restricted_attribute/u);
+  assert.match(sql, /has_column_privilege\([\s\S]*restricted_attribute\.attnum,[\s\S]*'SELECT'/u);
+  assert.match(sql, /current_setting\('enable_bitmapscan'\) = 'off'/u);
   assert.match(sql, /pg_size_bytes\(current_setting\('temp_file_limit'\)\) BETWEEN 0 AND 8388608/u);
   assert.match(sql, /hardened maxim_audit session invariant is missing/u);
   assert.match(sql, /to_regclass\('public\.webhook_events_status_created_at_idx'\)/u);
@@ -273,6 +324,496 @@ test('monitor signal audit bounds both indexed source samples before aggregation
   );
 });
 
+test('duplicate audit uses fixed windows and bounds every source before aggregation', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+
+  const result = runAudit(data, ['duplicate']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+
+  assert.match(sql, /required_duplicate_indexes/u);
+  for (const indexName of [
+    'chat_settings_pkey',
+    'moderation_events_created_at_idx',
+    'moderation_delete_intents_retention_idx',
+    'moderation_delete_intent_reasons_intent_reason_key',
+  ]) {
+    assert.match(sql, new RegExp(`'${indexName}'`, 'u'));
+  }
+  assert.match(sql, /index_definition\.indrelid/u);
+  assert.match(sql, /indisvalid/u);
+  assert.match(sql, /indisready/u);
+  assert.match(sql, /indislive/u);
+  assert.match(sql, /index_definition\.indpred IS NULL/u);
+  assert.match(sql, /0 = ALL\(index_definition\.indoption\)/u);
+  assert.match(sql, /pg_get_indexdef/u);
+
+  assert.match(sql, /settings_sample_plus AS MATERIALIZED/u);
+  assert.match(sql, /FROM chat_settings\s+ORDER BY id ASC\s+LIMIT 5001/u);
+  assert.match(sql, /settings_sample AS MATERIALIZED[\s\S]*LIMIT 5000/u);
+  assert.match(sql, /'audit', 'duplicate_settings'/u);
+  assert.match(sql, /'text_enabled_count_lower_bound'/u);
+  assert.match(sql, /'photo_effective_enabled_count_lower_bound'/u);
+  assert.match(sql, /GROUP BY duplicate_detection_preset/u);
+  assert.match(sql, /GROUP BY duplicate_photo_match_preset, duplicate_photo_scope/u);
+
+  assert.match(sql, /event_sample_plus AS MATERIALIZED/u);
+  assert.match(
+    sql,
+    /FROM moderation_events\s+WHERE created_at >= statement_timestamp\(\) - make_interval\(mins => 1440\)\s+ORDER BY created_at DESC\s+LIMIT 5001/u,
+  );
+  assert.match(sql, /event_sample AS MATERIALIZED[\s\S]*LIMIT 5000/u);
+  assert.match(sql, /VALUES \(60\), \(1440\)/u);
+  for (const ruleCode of [
+    'DUPLICATE_DELETE',
+    'DUPLICATE_WARN',
+    'DUPLICATE_MUTE',
+    'DUPLICATE_BAN',
+  ]) {
+    assert.match(sql, new RegExp(`'${ruleCode}'`, 'u'));
+  }
+  assert.match(sql, /'audit', 'recent_duplicate_moderation'/u);
+  assert.match(sql, /'unrecognized_rule_count'/u);
+
+  assert.match(sql, /intent_sample_plus AS MATERIALIZED/u);
+  assert.match(sql, /CROSS JOIN LATERAL/u);
+  assert.match(
+    sql,
+    /FROM moderation_delete_intents\s+WHERE status = intent_statuses\.status[\s\S]*ORDER BY updated_at DESC\s+LIMIT 501/u,
+  );
+  assert.match(sql, /WHERE sample_rank <= 500/u);
+  assert.match(
+    sql,
+    /FROM moderation_delete_intent_reasons\s+WHERE intent_id = intent_sample\.id\s+ORDER BY reason_key ASC\s+LIMIT 33/u,
+  );
+  assert.match(sql, /'audit', 'recent_duplicate_delete_intents'/u);
+  assert.match(sql, /'sample_cap_per_status', 500/u);
+  assert.match(sql, /'reason_sample_cap_per_intent', 32/u);
+  assert.match(sql, /'sample_saturated'/u);
+  assert.match(sql, /'complete'/u);
+
+  assert.doesNotMatch(
+    sql,
+    /raw_payload|normalized_payload|error_message|source_ip|chat_id|user_id|message_id|masked_excerpt|candidate_failures|last_error/u,
+  );
+});
+
+test('all public audit mode includes the duplicate catalog report', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+
+  const result = runAudit(data, ['all']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /'audit', 'webhook_queue'/u);
+  assert.match(sql, /'audit', 'postgres_activity'/u);
+  assert.match(sql, /'audit', 'duplicate_settings'/u);
+  assert.match(sql, /'audit', 'recent_duplicate_moderation'/u);
+  assert.match(sql, /'audit', 'recent_duplicate_delete_intents'/u);
+});
+
+test('duplicate SQL executes, grants converge, and each bounded source has an indexed plan', async (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['duplicate']);
+  assert.equal(result.status, 0, result.stderr);
+  const emittedSql = readFileSync(data.sql, 'utf8');
+  const reportSql = extractDuplicateReportSql(emittedSql);
+  const readinessSql = extractDuplicateReadinessSql(emittedSql);
+  const database = new PGlite();
+  t.after(() => database.close());
+
+  await database.exec(`
+    CREATE TYPE "DuplicateDetectionPreset" AS ENUM ('STANDARD', 'STRICT', 'CUSTOM');
+    CREATE TYPE "DuplicatePhotoMatchPreset" AS ENUM ('SAME_IMAGE', 'MINOR_EDITS');
+    CREATE TYPE "DuplicatePhotoScope" AS ENUM ('SAME_AUTHOR', 'CHAT');
+    CREATE TYPE "SanctionAction" AS ENUM ('NONE', 'WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN');
+    CREATE TYPE "ModerationDeleteIntentStatus" AS ENUM (
+      'OBSERVED',
+      'PENDING',
+      'IN_PROGRESS',
+      'RETRYABLE',
+      'WAITING_CAPABILITY',
+      'AMBIGUOUS',
+      'SUCCEEDED',
+      'ALREADY_ABSENT',
+      'EXPIRED',
+      'FAILED_TERMINAL'
+    );
+    CREATE TABLE chat_settings (
+      id TEXT PRIMARY KEY,
+      anti_duplicate_enabled BOOLEAN NOT NULL,
+      duplicate_photo_enabled BOOLEAN NOT NULL,
+      duplicate_detection_preset "DuplicateDetectionPreset" NOT NULL,
+      duplicate_photo_match_preset "DuplicatePhotoMatchPreset" NOT NULL,
+      duplicate_photo_scope "DuplicatePhotoScope" NOT NULL,
+      chat_id TEXT
+    );
+    CREATE TABLE moderation_events (
+      id TEXT PRIMARY KEY,
+      rule_code TEXT NOT NULL,
+      action "SanctionAction" NOT NULL,
+      created_at TIMESTAMP NOT NULL
+    );
+    CREATE INDEX moderation_events_created_at_idx ON moderation_events(created_at);
+    CREATE TABLE webhook_events (id TEXT PRIMARY KEY);
+    CREATE TABLE moderation_delete_intents (
+      id TEXT PRIMARY KEY,
+      status "ModerationDeleteIntentStatus" NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      message_id TEXT
+    );
+    CREATE INDEX moderation_delete_intents_retention_idx
+      ON moderation_delete_intents(status, updated_at);
+    CREATE TABLE moderation_delete_intent_reasons (
+      id TEXT PRIMARY KEY,
+      intent_id TEXT NOT NULL,
+      reason_key TEXT NOT NULL,
+      rule_code TEXT NOT NULL,
+      masked_excerpt TEXT
+    );
+    CREATE UNIQUE INDEX moderation_delete_intent_reasons_intent_reason_key
+      ON moderation_delete_intent_reasons(intent_id, reason_key);
+
+    CREATE ROLE maxim_audit NOLOGIN;
+    GRANT SELECT (chat_id), UPDATE (chat_id) ON TABLE chat_settings TO maxim_audit;
+    GRANT SELECT (message_id) ON TABLE moderation_delete_intents TO maxim_audit;
+    GRANT SELECT (masked_excerpt) ON TABLE moderation_delete_intent_reasons TO maxim_audit;
+    GRANT USAGE ON SCHEMA public TO maxim_audit;
+    GRANT SELECT ON TABLE webhook_events, moderation_events TO maxim_audit;
+    GRANT pg_read_all_stats TO maxim_audit;
+
+    INSERT INTO chat_settings (
+      id,
+      anti_duplicate_enabled,
+      duplicate_photo_enabled,
+      duplicate_detection_preset,
+      duplicate_photo_match_preset,
+      duplicate_photo_scope
+    ) VALUES
+      ('settings-enabled', TRUE, TRUE, 'STRICT', 'SAME_IMAGE', 'SAME_AUTHOR'),
+      ('settings-disabled', FALSE, FALSE, 'STANDARD', 'SAME_IMAGE', 'SAME_AUTHOR');
+    INSERT INTO moderation_events VALUES
+      (
+        'event-duplicate',
+        'DUPLICATE_DELETE',
+        'DELETE_MESSAGE',
+        CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+      ),
+      ('event-other', 'OTHER', 'NONE', CURRENT_TIMESTAMP - INTERVAL '10 minutes');
+    INSERT INTO moderation_events (id, rule_code, action, created_at)
+    SELECT
+      'event-old-' || sample_number::text,
+      'OTHER',
+      'NONE',
+      CURRENT_TIMESTAMP - INTERVAL '2 hours'
+    FROM generate_series(1, 5001) AS sample(sample_number);
+    INSERT INTO moderation_delete_intents (id, status, updated_at) VALUES
+      ('intent-duplicate', 'SUCCEEDED', CURRENT_TIMESTAMP - INTERVAL '5 minutes'),
+      ('intent-other', 'PENDING', CURRENT_TIMESTAMP - INTERVAL '10 minutes');
+    INSERT INTO moderation_delete_intents (id, status, updated_at)
+    SELECT
+      'intent-old-' || sample_number::text,
+      'OBSERVED',
+      CURRENT_TIMESTAMP - INTERVAL '2 hours'
+    FROM generate_series(1, 501) AS sample(sample_number);
+    INSERT INTO moderation_delete_intent_reasons (
+      id,
+      intent_id,
+      reason_key,
+      rule_code
+    ) VALUES
+      ('reason-duplicate', 'intent-duplicate', 'duplicate', 'DUPLICATE_DELETE'),
+      ('reason-other', 'intent-other', 'other', 'OTHER');
+    INSERT INTO moderation_delete_intent_reasons (id, intent_id, reason_key, rule_code)
+    SELECT
+      'reason-old-' || sample_number::text,
+      'intent-old-' || sample_number::text,
+      'duplicate',
+      'DUPLICATE_DELETE'
+    FROM generate_series(1, 501) AS sample(sample_number);
+    ANALYZE;
+    SET enable_seqscan = off;
+    SET enable_bitmapscan = off;
+  `);
+  const columnResetSql = extractAuditColumnResetSql();
+  await database.exec(columnResetSql);
+  await database.exec(columnResetSql);
+
+  const privilegeResult = await database.query(`
+    SELECT
+      has_column_privilege(
+        'maxim_audit',
+        'chat_settings',
+        'anti_duplicate_enabled',
+        'SELECT'
+      ) AS settings_column,
+      has_column_privilege(
+        'maxim_audit',
+        'moderation_delete_intents',
+        'updated_at',
+        'SELECT'
+      ) AS intent_column,
+      has_column_privilege(
+        'maxim_audit',
+        'moderation_delete_intent_reasons',
+        'rule_code',
+        'SELECT'
+      ) AS reason_column,
+      has_table_privilege('maxim_audit', 'chat_settings', 'SELECT') AS settings_table,
+      has_table_privilege(
+        'maxim_audit',
+        'moderation_delete_intents',
+        'SELECT'
+      ) AS intent_table,
+      has_table_privilege(
+        'maxim_audit',
+        'moderation_delete_intent_reasons',
+        'SELECT'
+      ) AS reason_table,
+      has_column_privilege('maxim_audit', 'chat_settings', 'chat_id', 'SELECT')
+        AS extra_settings_select,
+      has_column_privilege('maxim_audit', 'chat_settings', 'chat_id', 'UPDATE')
+        AS extra_settings_update,
+      has_column_privilege(
+        'maxim_audit',
+        'moderation_delete_intents',
+        'message_id',
+        'SELECT'
+      ) AS extra_intent_select,
+      has_column_privilege(
+        'maxim_audit',
+        'moderation_delete_intent_reasons',
+        'masked_excerpt',
+        'SELECT'
+      ) AS extra_reason_select,
+      (
+        SELECT count(DISTINCT (table_name, column_name, privilege_type))::integer
+        FROM information_schema.role_column_grants
+        WHERE grantee = 'maxim_audit'
+          AND table_schema = 'public'
+          AND table_name IN (
+            'chat_settings',
+            'moderation_delete_intents',
+            'moderation_delete_intent_reasons'
+          )
+      ) AS exact_grant_count
+  `);
+  assert.deepEqual(privilegeResult.rows[0], {
+    settings_column: true,
+    intent_column: true,
+    reason_column: true,
+    settings_table: false,
+    intent_table: false,
+    reason_table: false,
+    extra_settings_select: false,
+    extra_settings_update: false,
+    extra_intent_select: false,
+    extra_reason_select: false,
+    exact_grant_count: 12,
+  });
+
+  const verificationSql = extractProvisionVerificationSql();
+  await database.exec(verificationSql);
+
+  await database.exec('GRANT SELECT (chat_id) ON TABLE chat_settings TO PUBLIC;');
+  await assert.rejects(
+    database.exec(verificationSql),
+    /unexpected effective Antiduplicate column privileges/u,
+  );
+  await database.exec('REVOKE SELECT (chat_id) ON TABLE chat_settings FROM PUBLIC;');
+
+  await database.exec('GRANT SELECT (chat_id) ON TABLE chat_settings TO pg_read_all_stats;');
+  await assert.rejects(
+    database.exec(verificationSql),
+    /unexpected effective Antiduplicate column privileges/u,
+  );
+  await database.exec('REVOKE SELECT (chat_id) ON TABLE chat_settings FROM pg_read_all_stats;');
+  await database.exec(verificationSql);
+
+  await database.exec('SET SESSION AUTHORIZATION maxim_audit;');
+  assert.equal((await database.query(readinessSql)).rows[0]?.duplicate_audit_ready, 'true');
+
+  const reports = (await database.exec(reportSql))
+    .flatMap((statement) => statement.rows ?? [])
+    .map((row) => JSON.parse(row.json_build_object));
+  await database.exec('SET SESSION AUTHORIZATION postgres;');
+  assert.equal(reports.length, 3);
+  assert.equal(reports[0]?.audit, 'duplicate_settings');
+  assert.equal(reports[0]?.text_enabled_count_lower_bound, 1);
+  assert.equal(reports[1]?.audit, 'recent_duplicate_moderation');
+  assert.equal(reports[1]?.rows.length, 2);
+  assert.equal(reports[2]?.audit, 'recent_duplicate_delete_intents');
+
+  const oneHourEvents = reports[1]?.windows.find((row) => row.window_minutes === 60);
+  const oneDayEvents = reports[1]?.windows.find((row) => row.window_minutes === 1440);
+  assert.deepEqual(oneHourEvents, {
+    window_minutes: 60,
+    sampled_rows: 2,
+    count_lower_bound: 1,
+    unrecognized_rule_count: 0,
+    sample_saturated: false,
+    complete: true,
+  });
+  assert.deepEqual(oneDayEvents, {
+    window_minutes: 1440,
+    sampled_rows: 5000,
+    count_lower_bound: 1,
+    unrecognized_rule_count: 0,
+    sample_saturated: true,
+    complete: false,
+  });
+
+  const oneHourObservedIntents = reports[2]?.rows.find(
+    (row) => row.window_minutes === 60 && row.status === 'OBSERVED',
+  );
+  const oneDayObservedIntents = reports[2]?.rows.find(
+    (row) => row.window_minutes === 1440 && row.status === 'OBSERVED',
+  );
+  assert.deepEqual(oneHourObservedIntents, {
+    window_minutes: 60,
+    status: 'OBSERVED',
+    sampled_intents: 0,
+    count_lower_bound: 0,
+    saturated_reason_intents: 0,
+    sample_saturated: false,
+    complete: true,
+  });
+  assert.deepEqual(oneDayObservedIntents, {
+    window_minutes: 1440,
+    status: 'OBSERVED',
+    sampled_intents: 500,
+    count_lower_bound: 500,
+    saturated_reason_intents: 0,
+    sample_saturated: true,
+    complete: false,
+  });
+
+  const indexedQueries = [
+    {
+      index: 'chat_settings_pkey',
+      sql: 'SELECT id FROM chat_settings ORDER BY id ASC LIMIT 5001',
+    },
+    {
+      index: 'moderation_events_created_at_idx',
+      sql: `
+        SELECT rule_code, action, created_at
+        FROM moderation_events
+        WHERE created_at >= statement_timestamp() - make_interval(mins => 1440)
+        ORDER BY created_at DESC
+        LIMIT 5001
+      `,
+    },
+    {
+      index: 'moderation_delete_intents_retention_idx',
+      sql: `
+        SELECT id, status, updated_at
+        FROM moderation_delete_intents
+        WHERE status = 'PENDING'::"ModerationDeleteIntentStatus"
+          AND updated_at >= statement_timestamp() - make_interval(mins => 1440)
+        ORDER BY updated_at DESC
+        LIMIT 501
+      `,
+    },
+    {
+      index: 'moderation_delete_intent_reasons_intent_reason_key',
+      sql: `
+        SELECT reason_key, rule_code
+        FROM moderation_delete_intent_reasons
+        WHERE intent_id = 'intent-duplicate'
+        ORDER BY reason_key ASC
+        LIMIT 33
+      `,
+    },
+  ];
+  for (const query of indexedQueries) {
+    const plan = await database.query(`EXPLAIN (FORMAT JSON, COSTS FALSE) ${query.sql}`);
+    const serializedPlan = JSON.stringify(plan.rows);
+    assert.match(serializedPlan, new RegExp(query.index, 'u'));
+    assert.match(serializedPlan, /"Node Type":"Index(?: Only)? Scan"/u);
+    assert.doesNotMatch(
+      serializedPlan,
+      /"Node Type":"(?:Seq Scan|Bitmap Heap Scan|Bitmap Index Scan|Sort)"/u,
+    );
+  }
+
+  const expectDuplicateReadiness = async (expected) => {
+    const readiness = await database.query(readinessSql);
+    assert.equal(readiness.rows[0]?.duplicate_audit_ready, expected);
+  };
+  await database.exec(`
+    DROP INDEX moderation_events_created_at_idx;
+    CREATE INDEX moderation_events_created_at_idx ON chat_settings(id);
+  `);
+  await expectDuplicateReadiness('false');
+  await database.exec(`
+    DROP INDEX moderation_events_created_at_idx;
+    CREATE INDEX moderation_events_created_at_idx ON moderation_events(rule_code);
+  `);
+  await expectDuplicateReadiness('false');
+  await database.exec(`
+    DROP INDEX moderation_events_created_at_idx;
+    CREATE INDEX moderation_events_created_at_idx ON moderation_events(created_at DESC);
+  `);
+  await expectDuplicateReadiness('false');
+  await database.exec(`
+    DROP INDEX moderation_events_created_at_idx;
+    CREATE INDEX moderation_events_created_at_idx
+      ON moderation_events(created_at)
+      WHERE rule_code = 'DUPLICATE_DELETE';
+  `);
+  await expectDuplicateReadiness('false');
+  await database.exec(`
+    DROP INDEX moderation_events_created_at_idx;
+    CREATE INDEX moderation_events_created_at_idx ON moderation_events(created_at);
+  `);
+  await expectDuplicateReadiness('true');
+
+  await database.exec(`
+    TRUNCATE moderation_events;
+    TRUNCATE moderation_delete_intent_reasons;
+    TRUNCATE moderation_delete_intents;
+    INSERT INTO moderation_events (id, rule_code, action, created_at)
+    SELECT
+      'event-boundary-' || sample_number::text,
+      'DUPLICATE_DELETE',
+      'DELETE_MESSAGE',
+      TIMESTAMP '2026-09-05 11:00:00'
+    FROM generate_series(1, 5001) AS sample(sample_number);
+    INSERT INTO moderation_delete_intents (id, status, updated_at)
+    SELECT
+      'intent-boundary-' || sample_number::text,
+      'PENDING',
+      TIMESTAMP '2026-09-05 11:00:00'
+    FROM generate_series(1, 501) AS sample(sample_number);
+    INSERT INTO moderation_delete_intent_reasons (id, intent_id, reason_key, rule_code)
+    SELECT
+      'reason-boundary-' || sample_number::text,
+      'intent-boundary-' || sample_number::text,
+      'duplicate',
+      'DUPLICATE_DELETE'
+    FROM generate_series(1, 501) AS sample(sample_number);
+    ANALYZE;
+  `);
+  const fixedBoundarySql = reportSql.replaceAll(
+    'statement_timestamp()',
+    "TIMESTAMP '2026-09-05 12:00:00'",
+  );
+  const boundaryReports = (await database.exec(fixedBoundarySql))
+    .flatMap((statement) => statement.rows ?? [])
+    .map((row) => JSON.parse(row.json_build_object));
+  const boundaryEventWindow = boundaryReports[1]?.windows.find((row) => row.window_minutes === 60);
+  const boundaryIntentWindow = boundaryReports[2]?.rows.find(
+    (row) => row.window_minutes === 60 && row.status === 'PENDING',
+  );
+  assert.equal(boundaryEventWindow?.sample_saturated, true);
+  assert.equal(boundaryEventWindow?.complete, false);
+  assert.equal(boundaryIntentWindow?.sampled_intents, 500);
+  assert.equal(boundaryIntentWindow?.sample_saturated, true);
+  assert.equal(boundaryIntentWindow?.complete, false);
+});
+
 test('audit modes reject arbitrary SQL and unsafe monitor windows before Docker', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -282,6 +823,7 @@ test('audit modes reject arbitrary SQL and unsafe monitor windows before Docker'
     ['monitor-signals'],
     ['monitor-signals', '0'],
     ['monitor-signals', '1441'],
+    ['duplicate', 'select 1'],
     ['custom'],
   ]) {
     rmSync(data.dockerArgs, { force: true });
@@ -470,10 +1012,32 @@ test('provisioning is preview-only by default and declares a hardened idempotent
   assert.match(source, /REVOKE pg_read_all_data FROM maxim_audit/u);
   assert.doesNotMatch(source, /GRANT pg_read_all_data/u);
   assert.match(source, /GRANT USAGE ON SCHEMA public TO maxim_audit/u);
+  assert.match(source, /DO \$revoke_audit_columns\$/u);
+  assert.match(source, /string_agg\(format\('%I', column_name\)/u);
+  assert.match(
+    source,
+    /REVOKE SELECT \(%1\$s\), INSERT \(%1\$s\), UPDATE \(%1\$s\), REFERENCES \(%1\$s\)/u,
+  );
   assert.match(
     source,
     /GRANT SELECT ON TABLE public\.webhook_events, public\.moderation_events TO maxim_audit/u,
   );
+  assert.match(
+    source,
+    /GRANT SELECT \([\s\S]*anti_duplicate_enabled[\s\S]*duplicate_photo_scope[\s\S]*\) ON TABLE public\.chat_settings TO maxim_audit/u,
+  );
+  assert.match(
+    source,
+    /GRANT SELECT \([\s\S]*status[\s\S]*updated_at[\s\S]*\) ON TABLE public\.moderation_delete_intents TO maxim_audit/u,
+  );
+  assert.match(
+    source,
+    /GRANT SELECT \([\s\S]*intent_id[\s\S]*rule_code[\s\S]*\) ON TABLE public\.moderation_delete_intent_reasons TO maxim_audit/u,
+  );
+  assert.match(source, /Antiduplicate column privileges are not exact/u);
+  assert.match(source, /unexpected effective Antiduplicate column privileges/u);
+  assert.match(source, /restricted_relation[\s\S]*restricted_attribute/u);
+  assert.match(source, /has_table_privilege\([\s\S]*public\.chat_settings[\s\S]*'SELECT'/u);
   assert.match(source, /GRANT pg_read_all_stats TO maxim_audit/u);
   assert.match(source, /ALTER ROLE maxim_audit RESET ALL/u);
   assert.match(source, /ALTER ROLE maxim_audit IN DATABASE maxim RESET ALL/u);
@@ -487,6 +1051,7 @@ test('provisioning is preview-only by default and declares a hardened idempotent
   assert.match(source, /idle_in_transaction_session_timeout = '5s'/u);
   assert.match(source, /idle_session_timeout = '60s'/u);
   assert.match(source, /max_parallel_workers_per_gather = 0/u);
+  assert.match(source, /enable_bitmapscan = off/u);
   assert.match(source, /jit = off/u);
   assert.match(source, /work_mem = '1MB'/u);
   assert.match(source, /temp_file_limit = '8MB'/u);
@@ -610,6 +1175,10 @@ test('vps postgres-audit accepts only public fixed modes and needs no bypass', (
   const sshArgs = readFileSync(data.sshArgs, 'utf8');
   assert.match(sshArgs, /vps-postgres-audit\.sh/u);
   assert.match(sshArgs, /queue/u);
+
+  const duplicate = runConnect(data, ['postgres-audit', 'duplicate']);
+  assert.equal(duplicate.status, 0, duplicate.stderr);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /duplicate/u);
 
   for (const privateMode of ['monitor-signals', 'legacy-default-webhook-jobs']) {
     rmSync(data.sshArgs, { force: true });

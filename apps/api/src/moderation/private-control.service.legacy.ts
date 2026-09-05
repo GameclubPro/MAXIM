@@ -9,6 +9,7 @@ import {
   managedGiveawayHandoffRequestSchema,
   MAX_CHAT_RULES_TEXT_LENGTH,
   profileMentionHandoffRequestSchema,
+  resolveDuplicateTextRuleSubjects,
   stepDeleteBotMessagesDelayMinutes,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
@@ -6010,19 +6011,20 @@ export class PrivateControlService {
 
     if (settings.antiDuplicateEnabled) {
       const allowedCount = resolvePrivateDuplicateAllowedCount(settings);
-      if (settings.duplicatePhotoEnabled) {
-        items.push(
-          allowedCount === 0
-            ? 'Не отправляйте повторно одинаковые сообщения и фото.'
-            : `Не отправляйте повторно одинаковые сообщения и фото: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
-        );
-      } else {
-        items.push(
-          allowedCount === 0
-            ? 'Не повторяйте одно и то же сообщение несколько раз.'
-            : `Не повторяйте одно и то же сообщение: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
-        );
+      const subjects = resolveDuplicateTextRuleSubjects(settings);
+      const photoModerationEnforced =
+        settings.duplicatePhotoEnabled &&
+        (screen.duplicatePhotoModerationMode === 'DELETE_ONLY' ||
+          screen.duplicatePhotoModerationMode === 'FULL');
+      if (photoModerationEnforced) {
+        subjects.push('одинаковые фото');
       }
+      const subject = this.formatRulesConjunctionList(subjects);
+      items.push(
+        allowedCount === 0
+          ? `Не отправляйте ${subject}.`
+          : `Не отправляйте ${subject}: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
+      );
     }
 
     if (settings.antiSpamEnabled) {
@@ -6117,6 +6119,7 @@ export class PrivateControlService {
       | 'requiredSubscriptionWarnEnabled'
       | 'textFiltersWarnEnabled'
       | 'messageLimitsWarnEnabled'
+      | 'antiDuplicateEnabled'
       | 'duplicateWarnEnabled'
       | 'linkMuteEnabled'
       | 'requiredSubscriptionMuteEnabled'
@@ -6137,7 +6140,7 @@ export class PrivateControlService {
       settings.requiredSubscriptionWarnEnabled ||
       settings.textFiltersWarnEnabled ||
       settings.messageLimitsWarnEnabled ||
-      settings.duplicateWarnEnabled
+      (settings.antiDuplicateEnabled && settings.duplicateWarnEnabled)
     ) {
       sanctions.add('предупредить');
     }
@@ -6147,7 +6150,7 @@ export class PrivateControlService {
       settings.requiredSubscriptionMuteEnabled ||
       settings.textFiltersMuteEnabled ||
       settings.messageLimitsMuteEnabled ||
-      settings.duplicateMuteEnabled
+      (settings.antiDuplicateEnabled && settings.duplicateMuteEnabled)
     ) {
       sanctions.add('временно ограничить сообщения');
     }
@@ -6157,7 +6160,7 @@ export class PrivateControlService {
       settings.requiredSubscriptionBanEnabled ||
       settings.textFiltersBanEnabled ||
       settings.messageLimitsBanEnabled ||
-      settings.duplicateBanEnabled
+      (settings.antiDuplicateEnabled && settings.duplicateBanEnabled)
     ) {
       sanctions.add('заблокировать');
     }

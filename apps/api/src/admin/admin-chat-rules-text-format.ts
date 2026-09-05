@@ -1,5 +1,7 @@
 import {
   MAX_CHAT_RULES_TEXT_LENGTH,
+  resolveDuplicateFlowAllowedCount,
+  resolveDuplicateTextRuleSubjects,
   type ChatSettings,
   type DomainAllowlistEntry,
   type DuplicatePhotoModerationMode,
@@ -85,19 +87,16 @@ export function buildRulesTextItemsFromSettings(input: {
     const photoModerationEnforced =
       input.duplicatePhotoModerationMode === 'DELETE_ONLY' ||
       input.duplicatePhotoModerationMode === 'FULL';
+    const subjects = resolveDuplicateTextRuleSubjects(settings);
     if (settings.duplicatePhotoEnabled && photoModerationEnforced) {
-      items.push(
-        allowedCount === 0
-          ? 'Не отправляйте повторно одинаковые сообщения и фото.'
-          : `Не отправляйте повторно одинаковые сообщения и фото: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
-      );
-    } else {
-      items.push(
-        allowedCount === 0
-          ? 'Не повторяйте одно и то же сообщение несколько раз.'
-          : `Не повторяйте одно и то же сообщение: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
-      );
+      subjects.push('одинаковые фото');
     }
+    const subject = formatRulesConjunctionList(subjects);
+    items.push(
+      allowedCount === 0
+        ? `Не отправляйте ${subject}.`
+        : `Не отправляйте ${subject}: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
+    );
   }
 
   if (settings.antiSpamEnabled) {
@@ -182,6 +181,7 @@ export function buildRulesSanctionsSummary(
     | 'requiredSubscriptionWarnEnabled'
     | 'textFiltersWarnEnabled'
     | 'messageLimitsWarnEnabled'
+    | 'antiDuplicateEnabled'
     | 'duplicateWarnEnabled'
     | 'linkMuteEnabled'
     | 'requiredSubscriptionMuteEnabled'
@@ -202,7 +202,7 @@ export function buildRulesSanctionsSummary(
     settings.requiredSubscriptionWarnEnabled ||
     settings.textFiltersWarnEnabled ||
     settings.messageLimitsWarnEnabled ||
-    settings.duplicateWarnEnabled
+    (settings.antiDuplicateEnabled && settings.duplicateWarnEnabled)
   ) {
     sanctions.add('предупредить');
   }
@@ -212,7 +212,7 @@ export function buildRulesSanctionsSummary(
     settings.requiredSubscriptionMuteEnabled ||
     settings.textFiltersMuteEnabled ||
     settings.messageLimitsMuteEnabled ||
-    settings.duplicateMuteEnabled
+    (settings.antiDuplicateEnabled && settings.duplicateMuteEnabled)
   ) {
     sanctions.add('временно ограничить сообщения');
   }
@@ -222,7 +222,7 @@ export function buildRulesSanctionsSummary(
     settings.requiredSubscriptionBanEnabled ||
     settings.textFiltersBanEnabled ||
     settings.messageLimitsBanEnabled ||
-    settings.duplicateBanEnabled
+    (settings.antiDuplicateEnabled && settings.duplicateBanEnabled)
   ) {
     sanctions.add('заблокировать');
   }
@@ -246,23 +246,7 @@ export function resolveRulesDuplicateAllowedCount(
     | 'duplicateBanMaxCount'
   >,
 ): number {
-  const firstThreshold = settings.duplicateWarnEnabled
-    ? settings.duplicateWarnMaxCount
-    : settings.duplicateMuteEnabled
-      ? settings.duplicateMuteMaxCount
-      : settings.duplicateBanEnabled
-        ? settings.duplicateBanMaxCount
-        : settings.duplicateWarnMaxCount;
-  const duplicateThresholdOffset =
-    (settings.duplicateBotMessageEnabled ? 2 : 1) +
-    (settings.duplicateWarnEnabled ? 1 : 0) +
-    (settings.duplicateMuteEnabled ? 1 : 0);
-  const allowedCountMax = Math.max(0, 20 - duplicateThresholdOffset);
-
-  return Math.max(
-    0,
-    Math.min(allowedCountMax, firstThreshold - (settings.duplicateBotMessageEnabled ? 2 : 1)),
-  );
+  return resolveDuplicateFlowAllowedCount(settings);
 }
 
 export function formatRulesDuplicateAllowanceLabel(count: number): string {

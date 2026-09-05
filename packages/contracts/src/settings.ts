@@ -76,6 +76,9 @@ export {
   sanctionActionSchema,
 } from './core.js';
 export {
+  DUPLICATE_ALLOWED_COUNT_MIN,
+  DUPLICATE_THRESHOLD_MAX,
+  buildDuplicateFlowThresholds,
   duplicateDetectionPresetSchema,
   duplicatePhotoActionCeilingSchema,
   duplicatePhotoEffectivePolicySchema,
@@ -84,6 +87,11 @@ export {
   duplicatePhotoModerationModeSchema,
   duplicatePhotoPolicyMatrixSchema,
   duplicatePhotoScopeSchema,
+  resolveDuplicateFlowAllowedCount,
+  resolveDuplicateFlowAllowedCountMax,
+  resolveDuplicateTextRuleSubjects,
+  type DuplicateFlowStageSettings,
+  type DuplicateFlowThresholdSettings,
   type DuplicatePhotoActionCeiling,
   type DuplicatePhotoEffectivePolicy,
   type DuplicatePhotoMatchKind,

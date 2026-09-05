@@ -19,12 +19,12 @@ import { formatDuplicateActionSummary } from './settings-duplicate-photo-status'
 import {
   ClockIcon,
   DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
-  DUPLICATE_ALLOWED_COUNT_MAX,
   DUPLICATE_ALLOWED_COUNT_MIN,
   DUPLICATE_BOT_BUTTON_GROUP,
   EditToggleButton,
   type FieldErrors,
   LazyBotMessageEditor,
+  resolveDuplicateAllowedCountMax,
   SettingsHintAnchor,
 } from './settings-page-helpers';
 import type {
@@ -226,7 +226,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для одинаковой ссылки в дублях"
                         >
-                          Вкл: та же ссылка считается дублем. Выкл: проверяется текст.
+                          Остальной текст может отличаться.
                         </SettingsHintAnchor>
                       </div>
 
@@ -258,7 +258,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для одинакового номера в дублях"
                         >
-                          Вкл: тот же номер считается дублем. Выкл: проверяется текст.
+                          Остальной текст может отличаться.
                         </SettingsHintAnchor>
                       </div>
 
@@ -290,7 +290,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для близких совпадений дублей"
                         >
-                          Ловит перестановки и небольшие правки в том же тексте.
+                          Только для длинных сообщений.
                         </SettingsHintAnchor>
                       </div>
 
@@ -376,6 +376,12 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                             }
                             onBlur={handleDuplicateWindowHoursBlur}
                             aria-label="Период проверки дублей, часы"
+                            aria-invalid={Boolean(fieldErrors.duplicateWarnWindowSec) || undefined}
+                            aria-describedby={
+                              fieldErrors.duplicateWarnWindowSec
+                                ? 'duplicate-window-hours-error'
+                                : undefined
+                            }
                           />
                           <span className="duplicate-stage__suffix" aria-hidden>
                             часы
@@ -394,6 +400,12 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           className="duplicate-count-stepper"
                           role="group"
                           aria-label="Количество разрешённых дублей"
+                          aria-invalid={Boolean(fieldErrors.duplicateWarnMaxCount) || undefined}
+                          aria-describedby={
+                            fieldErrors.duplicateWarnMaxCount
+                              ? 'duplicate-allowed-count-error'
+                              : undefined
+                          }
                         >
                           <button
                             type="button"
@@ -413,7 +425,9 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                             type="button"
                             className="duplicate-count-stepper__button"
                             onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, 1)}
-                            disabled={duplicateAllowedCount >= DUPLICATE_ALLOWED_COUNT_MAX}
+                            disabled={
+                              duplicateAllowedCount >= resolveDuplicateAllowedCountMax(draft)
+                            }
                             aria-label="Разрешить больше дублей"
                           >
                             +
@@ -423,14 +437,16 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                     </div>
 
                     {fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount ? (
-                      <div className="duplicate-stage__errors">
+                      <div className="duplicate-stage__errors" aria-live="polite">
                         {fieldErrors.duplicateWarnWindowSec ? (
-                          <small className="field__hint">
+                          <small id="duplicate-window-hours-error" className="field__hint">
                             {fieldErrors.duplicateWarnWindowSec}
                           </small>
                         ) : null}
                         {fieldErrors.duplicateWarnMaxCount ? (
-                          <small className="field__hint">{fieldErrors.duplicateWarnMaxCount}</small>
+                          <small id="duplicate-allowed-count-error" className="field__hint">
+                            {fieldErrors.duplicateWarnMaxCount}
+                          </small>
                         ) : null}
                       </div>
                     ) : null}
@@ -602,6 +618,10 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                               openMuteDurationKey === 'duplicateMuteDurationHours' && 'is-active',
                             )}
                             onClick={() => toggleMuteDurationEditor('duplicateMuteDurationHours')}
+                            aria-label={`Срок: ${formatMuteDurationCompact(
+                              Number(draft.duplicateMuteDurationHours),
+                            )}`}
+                            aria-expanded={openMuteDurationKey === 'duplicateMuteDurationHours'}
                           >
                             <ClockIcon />
                             <span>

@@ -1,6 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { DelayedError, type Job } from 'bullmq';
+import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
 import { getAppRole, roleRunsModeration } from '../../runtime/app-role';
 import { ModerationExecutionService } from '../moderation-execution.service';
 import {
@@ -80,7 +80,11 @@ export class PhotoDuplicateProcessor extends WorkerHost {
           reason: 'source_not_ready',
         });
       }
-      await this.abandonIfFinalAttempt(job, identity);
+      if (error instanceof UnrecoverableError) {
+        await this.orderingStore.abandon(identity);
+      } else {
+        await this.abandonIfFinalAttempt(job, identity);
+      }
       throw error;
     }
 

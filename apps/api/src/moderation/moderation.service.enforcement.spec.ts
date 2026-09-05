@@ -33,6 +33,7 @@ import {
 } from './moderation.service.spec-support';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { classifyDuplicateEventTime } from './duplicate-enforcement-safety';
 import { buildNightModeTransitionScheduleFingerprint } from './night-mode-transition-generation.util';
 
 const NIGHT_MODE_V4_JOB_METADATA = {
@@ -4072,6 +4073,136 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
 
+  it('rechecks remote admin access before text duplicate enforcement when the local roster is stale', async () => {
+    const prisma = {
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    installRemoteAdminProbeFence(prisma);
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'WARN',
+          count: 2,
+          threshold: 2,
+          windowSec: 12 * 60 * 60,
+          hash: 'stale-admin-duplicate',
+          fingerprintType: 'exact',
+          nextAction: 'MUTE',
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const chatContextCache = createAdminAccessEpochCache({
+      adminUserIds: ['existing-admin'],
+    });
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('fails open for the message when text duplicate admin access stays unresolved', async () => {
+    const prisma = {
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'BAN',
+          count: 4,
+          threshold: 4,
+          windowSec: 12 * 60 * 60,
+          hash: 'unresolved-admin-duplicate',
+          fingerprintType: 'exact',
+          nextAction: null,
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatMembersAccess: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const chatContextCache = createAdminAccessEpochCache({
+      adminUserIds: ['existing-admin'],
+    });
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+    const warnSpy = jest
+      .spyOn(
+        (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+
+    try {
+      await service.handleUpdate(createUpdate());
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('runs Karavan storefront relay for a forwarded dollar-prefixed seller post after violation admin recheck', async () => {
     const prisma = {
       chat: {
@@ -5181,6 +5312,197 @@ describe('ModerationService', () => {
     );
   });
 
+  it('does not report duplicate-state throttling when anti-duplicate is disabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ antiDuplicateEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
+    const systemModeService = {
+      getSnapshot: jest.fn().mockReturnValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 20,
+        action: {
+          windowSec: 60,
+          total: 100,
+          success: 96,
+          failure: 4,
+          critical: 0,
+          errorRate: 0.04,
+          criticalRate: 0,
+        },
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      } as never,
+      undefined,
+      systemModeService as never,
+    );
+    const warnSpy = jest
+      .spyOn(
+        (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+
+    try {
+      await service.handleUpdate(createUpdate());
+
+      expect(ruleEngine.detect).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicateState: false }),
+      );
+      expect(
+        warnSpy.mock.calls.some(
+          ([context]) =>
+            (context as { stage?: unknown } | undefined)?.stage === 'rule-engine.duplicate-state',
+        ),
+      ).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('classifies only out-of-window and materially future duplicate event times as unsafe', () => {
+    const nowMs = Date.parse('2026-09-05T12:00:00.000Z');
+    const classify = (eventTimestampMs: number) =>
+      classifyDuplicateEventTime({
+        eventTimestampMs,
+        windowSec: 3_600,
+        nowMs,
+      });
+
+    expect(classify(nowMs - 3_600_000)).toBeNull();
+    expect(classify(nowMs - 3_600_001)).toContain('outside the 3600s window');
+    expect(classify(nowMs + 60_000)).toBeNull();
+    expect(classify(nowMs + 60_001)).toContain('ahead of the server clock');
+  });
+
+  it('skips unsafe duplicate event times but still handles a delayed event inside the configured window', async () => {
+    const nowMs = Date.parse('2026-09-05T12:00:00.000Z');
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const settings = createSettings({
+      duplicateBotMessageEnabled: false,
+      duplicateWarnWindowSec: 3_600,
+    });
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings,
+          domains: [],
+        }),
+      },
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(async (params: { skipDuplicateState?: boolean }) =>
+        params.skipDuplicateState
+          ? { violations: [], duplicateStateSkipped: true }
+          : {
+              violations: [],
+              duplicateHit: {
+                count: 1,
+                windowSec: 3_600,
+                hash: 'delayed-inside-window',
+                fingerprintType: 'exact',
+              },
+            },
+      ),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    const warnSpy = jest
+      .spyOn(
+        (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+    const staleUpdate = createUpdate();
+    staleUpdate.eventTimestampSource = 'payload';
+    staleUpdate.message!.messageId = 'stale-message';
+    staleUpdate.message!.createdAt = new Date(nowMs - 3_600_001).toISOString();
+    const futureUpdate = createUpdate();
+    futureUpdate.eventTimestampSource = 'payload';
+    futureUpdate.message!.messageId = 'future-message';
+    futureUpdate.message!.createdAt = new Date(nowMs + 60_001).toISOString();
+    const delayedUpdate = createUpdate();
+    delayedUpdate.eventTimestampSource = 'payload';
+    delayedUpdate.message!.messageId = 'delayed-message';
+    delayedUpdate.message!.createdAt = new Date(nowMs - 3_599_999).toISOString();
+
+    try {
+      await service.handleUpdate(staleUpdate);
+      await service.handleUpdate(futureUpdate);
+      await service.handleUpdate(delayedUpdate);
+    } finally {
+      warnSpy.mockRestore();
+      nowSpy.mockRestore();
+    }
+
+    expect(ruleEngine.detect).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ skipDuplicateState: true }),
+    );
+    expect(ruleEngine.detect).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ skipDuplicateState: true }),
+    );
+    expect(ruleEngine.detect).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ skipDuplicateState: false }),
+    );
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'delayed-message');
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps duplicate moderation active during chat hot-timeout backoff while the system is healthy', async () => {
     const prisma = {
       chat: {
@@ -5765,6 +6087,287 @@ describe('ModerationService', () => {
       debugSpy.mockRestore();
       jest.useRealTimers();
     }
+  });
+
+  it.each(['WARN', 'MUTE', 'BAN'] as const)(
+    'keeps handleUpdate pending for critical duplicate %s after the optional budget is exhausted',
+    async (duplicateAction) => {
+      let finishSanction!: (persisted: boolean) => void;
+      const sanction = new Promise<boolean>((resolve) => {
+        finishSanction = resolve;
+      });
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({ duplicateBotMessageEnabled: false }),
+            domains: [],
+          }),
+        },
+        violation: { create: jest.fn() },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({
+          violations: [],
+          duplicateDecision: {
+            action: duplicateAction,
+            count: 4,
+            threshold: 2,
+            windowSec: 60,
+            hash: `duplicate-critical-${duplicateAction.toLowerCase()}`,
+            fingerprintType: 'exact',
+            nextAction: null,
+          },
+        }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn().mockResolvedValue(undefined),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      (service as any).webhookUserFacingTimeoutMs = 10_000;
+      (service as any).claimDuplicateMessageAction = jest.fn().mockResolvedValue('claimed');
+      const applySanctionAction = jest
+        .spyOn(service as any, 'applySanctionAction')
+        .mockReturnValue(sanction);
+      const hotPathProfile = (service as any).createWebhookHotPathProfile();
+      hotPathProfile.startedAtMs = Date.now() - 9_500;
+      hotPathProfile.lastMarkedAtMs = hotPathProfile.startedAtMs;
+      let settled = false;
+
+      const execution = service.handleUpdate(createUpdate(), hotPathProfile).finally(() => {
+        settled = true;
+      });
+
+      for (
+        let attempt = 0;
+        attempt < 20 && applySanctionAction.mock.calls.length === 0;
+        attempt += 1
+      ) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+
+      expect(applySanctionAction).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+
+      finishSanction(true);
+      await expect(execution).resolves.toBeUndefined();
+    },
+  );
+
+  it('propagates a critical duplicate sanction error after the optional budget is exhausted', async () => {
+    const sanctionError = new Error('sanction storage unavailable');
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'MUTE',
+          count: 3,
+          threshold: 3,
+          windowSec: 60,
+          hash: 'duplicate-critical-error',
+          fingerprintType: 'exact',
+          nextAction: 'BAN',
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10_000;
+    (service as any).claimDuplicateMessageAction = jest.fn().mockResolvedValue('claimed');
+    jest.spyOn(service as any, 'applySanctionAction').mockRejectedValue(sanctionError);
+    const hotPathProfile = (service as any).createWebhookHotPathProfile();
+    hotPathProfile.startedAtMs = Date.now() - 9_500;
+    hotPathProfile.lastMarkedAtMs = hotPathProfile.startedAtMs;
+
+    await expect(service.handleUpdate(createUpdate(), hotPathProfile)).rejects.toBe(sanctionError);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('retries a duplicate ban after a proven pre-dispatch transient failure', async () => {
+    const preDispatchError = new Error('route preparation unavailable');
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'moderation-event' }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'BAN',
+          count: 4,
+          threshold: 4,
+          windowSec: 60,
+          hash: 'duplicate-ban-pre-dispatch-retry',
+          fingerprintType: 'exact',
+          nextAction: null,
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn(),
+      banMember: jest.fn().mockRejectedValueOnce(preDispatchError).mockResolvedValueOnce(undefined),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (service as any).claimDuplicateMessageAction = jest
+      .fn()
+      .mockResolvedValueOnce('claimed')
+      .mockResolvedValueOnce('resumed');
+    const warnSpy = jest
+      .spyOn((service as unknown as { logger: { warn: () => void } }).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(service.handleUpdate(createUpdate())).rejects.toBe(preDispatchError);
+      await expect(service.handleUpdate(createUpdate())).resolves.toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(
+      prisma.moderationEvent.create.mock.calls.filter(
+        ([call]) => call.data.action === SanctionAction.BAN,
+      ),
+    ).toHaveLength(1);
+    expect(
+      prisma.moderationEvent.create.mock.calls.some(
+        ([call]) =>
+          call.data.action === SanctionAction.NONE && call.data.ruleCode === 'DUPLICATE_BAN',
+      ),
+    ).toBe(false);
+  });
+
+  it('retries when a duplicate mute could not be persisted or cached', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: { create: jest.fn() },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'MUTE',
+          count: 3,
+          threshold: 3,
+          windowSec: 60,
+          hash: 'duplicate-mute-persistence-retry',
+          fingerprintType: 'exact',
+          nextAction: 'BAN',
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (service as any).claimDuplicateMessageAction = jest.fn().mockResolvedValue('claimed');
+    jest.spyOn(service as any, 'applySanctionAction').mockResolvedValue(false);
+
+    await expect(service.handleUpdate(createUpdate())).rejects.toThrow(
+      'Duplicate mute sanction could not be persisted',
+    );
+    expect(
+      prisma.moderationEvent.create.mock.calls.some(
+        ([call]) =>
+          call.data.action === SanctionAction.NONE && call.data.ruleCode === 'DUPLICATE_MUTE',
+      ),
+    ).toBe(false);
   });
 
   it('does not call SanctionService for text filter violations', async () => {

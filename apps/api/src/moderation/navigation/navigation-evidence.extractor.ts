@@ -497,6 +497,7 @@ function extractPlainTextCandidate(
     sourcePath: input.sourcePath ?? `${content.path}.text`,
     range,
     contentFingerprint: content.contentFingerprint,
+    navigationFingerprint: content.navigationFingerprint,
   });
 }
 
@@ -522,6 +523,7 @@ function evidenceForMarkup(
     sourcePath: markup.path,
     range,
     contentFingerprint: content.contentFingerprint,
+    navigationFingerprint: content.navigationFingerprint,
   };
 }
 
@@ -540,6 +542,7 @@ function evidenceForCarrier(
     sourcePath,
     range: notApplicableRange(),
     contentFingerprint: content.contentFingerprint,
+    navigationFingerprint: content.navigationFingerprint,
   };
 }
 

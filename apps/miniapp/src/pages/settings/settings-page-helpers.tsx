@@ -307,8 +307,6 @@ export const AUTO_SAVE_DELAY_MS = 650;
 export const AUTO_MUTE_DURATION_MIN_HOURS = 1;
 export const AUTO_MUTE_DURATION_MAX_HOURS = 168;
 export const AUTO_MUTE_DURATION_PRESET_HOURS = [1, 6, 24, 168] as const;
-export const DUPLICATE_ALLOWED_COUNT_MIN = 0;
-export const DUPLICATE_ALLOWED_COUNT_MAX = 16;
 export const MESSAGE_COUNT_LIMIT_MIN = 1;
 export const MESSAGE_COUNT_LIMIT_MAX = 10;
 export const MESSAGE_COUNT_LIMIT_WINDOW_MIN_HOURS = 1;
@@ -728,143 +726,15 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
 };
 export const APPLY_TARGET_FAVORITE_ICONS = HOME_ENTITY_FAVORITE_ICONS;
 
-export function resolveDuplicateSharedWindowSec(
-  settings: Pick<
-    ChatSettings,
-    | 'duplicateWarnEnabled'
-    | 'duplicateMuteEnabled'
-    | 'duplicateBanEnabled'
-    | 'duplicateWarnWindowSec'
-    | 'duplicateMuteWindowSec'
-    | 'duplicateBanWindowSec'
-  >,
-): number {
-  if (settings.duplicateWarnEnabled) {
-    return settings.duplicateWarnWindowSec;
-  }
-
-  if (settings.duplicateMuteEnabled) {
-    return settings.duplicateMuteWindowSec;
-  }
-
-  if (settings.duplicateBanEnabled) {
-    return settings.duplicateBanWindowSec;
-  }
-
-  return settings.duplicateWarnWindowSec;
-}
-
-export function resolveDuplicateFirstThreshold(
-  settings: Pick<
-    ChatSettings,
-    | 'duplicateWarnEnabled'
-    | 'duplicateMuteEnabled'
-    | 'duplicateBanEnabled'
-    | 'duplicateWarnMaxCount'
-    | 'duplicateMuteMaxCount'
-    | 'duplicateBanMaxCount'
-  >,
-): number {
-  if (settings.duplicateWarnEnabled) {
-    return settings.duplicateWarnMaxCount;
-  }
-
-  if (settings.duplicateMuteEnabled) {
-    return settings.duplicateMuteMaxCount;
-  }
-
-  if (settings.duplicateBanEnabled) {
-    return settings.duplicateBanMaxCount;
-  }
-
-  return settings.duplicateWarnMaxCount;
-}
-
-export function resolveDuplicateAllowedCount(
-  settings: Pick<
-    ChatSettings,
-    | 'duplicateBotMessageEnabled'
-    | 'duplicateWarnEnabled'
-    | 'duplicateMuteEnabled'
-    | 'duplicateBanEnabled'
-    | 'duplicateWarnMaxCount'
-    | 'duplicateMuteMaxCount'
-    | 'duplicateBanMaxCount'
-  >,
-): number {
-  return Math.max(
-    DUPLICATE_ALLOWED_COUNT_MIN,
-    Math.min(
-      DUPLICATE_ALLOWED_COUNT_MAX,
-      resolveDuplicateFirstThreshold(settings) - (settings.duplicateBotMessageEnabled ? 2 : 1),
-    ),
-  );
-}
-
-export function buildDuplicateFlowSettings(
-  settings: Pick<
-    ChatSettings,
-    | 'duplicateBotMessageEnabled'
-    | 'duplicateWarnEnabled'
-    | 'duplicateMuteEnabled'
-    | 'duplicateBanEnabled'
-  > & {
-    allowedCount: number;
-    windowSec: number;
-  },
-): Pick<
-  ChatSettings,
-  | 'duplicateWarnWindowSec'
-  | 'duplicateMuteWindowSec'
-  | 'duplicateBanWindowSec'
-  | 'duplicateWarnMaxCount'
-  | 'duplicateMuteMaxCount'
-  | 'duplicateBanMaxCount'
-> {
-  const allowedCount = Math.max(
-    DUPLICATE_ALLOWED_COUNT_MIN,
-    Math.min(DUPLICATE_ALLOWED_COUNT_MAX, Math.round(settings.allowedCount)),
-  );
-  const windowSec = Math.max(3_600, Math.min(604_800, Math.round(settings.windowSec)));
-  const warnThreshold = allowedCount + (settings.duplicateBotMessageEnabled ? 2 : 1);
-  const muteThreshold = warnThreshold + (settings.duplicateWarnEnabled ? 1 : 0);
-  const banThreshold = muteThreshold + (settings.duplicateMuteEnabled ? 1 : 0);
-
-  return {
-    duplicateWarnWindowSec: windowSec,
-    duplicateMuteWindowSec: windowSec,
-    duplicateBanWindowSec: windowSec,
-    duplicateWarnMaxCount: warnThreshold,
-    duplicateMuteMaxCount: muteThreshold,
-    duplicateBanMaxCount: banThreshold,
-  };
-}
-
-export function normalizeDuplicateFlowSettings(settings: ChatSettings): ChatSettings {
-  return {
-    ...settings,
-    ...buildDuplicateFlowSettings({
-      duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
-      duplicateWarnEnabled: settings.duplicateWarnEnabled,
-      duplicateMuteEnabled: settings.duplicateMuteEnabled,
-      duplicateBanEnabled: settings.duplicateBanEnabled,
-      allowedCount: resolveDuplicateAllowedCount(settings),
-      windowSec: resolveDuplicateSharedWindowSec(settings),
-    }),
-  };
-}
-
-export function formatDuplicateAllowanceLabel(count: number): string {
-  if (count === 0) {
-    return 'с первого дубля';
-  }
-
-  if (count === 1) {
-    return 'после 1 дубля';
-  }
-
-  return `после ${count} дублей`;
-}
+export {
+  DUPLICATE_ALLOWED_COUNT_MIN,
+  buildDuplicateFlowSettings,
+  formatDuplicateAllowanceLabel,
+  normalizeDuplicateFlowSettings,
+  resolveDuplicateAllowedCount,
+  resolveDuplicateAllowedCountMax,
+  resolveDuplicateSharedWindowSec,
+} from './settings-duplicate-flow';
 
 export const LINK_POLICY_OPTIONS: Array<{
   value: ChatSettings['linkPolicy'];

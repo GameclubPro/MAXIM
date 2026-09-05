@@ -1,4 +1,4 @@
-import { DelayedError, type Job } from 'bullmq';
+import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
 import { PhotoDuplicateProcessor } from './photo-duplicate.processor';
 import {
   PHOTO_DUPLICATE_ORDERING_DEFER_MS,
@@ -275,6 +275,34 @@ describe('PhotoDuplicateProcessor', () => {
   it('abandons ordering state when the claimed operation exhausts its attempts', async () => {
     const job = buildJob({ attemptsMade: 4, attempts: 5 });
     const processingError = new Error('moderation failed');
+    const moderationExecutionService = {
+      processPhotoDuplicateJob: jest.fn().mockRejectedValue(processingError),
+    };
+    const orderingStore = {
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => {
+        await operation(buildLease(), true);
+        return { kind: 'completed', value: undefined };
+      }),
+      abandon: jest.fn().mockResolvedValue(undefined),
+    };
+    const processor = new PhotoDuplicateProcessor(
+      moderationExecutionService as never,
+      orderingStore as never,
+    );
+
+    await expect(processor.process(job)).rejects.toBe(processingError);
+
+    expect(orderingStore.abandon).toHaveBeenCalledWith({
+      jobId: idempotencyKey,
+      chatId: 'chat-1',
+      sourceCreatedAt,
+    });
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('abandons ordering state immediately when BullMQ must not retry the failure', async () => {
+    const job = buildJob({ attemptsMade: 0, attempts: 5 });
+    const processingError = new UnrecoverableError('Photo response exceeds the byte limit');
     const moderationExecutionService = {
       processPhotoDuplicateJob: jest.fn().mockRejectedValue(processingError),
     };

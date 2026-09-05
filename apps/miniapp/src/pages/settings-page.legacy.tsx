@@ -225,9 +225,13 @@ import {
   applyRequiredSubscriptionChannelAddition,
   enableDefaultSanctionStages,
   hasSectionBotSpeechMediaChanges,
+  hasSectionSettingChanges,
   mergeBotSpeechStyleSettings,
   mergeSectionSettings,
   normalizeRequiredSubscriptionDraftSettings,
+  normalizeSectionDraftSettings,
+  serializeChatSettingsDraft,
+  shouldHydrateSettingsDraftFromServer,
 } from './settings-page-state';
 import {
   DUPLICATE_DETECTION_LABELS,
@@ -276,7 +280,6 @@ import {
   AUTO_MUTE_DURATION_MAX_HOURS,
   AUTO_MUTE_DURATION_PRESET_HOURS,
   DUPLICATE_ALLOWED_COUNT_MIN,
-  DUPLICATE_ALLOWED_COUNT_MAX,
   STICKER_COOLDOWN_MIN_MINUTES,
   STICKER_COOLDOWN_MAX_MINUTES,
   DOMAIN_REMOVAL_MIN_FUTURE_MS,
@@ -306,6 +309,7 @@ import {
   createDefaultApplySettingsTarget,
   resolveDuplicateSharedWindowSec,
   resolveDuplicateAllowedCount,
+  resolveDuplicateAllowedCountMax,
   buildDuplicateFlowSettings,
   normalizeDuplicateFlowSettings,
   formatDuplicateAllowanceLabel,
@@ -405,6 +409,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
+  const draftRef = useRef<ChatSettings | null>(null);
+  const previousSettingsServerSnapshotRef = useRef('');
   const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -585,6 +591,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const appliedLegacyEditorTargetRef = useRef<string | null>(null);
   const broadcastDraftRestoreEpochRef = useRef(0);
   const [broadcastDraftRestoreReady, setBroadcastDraftRestoreReady] = useState(false);
+
+  useLayoutEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  useEffect(() => {
+    previousSettingsServerSnapshotRef.current = '';
+  }, [chatId]);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -1114,13 +1128,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    setDraft(
-      normalizeDuplicateFlowSettings(
-        normalizeLegacyChatCommentScope(
-          normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
-        ),
+    const nextServerDraft = normalizeDuplicateFlowSettings(
+      normalizeLegacyChatCommentScope(
+        normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
       ),
     );
+    const nextServerSnapshot = serializeChatSettingsDraft(nextServerDraft);
+    const shouldHydrate = shouldHydrateSettingsDraftFromServer(
+      draftRef.current ? serializeChatSettingsDraft(draftRef.current) : '',
+      previousSettingsServerSnapshotRef.current,
+      nextServerSnapshot,
+    );
+    previousSettingsServerSnapshotRef.current = nextServerSnapshot;
+    if (!shouldHydrate) {
+      return;
+    }
+
+    setDraft(nextServerDraft);
     setFieldErrors({});
     setDuplicateWindowInputValue('');
   }, [settingsQuery.data]);
@@ -1272,7 +1296,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }, [domainsQuery.data, scheduleDomain]);
 
-  const draftSnapshot = useMemo(() => (draft ? JSON.stringify(draft) : ''), [draft]);
+  const draftSnapshot = useMemo(() => (draft ? serializeChatSettingsDraft(draft) : ''), [draft]);
   const rulesDraftSnapshot = useMemo(
     () => (rulesDraft ? serializeRulesDraftPayload(rulesDraft) : ''),
     [rulesDraft],
@@ -1281,7 +1305,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const serverSnapshot = useMemo(
     () =>
       settingsQuery.data
-        ? JSON.stringify(
+        ? serializeChatSettingsDraft(
             normalizeDuplicateFlowSettings(
               normalizeLegacyChatCommentScope(
                 normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
@@ -2616,8 +2640,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function adjustDuplicateAllowedCount(currentValue: number, delta: number) {
+    if (!draft) {
+      return;
+    }
+
     const next = Math.min(
-      DUPLICATE_ALLOWED_COUNT_MAX,
+      resolveDuplicateAllowedCountMax(draft),
       Math.max(DUPLICATE_ALLOWED_COUNT_MIN, Number(currentValue) + delta),
     );
     applyDuplicateFlowConfig({ allowedCount: next });
@@ -5082,24 +5110,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return false;
     }
 
-    const draftSettings =
-      section === 'requiredSubscription'
-        ? normalizeRequiredSubscriptionDraftSettings(draft)
-        : draft;
-    const savedSettings =
-      section === 'requiredSubscription'
-        ? normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)
-        : settingsQuery.data;
+    const draftSettings = normalizeSectionDraftSettings(draft, section);
+    const savedSettings = normalizeSectionDraftSettings(settingsQuery.data, section);
     return (
-      SECTION_SETTING_KEYS[section].some((key) => draftSettings[key] !== savedSettings[key]) ||
+      hasSectionSettingChanges(draftSettings, savedSettings, section) ||
       hasSectionBotSpeechMediaChanges(draftSettings, savedSettings, section)
     );
   }
 
   function discardSectionChanges(section: ApplySectionKey) {
-    const savedSettings = settingsQuery.data;
-    if (!savedSettings) {
+    if (!settingsQuery.data) {
       return;
+    }
+
+    const savedSettings = normalizeSectionDraftSettings(settingsQuery.data, section);
+
+    if (section === 'duplicates') {
+      setDuplicateWindowInputValue('');
     }
 
     setDraft((current) =>

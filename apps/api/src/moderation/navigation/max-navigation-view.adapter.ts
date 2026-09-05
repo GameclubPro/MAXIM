@@ -238,6 +238,19 @@ function adaptContent(
       })),
     })),
   };
+  const navigationFingerprintInput = {
+    chatActions: attachments.flatMap((attachment) =>
+      attachment.kind === 'inline_keyboard'
+        ? attachment.buttons
+            .filter((button) => button.type === 'chat')
+            .map((button) => ({
+              chatTitle: readString(button.chatTitle),
+              chatDescription: readString(button.chatDescription),
+              startPayload: readString(button.startPayload),
+            }))
+        : [],
+    ),
+  };
 
   return {
     path,
@@ -249,6 +262,10 @@ function adaptContent(
     contentFingerprint: createHash('sha256')
       .update('max-navigation-content:v1\0')
       .update(stableStringify(fingerprintInput))
+      .digest('hex'),
+    navigationFingerprint: createHash('sha256')
+      .update('max-navigation-actions:v1\0')
+      .update(stableStringify(navigationFingerprintInput))
       .digest('hex'),
   };
 }

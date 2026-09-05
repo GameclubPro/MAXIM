@@ -28,6 +28,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 20,
         membershipKeys: ['shared-key', 'new-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -42,16 +43,18 @@ describe('RedisCounterService revisioned set memberships', () => {
       sharedKey,
       expectedState,
       revision,
+      window,
       ttl,
       deadline,
       member,
       newDesired,
       oldDesired,
       sharedDesired,
+      countLimit,
     ] = redis.eval.mock.calls[0]!;
     const lua = String(script);
     const compareAt = lua.indexOf("local current_state = redis.call('GET', KEYS[1])");
-    const deadlineAt = lua.indexOf('if now_ms >= tonumber(ARGV[4]) then');
+    const deadlineAt = lua.indexOf('if now_ms >= tonumber(ARGV[5]) then');
     const firstPruneAt = lua.indexOf("redis.call('ZREMRANGEBYSCORE'");
     const firstRemoveAt = lua.indexOf("redis.call('ZREM'");
     const firstAddAt = lua.indexOf("redis.call('ZADD'");
@@ -71,12 +74,14 @@ describe('RedisCounterService revisioned set memberships', () => {
       sharedKey,
       expectedState,
       revision,
+      window,
       ttl,
       deadline,
       member,
       newDesired,
       oldDesired,
       sharedDesired,
+      countLimit,
     ]).toEqual([
       4,
       'state-key',
@@ -85,16 +90,18 @@ describe('RedisCounterService revisioned set memberships', () => {
       'shared-key',
       currentRaw,
       '20',
+      '60',
       '61',
       String(deadlineAtMs),
       'message-hash',
       '1',
       '0',
       '1',
+      '21',
     ]);
   });
 
-  it('prunes expired members and refreshes each desired history as a true rolling window', async () => {
+  it('uses trusted event time for the rolling window while retaining Redis time for deadlines', async () => {
     const { redis, service } = createService([1, 2]);
 
     await service.replaceRevisionedSetMembershipsBeforeDeadline({
@@ -102,16 +109,29 @@ describe('RedisCounterService revisioned set memberships', () => {
       member: 'message-hash',
       revision: 20,
       membershipKeys: ['membership-key'],
+      windowSeconds: 60,
       ttlSeconds: 61,
       deadlineAtMs,
     });
 
     const script = String(redis.eval.mock.calls[0]?.[0] ?? '');
-    expect(script).toContain('local cutoff_ms = now_ms - full_ttl_ms');
-    expect(script).toContain("redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', cutoff_ms)");
-    expect(script).toContain("redis.call('ZADD', KEYS[key_index], now_ms, ARGV[5])");
-    expect(script).toContain("redis.call('ZCARD', KEYS[key_index])");
+    expect(script).toContain('local member_timestamp_ms = tonumber(ARGV[2])');
+    expect(script).toContain('local window_ms = tonumber(ARGV[3]) * 1000');
+    expect(script).toContain('local count_limit = tonumber(ARGV[#ARGV])');
+    expect(script).toContain('local cutoff_ms = member_timestamp_ms - window_ms');
+    expect(script).toContain('local retention_cutoff_ms = now_ms - full_ttl_ms');
+    expect(script).toContain(
+      "redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', retention_cutoff_ms)",
+    );
+    expect(script).toContain("redis.call('ZADD', KEYS[key_index], member_timestamp_ms, ARGV[6])");
+    expect(script).toContain("local logical_lower_bound = '(' .. tostring(cutoff_ms)");
+    expect(script).toContain("local membership_count = redis.call(\n      'ZCOUNT'");
+    expect(script).toContain('logical_lower_bound,\n      member_timestamp_ms');
+    expect(script).toContain('membership_count = math.min(membership_count, count_limit)');
+    expect(script).not.toContain('future_cutoff_ms');
+    expect(script).not.toContain("'ZRANGEBYSCORE'");
     expect(script).toContain("redis.call('PEXPIRE', KEYS[key_index], full_ttl_ms)");
+    expect(script).not.toContain("redis.call('ZCARD', KEYS[key_index])");
     expect(script).not.toContain("redis.call('PTTL', KEYS[key_index])");
     expect(script).not.toContain("redis.call('SADD'");
     expect(script).not.toContain("redis.call('SCARD'");
@@ -129,10 +149,48 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 10,
         membershipKeys: ['membership-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
     ).resolves.toEqual(expected);
+  });
+
+  it('rejects a retention TTL that is shorter than the event-time window', async () => {
+    const { redis, service } = createService([1, 1]);
+
+    await expect(
+      service.replaceRevisionedSetMembershipsBeforeDeadline({
+        stateKey: 'state-key',
+        member: 'message-hash',
+        revision: 10,
+        membershipKeys: ['membership-key'],
+        windowSeconds: 61,
+        ttlSeconds: 60,
+        deadlineAtMs,
+      }),
+    ).rejects.toThrow('valid unique keys and times');
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.eval).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unbounded rolling-window count limit', async () => {
+    const { redis, service } = createService([1, 1]);
+
+    await expect(
+      service.replaceRevisionedSetMembershipsBeforeDeadline({
+        stateKey: 'state-key',
+        member: 'message-hash',
+        revision: 10,
+        membershipKeys: ['membership-key'],
+        windowSeconds: 60,
+        ttlSeconds: 181,
+        countLimit: 101,
+        deadlineAtMs,
+      }),
+    ).rejects.toThrow('valid unique keys and times');
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.eval).not.toHaveBeenCalled();
   });
 
   it('returns stale without mutating when the stored revision is newer', async () => {
@@ -147,6 +205,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 10,
         membershipKeys: ['membership-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -169,6 +228,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 10,
         membershipKeys: ['membership-a', 'membership-b'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -202,6 +262,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 10,
         membershipKeys: ['membership-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -227,6 +288,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 20,
         membershipKeys: ['new-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -242,11 +304,13 @@ describe('RedisCounterService revisioned set memberships', () => {
       'old-key',
       refreshedRaw,
       '20',
+      '60',
       '61',
       String(deadlineAtMs),
       'message-hash',
       '1',
       '0',
+      '21',
     ]);
   });
 
@@ -265,6 +329,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 20,
         membershipKeys: [],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -278,11 +343,13 @@ describe('RedisCounterService revisioned set memberships', () => {
       'old-b',
       currentRaw,
       '20',
+      '60',
       '61',
       String(deadlineAtMs),
       'message-hash',
       '0',
       '0',
+      '21',
     ]);
     expect(String(redis.eval.mock.calls[0]?.[0] ?? '')).toContain(
       'memberships = stored_memberships',
@@ -303,6 +370,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 20,
         membershipKeys: [],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -319,6 +387,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 20,
         membershipKeys: ['membership-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -334,6 +403,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 20,
         membershipKeys: ['membership-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),
@@ -349,6 +419,7 @@ describe('RedisCounterService revisioned set memberships', () => {
         member: 'message-hash',
         revision: 20,
         membershipKeys: ['membership-key'],
+        windowSeconds: 60,
         ttlSeconds: 61,
         deadlineAtMs,
       }),

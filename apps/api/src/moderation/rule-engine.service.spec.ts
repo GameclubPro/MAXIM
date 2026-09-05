@@ -4,6 +4,7 @@ import {
   COMMERCIAL_REAL_WORLD_POSITIVE_CASES,
 } from './commercial-real-world.fixture';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
+import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { PROFANITY_EXACT_VARIANT_COUNT, TARGETED_INSULT_VARIANT_COUNT } from './profanity-lexicon';
 import { DUPLICATE_STATE_BUDGET_MS } from './rule-engine-duplicate-detector';
 import { RuleEngineService } from './rule-engine.service';
@@ -15,7 +16,7 @@ class MockRedisCounterService {
     string,
     { revision: number; membershipKeys: string[]; countSnapshots: Map<string, number> }
   >();
-  private readonly membershipSets = new Map<string, Set<string>>();
+  private readonly membershipSets = new Map<string, Map<string, number>>();
 
   async incrementWithTtl(key: string): Promise<number> {
     const next = (this.counters.get(key) ?? 0) + 1;
@@ -46,6 +47,8 @@ class MockRedisCounterService {
     member: string;
     revision: number;
     membershipKeys: readonly string[];
+    windowSeconds: number;
+    ttlSeconds: number;
   }) {
     const current = this.revisionedStates.get(params.stateKey);
     if (current && params.revision < current.revision) {
@@ -72,12 +75,28 @@ class MockRedisCounterService {
       }
     }
     for (const key of params.membershipKeys) {
-      const membership = this.membershipSets.get(key) ?? new Set<string>();
-      membership.add(params.member);
+      const membership = this.membershipSets.get(key) ?? new Map<string, number>();
+      membership.set(params.member, params.revision);
       this.membershipSets.set(key, membership);
     }
+    const windowMs = params.windowSeconds * 1_000;
+    const cutoffMs = params.revision - windowMs;
+    const futureCutoffMs = params.revision + windowMs;
     const countSnapshots = new Map(
-      params.membershipKeys.map((key) => [key, this.membershipSets.get(key)?.size ?? 0]),
+      params.membershipKeys.map((key) => {
+        const timestamps = Array.from(this.membershipSets.get(key)?.values() ?? [])
+          .filter((timestampMs) => timestampMs > cutoffMs && timestampMs < futureCutoffMs)
+          .sort((left, right) => left - right);
+        let left = 0;
+        let maximum = 0;
+        for (let right = 0; right < timestamps.length; right += 1) {
+          while ((timestamps[right] ?? 0) - (timestamps[left] ?? 0) >= windowMs) {
+            left += 1;
+          }
+          maximum = Math.max(maximum, right - left + 1);
+        }
+        return [key, maximum];
+      }),
     );
     this.revisionedStates.set(params.stateKey, {
       revision: params.revision,
@@ -304,6 +323,16 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
 }
 
 const DUPLICATE_SPAM_TEXT = 'продам курс по маркетингу пишите в личные сообщения сегодня скидка';
+
+function duplicateNavigationTarget(url: string): NavigationTargetEvidence {
+  return {
+    kind: 'external_url',
+    target: url,
+    normalizedTarget: new URL(url).toString(),
+    enforceable: true,
+    origins: [],
+  };
+}
 
 const COMMERCIAL_SENSITIVITY_PROFILES = {
   soft: {
@@ -4324,10 +4353,10 @@ describe('RuleEngineService', () => {
     expect(nextMessage.duplicateDecision?.threshold).toBe(1);
   });
 
-  it('updates duplicate state for edits while all other stateful limits stay skipped', async () => {
+  it('writes a duplicate tombstone for transferable edits while other stateful limits stay skipped', async () => {
     const replaceRevisionedSetMembershipsBeforeDeadline = jest
       .fn()
-      .mockResolvedValue({ kind: 'applied', counts: [1] });
+      .mockResolvedValue({ kind: 'applied', counts: [] });
     const incrementOncePerMemberWithTtl = jest
       .fn()
       .mockResolvedValue({ inserted: true, count: 99 });
@@ -4359,7 +4388,7 @@ describe('RuleEngineService', () => {
     expect(replaceRevisionedSetMembershipsBeforeDeadline).toHaveBeenCalledWith(
       expect.objectContaining({
         revision: 1_800_000_000_000,
-        membershipKeys: [expect.stringContaining(':fingerprint:exact:')],
+        membershipKeys: [],
       }),
     );
     expect(incrementOncePerMemberWithTtl).not.toHaveBeenCalled();
@@ -5082,7 +5111,7 @@ describe('RuleEngineService', () => {
     );
   });
 
-  it('detects short exact text duplicates without enabling fuzzy matching', async () => {
+  it('does not moderate repeated short everyday text', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({ antiSpamEnabled: false });
 
@@ -5117,8 +5146,146 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(third.duplicateHit).toMatchObject({ count: 2, fingerprintType: 'exact' });
-    expect(third.duplicateDecision).toMatchObject({ action: 'WARN', fingerprintType: 'exact' });
+    expect(third.duplicateHit).toBeUndefined();
+    expect(third.duplicateDecision).toBeUndefined();
+  });
+
+  it('still tracks short repeated text when it contains a high-signal link', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      antiSpamEnabled: false,
+      linkPolicy: LinkPolicy.ALERT_ONLY,
+      duplicateWarnMaxCount: 1,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'сюда https://example.com/sale',
+      settings,
+      domainAllowlist: [],
+    });
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'сюда https://example.com/sale',
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(second.duplicateHit).toMatchObject({ count: 1, fingerprintType: 'exact' });
+  });
+
+  it.each([
+    'hasPhotoAttachment',
+    'hasVideoAttachment',
+    'hasFileAttachment',
+    'hasVoiceAttachment',
+    'hasMediaBatch',
+    'hasForwardedMessage',
+  ] as const)(
+    'does not treat repeated captions on transferable content as text duplicates: %s',
+    async (flag) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const settings = buildSettings({ antiSpamEnabled: false, duplicateWarnMaxCount: 1 });
+      const text =
+        'Команда завтра утром принимает новые заявки возле главного входа после общей встречи';
+      let result;
+
+      for (let index = 0; index < 3; index += 1) {
+        result = await service.detect({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: `transferable-${flag}-${index}`,
+          duplicateStateEventType: 'message_created',
+          duplicateStateEventTimestampMs: 1_800_000_000_000 + index,
+          text,
+          settings,
+          domainAllowlist: [],
+          [flag]: true,
+        });
+      }
+
+      expect(result?.duplicateHit).toBeUndefined();
+      expect(result?.duplicateDecision).toBeUndefined();
+    },
+  );
+
+  it('clears prior text history when an edit adds transferable content', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({ antiSpamEnabled: false, duplicateWarnMaxCount: 1 });
+    const text =
+      'Команда завтра утром принимает новые заявки возле главного входа после общей встречи';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'edited-transferable',
+      duplicateStateEventType: 'message_created',
+      duplicateStateEventTimestampMs: 1_800_000_000_000,
+      text,
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'edited-transferable',
+      duplicateStateEventType: 'message_edited',
+      duplicateStateEventTimestampMs: 1_800_000_000_001,
+      text,
+      settings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+    const next = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'text-after-transferable-edit',
+      duplicateStateEventType: 'message_created',
+      duplicateStateEventTimestampMs: 1_800_000_000_002,
+      text,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(next.duplicateHit).toBeUndefined();
+    expect(next.duplicateDecision).toBeUndefined();
+  });
+
+  it('treats structured link targets as part of an exact message', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      antiSpamEnabled: false,
+      linkPolicy: LinkPolicy.ALERT_ONLY,
+      duplicateWarnEnabled: false,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+      duplicateWarnMaxCount: 1,
+    });
+    const detect = (messageId: string, target: string) =>
+      service.detect({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId,
+        duplicateStateEventType: 'message_created',
+        duplicateStateEventTimestampMs: 1_800_000_000_000 + Number(messageId.slice(-1)),
+        text: 'Подробнее',
+        settings,
+        domainAllowlist: [],
+        navigationTargets: [duplicateNavigationTarget(target)],
+      });
+
+    const first = await detect('message-1', 'https://example.com/one');
+    const second = await detect('message-2', 'https://example.com/two');
+
+    expect(first.duplicateHit).toBeUndefined();
+    expect(second.duplicateHit).toBeUndefined();
+    await expect(detect('message-3', 'https://example.com/two')).resolves.toMatchObject({
+      duplicateHit: { count: 1, fingerprintType: 'exact' },
+    });
   });
 
   it.each([
@@ -5131,27 +5298,24 @@ describe('RuleEngineService', () => {
     '/start broadcast_handoff',
     '/START@major_bot pm2_chat-user_deadbeef',
     `/start ${'a'.repeat(128)}`,
-  ])(
-    'does not track empty, non-semantic, or service-like text %p',
-    async (text) => {
-      const service = new RuleEngineService(new MockRedisCounterService() as never);
-      const settings = buildSettings({ antiSpamEnabled: false });
-      let lastResult;
+  ])('does not track empty, non-semantic, or service-like text %p', async (text) => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({ antiSpamEnabled: false });
+    let lastResult;
 
-      for (let index = 0; index < 4; index += 1) {
-        lastResult = await service.detect({
-          chatId: 'chat-1',
-          userId: 'user-1',
-          text,
-          settings,
-          domainAllowlist: [],
-        });
-      }
+    for (let index = 0; index < 4; index += 1) {
+      lastResult = await service.detect({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        text,
+        settings,
+        domainAllowlist: [],
+      });
+    }
 
-      expect(lastResult?.duplicateHit).toBeUndefined();
-      expect(lastResult?.duplicateDecision).toBeUndefined();
-    },
-  );
+    expect(lastResult?.duplicateHit).toBeUndefined();
+    expect(lastResult?.duplicateDecision).toBeUndefined();
+  });
 
   it.each([
     '/x длинный повторяемый спам',
@@ -5160,30 +5324,33 @@ describe('RuleEngineService', () => {
     '/start payload с пробелами',
     '/start payload!',
     `/start ${'a'.repeat(129)}`,
-  ])('tracks repeated slash-prefixed text that is not a valid service command: %p', async (text) => {
-    const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const settings = buildSettings({ antiSpamEnabled: false });
-    let lastResult;
+  ])(
+    'tracks repeated slash-prefixed text that is not a valid service command: %p',
+    async (text) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const settings = buildSettings({ antiSpamEnabled: false });
+      let lastResult;
 
-    for (let index = 0; index < 3; index += 1) {
-      lastResult = await service.detect({
-        chatId: 'chat-1',
-        userId: 'user-1',
-        messageId: `slash-${index}`,
-        duplicateStateEventType: 'message_created',
-        duplicateStateEventTimestampMs: 1_800_000_000_000 + index,
-        text,
-        settings,
-        domainAllowlist: [],
+      for (let index = 0; index < 3; index += 1) {
+        lastResult = await service.detect({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: `slash-${index}`,
+          duplicateStateEventType: 'message_created',
+          duplicateStateEventTimestampMs: 1_800_000_000_000 + index,
+          text,
+          settings,
+          domainAllowlist: [],
+        });
+      }
+
+      expect(lastResult?.duplicateHit).toMatchObject({ count: 2, fingerprintType: 'exact' });
+      expect(lastResult?.duplicateDecision).toMatchObject({
+        action: 'WARN',
+        fingerprintType: 'exact',
       });
-    }
-
-    expect(lastResult?.duplicateHit).toMatchObject({ count: 2, fingerprintType: 'exact' });
-    expect(lastResult?.duplicateDecision).toMatchObject({
-      action: 'WARN',
-      fingerprintType: 'exact',
-    });
-  });
+    },
+  );
 
   it('does not fuzzy-match insufficient STRICT text when only its link changes', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);

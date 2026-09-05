@@ -2189,11 +2189,56 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain('Текст собран из текущих настроек.');
   });
 
+  it.each([
+    ['OBSERVE', false],
+    ['DELETE_ONLY', true],
+    ['FULL', true],
+  ] as const)(
+    'keeps private rules duplicate wording aligned with %s photo policy',
+    async (duplicatePhotoModerationMode, expectPhoto) => {
+      const generatedSettings = chatSettingsSchema.parse({
+        antiDuplicateEnabled: true,
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnoreLinksEnabled: true,
+        duplicatePhotoEnabled: true,
+        duplicateWarnEnabled: true,
+      });
+      const rules = createRules();
+      const { service, adminSettingsService, chats } = createHarness({
+        settings: generatedSettings,
+        rules,
+        adminService: {
+          getChatSettingsScreen: jest.fn().mockResolvedValue({
+            settings: generatedSettings,
+            rules,
+            duplicatePhotoModerationMode,
+            header: { id: '-70000000000001', title: 'Тестовый чат 1' },
+            requiredSubscriptionChannels: [],
+            domains: [],
+            managedBroadcasts: [],
+          }),
+        },
+      });
+
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_autofill'));
+
+      const text = String(adminSettingsService.updateRules.mock.calls.at(-1)?.[2]?.text ?? '');
+      expect(text).toContain('одинаковые сообщения');
+      expect(text).toContain('одни и те же ссылки');
+      expect(text.includes('одинаковые фото')).toBe(expectPhoto);
+    },
+  );
+
   it('builds rules text for alert-only links and anti-spam defaults in the private bot', async () => {
     const generatedSettings = chatSettingsSchema.parse({
       linkPolicy: 'ALERT_ONLY',
       antiSpamEnabled: true,
       antiDuplicateEnabled: false,
+      duplicateWarnEnabled: true,
+      duplicateMuteEnabled: true,
+      duplicateBanEnabled: true,
       russianProfanityFilterEnabled: false,
       commercialAdsFilterEnabled: false,
       messageCountLimitEnabled: false,
@@ -2235,6 +2280,7 @@ describe('PrivateControlService', () => {
       'Ссылки бот проверяет, но не удаляет автоматически.',
     );
     expect(String(updatePayload?.text ?? '')).toContain('Пожалуйста, не флудите и не спамьте.');
+    expect(String(updatePayload?.text ?? '')).not.toContain('За повторные нарушения бот может');
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {

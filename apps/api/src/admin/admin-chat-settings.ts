@@ -797,6 +797,10 @@ export async function saveChatSettings(params: {
       ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
       duplicatePhotoMatchPreset: true,
       duplicatePhotoScope: true,
+      duplicateDetectionPreset: true,
+      duplicateIgnoreLinksEnabled: true,
+      duplicateIgnorePhonesEnabled: true,
+      duplicateNearMatchEnabled: true,
       profanitySensitivity: true,
       nightModeForceCloseForever: true,
       nightModeForceCloseHours: true,
@@ -819,6 +823,18 @@ export async function saveChatSettings(params: {
     duplicatePhotoScope: hasOwnSetting(params.body, 'duplicatePhotoScope')
       ? parsed.data.duplicatePhotoScope
       : (currentSettings?.duplicatePhotoScope ?? parsed.data.duplicatePhotoScope),
+    duplicateDetectionPreset: hasOwnSetting(params.body, 'duplicateDetectionPreset')
+      ? parsed.data.duplicateDetectionPreset
+      : (currentSettings?.duplicateDetectionPreset ?? parsed.data.duplicateDetectionPreset),
+    duplicateIgnoreLinksEnabled: hasOwnSetting(params.body, 'duplicateIgnoreLinksEnabled')
+      ? parsed.data.duplicateIgnoreLinksEnabled
+      : (currentSettings?.duplicateIgnoreLinksEnabled ?? parsed.data.duplicateIgnoreLinksEnabled),
+    duplicateIgnorePhonesEnabled: hasOwnSetting(params.body, 'duplicateIgnorePhonesEnabled')
+      ? parsed.data.duplicateIgnorePhonesEnabled
+      : (currentSettings?.duplicateIgnorePhonesEnabled ?? parsed.data.duplicateIgnorePhonesEnabled),
+    duplicateNearMatchEnabled: hasOwnSetting(params.body, 'duplicateNearMatchEnabled')
+      ? parsed.data.duplicateNearMatchEnabled
+      : (currentSettings?.duplicateNearMatchEnabled ?? parsed.data.duplicateNearMatchEnabled),
     // Older clients omit settings introduced after their bundled contract.
     profanitySensitivity: hasOwnSetting(params.body, 'profanitySensitivity')
       ? parsed.data.profanitySensitivity

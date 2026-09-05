@@ -1,4 +1,4 @@
-import { normalizeAllowlistLink } from '@maxim/contracts/settings';
+import { DUPLICATE_THRESHOLD_MAX, normalizeAllowlistLink } from '@maxim/contracts/settings';
 import { createHash } from 'node:crypto';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
@@ -7,7 +7,10 @@ import {
   buildDuplicateFingerprintMembershipKey,
   buildDuplicateMessageStateKey,
   buildDuplicateStageKey,
+  resolveDuplicateHistoryRetentionSeconds,
 } from './duplicate-state';
+import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.util';
+import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { extractUrlsFromText } from './rule-engine-link-detector';
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 import { normalizeForDetection } from './rule-engine-normalization';
@@ -42,6 +45,7 @@ const NEAR_DUPLICATE_MIN_TOKEN_COUNT = 6;
 const NEAR_DUPLICATE_MIN_UNIQUE_TOKENS = 5;
 const DUPLICATE_APPROXIMATE_MIN_LENGTH = 50;
 const DUPLICATE_APPROXIMATE_MIN_UNIQUE_LONG_TOKENS = 4;
+const DUPLICATE_NEAR_SIGNIFICANT_SHORT_TOKENS = new Set(['без', 'не', 'нет', 'ни']);
 const DUPLICATE_ACTION_PRIORITY: Readonly<Record<DuplicateAction, number>> = {
   WARN: 1,
   MUTE: 2,
@@ -86,6 +90,7 @@ export class RuleEngineDuplicateDetector {
     rawText: string;
     compactText: string;
     settings: ChatSettings;
+    navigationTargets?: readonly NavigationTargetEvidence[];
     trackCurrentText?: boolean;
   }): Promise<{
     hit?: DuplicateHit;
@@ -133,6 +138,7 @@ export class RuleEngineDuplicateDetector {
       rawText: string;
       compactText: string;
       settings: ChatSettings;
+      navigationTargets?: readonly NavigationTargetEvidence[];
       trackCurrentText?: boolean;
     },
     deadlineAtMs: number,
@@ -145,7 +151,14 @@ export class RuleEngineDuplicateDetector {
     const flow = this.getFlowConfig(settings);
     const fingerprints =
       (params.trackCurrentText ?? true)
-        ? this.resolveFingerprints(chatId, userId, params.compactText, params.rawText, settings)
+        ? this.resolveFingerprints(
+            chatId,
+            userId,
+            params.compactText,
+            params.rawText,
+            settings,
+            params.navigationTargets,
+          )
         : [];
     const messageHash = createHash('sha256').update(params.messageId).digest('hex').slice(0, 20);
     const mutation = await this.redisCounter.replaceRevisionedSetMembershipsBeforeDeadline({
@@ -153,7 +166,9 @@ export class RuleEngineDuplicateDetector {
       member: messageHash,
       revision: params.eventTimestampMs,
       membershipKeys: fingerprints.map((fingerprint) => fingerprint.membershipKey),
-      ttlSeconds: flow.windowSec + 1,
+      windowSeconds: flow.windowSec,
+      ttlSeconds: resolveDuplicateHistoryRetentionSeconds(flow.windowSec),
+      countLimit: DUPLICATE_THRESHOLD_MAX + 1,
       deadlineAtMs,
     });
     if (mutation.kind === 'deadline_exceeded') {
@@ -172,6 +187,7 @@ export class RuleEngineDuplicateDetector {
     rawText: string;
     compactText: string;
     settings: ChatSettings;
+    navigationTargets?: readonly NavigationTargetEvidence[];
     trackCurrentText?: boolean;
   }): Promise<{
     hit?: DuplicateHit;
@@ -189,6 +205,7 @@ export class RuleEngineDuplicateDetector {
       params.compactText,
       params.rawText,
       settings,
+      params.navigationTargets,
     );
     const counts: number[] = [];
 
@@ -317,6 +334,7 @@ export class RuleEngineDuplicateDetector {
     compactText: string,
     rawText: string,
     settings: ChatSettings,
+    navigationTargets?: readonly NavigationTargetEvidence[],
   ): DuplicateFingerprint[] {
     const fingerprints: DuplicateFingerprint[] = [];
     const seen = new Set<string>();
@@ -329,11 +347,12 @@ export class RuleEngineDuplicateDetector {
       fingerprints.push({ type, value: normalized });
     };
 
-    push('exact', compactText);
+    const navigationIdentityKeys = this.resolveNavigationIdentityKeys(navigationTargets);
+    push('exact', this.buildExactFingerprint(compactText, navigationIdentityKeys));
 
     const config = this.resolveFingerprintConfig(settings);
     if (config.matchLinkValues) {
-      for (const link of this.extractNormalizedLinks(rawText)) {
+      for (const link of this.extractNormalizedLinks(rawText, navigationTargets)) {
         push('link', link);
       }
     }
@@ -367,20 +386,23 @@ export class RuleEngineDuplicateDetector {
     compactText: string,
     rawText: string,
     settings: ChatSettings,
+    navigationTargets?: readonly NavigationTargetEvidence[],
   ): ResolvedDuplicateFingerprint[] {
-    return this.buildFingerprints(compactText, rawText, settings).map((fingerprint) => {
-      const hash = createHash('sha256').update(fingerprint.value).digest('hex').slice(0, 20);
-      return {
-        ...fingerprint,
-        hash,
-        membershipKey: buildDuplicateFingerprintMembershipKey(
-          chatId,
-          userId,
+    return this.buildFingerprints(compactText, rawText, settings, navigationTargets).map(
+      (fingerprint) => {
+        const hash = createHash('sha256').update(fingerprint.value).digest('hex').slice(0, 20);
+        return {
+          ...fingerprint,
           hash,
-          fingerprint.type,
-        ),
-      };
-    });
+          membershipKey: buildDuplicateFingerprintMembershipKey(
+            chatId,
+            userId,
+            hash,
+            fingerprint.type,
+          ),
+        };
+      },
+    );
   }
 
   private resolveFingerprintConfig(settings: ChatSettings): {
@@ -420,7 +442,10 @@ export class RuleEngineDuplicateDetector {
     };
   }
 
-  private extractNormalizedLinks(rawText: string): string[] {
+  private extractNormalizedLinks(
+    rawText: string,
+    navigationTargets?: readonly NavigationTargetEvidence[],
+  ): string[] {
     const normalizedLinks = new Set<string>();
 
     for (const rawLink of extractUrlsFromText(rawText)) {
@@ -430,7 +455,48 @@ export class RuleEngineDuplicateDetector {
       }
     }
 
+    for (const target of navigationTargets ?? []) {
+      if (isEnforceableLinkPolicyTarget(target) && target.normalizedTarget.trim()) {
+        const normalizedHttpTarget = normalizeAllowlistLink(target.normalizedTarget);
+        normalizedLinks.add(
+          normalizedHttpTarget ?? `${target.kind}:${target.normalizedTarget.trim()}`,
+        );
+      }
+    }
+
     return Array.from(normalizedLinks);
+  }
+
+  private resolveNavigationIdentityKeys(
+    navigationTargets?: readonly NavigationTargetEvidence[],
+  ): string[] {
+    const keys = new Set<string>();
+    for (const target of navigationTargets ?? []) {
+      for (const candidate of [target, ...(target.allowlistAliases ?? [])]) {
+        const normalizedTarget = candidate.normalizedTarget.trim();
+        if (normalizedTarget) {
+          keys.add(`target:${candidate.kind}:${normalizedTarget}`);
+        }
+      }
+      for (const origin of target.origins) {
+        const navigationFingerprint = origin.navigationFingerprint?.trim();
+        if (navigationFingerprint) {
+          keys.add(`actions:${origin.provenance}:${navigationFingerprint}`);
+        }
+      }
+    }
+    return Array.from(keys).sort();
+  }
+
+  private buildExactFingerprint(
+    compactText: string,
+    navigationIdentityKeys: readonly string[],
+  ): string {
+    if (navigationIdentityKeys.length === 0) {
+      return compactText;
+    }
+
+    return JSON.stringify({ text: compactText, navigationIdentity: navigationIdentityKeys });
   }
 
   private normalizeContentFingerprint(
@@ -456,16 +522,36 @@ export class RuleEngineDuplicateDetector {
       return null;
     }
     const tokens = normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
-    const meaningfulTokens = tokens.filter((token) => token.length >= 4);
-    const uniqueTokens = Array.from(new Set(meaningfulTokens)).sort();
+    const meaningfulTokens = tokens.filter(
+      (token) => token.length >= 4 || DUPLICATE_NEAR_SIGNIFICANT_SHORT_TOKENS.has(token),
+    );
+    const numericTokens = this.extractNearNumericTokens(compactText, config).map(
+      (token) => `number:${token}`,
+    );
+    const uniqueTokens = Array.from(new Set([...meaningfulTokens, ...numericTokens])).sort();
+    const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4));
     if (
       tokens.length < NEAR_DUPLICATE_MIN_TOKEN_COUNT ||
-      uniqueTokens.length < NEAR_DUPLICATE_MIN_UNIQUE_TOKENS
+      uniqueLongTokens.size < NEAR_DUPLICATE_MIN_UNIQUE_TOKENS
     ) {
       return null;
     }
 
     return uniqueTokens.join(' ');
+  }
+
+  private extractNearNumericTokens(
+    value: string,
+    config: { ignoreLinks: boolean; ignorePhones: boolean },
+  ): string[] {
+    let source = value;
+    if (config.ignoreLinks) {
+      source = stripUrlsFromText(source);
+    }
+    if (config.ignorePhones) {
+      source = stripPhoneNumbersFromText(source);
+    }
+    return source.match(/\d+(?:[.,:]\d+)*/gu) ?? [];
   }
 
   private hasSufficientApproximateContent(value: string): boolean {

@@ -1,9 +1,10 @@
-import type { ChatSettings } from '@maxim/contracts';
 import {
-  DUPLICATE_ALLOWED_COUNT_MIN,
-  DUPLICATE_FLOW_SETTING_KEYS,
-  DUPLICATE_THRESHOLD_MAX,
-} from './private-control.constants';
+  buildDuplicateFlowThresholds,
+  resolveDuplicateFlowAllowedCount,
+  resolveDuplicateFlowAllowedCountMax,
+  type ChatSettings,
+} from '@maxim/contracts';
+import { DUPLICATE_FLOW_SETTING_KEYS } from './private-control.constants';
 
 type DuplicateFlowWindowSettings = Pick<
   ChatSettings,
@@ -72,63 +73,28 @@ export function resolvePrivateDuplicateSharedWindowSec(
   return settings.duplicateWarnWindowSec;
 }
 
-function resolvePrivateDuplicateFirstThreshold(settings: DuplicateFlowThresholdSettings): number {
-  if (settings.duplicateWarnEnabled) {
-    return settings.duplicateWarnMaxCount;
-  }
-
-  if (settings.duplicateMuteEnabled) {
-    return settings.duplicateMuteMaxCount;
-  }
-
-  if (settings.duplicateBanEnabled) {
-    return settings.duplicateBanMaxCount;
-  }
-
-  return settings.duplicateWarnMaxCount;
-}
-
 export function resolvePrivateDuplicateAllowedCountMax(
   settings: DuplicateFlowStepSettings,
 ): number {
-  const duplicateThresholdOffset =
-    (settings.duplicateBotMessageEnabled ? 2 : 1) +
-    (settings.duplicateWarnEnabled ? 1 : 0) +
-    (settings.duplicateMuteEnabled ? 1 : 0);
-
-  return Math.max(DUPLICATE_ALLOWED_COUNT_MIN, DUPLICATE_THRESHOLD_MAX - duplicateThresholdOffset);
+  return resolveDuplicateFlowAllowedCountMax(settings);
 }
 
 export function resolvePrivateDuplicateAllowedCount(
   settings: DuplicateFlowAllowedCountSettings,
 ): number {
-  const rawAllowedCount =
-    resolvePrivateDuplicateFirstThreshold(settings) - (settings.duplicateBotMessageEnabled ? 2 : 1);
-  return Math.max(
-    DUPLICATE_ALLOWED_COUNT_MIN,
-    Math.min(resolvePrivateDuplicateAllowedCountMax(settings), rawAllowedCount),
-  );
+  return resolveDuplicateFlowAllowedCount(settings);
 }
 
 export function buildPrivateDuplicateFlowSettings(
   settings: DuplicateFlowBuildParams,
 ): DuplicateFlowComputedSettings {
-  const allowedCount = Math.max(
-    DUPLICATE_ALLOWED_COUNT_MIN,
-    Math.min(resolvePrivateDuplicateAllowedCountMax(settings), Math.round(settings.allowedCount)),
-  );
   const windowSec = Math.max(3_600, Math.min(604_800, Math.round(settings.windowSec)));
-  const warnThreshold = allowedCount + (settings.duplicateBotMessageEnabled ? 2 : 1);
-  const muteThreshold = warnThreshold + (settings.duplicateWarnEnabled ? 1 : 0);
-  const banThreshold = muteThreshold + (settings.duplicateMuteEnabled ? 1 : 0);
 
   return {
     duplicateWarnWindowSec: windowSec,
     duplicateMuteWindowSec: windowSec,
     duplicateBanWindowSec: windowSec,
-    duplicateWarnMaxCount: warnThreshold,
-    duplicateMuteMaxCount: muteThreshold,
-    duplicateBanMaxCount: banThreshold,
+    ...buildDuplicateFlowThresholds(settings),
   };
 }
 

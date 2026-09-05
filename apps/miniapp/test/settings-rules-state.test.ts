@@ -271,16 +271,66 @@ test('buildRulesTextFromSettingsScreen mentions photos only for enforcing rollou
     const text = buildRulesTextFromSettingsScreen(
       createScreen({ settings, duplicatePhotoModerationMode: mode }),
     );
-    assert.match(text, /Не повторяйте одно и то же сообщение/);
-    assert.doesNotMatch(text, /сообщения и фото/);
+    assert.match(text, /Не отправляйте одинаковые и похожие сообщения/);
+    assert.doesNotMatch(text, /одинаковые фото/);
   }
 
   for (const mode of ['DELETE_ONLY', 'FULL'] as const) {
     const text = buildRulesTextFromSettingsScreen(
       createScreen({ settings, duplicatePhotoModerationMode: mode }),
     );
-    assert.match(text, /сообщения и фото/);
+    assert.match(text, /одинаковые фото/);
   }
+});
+
+test('buildRulesTextFromSettingsScreen describes the effective duplicate preset', () => {
+  const cases = [
+    {
+      overrides: { duplicateDetectionPreset: 'STANDARD' as const },
+      expected: 'Не отправляйте одинаковые сообщения: бот среагирует после 1 дубля.',
+    },
+    {
+      overrides: { duplicateDetectionPreset: 'STRICT' as const },
+      expected: 'Не отправляйте одинаковые и похожие сообщения: бот среагирует после 1 дубля.',
+    },
+    {
+      overrides: {
+        duplicateDetectionPreset: 'CUSTOM' as const,
+        duplicateIgnoreLinksEnabled: true,
+        duplicateIgnorePhonesEnabled: true,
+      },
+      expected:
+        'Не отправляйте одинаковые сообщения, одни и те же ссылки и одни и те же номера телефонов: бот среагирует после 1 дубля.',
+    },
+  ];
+
+  for (const { expected, overrides } of cases) {
+    const text = buildRulesTextFromSettingsScreen(
+      createScreen({
+        settings: chatSettingsSchema.parse({
+          antiDuplicateEnabled: true,
+          duplicateWarnEnabled: true,
+          ...overrides,
+        }),
+      }),
+    );
+    assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+  }
+});
+
+test('buildRulesTextFromSettingsScreen ignores duplicate sanctions while master is off', () => {
+  const text = buildRulesTextFromSettingsScreen(
+    createScreen({
+      settings: chatSettingsSchema.parse({
+        antiDuplicateEnabled: false,
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateBanEnabled: true,
+      }),
+    }),
+  );
+
+  assert.doesNotMatch(text, /За повторные нарушения бот может/u);
 });
 
 test('buildRulesTextFromSettingsScreen treats legacy required subscription expiry as indefinite', () => {

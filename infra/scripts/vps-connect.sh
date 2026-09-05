@@ -46,7 +46,7 @@ Commands:
   health                      Check local-on-VPS and public health endpoints
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
-  postgres-audit [queue|activity|all]
+  postgres-audit [queue|activity|duplicate|all]
                               Run fixed, bounded, privacy-safe PostgreSQL diagnostics
   postgres-audit-provision [--apply]
                               Preview or provision the dedicated PostgreSQL audit role
@@ -298,16 +298,16 @@ postgres_audit() {
   local mode="${1:-all}"
 
   if [[ $# -gt 1 ]]; then
-    echo "Usage: $0 postgres-audit [queue|activity|all]" >&2
+    echo "Usage: $0 postgres-audit [queue|activity|duplicate|all]" >&2
     exit 2
   fi
 
   case "$mode" in
-    queue|activity|all)
+    queue|activity|duplicate|all)
       ;;
     *)
       echo "Unknown PostgreSQL audit mode: $mode" >&2
-      echo "Usage: $0 postgres-audit [queue|activity|all]" >&2
+      echo "Usage: $0 postgres-audit [queue|activity|duplicate|all]" >&2
       exit 2
       ;;
   esac

@@ -31,7 +31,7 @@
 - Portable setup:
   - copy `infra/env/vps.env.example` to ignored root `.env.vps`;
   - run `./infra/scripts/vps-connect.sh doctor`;
-  - use `health`, `ps`, `logs <service>`, `deploy main [services...]`, `monitor-readonly [duration-sec] [interval-sec]`, or `postgres-audit [queue|activity|all]`.
+  - use `health`, `ps`, `logs <service>`, `deploy main [services...]`, `monitor-readonly [duration-sec] [interval-sec]`, or `postgres-audit [queue|activity|duplicate|all]`.
 - Interactive `shell` is break-glass, not routine access. It requires caller-only `MAXIM_VPS_DATABASE_BREAK_GLASS=1` and a non-empty `MAXIM_VPS_DATABASE_BREAK_GLASS_REASON`; never persist either value in `.env.vps`.
 - `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper.
 - If SSH access changed with the client IP, `./infra/scripts/vps-connect.sh ensure-ssh` can authorize the configured `/32`/CIDR and run doctor.
@@ -130,7 +130,7 @@
 - Keep Postgres `shm_size` comfortably above `shared_buffers` (currently 512m versus 128MB). Reducing it can trigger `53100` errors under admin/suggestion load.
 - Keep production Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`. Prefer lower concurrency/batches and governor controls before raising connection caps.
 - Live audits use indexed, bounded queries and short samples. Broad `webhook_events`/ledger aggregates can saturate I/O despite connection headroom.
-- Run routine production database diagnostics only through `./infra/scripts/vps-connect.sh postgres-audit [queue|activity|all]`. The catalog accepts no SQL, file path, or stdin from the operator and runs through the bounded audit role/session.
+- Run routine production database diagnostics only through `./infra/scripts/vps-connect.sh postgres-audit [queue|activity|duplicate|all]`. The catalog accepts no SQL, file path, or stdin from the operator and runs through the bounded audit role/session. The `duplicate` report uses only identifier-free aggregates from capped index walks and exact column grants; after synchronizing a catalog change, re-run the reviewed audit-role provision step before using `duplicate` or `all`.
 - Never pass ad hoc SQL or raw `psql`/`pg_dump`/`pg_restore` through `vps-connect.sh exec` or an agent shell. Reviewed human break-glass use requires caller-only `MAXIM_VPS_DATABASE_BREAK_GLASS=1` plus a non-empty `MAXIM_VPS_DATABASE_BREAK_GLASS_REASON`; the privileged SSH/Docker principal is not a database safety boundary.
 - Production audit queries stay read-only, output-bounded, index-compatible, single-session, and guarded by server and wall-clock timeouts, `max_parallel_workers_per_gather=0`, a unique `application_name`, and exact-backend cleanup. `LIMIT` does not bound the scan or sort required to find rows. Use plain `EXPLAIN`, never `EXPLAIN ANALYZE`, for a new live query shape.
 - Never run whole-table `COUNT`, `DISTINCT`, `GROUP BY`, JSON `OR`/`IN`, or unbounded ordering over `webhook_events`, `audit_logs`, delivery, or ledger tables on the sole primary. Prefer health snapshots and fixed catalog reports. Add a reviewed catalog query when existing reports are insufficient.

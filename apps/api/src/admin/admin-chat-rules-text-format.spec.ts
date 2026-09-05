@@ -67,7 +67,7 @@ describe('admin chat rules text format helpers', () => {
       'Можно отправлять только ссылки из разрешённого списка.',
       'Чтобы писать в чат, сначала подпишитесь на: Новости, Анонсы.',
       'Пожалуйста, без мата и грубой лексики.',
-      'Не повторяйте одно и то же сообщение: бот среагирует после 1 дубля.',
+      'Не отправляйте одинаковые и похожие сообщения: бот среагирует после 1 дубля.',
       'Пожалуйста, не флудите и не спамьте.',
       'Пожалуйста, не отправляйте больше 3 сообщений за 2 часа.',
       'Ночью чат работает тише: ограничения действуют с 23:00 до 07:30.',
@@ -80,7 +80,7 @@ describe('admin chat rules text format helpers', () => {
         '1. Можно отправлять только ссылки из разрешённого списка.',
         '2. Чтобы писать в чат, сначала подпишитесь на: Новости, Анонсы.',
         '3. Пожалуйста, без мата и грубой лексики.',
-        '4. Не повторяйте одно и то же сообщение: бот среагирует после 1 дубля.',
+        '4. Не отправляйте одинаковые и похожие сообщения: бот среагирует после 1 дубля.',
         '5. Пожалуйста, не флудите и не спамьте.',
         '6. Пожалуйста, не отправляйте больше 3 сообщений за 2 часа.',
         '7. Ночью чат работает тише: ограничения действуют с 23:00 до 07:30.',
@@ -179,7 +179,7 @@ describe('admin chat rules text format helpers', () => {
         ...input,
         settings: { ...baseSettings, duplicatePhotoEnabled: false },
       }),
-    ).toContain('Не повторяйте одно и то же сообщение: бот среагирует после 1 дубля.');
+    ).toContain('Не отправляйте одинаковые и похожие сообщения: бот среагирует после 1 дубля.');
     expect(
       buildRulesTextItemsFromSettings({
         ...input,
@@ -187,7 +187,7 @@ describe('admin chat rules text format helpers', () => {
         duplicatePhotoModerationMode: 'FULL',
       }),
     ).toContain(
-      'Не отправляйте повторно одинаковые сообщения и фото: бот среагирует после 1 дубля.',
+      'Не отправляйте одинаковые и похожие сообщения и одинаковые фото: бот среагирует после 1 дубля.',
     );
     expect(
       buildRulesTextItemsFromSettings({
@@ -195,8 +195,48 @@ describe('admin chat rules text format helpers', () => {
         settings: { ...baseSettings, duplicatePhotoEnabled: true },
         duplicatePhotoModerationMode: 'OBSERVE',
       }),
-    ).toContain('Не повторяйте одно и то же сообщение: бот среагирует после 1 дубля.');
+    ).toContain('Не отправляйте одинаковые и похожие сообщения: бот среагирует после 1 дубля.');
   });
+
+  it.each([
+    [
+      {
+        duplicateDetectionPreset: 'STANDARD' as const,
+      },
+      'Не отправляйте одинаковые сообщения: бот среагирует после 1 дубля.',
+    ],
+    [
+      {
+        duplicateDetectionPreset: 'STRICT' as const,
+      },
+      'Не отправляйте одинаковые и похожие сообщения: бот среагирует после 1 дубля.',
+    ],
+    [
+      {
+        duplicateDetectionPreset: 'CUSTOM' as const,
+        duplicateIgnoreLinksEnabled: true,
+        duplicateIgnorePhonesEnabled: true,
+      },
+      'Не отправляйте одинаковые сообщения, одни и те же ссылки и одни и те же номера телефонов: бот среагирует после 1 дубля.',
+    ],
+  ])(
+    'describes the effective duplicate preset in published rules for %#',
+    (overrides, expected) => {
+      const settings = chatSettingsSchema.parse({
+        antiDuplicateEnabled: true,
+        duplicateWarnEnabled: true,
+        ...overrides,
+      });
+
+      expect(
+        buildRulesTextItemsFromSettings({
+          settings,
+          domains: [],
+          requiredSubscriptionChannels: [],
+        }),
+      ).toContain(expected);
+    },
+  );
 
   it('uses a fallback allowlist rule when allowed domains are empty', () => {
     const parsedSettings = chatSettingsSchema.parse({
@@ -303,12 +343,51 @@ describe('admin chat rules text format helpers', () => {
     ).toBe(6);
   });
 
+  it.each([
+    ['no actions', false, false, false, false, 20, 20, 20, 19],
+    ['no actions', true, false, false, false, 20, 20, 20, 18],
+    ['WARN only', false, true, false, false, 20, 20, 20, 19],
+    ['WARN only', true, true, false, false, 20, 20, 20, 18],
+    ['WARN and BAN', false, true, false, true, 19, 20, 20, 18],
+    ['WARN and BAN', true, true, false, true, 19, 20, 20, 17],
+    ['MUTE and BAN', false, false, true, true, 19, 19, 20, 18],
+    ['MUTE and BAN', true, false, true, true, 19, 19, 20, 17],
+    ['full ladder', false, true, true, true, 18, 19, 20, 17],
+    ['full ladder', true, true, true, true, 18, 19, 20, 16],
+  ] as const)(
+    'keeps %s allowance aligned with bot message %s',
+    (
+      _name,
+      duplicateBotMessageEnabled,
+      duplicateWarnEnabled,
+      duplicateMuteEnabled,
+      duplicateBanEnabled,
+      duplicateWarnMaxCount,
+      duplicateMuteMaxCount,
+      duplicateBanMaxCount,
+      expected,
+    ) => {
+      expect(
+        resolveRulesDuplicateAllowedCount({
+          duplicateBotMessageEnabled,
+          duplicateWarnEnabled,
+          duplicateMuteEnabled,
+          duplicateBanEnabled,
+          duplicateWarnMaxCount,
+          duplicateMuteMaxCount,
+          duplicateBanMaxCount,
+        }),
+      ).toBe(expected);
+    },
+  );
+
   it('summarizes enabled sanctions in rules text order', () => {
     const emptySanctions = {
       linkWarnEnabled: false,
       requiredSubscriptionWarnEnabled: false,
       textFiltersWarnEnabled: false,
       messageLimitsWarnEnabled: false,
+      antiDuplicateEnabled: false,
       duplicateWarnEnabled: false,
       linkMuteEnabled: false,
       requiredSubscriptionMuteEnabled: false,
@@ -326,6 +405,7 @@ describe('admin chat rules text format helpers', () => {
     expect(
       buildRulesSanctionsSummary({
         ...emptySanctions,
+        antiDuplicateEnabled: true,
         linkWarnEnabled: true,
         duplicateMuteEnabled: true,
         textFiltersBanEnabled: true,
@@ -333,5 +413,13 @@ describe('admin chat rules text format helpers', () => {
     ).toBe(
       'За повторные нарушения бот может предупредить, временно ограничить сообщения и заблокировать.',
     );
+    expect(
+      buildRulesSanctionsSummary({
+        ...emptySanctions,
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateBanEnabled: true,
+      }),
+    ).toBeNull();
   });
 });

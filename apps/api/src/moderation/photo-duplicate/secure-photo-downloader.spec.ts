@@ -1,6 +1,11 @@
 import type { ConfigService } from '@nestjs/config';
+import { UnrecoverableError } from 'bullmq';
 import sharp from 'sharp';
-import { PhotoDownloadHttpError, SecurePhotoDownloader } from './secure-photo-downloader';
+import {
+  PhotoDownloadByteLimitExceededError,
+  PhotoDownloadHttpError,
+  SecurePhotoDownloader,
+} from './secure-photo-downloader';
 
 type MockResponse = {
   statusCode: number;
@@ -297,7 +302,32 @@ describe('SecurePhotoDownloader', () => {
       },
     ]);
 
-    await expect(downloader.download('https://i.oneme.ru/image')).rejects.toThrow('byte limit');
+    const error = await downloader.download('https://i.oneme.ru/image').catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(PhotoDownloadByteLimitExceededError);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect(error).toMatchObject({
+      code: 'PHOTO_DOWNLOAD_BYTE_LIMIT_EXCEEDED',
+      retryable: false,
+      message: 'Photo response exceeds the byte limit',
+    });
+    expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an oversized declared content length without consuming queue retries', async () => {
+    const downloader = new TestDownloader({ PHOTO_DUPLICATE_MAX_BYTES: '8' }, [
+      {
+        statusCode: 200,
+        headers: { 'content-type': 'image/png', 'content-length': '9' },
+        chunks: [],
+      },
+    ]);
+
+    const error = await downloader.download('https://i.oneme.ru/image').catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(PhotoDownloadByteLimitExceededError);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect(error).toMatchObject({ retryable: false });
     expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
   });
 

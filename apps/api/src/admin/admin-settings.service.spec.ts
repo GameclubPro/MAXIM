@@ -1276,6 +1276,38 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
+  it('preserves text duplicate matching settings when a stale client omits them', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnoreLinksEnabled: true,
+        duplicateIgnorePhonesEnabled: true,
+        duplicateNearMatchEnabled: true,
+      }),
+    });
+
+    await service.updateSettings('chat-1', user as never, {
+      antiSpamEnabled: false,
+    });
+
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
+      expect.objectContaining({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnoreLinksEnabled: true,
+        duplicateIgnorePhonesEnabled: true,
+        duplicateNearMatchEnabled: true,
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: {
+          source: 'miniapp',
+          settingKeys: ['antiSpamEnabled'],
+        },
+      }),
+    });
+  });
+
   it('preserves profanity sensitivity when a stale client omits the new field', async () => {
     const { prisma, service } = createService({
       currentSettings: createPersistedChatSettings({
@@ -2644,8 +2676,8 @@ describe('AdminSettingsService chat rules', () => {
 
     const generatedText =
       legacyAdminService.buildFormattedChatRulesPublicationText.mock.calls[0]?.[1];
-    expect(generatedText).toContain('Не повторяйте одно и то же сообщение');
-    expect(generatedText).not.toContain('сообщения и фото');
+    expect(generatedText).toContain('Не отправляйте одинаковые и похожие сообщения');
+    expect(generatedText).not.toContain('одинаковые фото');
     expect(
       legacyAdminService.buildAutofilledChatRulesTextFromCurrentSettings,
     ).not.toHaveBeenCalled();

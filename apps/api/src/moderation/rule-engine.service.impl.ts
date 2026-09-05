@@ -25,11 +25,19 @@ import type {
 } from './profanity/profanity.types';
 import { RedisCounterService } from './redis-counter.service';
 import { createRuleDetectionContext } from './rule-engine-detection-context';
+import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.util';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { RuleEngineDuplicateDetector } from './rule-engine-duplicate-detector';
 import type { DetectionResult, RuleViolation } from './rule-engine.contract';
-import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
-import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
+import {
+  createAllowlistLinkMatcher,
+  detectBlockedLink,
+  extractUrlsFromText,
+} from './rule-engine-link-detector';
+import {
+  extractDetectedPhoneNumbers,
+  RuleEngineMessageLimitsDetector,
+} from './rule-engine-message-limits.detector';
 import {
   MIXED_CHAR_MAP,
   normalizeForDetection,
@@ -898,6 +906,9 @@ const PROFANITY_HOSTILE_AFTER_TARGET_TOKENS = new Set([
 const DUPLICATE_COMMAND_ONLY_PATTERN = /^\s*\/[\p{L}\p{N}_]+(?:@[\p{L}\p{N}_]+)?\s*$/u;
 const DUPLICATE_START_WITH_PAYLOAD_PATTERN = /^\s*\/start(?:@[\p{L}\p{N}_]+)?\s+(\S+)\s*$/iu;
 const DUPLICATE_EXACT_MIN_SIGNAL_CHARACTERS = 2;
+const DUPLICATE_MIN_LENGTH = 50;
+const DUPLICATE_MIN_TOKEN_COUNT = 6;
+const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
 const PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP: Record<string, string> = {
   ...MIXED_CHAR_MAP,
   '!': 'и',
@@ -1233,11 +1244,20 @@ export class RuleEngineService {
     );
     markRuleEngineDetectStage(profile, 'attachments');
 
+    const hasTransferableAttachment = Boolean(
+      hasPhotoAttachment ||
+      hasVideoAttachment ||
+      hasFileAttachment ||
+      hasVoiceAttachment ||
+      hasMediaBatch ||
+      hasForwardedMessage,
+    );
     const duplicateTextCandidate =
       settings.antiDuplicateEnabled &&
       violations.length === 0 &&
       !linkViolation &&
-      this.shouldTrackDuplicate(text, detectionContext.compactText);
+      !hasTransferableAttachment &&
+      this.shouldTrackDuplicate(text, detectionContext.compactText, navigationTargets);
     const editedDuplicateStateCandidate =
       settings.antiDuplicateEnabled &&
       duplicateStateEventType === 'message_edited' &&
@@ -1261,6 +1281,7 @@ export class RuleEngineService {
             rawText: text,
             compactText: detectionContext.compactText,
             settings,
+            navigationTargets,
             trackCurrentText: duplicateTextCandidate,
           })
         : undefined;
@@ -1396,22 +1417,18 @@ export class RuleEngineService {
           const category = classifyProfanityVariant(normalizedCandidate, 'TARGETED_VARIANT');
           const targetContext =
             rolloutMode === 'legacy'
-              ? this.matchesTargetedInsultContext(
-                  normalizedCandidate,
-                  normalizedContext,
-                  candidate,
-                )
+              ? this.matchesTargetedInsultContext(normalizedCandidate, normalizedContext, candidate)
               : category === 'MILD_INSULT'
-              ? this.hasExplicitProfanityTargetContext(
-                  normalizedCandidate,
-                  normalizedContext,
-                  candidate,
-                )
-              : this.matchesTargetedInsultContext(
-                  normalizedCandidate,
-                  normalizedContext,
-                  candidate,
-                );
+                ? this.hasExplicitProfanityTargetContext(
+                    normalizedCandidate,
+                    normalizedContext,
+                    candidate,
+                  )
+                : this.matchesTargetedInsultContext(
+                    normalizedCandidate,
+                    normalizedContext,
+                    candidate,
+                  );
           if (targetContext) {
             const decision = this.buildProfanityDecision({
               candidate,
@@ -1477,16 +1494,16 @@ export class RuleEngineService {
                   candidate,
                 )
               : category === 'MILD_INSULT'
-              ? this.hasExplicitProfanityTargetContext(
-                  normalizedLatinCandidate,
-                  latinTargetContext,
-                  candidate,
-                )
-              : this.matchesTargetedInsultContext(
-                  normalizedLatinCandidate,
-                  latinTargetContext,
-                  candidate,
-                );
+                ? this.hasExplicitProfanityTargetContext(
+                    normalizedLatinCandidate,
+                    latinTargetContext,
+                    candidate,
+                  )
+                : this.matchesTargetedInsultContext(
+                    normalizedLatinCandidate,
+                    latinTargetContext,
+                    candidate,
+                  );
           if (targetContext) {
             const decision = this.buildProfanityDecision({
               candidate,
@@ -2233,13 +2250,39 @@ export class RuleEngineService {
     return false;
   }
 
-  private shouldTrackDuplicate(rawText: string, compactText: string): boolean {
-    if (!compactText || this.isDuplicateServiceCommand(rawText)) {
+  private shouldTrackDuplicate(
+    rawText: string,
+    compactText: string,
+    navigationTargets?: readonly NavigationTargetEvidence[],
+  ): boolean {
+    if (this.isDuplicateServiceCommand(rawText)) {
+      return false;
+    }
+
+    const hasNavigationTarget = (navigationTargets ?? []).some(isEnforceableLinkPolicyTarget);
+    const signalCharacters = (compactText.match(/[\p{L}\p{N}]/gu) ?? []).length;
+    if (signalCharacters < DUPLICATE_EXACT_MIN_SIGNAL_CHARACTERS && !hasNavigationTarget) {
+      return false;
+    }
+    if (
+      hasNavigationTarget ||
+      extractUrlsFromText(rawText).length > 0 ||
+      extractDetectedPhoneNumbers(rawText).length > 0 ||
+      rawText.trimStart().startsWith('/')
+    ) {
+      return true;
+    }
+    if (this.commercialAdDetector.hasCommercialSpamMarkers(compactText)) {
+      return true;
+    }
+
+    const tokens = this.extractTokens(compactText);
+    if (compactText.length < DUPLICATE_MIN_LENGTH || tokens.length < DUPLICATE_MIN_TOKEN_COUNT) {
       return false;
     }
 
     return (
-      (compactText.match(/[\p{L}\p{N}]/gu) ?? []).length >= DUPLICATE_EXACT_MIN_SIGNAL_CHARACTERS
+      new Set(tokens.filter((token) => token.length >= 4)).size >= DUPLICATE_MIN_UNIQUE_LONG_TOKENS
     );
   }
 

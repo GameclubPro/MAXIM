@@ -153,7 +153,8 @@ MAXIM_VPS_DATABASE_BREAK_GLASS=1 \
   ./infra/scripts/vps-connect.sh shell
 ```
 
-Never persist those variables in `.env.vps`. Use `postgres-audit` for queue and activity evidence.
+Never persist those variables in `.env.vps`. Use `postgres-audit` for queue, activity, and
+identifier-free Antiduplicate evidence.
 
 Provision or re-harden the dedicated audit role after the reviewed source is synchronized to a VPS.
 The first command is preview-only; `--apply` is the explicit database mutation:
@@ -164,8 +165,12 @@ The first command is preview-only; `--apply` is the explicit database mutation:
 ./infra/scripts/vps-connect.sh postgres-audit all
 ```
 
-The role has exact table grants, aggregate activity visibility, read-only resource defaults, and a
-single connection. It does not receive `pg_read_all_data`.
+The role has exact table grants for the original queue audit, exact column grants for the bounded
+Antiduplicate report, aggregate activity visibility, read-only resource defaults, and a single
+connection. It does not receive `pg_read_all_data`. Run
+`./infra/scripts/vps-connect.sh postgres-audit duplicate` for capped settings, recent moderation,
+and recent delete-intent aggregates. Every section reports its cap and whether a count is complete
+or only a lower bound.
 
 ## Bot Auto-Delete Access-Ambiguity Recovery
 

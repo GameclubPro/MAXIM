@@ -56,6 +56,7 @@ export type TerminalDuplicateSanctionEventModel = {
       messageId: string;
       ruleCode: { in: string[] };
       operator: 'BOT';
+      action: { in: Array<'WARN' | 'MUTE' | 'BAN'> };
     };
     select: { id: true };
   }) => Promise<{ id: string } | null>;
@@ -281,6 +282,7 @@ export async function hasPersistedTerminalDuplicateSanction(params: {
       messageId: params.messageId,
       ruleCode: { in: ['DUPLICATE_WARN', 'DUPLICATE_MUTE', 'DUPLICATE_BAN'] },
       operator: 'BOT',
+      action: { in: ['WARN', 'MUTE', 'BAN'] },
     },
     select: { id: true },
   });

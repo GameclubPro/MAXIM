@@ -10,9 +10,13 @@ import {
   applyNightModeEnabledChange,
   applyRequiredSubscriptionChannelAddition,
   hasSectionBotSpeechMediaChanges,
+  hasSectionSettingChanges,
   mergeBotSpeechStyleSettings,
   mergeNightSectionSettings,
   mergeSectionSettings,
+  normalizeSectionDraftSettings,
+  serializeChatSettingsDraft,
+  shouldHydrateSettingsDraftFromServer,
 } from '../src/pages/settings-page-state';
 
 function createSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
@@ -21,6 +25,43 @@ function createSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     ...overrides,
   };
 }
+
+test('settings polling preserves a locally edited draft', () => {
+  const previousServerDraft = createSettings({ antiDuplicateEnabled: false });
+  const currentDraft = createSettings({ antiDuplicateEnabled: true });
+  const nextServerDraft = createSettings({ antiSpamEnabled: true });
+
+  assert.equal(
+    shouldHydrateSettingsDraftFromServer(
+      serializeChatSettingsDraft(currentDraft),
+      serializeChatSettingsDraft(previousServerDraft),
+      serializeChatSettingsDraft(nextServerDraft),
+    ),
+    false,
+  );
+});
+
+test('settings polling hydrates the first or locally clean server snapshot', () => {
+  const previousServerDraft = createSettings({ antiDuplicateEnabled: false });
+  const nextServerDraft = createSettings({ antiDuplicateEnabled: true });
+
+  assert.equal(
+    shouldHydrateSettingsDraftFromServer(
+      serializeChatSettingsDraft(previousServerDraft),
+      serializeChatSettingsDraft(previousServerDraft),
+      serializeChatSettingsDraft(nextServerDraft),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldHydrateSettingsDraftFromServer(
+      serializeChatSettingsDraft(createSettings({ antiSpamEnabled: true })),
+      '',
+      serializeChatSettingsDraft(nextServerDraft),
+    ),
+    true,
+  );
+});
 
 test('applyNightModeEnabledChange enables bot notice and clears dependent toggles on disable', () => {
   const enabled = applyNightModeEnabledChange(createSettings(), true);
@@ -65,11 +106,7 @@ test('applyDefaultSanctionStages enables explanation, warning, and mute without 
   const cases = [
     {
       group: 'duplicate' as const,
-      keys: [
-        'duplicateBotMessageEnabled',
-        'duplicateWarnEnabled',
-        'duplicateMuteEnabled',
-      ] as const,
+      keys: ['duplicateBotMessageEnabled', 'duplicateWarnEnabled', 'duplicateMuteEnabled'] as const,
       banKey: 'duplicateBanEnabled' as const,
     },
     {
@@ -97,11 +134,7 @@ test('applyDefaultSanctionStages enables explanation, warning, and mute without 
     },
     {
       group: 'profanity' as const,
-      keys: [
-        'profanityBotMessageEnabled',
-        'profanityWarnEnabled',
-        'profanityMuteEnabled',
-      ] as const,
+      keys: ['profanityBotMessageEnabled', 'profanityWarnEnabled', 'profanityMuteEnabled'] as const,
       banKey: 'profanityBanEnabled' as const,
     },
     {
@@ -363,6 +396,63 @@ test('mergeSectionSettings preserves multi-button arrays when saving a section',
   assert.deepEqual(merged.linkBotButtons, saved.linkBotButtons);
   assert.equal(merged.linkBotButtonEnabled, true);
   assert.equal(merged.deleteSpammersEnabled, true);
+});
+
+test('section dirty comparison treats equal duplicate button arrays as unchanged after refetch', () => {
+  const draft = createSettings({
+    duplicateBotButtons: [{ text: 'Открыть', url: 'https://max.ru/channel/example' }],
+  });
+  const refetched = createSettings({
+    duplicateBotButtons: [{ text: 'Открыть', url: 'https://max.ru/channel/example' }],
+  });
+
+  assert.notEqual(draft.duplicateBotButtons, refetched.duplicateBotButtons);
+  assert.equal(hasSectionSettingChanges(draft, refetched, 'duplicates'), false);
+
+  refetched.duplicateBotButtons = [{ text: 'Другой чат', url: 'https://max.ru/channel/another' }];
+  assert.equal(hasSectionSettingChanges(draft, refetched, 'duplicates'), true);
+});
+
+test('duplicate section normalization prevents a legacy server shape from looking dirty', () => {
+  const saved = createSettings({
+    duplicateWarnEnabled: true,
+    duplicateMuteEnabled: true,
+    duplicateBanEnabled: true,
+    duplicateWarnWindowSec: 43_200,
+    duplicateMuteWindowSec: 86_400,
+    duplicateBanWindowSec: 172_800,
+  });
+  const draft = normalizeSectionDraftSettings(saved, 'duplicates');
+  const comparableSaved = normalizeSectionDraftSettings(saved, 'duplicates');
+
+  assert.equal(hasSectionSettingChanges(draft, comparableSaved, 'duplicates'), false);
+});
+
+test('discarding duplicate changes restores normalized server values', () => {
+  const saved = createSettings({
+    duplicateWarnEnabled: true,
+    duplicateMuteEnabled: true,
+    duplicateBanEnabled: true,
+    duplicateWarnWindowSec: 43_200,
+    duplicateMuteWindowSec: 86_400,
+    duplicateBanWindowSec: 172_800,
+  });
+  const current = createSettings({
+    antiSpamEnabled: true,
+    duplicateWarnWindowSec: 604_800,
+    duplicateMuteWindowSec: 604_800,
+    duplicateBanWindowSec: 604_800,
+  });
+  const restored = mergeSectionSettings(
+    current,
+    normalizeSectionDraftSettings(saved, 'duplicates'),
+    'duplicates',
+  );
+
+  assert.equal(restored.duplicateWarnWindowSec, 43_200);
+  assert.equal(restored.duplicateMuteWindowSec, 43_200);
+  assert.equal(restored.duplicateBanWindowSec, 43_200);
+  assert.equal(restored.antiSpamEnabled, true);
 });
 
 test('mergeSectionSettings does not copy legacy required subscription expiry fields', () => {

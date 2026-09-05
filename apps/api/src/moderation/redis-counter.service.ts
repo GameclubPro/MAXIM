@@ -52,9 +52,9 @@ return {1, count}
 const REVISIONED_MEMBERSHIP_STATE_MISSING = '__maxim_revisioned_membership_missing__';
 const REVISIONED_MEMBERSHIP_MAX_CAS_ATTEMPTS = 4;
 
-// FLAG: The compare and Redis TIME deadline check must both remain before ZREM/ZADD/SET. The
-// caller can stop awaiting at the same deadline, and an edit must replace every membership and
-// its message revision atomically or leave all of them unchanged.
+// FLAG: Keep compare/deadline checks before mutations. Physical pruning uses Redis time and the
+// extended retention TTL. Logical counts include only the current event and its chronological
+// predecessors, so a later event can never make an out-of-order original actionable.
 const REPLACE_REVISIONED_SET_MEMBERSHIPS_BEFORE_DEADLINE_SCRIPT = `
 local current_state = redis.call('GET', KEYS[1])
 if ARGV[1] == '${REVISIONED_MEMBERSHIP_STATE_MISSING}' then
@@ -67,25 +67,36 @@ end
 
 local redis_time = redis.call('TIME')
 local now_ms = (tonumber(redis_time[1]) * 1000) + math.floor(tonumber(redis_time[2]) / 1000)
-if now_ms >= tonumber(ARGV[4]) then
+if now_ms >= tonumber(ARGV[5]) then
   return {0}
 end
 
-local full_ttl_ms = tonumber(ARGV[3]) * 1000
-local cutoff_ms = now_ms - full_ttl_ms
+local window_ms = tonumber(ARGV[3]) * 1000
+local full_ttl_ms = tonumber(ARGV[4]) * 1000
+local count_limit = tonumber(ARGV[#ARGV])
+local member_timestamp_ms = tonumber(ARGV[2])
+local cutoff_ms = member_timestamp_ms - window_ms
+local retention_cutoff_ms = now_ms - full_ttl_ms
+local logical_lower_bound = '(' .. tostring(cutoff_ms)
 local response = {1}
 local stored_memberships = {}
 for key_index = 2, #KEYS do
-  local desired = ARGV[4 + key_index]
-  redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', cutoff_ms)
+  local desired = ARGV[5 + key_index]
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', retention_cutoff_ms)
   if desired == '1' then
-    redis.call('ZADD', KEYS[key_index], now_ms, ARGV[5])
+    redis.call('ZADD', KEYS[key_index], member_timestamp_ms, ARGV[6])
     redis.call('PEXPIRE', KEYS[key_index], full_ttl_ms)
-    local membership_count = redis.call('ZCARD', KEYS[key_index])
+    local membership_count = redis.call(
+      'ZCOUNT',
+      KEYS[key_index],
+      logical_lower_bound,
+      member_timestamp_ms
+    )
+    membership_count = math.min(membership_count, count_limit)
     table.insert(stored_memberships, {key = KEYS[key_index], count = membership_count})
     table.insert(response, membership_count)
   else
-    redis.call('ZREM', KEYS[key_index], ARGV[5])
+    redis.call('ZREM', KEYS[key_index], ARGV[6])
   end
 end
 
@@ -243,13 +254,17 @@ export class RedisCounterService implements OnModuleDestroy {
     member: string;
     revision: number;
     membershipKeys: readonly string[];
+    windowSeconds: number;
     ttlSeconds: number;
+    countLimit?: number;
     deadlineAtMs: number;
   }): Promise<RevisionedSetMembershipResult> {
     const stateKey = params.stateKey.trim();
     const member = params.member.trim();
     const revision = Math.trunc(params.revision);
+    const windowSeconds = Math.trunc(params.windowSeconds);
     const ttlSeconds = Math.trunc(params.ttlSeconds);
+    const countLimit = Math.trunc(params.countLimit ?? 21);
     const deadlineAtMs = Math.trunc(params.deadlineAtMs);
     const membershipKeys = params.membershipKeys.map((key) => key.trim());
     if (
@@ -259,8 +274,13 @@ export class RedisCounterService implements OnModuleDestroy {
       new Set(membershipKeys).size !== membershipKeys.length ||
       !Number.isSafeInteger(revision) ||
       revision <= 0 ||
+      !Number.isSafeInteger(windowSeconds) ||
+      windowSeconds <= 0 ||
       !Number.isSafeInteger(ttlSeconds) ||
-      ttlSeconds <= 0 ||
+      ttlSeconds < windowSeconds ||
+      !Number.isSafeInteger(countLimit) ||
+      countLimit <= 0 ||
+      countLimit > 100 ||
       !Number.isSafeInteger(deadlineAtMs) ||
       deadlineAtMs <= 0
     ) {
@@ -316,10 +336,12 @@ export class RedisCounterService implements OnModuleDestroy {
         ...allMembershipKeys,
         currentRaw ?? REVISIONED_MEMBERSHIP_STATE_MISSING,
         String(revision),
+        String(windowSeconds),
         String(ttlSeconds),
         String(deadlineAtMs),
         member,
         ...allMembershipKeys.map((key) => (desiredKeySet.has(key) ? '1' : '0')),
+        String(countLimit),
       )) as Array<number | string>;
       const appliedStatus = Number(appliedResult?.[0]);
       if (appliedStatus === 0) {

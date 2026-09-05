@@ -775,6 +775,7 @@ export class AdminChatRulesTextRuntime {
       | 'requiredSubscriptionWarnEnabled'
       | 'textFiltersWarnEnabled'
       | 'messageLimitsWarnEnabled'
+      | 'antiDuplicateEnabled'
       | 'duplicateWarnEnabled'
       | 'linkMuteEnabled'
       | 'requiredSubscriptionMuteEnabled'

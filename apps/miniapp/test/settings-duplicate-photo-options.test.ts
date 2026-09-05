@@ -44,6 +44,10 @@ const settingsPageSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
+const settingsSectionToggleSource = readFileSync(
+  new URL('../src/components/ui/settings-section-toggle.tsx', import.meta.url),
+  'utf8',
+);
 const duplicateStageStyles = readFileSync(
   new URL('../src/pages/settings/settings-duplicate-stage.css', import.meta.url),
   'utf8',
@@ -82,6 +86,14 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   assert.match(photoControlsSource, /\{enabled \? \(\s*<p className="policy-mode-hint">/u);
   assert.match(duplicatesSectionSource, /title="Антидубль"/u);
   assert.match(duplicatesSectionSource, /Находит повторный текст и изображения/u);
+  assert.doesNotMatch(duplicatesSectionSource, /DUPLICATE_DETECTION_HINTS/u);
+  assert.equal(
+    duplicatesSectionSource.match(/Остальной текст может отличаться\./gu)?.length,
+    2,
+  );
+  assert.match(duplicatesSectionSource, /Только для длинных сообщений\./u);
+  assert.match(duplicatesSectionSource, /aria-invalid=\{Boolean\(fieldErrors\.duplicateWarn/u);
+  assert.match(settingsSectionToggleSource, /Антидубль: '.*фото'/u);
   assert.match(settingsPageSource, /доп\. действия \$\{duplicateStagesEnabledCount\}\/4/u);
   assert.match(
     settingsPageSource,
@@ -89,7 +101,16 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.match(
     settingsPageSource,
+    /shouldHydrateSettingsDraftFromServer\(\s*draftRef\.current/u,
+  );
+  assert.match(settingsPageSource, /if \(!shouldHydrate\) \{\s*return;\s*\}/u);
+  assert.match(
+    settingsPageSource,
     /if \(section === 'duplicates' && !expandedSections\.duplicates\)\s*void settingsScreenQuery\.refetch\(\);/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /if \(section === 'duplicates'\) \{\s*setDuplicateWindowInputValue\(''\);\s*\}/u,
   );
   assert.doesNotMatch(duplicateStageStyles, /duplicate-settings-group__title/u);
   assert.match(

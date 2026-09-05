@@ -41,6 +41,7 @@ export type NavigationEvidence = {
   sourcePath: string;
   range: NavigationEvidenceRange;
   contentFingerprint: string;
+  navigationFingerprint?: string;
 };
 
 export type NavigationTargetEvidence = {
@@ -132,6 +133,7 @@ export type MaxNavigationContentView = {
   attachments: MaxNavigationAttachmentView[];
   nonNavigationUrls: string[];
   contentFingerprint: string;
+  navigationFingerprint: string;
 };
 
 export type MaxNavigationMessageView = {

@@ -1,4 +1,7 @@
 import type { ChatSettings } from '../prisma/prisma-client';
+import { adaptMaxMessageNavigationView } from './navigation/max-navigation-view.adapter';
+import { extractNavigationEvidence } from './navigation/navigation-evidence.extractor';
+import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import {
   DUPLICATE_STATE_BUDGET_MS,
   DuplicateStateBudgetExceededError,
@@ -30,13 +33,15 @@ class InMemoryRevisionedRedisCounter {
     string,
     { revision: number; membershipKeys: string[]; countSnapshots: Map<string, number> }
   >();
-  private readonly memberships = new Map<string, Set<string>>();
+  private readonly memberships = new Map<string, Map<string, number>>();
 
   async replaceRevisionedSetMembershipsBeforeDeadline(params: {
     stateKey: string;
     member: string;
     revision: number;
     membershipKeys: readonly string[];
+    windowSeconds: number;
+    ttlSeconds: number;
   }) {
     const current = this.states.get(params.stateKey);
     if (current && params.revision < current.revision) {
@@ -63,13 +68,20 @@ class InMemoryRevisionedRedisCounter {
       }
     }
     for (const key of params.membershipKeys) {
-      const membership = this.memberships.get(key) ?? new Set<string>();
-      membership.add(params.member);
+      const membership = this.memberships.get(key) ?? new Map<string, number>();
+      membership.set(params.member, params.revision);
       this.memberships.set(key, membership);
     }
 
+    const windowMs = params.windowSeconds * 1_000;
+    const cutoffMs = params.revision - windowMs;
     const countSnapshots = new Map(
-      params.membershipKeys.map((key) => [key, this.memberships.get(key)?.size ?? 0]),
+      params.membershipKeys.map((key) => {
+        const count = Array.from(this.memberships.get(key)?.values() ?? []).filter(
+          (timestampMs) => timestampMs > cutoffMs && timestampMs <= params.revision,
+        ).length;
+        return [key, count];
+      }),
     );
     this.states.set(params.stateKey, {
       revision: params.revision,
@@ -83,11 +95,28 @@ class InMemoryRevisionedRedisCounter {
   }
 }
 
+function navigationTarget(url: string): NavigationTargetEvidence {
+  return {
+    kind: 'external_url',
+    target: url,
+    normalizedTarget: new URL(url).toString(),
+    enforceable: true,
+    origins: [],
+  };
+}
+
+function navigationTargetsFromMessage(
+  message: Record<string, unknown>,
+): NavigationTargetEvidence[] {
+  return extractNavigationEvidence(adaptMaxMessageNavigationView(message)).targets;
+}
+
 function detectRevision(params: {
   detector: RuleEngineDuplicateDetector;
   messageId: string;
   revision: number;
   text: string;
+  settings?: ChatSettings;
   trackCurrentText?: boolean;
 }) {
   return params.detector.detectWithin({
@@ -97,7 +126,7 @@ function detectRevision(params: {
     eventTimestampMs: params.revision,
     rawText: params.text,
     compactText: params.text,
-    settings: buildSettings(),
+    settings: params.settings ?? buildSettings(),
     trackCurrentText: params.trackCurrentText,
   });
 }
@@ -231,7 +260,12 @@ describe('RuleEngineDuplicateDetector', () => {
       },
     });
     expect(mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ membershipKeys: [expect.any(String), expect.any(String)] }),
+      expect.objectContaining({
+        membershipKeys: [expect.any(String), expect.any(String)],
+        windowSeconds: 60,
+        ttlSeconds: 181,
+        countLimit: 21,
+      }),
     );
   });
 
@@ -284,6 +318,279 @@ describe('RuleEngineDuplicateDetector', () => {
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ membershipKeys: [expect.stringContaining(':fingerprint:exact:')] }),
     );
+  });
+
+  it('keeps equal visible text with different structured links out of the exact history', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({
+      duplicateWarnEnabled: false,
+      duplicateWarnMaxCount: 1,
+    });
+
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        eventTimestampMs: 100,
+        rawText: 'Подробнее',
+        compactText: 'подробнее',
+        settings,
+        navigationTargets: [navigationTarget('https://example.com/one')],
+      }),
+    ).resolves.toEqual({});
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-2',
+        eventTimestampMs: 200,
+        rawText: 'Подробнее',
+        compactText: 'подробнее',
+        settings,
+        navigationTargets: [navigationTarget('https://example.com/two')],
+      }),
+    ).resolves.toEqual({});
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-3',
+        eventTimestampMs: 300,
+        rawText: 'Подробнее',
+        compactText: 'подробнее',
+        settings,
+        navigationTargets: [navigationTarget('https://example.com/two')],
+      }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+  });
+
+  it('matches the same structured link across different visible text in custom mode', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnoreLinksEnabled: true,
+      duplicateWarnEnabled: false,
+      duplicateWarnMaxCount: 1,
+    });
+    const target = navigationTarget('https://example.com/same');
+
+    await detector.detectWithin({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'message-1',
+      eventTimestampMs: 100,
+      rawText: 'Первая подпись',
+      compactText: 'первая подпись',
+      settings,
+      navigationTargets: [target],
+    });
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-2',
+        eventTimestampMs: 200,
+        rawText: 'Другая подпись',
+        compactText: 'другая подпись',
+        settings,
+        navigationTargets: [target],
+      }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'link' } });
+  });
+
+  it.each([
+    [
+      'open_app contact',
+      { type: 'open_app', web_app: 'https://apps.example/start', contact_id: 101 },
+      { type: 'open_app', web_app: 'https://apps.example/start', contact_id: 202 },
+    ],
+    [
+      'chat-create payload',
+      { type: 'chat', chat_title: 'Первая группа', start_payload: 'first' },
+      { type: 'chat', chat_title: 'Вторая группа', start_payload: 'second' },
+    ],
+  ] as const)(
+    'keeps equal text with a different hidden %s action out of exact history',
+    async (_name, firstButton, secondButton) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({ duplicateWarnEnabled: false, duplicateWarnMaxCount: 1 });
+      const targets = (button: Record<string, unknown>) =>
+        navigationTargetsFromMessage({
+          body: {
+            text: 'Открыть',
+            attachments: [{ type: 'inline_keyboard', payload: { buttons: [[button]] } }],
+          },
+        });
+
+      await expect(
+        detector.detectWithin({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-hidden-1',
+          eventTimestampMs: 100,
+          rawText: 'Открыть',
+          compactText: 'открыть',
+          settings,
+          navigationTargets: targets(firstButton),
+        }),
+      ).resolves.toEqual({});
+      await expect(
+        detector.detectWithin({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-hidden-2',
+          eventTimestampMs: 200,
+          rawText: 'Открыть',
+          compactText: 'открыть',
+          settings,
+          navigationTargets: targets(secondButton),
+        }),
+      ).resolves.toEqual({});
+      await expect(
+        detector.detectWithin({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'message-hidden-3',
+          eventTimestampMs: 300,
+          rawText: 'Открыть',
+          compactText: 'открыть',
+          settings,
+          navigationTargets: targets(secondButton),
+        }),
+      ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+    },
+  );
+
+  it('keeps normalized visible text semantics when a structured action is unchanged', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({ duplicateWarnEnabled: false, duplicateWarnMaxCount: 1 });
+    const targets = (text: string) =>
+      navigationTargetsFromMessage({
+        body: {
+          text,
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [[{ type: 'link', url: 'https://example.com/same' }]],
+              },
+            },
+          ],
+        },
+      });
+
+    await detector.detectWithin({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'normalized-hidden-1',
+      eventTimestampMs: 100,
+      rawText: 'Подробнее',
+      compactText: 'подробнее',
+      settings,
+      navigationTargets: targets('Подробнее'),
+    });
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'normalized-hidden-2',
+        eventTimestampMs: 200,
+        rawText: 'ПОДРОБНЕЕ!',
+        compactText: 'подробнее',
+        settings,
+        navigationTargets: targets('ПОДРОБНЕЕ!'),
+      }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+  });
+
+  it.each([
+    [
+      'Команда завтра утром принимает новые заявки возле главного входа после общей встречи',
+      'Команда завтра утром не принимает новые заявки возле главного входа после общей встречи',
+    ],
+    [
+      'Команда собирается завтра утром в зале 10 возле главного входа после общей встречи',
+      'После общей встречи команда собирается завтра утром в зале 11 возле главного входа',
+    ],
+  ])('does not near-match text when a short semantic token changes', async (first, second) => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({ duplicateDetectionPreset: 'STRICT' });
+
+    await detectRevision({
+      detector,
+      messageId: 'message-1',
+      revision: 100,
+      text: first,
+      settings,
+    });
+    await expect(
+      detectRevision({
+        detector,
+        messageId: 'message-2',
+        revision: 200,
+        text: second,
+        settings,
+      }),
+    ).resolves.toEqual({});
+  });
+
+  it('uses event timestamps rather than delayed processing time for the duplicate window', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'same detailed repeated message';
+
+    await detectRevision({ detector, messageId: 'message-1', revision: 100_000, text });
+    await expect(
+      detectRevision({ detector, messageId: 'message-2', revision: 161_001, text }),
+    ).resolves.toEqual({});
+  });
+
+  it('excludes a predecessor exactly on the event-time window boundary', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'same detailed repeated message';
+
+    await detectRevision({ detector, messageId: 'message-1', revision: 100_000, text });
+    await expect(
+      detectRevision({ detector, messageId: 'message-2', revision: 160_000, text }),
+    ).resolves.toEqual({});
+  });
+
+  it('does not make an earlier message actionable because a later event was processed first', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'same detailed repeated message';
+
+    await detectRevision({ detector, messageId: 'message-later', revision: 150_000, text });
+    await expect(
+      detectRevision({ detector, messageId: 'message-earlier', revision: 100_000, text }),
+    ).resolves.toEqual({});
+  });
+
+  it('does not merge both sides of an event into a double-width duplicate window', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'same detailed repeated message';
+
+    await detectRevision({ detector, messageId: 'message-later', revision: 200_000, text });
+    await detectRevision({ detector, messageId: 'message-earlier', revision: 100_000, text });
+    await expect(
+      detectRevision({ detector, messageId: 'message-middle', revision: 150_000, text }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+  });
+
+  it('counts only chronological predecessors in a reverse-processed cluster', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'same detailed repeated message';
+
+    await detectRevision({ detector, messageId: 'message-later', revision: 150_000, text });
+    await detectRevision({ detector, messageId: 'message-earlier', revision: 100_000, text });
+    await expect(
+      detectRevision({ detector, messageId: 'message-middle', revision: 125_000, text }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-newest', revision: 159_000, text }),
+    ).resolves.toMatchObject({ hit: { count: 3, fingerprintType: 'exact' } });
   });
 
   it('moves a message membership from its created text to its edited text', async () => {

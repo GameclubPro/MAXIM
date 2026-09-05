@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { UnrecoverableError } from 'bullmq';
 import { lookup } from 'node:dns/promises';
 import type { IncomingHttpHeaders } from 'node:http';
 import { request as requestHttps } from 'node:https';
@@ -41,6 +42,16 @@ export class PhotoDownloadHttpError extends Error {
   constructor(readonly statusCode: number) {
     super(`Photo host returned HTTP ${statusCode}`);
     this.name = 'PhotoDownloadHttpError';
+  }
+}
+
+export class PhotoDownloadByteLimitExceededError extends UnrecoverableError {
+  readonly code = 'PHOTO_DOWNLOAD_BYTE_LIMIT_EXCEEDED';
+  readonly retryable = false;
+
+  constructor() {
+    super('Photo response exceeds the byte limit');
+    this.name = 'PhotoDownloadByteLimitExceededError';
   }
 }
 
@@ -177,7 +188,7 @@ export class SecurePhotoDownloader {
       validateResponseContentType(response.headers['content-type']);
       const contentLength = parseContentLength(response.headers['content-length']);
       if (contentLength !== null && contentLength > this.maxBytes) {
-        throw new Error('Photo response exceeds the byte limit');
+        throw new PhotoDownloadByteLimitExceededError();
       }
 
       const body = await withDeadline(readResponseBody(response.body, this.maxBytes), deadlineAtMs);
@@ -276,7 +287,7 @@ async function readResponseBody(
     const buffer = Buffer.from(chunk);
     byteLength += buffer.byteLength;
     if (byteLength > maxBytes) {
-      throw new Error('Photo response exceeds the byte limit');
+      throw new PhotoDownloadByteLimitExceededError();
     }
     chunks.push(buffer);
   }

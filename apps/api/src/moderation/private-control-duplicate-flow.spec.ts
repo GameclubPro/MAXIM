@@ -147,6 +147,50 @@ describe('private control duplicate flow', () => {
     ).toBe(19);
   });
 
+  it.each([
+    ['no actions', false, false, false, false, 19, [20, 20, 20]],
+    ['no actions', true, false, false, false, 18, [20, 20, 20]],
+    ['WARN only', false, true, false, false, 19, [20, 20, 20]],
+    ['WARN only', true, true, false, false, 18, [20, 20, 20]],
+    ['WARN and BAN', false, true, false, true, 18, [19, 20, 20]],
+    ['WARN and BAN', true, true, false, true, 17, [19, 20, 20]],
+    ['MUTE and BAN', false, false, true, true, 18, [19, 19, 20]],
+    ['MUTE and BAN', true, false, true, true, 17, [19, 19, 20]],
+    ['full ladder', false, true, true, true, 17, [18, 19, 20]],
+    ['full ladder', true, true, true, true, 16, [18, 19, 20]],
+  ] as const)(
+    '%s preserves its maximum allowance with bot message %s',
+    (
+      _name,
+      duplicateBotMessageEnabled,
+      duplicateWarnEnabled,
+      duplicateMuteEnabled,
+      duplicateBanEnabled,
+      expectedMax,
+      expectedThresholds,
+    ) => {
+      const stages = {
+        duplicateBotMessageEnabled,
+        duplicateWarnEnabled,
+        duplicateMuteEnabled,
+        duplicateBanEnabled,
+      };
+      expect(resolvePrivateDuplicateAllowedCountMax(stages)).toBe(expectedMax);
+
+      const built = buildPrivateDuplicateFlowSettings({
+        ...stages,
+        allowedCount: 99,
+        windowSec: 7_200,
+      });
+      expect([
+        built.duplicateWarnMaxCount,
+        built.duplicateMuteMaxCount,
+        built.duplicateBanMaxCount,
+      ]).toEqual(expectedThresholds);
+      expect(resolvePrivateDuplicateAllowedCount({ ...stages, ...built })).toBe(expectedMax);
+    },
+  );
+
   it('builds synchronized thresholds and windows from a compact flow state', () => {
     expect(
       buildPrivateDuplicateFlowSettings({
@@ -229,5 +273,23 @@ describe('private control duplicate flow', () => {
         duplicateBanMaxCount: 9,
       }),
     );
+  });
+
+  it('round-trips a WARN-only threshold at the contract maximum', () => {
+    const settings = createSettings({
+      duplicateBotMessageEnabled: false,
+      duplicateWarnEnabled: true,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+      duplicateWarnWindowSec: 43_200,
+      duplicateMuteWindowSec: 43_200,
+      duplicateBanWindowSec: 43_200,
+      duplicateWarnMaxCount: 20,
+      duplicateMuteMaxCount: 20,
+      duplicateBanMaxCount: 20,
+    });
+
+    expect(resolvePrivateDuplicateAllowedCount(settings)).toBe(19);
+    expect(normalizePrivateDuplicateFlowSettings(settings)).toEqual(settings);
   });
 });
