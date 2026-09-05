@@ -380,16 +380,16 @@ test('duplicate audit uses fixed windows and bounds every source before aggregat
   assert.match(sql, /CROSS JOIN LATERAL/u);
   assert.match(
     sql,
-    /FROM moderation_delete_intents\s+WHERE status = intent_statuses\.status[\s\S]*ORDER BY updated_at DESC\s+LIMIT 501/u,
+    /FROM moderation_delete_intents\s+WHERE status = intent_statuses\.status[\s\S]*ORDER BY updated_at DESC\s+LIMIT 65/u,
   );
-  assert.match(sql, /WHERE sample_rank <= 500/u);
+  assert.match(sql, /WHERE sample_rank <= 64/u);
   assert.match(
     sql,
-    /FROM moderation_delete_intent_reasons\s+WHERE intent_id = intent_sample\.id\s+ORDER BY reason_key ASC\s+LIMIT 33/u,
+    /FROM moderation_delete_intent_reasons\s+WHERE intent_id = intent_sample\.id\s+ORDER BY reason_key ASC\s+LIMIT 9/u,
   );
   assert.match(sql, /'audit', 'recent_duplicate_delete_intents'/u);
-  assert.match(sql, /'sample_cap_per_status', 500/u);
-  assert.match(sql, /'reason_sample_cap_per_intent', 32/u);
+  assert.match(sql, /'sample_cap_per_status', 64/u);
+  assert.match(sql, /'reason_sample_cap_per_intent', 8/u);
   assert.match(sql, /'sample_saturated'/u);
   assert.match(sql, /'complete'/u);
 
@@ -517,7 +517,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       'intent-old-' || sample_number::text,
       'OBSERVED',
       CURRENT_TIMESTAMP - INTERVAL '2 hours'
-    FROM generate_series(1, 501) AS sample(sample_number);
+    FROM generate_series(1, 65) AS sample(sample_number);
     INSERT INTO moderation_delete_intent_reasons (
       id,
       intent_id,
@@ -532,7 +532,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       'intent-old-' || sample_number::text,
       'duplicate',
       'DUPLICATE_DELETE'
-    FROM generate_series(1, 501) AS sample(sample_number);
+    FROM generate_series(1, 65) AS sample(sample_number);
     ANALYZE;
     SET enable_seqscan = off;
     SET enable_bitmapscan = off;
@@ -683,8 +683,8 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   assert.deepEqual(oneDayObservedIntents, {
     window_minutes: 1440,
     status: 'OBSERVED',
-    sampled_intents: 500,
-    count_lower_bound: 500,
+    sampled_intents: 64,
+    count_lower_bound: 64,
     saturated_reason_intents: 0,
     sample_saturated: true,
     complete: false,
@@ -713,7 +713,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
         WHERE status = 'PENDING'::"ModerationDeleteIntentStatus"
           AND updated_at >= statement_timestamp() - make_interval(mins => 1440)
         ORDER BY updated_at DESC
-        LIMIT 501
+        LIMIT 65
       `,
     },
     {
@@ -723,7 +723,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
         FROM moderation_delete_intent_reasons
         WHERE intent_id = 'intent-duplicate'
         ORDER BY reason_key ASC
-        LIMIT 33
+        LIMIT 9
       `,
     },
   ];
@@ -781,37 +781,58 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       'DELETE_MESSAGE',
       TIMESTAMP '2026-09-05 11:00:00'
     FROM generate_series(1, 5001) AS sample(sample_number);
+    WITH intent_statuses(status) AS (
+      VALUES
+        ('OBSERVED'::"ModerationDeleteIntentStatus"),
+        ('PENDING'::"ModerationDeleteIntentStatus"),
+        ('IN_PROGRESS'::"ModerationDeleteIntentStatus"),
+        ('RETRYABLE'::"ModerationDeleteIntentStatus"),
+        ('WAITING_CAPABILITY'::"ModerationDeleteIntentStatus"),
+        ('AMBIGUOUS'::"ModerationDeleteIntentStatus"),
+        ('SUCCEEDED'::"ModerationDeleteIntentStatus"),
+        ('ALREADY_ABSENT'::"ModerationDeleteIntentStatus"),
+        ('EXPIRED'::"ModerationDeleteIntentStatus"),
+        ('FAILED_TERMINAL'::"ModerationDeleteIntentStatus")
+    )
     INSERT INTO moderation_delete_intents (id, status, updated_at)
     SELECT
-      'intent-boundary-' || sample_number::text,
-      'PENDING',
+      'intent-boundary-' || intent_statuses.status::text || '-' || sample_number::text,
+      intent_statuses.status,
       TIMESTAMP '2026-09-05 11:00:00'
-    FROM generate_series(1, 501) AS sample(sample_number);
+    FROM intent_statuses
+    CROSS JOIN generate_series(1, 65) AS sample(sample_number);
     INSERT INTO moderation_delete_intent_reasons (id, intent_id, reason_key, rule_code)
     SELECT
-      'reason-boundary-' || sample_number::text,
-      'intent-boundary-' || sample_number::text,
-      'duplicate',
-      'DUPLICATE_DELETE'
-    FROM generate_series(1, 501) AS sample(sample_number);
+      'reason-boundary-' || intent.id || '-' || reason_number::text,
+      intent.id,
+      CASE WHEN reason_number = 1 THEN '00-duplicate' ELSE 'reason-' || reason_number::text END,
+      CASE WHEN reason_number = 1 THEN 'DUPLICATE_DELETE' ELSE 'OTHER' END
+    FROM moderation_delete_intents AS intent
+    CROSS JOIN generate_series(1, 9) AS reason(reason_number);
     ANALYZE;
   `);
   const fixedBoundarySql = reportSql.replaceAll(
     'statement_timestamp()',
     "TIMESTAMP '2026-09-05 12:00:00'",
   );
+  await database.exec("SET statement_timeout = '2500ms';");
+  await database.exec('SET SESSION AUTHORIZATION maxim_audit;');
   const boundaryReports = (await database.exec(fixedBoundarySql))
     .flatMap((statement) => statement.rows ?? [])
     .map((row) => JSON.parse(row.json_build_object));
+  await database.exec('SET SESSION AUTHORIZATION postgres;');
   const boundaryEventWindow = boundaryReports[1]?.windows.find((row) => row.window_minutes === 60);
-  const boundaryIntentWindow = boundaryReports[2]?.rows.find(
-    (row) => row.window_minutes === 60 && row.status === 'PENDING',
-  );
+  const boundaryIntentWindows = boundaryReports[2]?.rows.filter((row) => row.window_minutes === 60);
   assert.equal(boundaryEventWindow?.sample_saturated, true);
   assert.equal(boundaryEventWindow?.complete, false);
-  assert.equal(boundaryIntentWindow?.sampled_intents, 500);
-  assert.equal(boundaryIntentWindow?.sample_saturated, true);
-  assert.equal(boundaryIntentWindow?.complete, false);
+  assert.equal(boundaryIntentWindows?.length, 10);
+  for (const boundaryIntentWindow of boundaryIntentWindows ?? []) {
+    assert.equal(boundaryIntentWindow.sampled_intents, 64);
+    assert.equal(boundaryIntentWindow.count_lower_bound, 64);
+    assert.equal(boundaryIntentWindow.saturated_reason_intents, 64);
+    assert.equal(boundaryIntentWindow.sample_saturated, true);
+    assert.equal(boundaryIntentWindow.complete, false);
+  }
 });
 
 test('audit modes reject arbitrary SQL and unsafe monitor windows before Docker', (t) => {

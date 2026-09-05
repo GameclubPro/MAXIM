@@ -2,9 +2,10 @@
 
 ## Status
 
-Corrective release prepared. Production was healthy during the read-only investigation. Photo
-matching remains globally observation-only; no enforcement cohort was enabled as part of this
-work.
+Corrective release `release-20260905T021336Z-64496ba53ee3` is deployed. Post-release monitoring
+returned to `normal / healthy`: all 13 API roles run the exact release image without restarts,
+queue lag is nominal, and no new duplicate-specific failures were observed. Photo matching
+remains globally observation-only; no enforcement cohort was enabled as part of this work.
 
 ## User Impact
 
