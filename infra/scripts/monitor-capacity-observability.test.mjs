@@ -48,6 +48,7 @@ const {
   parseVmstat,
   probeApiFleet,
   readExpectedApiImage,
+  resolveExpectedApiTopologyFromCompose,
   resolveExpectedApiServicesFromCompose,
   summarizeApiFleet,
 } = probeModule;
@@ -111,6 +112,81 @@ function inspectedContainer(index, options = {}) {
       Env: environment,
       Image: options.imageRef ?? expectedApiImage.imageRef,
       Labels: labels,
+    },
+  };
+}
+
+function inspectedSandbox(index, options = {}) {
+  const project = Object.hasOwn(options, 'project') ? options.project : 'infra';
+  const service = options.service ?? 'ocr-native-sandbox';
+  const sandboxCommand = [
+    'node',
+    'apps/api/dist/apps/api/src/moderation/commercial-ocr/native-ocr-sandbox.entrypoint.js',
+  ];
+  return {
+    Id: (index + 1).toString(16).padStart(64, '0'),
+    Name: options.name ?? `/${project}-${service}-1`,
+    Image: options.imageId ?? expectedApiImage.imageId,
+    RestartCount: options.restartCount ?? 0,
+    Mounts: options.mounts ?? [
+      {
+        Type: 'volume',
+        Name: `${project}_ocr_native_ipc`,
+        Destination: '/run/maxim-ocr',
+        RW: true,
+        Mode: 'rw',
+      },
+    ],
+    State: {
+      Running: options.running ?? true,
+      Status: options.status ?? 'running',
+      Health: { Status: options.health ?? 'healthy' },
+    },
+    Config: {
+      User: options.user ?? '1000:1000',
+      Cmd: options.command ?? sandboxCommand,
+      Env: options.environment ?? [
+        'NODE_ENV=production',
+        'COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH=/run/maxim-ocr/native-ocr.sock',
+        'PHOTO_DUPLICATE_MAX_BYTES=16777216',
+        'COMMERCIAL_OCR_MAX_INPUT_PIXELS=40000000',
+        'COMMERCIAL_OCR_MAX_OUTPUT_PIXELS=3000000',
+        'COMMERCIAL_OCR_MAX_SIDE=2000',
+        'COMMERCIAL_OCR_TESSERACT_BINARY=tesseract',
+        'COMMERCIAL_OCR_TESSERACT_CONCURRENCY=1',
+        'COMMERCIAL_OCR_TESSERACT_MAX_QUEUE=4',
+        'COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS=10000',
+        'COMMERCIAL_OCR_TESSERACT_RECYCLE_AFTER_JOBS=250',
+        'COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES=16777216',
+        'COMMERCIAL_OCR_TESSERACT_MAX_OUTPUT_BYTES=4194304',
+        'OMP_THREAD_LIMIT=1',
+        'HOME=/home/node',
+        'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt',
+        'NODE_VERSION=24.8.0',
+        'PATH=/usr/local/bin:/usr/bin:/bin',
+        'YARN_VERSION=1.22.22',
+      ],
+      Image: options.imageRef ?? expectedApiImage.imageRef,
+      Labels: {
+        'com.docker.compose.project': project,
+        'com.docker.compose.service': service,
+        'com.maxim.release-protected': 'true',
+        'com.maxim.ocr-native-sandbox': 'true',
+        'com.maxim.ocr-native-sandbox-capable': 'true',
+        ...(options.labels ?? {}),
+      },
+    },
+    HostConfig: {
+      NetworkMode: 'none',
+      ReadonlyRootfs: true,
+      Init: true,
+      Memory: 1024 ** 3,
+      NanoCpus: 1_000_000_000,
+      PidsLimit: 128,
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges:true'],
+      Tmpfs: { '/tmp': 'rw,size=67108864,mode=1777,uid=1000,gid=1000' },
+      ...(options.hostConfig ?? {}),
     },
   };
 }
@@ -544,7 +620,10 @@ test('action health snapshots require internally consistent bounded arithmetic',
 });
 
 test('API fleet census checks runtime identity and exact-image roles without exposing identities', async () => {
-  const inspection = DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index));
+  const inspection = [
+    ...DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index)),
+    inspectedSandbox(80),
+  ];
   const ids = inspection.map((container) => container.Id);
   const calls = [];
   const healthy = await probeApiFleet(DEFAULT_EXPECTED_API_SERVICES, {
@@ -589,7 +668,7 @@ test('API fleet census checks runtime identity and exact-image roles without exp
     JSON.stringify([
       inspection[0],
       inspectedContainer(1, { appRole: 'moderation' }),
-      ...inspection.slice(2, -1),
+      ...inspection.slice(2, -2),
       inspectedContainer(12, { running: false, restartCount: 2 }),
       inspectedContainer(20, { service: DEFAULT_EXPECTED_API_SERVICES[0] }),
       inspectedContainer(21, {
@@ -710,6 +789,163 @@ test('API fleet expected roles fail closed on env, protected-label, and owned-na
   }
 });
 
+test('API fleet keeps 13 role metrics while strictly attesting the source-expected OCR sandbox', () => {
+  const roles = DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index));
+  const validSandbox = inspectedSandbox(80, { restartCount: 2 });
+  const healthy = summarizeApiFleet(
+    DEFAULT_EXPECTED_API_SERVICES,
+    expectedApiImage,
+    parseApiFleetInspection(JSON.stringify([...roles, validSandbox])),
+    'ocr-native-sandbox',
+  );
+  assert.deepEqual(healthy, {
+    available: true,
+    expectedRoleCount: 13,
+    observedRoleCount: 13,
+    singletonRoleCount: 13,
+    runningRoleCount: 13,
+    identityRoleCount: 13,
+    exactImageRoleCount: 13,
+    duplicateContainerCount: 0,
+    unexpectedApiContainerCount: 0,
+    unexpectedMainContainerCount: 0,
+    unexpectedScaleContainerCount: 0,
+    unexpectedManualContainerCount: 0,
+    totalRestartCount: 2,
+  });
+  assert.equal(
+    evaluateAlerts([], normalizeSnapshot(sample('2026-09-02T12:00:00.000Z', { apiFleet: healthy })))
+      .alerts.api_fleet_topology.outcome,
+    'clear',
+  );
+
+  const missing = summarizeApiFleet(
+    DEFAULT_EXPECTED_API_SERVICES,
+    expectedApiImage,
+    parseApiFleetInspection(JSON.stringify(roles)),
+    'ocr-native-sandbox',
+  );
+  assert.equal(missing.expectedRoleCount, 13);
+  assert.equal(missing.unexpectedApiContainerCount, 1);
+  assert.equal(missing.unexpectedMainContainerCount, 1);
+
+  const duplicate = summarizeApiFleet(
+    DEFAULT_EXPECTED_API_SERVICES,
+    expectedApiImage,
+    parseApiFleetInspection(
+      JSON.stringify([
+        ...roles,
+        validSandbox,
+        inspectedSandbox(81, { name: '/infra-ocr-native-sandbox-2' }),
+      ]),
+    ),
+    'ocr-native-sandbox',
+  );
+  assert.equal(duplicate.expectedRoleCount, 13);
+  assert.equal(duplicate.duplicateContainerCount, 0);
+  assert.equal(duplicate.unexpectedApiContainerCount, 2);
+  assert.equal(duplicate.unexpectedMainContainerCount, 2);
+
+  const historical = summarizeApiFleet(
+    DEFAULT_EXPECTED_API_SERVICES,
+    expectedApiImage,
+    parseApiFleetInspection(JSON.stringify([...roles, validSandbox])),
+  );
+  assert.equal(historical.unexpectedApiContainerCount, 1);
+  assert.equal(historical.unexpectedMainContainerCount, 1);
+
+  const foreign = summarizeApiFleet(
+    DEFAULT_EXPECTED_API_SERVICES,
+    expectedApiImage,
+    parseApiFleetInspection(
+      JSON.stringify([...roles, inspectedSandbox(82, { project: 'infra-scale' })]),
+    ),
+    'ocr-native-sandbox',
+  );
+  assert.equal(foreign.unexpectedApiContainerCount, 1);
+  assert.equal(foreign.unexpectedScaleContainerCount, 1);
+
+  const mislabeledRole = inspectedContainer(0, {
+    labels: { 'com.maxim.ocr-native-sandbox': 'true' },
+  });
+  const mislabeled = summarizeApiFleet(
+    DEFAULT_EXPECTED_API_SERVICES,
+    expectedApiImage,
+    parseApiFleetInspection(JSON.stringify([mislabeledRole, ...roles.slice(1), validSandbox])),
+    'ocr-native-sandbox',
+  );
+  assert.equal(mislabeled.observedRoleCount, 12);
+  assert.equal(mislabeled.unexpectedApiContainerCount, 2);
+  assert.equal(mislabeled.unexpectedMainContainerCount, 2);
+});
+
+test('API fleet rejects every security-relevant OCR sandbox drift without exposing secrets', () => {
+  const roles = DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index));
+  const baselineEnvironment = inspectedSandbox(80).Config.Env;
+  const defects = [
+    { status: 'paused' },
+    { health: 'unhealthy' },
+    { imageId: `sha256:${'8'.repeat(64)}` },
+    { imageRef: `maxim-api:${'c'.repeat(40)}` },
+    { user: '0:0' },
+    { command: ['node', 'unexpected.js'] },
+    { environment: [...baselineEnvironment, 'APP_ROLE=moderation'] },
+    { environment: [...baselineEnvironment, 'APP_SERVICE_NAME=api-media-analysis'] },
+    { environment: [...baselineEnvironment, 'REDIS_URL=redis://private-secret'] },
+    { environment: [...baselineEnvironment, 'COMMERCIAL_OCR_TESSDATA_PREFIX=/models'] },
+    {
+      environment: baselineEnvironment.map((entry) =>
+        entry.startsWith('COMMERCIAL_OCR_MAX_SIDE=') ? 'COMMERCIAL_OCR_MAX_SIDE=1600' : entry,
+      ),
+    },
+    {
+      environment: baselineEnvironment.filter(
+        (entry) => !entry.startsWith('COMMERCIAL_OCR_TESSERACT_RECYCLE_AFTER_JOBS='),
+      ),
+    },
+    { labels: { 'com.maxim.release-protected': 'false' } },
+    { labels: { 'com.maxim.ocr-native-sandbox': 'false' } },
+    { labels: { 'com.maxim.ocr-native-sandbox-capable': 'false' } },
+    { hostConfig: { NetworkMode: 'default' } },
+    { hostConfig: { ReadonlyRootfs: false } },
+    { hostConfig: { Init: false } },
+    { hostConfig: { Memory: 512 * 1024 ** 2 } },
+    { hostConfig: { NanoCpus: 2_000_000_000 } },
+    { hostConfig: { PidsLimit: 0 } },
+    { hostConfig: { CapDrop: [] } },
+    { hostConfig: { SecurityOpt: [] } },
+    { hostConfig: { Tmpfs: { '/tmp': 'size=128m,mode=1777,uid=1000,gid=1000' } } },
+    { mounts: [] },
+    {
+      mounts: [
+        {
+          Type: 'volume',
+          Name: 'infra_ocr_native_ipc',
+          Destination: '/run/maxim-ocr',
+          RW: false,
+          Mode: 'ro',
+        },
+      ],
+    },
+  ];
+
+  defects.forEach((defect, index) => {
+    const parsed = parseApiFleetInspection(
+      JSON.stringify([...roles, inspectedSandbox(index + 80, defect)]),
+    );
+    assert.doesNotMatch(JSON.stringify(parsed), /private-secret|REDIS_URL/u);
+    const fleet = summarizeApiFleet(
+      DEFAULT_EXPECTED_API_SERVICES,
+      expectedApiImage,
+      parsed,
+      'ocr-native-sandbox',
+    );
+    assert.equal(fleet.expectedRoleCount, 13, JSON.stringify(defect));
+    assert.equal(fleet.unexpectedApiContainerCount, 1, JSON.stringify(defect));
+    assert.equal(fleet.unexpectedMainContainerCount, 1, JSON.stringify(defect));
+  });
+});
+
 test('API fleet fallback topology and release manifest identity stay exact', () => {
   const topologySource = readFileSync(
     resolve(root, 'infra/scripts/lib/deploy-topology.sh'),
@@ -726,6 +962,17 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
     (service) => service !== 'api-media-analysis' && service !== 'api-publisher',
   );
   const legacyCompose = `services:\n${baseServices.map((service) => `  ${service}:`).join('\n')}`;
+  assert.deepEqual(
+    resolveExpectedApiTopologyFromCompose(DEFAULT_EXPECTED_API_SERVICES, productionComposeSource),
+    {
+      services: DEFAULT_EXPECTED_API_SERVICES,
+      expectedAuxiliaryService: 'ocr-native-sandbox',
+    },
+  );
+  assert.deepEqual(
+    resolveExpectedApiTopologyFromCompose(DEFAULT_EXPECTED_API_SERVICES, legacyCompose),
+    { services: baseServices, expectedAuxiliaryService: null },
+  );
   assert.deepEqual(
     resolveExpectedApiServicesFromCompose(DEFAULT_EXPECTED_API_SERVICES, legacyCompose),
     baseServices,
@@ -758,6 +1005,22 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
         `${legacyCompose}\nservices:\n${baseServices.map((service) => `  ${service}:`).join('\n')}`,
       ),
     /services section is missing or ambiguous/u,
+  );
+  assert.throws(
+    () =>
+      resolveExpectedApiTopologyFromCompose(
+        DEFAULT_EXPECTED_API_SERVICES,
+        `${legacyCompose}\n  ocr-native-sandbox:`,
+      ),
+    /auxiliary topology is missing its media role/u,
+  );
+  assert.throws(
+    () =>
+      resolveExpectedApiTopologyFromCompose(
+        DEFAULT_EXPECTED_API_SERVICES,
+        productionComposeSource.replace('services:\n', 'services:\n  ocr-native-sandbox:\n'),
+      ),
+    /auxiliary topology is ambiguous/u,
   );
 
   const directory = mkdtempSync(join(tmpdir(), 'maxim-capacity-manifest-'));

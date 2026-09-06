@@ -217,6 +217,7 @@ SELECT_ADMIN=0
 SELECTED_COMPONENTS=()
 SERVICES=()
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_OCR_NATIVE_SANDBOX=0
 TARGET_HAS_PUBLISHER=0
 TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
 TARGET_COMMERCIAL_OCR_VERSION=""
@@ -297,6 +298,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     echo "Fetch the immutable API source object without changing the VPS worktree, then retry." >&2
     exit 1
   fi
+  maxim_topology_require_image_text_stop_list_delete_guard "$API_SOURCE_SHA"
   if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_PUBLISHER_SERVICE"; then
     TARGET_HAS_PUBLISHER=1
   else
@@ -320,11 +322,22 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     maxim_topology_remove_service SERVICES "$MAXIM_MEDIA_ANALYSIS_SERVICE"
     echo "API rollback target predates $MAXIM_MEDIA_ANALYSIS_SERVICE; the role will be removed."
   fi
+  if maxim_topology_git_has_ocr_native_sandbox "$API_SOURCE_SHA"; then
+    TARGET_HAS_OCR_NATIVE_SANDBOX=1
+  else
+    topology_status=$?
+    if [[ "$topology_status" -ne 1 ]]; then
+      exit "$topology_status"
+    fi
+    maxim_topology_remove_service SERVICES "$MAXIM_OCR_NATIVE_SANDBOX_SERVICE"
+    echo "API rollback target predates $MAXIM_OCR_NATIVE_SANDBOX_SERVICE; the auxiliary will be removed."
+  fi
   maxim_topology_prepare_commercial_ocr_target \
     "$API_SOURCE_SHA" \
     COMPOSE_FILES \
     TARGET_HAS_MEDIA_ANALYSIS \
-    TARGET_COMMERCIAL_OCR_VERSION
+    TARGET_COMMERCIAL_OCR_VERSION \
+    TARGET_HAS_OCR_NATIVE_SANDBOX
 fi
 
 for component in "${SELECTED_COMPONENTS[@]}"; do
@@ -341,6 +354,10 @@ for component in "${SELECTED_COMPONENTS[@]}"; do
     exit 1
   fi
 done
+if [[ "$SELECT_API" -eq 1 ]]; then
+  maxim_topology_require_ocr_native_sandbox_image_capability \
+    "${COMPONENT_IMAGE_ID[api-shared]}" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
+fi
 
 if [[ "$SELECT_API" -eq 1 ]]; then
   if ! docker compose "${COMPOSE_FILES[@]}" ps --status running --services | grep -qx postgres; then
@@ -542,6 +559,7 @@ verify_inherited_api_component() {
   for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
     verify_service_image_id "$service" "$expected_image_id"
   done
+  maxim_topology_verify_ocr_native_sandbox_for_image COMPOSE_FILES "$expected_image_id"
 }
 
 verify_inherited_release_components() {
@@ -585,6 +603,9 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   else
     maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
   fi
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 0 ]]; then
+    maxim_topology_remove_ocr_native_sandbox_container COMPOSE_FILES
+  fi
 
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service api-action
@@ -598,7 +619,18 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   recreate_service api-ingress
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+      maxim_topology_recreate_ocr_native_sandbox \
+        COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}"
+      maxim_topology_smoke_ocr_native_sandbox_uds \
+        COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}" prestart
+      maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    fi
     recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+    if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+      maxim_topology_verify_ocr_native_sandbox_runtime \
+        COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}" with-media
+    fi
   fi
 
   # FLAG: Keep every webhook consumer and producer stopped until non-webhook API roles are fenced.
@@ -630,6 +662,12 @@ if [[ "$SELECT_API" -eq 1 && "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     COMPOSE_FILES \
     "$TARGET_COMMERCIAL_OCR_VERSION" \
     "$publisher_policy"
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}" with-media
+  else
+    maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES
+  fi
 fi
 if [[ "$SELECT_API" -eq 1 ]]; then
   wait_for_strict_smoke json-ok http://127.0.0.1:3001/api/health/live
@@ -653,9 +691,13 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   SMOKE_RESULTS+=(api-local-ready api-admin-ready api-public-live)
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
-      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+      if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+        maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
+      else
+        maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required legacy
+      fi
     else
-      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present
+      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present legacy
     fi
     SMOKE_RESULTS+=(
       api-commercial-ocr-version
@@ -666,6 +708,13 @@ if [[ "$SELECT_API" -eq 1 ]]; then
       SMOKE_RESULTS+=(
         api-media-analysis-native-raster
         api-media-analysis-internal-ready
+      )
+    fi
+    if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+      SMOKE_RESULTS+=(
+        api-ocr-native-sandbox-isolation
+        api-ocr-native-sandbox-uds
+        api-ocr-native-sandbox-process-clean
       )
     fi
   fi

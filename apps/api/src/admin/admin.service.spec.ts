@@ -17577,6 +17577,7 @@ describe('AdminService settings screen endpoints', () => {
       [
         'messageLimitsBlockedWords',
         'messageLimitsBlockedDomains',
+        'messageLimitsImageTextScanEnabled',
         'messageLimitsBotMessageText',
         'messageLimitsWarnMessageText',
         'botSpeechMedia',

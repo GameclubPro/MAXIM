@@ -3,7 +3,8 @@ import type { QueueJobEnvelope } from '../../common/queue-job-envelope';
 
 export const COMMERCIAL_OCR_QUEUE = 'commercial-image-ocr';
 export const COMMERCIAL_OCR_JOB_NAME = 'commercial-image-ocr-analysis';
-export const COMMERCIAL_OCR_JOB_SCHEMA_VERSION = 1 as const;
+export const COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION = 1 as const;
+export const COMMERCIAL_OCR_JOB_SCHEMA_VERSION = 2 as const;
 // FLAG: This behavior identity is image-owned. Production deploys export the target source value
 // only so older immutable images receive their own version during rollback; runtime config must not
 // change the version used by current enqueue, processing, cache, or delete-guard code.
@@ -28,9 +29,13 @@ export type CommercialOcrJob = QueueJobEnvelope<
     messageId: string;
     sourceCreatedAt: string;
     imageCount: number;
-    schemaVersion: typeof COMMERCIAL_OCR_JOB_SCHEMA_VERSION;
+    schemaVersion:
+      | typeof COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION
+      | typeof COMMERCIAL_OCR_JOB_SCHEMA_VERSION;
     ocrVersion: string;
     actionEligible: boolean;
+    commercialScanRequested?: boolean;
+    imageTextScanRequested?: boolean;
   },
   {
     idempotencyKey: string;
@@ -45,6 +50,8 @@ export function buildCommercialOcrJobId(params: {
   sourceCreatedAt: string;
   ocrVersion: string;
   schemaVersion?: number;
+  commercialScanRequested?: boolean;
+  imageTextScanRequested?: boolean;
 }): string {
   const chatId = validateIdentifier(params.chatId, 'chatId');
   const messageId = validateIdentifier(params.messageId, 'messageId');
@@ -60,7 +67,7 @@ export function buildCommercialOcrJobId(params: {
 
   // FLAG: Eligibility is absent from identity so a stricter replay targets the same job. Admission
   // stores the absorbing eligibility latch that the worker must re-read before an action.
-  const digest = createHash('sha256')
+  const hash = createHash('sha256')
     .update(chatId)
     .update('\0')
     .update(messageId)
@@ -69,13 +76,43 @@ export function buildCommercialOcrJobId(params: {
     .update('\0')
     .update(String(schemaVersion))
     .update('\0')
-    .update(ocrVersion)
-    .digest('hex');
+    .update(ocrVersion);
+  if (schemaVersion >= COMMERCIAL_OCR_JOB_SCHEMA_VERSION) {
+    hash
+      .update('\0')
+      .update(params.commercialScanRequested === true ? 'commercial:1' : 'commercial:0')
+      .update('\0')
+      .update(params.imageTextScanRequested === true ? 'image-text:1' : 'image-text:0');
+  }
+  const digest = hash.digest('hex');
   return `commercial-image-ocr__${digest}`;
 }
 
 export function normalizeCommercialOcrActionEligibility(value: unknown): boolean {
   return value === true;
+}
+
+export function normalizeImageTextScanRequested(value: unknown): boolean {
+  return value === true;
+}
+
+export function isSupportedCommercialOcrJobSchemaVersion(value: unknown): value is 1 | 2 {
+  return (
+    value === COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION ||
+    value === COMMERCIAL_OCR_JOB_SCHEMA_VERSION
+  );
+}
+
+export function resolveCommercialOcrJobPurposes(
+  job: Pick<CommercialOcrJob, 'schemaVersion' | 'commercialScanRequested' | 'imageTextScanRequested'>,
+): Readonly<{ commercial: boolean; imageTextStopList: boolean }> {
+  if (job.schemaVersion === COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION) {
+    return { commercial: true, imageTextStopList: false };
+  }
+  return {
+    commercial: job.commercialScanRequested === true,
+    imageTextStopList: job.imageTextScanRequested === true,
+  };
 }
 
 export function validateCommercialOcrImageCount(value: number): number {

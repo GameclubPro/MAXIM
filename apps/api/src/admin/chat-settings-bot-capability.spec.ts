@@ -127,6 +127,18 @@ describe('resolveChatSettingsBotCapabilityRequirements', () => {
     ).toEqual([{ permission: 'write', featureKeys: ['messageLimitsBlockedWords'] }]);
   });
 
+  it('requires write permission when image text scanning is enabled', () => {
+    expect(
+      resolveRequirements(
+        {
+          messageLimitsImageTextScanEnabled: false,
+          messageLimitsBlockedWords: ['спам'],
+        },
+        { messageLimitsImageTextScanEnabled: true },
+      ),
+    ).toEqual([{ permission: 'write', featureKeys: ['messageLimitsImageTextScanEnabled'] }]);
+  });
+
   it('requires member management when a parent activates an already staged ban', () => {
     expect(
       resolveRequirements(

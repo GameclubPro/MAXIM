@@ -343,10 +343,11 @@ first enforcement cohort is runtime-limited to two Cyrillic-only OCR passes. Lat
 phone-only, incomplete, or ambiguous results remain report-only. The service does not persist OCR
 text, source pixels, or MAX image URLs in Redis, Postgres, or ordinary logs.
 
-Each native OCR pass has one continuous 10-second Tesseract budget. A Tesseract-reported timeout
-is a terminal, fail-open incomplete result: BullMQ must not retry the image, and the native worker
-must stay alive. The parent IPC watchdog allows 500 ms beyond that native budget; only a worker
-that fails to answer the watchdog is recycled and reported as retryable `worker_unavailable`.
+Each native OCR pass has one continuous 10-second Tesseract budget. The sandbox verifies its
+dedicated process group after normal completion, but every forced timeout/output-limit path retires
+the entire sandbox container so a descendant that escaped that group cannot survive in the cgroup.
+The UDS client watchdog is bounded beyond the native budget; a lost response may therefore surface
+as retryable `worker_unavailable` while the sandbox restarts.
 Queue-capacity, worker-startup, shutdown, IPC, and transient download failures remain eligible for
 the queue's bounded three attempts. Keep raster preprocessing at 3 MP / 2000 px, processor and
 native-worker concurrency at one, `OMP_THREAD_LIMIT=1`, and the role CPU ceiling at `1.0` until a
@@ -358,10 +359,25 @@ delete bindings instead of evaluating them under different recognition behavior.
 
 Deploy and both rollback paths read that behavior identity from the target API source, export it
 over any `.env` value, and verify it on all 13 effective and running API roles. They stop the old
-`api-media-analysis` before producer roles change and start the target worker last, so a `v1`/`v2`
-transition cannot send new-version jobs to the old worker. A target that predates the OCR role
-removes that role instead. Treat any missing or non-literal target version, role mismatch, or
-non-`shadow` effective rollout mode as a failed deployment; do not edit `.env` to bypass the gate.
+`api-media-analysis` before its sandbox, recreate and attest the target no-network sandbox, and run
+the real UDS Sharp/Tesseract raster smoke from a one-off media client before starting media analysis
+or producer roles. A target that predates
+the sandbox removes the auxiliary and uses the legacy smoke branch; a target that predates the OCR
+role removes both. Treat any missing or non-literal target version, image/boundary mismatch, or
+non-`shadow` effective commercial rollout mode as a failed deployment; do not edit `.env` to bypass
+the gate.
+
+Image-text stop-list enforcement introduces an irreversible API rollback floor. Both immutable and
+ref-based API rollback require binding version 1 and the explicit image-text pre-dispatch delete
+guard in the target source before any image build or runtime mutation. A pending delete intent can
+outlive an environment downgrade, so `shadow` is not authority to bypass this floor; choose the
+first guarded shadow release or a newer compatible release instead.
+
+`IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE` is the independent emergency ceiling for this opt-in path:
+`off` skips analysis, `shadow` records no executable image-text intent, and `on` permits delete-only
+enforcement after the per-chat toggle and sandbox checks pass. A reviewed change to `shadow` or
+`off` also stops pending image-text-only intents at dispatch. Commercial OCR promotion, downgrade,
+and recovery commands do not change this setting; never use them as its kill switch.
 
 Keep the eval corpus outside Git or under `artifacts/commercial-ocr-private/`. Schema-v1 manifests
 remain readable for diagnostics, but enforcement certification requires schema v2 with temporal
@@ -467,12 +483,13 @@ the promotion argument; do not generate the argument inline from the candidate f
 promotion invocation. The local wrapper recomputes the file digest and stops before SSH if it differs
 from the independently reviewed value.
 
-Passing evaluation and signature checks are necessary but not sufficient for promotion with the
-current native execution boundary. Sharp/libvips and Tesseract still run in the secret-bearing,
-networked `api-media-analysis` container, and terminating the direct Tesseract PID does not prove
-that all descendants have exited. Keep production in `shadow` until native image parsing/OCR runs in
-a no-network, no-secret sandbox or sidecar with bounded IPC, cgroup limits, and verified process-group
-teardown, and the resulting runtime/native identity is evaluated and certified again.
+Sharp/libvips and Tesseract run only in `ocr-native-sandbox`, which has no network, API identity,
+runtime env file, or secrets. The media worker sends bounded frames over the project-scoped Unix
+socket; only those two services may mount that volume. The sandbox has its own cgroup limits,
+verifies normal process-group teardown, and recycles its whole container after forced native
+timeouts. This removes the prior structural boundary blocker, but the old evaluation and
+certificate do not cover this implementation. Keep production Commercial OCR in `shadow` until the
+sandbox-backed runtime/native identity is evaluated and freshly certified.
 
 Changing the environment ceiling alone cannot authorize deletion. An enforcing ceiling also
 requires a fresh shared runtime-control document with exact chat IDs, a compare-and-set revision,
@@ -552,9 +569,9 @@ not restore the environment ceiling: first run guarded downgrade with the expire
 then read status again and use the incremented missing revision for a later promotion. Promotion
 atomically patches the production environment file with the OCR mode and canary allowlist, then
 recreates and verifies every role; the OCR-specific delete-intent lane derives its authority from
-those same two OCR variables. It recreates the 12 non-media roles in the reviewed
-order, starts `api-media-analysis` last, and verifies readiness and identity/mode/image parity for
-all 13 roles. The HTTP-serving `api-ingress`, `api-admin`, and `api-media-analysis` roles must answer
+those same two OCR variables. It recreates the 12 non-media roles in the reviewed order, attests the
+unchanged sandbox, starts `api-media-analysis` last, and verifies readiness and identity/mode/image
+parity for all 13 roles plus the auxiliary. The HTTP-serving `api-ingress`, `api-admin`, and `api-media-analysis` roles must answer
 their internal ready endpoint twice across a five-second stability window. Every role, including
 the ten headless queue workers, must keep exactly one running container with the same container ID
 and restart count across that window. Every readiness `docker compose ps`, `docker exec`, and
@@ -625,11 +642,12 @@ through guarded downgrade if needed. Any invalid Redis control that the guarded 
 remains fail-closed and requires a separate reviewed control-store repair before promotion; do not
 delete or rewrite its keys ad hoc.
 
-Every API image build in CI executes the compiled native worker against a generated raster before
-the image can be packaged. API deploy and rollback repeat exact `rus`/`eng` language and raster
-smokes inside `api-media-analysis`. After deployment, confirm that role is live/ready, has one OCR
-processor and one native worker, has not restarted, and still receives the `shadow` ceiling. Audit
-the terminal timeout count separately from retryable OCR failures and compare native-worker
+Every API image build in CI starts the compiled sandbox without network or secrets and sends the
+compiled raster smoke from a separate container over the read-only client side of the UDS volume
+before the image can be packaged. API deploy and rollback repeat exact `rus`/`eng`, runtime
+isolation, process cleanup, and media-to-sandbox raster smokes. After deployment, confirm media is
+live/ready, exactly one sandbox is healthy on the same image, neither restarted, and Commercial OCR
+still receives the `shadow` ceiling. Audit the terminal timeout count separately from retryable OCR failures and compare native-worker
 restarts, queue wait p95, OCR duration p95/p99, and CPU seconds per image with the prior release. Do
 not raise rollout during the code deployment.
 
@@ -641,10 +659,10 @@ under the OCR/preprocess/policy/detector behavior fingerprint, both for the beha
 or chat/message identifiers. `observed` is cumulative since `processStartedAt`, while `sampled`,
 `oldestSampleAt`, and `newestSampleAt` describe the bounded percentile population. Queue wait is
 recorded only when BullMQ first moves a job to active, so retries and governor deferrals cannot
-inflate it. CPU is the whole isolated container's cgroup CPU delta around an image that reached
-native OCR, so it includes Tesseract child work; compare it only while the role remains single-
-concurrency with background tasks disabled. A non-zero `cpuSecondsPerImage.unavailable` means the
-host did not expose a supported cgroup v1/v2 counter and blocks the performance gate.
+inflate it. CPU evidence must come from the sandbox cgroup around the request that reached native
+OCR. A media-container cgroup delta no longer includes Tesseract and is not valid candidate evidence.
+Compare sandbox CPU only while it remains single-concurrency; unavailable or media-only CPU evidence
+blocks the performance gate.
 
 Capture a baseline with at least 100 sampled first-attempt jobs and 100 sampled attempted images
 immediately before deployment. Capture the candidate only after its new process has observed at

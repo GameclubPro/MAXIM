@@ -1636,6 +1636,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         webhookEventId,
         updateType,
         commercialAdsFilterEnabled: settings.commercialAdsFilterEnabled,
+        imageTextScanEnabled: settings.messageLimitsImageTextScanEnabled,
+        hasImageTextStopList:
+          (Array.isArray(settings.messageLimitsBlockedWords) &&
+            settings.messageLimitsBlockedWords.length > 0) ||
+          (Array.isArray(settings.messageLimitsBlockedDomains) &&
+            settings.messageLimitsBlockedDomains.length > 0),
         hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
         chatId,
         messageId,

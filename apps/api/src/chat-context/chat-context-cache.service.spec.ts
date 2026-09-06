@@ -420,6 +420,7 @@ function buildSettings(chatId: string): ChatSettings {
     phoneNumbersAdminContactButtonUrl: '',
     messageLimitsBlockedWords: [],
     messageLimitsBlockedDomains: [],
+    messageLimitsImageTextScanEnabled: false,
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,

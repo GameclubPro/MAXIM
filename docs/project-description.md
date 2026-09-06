@@ -33,26 +33,32 @@ API собирается в один Docker image, но production запуск�
 
 Production-сервисы:
 
-| Сервис                      | Роль                                       |
-| --------------------------- | ------------------------------------------ |
-| `api-ingress`               | публичные health/webhook endpoints         |
-| `api-admin`                 | `/api/v1/`, mini app и закрытые owner APIs |
-| `api-enqueue`               | materialization/enqueue webhook work       |
-| `api-moderation`            | default moderation shard group             |
-| `api-moderation-critical`   | critical/legacy moderation queues          |
-| `api-moderation-join`       | membership/join queues                     |
-| `api-moderation-realtime-b` | realtime shard group B                     |
-| `api-moderation-realtime-c` | realtime shard group C                     |
-| `api-moderation-realtime-d` | realtime shard group D                     |
-| `api-moderation-background` | background moderation and scheduled work   |
-| `api-media-analysis`         | CPU-isolated commercial-image OCR          |
-| `api-action`                | durable MAX action dispatch                |
+| Сервис                      | Роль                                        |
+| --------------------------- | ------------------------------------------- |
+| `api-ingress`               | публичные health/webhook endpoints          |
+| `api-admin`                 | `/api/v1/`, mini app и закрытые owner APIs  |
+| `api-enqueue`               | materialization/enqueue webhook work        |
+| `api-moderation`            | default moderation shard group              |
+| `api-moderation-critical`   | critical/legacy moderation queues           |
+| `api-moderation-join`       | membership/join queues                      |
+| `api-moderation-realtime-b` | realtime shard group B                      |
+| `api-moderation-realtime-c` | realtime shard group C                      |
+| `api-moderation-realtime-d` | realtime shard group D                      |
+| `api-moderation-background` | background moderation and scheduled work    |
+| `api-media-analysis`        | OCR queue, downloads, policy and UDS client |
+| `ocr-native-sandbox`        | no-network Sharp/Tesseract auxiliary        |
+| `api-action`                | durable MAX action dispatch                 |
+| `api-publisher`             | isolated Publik dispatch                    |
 
 Для локальной отладки доступны роли `all`, `ingress`, `admin`, `enqueue`, `moderation` и `action`.
 Production Compose не использует `all`.
 
 Nginx направляет публичные webhooks/health в `api-ingress`, обычный `/api/v1/` — в `api-admin`.
 Публичный ready endpoint намеренно закрыт; локальные ready endpoints доступны на портах 3001 и 3002.
+
+Стоп-лист чата может отдельно проверять текст на фото. Эта opt-in проверка использует два OCR
+прохода с уверенностью по каждому совпавшему слову, не сохраняет распознанный текст и применяет
+только удаление сообщения; предупреждения, мут и бан остаются политикой текстовых сообщений.
 
 ## 4. Поток Webhook И Модерации
 

@@ -1362,6 +1362,23 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
+  it('preserves image text scanning when a stale client omits the new field', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        messageLimitsImageTextScanEnabled: true,
+      }),
+    });
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      antiSpamEnabled: false,
+    });
+
+    expect(result.messageLimitsImageTextScanEnabled).toBe(true);
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
+      expect.objectContaining({ messageLimitsImageTextScanEnabled: true }),
+    );
+  });
+
   it('preserves the storefront toggle when a stale client omits the new field', async () => {
     const { prisma, service } = createService({
       currentSettings: createPersistedChatSettings({
@@ -2242,6 +2259,7 @@ describe('AdminSettingsService chat rules', () => {
     const sourceSettings = chatSettingsSchema.parse({
       profanitySensitivity: 'STRICT',
       forwardedMessagesEnabled: false,
+      messageLimitsImageTextScanEnabled: true,
     });
     jest.spyOn(service, 'getSettings').mockResolvedValue(sourceSettings);
     const legacyBody = { ...chatSettingsSchema.parse({ antiSpamEnabled: false }) } as Record<
@@ -2250,6 +2268,7 @@ describe('AdminSettingsService chat rules', () => {
     >;
     delete legacyBody.profanitySensitivity;
     delete legacyBody.forwardedMessagesEnabled;
+    delete legacyBody.messageLimitsImageTextScanEnabled;
 
     await service.applySettingsToAllChats('chat-1', user as never, legacyBody);
 
@@ -2258,6 +2277,7 @@ describe('AdminSettingsService chat rules', () => {
         antiSpamEnabled: false,
         profanitySensitivity: 'STRICT',
         forwardedMessagesEnabled: false,
+        messageLimitsImageTextScanEnabled: true,
       }),
     );
   });

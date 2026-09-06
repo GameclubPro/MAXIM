@@ -189,23 +189,74 @@ jobs:
         if: matrix.component == 'api'
         env:
           IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
-        run: >-
-          docker run --rm --init --read-only
-          --cap-drop=ALL
-          --security-opt=no-new-privileges
-          --pids-limit=128
-          --memory=1g
-          --cpus=0.75
-          --tmpfs /tmp:rw,nosuid,size=64m,uid=1000,gid=1000
-          --env APP_SERVICE_NAME=api-media-analysis
-          --env APP_ROLE=moderation
-          --env COMMERCIAL_OCR_TESSERACT_CONCURRENCY=1
-          --env COMMERCIAL_OCR_TESSERACT_MAX_QUEUE=4
-          --env COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS=10000
-          --env OMP_THREAD_LIMIT=1
-          --entrypoint=node
-          "$IMAGE_REF"
-          apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js
+        run: |
+          sandbox_name=maxim-ocr-native-sandbox-ci
+          socket_volume=maxim-ocr-native-ipc-ci
+          socket_path=/run/maxim-ocr/native-ocr.sock
+          entrypoint=apps/api/dist/apps/api/src/moderation/commercial-ocr/native-ocr-sandbox.entrypoint.js
+          smoke=apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js
+          cleanup() {
+            docker rm -f "$sandbox_name" >/dev/null 2>&1 || true
+            docker volume rm "$socket_volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          cleanup
+          docker volume create "$socket_volume" >/dev/null
+          native_env=(
+            --env NODE_ENV=production
+            --env COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH="$socket_path"
+            --env PHOTO_DUPLICATE_MAX_BYTES=16777216
+            --env COMMERCIAL_OCR_MAX_INPUT_PIXELS=40000000
+            --env COMMERCIAL_OCR_MAX_OUTPUT_PIXELS=3000000
+            --env COMMERCIAL_OCR_MAX_SIDE=2000
+            --env COMMERCIAL_OCR_TESSERACT_BINARY=tesseract
+            --env COMMERCIAL_OCR_TESSERACT_CONCURRENCY=1
+            --env COMMERCIAL_OCR_TESSERACT_MAX_QUEUE=4
+            --env COMMERCIAL_OCR_TESSERACT_RECYCLE_AFTER_JOBS=250
+            --env COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS=10000
+            --env COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES=16777216
+            --env COMMERCIAL_OCR_TESSERACT_MAX_OUTPUT_BYTES=4194304
+            --env OMP_THREAD_LIMIT=1
+          )
+          sandbox_flags=(
+            --init
+            --read-only
+            --user 1000:1000
+            --network none
+            --label com.maxim.ocr-native-sandbox=true
+            --cap-drop ALL
+            --security-opt no-new-privileges
+            --pids-limit 128
+            --memory 1g
+            --cpus 1
+            --tmpfs /tmp:rw,nosuid,size=64m,uid=1000,gid=1000
+            --mount type=volume,source="$socket_volume",target=/run/maxim-ocr
+          )
+          docker run -d --name "$sandbox_name" \
+            "${sandbox_flags[@]}" "${native_env[@]}" \
+            --entrypoint node "$IMAGE_REF" "$entrypoint" >/dev/null
+          probe_ok=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --init --read-only --user 1000:1000 --network none \
+              --cap-drop ALL --security-opt no-new-privileges \
+              --mount type=volume,source="$socket_volume",target=/run/maxim-ocr,readonly \
+              "${native_env[@]}" --entrypoint node "$IMAGE_REF" "$entrypoint" --probe; then
+              probe_ok=1
+              break
+            fi
+            [[ "$attempt" -eq 30 ]] || sleep 1
+          done
+          [[ "$probe_ok" -eq 1 ]]
+          docker run --rm --init --read-only --user 1000:1000 --network none \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount type=volume,source="$socket_volume",target=/run/maxim-ocr,readonly \
+            "${native_env[@]}" \
+            --env APP_SERVICE_NAME=api-media-analysis --env APP_ROLE=moderation \
+            --entrypoint node "$IMAGE_REF" "$smoke"
+          docker inspect --format \
+            '{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.PidsLimit}}|{{.HostConfig.Memory}}|{{.HostConfig.NanoCpus}}|{{.Config.User}}|{{index .Config.Labels "com.maxim.ocr-native-sandbox"}}|{{index .Config.Labels "com.maxim.ocr-native-sandbox-capable"}}' \
+            "$sandbox_name" | grep -Fx 'none|true|128|1073741824|1000000000|1000:1000|true|true'
+          docker top "$sandbox_name" -eo comm | awk 'NR > 1 && $1 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'
       - name: Package immutable production image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

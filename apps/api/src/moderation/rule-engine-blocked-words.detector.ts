@@ -27,6 +27,7 @@ type ResolvedBlockedWordIndex = {
 };
 
 const BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES = 512;
+const BLOCKED_WORD_PATTERN_CACHE_MAX_ENTRIES = 4_096;
 const BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES = [
   'иями',
   'ями',
@@ -94,20 +95,32 @@ export class MessageLimitsBlockedWordDetector {
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
 
   detect(text: string, blockedWords: readonly string[]): BlockedWordDetection | null {
+    return this.detectMatches(text, blockedWords, true)[0] ?? null;
+  }
+
+  detectAll(text: string, blockedWords: readonly string[]): BlockedWordDetection[] {
+    return this.detectMatches(text, blockedWords, false);
+  }
+
+  private detectMatches(
+    text: string,
+    blockedWords: readonly string[],
+    stopAfterFirst: boolean,
+  ): BlockedWordDetection[] {
     if (!text || !Array.isArray(blockedWords) || blockedWords.length === 0) {
-      return null;
+      return [];
     }
 
     const blockedWordIndex = this.resolveMessageLimitsBlockedWordList(blockedWords);
     if (blockedWordIndex.words.length === 0) {
-      return null;
+      return [];
     }
 
     const normalizedText = this.normalizeMessageLimitsBlockedWordText(
       this.stripMessageLimitsBlockedWordIgnoredTokens(stripUrlsFromText(text)),
     );
     if (!normalizedText) {
-      return null;
+      return [];
     }
 
     const compactText = normalizedText.replace(/[^\p{L}\p{N}]+/gu, '');
@@ -120,7 +133,7 @@ export class MessageLimitsBlockedWordDetector {
     const tokenInflectionRoots =
       this.resolveMessageLimitsBlockedWordInflectionRoots(normalizedTokens);
     if (matchedPrefilterTokens.size === 0 && tokenInflectionRoots.size === 0) {
-      return null;
+      return [];
     }
 
     const candidateFlagsByBlockedWord = new Map<
@@ -164,9 +177,10 @@ export class MessageLimitsBlockedWordDetector {
     }
 
     if (candidateFlagsByBlockedWord.size === 0) {
-      return null;
+      return [];
     }
 
+    const detections: BlockedWordDetection[] = [];
     for (const blockedWord of blockedWordIndex.words) {
       const candidate = candidateFlagsByBlockedWord.get(blockedWord.blockedWord);
       if (!candidate) {
@@ -177,21 +191,28 @@ export class MessageLimitsBlockedWordDetector {
         candidate.prefilter &&
         this.getMessageLimitsBlockedWordPattern(blockedWord.blockedWord).test(normalizedText)
       ) {
-        return {
+        detections.push({
           blockedWord: blockedWord.blockedWord,
           matchKind: 'pattern',
-        };
+        });
+        if (stopAfterFirst) {
+          return detections;
+        }
+        continue;
       }
 
       if (candidate.inflection) {
-        return {
+        detections.push({
           blockedWord: blockedWord.blockedWord,
           matchKind: 'inflection',
-        };
+        });
+        if (stopAfterFirst) {
+          return detections;
+        }
       }
     }
 
-    return null;
+    return detections;
   }
 
   private normalizeMessageLimitsBlockedWordText(value: string): string {
@@ -278,6 +299,12 @@ export class MessageLimitsBlockedWordDetector {
 
     const pattern = this.buildMessageLimitsBlockedWordPattern(value);
     this.blockedWordPatternCache.set(value, pattern);
+    if (this.blockedWordPatternCache.size > BLOCKED_WORD_PATTERN_CACHE_MAX_ENTRIES) {
+      const oldestKey = this.blockedWordPatternCache.keys().next().value;
+      if (typeof oldestKey === 'string') {
+        this.blockedWordPatternCache.delete(oldestKey);
+      }
+    }
     return pattern;
   }
 

@@ -1,4 +1,8 @@
-import { parseNativeTesseractTsv } from './native-tesseract-tsv';
+import {
+  NATIVE_TESSERACT_MAX_WORD_LENGTH,
+  NATIVE_TESSERACT_MAX_WORDS,
+  parseNativeTesseractTsv,
+} from './native-tesseract-tsv';
 
 const HEADER =
   'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext';
@@ -86,6 +90,33 @@ describe('parseNativeTesseractTsv', () => {
 
     expect(parsed.text).toBe('A');
     expect(parsed.words[0]).toMatchObject({ text: 'A', start: 0, end: 1 });
+    expect(parsed.truncated).toBe(true);
+  });
+
+  it('emits the exact bounded word population and marks additional rows truncated', () => {
+    const rows = Array.from(
+      { length: NATIVE_TESSERACT_MAX_WORDS + 1 },
+      (_, index) => `5\t1\t1\t1\t1\t${index + 1}\t${index}\t0\t1\t1\t90\ta`,
+    );
+    const exact = parseNativeTesseractTsv(
+      [HEADER, ...rows.slice(0, NATIVE_TESSERACT_MAX_WORDS)].join('\n'),
+    );
+    const overflow = parseNativeTesseractTsv([HEADER, ...rows].join('\n'));
+
+    expect(exact.words).toHaveLength(NATIVE_TESSERACT_MAX_WORDS);
+    expect(exact.truncated).toBe(false);
+    expect(overflow.words).toHaveLength(NATIVE_TESSERACT_MAX_WORDS);
+    expect(overflow.truncated).toBe(true);
+  });
+
+  it('bounds a single OCR word before it crosses the UDS/cache contract', () => {
+    const parsed = parseNativeTesseractTsv(
+      `${HEADER}\n5\t1\t1\t1\t1\t1\t0\t0\t20\t20\t90\t${'a'.repeat(
+        NATIVE_TESSERACT_MAX_WORD_LENGTH + 1,
+      )}`,
+    );
+
+    expect(parsed.words[0]?.text).toHaveLength(NATIVE_TESSERACT_MAX_WORD_LENGTH);
     expect(parsed.truncated).toBe(true);
   });
 

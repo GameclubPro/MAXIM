@@ -49,8 +49,16 @@ export type CommercialOcrPass = {
   status: 'recognized' | 'no_text' | 'failed';
   text: string;
   confidencePermille: number;
+  words?: readonly CommercialOcrPassWord[];
   criticalEvidence?: readonly CommercialOcrCriticalEvidence[];
 };
+
+export type CommercialOcrPassWord = Readonly<{
+  text: string;
+  start: number;
+  end: number;
+  confidencePermille: number;
+}>;
 
 export type CommercialOcrImageDecisionInput = {
   imageIndex: number;

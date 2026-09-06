@@ -121,6 +121,23 @@ describe('CommercialOcrMetricsService', () => {
     });
   });
 
+  it('marks native CPU samples unavailable when OCR runs in the sidecar cgroup', async () => {
+    const service = new TestCommercialOcrMetricsService(
+      new ConfigService({
+        COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/native-ocr.sock',
+      }),
+    );
+    service.queueCpuReadings(1_000_000n, 2_000_000n);
+    const image = service.startImageCpuSample();
+
+    service.recordNativePass(image, 10);
+    service.finishImageCpuSample(image);
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      cpuSecondsPerImage: { observed: 0, sampled: 0, unavailable: 1 },
+    });
+  });
+
   it('exposes only fixed privacy-safe counters scoped to the behavior release', async () => {
     const service = new TestCommercialOcrMetricsService();
     service.recordCounter('analysis.complete.delete');

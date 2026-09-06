@@ -33,6 +33,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV HOME=/home/node
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt
+LABEL com.maxim.ocr-native-sandbox-capable="true"
 
 COPY infra/certs/russian-trusted-root-ca.pem /usr/local/share/ca-certificates/russian-trusted-root-ca.crt
 COPY infra/certs/russian-trusted-sub-ca.pem /usr/local/share/ca-certificates/russian-trusted-sub-ca.crt
@@ -63,7 +64,10 @@ COPY --from=build /app/packages/contracts/package.json ./packages/contracts/pack
 RUN node apps/api/dist/apps/api/src/scripts/commercial-ocr-native-build-manifest.js \
     --output /app/apps/api/commercial-ocr-native-build-manifest.json \
   && chown root:root /app/apps/api/commercial-ocr-native-build-manifest.json \
-  && chmod 0444 /app/apps/api/commercial-ocr-native-build-manifest.json
+  && chmod 0444 /app/apps/api/commercial-ocr-native-build-manifest.json \
+  && mkdir -p /run/maxim-ocr \
+  && chown node:node /run/maxim-ocr \
+  && chmod 0700 /run/maxim-ocr
 
 EXPOSE 3001
 USER node

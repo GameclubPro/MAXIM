@@ -1531,7 +1531,7 @@ const scenarioBehaviors = [
     name: 'chat-settings-stop-words',
     beforeShot: async (page) => {
       await page.locator('.settings-word-banlist__preset-grid').waitFor({ state: 'visible' });
-      await page.locator('.settings-word-banlist').scrollIntoViewIfNeeded();
+      await page.getByRole('checkbox', { name: 'Проверять изображения' }).scrollIntoViewIfNeeded();
       await page.waitForTimeout(350);
     },
   },

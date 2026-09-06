@@ -15,11 +15,19 @@ import {
   CommercialOcrDeleteGuardRejectedError,
 } from './commercial-ocr/commercial-ocr-delete-guard.service';
 import {
+  buildImageTextStopListBinding,
+  fingerprintImageTextStopListPolicy,
+  IMAGE_TEXT_STOP_LIST_ACTION_DEDUPE_PREFIX,
+  IMAGE_TEXT_STOP_LIST_MESSAGE_ACTION_RULE_CODE,
+} from './commercial-ocr/image-text-stop-list-binding';
+import { resolveExpectedCommercialOcrProductionBehaviorIdentity } from './commercial-ocr/commercial-ocr-behavior-identity';
+import {
   BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_SOURCE,
   BOT_MESSAGE_AUTO_DELETE_ACCESS_AMBIGUOUS_LEDGER_EVIDENCE_VERSION,
   BOT_MESSAGE_AUTO_DELETE_REPAIR_INTENT_AUDIT_ACTION,
   BOT_MESSAGE_EXPLICIT_OPERATOR_CLEANUP_INTENT_AUDIT_ACTION,
   BotMessageAutoDeleteExplicitCleanupPolicyConflictError,
+  ImageTextStopListDeleteIntentGuardRejectedError,
   ModerationDeleteIntentService,
   PhotoDuplicateDeleteIntentGuardRejectedError,
 } from './moderation-delete-intent.service';
@@ -84,6 +92,11 @@ type ServiceInternals = {
     },
   ): Promise<void>;
   isExecutionEnabledForIntent(intent: Record<string, unknown>): boolean;
+  assertImageTextStopListDeleteIntentStillActionable(
+    intent: Record<string, unknown>,
+    botId: string,
+  ): Promise<'not_applicable' | 'allowed' | 'absent'>;
+  isTerminalDeleteGuardRejection(error: unknown): boolean;
   hasRemoteSuccessMarker(intent: Record<string, unknown>): boolean;
   hasDeleteDispatchMarker(intent: Record<string, unknown>): boolean;
   hasDeleteMutationEvidence(intent: Record<string, unknown>): boolean;
@@ -110,6 +123,7 @@ function createService(
   linkHistoryDeleteGuardOverrides?: Record<string, unknown>,
   photoDuplicateRuntimePolicyOverrides?: Record<string, unknown>,
   commercialOcrDeleteGuardOverrides?: Record<string, unknown>,
+  participantImmunityOverrides?: Record<string, unknown>,
 ) {
   const config = {
     MODERATION_DELETE_INTENT_MODE: 'on',
@@ -203,6 +217,10 @@ function createService(
     assertIntentStillActionable: jest.fn().mockResolvedValue('allowed'),
     ...commercialOcrDeleteGuardOverrides,
   };
+  const participantImmunity = {
+    consumeForMessage: jest.fn().mockResolvedValue('not_granted'),
+    ...participantImmunityOverrides,
+  };
   const service = new ModerationDeleteIntentService(
     prisma as never,
     maxClient as never,
@@ -212,6 +230,7 @@ function createService(
     linkHistoryDeleteGuard as never,
     photoDuplicateRuntimePolicy as never,
     commercialOcrDeleteGuard as never,
+    participantImmunity as never,
   );
   return {
     service,
@@ -222,6 +241,7 @@ function createService(
     linkHistoryDeleteGuard,
     photoDuplicateRuntimePolicy,
     commercialOcrDeleteGuard,
+    participantImmunity,
   };
 }
 
@@ -373,6 +393,76 @@ function commercialOcrClaimedIntentInput() {
         userId,
         eventType: 'MESSAGE' as const,
         metadata: { commercialOcrBinding: binding },
+      },
+    },
+  };
+}
+
+function imageTextStopListClaimedIntentInput() {
+  const chatId = 'chat-1';
+  const messageId = 'message-image-1';
+  const userId = 'user-1';
+  const sourceMessageAt = new Date(Date.now() - 60_000);
+  const deadlineAt = new Date(Date.now() + 60_000);
+  const binding = buildImageTextStopListBinding({
+    ocrVersion: 'tesseract-rus-eng-v2',
+    nativeBehaviorFingerprintSha256:
+      resolveExpectedCommercialOcrProductionBehaviorIdentity(new ConfigService()).identity
+        .fingerprintSha256,
+    policyFingerprint: fingerprintImageTextStopListPolicy({
+      settings: {
+        messageLimitsImageTextScanEnabled: true,
+        messageLimitsBlockedWords: ['казино'],
+        messageLimitsBlockedDomains: [],
+        nightModeTimezone: 'Europe/Moscow',
+      },
+      domainAllowlist: [],
+    }),
+    ruleCode: 'MESSAGE_BLOCKED_WORD',
+    value: 'казино',
+    imageIndex: 0,
+    primaryConfidencePermille: 960,
+    confirmationConfidencePermille: 950,
+    senderId: userId,
+    sourceCreatedAt: sourceMessageAt.toISOString(),
+    deleteDeadlineAt: deadlineAt.toISOString(),
+    orderedPhotoIds: ['photo-1'],
+    caption: '',
+  });
+  return {
+    claim: {
+      dedupeKey: `${IMAGE_TEXT_STOP_LIST_ACTION_DEDUPE_PREFIX}${'a'.repeat(64)}`,
+      messageActionKey: buildMessageScopedModerationActionClaimKey(chatId, messageId),
+      chatId,
+      userId,
+      messageId,
+      ruleCode: IMAGE_TEXT_STOP_LIST_MESSAGE_ACTION_RULE_CODE,
+      updateType: 'message_action' as const,
+    },
+    intent: {
+      chatId,
+      messageId,
+      reasonKey: `image-text-stop-list-delete:${'a'.repeat(64)}`,
+      ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE,
+      subjectUserId: userId,
+      sourceMessageAt,
+      entityType: 'CHAT' as const,
+      messageAuthorKind: 'user' as const,
+      originBotId: 'bot-1',
+      routingPolicy: 'delete_capable' as const,
+      retryUntilAt: deadlineAt,
+      commercialOcrDeadlineAt: deadlineAt,
+      event: {
+        userId,
+        eventType: 'MESSAGE' as const,
+        score: 0.95,
+        metadata: {
+          source: 'image_text_ocr',
+          enforcementScope: 'delete_only',
+          matchedRuleCode: 'MESSAGE_BLOCKED_WORD',
+          blockedWord: 'казино',
+          imageTextStopListBinding: binding,
+        },
       },
     },
   };
@@ -1275,6 +1365,281 @@ describe('ModerationDeleteIntentService', () => {
     expect(txQueryRaw).toHaveBeenCalledTimes(2);
     expect(txExecuteRaw).toHaveBeenCalledTimes(1);
     expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('atomically persists and enqueues a guarded image stop-list intent in image-only rollout', async () => {
+    const input = imageTextStopListClaimedIntentInput();
+    const persisted = {
+      ...baseIntent,
+      messageId: input.intent.messageId,
+      sourceMessageAt: input.intent.sourceMessageAt,
+      retryUntilAt: input.intent.retryUntilAt,
+      commercialOcrDeadlineAt: input.intent.commercialOcrDeadlineAt,
+      commercialOcrGuardRequired: true,
+      imageTextStopListDeleteReason: true,
+      imageTextStopListDeleteOnly: true,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const claimCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        moderationViolationMessageClaim: { createMany: claimCreateMany },
+        $queryRaw: txQueryRaw,
+        $executeRaw: txExecuteRaw,
+      }),
+    );
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'shadow',
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+        IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+      },
+      { $transaction: transaction, $queryRaw: jest.fn().mockResolvedValue([persisted]) },
+    );
+
+    await expect(service.ensureIntentWithMessageActionClaim(input)).resolves.toMatchObject({
+      claim: 'claimed',
+      intent: { rollout: 'execute', status: 'PENDING' },
+    });
+
+    expect(claimCreateMany).toHaveBeenCalledTimes(1);
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: persisted.id },
+      expect.objectContaining({ priority: 1 }),
+    );
+  });
+
+  it('reauthorizes an image stop-list intent against current policy, author and exact photos', async () => {
+    const input = imageTextStopListClaimedIntentInput();
+    const metadata = input.intent.event.metadata;
+    const binding = metadata.imageTextStopListBinding;
+    const context = {
+      entityType: 'CHAT',
+      settings: {
+        messageLimitsImageTextScanEnabled: true,
+        messageLimitsBlockedWords: ['казино'],
+        messageLimitsBlockedDomains: [],
+        nightModeTimezone: 'Europe/Moscow',
+      },
+      admins: [],
+      domains: [],
+    };
+    const reason = { ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE, metadata };
+    const { service, participantImmunity, prisma } = createService(
+      {
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+        IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+      },
+      {
+        chat: { findUnique: jest.fn().mockResolvedValue(context) },
+        moderationDeleteIntentReason: {
+          findMany: jest.fn().mockResolvedValue([reason]),
+        },
+      },
+      {
+        getChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: input.intent.subjectUserId,
+          isAdmin: false,
+          isOwner: false,
+        }),
+        getExactMessageRow: jest.fn().mockResolvedValue({
+          id: input.intent.messageId,
+          timestamp: input.intent.sourceMessageAt.toISOString(),
+          recipient: { chat_id: input.intent.chatId },
+          sender: { user_id: input.intent.subjectUserId, is_bot: false },
+          body: {
+            mid: input.intent.messageId,
+            text: '',
+            attachments: [
+              {
+                type: 'image',
+                payload: { photo_id: 'photo-1', url: 'https://i.oneme.ru/photo-1' },
+              },
+            ],
+          },
+        }),
+      },
+      { isKnownBotUserId: jest.fn().mockReturnValue(false) },
+    );
+    const intent = {
+      ...baseIntent,
+      messageId: input.intent.messageId,
+      subjectUserId: input.intent.subjectUserId,
+      sourceMessageAt: input.intent.sourceMessageAt,
+      retryUntilAt: input.intent.retryUntilAt,
+      commercialOcrDeadlineAt: input.intent.commercialOcrDeadlineAt,
+      commercialOcrGuardRequired: true,
+      commercialOcrDeleteReason: true,
+      nonCommercialOcrDeleteReason: false,
+      imageTextStopListDeleteReason: true,
+      imageTextStopListDeleteOnly: true,
+    };
+    (service as any).expectedImageOcrNativeBehavior = {
+      complete: true,
+      fingerprintSha256: binding.nativeBehaviorFingerprintSha256,
+    };
+
+    await expect(
+      (service as unknown as ServiceInternals).assertImageTextStopListDeleteIntentStillActionable(
+        intent,
+        'bot-1',
+      ),
+    ).resolves.toBe('allowed');
+
+    expect(binding).toMatchObject({ value: 'казино', expectedImageCount: 1 });
+    expect(participantImmunity.consumeForMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'image_text_stop_list_delete' }),
+    );
+    expect((prisma as any).chat.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          domains: expect.objectContaining({
+            where: { OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: expect.any(Date) } }] },
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('rejects an image stop-list intent after its toggle is disabled', async () => {
+    const input = imageTextStopListClaimedIntentInput();
+    const { service } = createService(
+      { IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on' },
+      {
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            entityType: 'CHAT',
+            settings: {
+              messageLimitsImageTextScanEnabled: false,
+              messageLimitsBlockedWords: ['казино'],
+              messageLimitsBlockedDomains: [],
+              nightModeTimezone: 'Europe/Moscow',
+            },
+            admins: [],
+            domains: [],
+          }),
+        },
+        moderationDeleteIntentReason: {
+          findMany: jest.fn().mockResolvedValue([
+            { ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE, metadata: input.intent.event.metadata },
+          ]),
+        },
+      },
+    );
+    const intent = {
+      ...baseIntent,
+      messageId: input.intent.messageId,
+      subjectUserId: input.intent.subjectUserId,
+      sourceMessageAt: input.intent.sourceMessageAt,
+      retryUntilAt: input.intent.retryUntilAt,
+      commercialOcrDeadlineAt: input.intent.commercialOcrDeadlineAt,
+      commercialOcrGuardRequired: true,
+      commercialOcrDeleteReason: true,
+      nonCommercialOcrDeleteReason: false,
+      imageTextStopListDeleteReason: true,
+      imageTextStopListDeleteOnly: true,
+    };
+    (service as any).expectedImageOcrNativeBehavior = {
+      complete: true,
+      fingerprintSha256:
+        input.intent.event.metadata.imageTextStopListBinding.nativeBehaviorFingerprintSha256,
+    };
+
+    const error = await (
+      service as unknown as ServiceInternals
+    ).assertImageTextStopListDeleteIntentStillActionable(intent, 'bot-1').catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(ImageTextStopListDeleteIntentGuardRejectedError);
+    expect(error.code).toBe('image_text_stop_list_settings_disabled');
+    expect(
+      (service as unknown as ServiceInternals).isTerminalDeleteGuardRejection(error),
+    ).toBe(true);
+  });
+
+  it('preserves independently executable ordinary reasons beside an image sentinel', () => {
+    const imageOnly = createService({
+      MODERATION_DELETE_INTENT_MODE: 'shadow',
+      COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+      IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+    }).service as unknown as ServiceInternals;
+    expect(
+      imageOnly.isExecutionEnabledForIntent({
+        chatId: 'chat-1',
+        imageTextStopListDeleteReason: true,
+        imageTextStopListDeleteOnly: true,
+        nonCommercialOcrDeleteReason: false,
+        commercialOcrDeleteReason: true,
+        commercialOcrGuardRequired: true,
+      }),
+    ).toBe(true);
+
+    const ordinary = createService({
+      MODERATION_DELETE_INTENT_MODE: 'on',
+      COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+      IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'off',
+    }).service as unknown as ServiceInternals;
+    expect(
+      ordinary.isExecutionEnabledForIntent({
+        chatId: 'chat-1',
+        imageTextStopListDeleteReason: true,
+        imageTextStopListDeleteOnly: false,
+        nonCommercialOcrDeleteReason: true,
+        commercialOcrDeleteReason: true,
+        commercialOcrGuardRequired: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps image-only intents selectable by the DB sweeper under image rollout', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const { service } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'shadow',
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+        IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+      },
+      { $queryRaw: queryRaw },
+    );
+
+    await (service as unknown as ServiceInternals).selectDueIntentIds();
+
+    const sql = queryRaw.mock.calls[0]![0].strings?.join('?') ?? '';
+    expect(sql).toContain("image_text_reason.\"metadata\"->>'source'");
+    expect(sql).toContain('image_text_ocr');
+    expect(sql).toContain('delete_only');
+  });
+
+  it('does not manually reopen a terminal image-only OCR intent', async () => {
+    const terminal = {
+      ...baseIntent,
+      status: 'FAILED_TERMINAL' as const,
+      updatedAt: new Date(),
+      imageTextStopListDeleteReason: true,
+      imageTextStopListDeleteOnly: true,
+      commercialOcrDeleteReason: true,
+      standardCommercialOcrDeleteReason: false,
+      commercialOcrGuardRequired: true,
+      nonCommercialOcrDeleteReason: false,
+    };
+    const transaction = jest.fn();
+    const { service } = createService(
+      { IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on' },
+      { $queryRaw: jest.fn().mockResolvedValue([terminal]), $transaction: transaction },
+    );
+
+    await expect(
+      service.retryTerminalIntent(terminal.id, 'FAILED_TERMINAL', {
+        updatedAt: terminal.updatedAt,
+        attemptCount: terminal.attemptCount,
+      }),
+    ).resolves.toMatchObject({ reopened: false });
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('blocks a conflicting OCR action owner without creating an intent, reason or queue job', async () => {

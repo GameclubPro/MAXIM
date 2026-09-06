@@ -322,6 +322,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
   stopWords: [
     'messageLimitsBlockedWords',
     'messageLimitsBlockedDomains',
+    'messageLimitsImageTextScanEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnMessageText',
   ],

@@ -1,6 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import { COMMERCIAL_OCR_NATIVE_ORCHESTRATION } from './commercial-ocr-behavior-identity';
+import { signalNativeProcessGroup } from './native-process-group';
 import { probeNativeTesseract, runNativeTesseract } from './native-tesseract-runner';
 import type {
   NativeTesseractWorkerRecognizeRequest,
@@ -20,8 +21,7 @@ const maxImageBytes = readPositiveInteger(
 );
 const maxTimeoutMs = readPositiveInteger(process.env.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS, 10_000);
 const ompThreadLimit = readBoundedPositiveInteger(process.env.OMP_THREAD_LIMIT, 1, 8);
-const STARTUP_PROBE_TIMEOUT_MS =
-  COMMERCIAL_OCR_NATIVE_ORCHESTRATION.workerStartupProbeTimeoutMs;
+const STARTUP_PROBE_TIMEOUT_MS = COMMERCIAL_OCR_NATIVE_ORCHESTRATION.workerStartupProbeTimeoutMs;
 const STARTUP_PROBE_MAX_OUTPUT_BYTES =
   COMMERCIAL_OCR_NATIVE_ORCHESTRATION.workerStartupProbeMaxOutputBytes;
 
@@ -72,7 +72,9 @@ export function startNativeTesseractWorker(
 
   const killActiveNativeProcess = (): void => {
     try {
-      activeNativeProcess?.kill('SIGKILL');
+      if (activeNativeProcess) {
+        signalNativeProcessGroup(activeNativeProcess, 'SIGKILL');
+      }
     } catch {
       // Exiting the host worker remains the final containment boundary.
     }

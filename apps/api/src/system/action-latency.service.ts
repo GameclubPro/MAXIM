@@ -235,6 +235,14 @@ export class ActionLatencyService {
               },
             },
           },
+          {
+            reasons: {
+              some: {
+                ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE,
+                metadata: { path: ['source'], equals: 'image_text_ocr' },
+              },
+            },
+          },
         ],
       },
       select: {

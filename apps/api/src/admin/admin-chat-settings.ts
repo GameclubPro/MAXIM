@@ -848,6 +848,13 @@ export async function saveChatSettings(params: {
     forwardedMessagesEnabled: hasOwnSetting(params.body, 'forwardedMessagesEnabled')
       ? parsed.data.forwardedMessagesEnabled
       : (currentSettings?.forwardedMessagesEnabled ?? parsed.data.forwardedMessagesEnabled),
+    messageLimitsImageTextScanEnabled: hasOwnSetting(
+      params.body,
+      'messageLimitsImageTextScanEnabled',
+    )
+      ? parsed.data.messageLimitsImageTextScanEnabled
+      : (currentSettings?.messageLimitsImageTextScanEnabled ??
+        parsed.data.messageLimitsImageTextScanEnabled),
   };
   let normalizedSettings = normalizeChatSettings(
     settingsInput,

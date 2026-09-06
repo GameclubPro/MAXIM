@@ -770,6 +770,7 @@ export const chatSettingsSchema = z
       phoneNumbersAdminContactButtonUrl: botButtonUrlSchema,
       messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
       messageLimitsBlockedDomains: messageLimitsBlockedDomainsSchema,
+      messageLimitsImageTextScanEnabled: z.boolean().default(false),
       messageLimitsBotMessageEnabled: z.boolean().default(false),
       messageLimitsBotMessageText: botMessageTextSchema,
       messageLimitsWarnEnabled: z.boolean().default(false),

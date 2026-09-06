@@ -150,6 +150,31 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
         >
           {expanded ? (
             <div className="settings-section__collapse-inner">
+              <div className="settings-native-toggle">
+                <div className="settings-native-toggle__row">
+                  <div className="settings-native-toggle__title-wrap">
+                    <span className="settings-native-toggle__title">Проверять изображения</span>
+                  </div>
+
+                  <label className="settings-native-switch" aria-label="Проверять изображения">
+                    <input
+                      type="checkbox"
+                      checked={draft.messageLimitsImageTextScanEnabled}
+                      onChange={(event) =>
+                        setFieldValue('messageLimitsImageTextScanEnabled', event.target.checked)
+                      }
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+                <p className="settings-native-toggle__hint">
+                  Бот распознает текст и удалит фото при подтвержденном совпадении. Предупреждения,
+                  мут и бан применяются только к текстовым сообщениям.
+                </p>
+              </div>
+
               <div
                 className={cn(
                   'settings-word-banlist',

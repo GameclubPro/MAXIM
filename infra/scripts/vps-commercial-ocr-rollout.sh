@@ -94,6 +94,7 @@ CERTIFICATION_VERIFICATION_FILE=""
 APPLIED_CONTROL_EXPIRES_AT=""
 RUNTIME_INVENTORY_OWNED_UNREVIEWED_IDS=()
 RUNTIME_INVENTORY_AMBIGUOUS_COUNT=0
+EXPECTED_HAS_OCR_NATIVE_SANDBOX=0
 
 usage() {
   cat <<'USAGE'
@@ -395,6 +396,17 @@ resolve_release_fence() {
     fail "Could not derive the commercial OCR version from the active source."
     return 1
   fi
+  if maxim_topology_git_has_ocr_native_sandbox "$CHECKOUT_SHA"; then
+    EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
+    maxim_topology_require_ocr_native_sandbox_config COMPOSE_FILES
+  else
+    local sandbox_status=$?
+    if [[ "$sandbox_status" -ne 1 ]]; then
+      fail "Could not resolve the active native OCR sandbox topology."
+      return 1
+    fi
+    EXPECTED_HAS_OCR_NATIVE_SANDBOX=0
+  fi
   local image_fence deadline
   deadline=$((SECONDS + API_READINESS_TIMEOUT_SEC))
   if ! image_fence="$(
@@ -409,6 +421,8 @@ resolve_release_fence() {
     fail "The active API image does not match its manifest and protected revision labels."
     return 1
   fi
+  maxim_topology_require_ocr_native_sandbox_image_capability \
+    "$MANIFEST_IMAGE_ID" "$EXPECTED_HAS_OCR_NATIVE_SANDBOX"
   export MAXIM_API_IMAGE="$MANIFEST_IMAGE_REF"
   export COMMERCIAL_OCR_VERSION="$EXPECTED_OCR_VERSION"
 }
@@ -441,7 +455,7 @@ container_env_summary() {
 
 read_running_api_inventory() {
   local deadline="${1:-$((SECONDS + API_READINESS_TIMEOUT_SEC))}"
-  local running_ids_raw inventory_json expected_image_id inventory_summary
+  local running_ids_raw inventory_json expected_image_id expected_auxiliary inventory_summary
   local running_ids=()
   running_ids_raw="$(
     run_host_command_before_deadline "$deadline" "$READINESS_COMMAND_MAX_TIMEOUT_SEC" \
@@ -451,16 +465,22 @@ read_running_api_inventory() {
     mapfile -t running_ids <<<"$running_ids_raw"
   fi
   expected_image_id="${MANIFEST_IMAGE_ID:-none}"
+  expected_auxiliary=none
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    expected_auxiliary="$MAXIM_OCR_NATIVE_SANDBOX_SERVICE"
+  fi
   if [[ "${#running_ids[@]}" -eq 0 ]]; then
     inventory_json="$(
       printf '%s\n' '[]' |
-        node "$INVENTORY_HELPER" "$expected_image_id" "${MAXIM_PRODUCTION_API_SERVICES[@]}"
+        node "$INVENTORY_HELPER" "$expected_image_id" "$expected_auxiliary" \
+          "${MAXIM_PRODUCTION_API_SERVICES[@]}"
     )" || return 1
   else
     inventory_json="$(
       run_host_command_before_deadline "$deadline" "$READINESS_COMMAND_MAX_TIMEOUT_SEC" \
         docker inspect "${running_ids[@]}" |
-        node "$INVENTORY_HELPER" "$expected_image_id" "${MAXIM_PRODUCTION_API_SERVICES[@]}"
+        node "$INVENTORY_HELPER" "$expected_image_id" "$expected_auxiliary" \
+          "${MAXIM_PRODUCTION_API_SERVICES[@]}"
     )" || return 1
   fi
   inventory_summary="$(printf '%s' "$inventory_json" | node -e '
@@ -470,6 +490,9 @@ read_running_api_inventory() {
     const ambiguous = value?.ambiguousIds;
     if (
       !Array.isArray(owned) || !Array.isArray(ambiguous) ||
+      !Number.isSafeInteger(value?.expectedAuxiliaryCount) ||
+      !Number.isSafeInteger(value?.reviewedAuxiliaryCount) ||
+      value.reviewedAuxiliaryCount !== value.expectedAuxiliaryCount ||
       [...owned, ...ambiguous].some((id) => typeof id !== "string" || !/^[a-f0-9]{12,64}$/u.test(id))
     ) process.exit(2);
     process.stdout.write(String(ambiguous.length) + "\n" + owned.join("\n"));
@@ -617,6 +640,12 @@ verify_runtime() {
       return 1
     fi
   done
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" with-media || return 1
+  else
+    maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES || return 1
+  fi
   verify_no_unreviewed_running_api_containers "$deadline" || return 1
 }
 
@@ -827,7 +856,15 @@ recreate_all_roles() {
   for service in "${NON_MEDIA_SERVICES[@]}"; do
     recreate_service "$service" "$deadline" || return 1
   done
-  recreate_service "$MEDIA_SERVICE" "$deadline"
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" sandbox-only || return 1
+  fi
+  recreate_service "$MEDIA_SERVICE" "$deadline" || return 1
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" with-media
+  fi
 }
 
 stop_ocr_producers() {
@@ -977,7 +1014,15 @@ recreate_all_roles_best_effort() {
     fi
     recreate_recovery_service "$service" "$deadline" || failed=1
   done
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" sandbox-only || failed=1
+  fi
   recreate_recovery_service "$MEDIA_SERVICE" "$deadline" || failed=1
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" with-media || failed=1
+  fi
   return "$failed"
 }
 
@@ -1030,6 +1075,11 @@ all_api_roles_ready() {
   for pid in "${readiness_pids[@]}"; do
     if ! wait "$pid"; then failed=1; fi
   done
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]] &&
+    ! maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" with-media; then
+    failed=1
+  fi
   return "$failed"
 }
 
@@ -1054,6 +1104,23 @@ api_runtime_signature() {
     [[ "$restart_count" =~ ^[0-9]+$ ]] || return 1
     printf '%s|%s|%s\n' "$service" "${container_ids[0]}" "$restart_count"
   done
+  if [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    container_ids_raw="$(
+      run_host_command_before_deadline "$deadline" "$READINESS_COMMAND_MAX_TIMEOUT_SEC" \
+        docker compose "${COMPOSE_FILES[@]}" ps --status running -q \
+          "$MAXIM_OCR_NATIVE_SANDBOX_SERVICE" 2>/dev/null
+    )" || return 1
+    container_ids=()
+    [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
+    [[ "${#container_ids[@]}" -eq 1 ]] || return 1
+    restart_count="$(
+      run_host_command_before_deadline "$deadline" "$READINESS_COMMAND_MAX_TIMEOUT_SEC" \
+        docker inspect --format '{{.RestartCount}}' "${container_ids[0]}" 2>/dev/null
+    )" || return 1
+    [[ "$restart_count" =~ ^[0-9]+$ ]] || return 1
+    printf '%s|%s|%s\n' "$MAXIM_OCR_NATIVE_SANDBOX_SERVICE" \
+      "${container_ids[0]}" "$restart_count"
+  fi
 }
 
 wait_for_api_readiness() {
@@ -1148,6 +1215,8 @@ promote() {
   normalize_cohort
   validate_control_options
   resolve_release_fence
+  [[ "$EXPECTED_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]] ||
+    fail "Commercial OCR promotion requires the reviewed no-network native sandbox."
   verify_runtime shadow
   wait_for_api_readiness
   verify_runtime shadow
@@ -1216,6 +1285,9 @@ recover_shadow_command() {
     printf '%s\n' "Shadow recovery preflight passed; no state changed."
     return
   fi
+  # Recovery quiesces producers before trusting the release manifest. The sandbox is not an
+  # enforcement-capable role, so classify only an exactly isolated current-Compose auxiliary.
+  EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
   quiesce_recovery_services || true
   if ! resolve_release_fence; then
     if [[ "$RECOVERY_QUIESCENCE_PROVEN" -eq 1 ]]; then

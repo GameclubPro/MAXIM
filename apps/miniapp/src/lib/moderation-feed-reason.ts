@@ -31,6 +31,18 @@ const standaloneDeleteRuleCodes = new Set([
 
 export function resolveModerationFeedReason(violation: ModerationReasonSource): string {
   const metadata = readRecord(violation.metadata);
+  const imageTextRuleCode = readString(metadata?.matchedRuleCode);
+  if (
+    violation.ruleCode.trim().toUpperCase() === 'COMMERCIAL_OCR_DELETE' &&
+    metadata?.source === 'image_text_ocr' &&
+    (imageTextRuleCode === 'MESSAGE_BLOCKED_WORD' || imageTextRuleCode === 'MESSAGE_BLOCKED_DOMAIN')
+  ) {
+    const imageTextReason = resolveStructuredReason(imageTextRuleCode, metadata);
+    if (imageTextReason) {
+      return imageTextReason;
+    }
+  }
+
   const ruleCode = normalizeModerationRuleCode(violation.ruleCode);
 
   const structuredReason = resolveStructuredReason(ruleCode, metadata);

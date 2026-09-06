@@ -20,6 +20,7 @@ const WRITE_ENABLE_KEYS = [
   'stickerMessageCooldownEnabled',
   'russianProfanityFilterEnabled',
   'commercialAdsFilterEnabled',
+  'messageLimitsImageTextScanEnabled',
   'nightModeEnabled',
   'nightModeForceCloseEnabled',
 ] as const satisfies readonly (keyof ChatSettings)[];
@@ -167,6 +168,7 @@ export const CHAT_SETTINGS_BOT_CAPABILITY_SELECT = {
   deleteSpammersEnabled: true,
   messageLimitsBlockedWords: true,
   messageLimitsBlockedDomains: true,
+  messageLimitsImageTextScanEnabled: true,
   linkBotMessageEnabled: true,
   linkWarnEnabled: true,
   linkMuteEnabled: true,

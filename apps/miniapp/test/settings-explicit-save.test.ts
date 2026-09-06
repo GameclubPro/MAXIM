@@ -34,6 +34,10 @@ const settingsNightSectionSource = readFileSync(
   new URL('../src/pages/settings/settings-night-section.tsx', import.meta.url),
   'utf8',
 );
+const settingsStopWordsSectionSource = readFileSync(
+  new URL('../src/pages/settings/settings-stop-words-section.tsx', import.meta.url),
+  'utf8',
+);
 const nightModeTimeFieldsSource = readFileSync(
   new URL('../src/pages/settings/night-mode-time-fields.tsx', import.meta.url),
   'utf8',
@@ -177,6 +181,22 @@ test('night schedule validation is shown next to the time controls', () => {
   );
   assert.match(settingsNightSectionSource, /error=\{nightTimeError\}/u);
   assert.match(nightModeTimeFieldsSource, /label="Открывать в"[\s\S]*?error=\{error\}/u);
+});
+
+test('stop-word image scanning is an explicit persisted switch', () => {
+  assert.match(settingsStopWordsSectionSource, />Проверять изображения<\/span>/u);
+  assert.match(
+    settingsStopWordsSectionSource,
+    /checked=\{draft\.messageLimitsImageTextScanEnabled\}/u,
+  );
+  assert.match(
+    settingsStopWordsSectionSource,
+    /setFieldValue\('messageLimitsImageTextScanEnabled', event\.target\.checked\)/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /const stopWordsCardStatus =[\s\S]*?draft\?\.messageLimitsImageTextScanEnabled[\s\S]*?'Вкл'/u,
+  );
 });
 
 test('speech style opens on the selected radio and supports arrow navigation', () => {

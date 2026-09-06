@@ -11,10 +11,11 @@ import {
   buildCommercialOcrJobId,
   COMMERCIAL_OCR_DEFAULT_VERSION,
   COMMERCIAL_OCR_JOB_NAME,
-  COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
+  COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION,
   COMMERCIAL_OCR_QUEUE,
   validateCommercialOcrImageCount,
   validateCommercialOcrVersion,
+  isSupportedCommercialOcrJobSchemaVersion,
   type CommercialOcrJob,
 } from './commercial-ocr.queue';
 
@@ -145,7 +146,7 @@ export class CommercialOcrProcessor extends WorkerHost {
 
   private validateJobIdentity(job: Job<CommercialOcrJob>): CommercialOcrJobIdentity {
     const data = job.data;
-    if (data.schemaVersion !== COMMERCIAL_OCR_JOB_SCHEMA_VERSION) {
+    if (!isSupportedCommercialOcrJobSchemaVersion(data.schemaVersion)) {
       throw new Error('Commercial OCR job schema version is invalid');
     }
     const expectedJobId = buildCommercialOcrJobId({
@@ -154,6 +155,8 @@ export class CommercialOcrProcessor extends WorkerHost {
       sourceCreatedAt: data.sourceCreatedAt,
       ocrVersion: data.ocrVersion,
       schemaVersion: data.schemaVersion,
+      commercialScanRequested: data.commercialScanRequested,
+      imageTextScanRequested: data.imageTextScanRequested,
     });
     if (job.id !== expectedJobId || data.idempotencyKey !== expectedJobId) {
       throw new Error('Commercial OCR job identity is invalid');
@@ -171,11 +174,18 @@ export class CommercialOcrProcessor extends WorkerHost {
     if (jobOcrVersion !== COMMERCIAL_OCR_DEFAULT_VERSION) {
       throw new Error('Commercial OCR job version is stale');
     }
+    const validPurposeEnvelope =
+      data.schemaVersion === COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION
+        ? data.commercialScanRequested === undefined && data.imageTextScanRequested === undefined
+        : typeof data.commercialScanRequested === 'boolean' &&
+          typeof data.imageTextScanRequested === 'boolean' &&
+          (data.commercialScanRequested || data.imageTextScanRequested);
     if (
       typeof data.webhookEventId !== 'string' ||
       !data.webhookEventId.trim() ||
       data.webhookEventId.length > 512 ||
       typeof data.actionEligible !== 'boolean' ||
+      !validPurposeEnvelope ||
       data.sourceTag !== 'commercial-image-ocr' ||
       !isValidTimestamp(data.createdAt)
     ) {

@@ -182,6 +182,14 @@ describe('ActionLatencyService', () => {
                 },
               },
             },
+            {
+              reasons: {
+                some: {
+                  ruleCode: 'COMMERCIAL_OCR_DELETE',
+                  metadata: { path: ['source'], equals: 'image_text_ocr' },
+                },
+              },
+            },
           ],
         }),
         orderBy: [{ completedAt: 'desc' }, { id: 'desc' }],
@@ -218,6 +226,14 @@ describe('ActionLatencyService', () => {
                   ruleCode: {
                     notIn: ['BOT_MESSAGE_AUTO_DELETE', 'COMMERCIAL_OCR_DELETE'],
                   },
+                },
+              },
+            },
+            {
+              reasons: {
+                some: {
+                  ruleCode: 'COMMERCIAL_OCR_DELETE',
+                  metadata: { path: ['source'], equals: 'image_text_ocr' },
                 },
               },
             },

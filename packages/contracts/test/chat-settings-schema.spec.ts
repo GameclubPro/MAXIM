@@ -115,8 +115,16 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(settings.duplicatePhotoEnabled).toBe(false);
     expect(settings.duplicatePhotoMatchPreset).toBe('SAME_IMAGE');
     expect(settings.duplicatePhotoScope).toBe('SAME_AUTHOR');
+    expect(settings.messageLimitsImageTextScanEnabled).toBe(false);
     expect(settings.karavanStorefrontEnabled).toBe(true);
     expect(settings.profanitySensitivity).toBe('BALANCED');
+  });
+
+  it('accepts an explicit opt-in to scan image text against blocked rules', () => {
+    expect(
+      chatSettingsSchema.parse({ messageLimitsImageTextScanEnabled: true })
+        .messageLimitsImageTextScanEnabled,
+    ).toBe(true);
   });
 
   it('accepts supported profanity sensitivity levels and rejects unknown values', () => {

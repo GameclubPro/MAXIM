@@ -188,6 +188,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     phoneNumbersAdminContactButtonUrl: '',
     messageLimitsBlockedWords: [],
     messageLimitsBlockedDomains: [],
+    messageLimitsImageTextScanEnabled: false,
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,

@@ -748,6 +748,7 @@ export const SETTINGS_SECTION_KEYS = {
   stopWords: [
     'messageLimitsBlockedWords',
     'messageLimitsBlockedDomains',
+    'messageLimitsImageTextScanEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnMessageText',
   ],

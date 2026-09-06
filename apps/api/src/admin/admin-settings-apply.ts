@@ -124,7 +124,9 @@ export async function applySettingsToAllChats(params: {
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
   getCurrentSourceSettings?: () => Promise<Pick<
     ChatSettings,
-    'profanitySensitivity' | 'forwardedMessagesEnabled'
+    | 'profanitySensitivity'
+    | 'forwardedMessagesEnabled'
+    | 'messageLimitsImageTextScanEnabled'
   > | null>;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
@@ -134,8 +136,14 @@ export async function applySettingsToAllChats(params: {
   }
   const hasOwnProfanitySensitivity = hasOwnSetting(params.body, 'profanitySensitivity');
   const hasOwnForwardedMessagesEnabled = hasOwnSetting(params.body, 'forwardedMessagesEnabled');
+  const hasOwnMessageLimitsImageTextScanEnabled = hasOwnSetting(
+    params.body,
+    'messageLimitsImageTextScanEnabled',
+  );
   const currentSourceSettings =
-    (!hasOwnProfanitySensitivity || !hasOwnForwardedMessagesEnabled) &&
+    (!hasOwnProfanitySensitivity ||
+      !hasOwnForwardedMessagesEnabled ||
+      !hasOwnMessageLimitsImageTextScanEnabled) &&
     params.getCurrentSourceSettings
       ? await params.getCurrentSourceSettings()
       : null;
@@ -147,6 +155,12 @@ export async function applySettingsToAllChats(params: {
           : {}),
         ...(!hasOwnForwardedMessagesEnabled
           ? { forwardedMessagesEnabled: currentSourceSettings.forwardedMessagesEnabled }
+          : {}),
+        ...(!hasOwnMessageLimitsImageTextScanEnabled
+          ? {
+              messageLimitsImageTextScanEnabled:
+                currentSourceSettings.messageLimitsImageTextScanEnabled,
+            }
           : {}),
       }
     : parsed.data;

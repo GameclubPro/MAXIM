@@ -28,6 +28,7 @@ WEBHOOK_ROLLOUT_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
 RECOVERY_BASE_MANIFEST=""
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_OCR_NATIVE_SANDBOX=0
 TARGET_HAS_PUBLISHER=0
 TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
 TARGET_COMMERCIAL_OCR_VERSION=""
@@ -79,6 +80,7 @@ if ! TARGET_FULL_SHA="$(git rev-parse --verify --end-of-options "${ROLLBACK_REF}
   echo "Cannot resolve rollback ref to an exact commit: $ROLLBACK_REF" >&2
   exit 2
 fi
+maxim_topology_require_image_text_stop_list_delete_guard "$TARGET_FULL_SHA"
 if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
   TARGET_HAS_MEDIA_ANALYSIS=1
   if maxim_topology_git_has_commercial_ocr_raster_smoke "$TARGET_FULL_SHA"; then
@@ -91,6 +93,14 @@ else
   fi
   maxim_topology_remove_service SERVICES "$MAXIM_MEDIA_ANALYSIS_SERVICE"
   echo "Runtime rollback target predates $MAXIM_MEDIA_ANALYSIS_SERVICE; the role will be removed."
+fi
+if maxim_topology_git_has_ocr_native_sandbox "$TARGET_FULL_SHA"; then
+  TARGET_HAS_OCR_NATIVE_SANDBOX=1
+else
+  topology_status=$?
+  if [[ "$topology_status" -ne 1 ]]; then
+    exit "$topology_status"
+  fi
 fi
 if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_PUBLISHER_SERVICE"; then
   TARGET_HAS_PUBLISHER=1
@@ -423,6 +433,13 @@ record_runtime_rollback_release() {
         --smoke api-media-analysis-internal-ready
       )
     fi
+    if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+      args+=(
+        --smoke api-ocr-native-sandbox-isolation
+        --smoke api-ocr-native-sandbox-uds
+        --smoke api-ocr-native-sandbox-process-clean
+      )
+    fi
   fi
   if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
     args+=(--current-manifest-file "$RECOVERY_BASE_MANIFEST")
@@ -483,7 +500,8 @@ maxim_topology_prepare_commercial_ocr_target \
   "$TARGET_FULL_SHA" \
   COMPOSE_FILES \
   TARGET_HAS_MEDIA_ANALYSIS \
-  TARGET_COMMERCIAL_OCR_VERSION
+  TARGET_COMMERCIAL_OCR_VERSION \
+  TARGET_HAS_OCR_NATIVE_SANDBOX
 CURRENT_HEAD="$(git rev-parse --short HEAD)"
 TARGET_HEAD="${TARGET_FULL_SHA:0:12}"
 ROLLBACK_API_IMAGE="maxim-api:runtime-rollback-${TARGET_FULL_SHA}"
@@ -498,6 +516,8 @@ maxim_topology_refuse_dirty_api_build_inputs
 export MAXIM_API_IMAGE="$ROLLBACK_API_IMAGE"
 maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE" "$TARGET_FULL_SHA"
 ROLLBACK_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_API_IMAGE")"
+maxim_topology_require_ocr_native_sandbox_image_capability \
+  "$ROLLBACK_API_IMAGE_ID" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
 begin_runtime_rollback_transition
 ROLLBACK_RUNTIME_STARTED=1
 verify_inherited_static_components
@@ -513,6 +533,10 @@ if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
 else
   ROLLBACK_RUNTIME_STARTED=1
   maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
+fi
+if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 0 ]]; then
+  ROLLBACK_RUNTIME_STARTED=1
+  maxim_topology_remove_ocr_native_sandbox_container COMPOSE_FILES
 fi
 
 recreate_runtime_api_wave() {
@@ -539,7 +563,17 @@ fi
 non_webhook_services+=(api-admin api-ingress)
 recreate_runtime_api_wave non-webhook "${non_webhook_services[@]}"
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    maxim_topology_recreate_ocr_native_sandbox COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID"
+    maxim_topology_smoke_ocr_native_sandbox_uds \
+      COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID" prestart
+  fi
   recreate_runtime_api_wave media-analysis "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID" with-media
+  fi
 fi
 recreate_runtime_api_wave moderation "${MAXIM_WEBHOOK_MODERATION_SERVICES[@]}"
 recreate_runtime_api_wave enqueue api-enqueue
@@ -556,6 +590,12 @@ if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     COMPOSE_FILES \
     "$TARGET_COMMERCIAL_OCR_VERSION" \
     "$publisher_policy"
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$ROLLBACK_API_IMAGE_ID" with-media
+  else
+    maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES
+  fi
 fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
@@ -575,9 +615,13 @@ strict_smoke_json_ok "http://127.0.0.1:3002/api/health/ready"
 strict_smoke_json_ok "$PUBLIC_HEALTH_URL/api/health/live"
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
-    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+    if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
+    else
+      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required legacy
+    fi
   else
-    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present legacy
   fi
 fi
 record_runtime_rollback_release

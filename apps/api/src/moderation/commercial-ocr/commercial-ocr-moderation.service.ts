@@ -1,5 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 
@@ -20,6 +20,7 @@ import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
+import { createAllowlistLinkMatcher } from '../rule-engine-link-detector';
 import {
   extractLogicalPhotoAlbumResult,
   type LogicalPhotoAlbum,
@@ -41,11 +42,29 @@ import {
   type CommercialOcrDeleteSource,
   type CommercialOcrExactMessageSource,
 } from './commercial-ocr-delete-guard.service';
-import { COMMERCIAL_OCR_JOB_SCHEMA_VERSION, type CommercialOcrJob } from './commercial-ocr.queue';
+import {
+  isSupportedCommercialOcrJobSchemaVersion,
+  resolveCommercialOcrJobPurposes,
+  type CommercialOcrJob,
+} from './commercial-ocr.queue';
 import { CommercialOcrMetricsService } from './commercial-ocr-metrics.service';
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr-runtime-policy.service';
 import { resolveCommercialOcrRuntimePolicy } from './commercial-ocr.runtime';
 import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
+import {
+  IMAGE_TEXT_STOP_LIST_POLICY_VERSION,
+  type ImageTextStopListDecision,
+} from './image-text-stop-list-decision';
+import {
+  buildImageTextStopListBinding,
+  fingerprintImageTextStopListPolicy,
+  IMAGE_TEXT_STOP_LIST_ACTION_DEDUPE_PREFIX,
+  IMAGE_TEXT_STOP_LIST_MESSAGE_ACTION_RULE_CODE,
+  IMAGE_TEXT_STOP_LIST_PARTICIPANT_IMMUNITY_SCOPE,
+  type ImageTextStopListBinding,
+} from './image-text-stop-list-binding';
+import { resolveImageTextStopListOcrRuntimePolicy } from './image-text-stop-list.runtime';
+import { NativeTesseractOcrAdapter } from './native-tesseract-ocr.adapter';
 
 const GOVERNOR_COMPONENT = 'commercial-image-ocr';
 const GOVERNOR_SOURCE_TAG = 'commercial_image_ocr';
@@ -64,6 +83,7 @@ type CommercialOcrJobContext = {
   entityType: ChatEntityType;
   settings: ChatSettings;
   localAdminUserIds: string[];
+  domainAllowlist: string[];
 };
 
 type SourceEnvelope = {
@@ -103,6 +123,7 @@ export class CommercialOcrModerationService {
     private readonly runtimePolicy: CommercialOcrRuntimePolicyService,
     private readonly configService: ConfigService,
     private readonly metrics: CommercialOcrMetricsService,
+    @Optional() private readonly nativeOcr?: NativeTesseractOcrAdapter,
   ) {
     this.admissionTombstoneTtlMs = resolveCommercialOcrReservationTtlMs(configService);
   }
@@ -115,7 +136,7 @@ export class CommercialOcrModerationService {
     if (deadlineExpired(deadlineAtMs)) {
       return { kind: 'completed' };
     }
-    if (job.schemaVersion !== COMMERCIAL_OCR_JOB_SCHEMA_VERSION) {
+    if (!isSupportedCommercialOcrJobSchemaVersion(job.schemaVersion)) {
       return { kind: 'completed' };
     }
 
@@ -127,7 +148,15 @@ export class CommercialOcrModerationService {
       chatId: job.chatId,
       configService: this.configService,
     });
-    if (!runtime.process) {
+    const imageTextRuntime = resolveImageTextStopListOcrRuntimePolicy({
+      configService: this.configService,
+      sandboxBoundaryVerified: false,
+    });
+    const purposes = resolveCommercialOcrJobPurposes(job);
+    if (
+      !(purposes.commercial && runtime.process) &&
+      !(purposes.imageTextStopList && imageTextRuntime.process)
+    ) {
       return { kind: 'completed' };
     }
 
@@ -241,16 +270,27 @@ export class CommercialOcrModerationService {
     }
 
     const context = await this.loadJobContext(job.chatId);
+    const purposes = resolveCommercialOcrJobPurposes(job);
+    const imageTextStopListEnabled =
+      purposes.imageTextStopList && isImageTextStopListEnabled(context?.settings);
     if (
       !context ||
       context.entityType !== ChatEntityType.CHAT ||
-      !context.settings.commercialAdsFilterEnabled ||
+      (!(purposes.commercial && context.settings.commercialAdsFilterEnabled) &&
+        !imageTextStopListEnabled) ||
       context.localAdminUserIds.includes(source.album.senderId)
     ) {
       return { kind: 'completed' };
     }
-    const initialSettingsFingerprint = fingerprintSettingsFailOpen(context.settings);
-    if (!initialSettingsFingerprint) {
+    const initialSettingsFingerprint =
+      purposes.commercial && context.settings.commercialAdsFilterEnabled
+        ? fingerprintSettingsFailOpen(context.settings)
+        : null;
+    if (
+      purposes.commercial &&
+      context.settings.commercialAdsFilterEnabled &&
+      !initialSettingsFingerprint
+    ) {
       return { kind: 'completed' };
     }
     if (
@@ -271,6 +311,16 @@ export class CommercialOcrModerationService {
       ocrVersion: job.ocrVersion,
       deadlineAtMs,
       authorizeStage: () => this.authorizeHeavyStage(),
+      commercialScanEnabled: purposes.commercial && context.settings.commercialAdsFilterEnabled,
+      imageTextStopListScanEnabled:
+        imageTextStopListEnabled &&
+        resolveImageTextStopListOcrRuntimePolicy({
+          configService: this.configService,
+          sandboxBoundaryVerified: false,
+        }).process,
+      ...(context.domainAllowlist.length > 0
+        ? { isLinkAllowlisted: createAllowlistLinkMatcher(context.domainAllowlist) }
+        : {}),
     });
     if (analysis.kind === 'defer') {
       this.metrics.recordCounter(`analysis.defer.${analysis.reason}`);
@@ -313,6 +363,32 @@ export class CommercialOcrModerationService {
       return { kind: 'completed' };
     }
 
+    const imageTextStopListDecision =
+      analysis.imageTextStopListDecision ?? ({ kind: 'no_action' } as const);
+    if (imageTextStopListEnabled) {
+      this.metrics.recordCounter(
+        imageTextStopListDecision.kind === 'match'
+          ? 'image_text_stop_list.complete.match'
+          : 'image_text_stop_list.complete.no_action',
+      );
+    }
+    if (imageTextStopListEnabled && imageTextStopListDecision.kind === 'match') {
+      // A confirmed explicit stop-list match owns the single message action. If its stricter
+      // authorization is suppressed, the independently completed commercial decision may proceed.
+      const actionOwned = await this.processImageTextStopListMatch({
+        job,
+        jobId,
+        source,
+        initialContext: context,
+        decision: imageTextStopListDecision,
+        admissionActionEligible,
+        deadlineAtMs,
+      });
+      if (actionOwned) {
+        return { kind: 'completed' };
+      }
+    }
+
     this.metrics.recordCounter(
       analysis.decision.action === 'DELETE'
         ? 'analysis.complete.delete'
@@ -331,7 +407,11 @@ export class CommercialOcrModerationService {
       },
       'Commercial OCR decision completed',
     );
-    if (analysis.decision.action !== 'DELETE') {
+    if (
+      !context.settings.commercialAdsFilterEnabled ||
+      !initialSettingsFingerprint ||
+      analysis.decision.action !== 'DELETE'
+    ) {
       return { kind: 'completed' };
     }
     if (source.persistedDownloadUrlFallbackIndexes.length > 0) {
@@ -581,6 +661,274 @@ export class CommercialOcrModerationService {
     };
   }
 
+  private async processImageTextStopListMatch(params: {
+    job: CommercialOcrJob;
+    jobId: string;
+    source: SourceEnvelope;
+    initialContext: CommercialOcrJobContext;
+    decision: Extract<ImageTextStopListDecision, { kind: 'match' }>;
+    admissionActionEligible: boolean;
+    deadlineAtMs: number;
+  }): Promise<boolean> {
+    const runtime = resolveImageTextStopListOcrRuntimePolicy({
+      configService: this.configService,
+      sandboxBoundaryVerified: this.nativeOcr?.isSandboxBoundaryVerified?.() === true,
+    });
+    if (
+      !runtime.enforce ||
+      !params.admissionActionEligible ||
+      params.source.persistedDownloadUrlFallbackIndexes.includes(params.decision.imageIndex) ||
+      deadlineExpired(params.deadlineAtMs)
+    ) {
+      this.metrics.recordCounter('image_text_stop_list.enforcement.suppressed');
+      return false;
+    }
+
+    const initialPolicyFingerprint = fingerprintImageTextStopListPolicy({
+      settings: params.initialContext.settings,
+      domainAllowlist: params.initialContext.domainAllowlist,
+    });
+    const authorization = await this.resolveFinalImageTextStopListAuthorization({
+      ...params,
+      initialPolicyFingerprint,
+    });
+    if (!authorization) {
+      this.metrics.recordCounter('image_text_stop_list.enforcement.suppressed');
+      return false;
+    }
+
+    if (
+      await this.consumeImageTextStopListParticipantImmunityFailOpen({
+        chatId: params.job.chatId,
+        userId: authorization.exactSource.senderId,
+        messageId: params.job.messageId,
+        nightModeTimezone: authorization.context.settings.nightModeTimezone,
+      })
+    ) {
+      this.metrics.recordCounter('image_text_stop_list.enforcement.suppressed');
+      return false;
+    }
+
+    const commitContext = await this.loadJobContext(params.job.chatId);
+    const commitRuntime = resolveImageTextStopListOcrRuntimePolicy({
+      configService: this.configService,
+      sandboxBoundaryVerified: this.nativeOcr?.isSandboxBoundaryVerified?.() === true,
+    });
+    if (
+      !commitRuntime.enforce ||
+      !commitContext ||
+      !isImageTextStopListEnabled(commitContext.settings) ||
+      fingerprintImageTextStopListPolicy({
+        settings: commitContext.settings,
+        domainAllowlist: commitContext.domainAllowlist,
+      }) !== initialPolicyFingerprint ||
+      commitContext.localAdminUserIds.includes(authorization.exactSource.senderId) ||
+      deadlineExpired(params.deadlineAtMs)
+    ) {
+      this.metrics.recordCounter('image_text_stop_list.enforcement.suppressed');
+      return false;
+    }
+    const nativeBehavior = this.nativeOcr?.getRuntimeStatus().behaviorIdentity;
+    if (!nativeBehavior?.verified || !/^[a-f0-9]{64}$/u.test(nativeBehavior.fingerprintSha256)) {
+      this.metrics.recordCounter('image_text_stop_list.enforcement.suppressed');
+      return false;
+    }
+
+    const binding = buildImageTextStopListBinding({
+      ocrVersion: params.job.ocrVersion,
+      nativeBehaviorFingerprintSha256: nativeBehavior.fingerprintSha256,
+      policyFingerprint: initialPolicyFingerprint,
+      ruleCode: params.decision.ruleCode,
+      value: params.decision.value,
+      imageIndex: params.decision.imageIndex,
+      primaryConfidencePermille: params.decision.primaryConfidencePermille,
+      confirmationConfidencePermille: params.decision.confirmationConfidencePermille,
+      senderId: authorization.exactSource.senderId,
+      sourceCreatedAt: authorization.exactSource.sourceCreatedAt,
+      deleteDeadlineAt: new Date(params.deadlineAtMs).toISOString(),
+      orderedPhotoIds: authorization.exactSource.orderedPhotoIds,
+      caption: authorization.exactSource.caption,
+    });
+    const persisted = await this.persistImageTextStopListDeleteAction({
+      job: params.job,
+      jobId: params.jobId,
+      decision: params.decision,
+      binding,
+      senderId: authorization.exactSource.senderId,
+      originBotId: authorization.originBotId,
+      deadlineAtMs: params.deadlineAtMs,
+    });
+    if (!persisted) {
+      this.metrics.recordCounter('image_text_stop_list.enforcement.suppressed');
+      return false;
+    }
+    this.metrics.recordCounter('image_text_stop_list.enforcement.intent.requested');
+    return true;
+  }
+
+  private async resolveFinalImageTextStopListAuthorization(params: {
+    job: CommercialOcrJob;
+    jobId: string;
+    source: SourceEnvelope;
+    initialContext: CommercialOcrJobContext;
+    decision: Extract<ImageTextStopListDecision, { kind: 'match' }>;
+    initialPolicyFingerprint: string;
+    deadlineAtMs: number;
+  }): Promise<{
+    context: CommercialOcrJobContext;
+    exactSource: CommercialOcrDeleteSource;
+    originBotId: string;
+  } | null> {
+    if (deadlineExpired(params.deadlineAtMs)) {
+      return null;
+    }
+    const admission = await this.admissionStore.resolveState(params.jobId);
+    if (admission.kind !== 'available' || admission.state !== 'actionable') {
+      return null;
+    }
+
+    const context = await this.loadJobContext(params.job.chatId);
+    if (
+      !context ||
+      context.entityType !== ChatEntityType.CHAT ||
+      !isImageTextStopListEnabled(context.settings) ||
+      fingerprintImageTextStopListPolicy({
+        settings: context.settings,
+        domainAllowlist: context.domainAllowlist,
+      }) !== params.initialPolicyFingerprint ||
+      context.localAdminUserIds.includes(params.source.album.senderId) ||
+      !decisionStillConfigured(params.decision, context.settings)
+    ) {
+      return null;
+    }
+    if (
+      !(await this.isFreshNonAdmin(
+        params.job.chatId,
+        params.source.album.senderId,
+        params.source.originBotId,
+        params.deadlineAtMs,
+      ))
+    ) {
+      return null;
+    }
+
+    const exact = await this.loadExactSource(
+      params.job,
+      params.source.originBotId,
+      params.deadlineAtMs,
+    );
+    if (
+      !exact ||
+      exact.authorKind !== 'user' ||
+      !sameAlbumSource(params.source.album, exact.source, params.job) ||
+      !sameExactSource(exact.source, params.source.exactSource)
+    ) {
+      return null;
+    }
+    const finalAdmission = await this.admissionStore.resolveState(params.jobId);
+    if (
+      finalAdmission.kind !== 'available' ||
+      finalAdmission.state !== 'actionable' ||
+      deadlineExpired(params.deadlineAtMs)
+    ) {
+      return null;
+    }
+    return {
+      context,
+      exactSource: exact.source,
+      originBotId: params.source.originBotId,
+    };
+  }
+
+  private async consumeImageTextStopListParticipantImmunityFailOpen(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    nightModeTimezone: string | null;
+  }): Promise<boolean> {
+    try {
+      return (
+        (await this.participantImmunity.consumeForMessage({
+          ...params,
+          scope: IMAGE_TEXT_STOP_LIST_PARTICIPANT_IMMUNITY_SCOPE,
+        })) === 'granted'
+      );
+    } catch {
+      this.logger.warn(
+        'Image text stop-list participant immunity check failed; enforcement remains fail-open',
+      );
+      return true;
+    }
+  }
+
+  private async persistImageTextStopListDeleteAction(params: {
+    job: CommercialOcrJob;
+    jobId: string;
+    decision: Extract<ImageTextStopListDecision, { kind: 'match' }>;
+    binding: ImageTextStopListBinding;
+    senderId: string;
+    originBotId: string;
+    deadlineAtMs: number;
+  }): Promise<boolean> {
+    const deleteRuleCode = COMMERCIAL_OCR_DELETE_RULE_CODE;
+    const metadata = {
+      source: 'image_text_ocr',
+      enforcementScope: 'delete_only',
+      matchedRuleCode: params.decision.ruleCode,
+      policyVersion: IMAGE_TEXT_STOP_LIST_POLICY_VERSION,
+      imageIndex: params.decision.imageIndex,
+      ocrVersion: params.job.ocrVersion,
+      primaryConfidencePermille: params.decision.primaryConfidencePermille,
+      confirmationConfidencePermille: params.decision.confirmationConfidencePermille,
+      imageTextStopListBinding: params.binding,
+      ...(params.decision.ruleCode === 'MESSAGE_BLOCKED_WORD'
+        ? { blockedWord: params.decision.value }
+        : { blockedDomain: params.decision.value }),
+    } as const;
+    const actionDigest = createHash('sha256')
+      .update(JSON.stringify([params.jobId, deleteRuleCode, params.binding]))
+      .digest('hex');
+    const result = await this.moderationDeleteIntents.ensureIntentWithMessageActionClaim({
+      claim: {
+        dedupeKey: `${IMAGE_TEXT_STOP_LIST_ACTION_DEDUPE_PREFIX}${actionDigest}`,
+        messageActionKey: buildMessageScopedModerationActionClaimKey(
+          params.job.chatId,
+          params.job.messageId,
+        ),
+        chatId: params.job.chatId,
+        userId: params.senderId,
+        messageId: params.job.messageId,
+        ruleCode: IMAGE_TEXT_STOP_LIST_MESSAGE_ACTION_RULE_CODE,
+        updateType: 'message_action',
+      },
+      intent: {
+        chatId: params.job.chatId,
+        messageId: params.job.messageId,
+        reasonKey: `image-text-stop-list-delete:${actionDigest}`,
+        ruleCode: deleteRuleCode,
+        subjectUserId: params.senderId,
+        sourceMessageAt: params.job.sourceCreatedAt,
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: params.originBotId,
+        routingPolicy: 'delete_capable',
+        retryUntilAt: new Date(params.deadlineAtMs),
+        commercialOcrDeadlineAt: new Date(params.deadlineAtMs),
+        event: {
+          userId: params.senderId,
+          eventType: 'MESSAGE',
+          score:
+            Math.min(
+              params.decision.primaryConfidencePermille,
+              params.decision.confirmationConfidencePermille,
+            ) / 1_000,
+          metadata,
+        },
+      },
+    });
+    return result.claim !== 'blocked' && result.intent?.rollout === 'execute';
+  }
+
   // FLAG: OCR job identity is message-scoped, so BullMQ may retain a mirror receipt in the job
   // envelope. Follow it only through the completed semantic claim and a clean processed owner.
   private async loadCompletedSemanticOwner(
@@ -784,6 +1132,12 @@ export class CommercialOcrModerationService {
         entityType: true,
         settings: true,
         admins: { select: { userId: true } },
+        domains: {
+          where: {
+            OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
+          },
+          select: { domain: true },
+        },
       },
     });
     if (!chat?.settings) {
@@ -793,6 +1147,7 @@ export class CommercialOcrModerationService {
       entityType: chat.entityType,
       settings: chat.settings,
       localAdminUserIds: chat.admins.map((admin) => admin.userId),
+      domainAllowlist: chat.domains.map((entry) => entry.domain),
     };
   }
 
@@ -1004,6 +1359,25 @@ function sameCommercialPolicy(left: ChatSettings, right: ChatSettings): boolean 
     left.commercialAdsWarnThreshold === right.commercialAdsWarnThreshold &&
     left.commercialAdsDeleteThreshold === right.commercialAdsDeleteThreshold
   );
+}
+
+function isImageTextStopListEnabled(settings: ChatSettings | null | undefined): boolean {
+  return Boolean(
+    settings?.messageLimitsImageTextScanEnabled &&
+    (settings.messageLimitsBlockedWords.length > 0 ||
+      settings.messageLimitsBlockedDomains.length > 0),
+  );
+}
+
+function decisionStillConfigured(
+  decision: Extract<ImageTextStopListDecision, { kind: 'match' }>,
+  settings: ChatSettings,
+): boolean {
+  const configured =
+    decision.ruleCode === 'MESSAGE_BLOCKED_WORD'
+      ? settings.messageLimitsBlockedWords
+      : settings.messageLimitsBlockedDomains;
+  return configured.includes(decision.value);
 }
 
 function isBotOrServiceAuthored(update: MaxUpdate): boolean {

@@ -1,70 +1,62 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import sharp, { type Metadata, type OutputInfo } from 'sharp';
 
-const DEFAULT_MAX_INPUT_PIXELS = 40_000_000;
-const DEFAULT_MAX_OUTPUT_PIXELS = 3_000_000;
-const DEFAULT_MAX_SIDE = 2_000;
-const CONFIRMATION_THRESHOLD = 160;
+import {
+  NativeOcrSandboxClient,
+  NativeOcrSandboxImageRejectedError,
+  NativeOcrSandboxUnavailableError,
+} from './native-ocr-sandbox.client';
+import {
+  COMMERCIAL_OCR_SHARP_PROCESSING_TIMEOUT_SECONDS,
+  CommercialOcrImageRejectedError,
+  resolveCommercialOcrPreprocessLimits,
+  type CommercialOcrPassName,
+  type CommercialOcrPreparedImage,
+} from './commercial-ocr-preprocess-config';
+import { NATIVE_OCR_SANDBOX_IPC_GRACE_MS } from './native-ocr-sandbox.protocol';
 
-export const COMMERCIAL_OCR_SHARP_CONCURRENCY = 1;
-export const COMMERCIAL_OCR_SHARP_PROCESSING_TIMEOUT_SECONDS = 5;
+const MINIMUM_SHARP_EXECUTION_BUDGET_MS = 1_000;
 
-export const COMMERCIAL_OCR_PREPROCESS_PROFILES = Object.freeze({
-  primary: 'gray-bounded-v3',
-  confirmation: 'normalized-threshold160-v3',
-} as const);
+export {
+  COMMERCIAL_OCR_DEFAULT_PREPROCESS_LIMITS,
+  COMMERCIAL_OCR_PREPROCESS_PROFILES,
+  COMMERCIAL_OCR_SHARP_CONCURRENCY,
+  COMMERCIAL_OCR_SHARP_PROCESSING_TIMEOUT_SECONDS,
+  CommercialOcrImageRejectedError,
+  resolveCommercialOcrPreprocessCacheProfile,
+  resolveCommercialOcrPreprocessLimits,
+  type CommercialOcrPassName,
+  type CommercialOcrPreparedImage,
+  type CommercialOcrPreprocessConfigReader,
+  type CommercialOcrPreprocessLimits,
+} from './commercial-ocr-preprocess-config';
 
-export type CommercialOcrPassName = keyof typeof COMMERCIAL_OCR_PREPROCESS_PROFILES;
+export class CommercialOcrPreprocessUnavailableError extends Error {
+  readonly retryable = true;
 
-export type CommercialOcrPreprocessLimits = Readonly<{
-  maxInputPixels: number;
-  maxOutputPixels: number;
-  maxSide: number;
-}>;
-
-export interface CommercialOcrPreprocessConfigReader {
-  get(propertyPath: string): unknown;
-}
-
-export const COMMERCIAL_OCR_DEFAULT_PREPROCESS_LIMITS: CommercialOcrPreprocessLimits =
-  Object.freeze({
-    maxInputPixels: DEFAULT_MAX_INPUT_PIXELS,
-    maxOutputPixels: DEFAULT_MAX_OUTPUT_PIXELS,
-    maxSide: DEFAULT_MAX_SIDE,
-  });
-
-export type CommercialOcrPreparedImage = {
-  bytes: Buffer;
-  width: number;
-  height: number;
-};
-
-export class CommercialOcrImageRejectedError extends Error {
-  constructor(
-    readonly reason:
-      | 'invalid_image'
-      | 'too_many_pixels'
-      | 'animated_image'
-      | 'processing_timeout',
-  ) {
-    super(`Commercial OCR image rejected: ${reason}`);
-    this.name = 'CommercialOcrImageRejectedError';
+  constructor() {
+    super('Commercial OCR native preprocess boundary is unavailable');
+    this.name = 'CommercialOcrPreprocessUnavailableError';
   }
 }
 
 @Injectable()
-export class CommercialOcrPreprocessor {
-  private readonly maxInputPixels: number;
-  private readonly maxOutputPixels: number;
-  private readonly maxSide: number;
+export class CommercialOcrPreprocessor implements OnModuleDestroy {
+  private readonly sandbox: NativeOcrSandboxClient;
+  private readonly localEnabled: boolean;
+  private localPromise: Promise<
+    import('./native-ocr-image-preprocessor').NativeOcrImagePreprocessor
+  > | null = null;
 
   constructor(configService: ConfigService) {
     const limits = resolveCommercialOcrPreprocessLimits(configService);
-    this.maxInputPixels = limits.maxInputPixels;
-    this.maxOutputPixels = limits.maxOutputPixels;
-    this.maxSide = limits.maxSide;
-    sharp.concurrency(COMMERCIAL_OCR_SHARP_CONCURRENCY);
+    this.sandbox = new NativeOcrSandboxClient(configService);
+    this.localEnabled = !this.sandbox.isConfigured() && !this.sandbox.isRequired();
+    if (this.localEnabled) {
+      this.localPromise = import('./native-ocr-image-preprocessor').then(
+        ({ NativeOcrImagePreprocessor }) => new NativeOcrImagePreprocessor(limits),
+      );
+    }
   }
 
   async prepare(
@@ -72,127 +64,42 @@ export class CommercialOcrPreprocessor {
     pass: CommercialOcrPassName,
     options: { deadlineAtMs?: number } = {},
   ): Promise<CommercialOcrPreparedImage> {
-    let metadata: Metadata;
-    try {
-      metadata = await sharp(input, { limitInputPixels: this.maxInputPixels })
-        .timeout({ seconds: resolveSharpTimeoutSeconds(options.deadlineAtMs) })
-        .metadata();
-    } catch (error: unknown) {
-      if (isProcessingTimeoutError(error)) {
-        throw new CommercialOcrImageRejectedError('processing_timeout');
+    if (this.sandbox.isConfigured()) {
+      const timeoutMs = resolveSandboxPreprocessTimeout(options.deadlineAtMs);
+      try {
+        return await this.sandbox.preprocess(input, pass, timeoutMs);
+      } catch (error: unknown) {
+        if (error instanceof NativeOcrSandboxImageRejectedError) {
+          throw new CommercialOcrImageRejectedError(error.reason);
+        }
+        if (error instanceof NativeOcrSandboxUnavailableError) {
+          throw new CommercialOcrPreprocessUnavailableError();
+        }
+        throw error;
       }
-      if (isPixelLimitError(error)) {
-        throw new CommercialOcrImageRejectedError('too_many_pixels');
-      }
-      throw new CommercialOcrImageRejectedError('invalid_image');
     }
-    if (!metadata.width || !metadata.height) {
-      throw new CommercialOcrImageRejectedError('invalid_image');
+    if (!this.localEnabled || !this.localPromise) {
+      throw new CommercialOcrPreprocessUnavailableError();
     }
-    if ((metadata.pages ?? 1) > 1) {
-      throw new CommercialOcrImageRejectedError('animated_image');
-    }
+    return (await this.localPromise).prepare(input, pass, options);
+  }
 
-    const inputPixels = metadata.width * metadata.height;
-    if (!Number.isSafeInteger(inputPixels) || inputPixels > this.maxInputPixels) {
-      throw new CommercialOcrImageRejectedError('too_many_pixels');
-    }
-    const swapsAxes =
-      metadata.orientation !== undefined && metadata.orientation >= 5 && metadata.orientation <= 8;
-    const orientedWidth = swapsAxes ? metadata.height : metadata.width;
-    const orientedHeight = swapsAxes ? metadata.width : metadata.height;
-    const outputScale = Math.min(
-      1,
-      this.maxSide / Math.max(orientedWidth, orientedHeight),
-      Math.sqrt(this.maxOutputPixels / inputPixels),
-    );
-    const width = Math.max(1, Math.round(orientedWidth * outputScale));
-    const height = Math.max(1, Math.round(orientedHeight * outputScale));
-
-    let pipeline = sharp(input, {
-      limitInputPixels: this.maxInputPixels,
-      sequentialRead: true,
-      animated: false,
-    })
-      .timeout({ seconds: resolveSharpTimeoutSeconds(options.deadlineAtMs) })
-      .rotate()
-      .resize(width, height, { fit: 'inside', withoutEnlargement: true, fastShrinkOnLoad: true })
-      .grayscale();
-    if (pass === 'confirmation') {
-      pipeline = pipeline.normalize().threshold(CONFIRMATION_THRESHOLD, { greyscale: true });
-    }
-    let prepared: { data: Buffer; info: OutputInfo };
-    try {
-      prepared = await pipeline
-        .png({ compressionLevel: 1, adaptiveFiltering: false })
-        .toBuffer({ resolveWithObject: true });
-    } catch (error: unknown) {
-      if (isProcessingTimeoutError(error)) {
-        throw new CommercialOcrImageRejectedError('processing_timeout');
-      }
-      if (isPixelLimitError(error)) {
-        throw new CommercialOcrImageRejectedError('too_many_pixels');
-      }
-      throw new CommercialOcrImageRejectedError('invalid_image');
-    }
-    return {
-      bytes: prepared.data,
-      width: prepared.info.width,
-      height: prepared.info.height,
-    };
+  onModuleDestroy(): void {
+    this.sandbox.close();
   }
 }
 
-export function resolveCommercialOcrPreprocessLimits(
-  configService?: CommercialOcrPreprocessConfigReader,
-): CommercialOcrPreprocessLimits {
-  return Object.freeze({
-    maxInputPixels: readPositiveInt(
-      configService?.get('COMMERCIAL_OCR_MAX_INPUT_PIXELS'),
-      DEFAULT_MAX_INPUT_PIXELS,
-    ),
-    maxOutputPixels: readPositiveInt(
-      configService?.get('COMMERCIAL_OCR_MAX_OUTPUT_PIXELS'),
-      DEFAULT_MAX_OUTPUT_PIXELS,
-    ),
-    maxSide: readPositiveInt(configService?.get('COMMERCIAL_OCR_MAX_SIDE'), DEFAULT_MAX_SIDE),
-  });
-}
-
-export function resolveCommercialOcrPreprocessCacheProfile(
-  pass: CommercialOcrPassName,
-  limits: CommercialOcrPreprocessLimits,
-): string {
-  return [
-    COMMERCIAL_OCR_PREPROCESS_PROFILES[pass],
-    `i${limits.maxInputPixels}`,
-    `o${limits.maxOutputPixels}`,
-    `s${limits.maxSide}`,
-  ].join('.');
-}
-
-function readPositiveInt(value: unknown, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function isPixelLimitError(error: unknown): boolean {
-  return error instanceof Error && error.message.toLowerCase().includes('pixel limit');
-}
-
-function isProcessingTimeoutError(error: unknown): boolean {
-  return error instanceof CommercialOcrImageRejectedError
-    ? error.reason === 'processing_timeout'
-    : error instanceof Error && error.message.toLowerCase().includes('timeout');
-}
-
-function resolveSharpTimeoutSeconds(deadlineAtMs: number | undefined): number {
+function resolveSandboxPreprocessTimeout(deadlineAtMs: number | undefined): number {
+  const localMaximumMs = COMMERCIAL_OCR_SHARP_PROCESSING_TIMEOUT_SECONDS * 1_000;
   if (deadlineAtMs === undefined) {
-    return COMMERCIAL_OCR_SHARP_PROCESSING_TIMEOUT_SECONDS;
+    return localMaximumMs;
   }
-  const remainingWholeSeconds = Math.floor((deadlineAtMs - Date.now()) / 1_000);
-  if (!Number.isSafeInteger(deadlineAtMs) || remainingWholeSeconds < 1) {
+  if (!Number.isSafeInteger(deadlineAtMs)) {
     throw new CommercialOcrImageRejectedError('processing_timeout');
   }
-  return Math.min(COMMERCIAL_OCR_SHARP_PROCESSING_TIMEOUT_SECONDS, remainingWholeSeconds);
+  const remainingMs = deadlineAtMs - Date.now();
+  if (remainingMs <= NATIVE_OCR_SANDBOX_IPC_GRACE_MS + MINIMUM_SHARP_EXECUTION_BUDGET_MS) {
+    throw new CommercialOcrImageRejectedError('processing_timeout');
+  }
+  return Math.min(localMaximumMs, remainingMs - NATIVE_OCR_SANDBOX_IPC_GRACE_MS);
 }

@@ -25,7 +25,9 @@ const policySourceFiles = [
   'apps/api/src/moderation/commercial-ocr/commercial-ocr-letter-script.ts',
 ];
 const preprocessSourceFiles = [
+  'apps/api/src/moderation/commercial-ocr/commercial-ocr-preprocess-config.ts',
   'apps/api/src/moderation/commercial-ocr/commercial-ocr-preprocessor.ts',
+  'apps/api/src/moderation/commercial-ocr/native-ocr-image-preprocessor.ts',
   'apps/api/src/moderation/photo-duplicate/photo-image-format.ts',
 ];
 const auditToolDependencyFiles = [
@@ -71,8 +73,13 @@ export function resolveCommercialOcrRuntimeSourceFiles(repositoryRoot = root) {
     .map((entry) => relative(repositoryRoot, resolve(sourceDirectory, entry.name)));
   return [
     ...commercialOcrFiles,
+    'apps/api/src/common/url-text.util.ts',
+    'apps/api/src/moderation/rule-engine-blocked-domains.detector.ts',
+    'apps/api/src/moderation/rule-engine-blocked-words.detector.ts',
+    'apps/api/src/moderation/rule-engine-normalization.ts',
     'apps/api/src/moderation/photo-duplicate/photo-image-format.ts',
     'apps/api/src/moderation/photo-duplicate/secure-photo-downloader.ts',
+    'packages/contracts/src/core.ts',
   ]
     .map((path) => path.split('\\').join('/'))
     .sort((left, right) => left.localeCompare(right));

@@ -9,6 +9,8 @@ export type CommercialOcrEnqueueCandidate = Readonly<{
   messageId: string;
   sourceCreatedAt: string;
   imageCount: number;
+  commercialScanRequested: boolean;
+  imageTextScanRequested: boolean;
 }>;
 
 export function resolveCommercialOcrEnqueueCandidate(params: {
@@ -16,6 +18,8 @@ export function resolveCommercialOcrEnqueueCandidate(params: {
   webhookEventId?: string;
   updateType: string | null;
   commercialAdsFilterEnabled: boolean;
+  imageTextScanEnabled?: boolean;
+  hasImageTextStopList?: boolean;
   hasPhotoAttachment: boolean;
   chatId: string;
   messageId?: string;
@@ -25,7 +29,8 @@ export function resolveCommercialOcrEnqueueCandidate(params: {
     !params.webhookEventId ||
     !params.messageId ||
     params.updateType !== 'message_created' ||
-    !params.commercialAdsFilterEnabled ||
+    (!params.commercialAdsFilterEnabled &&
+      !(params.imageTextScanEnabled === true && params.hasImageTextStopList === true)) ||
     !params.hasPhotoAttachment
   ) {
     return null;
@@ -46,12 +51,13 @@ export function resolveCommercialOcrEnqueueCandidate(params: {
     messageId: params.messageId,
     sourceCreatedAt: params.sourceCreatedAt,
     imageCount: result.album.images.length,
+    commercialScanRequested: params.commercialAdsFilterEnabled,
+    imageTextScanRequested:
+      params.imageTextScanEnabled === true && params.hasImageTextStopList === true,
   };
 }
 
-export function hasActionableCompetingViolation(
-  violations: readonly RuleViolation[],
-): boolean {
+export function hasActionableCompetingViolation(violations: readonly RuleViolation[]): boolean {
   return violations.some((violation) => {
     if (violation.ruleCode !== 'COMMERCIAL_AD') {
       return true;

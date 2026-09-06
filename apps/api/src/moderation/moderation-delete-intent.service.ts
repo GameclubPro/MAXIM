@@ -1,6 +1,6 @@
 import { isValidDeleteBotMessagesDelayMinutes } from '@maxim/contracts/settings';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -79,13 +79,30 @@ import {
   type PhotoDuplicateScope,
 } from './photo-duplicate/photo-duplicate.runtime';
 import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
+import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
 import {
   COMMERCIAL_OCR_DELETE_RULE_CODE,
   COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE,
   CommercialOcrDeleteGuardRejectedError,
   CommercialOcrDeleteGuardService,
+  extractCommercialOcrExactMessageSource,
   parseCommercialOcrDeleteBinding,
 } from './commercial-ocr/commercial-ocr-delete-guard.service';
+import {
+  fingerprintImageTextStopListPolicy,
+  IMAGE_TEXT_STOP_LIST_ACTION_DEDUPE_PREFIX,
+  IMAGE_TEXT_STOP_LIST_MESSAGE_ACTION_RULE_CODE,
+  IMAGE_TEXT_STOP_LIST_PARTICIPANT_IMMUNITY_SCOPE,
+  imageTextStopListSourceMatchesBinding,
+  parseImageTextStopListBinding,
+  type ImageTextStopListBinding,
+} from './commercial-ocr/image-text-stop-list-binding';
+import { resolveImageTextStopListOcrRuntimePolicy } from './commercial-ocr/image-text-stop-list.runtime';
+import { COMMERCIAL_OCR_DEFAULT_VERSION } from './commercial-ocr/commercial-ocr.queue';
+import {
+  resolveExpectedCommercialOcrProductionBehaviorIdentity,
+  type CommercialOcrNativeBehaviorIdentity,
+} from './commercial-ocr/commercial-ocr-behavior-identity';
 
 const DEFAULT_RETRY_HORIZON_MS = 24 * 60 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 5_000;
@@ -183,12 +200,27 @@ type IntentRow = {
   botMessageAutoDeleteOnly?: boolean;
   requiredSubscriptionDeleteReason?: boolean;
   commercialOcrDeleteReason?: boolean;
+  standardCommercialOcrDeleteReason?: boolean;
   nonCommercialOcrDeleteReason?: boolean;
   linkFamilyDeleteOnly?: boolean;
   photoDuplicateDeleteOnly?: boolean;
+  imageTextStopListDeleteReason?: boolean;
+  imageTextStopListDeleteOnly?: boolean;
   nightModeCloseNoticeCleanupReason?: boolean;
   nightModeCloseNoticeCleanupOnly?: boolean;
   nightModeCloseNoticeCleanupBinding?: unknown;
+};
+
+type ImageTextStopListGuardContext = {
+  entityType: 'CHAT' | 'CHANNEL';
+  settings: {
+    messageLimitsImageTextScanEnabled: boolean;
+    messageLimitsBlockedWords: string[];
+    messageLimitsBlockedDomains: string[];
+    nightModeTimezone: string;
+  } | null;
+  admins: Array<{ userId: string }>;
+  domains: Array<{ domain: string }>;
 };
 
 type PhotoDuplicateDeleteReasonFence = {
@@ -423,7 +455,8 @@ class ModerationDeleteGuardedMessageAbsentError extends Error {
   constructor(
     readonly verificationCode:
       | 'guarded_link_predispatch_exact_absence'
-      | 'guarded_commercial_ocr_predispatch_exact_absence',
+      | 'guarded_commercial_ocr_predispatch_exact_absence'
+      | 'guarded_image_text_stop_list_predispatch_exact_absence',
   ) {
     super('MAX confirmed that the guarded message is absent');
     this.name = 'ModerationDeleteGuardedMessageAbsentError';
@@ -437,6 +470,16 @@ export class PhotoDuplicateDeleteIntentGuardRejectedError extends Error {
   ) {
     super(message);
     this.name = 'PhotoDuplicateDeleteIntentGuardRejectedError';
+  }
+}
+
+export class ImageTextStopListDeleteIntentGuardRejectedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ImageTextStopListDeleteIntentGuardRejectedError';
   }
 }
 
@@ -482,6 +525,7 @@ export class ModerationDeleteIntentService {
   private readonly deleteTimeoutMs: number;
   private readonly retentionDays: number;
   private readonly purgeMaxBatches: number;
+  private readonly expectedImageOcrNativeBehavior: CommercialOcrNativeBehaviorIdentity;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -489,11 +533,15 @@ export class ModerationDeleteIntentService {
     private readonly maxBotLinkService: MaxBotLinkService,
     @InjectQueue(MODERATION_DELETE_INTENT_QUEUE)
     private readonly queue: Queue<ModerationDeleteIntentJob>,
-    configService: ConfigService,
+    private readonly configService: ConfigService,
     private readonly linkHistoryDeleteGuard: LinkHistoryDeleteGuardService,
     private readonly photoDuplicateRuntimePolicy: PhotoDuplicateRuntimePolicyService,
     private readonly commercialOcrDeleteGuard: CommercialOcrDeleteGuardService,
+    @Optional()
+    private readonly participantImmunity?: ParticipantModerationImmunityService,
   ) {
+    this.expectedImageOcrNativeBehavior =
+      resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
     this.mode = normalizeModerationDeleteIntentMode(
       configService.get('MODERATION_DELETE_INTENT_MODE'),
     );
@@ -584,9 +632,25 @@ export class ModerationDeleteIntentService {
   }
 
   getRolloutForInput(
-    input: Pick<EnsureModerationDeleteIntentInput, 'chatId' | 'reasonKey' | 'ruleCode'>,
+    input: Pick<
+      EnsureModerationDeleteIntentInput,
+      'chatId' | 'reasonKey' | 'ruleCode' | 'event'
+    >,
   ): ModerationDeleteIntentRollout {
+    if (parseImageTextStopListBinding(input.event?.metadata)) {
+      return this.getImageTextStopListRollout();
+    }
     return this.getRolloutForRule(input.chatId, input.ruleCode ?? input.reasonKey);
+  }
+
+  private getImageTextStopListRollout(): ModerationDeleteIntentRollout {
+    const policy = resolveImageTextStopListOcrRuntimePolicy({
+      configService: this.configService,
+      // The trusted writer's strict binding proves sandbox use; action roles do not mount its UDS.
+      sandboxBoundaryVerified: true,
+    });
+    if (!policy.process) return 'off';
+    return policy.enforce ? 'execute' : 'observed';
   }
 
   getRolloutForRuleCodes(
@@ -1391,6 +1455,9 @@ export class ModerationDeleteIntentService {
   ): Promise<{ reopened: boolean; intent: ModerationDeleteIntentSnapshot }> {
     const existing = await this.loadRequiredIntent(intentId);
     if (!this.isExecutionEnabledForIntent(existing)) {
+      return { reopened: false, intent: this.toSnapshot(existing) };
+    }
+    if (existing.imageTextStopListDeleteOnly === true) {
       return { reopened: false, intent: this.toSnapshot(existing) };
     }
     const independentNonCommercialOcrExecution = this.hasExecutableNonCommercialOcrReason(existing);
@@ -2484,6 +2551,13 @@ export class ModerationDeleteIntentService {
       // FLAG: A durable photo-only retry must regain authorization from current chat settings and
       // a fresh shared runtime control immediately before every remote DELETE mutation.
       await this.assertPhotoDuplicateDeleteIntentStillActionable(intent);
+      const imageTextStopListGuard =
+        await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);
+      if (imageTextStopListGuard === 'absent') {
+        throw new ModerationDeleteGuardedMessageAbsentError(
+          'guarded_image_text_stop_list_predispatch_exact_absence',
+        );
+      }
       if (commercialOcrGuardRequired) {
         // FLAG: OCR is asynchronous. Bind every OCR-only DELETE to the current exact message,
         // author immunity, filter setting, runtime rollout and behavior versions at dispatch time.
@@ -2519,6 +2593,13 @@ export class ModerationDeleteIntentService {
         }
       }
       await options?.beforeDeleteMutation?.();
+      if (imageTextStopListGuard === 'allowed' && finalDispatchLeaseToken) {
+        await this.assertImageTextStopListDispatchDeadline(
+          intent.id,
+          finalDispatchLeaseToken,
+          botId,
+        );
+      }
       if (commercialOcrGuardRequired && finalDispatchLeaseToken) {
         await this.assertCommercialOcrDispatchDeadline(intent.id, finalDispatchLeaseToken, botId);
       }
@@ -2550,9 +2631,10 @@ export class ModerationDeleteIntentService {
           intent."commercial_ocr_guard_required"
           OR EXISTS (
             SELECT 1
-            FROM "moderation_delete_intent_reasons" ocr_reason
-            WHERE ocr_reason."intent_id" = intent."id"
-              AND ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+              FROM "moderation_delete_intent_reasons" ocr_reason
+              WHERE ocr_reason."intent_id" = intent."id"
+                AND ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+                AND COALESCE(ocr_reason."metadata"->>'source', '') <> 'image_text_ocr'
           )
         )
         AND COALESCE(intent."commercial_ocr_deadline_at", intent."retry_until_at")
@@ -2592,7 +2674,17 @@ export class ModerationDeleteIntentService {
       code === 'commercial_ocr_policy_changed' ||
       code === 'commercial_ocr_admin_immune' ||
       code === 'commercial_ocr_message_changed' ||
-      code === 'commercial_ocr_participant_immune'
+      code === 'commercial_ocr_participant_immune' ||
+      code === 'image_text_stop_list_runtime_disabled' ||
+      code === 'image_text_stop_list_binding_invalid' ||
+      code === 'image_text_stop_list_binding_stale' ||
+      code === 'image_text_stop_list_settings_disabled' ||
+      code === 'image_text_stop_list_bot_immune' ||
+      code === 'image_text_stop_list_admin_immune' ||
+      code === 'image_text_stop_list_message_changed' ||
+      code === 'image_text_stop_list_participant_immune' ||
+      code === 'image_text_stop_list_policy_changed' ||
+      code === 'image_text_stop_list_deadline_expired'
     );
   }
 
@@ -2841,17 +2933,271 @@ export class ModerationDeleteIntentService {
     if (!reason) {
       throw new ModerationDeleteReasonMissingError();
     }
+    if (
+      intent.imageTextStopListDeleteReason === true &&
+      this.getImageTextStopListRollout() === 'execute'
+    ) {
+      return false;
+    }
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
       return false;
     }
     if (intent.commercialOcrGuardRequired === true) {
       return true;
     }
+    if (intent.standardCommercialOcrDeleteReason === false) {
+      return false;
+    }
     const commercialOcrReason = await this.prisma.moderationDeleteIntentReason.findFirst({
       where: { intentId: intent.id, ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE },
       select: { id: true },
     });
     return commercialOcrReason !== null;
+  }
+
+  private async assertImageTextStopListDeleteIntentStillActionable(
+    intent: IntentRow,
+    botId: string,
+  ): Promise<'not_applicable' | 'allowed' | 'absent'> {
+    if (
+      intent.imageTextStopListDeleteReason !== true ||
+      this.hasExecutableNonCommercialOcrReason(intent)
+    ) {
+      return 'not_applicable';
+    }
+    if (this.getImageTextStopListRollout() !== 'execute') {
+      if (intent.standardCommercialOcrDeleteReason === true) {
+        return 'not_applicable';
+      }
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_runtime_disabled',
+        'Image text stop-list deletion is no longer enabled',
+      );
+    }
+
+    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+      where: { intentId: intent.id },
+      select: { ruleCode: true, metadata: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const bindings = reasons.map((reason) => parseImageTextStopListBinding(reason.metadata));
+    if (
+      reasons.length === 0 ||
+      reasons.some((reason) => reason.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE) ||
+      bindings.some((binding) => binding === null)
+    ) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_binding_invalid',
+        'Image text stop-list delete intent has an invalid durable binding',
+      );
+    }
+    const validBindings = bindings as ImageTextStopListBinding[];
+    const primaryBinding = validBindings[0]!;
+    const expectedNativeBehavior = this.expectedImageOcrNativeBehavior;
+    if (
+      primaryBinding.ocrVersion !== COMMERCIAL_OCR_DEFAULT_VERSION ||
+      !expectedNativeBehavior.complete ||
+      primaryBinding.nativeBehaviorFingerprintSha256 !==
+        expectedNativeBehavior.fingerprintSha256 ||
+      primaryBinding.senderId !== intent.subjectUserId ||
+      primaryBinding.sourceCreatedAt !== intent.sourceMessageAt?.toISOString() ||
+      primaryBinding.deleteDeadlineAt !== intent.commercialOcrDeadlineAt?.toISOString() ||
+      primaryBinding.deleteDeadlineAt !== intent.retryUntilAt.toISOString() ||
+      Date.parse(primaryBinding.deleteDeadlineAt) <= Date.now() ||
+      validBindings.some(
+        (binding) =>
+          binding.senderId !== primaryBinding.senderId ||
+          binding.sourceCreatedAt !== primaryBinding.sourceCreatedAt ||
+          binding.deleteDeadlineAt !== primaryBinding.deleteDeadlineAt ||
+          binding.policyFingerprint !== primaryBinding.policyFingerprint ||
+          binding.ocrVersion !== primaryBinding.ocrVersion,
+      )
+    ) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_binding_stale',
+        'Image text stop-list delete binding no longer matches its intent',
+      );
+    }
+
+    const context = await this.loadImageTextStopListGuardContext(intent.chatId);
+    this.assertImageTextStopListContext(context, validBindings, primaryBinding.senderId);
+    if (this.maxBotLinkService.isKnownBotUserId(primaryBinding.senderId)) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_bot_immune',
+        'Image text stop-list message author is a configured bot',
+      );
+    }
+
+    const access = await this.maxClient.getChatMemberAccess(intent.chatId, primaryBinding.senderId, {
+      botId,
+      bypassCache: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      timeoutMs: this.deleteTimeoutMs,
+    });
+    if (
+      !access ||
+      (access.userId !== null && access.userId !== primaryBinding.senderId)
+    ) {
+      throw new Error('Image text stop-list author access is unavailable');
+    }
+    if (access.isAdmin || access.isOwner) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_admin_immune',
+        'Image text stop-list message author is now exempt from moderation',
+      );
+    }
+
+    const exactRow = await this.maxClient.getExactMessageRow(intent.chatId, intent.messageId, {
+      botId,
+      bypassCache: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      timeoutMs: this.deleteTimeoutMs,
+    });
+    if (!exactRow) {
+      return 'absent';
+    }
+    const exact = extractCommercialOcrExactMessageSource(exactRow);
+    if (
+      !exact ||
+      exact.authorKind !== 'user' ||
+      exact.source.chatId !== intent.chatId ||
+      exact.source.messageId !== intent.messageId ||
+      validBindings.some((binding) => !imageTextStopListSourceMatchesBinding(binding, exact.source))
+    ) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_message_changed',
+        'Image text stop-list source message changed after analysis',
+      );
+    }
+
+    if (!this.participantImmunity) {
+      throw new Error('Image text stop-list participant immunity guard is unavailable');
+    }
+    const immunity = await this.participantImmunity.consumeForMessage({
+      chatId: intent.chatId,
+      userId: primaryBinding.senderId,
+      messageId: intent.messageId,
+      scope: IMAGE_TEXT_STOP_LIST_PARTICIPANT_IMMUNITY_SCOPE,
+      nightModeTimezone: context!.settings!.nightModeTimezone,
+    });
+    if (immunity === 'granted') {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_participant_immune',
+        'Image text stop-list message author has active participant immunity',
+      );
+    }
+
+    const finalContext = await this.loadImageTextStopListGuardContext(intent.chatId);
+    this.assertImageTextStopListContext(finalContext, validBindings, primaryBinding.senderId);
+    if (
+      this.getImageTextStopListRollout() !== 'execute' ||
+      Date.parse(primaryBinding.deleteDeadlineAt) <= Date.now()
+    ) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_runtime_disabled',
+        'Image text stop-list authorization expired before delete dispatch',
+      );
+    }
+    return 'allowed';
+  }
+
+  private async loadImageTextStopListGuardContext(
+    chatId: string,
+  ): Promise<ImageTextStopListGuardContext | null> {
+    return this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        entityType: true,
+        settings: {
+          select: {
+            messageLimitsImageTextScanEnabled: true,
+            messageLimitsBlockedWords: true,
+            messageLimitsBlockedDomains: true,
+            nightModeTimezone: true,
+          },
+        },
+        admins: { select: { userId: true } },
+        domains: {
+          where: {
+            OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
+          },
+          select: { domain: true },
+        },
+      },
+    });
+  }
+
+  private assertImageTextStopListContext(
+    context: ImageTextStopListGuardContext | null,
+    bindings: readonly ImageTextStopListBinding[],
+    senderId: string,
+  ): void {
+    if (
+      !context ||
+      context.entityType !== 'CHAT' ||
+      !context.settings?.messageLimitsImageTextScanEnabled ||
+      context.admins.some((admin) => admin.userId === senderId)
+    ) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_settings_disabled',
+        'Image text stop-list moderation is no longer enabled for this author',
+      );
+    }
+    const policyFingerprint = fingerprintImageTextStopListPolicy({
+      settings: context.settings,
+      domainAllowlist: context.domains.map((entry) => entry.domain),
+    });
+    if (
+      bindings.some(
+        (binding) =>
+          binding.policyFingerprint !== policyFingerprint ||
+          !(binding.ruleCode === 'MESSAGE_BLOCKED_WORD'
+            ? context.settings!.messageLimitsBlockedWords
+            : context.settings!.messageLimitsBlockedDomains
+          ).includes(binding.value),
+      )
+    ) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_policy_changed',
+        'Image text stop-list policy changed after analysis',
+      );
+    }
+  }
+
+  private async assertImageTextStopListDispatchDeadline(
+    intentId: string,
+    leaseToken: string,
+    botId: string,
+  ): Promise<void> {
+    const changed = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "moderation_delete_intents" intent
+      SET "updated_at" = CURRENT_TIMESTAMP
+      WHERE intent."id" = ${intentId}
+        AND intent."status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+        AND intent."lease_token" = ${leaseToken}
+        AND intent."lease_expires_at" > CURRENT_TIMESTAMP
+        AND intent."delete_dispatch_started_at" IS NOT NULL
+        AND intent."delete_dispatch_started_bot_id" = ${botId}
+        AND intent."commercial_ocr_deadline_at" > CURRENT_TIMESTAMP
+        AND EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" image_text_reason
+          WHERE image_text_reason."intent_id" = intent."id"
+            AND image_text_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            AND COALESCE(image_text_reason."metadata"->>'source', '') = 'image_text_ocr'
+            AND COALESCE(image_text_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+        )
+    `);
+    if (changed === 0) {
+      throw new ImageTextStopListDeleteIntentGuardRejectedError(
+        'image_text_stop_list_deadline_expired',
+        'Image text stop-list deadline expired before delete dispatch',
+      );
+    }
   }
 
   private async assertPhotoDuplicateDeleteIntentStillActionable(intent: IntentRow): Promise<void> {
@@ -2974,7 +3320,7 @@ export class ModerationDeleteIntentService {
     transactionClient?: Prisma.TransactionClient,
   ): Promise<EnsureModerationDeleteIntentResult> {
     const normalized = this.normalizeInput(input);
-    const rollout = this.getRolloutForRule(normalized.chatId, normalized.ruleCode);
+    const rollout = this.getRolloutForInput(input);
     if (rollout === 'off') {
       return { intentId: null, rollout, status: null };
     }
@@ -3235,6 +3581,9 @@ export class ModerationDeleteIntentService {
       let storedChannelAutoPostCleanupReason: boolean | undefined;
       let storedBotMessageAutoDeleteReason: boolean | undefined;
       let storedRequiredSubscriptionDeleteReason: boolean | undefined;
+      let storedImageTextStopListDeleteReason: boolean | undefined;
+      let storedImageTextStopListDeleteOnly: boolean | undefined;
+      let storedStandardCommercialOcrDeleteReason: boolean | undefined;
       if (intent.id !== intentId && normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE) {
         const reasonState = await tx.$queryRaw<
           Array<{
@@ -3244,6 +3593,9 @@ export class ModerationDeleteIntentService {
             channelAutoPostCleanupReason: boolean;
             botMessageAutoDeleteReason: boolean;
             requiredSubscriptionDeleteReason: boolean;
+            imageTextStopListDeleteReason: boolean;
+            imageTextStopListDeleteOnly: boolean;
+            standardCommercialOcrDeleteReason: boolean;
           }>
         >(Prisma.sql`
           SELECT EXISTS (
@@ -3292,7 +3644,32 @@ export class ModerationDeleteIntentService {
             WHERE existing_required_subscription_reason."intent_id" = ${intent.id}
               AND existing_required_subscription_reason."rule_code" =
                 ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
-          ) AS "requiredSubscriptionDeleteReason"
+          ) AS "requiredSubscriptionDeleteReason",
+          EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" image_text_reason
+            WHERE image_text_reason."intent_id" = ${intent.id}
+              AND image_text_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+              AND COALESCE(image_text_reason."metadata"->>'source', '') = 'image_text_ocr'
+              AND COALESCE(image_text_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+          ) AS "imageTextStopListDeleteReason",
+          EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" commercial_reason
+            WHERE commercial_reason."intent_id" = ${intent.id}
+              AND commercial_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+              AND COALESCE(commercial_reason."metadata"->>'source', '') <> 'image_text_ocr'
+          ) AS "standardCommercialOcrDeleteReason",
+          NOT EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" independent_reason
+            WHERE independent_reason."intent_id" = ${intent.id}
+              AND NOT (
+                independent_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+                AND COALESCE(independent_reason."metadata"->>'source', '') = 'image_text_ocr'
+                AND COALESCE(independent_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+              )
+          ) AS "imageTextStopListDeleteOnly"
         `);
         storedNonCommercialOcrDeleteReason = reasonState[0]?.nonCommercialOcrDeleteReason === true;
         storedReplacementCleanup = reasonState[0]?.replacementCleanup === true;
@@ -3307,6 +3684,13 @@ export class ModerationDeleteIntentService {
         storedBotMessageAutoDeleteReason = reasonState[0]?.botMessageAutoDeleteReason === true;
         storedRequiredSubscriptionDeleteReason =
           reasonState[0]?.requiredSubscriptionDeleteReason === true;
+        storedImageTextStopListDeleteReason =
+          reasonState[0]?.imageTextStopListDeleteReason === true;
+        storedImageTextStopListDeleteOnly =
+          storedImageTextStopListDeleteReason &&
+          reasonState[0]?.imageTextStopListDeleteOnly === true;
+        storedStandardCommercialOcrDeleteReason =
+          reasonState[0]?.standardCommercialOcrDeleteReason === true;
       } else if (
         intent.id !== intentId &&
         this.requiredSubscriptionDeleteEnabled &&
@@ -3526,6 +3910,7 @@ export class ModerationDeleteIntentService {
                 "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
                 AND (
                   "last_error_code" LIKE 'commercial_ocr_%'
+                  OR "last_error_code" LIKE 'image_text_stop_list_%'
                   OR "last_error_code" = 'moderation_delete_reason_missing'
                 )
               )
@@ -3620,6 +4005,16 @@ export class ModerationDeleteIntentService {
       if (storedRequiredSubscriptionDeleteReason !== undefined) {
         effectiveIntent.requiredSubscriptionDeleteReason = storedRequiredSubscriptionDeleteReason;
       }
+      if (storedImageTextStopListDeleteReason !== undefined) {
+        effectiveIntent.imageTextStopListDeleteReason = storedImageTextStopListDeleteReason;
+      }
+      if (storedImageTextStopListDeleteOnly !== undefined) {
+        effectiveIntent.imageTextStopListDeleteOnly = storedImageTextStopListDeleteOnly;
+      }
+      if (storedStandardCommercialOcrDeleteReason !== undefined) {
+        effectiveIntent.standardCommercialOcrDeleteReason =
+          storedStandardCommercialOcrDeleteReason;
+      }
       return effectiveIntent;
     };
     const persisted = transactionClient
@@ -3655,9 +4050,21 @@ export class ModerationDeleteIntentService {
     persisted.commercialOcrDeleteReason =
       persisted.commercialOcrGuardRequired ||
       normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE;
+    const normalizedImageTextBinding = parseImageTextStopListBinding(normalized.event.metadata);
+    if (normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE) {
+      persisted.standardCommercialOcrDeleteReason = normalizedImageTextBinding
+        ? (persisted.standardCommercialOcrDeleteReason ?? false)
+        : true;
+    }
     persisted.nonCommercialOcrDeleteReason =
       persisted.nonCommercialOcrDeleteReason === true ||
       normalized.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE;
+    if (normalizedImageTextBinding) {
+      persisted.imageTextStopListDeleteReason = true;
+      if (persisted.id === intentId) {
+        persisted.imageTextStopListDeleteOnly = true;
+      }
+    }
 
     const effectiveRollout =
       persisted.status !== 'OBSERVED' && this.isExecutionEnabledForIntent(persisted)
@@ -4916,7 +5323,8 @@ export class ModerationDeleteIntentService {
       | 'retry_predelete_exact_presence'
       | 'postdelete_exact_presence'
       | 'guarded_link_predispatch_exact_absence'
-      | 'guarded_commercial_ocr_predispatch_exact_absence',
+      | 'guarded_commercial_ocr_predispatch_exact_absence'
+      | 'guarded_image_text_stop_list_predispatch_exact_absence',
   ): Promise<IntentRow> {
     await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents"
@@ -5107,6 +5515,21 @@ export class ModerationDeleteIntentService {
   private buildSweepRolloutFilter(): Prisma.Sql {
     const baseFilter = this.buildBaseRolloutFilter(Prisma.sql`intent."chat_id"`);
     const commercialOcrFilter = this.buildCommercialOcrRolloutFilter(Prisma.sql`intent."chat_id"`);
+    const imageTextStopListFilter =
+      this.getImageTextStopListRollout() === 'execute'
+        ? Prisma.sql`
+          OR (
+            EXISTS (
+              SELECT 1
+              FROM "moderation_delete_intent_reasons" image_text_reason
+              WHERE image_text_reason."intent_id" = intent."id"
+                AND image_text_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+                AND COALESCE(image_text_reason."metadata"->>'source', '') = 'image_text_ocr'
+                AND COALESCE(image_text_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+            )
+          )
+        `
+        : Prisma.empty;
     const replacementCleanupFilter = this.replacementCleanupEnabled
       ? Prisma.sql`
           OR EXISTS (
@@ -5147,10 +5570,12 @@ export class ModerationDeleteIntentService {
           FROM "moderation_delete_intent_reasons" ocr_reason
           WHERE ocr_reason."intent_id" = intent."id"
             AND ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            AND COALESCE(ocr_reason."metadata"->>'source', '') <> 'image_text_ocr'
         )
       )
       ${replacementCleanupFilter}
       ${requiredSubscriptionDeleteFilter}
+      ${imageTextStopListFilter}
       OR (
         EXISTS (
           SELECT 1
@@ -5250,17 +5675,29 @@ export class ModerationDeleteIntentService {
       | 'requiredSubscriptionDeleteReason'
       | 'commercialOcrGuardRequired'
       | 'commercialOcrDeleteReason'
+      | 'standardCommercialOcrDeleteReason'
       | 'nonCommercialOcrDeleteReason'
+      | 'imageTextStopListDeleteReason'
+      | 'imageTextStopListDeleteOnly'
     >,
   ): boolean {
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
+      return true;
+    }
+    if (
+      intent.imageTextStopListDeleteReason === true &&
+      this.getImageTextStopListRollout() === 'execute'
+    ) {
       return true;
     }
     if (this.replacementCleanupEnabled && intent.channelAutoPostCleanupReason === true) {
       return true;
     }
     const hasCommercialOcrReason =
-      intent.commercialOcrDeleteReason === true || intent.commercialOcrGuardRequired === true;
+      intent.standardCommercialOcrDeleteReason === true ||
+      (intent.standardCommercialOcrDeleteReason === undefined &&
+        intent.imageTextStopListDeleteReason !== true &&
+        (intent.commercialOcrDeleteReason === true || intent.commercialOcrGuardRequired === true));
     if (
       hasCommercialOcrReason &&
       this.getCommercialOcrRolloutForChat(intent.chatId) === 'execute'
@@ -5854,8 +6291,40 @@ export class ModerationDeleteIntentService {
     claim: ModerationMessageActionClaimData,
     intent: EnsureModerationDeleteIntentInput,
   ): void {
-    const binding = parseCommercialOcrDeleteBinding(intent.event?.metadata);
+    const imageTextBinding = parseImageTextStopListBinding(intent.event?.metadata);
     const retryUntilAt = this.toNullableDate(intent.retryUntilAt);
+    if (imageTextBinding) {
+      const metadata = this.asRecord(intent.event?.metadata);
+      if (
+        claim.updateType !== 'message_action' ||
+        claim.ruleCode !== IMAGE_TEXT_STOP_LIST_MESSAGE_ACTION_RULE_CODE ||
+        claim.messageActionKey !==
+          buildMessageScopedModerationActionClaimKey(intent.chatId, intent.messageId) ||
+        !claim.dedupeKey.startsWith(IMAGE_TEXT_STOP_LIST_ACTION_DEDUPE_PREFIX) ||
+        !/^[a-f0-9]{64}$/u.test(
+          claim.dedupeKey.slice(IMAGE_TEXT_STOP_LIST_ACTION_DEDUPE_PREFIX.length),
+        ) ||
+        claim.chatId.trim() !== intent.chatId.trim() ||
+        claim.messageId.trim() !== intent.messageId.trim() ||
+        claim.userId.trim() !== imageTextBinding.senderId ||
+        claim.userId.trim() !== this.optionalString(intent.subjectUserId) ||
+        (intent.ruleCode ?? intent.reasonKey).trim() !== COMMERCIAL_OCR_DELETE_RULE_CODE ||
+        metadata?.source !== 'image_text_ocr' ||
+        metadata?.enforcementScope !== 'delete_only' ||
+        metadata?.matchedRuleCode !== imageTextBinding.ruleCode ||
+        !retryUntilAt ||
+        retryUntilAt.toISOString() !== imageTextBinding.deleteDeadlineAt ||
+        this.toNullableDate(intent.sourceMessageAt)?.toISOString() !==
+          imageTextBinding.sourceCreatedAt
+      ) {
+        throw new Error(
+          'Moderation message action claim does not match its image text stop-list delete intent',
+        );
+      }
+      return;
+    }
+
+    const binding = parseCommercialOcrDeleteBinding(intent.event?.metadata);
     if (
       claim.updateType !== 'message_action' ||
       claim.ruleCode !== COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE ||
@@ -5975,12 +6444,47 @@ export class ModerationDeleteIntentService {
       ) AS "commercialOcrDeleteReason",
       EXISTS (
         SELECT 1
+        FROM "moderation_delete_intent_reasons" commercial_reason
+        WHERE commercial_reason."intent_id" = ${intentIdColumn}
+          AND commercial_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+          AND COALESCE(commercial_reason."metadata"->>'source', '') <> 'image_text_ocr'
+      ) AS "standardCommercialOcrDeleteReason",
+      EXISTS (
+        SELECT 1
         FROM "moderation_delete_intent_reasons" non_ocr_reason
         WHERE non_ocr_reason."intent_id" = ${intentIdColumn}
           AND non_ocr_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
           AND non_ocr_reason."rule_code" <>
             ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
       ) AS "nonCommercialOcrDeleteReason",
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" image_text_reason
+        WHERE image_text_reason."intent_id" = ${intentIdColumn}
+          AND image_text_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+          AND COALESCE(image_text_reason."metadata"->>'source', '') = 'image_text_ocr'
+          AND COALESCE(image_text_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+      ) AS "imageTextStopListDeleteReason",
+      (
+        EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" image_text_reason
+          WHERE image_text_reason."intent_id" = ${intentIdColumn}
+            AND image_text_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            AND COALESCE(image_text_reason."metadata"->>'source', '') = 'image_text_ocr'
+            AND COALESCE(image_text_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" independent_reason
+          WHERE independent_reason."intent_id" = ${intentIdColumn}
+            AND NOT (
+              independent_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+              AND COALESCE(independent_reason."metadata"->>'source', '') = 'image_text_ocr'
+              AND COALESCE(independent_reason."metadata"->>'enforcementScope', '') = 'delete_only'
+            )
+        )
+      ) AS "imageTextStopListDeleteOnly",
       (
         EXISTS (
           SELECT 1

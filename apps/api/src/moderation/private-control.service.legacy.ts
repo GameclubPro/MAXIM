@@ -7269,6 +7269,7 @@ export class PrivateControlService {
           `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
           `Контент: фото ${this.describeBooleanCompact(settings.photoMessagesEnabled)} • видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)} • пересылки ${this.describeBooleanCompact(settings.forwardedMessagesEnabled)} • телефоны ${this.describeBooleanCompact(settings.phoneNumbersEnabled)}`,
           `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'} • домены ${settings.messageLimitsBlockedDomains.length > 0 ? settings.messageLimitsBlockedDomains.length : 'выкл'}`,
+          `Текст на фото: ${this.describeBooleanCompact(settings.messageLimitsImageTextScanEnabled)} • только удаление`,
           `Санкции: WARN ${this.describeBooleanCompact(settings.messageLimitsWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.messageLimitsMuteEnabled)} (${settings.messageLimitsMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.messageLimitsBanEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,
         ];

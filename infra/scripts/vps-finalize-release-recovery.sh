@@ -26,6 +26,7 @@ RECOVERY_BASE_MANIFEST=""
 MIGRATIONS_FILE=""
 TARGET_COMMERCIAL_OCR_VERSION=""
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_OCR_NATIVE_SANDBOX=0
 declare -A COMPONENT_IMAGE_REF=()
 declare -A COMPONENT_IMAGE_ID=()
 SMOKE_RESULTS=()
@@ -259,7 +260,12 @@ inspect_service_runtime() {
 verify_no_unreviewed_running_api_containers() {
   local running_ids_raw
   local inventory
+  local expected_auxiliary=none
   local running_ids=()
+
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    expected_auxiliary="$MAXIM_OCR_NATIVE_SANDBOX_SERVICE"
+  fi
 
   running_ids_raw="$(
     timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
@@ -271,14 +277,18 @@ verify_no_unreviewed_running_api_containers() {
     timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
       docker inspect "${running_ids[@]}" |
       node "$RUNTIME_INVENTORY_HELPER" \
-        "${COMPONENT_IMAGE_ID[api-shared]}" "${MAXIM_PRODUCTION_API_SERVICES[@]}"
+        "${COMPONENT_IMAGE_ID[api-shared]}" "$expected_auxiliary" \
+        "${MAXIM_PRODUCTION_API_SERVICES[@]}"
   )" || fail "Could not classify the running API container inventory."
   if ! printf '%s' "$inventory" | node -e '
       const { readFileSync } = require("node:fs");
       const value = JSON.parse(readFileSync(0, "utf8"));
       process.exit(
         Array.isArray(value?.ownedUnreviewedIds) && value.ownedUnreviewedIds.length === 0 &&
-        Array.isArray(value?.ambiguousIds) && value.ambiguousIds.length === 0 ? 0 : 1,
+        Array.isArray(value?.ambiguousIds) && value.ambiguousIds.length === 0 &&
+        Number.isSafeInteger(value?.expectedAuxiliaryCount) &&
+        Number.isSafeInteger(value?.reviewedAuxiliaryCount) &&
+        value.reviewedAuxiliaryCount === value.expectedAuxiliaryCount ? 0 : 1,
       );
     '; then
     fail "An unreviewed, ambiguous, orphaned, or duplicate API container is running."
@@ -294,6 +304,16 @@ verify_runtime_snapshot() {
       "${COMPONENT_IMAGE_REF[api-shared]}" \
       "${COMPONENT_IMAGE_ID[api-shared]}"
   done
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    inspect_service_runtime \
+      "$MAXIM_OCR_NATIVE_SANDBOX_SERVICE" \
+      "${COMPONENT_IMAGE_REF[api-shared]}" \
+      "${COMPONENT_IMAGE_ID[api-shared]}"
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "${COMPONENT_IMAGE_ID[api-shared]}" with-media
+  else
+    maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES
+  fi
   inspect_service_runtime \
     miniapp-major-static \
     "${COMPONENT_IMAGE_REF[miniapp-major-static]}" \
@@ -410,15 +430,23 @@ run_http_smoke() {
     node "$ROOT_DIR/scripts/smoke-http.mjs" "$kind" "$url"
 }
 
-run_strict_finalizer_smokes() {
-  require_stateful_services_ready
+prepare_target_ocr_runtime() {
   maxim_topology_prepare_commercial_ocr_target \
     "$EXPECTED_DEPLOY_SHA" \
     COMPOSE_FILES \
     TARGET_HAS_MEDIA_ANALYSIS \
-    TARGET_COMMERCIAL_OCR_VERSION
+    TARGET_COMMERCIAL_OCR_VERSION \
+    TARGET_HAS_OCR_NATIVE_SANDBOX
   [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]] ||
     fail "Recovery finalization requires the reviewed media-analysis topology."
+  [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]] ||
+    fail "Recovery finalization requires the reviewed native OCR sandbox topology."
+  maxim_topology_require_ocr_native_sandbox_image_capability \
+    "${COMPONENT_IMAGE_ID[api-shared]}" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
+}
+
+run_strict_finalizer_smokes() {
+  require_stateful_services_ready
   maxim_topology_verify_api_commercial_ocr_version \
     COMPOSE_FILES \
     "$TARGET_COMMERCIAL_OCR_VERSION"
@@ -431,7 +459,7 @@ run_strict_finalizer_smokes() {
   run_http_smoke static http://127.0.0.1:3003/app/
   run_http_smoke static "$PUBLIC_HEALTH_URL/app/"
   run_http_smoke static http://127.0.0.1:3004/
-  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
 
   SMOKE_RESULTS=(
     "api-local-live"
@@ -444,6 +472,9 @@ run_strict_finalizer_smokes() {
     "api-media-analysis-shadow"
     "api-media-analysis-native-raster"
     "api-media-analysis-internal-ready"
+    "api-ocr-native-sandbox-isolation"
+    "api-ocr-native-sandbox-uds"
+    "api-ocr-native-sandbox-process-clean"
     "miniapp-major-static-local"
     "miniapp-major-static"
     "admin-static"
@@ -509,6 +540,7 @@ main() {
   verify_synchronized_checkout
   resolve_recovery_base_manifest
   resolve_target_images
+  prepare_target_ocr_runtime
 
   stability_started_at=$SECONDS
   runtime_before="$(verify_runtime_snapshot)"

@@ -279,6 +279,11 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'phoneNumbersEnabled', label: 'Разрешить телефоны', type: 'boolean' },
     { key: 'messageLimitsBlockedWords', label: 'Стоп-слова', type: 'text' },
     { key: 'messageLimitsBlockedDomains', label: 'Запрещенные домены', type: 'text' },
+    {
+      key: 'messageLimitsImageTextScanEnabled',
+      label: 'Текст на фото (только удаление)',
+      type: 'boolean',
+    },
     { key: 'messageLimitsBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'messageLimitsBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'messageLimitsWarnEnabled', label: 'Штраф: предупреждение', type: 'boolean' },
@@ -473,6 +478,7 @@ export const SECTION_CARD_FIELDS: Record<
       'phoneNumbersEnabled',
       'messageLimitsBlockedWords',
       'messageLimitsBlockedDomains',
+      'messageLimitsImageTextScanEnabled',
     ],
     advanced: [
       'photoMessageCooldownEnabled',

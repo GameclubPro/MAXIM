@@ -8,6 +8,7 @@ import {
   COMMERCIAL_OCR_JOB_ATTEMPTS,
   COMMERCIAL_OCR_JOB_NAME,
   COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
+  COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION,
   type CommercialOcrJob,
 } from './commercial-ocr.queue';
 
@@ -20,6 +21,8 @@ const data = {
   schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
   actionEligible: true,
+  commercialScanRequested: true,
+  imageTextScanRequested: false,
   sourceTag: 'commercial-image-ocr',
   createdAt: '2026-08-12T08:00:01.000Z',
 } satisfies Omit<CommercialOcrJob, 'idempotencyKey'>;
@@ -115,6 +118,32 @@ describe('CommercialOcrProcessor', () => {
     expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
   });
 
+  it('drains legacy v1 jobs as commercial-only work during the schema transition', async () => {
+    const legacyJobId = buildCommercialOcrJobId({
+      ...jobData,
+      schemaVersion: COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION,
+    });
+    const legacyData: CommercialOcrJob = {
+      ...jobData,
+      schemaVersion: COMMERCIAL_OCR_LEGACY_JOB_SCHEMA_VERSION,
+      idempotencyKey: legacyJobId,
+      commercialScanRequested: undefined,
+      imageTextScanRequested: undefined,
+    };
+    const harness = createHarness({
+      dataOverrides: legacyData,
+      jobOverrides: { id: legacyJobId },
+    });
+
+    await expect(harness.processor.process(harness.job, 'lock-1')).resolves.toBeUndefined();
+
+    expect(harness.moderationService.processCommercialOcrJob).toHaveBeenCalledWith(
+      expect.objectContaining({ schemaVersion: 1 }),
+      legacyJobId,
+      deadlineAtMs,
+    );
+  });
+
   it('does not record queue wait again after BullMQ has started a retry or defer', async () => {
     const harness = createHarness({
       jobOverrides: {
@@ -189,6 +218,7 @@ describe('CommercialOcrProcessor', () => {
             nightModeTimezone: 'Europe/Moscow',
           },
           admins: [],
+          domains: [],
         }),
       },
     };
@@ -272,13 +302,19 @@ describe('CommercialOcrProcessor', () => {
     [
       'schema',
       {
-        dataOverrides: { schemaVersion: 2 as typeof COMMERCIAL_OCR_JOB_SCHEMA_VERSION },
+        dataOverrides: { schemaVersion: 3 as typeof COMMERCIAL_OCR_JOB_SCHEMA_VERSION },
       },
     ],
     ['job id', { jobOverrides: { id: `${jobId}-wrong` } }],
     ['idempotency key', { dataOverrides: { idempotencyKey: `${jobId}-wrong` } }],
     ['image count', { dataOverrides: { imageCount: 0 } }],
     ['action eligibility', { dataOverrides: { actionEligible: 'true' as never } }],
+    ['commercial purpose', { dataOverrides: { commercialScanRequested: 'true' as never } }],
+    ['image-text purpose', { dataOverrides: { imageTextScanRequested: 'true' as never } }],
+    [
+      'empty purposes',
+      { dataOverrides: { commercialScanRequested: false, imageTextScanRequested: false } },
+    ],
   ])('rejects an invalid %s without consuming retries', async (label, overrides) => {
     const harness = createHarness(overrides);
 
@@ -287,7 +323,13 @@ describe('CommercialOcrProcessor', () => {
     expect(error).toBeInstanceOf(UnrecoverableError);
     expect(harness.moderationService.processCommercialOcrJob).not.toHaveBeenCalled();
     expect(harness.admissionStore.release).toHaveBeenCalledTimes(
-      label === 'schema' || label === 'job id' || label === 'idempotency key' ? 0 : 1,
+      label === 'schema' ||
+        label === 'job id' ||
+        label === 'idempotency key' ||
+        label === 'commercial purpose' ||
+        label === 'empty purposes'
+        ? 0
+        : 1,
     );
   });
 

@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
-import sharp from 'sharp';
 
+import { CommercialOcrPreprocessor } from '../moderation/commercial-ocr/commercial-ocr-preprocessor';
 import { NativeTesseractOcrAdapter } from '../moderation/commercial-ocr/native-tesseract-ocr.adapter';
 
 const STARTUP_TIMEOUT_MS = 15_000;
@@ -11,11 +11,19 @@ const CYRILLIC_CALL_TO_ACTION = 'ЗВОНИТЕ';
 const EXPECTED_PHONE_DIGITS = '79991234567';
 
 export async function runCommercialOcrWorkerSmoke(): Promise<void> {
-  const adapter = new NativeTesseractOcrAdapter(createCommercialOcrWorkerSmokeConfig());
+  const config = createCommercialOcrWorkerSmokeConfig();
+  const adapter = new NativeTesseractOcrAdapter(config);
+  const preprocessor = new CommercialOcrPreprocessor(config);
   adapter.onModuleInit();
+  let prepared: Buffer | null = null;
   try {
     await waitForReady(adapter, STARTUP_TIMEOUT_MS);
-    const result = await adapter.recognize(await buildSmokeRaster(), {
+    prepared = (
+      await preprocessor.prepare(buildSmokeVector(), 'confirmation', {
+        deadlineAtMs: Date.now() + RECOGNITION_TIMEOUT_MS,
+      })
+    ).bytes;
+    const result = await adapter.recognize(prepared, {
       psm: 6,
       passLabel: 'deploy-smoke',
       deadlineAtMs: Date.now() + RECOGNITION_TIMEOUT_MS,
@@ -25,6 +33,7 @@ export async function runCommercialOcrWorkerSmoke(): Promise<void> {
     }
     assertCommercialOcrWorkerSmokeText(result.text);
   } finally {
+    prepared?.fill(0);
     await adapter.onModuleDestroy();
   }
 }
@@ -60,8 +69,8 @@ async function waitForReady(adapter: NativeTesseractOcrAdapter, timeoutMs: numbe
   throw new Error(`Commercial OCR worker did not become ready: ${adapter.getRuntimeStatus().state}`);
 }
 
-async function buildSmokeRaster(): Promise<Buffer> {
-  const svg = Buffer.from(
+function buildSmokeVector(): Buffer {
+  return Buffer.from(
     [
       '<svg width="1400" height="390" xmlns="http://www.w3.org/2000/svg">',
       '<rect width="1400" height="390" fill="white"/>',
@@ -78,7 +87,6 @@ async function buildSmokeRaster(): Promise<Buffer> {
     ].join(''),
     'utf8',
   );
-  return sharp(svg).png({ compressionLevel: 1, adaptiveFiltering: false }).toBuffer();
 }
 
 if (require.main === module) {

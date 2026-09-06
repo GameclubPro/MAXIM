@@ -22,9 +22,13 @@ export const PRODUCTION_API_SERVICES = Object.freeze([
   'api-action',
   'api-publisher',
 ]);
+export const API_SHARED_SERVICES = Object.freeze([
+  ...PRODUCTION_API_SERVICES,
+  'ocr-native-sandbox',
+]);
 
 export const ROLLBACK_COMPONENT_SERVICES = Object.freeze({
-  'api-shared': PRODUCTION_API_SERVICES,
+  'api-shared': API_SHARED_SERVICES,
   'miniapp-major-static': Object.freeze(['miniapp-major-static']),
   'admin-static': Object.freeze(['admin-static']),
 });

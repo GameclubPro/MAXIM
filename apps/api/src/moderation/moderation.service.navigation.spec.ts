@@ -4056,6 +4056,8 @@ describe('ModerationService', () => {
           sourceCreatedAt: update.message!.createdAt,
           imageCount: 2,
           actionEligible: true,
+          commercialScanRequested: true,
+          imageTextScanRequested: false,
         });
       });
 
@@ -4145,6 +4147,8 @@ describe('ModerationService', () => {
           sourceCreatedAt: update.message!.createdAt,
           imageCount: 1,
           actionEligible: false,
+          commercialScanRequested: true,
+          imageTextScanRequested: false,
         });
       });
 
@@ -4179,6 +4183,8 @@ describe('ModerationService', () => {
           sourceCreatedAt: update.message!.createdAt,
           imageCount: 1,
           actionEligible: false,
+          commercialScanRequested: true,
+          imageTextScanRequested: false,
         });
         expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
       });
@@ -4244,6 +4250,8 @@ describe('ModerationService', () => {
                   sourceCreatedAt: update.message!.createdAt,
                   imageCount: 1,
                   actionEligible: false,
+                  commercialScanRequested: true,
+                  imageTextScanRequested: false,
                 },
               ],
             ]),
@@ -4284,6 +4292,32 @@ describe('ModerationService', () => {
           sourceCreatedAt: update.message!.createdAt,
           imageCount: 1,
           actionEligible: true,
+          commercialScanRequested: true,
+          imageTextScanRequested: false,
+        });
+      });
+
+      it('enqueues an image-text-only stop-list scan when the opt-in is enabled', async () => {
+        const harness = createHarness({
+          settingsOverrides: {
+            commercialAdsFilterEnabled: false,
+            messageLimitsImageTextScanEnabled: true,
+            messageLimitsBlockedWords: ['казино'],
+          },
+        });
+        const update = createPhotoAttachmentUpdate(111);
+
+        await harness.service.handleUpdate(update, undefined, 'webhook-photo-111');
+
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledWith({
+          webhookEventId: 'webhook-photo-111',
+          chatId: 'chat-1',
+          messageId: 'msg-photo-111',
+          sourceCreatedAt: update.message!.createdAt,
+          imageCount: 1,
+          actionEligible: true,
+          commercialScanRequested: false,
+          imageTextScanRequested: true,
         });
       });
     });

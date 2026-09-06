@@ -4492,11 +4492,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
   const stopWordsTotalCount = messageLimitsBlockedWords.length + messageLimitsBlockedDomains.length;
-  const stopWordsHeaderSummary =
+  const stopWordsListSummary =
     stopWordsTotalCount > 0
       ? `Слова: ${messageLimitsBlockedWords.length} · Домены: ${messageLimitsBlockedDomains.length}`
       : 'Список пуст';
-  const stopWordsCardStatus = stopWordsTotalCount > 0 ? `${stopWordsTotalCount}` : 'Выкл';
+  const stopWordsHeaderSummary = draft?.messageLimitsImageTextScanEnabled
+    ? `${stopWordsListSummary} · Изображения: вкл`
+    : stopWordsListSummary;
+  const stopWordsCardStatus =
+    stopWordsTotalCount > 0
+      ? `${stopWordsTotalCount}`
+      : draft?.messageLimitsImageTextScanEnabled
+        ? 'Вкл'
+        : 'Выкл';
   const nightTimezoneLabel =
     RUSSIAN_TIMEZONE_OPTIONS.find((option) => option.value === draft?.nightModeTimezone)?.label ??
     'Москва (UTC+3)';

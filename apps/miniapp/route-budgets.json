@@ -29,7 +29,7 @@
       "label": "Chat settings",
       "entries": ["src/pages/settings-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 146944, "cssGzipBytes": 77824 }
+      "limits": { "jsGzipBytes": 147968, "cssGzipBytes": 77824 }
     },
     {
       "id": "channel-settings",

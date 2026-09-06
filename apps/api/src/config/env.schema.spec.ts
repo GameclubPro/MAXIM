@@ -43,6 +43,7 @@ describe('validateEnv boolean parsing', () => {
         createValidEnv({
           APP_ROLE: 'moderation',
           APP_SERVICE_NAME: 'api-media-analysis',
+          COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/native-ocr.sock',
         }),
       ),
     ).toMatchObject({
@@ -605,6 +606,8 @@ describe('validateEnv boolean parsing', () => {
   it('keeps commercial OCR off by default with bounded isolated worker resources', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.COMMERCIAL_OCR_ROLLOUT_MODE).toBe('off');
+    expect(defaults.IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE).toBe('shadow');
+    expect(defaults.COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH).toBeUndefined();
     expect(defaults.COMMERCIAL_OCR_CANARY_CHAT_IDS).toBe('');
     expect(defaults.COMMERCIAL_OCR_VERSION).toBe('tesseract-rus-eng-v2');
     expect(defaults.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS).toBe(10_000);
@@ -637,6 +640,40 @@ describe('validateEnv boolean parsing', () => {
     expect(configured.COMMERCIAL_OCR_CANARY_CHAT_IDS).toBe('chat-1,chat-2');
     expect(configured.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS).toBe(7_500);
     expect(configured.OMP_THREAD_LIMIT).toBe(2);
+
+    expect(
+      validateEnv(
+        createValidEnv({
+          IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+          COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/native-ocr.sock',
+        }),
+      ),
+    ).toMatchObject({
+      IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+      COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/native-ocr.sock',
+    });
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'unsafe',
+        }),
+      ),
+    ).toThrow(/IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/tmp/native-ocr.sock',
+        }),
+      ),
+    ).toThrow(/COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          APP_ROLE: 'moderation',
+          APP_SERVICE_NAME: 'api-media-analysis',
+        }),
+      ),
+    ).toThrow(/COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH is required/u);
 
     expect(
       validateEnv(

@@ -6,6 +6,7 @@ import {
 import {
   COMMERCIAL_OCR_JOB_NAME,
   COMMERCIAL_OCR_JOB_OPTIONS,
+  COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   type CommercialOcrJob,
 } from './commercial-ocr.queue';
 
@@ -15,9 +16,11 @@ const job = {
   messageId: 'message-1',
   sourceCreatedAt: '2026-08-12T08:00:00.000Z',
   imageCount: 1,
-  schemaVersion: 1,
+  schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   ocrVersion: 'tesseract-rus-eng-v1',
   actionEligible: false,
+  commercialScanRequested: true,
+  imageTextScanRequested: false,
   idempotencyKey: `commercial-image-ocr__${'a'.repeat(64)}`,
   sourceTag: 'commercial-image-ocr',
   createdAt: '2026-08-12T08:00:01.000Z',
@@ -45,12 +48,12 @@ describe('CommercialOcrQueueProducer', () => {
     const factory = jest.fn().mockReturnValue(queue);
     const producer = new CommercialOcrQueueProducer('redis://example.test:6379', factory);
 
-    await expect(producer.add(COMMERCIAL_OCR_JOB_NAME, job, COMMERCIAL_OCR_JOB_OPTIONS)).resolves.toEqual(
-      { id: 'job-1' },
-    );
-    await expect(producer.add(COMMERCIAL_OCR_JOB_NAME, job, COMMERCIAL_OCR_JOB_OPTIONS)).resolves.toEqual(
-      { id: 'job-1' },
-    );
+    await expect(
+      producer.add(COMMERCIAL_OCR_JOB_NAME, job, COMMERCIAL_OCR_JOB_OPTIONS),
+    ).resolves.toEqual({ id: 'job-1' });
+    await expect(
+      producer.add(COMMERCIAL_OCR_JOB_NAME, job, COMMERCIAL_OCR_JOB_OPTIONS),
+    ).resolves.toEqual({ id: 'job-1' });
 
     expect(factory).toHaveBeenCalledTimes(1);
     expect(queue.on).toHaveBeenCalledWith('error', expect.any(Function));
@@ -72,10 +75,7 @@ describe('CommercialOcrQueueProducer', () => {
       disconnect: jest.fn().mockResolvedValue(undefined),
       on: jest.fn(),
     };
-    const factory = jest
-      .fn()
-      .mockReturnValueOnce(failedQueue)
-      .mockReturnValueOnce(healthyQueue);
+    const factory = jest.fn().mockReturnValueOnce(failedQueue).mockReturnValueOnce(healthyQueue);
     const producer = new CommercialOcrQueueProducer('redis://example.test:6379', factory);
 
     await expect(

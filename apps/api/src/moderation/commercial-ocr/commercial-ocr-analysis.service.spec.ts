@@ -11,7 +11,10 @@ import {
 } from './commercial-ocr-cache.store';
 import { CommercialOcrAnalysisService } from './commercial-ocr-analysis.service';
 import type { CommercialOcrDetector } from './commercial-ocr-decision-policy';
-import { CommercialOcrImageRejectedError } from './commercial-ocr-preprocessor';
+import {
+  CommercialOcrImageRejectedError,
+  CommercialOcrPreprocessUnavailableError,
+} from './commercial-ocr-preprocessor';
 
 const SETTINGS = {
   commercialAdsFilterEnabled: true,
@@ -80,6 +83,16 @@ function noTextResult() {
     text: '',
     aggregateConfidence: null,
     words: [],
+  });
+}
+
+function recognizedTextResult(text: string, passLabel: 'primary' | 'confirmation') {
+  return nativeResult({
+    passLabel,
+    psm: passLabel === 'primary' ? 11 : 6,
+    text,
+    aggregateConfidence: 96,
+    words: [word(text, 0, text.length)],
   });
 }
 
@@ -241,19 +254,103 @@ function analyze(
     caption?: string;
     authorizeStage?: jest.Mock;
     deadlineAtMs?: number;
+    settings?: ChatSettings;
+    commercialScanEnabled?: boolean;
+    imageTextStopListScanEnabled?: boolean;
   } = {},
 ) {
   return service.analyzeAlbum({
     album: album(options.urls ?? ['https://i.oneme.ru/1']),
     caption: options.caption ?? '',
-    settings: SETTINGS,
+    settings: options.settings ?? SETTINGS,
     ocrVersion: 'tesseract-rus-eng-v1',
     deadlineAtMs: options.deadlineAtMs ?? Date.now() + 60_000,
     authorizeStage: options.authorizeStage ?? jest.fn().mockResolvedValue(true),
+    ...(options.commercialScanEnabled === undefined
+      ? {}
+      : { commercialScanEnabled: options.commercialScanEnabled }),
+    ...(options.imageTextStopListScanEnabled === undefined
+      ? {}
+      : { imageTextStopListScanEnabled: options.imageTextStopListScanEnabled }),
   });
 }
 
 describe('CommercialOcrAnalysisService', () => {
+  it('runs a confirmation pass for an image stop-list candidate and returns no OCR text', async () => {
+    const { service, downloader, ocr } = harness({
+      ocrResults: [
+        recognizedTextResult('казино', 'primary'),
+        recognizedTextResult('КАЗИНО', 'confirmation'),
+      ],
+    });
+    Object.defineProperty(service, 'detector', {
+      value: { detect: jest.fn().mockReturnValue(null) },
+    });
+
+    const result = await analyze(service, {
+      caption: 'Ищу совет по ремонту',
+      urls: ['https://i.oneme.ru/1', 'https://i.oneme.ru/2'],
+      settings: {
+        ...SETTINGS,
+        commercialAdsFilterEnabled: false,
+        messageLimitsImageTextScanEnabled: true,
+        messageLimitsBlockedWords: ['казино'],
+        messageLimitsBlockedDomains: [],
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'complete',
+      imageTextStopListDecision: {
+        kind: 'match',
+        ruleCode: 'MESSAGE_BLOCKED_WORD',
+        value: 'казино',
+        imageIndex: 0,
+      },
+    });
+    expect(ocr.recognize).toHaveBeenCalledTimes(2);
+    expect(downloader.download).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.stringify((result as { imageTextStopListDecision: unknown }).imageTextStopListDecision),
+    ).not.toContain('КАЗИНО');
+  });
+
+  it('finishes commercial album traversal after an image stop-list match in a combined job', async () => {
+    const { service, downloader, ocr } = harness({
+      ocrResults: [
+        recognizedTextResult('казино', 'primary'),
+        recognizedTextResult('КАЗИНО', 'confirmation'),
+        nativeResult({ passLabel: 'primary', psm: 11 }),
+        nativeResult({ passLabel: 'confirmation', psm: 6 }),
+      ],
+    });
+
+    const result = await analyze(service, {
+      urls: ['https://i.oneme.ru/1', 'https://i.oneme.ru/2'],
+      commercialScanEnabled: true,
+      imageTextStopListScanEnabled: true,
+      settings: {
+        ...SETTINGS,
+        messageLimitsImageTextScanEnabled: true,
+        messageLimitsBlockedWords: ['казино'],
+        messageLimitsBlockedDomains: [],
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'complete',
+      decision: { action: 'DELETE' },
+      imageTextStopListDecision: {
+        kind: 'match',
+        ruleCode: 'MESSAGE_BLOCKED_WORD',
+        value: 'казино',
+        imageIndex: 0,
+      },
+    });
+    expect(downloader.download).toHaveBeenCalledTimes(2);
+    expect(ocr.recognize).toHaveBeenCalledTimes(4);
+  });
+
   it('short-circuits a safe caption before download or governor work', async () => {
     const { service, downloader, ocr, cache } = harness();
     const detector: CommercialOcrDetector = { detect: jest.fn().mockReturnValue(null) };
@@ -671,6 +768,20 @@ describe('CommercialOcrAnalysisService', () => {
       'primary',
       expect.objectContaining({ deadlineAtMs: expect.any(Number) }),
     );
+    expect(ocr.recognize).not.toHaveBeenCalled();
+    expect(cache.write).not.toHaveBeenCalled();
+  });
+
+  it('retries a transient sandbox preprocessing outage within the bounded job policy', async () => {
+    const { service, preprocessor, ocr, cache } = harness();
+    preprocessor.prepare.mockRejectedValueOnce(new CommercialOcrPreprocessUnavailableError());
+
+    await expect(analyze(service)).resolves.toEqual({
+      kind: 'retry',
+      reason: 'ocr_failed',
+      imageIndex: 0,
+      pass: 'primary',
+    });
     expect(ocr.recognize).not.toHaveBeenCalled();
     expect(cache.write).not.toHaveBeenCalled();
   });

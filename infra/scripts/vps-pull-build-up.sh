@@ -268,6 +268,10 @@ component_manifest_matches_runtime() {
     actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true)"
     [[ "$actual_image_id" == "$expected_image_id" ]] || return 1
   done
+  if [[ "$component" == "api-shared" ]]; then
+    maxim_topology_verify_ocr_native_sandbox_for_image \
+      COMPOSE_FILES "$expected_image_id" || return 1
+  fi
 }
 
 impact_plan_selects_component() {
@@ -872,6 +876,7 @@ verify_inherited_api_component() {
   for service in "${inherited_api_services[@]}"; do
     verify_service_image_id "$service" "$expected_image_id"
   done
+  maxim_topology_verify_ocr_native_sandbox_for_image COMPOSE_FILES "$expected_image_id"
 }
 
 verify_inherited_release_components() {
@@ -937,6 +942,7 @@ record_successful_release() {
       for service in "${API_SERVICES[@]}"; do
         verify_service_image_id "$service" "$image_id"
       done
+      maxim_topology_verify_ocr_native_sandbox_for_image COMPOSE_FILES "$image_id"
     else
       verify_service_image_id "$service" "$image_id"
     fi
@@ -1251,6 +1257,7 @@ fi
 TARGET_SHA="$(git rev-parse HEAD)"
 RELEASE_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_SHA:0:12}"
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_OCR_NATIVE_SANDBOX=0
 TARGET_COMMERCIAL_OCR_VERSION=""
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   maxim_topology_require_publisher_secret_files
@@ -1258,7 +1265,8 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     "$TARGET_SHA" \
     COMPOSE_FILES \
     TARGET_HAS_MEDIA_ANALYSIS \
-    TARGET_COMMERCIAL_OCR_VERSION
+    TARGET_COMMERCIAL_OCR_VERSION \
+    TARGET_HAS_OCR_NATIVE_SANDBOX
 fi
 DEPLOYED_COMPONENTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
@@ -1294,6 +1302,8 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     fi
     maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE" "$TARGET_SHA"
   fi
+  maxim_topology_require_ocr_native_sandbox_image_capability \
+    "$MAXIM_API_IMAGE" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
   begin_release_runtime_transition
   DEPLOY_RUNTIME_STARTED=1
   verify_inherited_release_components
@@ -1343,6 +1353,7 @@ if [[ "${#DEPLOYED_COMPONENTS[@]}" -gt 0 ]]; then
 fi
 remove_stale_service_containers "${SERVICES[@]}"
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  expected_api_image_id="$(docker image inspect --format '{{.Id}}' "$MAXIM_API_IMAGE")"
   maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
@@ -1356,7 +1367,19 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service_wave "ingress" "api-ingress"
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_recreate_ocr_native_sandbox COMPOSE_FILES "$expected_api_image_id"
+    maxim_topology_smoke_ocr_native_sandbox_uds \
+      COMPOSE_FILES "$expected_api_image_id" prestart
+  else
+    maxim_topology_remove_ocr_native_sandbox_container COMPOSE_FILES
+  fi
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service_wave "media analysis" "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$expected_api_image_id" with-media
+  fi
 
   # FLAG: Webhook consumers and the enqueue producer start only after every non-webhook API role
   # is already on the target image and the owned global pause has been re-proven.
@@ -1380,10 +1403,15 @@ if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     "$TARGET_COMMERCIAL_OCR_VERSION"
 fi
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
-  expected_api_image_id="$(docker image inspect --format '{{.Id}}' "$MAXIM_API_IMAGE")"
   for service in "${API_SERVICES[@]}"; do
     verify_service_image_id "$service" "$expected_api_image_id"
   done
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$expected_api_image_id" with-media
+  else
+    maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES
+  fi
   wait_for_url "http://127.0.0.1:3001/api/health/live" 180
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
   maxim_webhook_resume_after_api_fence COMPOSE_FILES
@@ -1407,7 +1435,11 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   node scripts/smoke-http.mjs json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=("api-local-live" "api-local-ready" "api-admin-live" "api-admin-ready" "api-public-live")
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+    if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
+    else
+      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required legacy
+    fi
     SMOKE_RESULTS+=(
       "api-commercial-ocr-version"
       "api-media-analysis-tesseract-rus-eng"
@@ -1415,6 +1447,13 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
       "api-media-analysis-native-raster"
       "api-media-analysis-internal-ready"
     )
+    if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+      SMOKE_RESULTS+=(
+        "api-ocr-native-sandbox-isolation"
+        "api-ocr-native-sandbox-uds"
+        "api-ocr-native-sandbox-process-clean"
+      )
+    fi
   fi
 fi
 

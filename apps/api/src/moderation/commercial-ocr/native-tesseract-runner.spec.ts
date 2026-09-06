@@ -61,7 +61,11 @@ describe('probeNativeTesseract', () => {
       expect.objectContaining({
         command: '/usr/bin/tesseract',
         args: ['--list-langs'],
-        options: expect.objectContaining({ shell: false, windowsHide: true }),
+        options: expect.objectContaining({
+          shell: false,
+          windowsHide: true,
+          detached: process.platform !== 'win32',
+        }),
       }),
     );
     expect(captured?.options.env).toEqual(expect.objectContaining({ TESSDATA_PREFIX: '/models' }));
@@ -175,7 +179,11 @@ describe('runNativeTesseract', () => {
       expect.objectContaining({
         command: '/usr/bin/tesseract',
         args: ['stdin', 'stdout', '-l', 'rus+eng', '--oem', '1', '--psm', '11', 'tsv'],
-        options: expect.objectContaining({ shell: false, windowsHide: true }),
+        options: expect.objectContaining({
+          shell: false,
+          windowsHide: true,
+          detached: process.platform !== 'win32',
+        }),
       }),
     );
     expect(captured?.options.env).toEqual(

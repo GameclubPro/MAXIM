@@ -22,6 +22,10 @@ describe('admin settings section apply', () => {
     expect(SETTINGS_SECTION_KEYS.profanityFilter).toContain('profanitySensitivity');
   });
 
+  it('applies image text scanning with the stop-word section', () => {
+    expect(SETTINGS_SECTION_KEYS.stopWords).toContain('messageLimitsImageTextScanEnabled');
+  });
+
   it('keeps the storefront section scoped to its toggles', () => {
     expect(SETTINGS_SECTION_KEYS.storefront).toEqual([
       'karavanStorefrontEnabled',

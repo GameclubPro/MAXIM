@@ -534,6 +534,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
 fi
 TARGET_SHA="$(git rev-parse HEAD)"
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_OCR_NATIVE_SANDBOX=0
 TARGET_COMMERCIAL_OCR_VERSION=""
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   maxim_topology_require_publisher_secret_files
@@ -541,7 +542,8 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     "$TARGET_SHA" \
     COMPOSE_FILES \
     TARGET_HAS_MEDIA_ANALYSIS \
-    TARGET_COMMERCIAL_OCR_VERSION
+    TARGET_COMMERCIAL_OCR_VERSION \
+    TARGET_HAS_OCR_NATIVE_SANDBOX
 fi
 
 BUILD_STATIC_IMAGE=0
@@ -566,6 +568,9 @@ wait_for_postgres 180
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   ensure_compose_env
   maxim_topology_build_shared_api_image "$SCALE_PROJECT_NAME"
+  SCALE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${SCALE_PROJECT_NAME}-api-ingress:latest")"
+  maxim_topology_require_ocr_native_sandbox_image_capability \
+    "$SCALE_API_IMAGE_ID" "$TARGET_HAS_OCR_NATIVE_SANDBOX"
 fi
 
 if ! run_migrations; then
@@ -591,6 +596,31 @@ remove_stale_service_containers "${SERVICES[@]}"
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
   maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
 fi
+recreate_service_wave "support" "api-admin" "miniapp-static"
+recreate_service_wave "major static" "miniapp-major-static"
+recreate_service_wave "ingress" "api-ingress"
+if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+  maxim_topology_recreate_ocr_native_sandbox COMPOSE_FILES "${SCALE_API_IMAGE_ID:-}"
+  maxim_topology_smoke_ocr_native_sandbox_uds \
+    COMPOSE_FILES "${SCALE_API_IMAGE_ID:-}" prestart
+else
+  maxim_topology_remove_ocr_native_sandbox_container COMPOSE_FILES
+fi
+recreate_service_wave "media analysis" "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_verify_api_commercial_ocr_version \
+    COMPOSE_FILES \
+    "$TARGET_COMMERCIAL_OCR_VERSION"
+  if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "${SCALE_API_IMAGE_ID:-}" with-media
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
+  else
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required legacy
+  fi
+fi
+
 recreate_service_wave "worker" \
   "api-enqueue" \
   "api-action" \
@@ -602,18 +632,7 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-c" \
   "api-moderation-realtime-d" \
   "api-moderation-background"
-recreate_service_wave "support" "api-admin" "miniapp-static"
-recreate_service_wave "major static" "miniapp-major-static"
-recreate_service_wave "ingress" "api-ingress"
 ensure_requested_services_running "$MAXIM_MEDIA_ANALYSIS_SERVICE"
-recreate_service_wave "media analysis" "$MAXIM_MEDIA_ANALYSIS_SERVICE"
-
-if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-  maxim_topology_verify_api_commercial_ocr_version \
-    COMPOSE_FILES \
-    "$TARGET_COMMERCIAL_OCR_VERSION"
-  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
-fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180

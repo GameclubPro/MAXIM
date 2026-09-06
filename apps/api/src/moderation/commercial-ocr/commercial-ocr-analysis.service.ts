@@ -33,6 +33,7 @@ import {
 import {
   CommercialOcrImageRejectedError,
   CommercialOcrPreprocessor,
+  CommercialOcrPreprocessUnavailableError,
   resolveCommercialOcrPreprocessCacheProfile,
   resolveCommercialOcrPreprocessLimits,
   type CommercialOcrPassName,
@@ -43,6 +44,12 @@ import {
   validateCommercialOcrVersion,
 } from './commercial-ocr.queue';
 import { NativeTesseractOcrAdapter } from './native-tesseract-ocr.adapter';
+import {
+  evaluateImageTextStopListDecision,
+  shouldConfirmImageTextStopListPass,
+  type ImageTextStopListDecision,
+  type ImageTextStopListPasses,
+} from './image-text-stop-list-decision';
 import type {
   NativeTesseractFailureReason,
   NativeTesseractPageSegmentationMode,
@@ -88,7 +95,11 @@ export type CommercialOcrAnalysisIncompleteReason =
 export type CommercialOcrAnalysisRetryReason = 'download_failed' | 'ocr_failed';
 
 export type CommercialOcrAnalysisResult =
-  | { kind: 'complete'; decision: CommercialOcrDecision }
+  | {
+      kind: 'complete';
+      decision: CommercialOcrDecision;
+      imageTextStopListDecision: ImageTextStopListDecision;
+    }
   | {
       kind: 'incomplete';
       reason: CommercialOcrAnalysisIncompleteReason;
@@ -139,6 +150,9 @@ export class CommercialOcrAnalysisService {
     ocrVersion: string;
     deadlineAtMs: number;
     authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
+    isLinkAllowlisted?: (link: string) => boolean;
+    commercialScanEnabled?: boolean;
+    imageTextStopListScanEnabled?: boolean;
   }): Promise<CommercialOcrAnalysisResult> {
     if (deadlineExpired(params.deadlineAtMs)) {
       return deadlineIncomplete();
@@ -156,6 +170,14 @@ export class CommercialOcrAnalysisService {
       return { kind: 'incomplete', reason: 'invalid_album' };
     }
 
+    const imageTextStopListEnabled =
+      (params.imageTextStopListScanEnabled ?? params.settings.messageLimitsImageTextScanEnabled) &&
+      (params.settings.messageLimitsBlockedWords.length > 0 ||
+        params.settings.messageLimitsBlockedDomains.length > 0);
+    const commercialScanEnabled =
+      params.commercialScanEnabled ?? params.settings.commercialAdsFilterEnabled;
+    const imageTextPasses = new Map<number, ImageTextStopListPasses>();
+
     type RuntimeImageContext = {
       cpuSample: CommercialOcrImageCpuSample;
       rawBytes: Buffer | null;
@@ -169,6 +191,34 @@ export class CommercialOcrAnalysisService {
       settings: params.settings,
       imageSources: params.album.images.map((image) => image.source),
       detector: this.detector,
+      requireCompletePrimaryScan: imageTextStopListEnabled,
+      ...(imageTextStopListEnabled
+        ? {
+            shouldResolveConfirmation: ({ primary }: { primary: CommercialOcrPass }) =>
+              shouldConfirmImageTextStopListPass(
+                primary,
+                params.settings,
+                params.isLinkAllowlisted,
+              ),
+            shouldStopAfterConfirmation: ({
+              imageIndex,
+              primary,
+              confirmation,
+            }: {
+              imageIndex: number;
+              primary: CommercialOcrPass;
+              confirmation: CommercialOcrPass;
+            }) =>
+              !commercialScanEnabled &&
+              evaluateImageTextStopListDecision({
+                settings: params.settings,
+                images: [{ imageIndex, primary, confirmation }],
+                ...(params.isLinkAllowlisted
+                  ? { isLinkAllowlisted: params.isLinkAllowlisted }
+                  : {}),
+              }).kind === 'match',
+          }
+        : {}),
       preflight: () => {
         const missingDownloadUrlIndex = params.album.images.findIndex(
           (image) => !image.downloadUrl,
@@ -242,15 +292,40 @@ export class CommercialOcrAnalysisService {
         if (pass === 'confirmation' && resolved.kind === 'ready') {
           this.metrics.recordCounter('confirmation.completed');
         }
-        return resolved.kind === 'ready'
-          ? { kind: 'ready', value: resolved.pass }
-          : { kind: 'stop', result: resolved };
+        if (resolved.kind !== 'ready') {
+          return { kind: 'stop', result: resolved };
+        }
+        const current = imageTextPasses.get(imageIndex);
+        if (pass === 'primary') {
+          imageTextPasses.set(imageIndex, {
+            imageIndex,
+            primary: resolved.pass,
+            confirmation: current?.confirmation ?? null,
+          });
+        } else if (current) {
+          imageTextPasses.set(imageIndex, { ...current, confirmation: resolved.pass });
+        }
+        return { kind: 'ready', value: resolved.pass };
       },
       finishImage: ({ cpuSample }) => this.metrics.finishImageCpuSample(cpuSample),
       observePolicyDuration: (durationMs) => this.metrics.recordStageDuration('policy', durationMs),
     });
     return scheduled.kind === 'complete'
-      ? { kind: 'complete', decision: scheduled.decision }
+      ? {
+          kind: 'complete',
+          decision: scheduled.decision,
+          imageTextStopListDecision: imageTextStopListEnabled
+            ? evaluateImageTextStopListDecision({
+                settings: params.settings,
+                images: [...imageTextPasses.values()].sort(
+                  (left, right) => left.imageIndex - right.imageIndex,
+                ),
+                ...(params.isLinkAllowlisted
+                  ? { isLinkAllowlisted: params.isLinkAllowlisted }
+                  : {}),
+              })
+            : { kind: 'no_action' },
+        }
       : scheduled.result;
   }
 
@@ -358,11 +433,18 @@ export class CommercialOcrAnalysisService {
       if (deadlineExpired(params.deadlineAtMs)) {
         return deadlineIncomplete(params.imageIndex, params.pass);
       }
+      if (error instanceof CommercialOcrPreprocessUnavailableError) {
+        return {
+          kind: 'retry',
+          reason: 'ocr_failed',
+          imageIndex: params.imageIndex,
+          pass: params.pass,
+        };
+      }
       return {
         kind: 'incomplete',
         reason:
-          error instanceof CommercialOcrImageRejectedError &&
-          error.reason === 'processing_timeout'
+          error instanceof CommercialOcrImageRejectedError && error.reason === 'processing_timeout'
             ? 'preprocess_timeout'
             : 'image_rejected',
         imageIndex: params.imageIndex,

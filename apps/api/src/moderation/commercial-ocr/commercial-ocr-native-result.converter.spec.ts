@@ -46,6 +46,7 @@ describe('commercial OCR native result converter', () => {
         status: 'no_text',
         text: '',
         confidencePermille: 0,
+        words: [],
         criticalEvidence: [],
       },
     });

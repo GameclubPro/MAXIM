@@ -330,6 +330,8 @@ test('pins an exact unique 13-role topology and exact seven producer partition',
   assert.match(rollout, /Commercial OCR rollout API roles must be unique/u);
   assert.match(rollout, /Commercial OCR moderation producer partition is incomplete/u);
   assert.match(rollout, /recovery requires action plus seven producer roles/u);
+  assert.match(rollout, /EXPECTED_HAS_OCR_NATIVE_SANDBOX=0/u);
+  assert.match(rollout, /promotion requires the reviewed no-network native sandbox/u);
 });
 
 test('checks role-aware readiness, image, service identity, role, and rollout parity', () => {
@@ -347,6 +349,8 @@ test('checks role-aware readiness, image, service identity, role, and rollout pa
   assert.match(verifyBlock, /"\$image_id" != "\$MANIFEST_IMAGE_ID"/u);
   assert.match(verifyBlock, /verify-runtime-env[\s\S]*"\$service"/u);
   assert.match(verifyBlock, /verify_no_unreviewed_running_api_containers/u);
+  assert.match(verifyBlock, /maxim_topology_verify_ocr_native_sandbox_runtime/u);
+  assert.match(rollout, /reviewedAuxiliaryCount !== value\.expectedAuxiliaryCount/u);
   assert.match(rollout, /"APP_ROLE"[\s\S]*"APP_SERVICE_NAME"/u);
   assert.match(readinessBlock, /for service in "\$\{MAXIM_PRODUCTION_API_SERVICES\[@\]\}"/u);
   assert.match(readinessBlock, /api_role_ready "\$service" "\$deadline" &/u);
@@ -356,6 +360,7 @@ test('checks role-aware readiness, image, service identity, role, and rollout pa
   );
   assert.match(readinessBlock, /wait "\$pid"/u);
   assert.match(readinessBlock, /api_runtime_signature/u);
+  assert.match(readinessBlock, /MAXIM_OCR_NATIVE_SANDBOX_SERVICE/u);
   assert.match(readinessBlock, /API_STABILITY_WINDOW_SEC/u);
   assert.match(rollout, /docker exec "\$\{container_ids\[0\]\}" node -e/u);
   assert.match(rollout, /'\{\{\.RestartCount\}\}'/u);

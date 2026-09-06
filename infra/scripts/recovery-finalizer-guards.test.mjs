@@ -76,6 +76,9 @@ test('finalizer binds every active component to the target ref and re-proves str
   assert.match(runtime, /"\$image_id" == "\$expected_id"/u);
   assert.match(finalizer, /for service in "\$\{MAXIM_PRODUCTION_API_SERVICES\[@\]\}"/u);
   assert.match(finalizer, /commercial-ocr-runtime-inventory\.mjs/u);
+  assert.match(finalizer, /MAXIM_OCR_NATIVE_SANDBOX_SERVICE/u);
+  assert.match(finalizer, /maxim_topology_verify_ocr_native_sandbox_runtime/u);
+  assert.match(finalizer, /reviewedAuxiliaryCount === value\.expectedAuxiliaryCount/u);
 
   for (const endpoint of [
     'http://127.0.0.1:3001/api/health/live',
@@ -90,7 +93,10 @@ test('finalizer binds every active component to the target ref and re-proves str
   assert.match(smokes, /"\$PUBLIC_HEALTH_URL\/api\/health\/live"/u);
   assert.match(smokes, /"\$PUBLIC_HEALTH_URL\/app\/"/u);
   assert.match(smokes, /maxim_topology_verify_api_commercial_ocr_version/u);
-  assert.match(smokes, /maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required/u);
+  assert.match(
+    smokes,
+    /maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox/u,
+  );
 
   assert.match(commit, /for component in api-shared miniapp-major-static admin-static/u);
   assert.match(commit, /\$\{component\}\|\$\{EXPECTED_DEPLOY_SHA\}\|/u);
@@ -204,6 +210,7 @@ acquire_deploy_lock() { printf '%s\\n' lock >&2; }
 verify_synchronized_checkout() { printf '%s\\n' checkout >&2; }
 resolve_recovery_base_manifest() { printf '%s\\n' journal >&2; }
 resolve_target_images() { printf '%s\\n' images >&2; }
+prepare_target_ocr_runtime() { printf '%s\\n' ocr-boundary >&2; }
 verify_runtime_snapshot() { printf '%s\\n' runtime >&2; printf '%s' stable-runtime; }
 assert_webhook_queue_fence_released() { printf '%s\\n' queues >&2; }
 run_strict_finalizer_smokes() { printf '%s\\n' smokes >&2; }
@@ -222,6 +229,7 @@ main main
     'checkout',
     'journal',
     'images',
+    'ocr-boundary',
     'runtime',
     'queues',
     'smokes',
@@ -240,6 +248,7 @@ test('main fails closed before manifest commit when any proof boundary fails', (
     'verify_synchronized_checkout',
     'resolve_recovery_base_manifest',
     'resolve_target_images',
+    'prepare_target_ocr_runtime',
     'verify_runtime_snapshot',
     'assert_webhook_queue_fence_released',
     'run_strict_finalizer_smokes',
@@ -253,6 +262,7 @@ acquire_deploy_lock() { :; }
 verify_synchronized_checkout() { :; }
 resolve_recovery_base_manifest() { :; }
 resolve_target_images() { :; }
+prepare_target_ocr_runtime() { :; }
 verify_runtime_snapshot() { printf '%s' stable-runtime; }
 assert_webhook_queue_fence_released() { :; }
 run_strict_finalizer_smokes() { :; }

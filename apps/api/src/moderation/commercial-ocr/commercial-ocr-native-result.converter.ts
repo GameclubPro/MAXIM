@@ -98,6 +98,7 @@ export function commercialOcrCacheValueToDecisionPass(
     status: value.status,
     text: value.text,
     confidencePermille: value.confidencePermille,
+    words: value.words,
     criticalEvidence:
       value.status === 'recognized'
         ? deriveCommercialOcrCriticalEvidence({ text: value.text, words: value.words })

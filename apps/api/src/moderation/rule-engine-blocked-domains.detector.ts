@@ -21,41 +21,69 @@ export class MessageLimitsBlockedDomainDetector {
     blockedDomains: readonly string[],
     options: { isLinkAllowlisted?: (link: string) => boolean } = {},
   ): BlockedDomainDetection | null {
+    return this.detectMatches(text, blockedDomains, options, true)[0] ?? null;
+  }
+
+  detectAll(
+    text: string,
+    blockedDomains: readonly string[],
+    options: { isLinkAllowlisted?: (link: string) => boolean } = {},
+  ): BlockedDomainDetection[] {
+    return this.detectMatches(text, blockedDomains, options, false);
+  }
+
+  private detectMatches(
+    text: string,
+    blockedDomains: readonly string[],
+    options: { isLinkAllowlisted?: (link: string) => boolean },
+    stopAfterFirst: boolean,
+  ): BlockedDomainDetection[] {
     if (!text || !Array.isArray(blockedDomains) || blockedDomains.length === 0) {
-      return null;
+      return [];
     }
 
     const blockedDomainIndex = this.resolveMessageLimitsBlockedDomainList(blockedDomains);
     if (blockedDomainIndex.domains.length === 0) {
-      return null;
+      return [];
     }
 
     const links = extractUrlsFromText(text);
     if (links.length === 0) {
-      return null;
+      return [];
     }
 
+    const detections: BlockedDomainDetection[] = [];
+    const detectedDomains = new Set<string>();
     for (const link of links) {
       const matchedDomain = normalizeMessageLimitsBlockedDomainCandidate(link);
       if (!matchedDomain) {
         continue;
       }
 
-      const blockedDomain = this.findBlockedDomainMatch(matchedDomain, blockedDomainIndex.domains);
-      if (blockedDomain) {
-        if (options.isLinkAllowlisted?.(link)) {
+      const blockedDomainMatches = this.findBlockedDomainMatches(
+        matchedDomain,
+        blockedDomainIndex.domains,
+      );
+      if (blockedDomainMatches.length === 0 || options.isLinkAllowlisted?.(link)) {
+        continue;
+      }
+      for (const blockedDomain of blockedDomainMatches) {
+        if (detectedDomains.has(blockedDomain)) {
           continue;
         }
-
-        return {
+        detectedDomains.add(blockedDomain);
+        detections.push({
           blockedDomain,
           matchedDomain,
           matchedLink: link,
-        };
+        });
+        if (stopAfterFirst) {
+          return detections;
+        }
       }
     }
 
-    return null;
+    return detections;
   }
 
   private resolveMessageLimitsBlockedDomainList(
@@ -87,17 +115,14 @@ export class MessageLimitsBlockedDomainDetector {
     return resolved;
   }
 
-  private findBlockedDomainMatch(
+  private findBlockedDomainMatches(
     matchedDomain: string,
     blockedDomains: readonly string[],
-  ): string | null {
-    for (const blockedDomain of blockedDomains) {
-      if (matchedDomain === blockedDomain || matchedDomain.endsWith(`.${blockedDomain}`)) {
-        return blockedDomain;
-      }
-    }
-
-    return null;
+  ): string[] {
+    return blockedDomains.filter(
+      (blockedDomain) =>
+        matchedDomain === blockedDomain || matchedDomain.endsWith(`.${blockedDomain}`),
+    );
   }
 
   private buildBlockedDomainListCacheKey(blockedDomains: readonly string[]): string {

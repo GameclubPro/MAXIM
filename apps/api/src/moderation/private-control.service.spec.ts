@@ -1629,6 +1629,25 @@ describe('PrivateControlService', () => {
     expect(adminService.updateSettings).not.toHaveBeenCalled();
   });
 
+  it('keeps the legacy limits summary explicit about delete-only image OCR', () => {
+    const { service } = createHarness();
+    const summary = (
+      service as unknown as {
+        buildSectionSummaryLines: (
+          section: 'limits',
+          settings: typeof defaultSettings,
+          view: 'basic',
+        ) => string[];
+      }
+    ).buildSectionSummaryLines(
+      'limits',
+      { ...defaultSettings, messageLimitsImageTextScanEnabled: true },
+      'basic',
+    );
+
+    expect(summary).toContain('Текст на фото: вкл • только удаление');
+  });
+
   it('treats /legacy and /modern as aliases for the current interface', async () => {
     const { service, maxClient, chats } = createHarness();
 

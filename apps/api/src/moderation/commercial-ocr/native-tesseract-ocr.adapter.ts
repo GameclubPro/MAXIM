@@ -15,6 +15,7 @@ import {
   type CommercialOcrNativeArtifactVerification,
   type CommercialOcrNativeBehaviorIdentity,
 } from './commercial-ocr-behavior-identity';
+import { NativeOcrSandboxClient } from './native-ocr-sandbox.client';
 import {
   NATIVE_TESSERACT_PAGE_SEGMENTATION_MODES,
   type NativeTesseractFailedOpenResult,
@@ -38,6 +39,7 @@ const WORKER_STARTUP_TIMEOUT_MS = COMMERCIAL_OCR_NATIVE_ORCHESTRATION.workerStar
 const WORKER_RESULT_GRACE_MS = COMMERCIAL_OCR_NATIVE_ORCHESTRATION.workerResultGraceMs;
 const MAX_WORKER_RESTART_ATTEMPTS = COMMERCIAL_OCR_NATIVE_ORCHESTRATION.maxWorkerRestartAttempts;
 const QUEUE_WAIT_SAMPLE_CAPACITY = 512;
+const SANDBOX_PROBE_INTERVAL_MS = 5_000;
 
 type OcrJob = {
   id: string;
@@ -84,6 +86,11 @@ export type NativeTesseractRuntimeStatus = Readonly<{
   }>;
   latencyMs: Readonly<{ last: number | null; average: number | null; maximum: number | null }>;
   behaviorIdentity: NativeTesseractBehaviorIdentityStatus;
+  boundary?: Readonly<{
+    kind: 'unix_socket_sandbox' | 'local_worker';
+    required: boolean;
+    verified: boolean;
+  }>;
 }>;
 
 export type NativeTesseractBehaviorIdentityStatus = Readonly<{
@@ -182,6 +189,8 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
   private readonly ompThreadLimit: number;
   private readonly nativeArtifactVerificationRequired: boolean;
   private readonly nativeBehaviorIdentity: CommercialOcrNativeBehaviorIdentity;
+  private readonly sandbox: NativeOcrSandboxClient;
+  private sandboxProbeTimer: NodeJS.Timeout | null = null;
   private nativeArtifactVerification: CommercialOcrNativeArtifactVerification | null = null;
   private nativeArtifactVerificationPromise: Promise<void> | null = null;
   private readonly workerPath = resolveWorkerPath(__dirname);
@@ -215,10 +224,12 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       configService.get<string>('APP_SERVICE_NAME') === 'api-media-analysis';
     this.nativeBehaviorIdentity =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
+    this.sandbox = new NativeOcrSandboxClient(configService);
   }
 
   onModuleInit(): void {
     this.startNativeArtifactVerification();
+    this.scheduleSandboxProbe();
     this.ensureInitialized();
   }
 
@@ -227,6 +238,14 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       return;
     }
     this.shuttingDown = true;
+    if (this.sandboxProbeTimer) {
+      clearInterval(this.sandboxProbeTimer);
+      this.sandboxProbeTimer = null;
+    }
+    this.sandbox.close();
+    if (this.sandbox.isConfigured() || this.sandbox.isRequired()) {
+      return;
+    }
     for (const job of this.queue.splice(0)) {
       this.queueWaitMs.record(Math.max(0, performance.now() - job.enqueuedAt));
       this.finishJob(job, this.failedOpen(job, 'shutting_down'));
@@ -277,6 +296,9 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
   }
 
   getRuntimeStatus(): NativeTesseractRuntimeStatus {
+    if (this.sandbox.isConfigured() || this.sandbox.isRequired()) {
+      return this.getSandboxRuntimeStatus();
+    }
     const live = this.slots.filter((slot) => isChildLive(slot.process)).length;
     const readyWorkers = this.slots.filter(
       (slot) => isChildLive(slot.process) && slot.ready && slot.retirementReason === null,
@@ -314,7 +336,20 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
         maximum: this.maxLatencyMs,
       },
       behaviorIdentity: this.getNativeBehaviorIdentityStatus(),
+      boundary: {
+        kind: 'local_worker',
+        required: false,
+        verified: false,
+      },
     };
+  }
+
+  isSandboxBoundaryVerified(): boolean {
+    return (
+      this.sandbox.isConfigured() &&
+      this.sandbox.isVerified() &&
+      this.nativeArtifactsReadyForRecognition()
+    );
   }
 
   private startNativeArtifactVerification(): void {
@@ -367,7 +402,58 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
   }
 
   protected verifyNativeBehaviorIdentity(): Promise<CommercialOcrNativeArtifactVerification> {
+    if (this.sandbox.isConfigured()) {
+      return this.sandbox.probe();
+    }
+    if (this.sandbox.isRequired()) {
+      return Promise.resolve({
+        verified: false,
+        status: 'probe_failed',
+        mismatches: Object.freeze(['boundary.unconfigured']),
+        identity: this.nativeBehaviorIdentity,
+      });
+    }
     return resolveVerifiedCommercialOcrNativeBehaviorIdentity(this.configService);
+  }
+
+  private scheduleSandboxProbe(): void {
+    if (!this.sandbox.isConfigured() || !this.sandbox.isRequired() || this.sandboxProbeTimer) {
+      return;
+    }
+    this.sandboxProbeTimer = setInterval(() => {
+      void this.refreshSandboxVerification();
+    }, SANDBOX_PROBE_INTERVAL_MS);
+    this.sandboxProbeTimer.unref();
+  }
+
+  private async refreshSandboxVerification(): Promise<void> {
+    if (this.shuttingDown) return;
+    try {
+      const result = await this.sandbox.probe();
+      const valid =
+        result.verified &&
+        result.identity.complete &&
+        this.nativeBehaviorIdentity.complete &&
+        result.identity.fingerprintSha256 === this.nativeBehaviorIdentity.fingerprintSha256;
+      this.nativeArtifactVerification = valid
+        ? result
+        : {
+            ...result,
+            verified: false,
+            status: 'mismatch',
+            mismatches: Object.freeze([...result.mismatches, 'boundary.identity']),
+          };
+      if (valid) {
+        this.ensureInitialized();
+      }
+    } catch {
+      this.nativeArtifactVerification = {
+        verified: false,
+        status: 'probe_failed',
+        mismatches: Object.freeze(['boundary.unavailable']),
+        identity: this.nativeBehaviorIdentity,
+      };
+    }
   }
 
   private nativeArtifactsReadyForRecognition(): boolean {
@@ -429,6 +515,14 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       return this.failImmediately(startedAt, passLabel, psm, 'artifact_unverified');
     }
 
+    if (this.sandbox.isConfigured()) {
+      return this.recognizeInSandbox(image, psm, passLabel, startedAt, options.deadlineAtMs);
+    }
+    // FLAG: Production media analysis must never fall back to an in-container native worker.
+    if (this.sandbox.isRequired()) {
+      return this.failImmediately(startedAt, passLabel, psm, 'worker_unavailable');
+    }
+
     const externalRemainingMs =
       options.deadlineAtMs === undefined
         ? null
@@ -482,6 +576,9 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       return;
     }
     this.initialized = true;
+    if (this.sandbox.isConfigured() || this.sandbox.isRequired()) {
+      return;
+    }
     for (let id = 0; id < this.concurrency; id += 1) {
       const slot: WorkerSlot = {
         id,
@@ -847,6 +944,98 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
 
   protected forkWorker(path: string, options: Parameters<typeof fork>[2]): ChildProcess {
     return fork(path, [], options);
+  }
+
+  private async recognizeInSandbox(
+    image: Buffer,
+    psm: NativeTesseractPageSegmentationMode,
+    passLabel: string,
+    startedAt: number,
+    deadlineAtMs: number | undefined,
+  ): Promise<NativeTesseractOcrResult> {
+    const remainingMs =
+      deadlineAtMs === undefined
+        ? this.timeoutMs
+        : Math.min(this.timeoutMs, Math.max(0, deadlineAtMs - Date.now() - WORKER_RESULT_GRACE_MS));
+    if (remainingMs < 1) {
+      return this.failImmediately(startedAt, passLabel, psm, 'timeout');
+    }
+    this.queueWaitMs.record(0);
+    try {
+      const result = await this.sandbox.recognize(image, psm, remainingMs);
+      if (!result.ok) {
+        const failed = this.buildFailedOpenResult(startedAt, passLabel, psm, result.reason);
+        this.recordResult(failed);
+        return failed;
+      }
+      const recognized: NativeTesseractOcrResult = {
+        ok: true,
+        status: result.payload.text.length > 0 ? 'recognized' : 'no_text',
+        passLabel,
+        psm,
+        ...result.payload,
+        durationMs: elapsedMs(startedAt),
+      };
+      this.recordResult(recognized);
+      return recognized;
+    } catch {
+      const failed = this.buildFailedOpenResult(
+        startedAt,
+        passLabel,
+        psm,
+        this.shuttingDown ? 'shutting_down' : 'worker_unavailable',
+      );
+      this.recordResult(failed);
+      return failed;
+    }
+  }
+
+  private getSandboxRuntimeStatus(): NativeTesseractRuntimeStatus {
+    const boundary = this.sandbox.getStatus();
+    const artifactReady = this.nativeArtifactsReadyForRecognition();
+    const ready =
+      this.initialized &&
+      !this.shuttingDown &&
+      boundary.configured &&
+      boundary.verified &&
+      artifactReady;
+    const total = this.completedCount + this.failedCount;
+    return {
+      state: this.shuttingDown
+        ? 'shutting_down'
+        : ready
+          ? 'ready'
+          : this.nativeArtifactVerification !== null && !this.nativeArtifactVerification.verified
+            ? 'degraded'
+            : 'starting',
+      ready,
+      workers: {
+        configured: this.concurrency,
+        live: boundary.verified ? 1 : 0,
+        ready: ready ? 1 : 0,
+        busy: boundary.activeRequests > 0 ? 1 : 0,
+      },
+      queueDepth: 0,
+      queueWaitMs: this.queueWaitMs.snapshot(),
+      counters: {
+        completed: this.completedCount,
+        failed: this.failedCount,
+        restarts: this.restartCount + boundary.restarts,
+        recycles: this.recycleCount,
+        failuresByReason: Object.fromEntries(this.failuresByReason),
+      },
+      latencyMs: {
+        last: this.lastLatencyMs,
+        average: total > 0 ? roundDuration(this.totalLatencyMs / total) : null,
+        maximum: this.maxLatencyMs,
+      },
+      behaviorIdentity: this.getNativeBehaviorIdentityStatus(),
+      boundary: {
+        kind: boundary.kind,
+        required: boundary.required,
+        verified: ready,
+      },
+    };
   }
 }
 

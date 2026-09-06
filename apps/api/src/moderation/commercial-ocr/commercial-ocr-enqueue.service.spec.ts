@@ -269,6 +269,8 @@ describe('CommercialOcrEnqueueService', () => {
       imageCount: 2,
       ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
       actionEligible: false,
+      commercialScanRequested: true,
+      imageTextScanRequested: false,
       sourceTag: 'commercial-image-ocr',
     });
     expect(JSON.stringify(data)).not.toMatch(/(?:url|token|bytes|base64)/iu);
@@ -409,6 +411,38 @@ describe('CommercialOcrEnqueueService', () => {
     expect(store.reserve).not.toHaveBeenCalled();
     expect(store.suppress).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('queues image stop-list work independently of the commercial OCR rollout', async () => {
+    const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    const store = admission();
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config({
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'off',
+        IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'on',
+      }) as never,
+      store as never,
+    );
+
+    await expect(
+      service.enqueue({
+        ...input,
+        commercialScanRequested: false,
+        imageTextScanRequested: true,
+        registerPendingActivation: jest.fn(),
+      }),
+    ).resolves.toBe('queued');
+
+    expect(store.reserve).toHaveBeenCalledWith(expect.objectContaining({ actionEligible: true }));
+    expect(queue.add).toHaveBeenCalledWith(
+      'commercial-image-ocr-analysis',
+      expect.objectContaining({
+        commercialScanRequested: false,
+        imageTextScanRequested: true,
+      }),
+      expect.any(Object),
+    );
   });
 
   it('keeps the actionable reserve for canary observations', async () => {

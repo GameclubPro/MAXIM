@@ -111,6 +111,10 @@ export const COMMERCIAL_OCR_METRIC_COUNTERS = [
   'album.image_count.7_10',
   'analysis.complete.delete',
   'analysis.complete.no_action',
+  'image_text_stop_list.complete.match',
+  'image_text_stop_list.complete.no_action',
+  'image_text_stop_list.enforcement.suppressed',
+  'image_text_stop_list.enforcement.intent.requested',
   'analysis.incomplete.invalid_album',
   'analysis.incomplete.job_deadline_exceeded',
   'analysis.incomplete.missing_download_url',
@@ -310,6 +314,7 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
   private readonly releaseKey: string;
   private readonly remoteProcessKey: string;
   private readonly redis: Redis | null;
+  private readonly nativeCpuSamplingAvailable: boolean;
   private readonly processCounters = new Map<CommercialOcrMetricCounter, number>();
   private readonly pendingRemoteCounters = new Map<CommercialOcrMetricCounter, number>();
   private inFlightRemoteBatch: RemoteCounterBatch | null = null;
@@ -335,6 +340,10 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
   private shuttingDown = false;
 
   constructor(@Optional() configService?: ConfigService) {
+    this.nativeCpuSamplingAvailable =
+      !configService
+        ?.get<string>('COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH')
+        ?.trim();
     this.behaviorIdentity = resolveCommercialOcrBehaviorIdentity(
       resolveCommercialOcrBehaviorDescriptor(configService),
     );
@@ -415,7 +424,9 @@ export class CommercialOcrMetricsService implements OnModuleDestroy {
 
   startImageCpuSample(): CommercialOcrImageCpuSample {
     return {
-      startedUsageMicros: this.readCgroupCpuUsageMicros(),
+      startedUsageMicros: this.nativeCpuSamplingAvailable
+        ? this.readCgroupCpuUsageMicros()
+        : null,
       nativePasses: 0,
       finished: false,
     };

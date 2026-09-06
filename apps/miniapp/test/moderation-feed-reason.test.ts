@@ -114,6 +114,32 @@ test('summarizes commercial ad evidence', () => {
   assert.match(reason, /контакт и цена/u);
 });
 
+test('renders image OCR sentinels as their privacy-safe stop-list reason', () => {
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'COMMERCIAL_OCR_DELETE',
+      metadata: {
+        source: 'image_text_ocr',
+        matchedRuleCode: 'MESSAGE_BLOCKED_WORD',
+        blockedWord: 'казино',
+      },
+    }),
+    'Стоп-слово: казино.',
+  );
+
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'COMMERCIAL_OCR_DELETE',
+      metadata: {
+        source: 'image_text_ocr',
+        matchedRuleCode: 'MESSAGE_BLOCKED_DOMAIN',
+        blockedDomain: 'spam.example',
+      },
+    }),
+    'Запрещенный домен: spam.example.',
+  );
+});
+
 test('shows required subscription targets when available', () => {
   assert.equal(
     resolveModerationFeedReason({

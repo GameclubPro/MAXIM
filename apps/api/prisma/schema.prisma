@@ -1079,6 +1079,7 @@ model ChatSettings {
   phoneNumbersAdminContactButtonUrl             String                    @default("") @map("phone_numbers_admin_contact_button_url")
   messageLimitsBlockedWords                     String[]                  @default([]) @map("message_limits_blocked_words")
   messageLimitsBlockedDomains                   String[]                  @default([]) @map("message_limits_blocked_domains")
+  messageLimitsImageTextScanEnabled             Boolean                   @default(false) @map("message_limits_image_text_scan_enabled")
   messageLimitsBotMessageEnabled                Boolean                   @default(false) @map("message_limits_bot_message_enabled")
   messageLimitsBotMessageText                   String                    @default("") @map("message_limits_bot_message_text")
   messageLimitsWarnEnabled                      Boolean                   @default(false) @map("message_limits_warn_enabled")

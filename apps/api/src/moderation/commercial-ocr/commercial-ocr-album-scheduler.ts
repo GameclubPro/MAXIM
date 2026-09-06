@@ -33,6 +33,18 @@ export async function runCommercialOcrAlbumSchedule<TContext, TStop>(params: {
   settings: ChatSettings;
   imageSources: readonly ('direct' | 'forward')[];
   detector?: CommercialOcrDetector;
+  requireCompletePrimaryScan?: boolean;
+  shouldResolveConfirmation?: (params: {
+    imageIndex: number;
+    source: 'direct' | 'forward';
+    primary: CommercialOcrPass;
+  }) => boolean;
+  shouldStopAfterConfirmation?: (params: {
+    imageIndex: number;
+    source: 'direct' | 'forward';
+    primary: CommercialOcrPass;
+    confirmation: CommercialOcrPass;
+  }) => boolean;
   preflight?: () =>
     | CommercialOcrAlbumScheduleStageResult<void, TStop>
     | Promise<CommercialOcrAlbumScheduleStageResult<void, TStop>>;
@@ -69,7 +81,10 @@ export async function runCommercialOcrAlbumSchedule<TContext, TStop>(params: {
   if (params.caption.trim()) {
     const captionDecision = evaluate([]);
     lastDecision = captionDecision;
-    if (captionDecision.caption.safeContextBucket !== 'none') {
+    if (
+      captionDecision.caption.safeContextBucket !== 'none' &&
+      !params.requireCompletePrimaryScan
+    ) {
       return { kind: 'complete', decision: captionDecision };
     }
   }
@@ -96,10 +111,17 @@ export async function runCommercialOcrAlbumSchedule<TContext, TStop>(params: {
 
       const primaryDecision = evaluate(images);
       lastDecision = primaryDecision;
-      if (hasSafeContextVeto(primaryDecision)) {
+      if (hasSafeContextVeto(primaryDecision) && !params.requireCompletePrimaryScan) {
         return { kind: 'complete', decision: primaryDecision };
       }
-      if (!isCurrentPrimaryDeleteCandidate(primaryDecision, imageIndex)) {
+      const shouldResolveConfirmation =
+        isCurrentPrimaryDeleteCandidate(primaryDecision, imageIndex) ||
+        params.shouldResolveConfirmation?.({
+          imageIndex,
+          source: params.imageSources[imageIndex]!,
+          primary: primary.value,
+        }) === true;
+      if (!shouldResolveConfirmation) {
         continue;
       }
 
@@ -115,7 +137,17 @@ export async function runCommercialOcrAlbumSchedule<TContext, TStop>(params: {
 
       const confirmedDecision = evaluate(images);
       lastDecision = confirmedDecision;
-      if (hasSafeContextVeto(confirmedDecision)) {
+      if (
+        params.shouldStopAfterConfirmation?.({
+          imageIndex,
+          source: params.imageSources[imageIndex]!,
+          primary: primary.value,
+          confirmation: confirmation.value,
+        }) === true
+      ) {
+        return { kind: 'complete', decision: confirmedDecision };
+      }
+      if (hasSafeContextVeto(confirmedDecision) && !params.requireCompletePrimaryScan) {
         return { kind: 'complete', decision: confirmedDecision };
       }
     } finally {

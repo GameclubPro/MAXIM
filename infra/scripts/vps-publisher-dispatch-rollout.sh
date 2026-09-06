@@ -67,6 +67,7 @@ MANIFEST_SOURCE_SHA=""
 MANIFEST_IMAGE_REF=""
 MANIFEST_IMAGE_ID=""
 EXPECTED_OCR_VERSION=""
+EXPECTED_HAS_OCR_NATIVE_SANDBOX=0
 CURRENT_ENV_STATE=""
 CURRENT_ENV_CONFIGURED=""
 PREVIEW_ENV_FILE=""
@@ -275,6 +276,16 @@ resolve_release_fence() {
     fail "Active API image does not match its manifest and protected revision labels."
   EXPECTED_OCR_VERSION="$(maxim_topology_git_commercial_ocr_version "$MANIFEST_SOURCE_SHA")" ||
     fail "Could not derive the exact Commercial OCR version from the active source."
+  if maxim_topology_git_has_ocr_native_sandbox "$MANIFEST_SOURCE_SHA"; then
+    EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
+    maxim_topology_require_ocr_native_sandbox_config COMPOSE_FILES
+  else
+    local sandbox_status=$?
+    [[ "$sandbox_status" -eq 1 ]] || fail "Could not resolve the active OCR sandbox topology."
+    EXPECTED_HAS_OCR_NATIVE_SANDBOX=0
+  fi
+  maxim_topology_require_ocr_native_sandbox_image_capability \
+    "$MANIFEST_IMAGE_ID" "$EXPECTED_HAS_OCR_NATIVE_SANDBOX"
   export MAXIM_API_IMAGE="$MANIFEST_IMAGE_REF"
   export COMMERCIAL_OCR_VERSION="$EXPECTED_OCR_VERSION"
 }
@@ -338,8 +349,11 @@ container_env_summary() {
 }
 
 verify_no_unreviewed_running_api_containers() {
-  local running_raw inventory
+  local running_raw inventory expected_auxiliary=none
   local running=()
+  if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+    expected_auxiliary="$MAXIM_OCR_NATIVE_SANDBOX_SERVICE"
+  fi
   running_raw="$(timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" docker ps --no-trunc -q)" || {
     fail "Could not inspect running Docker containers."
     return 1
@@ -348,7 +362,8 @@ verify_no_unreviewed_running_api_containers() {
   if [[ "${#running[@]}" -eq 0 ]]; then
     inventory="$(
       printf '%s\n' '[]' |
-        node "$INVENTORY_HELPER" "$MANIFEST_IMAGE_ID" "${MAXIM_PRODUCTION_API_SERVICES[@]}"
+        node "$INVENTORY_HELPER" "$MANIFEST_IMAGE_ID" "$expected_auxiliary" \
+          "${MAXIM_PRODUCTION_API_SERVICES[@]}"
     )" || {
       fail "Could not classify the running API inventory."
       return 1
@@ -357,7 +372,8 @@ verify_no_unreviewed_running_api_containers() {
     inventory="$(
       timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
         docker inspect "${running[@]}" |
-        node "$INVENTORY_HELPER" "$MANIFEST_IMAGE_ID" "${MAXIM_PRODUCTION_API_SERVICES[@]}"
+        node "$INVENTORY_HELPER" "$MANIFEST_IMAGE_ID" "$expected_auxiliary" \
+          "${MAXIM_PRODUCTION_API_SERVICES[@]}"
     )" || {
       fail "Could not classify the running API inventory."
       return 1
@@ -368,7 +384,10 @@ verify_no_unreviewed_running_api_containers() {
     const value = JSON.parse(readFileSync(0, "utf8"));
     process.exit(
       Array.isArray(value?.ownedUnreviewedIds) && value.ownedUnreviewedIds.length === 0 &&
-      Array.isArray(value?.ambiguousIds) && value.ambiguousIds.length === 0 ? 0 : 1
+      Array.isArray(value?.ambiguousIds) && value.ambiguousIds.length === 0 &&
+      Number.isSafeInteger(value?.expectedAuxiliaryCount) &&
+      Number.isSafeInteger(value?.reviewedAuxiliaryCount) &&
+      value.reviewedAuxiliaryCount === value.expectedAuxiliaryCount ? 0 : 1
     );
   '; then
     fail "An owned-unreviewed, ambiguous, foreign, orphaned, or duplicate API container is running."
@@ -423,6 +442,12 @@ verify_runtime() {
       return 1
     fi
   done
+  if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" with-media || return 1
+  else
+    maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES || return 1
+  fi
   verify_no_unreviewed_running_api_containers || return 1
 }
 
@@ -599,7 +624,15 @@ recreate_all_api_roles() {
   recreate_wave "action and publisher" "${ACTION_AND_PUBLISHER_WAVE[@]}"
   recreate_wave "admin" "${ADMIN_WAVE[@]}"
   recreate_wave "ingress" "${INGRESS_WAVE[@]}"
+  if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" sandbox-only
+  fi
   recreate_wave "media analysis" "${MEDIA_WAVE[@]}"
+  if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+    maxim_topology_verify_ocr_native_sandbox_runtime \
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" with-media
+  fi
   recreate_wave "moderation" "${MODERATION_WAVE[@]}"
   recreate_wave "enqueue" "${ENQUEUE_WAVE[@]}"
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
@@ -617,7 +650,7 @@ wait_for_url() {
 }
 
 api_runtime_signature() {
-  local container_ids_raw inspect_raw service container_id restart_count state extra
+  local container_ids_raw inspect_raw service container_id restart_count state health extra
   local container_ids=()
   local -A signatures=()
   container_ids_raw="$(
@@ -645,6 +678,27 @@ api_runtime_signature() {
     [[ -n "${signatures[$service]+present}" ]] || return 1
     printf '%s|%s\n' "$service" "${signatures[$service]}"
   done
+  if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+    container_ids_raw="$(
+      timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+        docker compose "${COMPOSE_FILES[@]}" ps --status running -q \
+          "$MAXIM_OCR_NATIVE_SANDBOX_SERVICE" 2>/dev/null
+    )" || return 1
+    container_ids=()
+    [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
+    [[ "${#container_ids[@]}" -eq 1 ]] || return 1
+    inspect_raw="$(
+      timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+        docker inspect --format \
+        '{{.Id}}|{{.RestartCount}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+        "${container_ids[0]}" 2>/dev/null
+    )" || return 1
+    IFS='|' read -r container_id restart_count state health extra <<<"$inspect_raw"
+    [[ -z "$extra" && "$container_id" =~ ^[a-f0-9]{64}$ &&
+      "$restart_count" =~ ^[0-9]+$ && "$state" == "running" && "$health" == "healthy" ]] ||
+      return 1
+    printf '%s|%s|%s\n' "$MAXIM_OCR_NATIVE_SANDBOX_SERVICE" "$container_id" "$restart_count"
+  fi
 }
 
 api_media_readiness_endpoint_ready() {
@@ -990,7 +1044,11 @@ apply_rollout() {
   run_health_smokes
   verify_runtime "$DESIRED_STATE"
   maxim_topology_verify_api_commercial_ocr_version COMPOSE_FILES "$EXPECTED_OCR_VERSION"
-  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+  if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox
+  else
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required legacy
+  fi
 
   if [[ "$COMMAND" == "enable" ]]; then
     run_publisher_identity_probe

@@ -5,6 +5,9 @@ import type {
 } from './native-tesseract-ocr.types';
 
 export const NATIVE_TESSERACT_MAX_TEXT_LENGTH = 8_000;
+export const NATIVE_TESSERACT_MAX_WORDS = 1_024;
+export const NATIVE_TESSERACT_MAX_WORD_LENGTH = 256;
+export const NATIVE_TESSERACT_MAX_LINES = 1_024;
 
 export type ParsedNativeTesseractTsv = {
   text: string;
@@ -47,14 +50,21 @@ export function parseNativeTesseractTsv(
     throw new Error('Tesseract TSV header is invalid');
   }
 
-  const sourceWords = readTsvWords(tsv);
+  const source = readTsvWords(tsv);
+  const sourceWords = source.words;
+  const sourceTruncated = source.truncated;
   const words: CommercialOcrWordSpan[] = [];
   const lines: CommercialOcrLineSpan[] = [];
   let text = '';
   let truncated = false;
   let sourceIndex = 0;
 
-  while (sourceIndex < sourceWords.length && text.length < maxTextLength) {
+  while (
+    sourceIndex < sourceWords.length &&
+    text.length < maxTextLength &&
+    words.length < NATIVE_TESSERACT_MAX_WORDS &&
+    lines.length < NATIVE_TESSERACT_MAX_LINES
+  ) {
     const lineKey = sourceWords[sourceIndex].lineKey;
     const lineWords: TsvWord[] = [];
     while (sourceIndex < sourceWords.length && sourceWords[sourceIndex].lineKey === lineKey) {
@@ -73,13 +83,20 @@ export function parseNativeTesseractTsv(
     const acceptedLineWords: TsvWord[] = [];
 
     for (const sourceWord of lineWords) {
+      if (words.length >= NATIVE_TESSERACT_MAX_WORDS) {
+        truncated = true;
+        break;
+      }
       const wordSeparator = acceptedLineWords.length > 0 ? ' ' : '';
       const available = maxTextLength - text.length - wordSeparator.length;
       if (available <= 0) {
         truncated = true;
         break;
       }
-      const acceptedText = truncateUtf16Safely(sourceWord.text, available);
+      const acceptedText = truncateUtf16Safely(
+        sourceWord.text,
+        Math.min(available, NATIVE_TESSERACT_MAX_WORD_LENGTH),
+      );
       if (acceptedText.length === 0) {
         truncated = true;
         break;
@@ -122,7 +139,7 @@ export function parseNativeTesseractTsv(
     }
   }
 
-  if (sourceIndex < sourceWords.length) {
+  if (sourceTruncated || sourceIndex < sourceWords.length) {
     truncated = true;
   }
 
@@ -135,8 +152,9 @@ export function parseNativeTesseractTsv(
   };
 }
 
-function readTsvWords(tsv: string): TsvWord[] {
+function readTsvWords(tsv: string): { words: TsvWord[]; truncated: boolean } {
   const words: TsvWord[] = [];
+  let truncated = false;
   const rows = tsv.replace(/^\uFEFF/u, '').split(/\r?\n/u);
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
@@ -183,8 +201,13 @@ function readTsvWords(tsv: string): TsvWord[] {
       confidence: roundConfidence(Math.max(0, Math.min(100, rawConfidence))),
       boundingBox: { left, top, width, height },
     });
+    if (words.length > NATIVE_TESSERACT_MAX_WORDS) {
+      words.pop();
+      truncated = true;
+      break;
+    }
   }
-  return words;
+  return { words, truncated };
 }
 
 function normalizeWord(value: string): string {

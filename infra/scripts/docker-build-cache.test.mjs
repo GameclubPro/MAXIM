@@ -203,10 +203,7 @@ test('bakes the production API URL into only the Major mini app image', () => {
   assert.match(dockerJob, /VITE_API_BASE: \$\{\{ matrix\.vite_api_base \}\}/u);
   assert.match(dockerJob, /build_args=\(\)/u);
   assert.match(dockerJob, /if \[\[ -n "\$VITE_API_BASE" \]\]; then/u);
-  assert.match(
-    dockerJob,
-    /build_args\+=\(--build-arg "VITE_API_BASE=\$VITE_API_BASE"\)/u,
-  );
+  assert.match(dockerJob, /build_args\+=\(--build-arg "VITE_API_BASE=\$VITE_API_BASE"\)/u);
   assert.match(dockerJob, /"\$\{build_args\[@\]\}"/u);
   assert.equal(
     dockerJob.match(/vite_api_base: https:\/\/major-maksimov\.ru\/api\/v1/gu)?.length,
@@ -214,27 +211,35 @@ test('bakes the production API URL into only the Major mini app image', () => {
   );
 });
 
-test('runs the compiled native OCR raster smoke before packaging the API image', () => {
+test('runs the compiled native OCR raster smoke through an isolated UDS sidecar', () => {
   const workflow = read('.github/workflows/ci.yml');
+  const apiDockerfile = read('apps/api/Dockerfile');
   const smoke = workflow.indexOf('Smoke native OCR in API image');
   const packaging = workflow.indexOf('Package immutable production image');
 
   assert.notEqual(smoke, -1);
   assert.notEqual(packaging, -1);
   assert.ok(smoke < packaging);
+  assert.match(apiDockerfile, /^LABEL com\.maxim\.ocr-native-sandbox-capable="true"$/mu);
+  assert.match(apiDockerfile, /mkdir -p \/run\/maxim-ocr/u);
   const smokeStep = workflow.slice(smoke, packaging);
   assert.match(smokeStep, /if: matrix\.component == 'api'/u);
-  assert.match(smokeStep, /docker run --rm --init --read-only/u);
-  assert.match(smokeStep, /--cap-drop=ALL/u);
-  assert.match(smokeStep, /--memory=1g/u);
-  assert.match(smokeStep, /--cpus=0\.75/u);
+  assert.match(smokeStep, /docker volume create "\$socket_volume"/u);
+  assert.match(smokeStep, /docker run -d --name "\$sandbox_name"/u);
+  assert.match(smokeStep, /--network none/u);
+  assert.match(smokeStep, /--label com\.maxim\.ocr-native-sandbox=true/u);
+  assert.match(smokeStep, /--user 1000:1000/u);
+  assert.match(smokeStep, /--cap-drop ALL/u);
+  assert.match(smokeStep, /--memory 1g/u);
+  assert.match(smokeStep, /--cpus 1/u);
   assert.match(smokeStep, /--tmpfs \/tmp:rw,nosuid,size=64m,uid=1000,gid=1000/u);
+  assert.match(smokeStep, /target=\/run\/maxim-ocr,readonly/u);
   assert.match(smokeStep, /--env APP_SERVICE_NAME=api-media-analysis/u);
   assert.match(smokeStep, /--env APP_ROLE=moderation/u);
-  assert.match(smokeStep, /--env COMMERCIAL_OCR_TESSERACT_CONCURRENCY=1/u);
-  assert.match(smokeStep, /--env COMMERCIAL_OCR_TESSERACT_MAX_QUEUE=4/u);
-  assert.match(smokeStep, /--env COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS=10000/u);
-  assert.match(smokeStep, /--env OMP_THREAD_LIMIT=1/u);
+  assert.match(smokeStep, /COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH="\$socket_path"/u);
+  assert.match(smokeStep, /native-ocr-sandbox\.entrypoint\.js/u);
+  assert.match(smokeStep, /"\$entrypoint" --probe/u);
+  assert.match(smokeStep, /docker top "\$sandbox_name" -eo comm/u);
   assert.match(
     smokeStep,
     /apps\/api\/dist\/apps\/api\/src\/scripts\/smoke-commercial-ocr-worker\.js/u,

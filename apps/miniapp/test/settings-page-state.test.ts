@@ -245,8 +245,10 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsBlockedWords'));
   assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsBlockedDomains'));
+  assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsImageTextScanEnabled'));
   assert.ok(!SECTION_SETTING_KEYS.limits.includes('messageLimitsBlockedWords'));
   assert.ok(!SECTION_SETTING_KEYS.limits.includes('messageLimitsBlockedDomains'));
+  assert.ok(!SECTION_SETTING_KEYS.limits.includes('messageLimitsImageTextScanEnabled'));
   assert.ok(SECTION_SETTING_KEYS.night.includes('nightModeBotButtons'));
 });
 
@@ -540,18 +542,21 @@ test('mergeSectionSettings syncs stop words without copying limit sanctions', ()
     antiSpamEnabled: true,
     messageLimitsBlockedWords: ['старое'],
     messageLimitsBlockedDomains: ['old.example'],
+    messageLimitsImageTextScanEnabled: false,
     messageLimitsBotMessageEnabled: false,
   });
   const saved = createSettings({
     antiSpamEnabled: false,
     messageLimitsBlockedWords: ['казино', 'ставки'],
     messageLimitsBlockedDomains: ['casino.example'],
+    messageLimitsImageTextScanEnabled: true,
     messageLimitsBotMessageEnabled: true,
   });
 
   const merged = mergeSectionSettings(current, saved, 'stopWords');
   assert.deepEqual(merged.messageLimitsBlockedWords, ['казино', 'ставки']);
   assert.deepEqual(merged.messageLimitsBlockedDomains, ['casino.example']);
+  assert.equal(merged.messageLimitsImageTextScanEnabled, true);
   assert.equal(merged.messageLimitsBotMessageEnabled, false);
   assert.equal(merged.antiSpamEnabled, true);
 });

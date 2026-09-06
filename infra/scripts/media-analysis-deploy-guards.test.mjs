@@ -79,6 +79,90 @@ maxim_topology_git_compose_has_service target-sha "$MAXIM_MEDIA_ANALYSIS_SERVICE
   assert.equal(absent.status, 1, absent.stderr);
 });
 
+test('detects the OCR sandbox as an auxiliary target capability', () => {
+  const present = runTopologyProbe(`
+git() {
+  if [[ "$1" == "cat-file" ]]; then return 0; fi
+  if [[ "$1" == "show" ]]; then
+    printf '%s\\n' 'services:' '  api-media-analysis:' '  ocr-native-sandbox:'
+    return 0
+  fi
+  return 2
+}
+maxim_topology_git_has_ocr_native_sandbox target-sha
+`);
+  assert.equal(present.status, 0, present.stderr);
+
+  const absent = runTopologyProbe(`
+git() {
+  if [[ "$1" == "cat-file" ]]; then return 0; fi
+  if [[ "$1" == "show" ]]; then
+    printf '%s\\n' 'services:' '  api-media-analysis:' '    ocr-native-sandbox: incidental'
+    return 0
+  fi
+  return 2
+}
+if maxim_topology_git_has_ocr_native_sandbox target-sha; then exit 9; fi
+`);
+  assert.equal(absent.status, 0, absent.stderr);
+});
+
+test('rollback floor requires image-text binding v1 at the pre-dispatch delete boundary', () => {
+  const topology = read('infra/scripts/lib/deploy-topology.sh');
+  const start = topology.indexOf('maxim_topology_require_image_text_stop_list_delete_guard() {');
+  const guard = topology.slice(start, topology.indexOf('\n}\n', start) + 2);
+  assert.match(guard, /git cat-file/u);
+  assert.match(guard, /git show/u);
+  assert.doesNotMatch(guard, /docker|psql|redis|\.env/u);
+
+  const valid = runTopologyProbe(`
+git() {
+  if [[ "$1" == "cat-file" ]]; then return 0; fi
+  if [[ "$1" == "show" && "$2" == *'image-text-stop-list-binding.ts' ]]; then
+    printf '%s\\n' 'export const IMAGE_TEXT_STOP_LIST_BINDING_VERSION = 1 as const;'
+    return 0
+  fi
+  if [[ "$1" == "show" ]]; then
+    printf '%s\\n' \\
+      "import {} from './commercial-ocr/image-text-stop-list-binding';" \\
+      '  private async runDeletePreDispatchGuards(' \\
+      '    await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);' \\
+      '    await options?.beforeDeleteMutation?.();' \\
+      '  }' \\
+      '  private async assertImageTextStopListDeleteIntentStillActionable('
+    return 0
+  fi
+  return 2
+}
+maxim_topology_require_image_text_stop_list_delete_guard target-sha
+`);
+  assert.equal(valid.status, 0, valid.stderr);
+
+  const stale = runTopologyProbe(`
+git() {
+  if [[ "$1" == "cat-file" ]]; then return 0; fi
+  if [[ "$1" == "show" && "$2" == *'image-text-stop-list-binding.ts' ]]; then
+    printf '%s\\n' 'export const IMAGE_TEXT_STOP_LIST_BINDING_VERSION = 1 as const;'
+    return 0
+  fi
+  if [[ "$1" == "show" ]]; then
+    printf '%s\\n' \\
+      "import {} from './commercial-ocr/image-text-stop-list-binding';" \\
+      '  private async runDeletePreDispatchGuards(' \\
+      '    await options?.beforeDeleteMutation?.();' \\
+      '    await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);' \\
+      '  }' \\
+      '  private async assertImageTextStopListDeleteIntentStillActionable('
+    return 0
+  fi
+  return 2
+}
+if maxim_topology_require_image_text_stop_list_delete_guard target-sha; then exit 9; fi
+`);
+  assert.equal(stale.status, 0, stale.stderr);
+  assert.match(stale.stderr, /lacks the reviewed image-text stop-list pre-dispatch guard/u);
+});
+
 test('extracts a single literal behavior version from the target Git source', () => {
   const literal = runTopologyProbe(`
 git() {
@@ -322,6 +406,32 @@ if maxim_topology_smoke_media_analysis_tesseract compose_args required; then exi
   assert.match(notReady.stderr, /did not reach internal OCR readiness/u);
 });
 
+test('sandbox OCR smoke uses only the attested UDS probe and never spawns Tesseract directly', () => {
+  const result = runTopologyProbe(`
+maxim_topology_require_ocr_native_sandbox_config() { :; }
+maxim_topology_wait_for_ocr_native_sandbox() { :; }
+maxim_topology_verify_ocr_native_sandbox_runtime() { :; }
+docker() {
+  case "$*" in
+    *'--list-langs'*) printf '%s\\n' 'direct Tesseract probe is forbidden' >&2; return 9 ;;
+    *'native-ocr-sandbox.entrypoint.js --probe'*) printf '%s\\n' 'Native OCR sandbox probe passed.' ;;
+    *'COMMERCIAL_OCR_ROLLOUT_MODE'*) return 0 ;;
+    *'if [ -f apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js ]'*) printf '%s' present ;;
+    *'checks?.ocr?.ready'*) return 0 ;;
+    *'smoke-commercial-ocr-worker.js'*) printf '%s\\n' 'Commercial OCR worker smoke passed.' ;;
+    *'ps --status running -q ocr-native-sandbox'*) printf '%s' sandbox-container ;;
+    'top sandbox-container -eo comm') printf '%s\\n' COMMAND node ;;
+    *) return 8 ;;
+  esac
+}
+compose_args=(-p infra -f infra/docker-compose.yml)
+maxim_topology_smoke_media_analysis_tesseract compose_args required sandbox
+`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /No-network OCR sandbox/u);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /direct Tesseract probe is forbidden/u);
+});
+
 test('legacy rollback keeps exact language smoke while new images require the raster marker', () => {
   const legacy = runTopologyProbe(`
 docker() {
@@ -402,6 +512,12 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   const refRollback = read('infra/scripts/vps-runtime-rollback.sh');
 
   assert.match(topology, /maxim_topology_git_commercial_ocr_version "\$commit_sha"/u);
+  assert.match(topology, /maxim_topology_smoke_ocr_native_sandbox_uds\(\)/u);
+  assert.match(
+    topology,
+    /run --rm --no-deps --pull never[\s\S]*--entrypoint node "\$MAXIM_MEDIA_ANALYSIS_SERVICE"/u,
+  );
+  assert.match(topology, /docker ps --no-trunc -q --filter "volume=\$socket_volume_name"/u);
   assert.match(deploy, /maxim_topology_prepare_commercial_ocr_target/u);
   assert.match(topology, /export COMMERCIAL_OCR_VERSION="\$resolved_version"/u);
   assert.match(deploy, /DEPLOY_RUNTIME_STARTED=0/u);
@@ -419,7 +535,23 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   );
   assert.ok(
     deploy.lastIndexOf('recreate_service_wave "ingress"') <
+      deploy.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
       deploy.lastIndexOf('recreate_service_wave "media analysis"'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
+      deploy.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds') <
+      deploy.lastIndexOf('recreate_service_wave "media analysis"'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds') <
+      deploy.lastIndexOf('maxim_webhook_resume_after_api_fence'),
   );
   assert.ok(
     deploy.lastIndexOf('recreate_service_wave "media analysis"') <
@@ -448,7 +580,11 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
       scaleDeploy.lastIndexOf('prepare_scale_redis_named_volume'),
   );
   assert.ok(
-    scaleDeploy.lastIndexOf('maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES') >
+    scaleDeploy.lastIndexOf('maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES') <
+      scaleDeploy.lastIndexOf('recreate_service_wave "worker"'),
+  );
+  assert.ok(
+    scaleDeploy.lastIndexOf('recreate_service_wave "worker"') <
       scaleDeploy.lastIndexOf('ensure_requested_services_running'),
   );
   assert.ok(
@@ -457,6 +593,18 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   );
   assert.ok(
     scaleDeploy.lastIndexOf('recreate_service_wave "ingress"') <
+      scaleDeploy.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox'),
+  );
+  assert.ok(
+    scaleDeploy.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
+      scaleDeploy.lastIndexOf('recreate_service_wave "media analysis"'),
+  );
+  assert.ok(
+    scaleDeploy.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
+      scaleDeploy.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds'),
+  );
+  assert.ok(
+    scaleDeploy.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds') <
       scaleDeploy.lastIndexOf('recreate_service_wave "media analysis"'),
   );
   assert.ok(
@@ -467,6 +615,11 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   assert.match(
     immutableRollback,
     /maxim_topology_git_compose_has_service "\$API_SOURCE_SHA" "\$MAXIM_MEDIA_ANALYSIS_SERVICE"/u,
+  );
+  assert.ok(
+    immutableRollback.indexOf(
+      'maxim_topology_require_image_text_stop_list_delete_guard "$API_SOURCE_SHA"',
+    ) < immutableRollback.lastIndexOf('begin_release_runtime_transition'),
   );
   assert.match(
     immutableRollback,
@@ -502,7 +655,23 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   );
   assert.ok(
     immutableRollback.lastIndexOf('recreate_service api-ingress') <
+      immutableRollback.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
       immutableRollback.lastIndexOf('recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
+      immutableRollback.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds') <
+      immutableRollback.lastIndexOf('recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds') <
+      immutableRollback.lastIndexOf('maxim_webhook_resume_after_api_fence'),
   );
   assert.ok(
     immutableRollback.lastIndexOf('recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"') <
@@ -524,6 +693,11 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   assert.match(
     refRollback,
     /maxim_topology_git_compose_has_service "\$TARGET_FULL_SHA" "\$MAXIM_MEDIA_ANALYSIS_SERVICE"/u,
+  );
+  assert.ok(
+    refRollback.indexOf(
+      'maxim_topology_require_image_text_stop_list_delete_guard "$TARGET_FULL_SHA"',
+    ) < refRollback.indexOf('git switch --detach "$TARGET_FULL_SHA"'),
   );
   assert.match(
     refRollback,
@@ -556,7 +730,23 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   );
   assert.ok(
     refRollback.lastIndexOf('recreate_runtime_api_wave non-webhook') <
+      refRollback.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
       refRollback.lastIndexOf('recreate_runtime_api_wave media-analysis'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('maxim_topology_recreate_ocr_native_sandbox') <
+      refRollback.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds') <
+      refRollback.lastIndexOf('recreate_runtime_api_wave media-analysis'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('maxim_topology_smoke_ocr_native_sandbox_uds') <
+      refRollback.lastIndexOf('maxim_webhook_resume_after_api_fence'),
   );
   assert.ok(
     refRollback.lastIndexOf('recreate_runtime_api_wave media-analysis') <
@@ -618,31 +808,52 @@ test('read-only BullMQ monitor batches counters and includes every Publisher que
   assert.doesNotMatch(monitor, /redis_count/u);
 });
 
-test('production media-analysis roles are singleton init-managed OCR sandboxes', () => {
+test('production OCR uses a singleton no-network sandbox connected only over UDS', () => {
   for (const [name, path] of [
     ['main', 'infra/docker-compose.yml'],
     ['scale', 'infra/docker-compose.scale.yml'],
   ]) {
     const compose = read(path);
-    const service = compose.match(
+    const media = compose.match(
       /\n {2}api-media-analysis:\n([\s\S]*?)(?=\n {2}[a-zA-Z0-9_-]+:|\nvolumes:|$)/u,
     )?.[1];
+    const sandbox = compose.match(
+      /\n {2}ocr-native-sandbox:\n([\s\S]*?)(?=\n {2}[a-zA-Z0-9_-]+:|\nvolumes:|$)/u,
+    )?.[1];
 
-    assert.ok(service, `missing api-media-analysis service in ${name} Compose`);
-    assert.match(service, /^\s+init:\s+true\s*$/mu);
-    assert.match(service, /^\s+deploy:\n\s+replicas:\s+1\s*$/mu);
-    assert.doesNotMatch(service, /^\s+COMMERCIAL_OCR_PROCESSOR_CONCURRENCY:/mu);
-    assert.match(service, /^\s+COMMERCIAL_OCR_TESSERACT_CONCURRENCY:\s+1\s*$/mu);
-    assert.match(service, /^\s+OMP_THREAD_LIMIT:\s+1\s*$/mu);
-    assert.match(service, /^\s+read_only:\s+true\s*$/mu);
-    assert.match(service, /^\s+cap_drop:\n\s+- ALL\s*$/mu);
+    assert.ok(media, `missing api-media-analysis service in ${name} Compose`);
+    assert.ok(sandbox, `missing ocr-native-sandbox service in ${name} Compose`);
     assert.match(
-      service,
+      media,
+      /COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH:\s+\/run\/maxim-ocr\/native-ocr\.sock/u,
+    );
+    assert.match(media, /ocr_native_ipc:\/run\/maxim-ocr:ro/u);
+    assert.match(media, /ocr-native-sandbox:\n\s+condition:\s+service_healthy/u);
+    assert.doesNotMatch(sandbox, /^\s+env_file:/mu);
+    assert.doesNotMatch(sandbox, /^\s+secrets:/mu);
+    assert.doesNotMatch(sandbox, /^\s+APP_(?:ROLE|SERVICE_NAME):/mu);
+    assert.match(sandbox, /^\s+labels:\n\s+com\.maxim\.ocr-native-sandbox:\s+'true'\s*$/mu);
+    assert.match(sandbox, /^\s+network_mode:\s+none\s*$/mu);
+    assert.match(sandbox, /^\s+user:\s+'1000:1000'\s*$/mu);
+    assert.match(sandbox, /^\s+init:\s+true\s*$/mu);
+    assert.match(sandbox, /^\s+deploy:\n\s+replicas:\s+1\s*$/mu);
+    assert.match(sandbox, /^\s+COMMERCIAL_OCR_TESSERACT_CONCURRENCY:\s+1\s*$/mu);
+    assert.match(sandbox, /^\s+OMP_THREAD_LIMIT:\s+1\s*$/mu);
+    assert.match(sandbox, /^\s+read_only:\s+true\s*$/mu);
+    assert.match(sandbox, /^\s+cap_drop:\n\s+- ALL\s*$/mu);
+    assert.match(
+      sandbox,
       new RegExp(
         `^\\s+security_opt:${name === 'scale' ? ' !override' : ''}\\n\\s+- no-new-privileges:true\\s*$`,
         'mu',
       ),
     );
-    assert.match(service, /^\s+tmpfs:\n\s+- \/tmp:size=64m,mode=1777,uid=1000,gid=1000\s*$/mu);
+    assert.match(sandbox, /^\s+tmpfs:\n\s+- \/tmp:size=64m,mode=1777,uid=1000,gid=1000\s*$/mu);
+    assert.match(sandbox, /ocr_native_ipc:\/run\/maxim-ocr\s*$/mu);
+    assert.equal(
+      [...compose.matchAll(/^\s+- ocr_native_ipc:\/run\/maxim-ocr(?::ro)?\s*$/gmu)].length,
+      2,
+      `${name} Compose must expose OCR IPC only to sandbox and media`,
+    );
   }
 });

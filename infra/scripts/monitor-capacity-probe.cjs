@@ -40,6 +40,34 @@ const DEFAULT_EXPECTED_API_SERVICES = Object.freeze([
   'api-publisher',
 ]);
 const HISTORICALLY_OPTIONAL_API_SERVICES = new Set(['api-media-analysis', 'api-publisher']);
+const OCR_NATIVE_SANDBOX_SERVICE = 'ocr-native-sandbox';
+const OCR_NATIVE_SANDBOX_COMMAND = Object.freeze([
+  'node',
+  'apps/api/dist/apps/api/src/moderation/commercial-ocr/native-ocr-sandbox.entrypoint.js',
+]);
+const OCR_NATIVE_SANDBOX_REQUIRED_ENV = Object.freeze({
+  NODE_ENV: 'production',
+  COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH: '/run/maxim-ocr/native-ocr.sock',
+  PHOTO_DUPLICATE_MAX_BYTES: '16777216',
+  COMMERCIAL_OCR_MAX_INPUT_PIXELS: '40000000',
+  COMMERCIAL_OCR_MAX_OUTPUT_PIXELS: '3000000',
+  COMMERCIAL_OCR_MAX_SIDE: '2000',
+  COMMERCIAL_OCR_TESSERACT_BINARY: 'tesseract',
+  COMMERCIAL_OCR_TESSERACT_CONCURRENCY: '1',
+  COMMERCIAL_OCR_TESSERACT_MAX_QUEUE: '4',
+  COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: '10000',
+  COMMERCIAL_OCR_TESSERACT_RECYCLE_AFTER_JOBS: '250',
+  COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: '16777216',
+  COMMERCIAL_OCR_TESSERACT_MAX_OUTPUT_BYTES: '4194304',
+  OMP_THREAD_LIMIT: '1',
+});
+const OCR_NATIVE_SANDBOX_ALLOWED_IMAGE_ENV = new Set([
+  'HOME',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_VERSION',
+  'PATH',
+  'YARN_VERSION',
+]);
 const SAFE_IMAGE_REF_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,511}$/u;
 const DIGEST_IMAGE_REF_PATTERN = /@sha256:[0-9a-f]{64}$/u;
 const FULL_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
@@ -433,7 +461,7 @@ function readExpectedApiImage(path = RELEASE_MANIFEST_PATH) {
   return { imageId, imageRef, sourceSha };
 }
 
-function resolveExpectedApiServicesFromCompose(expectedServices, composeSource) {
+function resolveExpectedApiTopologyFromCompose(expectedServices, composeSource) {
   const expected = normalizeExpectedApiServices(expectedServices);
   if (
     typeof composeSource !== 'string' ||
@@ -473,7 +501,21 @@ function resolveExpectedApiServicesFromCompose(expectedServices, composeSource) 
       throw new Error('API source Compose topology is missing a required role.');
     }
   }
-  return normalizeExpectedApiServices(present);
+  const auxiliaryCount = serviceCounts.get(OCR_NATIVE_SANDBOX_SERVICE) ?? 0;
+  if (auxiliaryCount > 1) {
+    throw new Error('API source Compose auxiliary topology is ambiguous.');
+  }
+  if (auxiliaryCount === 1 && !present.includes('api-media-analysis')) {
+    throw new Error('API source Compose auxiliary topology is missing its media role.');
+  }
+  return {
+    services: normalizeExpectedApiServices(present),
+    expectedAuxiliaryService: auxiliaryCount === 1 ? OCR_NATIVE_SANDBOX_SERVICE : null,
+  };
+}
+
+function resolveExpectedApiServicesFromCompose(expectedServices, composeSource) {
+  return resolveExpectedApiTopologyFromCompose(expectedServices, composeSource).services;
 }
 
 function readOptionalDockerToken(value) {
@@ -525,6 +567,78 @@ function parseApiIdentityEnvironment(raw) {
   };
 }
 
+function isExactOcrNativeSandboxEnvironment(value) {
+  if (!Array.isArray(value)) return false;
+  const environment = new Map();
+  for (const entry of value) {
+    if (typeof entry !== 'string') return false;
+    const separator = entry.indexOf('=');
+    if (separator < 1) return false;
+    const key = entry.slice(0, separator);
+    if (environment.has(key)) return false;
+    if (
+      !Object.hasOwn(OCR_NATIVE_SANDBOX_REQUIRED_ENV, key) &&
+      !OCR_NATIVE_SANDBOX_ALLOWED_IMAGE_ENV.has(key)
+    ) {
+      return false;
+    }
+    environment.set(key, entry.slice(separator + 1));
+  }
+  return Object.entries(OCR_NATIVE_SANDBOX_REQUIRED_ENV).every(
+    ([key, expectedValue]) => environment.get(key) === expectedValue,
+  );
+}
+
+function hasExactStringArray(value, expected) {
+  return (
+    Array.isArray(value) &&
+    value.length === expected.length &&
+    value.every((entry, index) => entry === expected[index])
+  );
+}
+
+function hasExactSandboxTmpfs(value) {
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length !== 1 || entries[0][0] !== '/tmp' || typeof entries[0][1] !== 'string') {
+    return false;
+  }
+  const options = new Map();
+  const flags = new Set();
+  for (const option of entries[0][1].split(',')) {
+    const separator = option.indexOf('=');
+    if (separator < 1) {
+      if (option !== 'rw' || flags.has(option)) return false;
+      flags.add(option);
+      continue;
+    }
+    const key = option.slice(0, separator);
+    if (options.has(key)) return false;
+    options.set(key, option.slice(separator + 1));
+  }
+  return (
+    options.size === 4 &&
+    flags.size <= 1 &&
+    ['64m', '64M', String(64 * 1024 * 1024)].includes(options.get('size')) &&
+    options.get('mode') === '1777' &&
+    options.get('uid') === '1000' &&
+    options.get('gid') === '1000'
+  );
+}
+
+function hasExactSandboxMount(value, expectedProject) {
+  if (!Array.isArray(value) || value.length !== 1) return false;
+  const mount = value[0];
+  return (
+    isRecord(mount) &&
+    mount.Type === 'volume' &&
+    mount.Name === `${expectedProject}_ocr_native_ipc` &&
+    mount.Destination === '/run/maxim-ocr' &&
+    mount.RW === true &&
+    mount.Mode === 'rw'
+  );
+}
+
 function parseApiFleetInspection(raw) {
   // FLAG: Docker inspection contains secret-bearing env; retain only fixed identity signals in memory.
   if (typeof raw !== 'string' || Buffer.byteLength(raw) === 0) return [];
@@ -545,6 +659,7 @@ function parseApiFleetInspection(raw) {
     const name = container?.Name;
     const restartCount = container?.RestartCount;
     const identity = parseApiIdentityEnvironment(config.Env);
+    const healthStatus = isRecord(state.Health) ? state.Health.Status : null;
     if (
       typeof id !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(id) ||
@@ -562,9 +677,16 @@ function parseApiFleetInspection(raw) {
     ) {
       throw new Error('Docker returned invalid API fleet metadata.');
     }
+    if (
+      healthStatus !== null &&
+      !['starting', 'healthy', 'unhealthy', 'none'].includes(healthStatus)
+    ) {
+      throw new Error('Docker returned invalid API fleet health metadata.');
+    }
+    const project = readOptionalDockerToken(labels['com.docker.compose.project']);
     return {
       id,
-      project: readOptionalDockerToken(labels['com.docker.compose.project']),
+      project,
       service: readOptionalDockerToken(labels['com.docker.compose.service']),
       name,
       imageId,
@@ -573,6 +695,26 @@ function parseApiFleetInspection(raw) {
       status: state.Status,
       restartCount,
       releaseProtected: labels['com.maxim.release-protected'] === 'true',
+      ocrNativeSandbox: labels['com.maxim.ocr-native-sandbox'] === 'true',
+      ocrNativeSandboxCapable: labels['com.maxim.ocr-native-sandbox-capable'] === 'true',
+      healthStatus,
+      sandboxCommandExact: hasExactStringArray(config.Cmd, OCR_NATIVE_SANDBOX_COMMAND),
+      sandboxEnvironmentExact: isExactOcrNativeSandboxEnvironment(config.Env),
+      sandboxUserExact: config.User === '1000:1000',
+      sandboxNetworkNone: container?.HostConfig?.NetworkMode === 'none',
+      sandboxReadOnly: container?.HostConfig?.ReadonlyRootfs === true,
+      sandboxInit: container?.HostConfig?.Init === true,
+      sandboxLimitsExact:
+        container?.HostConfig?.Memory === 1024 ** 3 &&
+        container?.HostConfig?.NanoCpus === 1_000_000_000 &&
+        container?.HostConfig?.PidsLimit === 128,
+      sandboxCapDropAll: hasExactStringArray(container?.HostConfig?.CapDrop, ['ALL']),
+      sandboxNoNewPrivileges: hasExactStringArray(container?.HostConfig?.SecurityOpt, [
+        'no-new-privileges:true',
+      ]),
+      sandboxTmpfsExact: hasExactSandboxTmpfs(container?.HostConfig?.Tmpfs),
+      sandboxMainMountExact: hasExactSandboxMount(container?.Mounts, 'infra'),
+      sandboxScaleMountExact: hasExactSandboxMount(container?.Mounts, 'infra-scale'),
       ...identity,
     };
   });
@@ -595,6 +737,47 @@ function isExpectedProjectApiContainerName(value) {
   if (typeof value !== 'string') return false;
   return ['api', ...DEFAULT_EXPECTED_API_SERVICES].some((service) =>
     isExpectedComposeServiceContainerName(value, service),
+  );
+}
+
+function isOcrNativeSandboxCandidate(container) {
+  return (
+    container.ocrNativeSandbox === true ||
+    container.service === OCR_NATIVE_SANDBOX_SERVICE ||
+    isExpectedComposeServiceContainerName(container.name, OCR_NATIVE_SANDBOX_SERVICE) ||
+    /^\/infra-scale(?:-|_)ocr-native-sandbox(?:-|_)[1-9]\d*$/u.test(container.name) ||
+    container.sandboxCommandExact === true
+  );
+}
+
+function isReviewedOcrNativeSandbox(container, expectedImage, expectedProject) {
+  return (
+    container.project === expectedProject &&
+    container.service === OCR_NATIVE_SANDBOX_SERVICE &&
+    isExpectedComposeServiceContainerName(container.name, OCR_NATIVE_SANDBOX_SERVICE) &&
+    container.running === true &&
+    container.status === 'running' &&
+    container.healthStatus === 'healthy' &&
+    container.imageId === expectedImage.imageId &&
+    container.imageRef === expectedImage.imageRef &&
+    container.releaseProtected === true &&
+    container.ocrNativeSandbox === true &&
+    container.ocrNativeSandboxCapable === true &&
+    container.identityInvalid === false &&
+    container.appRole === null &&
+    container.appServiceName === null &&
+    container.commercialOcrVersionPresent === false &&
+    container.sandboxCommandExact === true &&
+    container.sandboxEnvironmentExact === true &&
+    container.sandboxUserExact === true &&
+    container.sandboxNetworkNone === true &&
+    container.sandboxReadOnly === true &&
+    container.sandboxInit === true &&
+    container.sandboxLimitsExact === true &&
+    container.sandboxCapDropAll === true &&
+    container.sandboxNoNewPrivileges === true &&
+    container.sandboxTmpfsExact === true &&
+    container.sandboxMainMountExact === true
   );
 }
 
@@ -635,7 +818,12 @@ function isApiFleetCandidate(container, expectedImage) {
   );
 }
 
-function summarizeApiFleet(expectedServices, expectedImage, containers) {
+function summarizeApiFleet(
+  expectedServices,
+  expectedImage,
+  containers,
+  expectedAuxiliaryService = null,
+) {
   const expected = normalizeExpectedApiServices(expectedServices);
   if (
     !isRecord(expectedImage) ||
@@ -646,8 +834,15 @@ function summarizeApiFleet(expectedServices, expectedImage, containers) {
   ) {
     throw new Error('Expected API image is invalid.');
   }
+  if (
+    expectedAuxiliaryService !== null &&
+    expectedAuxiliaryService !== OCR_NATIVE_SANDBOX_SERVICE
+  ) {
+    throw new Error('Expected API auxiliary topology is invalid.');
+  }
   const expectedSet = new Set(expected);
   const byService = new Map(expected.map((service) => [service, []]));
+  const auxiliaryContainers = [];
   let unexpectedApiContainerCount = 0;
   let unexpectedMainContainerCount = 0;
   let unexpectedScaleContainerCount = 0;
@@ -660,9 +855,34 @@ function summarizeApiFleet(expectedServices, expectedImage, containers) {
     ) {
       throw new Error('API fleet container metadata is invalid.');
     }
-    if (container.project === 'infra' && expectedSet.has(container.service)) {
+    if (isOcrNativeSandboxCandidate(container)) {
+      auxiliaryContainers.push(container);
+    } else if (container.project === 'infra' && expectedSet.has(container.service)) {
       byService.get(container.service).push(container);
     } else if (isApiFleetCandidate(container, expectedImage)) {
+      unexpectedApiContainerCount += 1;
+      if (container.project === 'infra') {
+        unexpectedMainContainerCount += 1;
+      } else if (container.project === 'infra-scale') {
+        unexpectedScaleContainerCount += 1;
+      } else {
+        unexpectedManualContainerCount += 1;
+      }
+    }
+  }
+
+  let acceptedAuxiliaryRestartCount = 0;
+  if (
+    expectedAuxiliaryService === OCR_NATIVE_SANDBOX_SERVICE &&
+    auxiliaryContainers.length === 1 &&
+    isReviewedOcrNativeSandbox(auxiliaryContainers[0], expectedImage, 'infra')
+  ) {
+    acceptedAuxiliaryRestartCount = auxiliaryContainers[0].restartCount;
+  } else if (auxiliaryContainers.length === 0 && expectedAuxiliaryService !== null) {
+    unexpectedApiContainerCount += 1;
+    unexpectedMainContainerCount += 1;
+  } else {
+    for (const container of auxiliaryContainers) {
       unexpectedApiContainerCount += 1;
       if (container.project === 'infra') {
         unexpectedMainContainerCount += 1;
@@ -680,7 +900,7 @@ function summarizeApiFleet(expectedServices, expectedImage, containers) {
   let identityRoleCount = 0;
   let exactImageRoleCount = 0;
   let duplicateContainerCount = 0;
-  let totalRestartCount = 0;
+  let totalRestartCount = acceptedAuxiliaryRestartCount;
   for (const service of expected) {
     const matches = byService.get(service);
     if (matches.length > 0) observedRoleCount += 1;
@@ -734,7 +954,8 @@ async function probeApiFleet(expectedServices, options = {}) {
       `${expectedImage.sourceSha}:infra/docker-compose.yml`,
     ]);
     if (!sourceCompose.ok) return { available: false };
-    const expected = resolveExpectedApiServicesFromCompose(currentExpected, sourceCompose.output);
+    const topology = resolveExpectedApiTopologyFromCompose(currentExpected, sourceCompose.output);
+    const expected = topology.services;
     const list = await run('docker', ['ps', '-a', '--no-trunc', '--format', '{{.ID}}']);
     if (!list.ok) return { available: false };
     const ids = list.output.trim() ? list.output.trim().split(/\s+/u) : [];
@@ -745,7 +966,9 @@ async function probeApiFleet(expectedServices, options = {}) {
     ) {
       return { available: false };
     }
-    if (ids.length === 0) return summarizeApiFleet(expected, expectedImage, []);
+    if (ids.length === 0) {
+      return summarizeApiFleet(expected, expectedImage, [], topology.expectedAuxiliaryService);
+    }
     const inspection = await run('docker', ['inspect', ...ids], {
       maxOutputBytes: MAX_DOCKER_INSPECT_BYTES,
     });
@@ -759,7 +982,12 @@ async function probeApiFleet(expectedServices, options = {}) {
     ) {
       return { available: false };
     }
-    return summarizeApiFleet(expected, expectedImage, containers);
+    return summarizeApiFleet(
+      expected,
+      expectedImage,
+      containers,
+      topology.expectedAuxiliaryService,
+    );
   } catch {
     return { available: false };
   }
@@ -849,6 +1077,7 @@ module.exports = {
   parseVmstat,
   probeApiFleet,
   readExpectedApiImage,
+  resolveExpectedApiTopologyFromCompose,
   resolveExpectedApiServicesFromCompose,
   summarizeApiFleet,
 };

@@ -20,12 +20,14 @@ import {
   COMMERCIAL_OCR_JOB_OPTIONS,
   COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   normalizeCommercialOcrActionEligibility,
+  normalizeImageTextScanRequested,
   validateCommercialOcrImageCount,
 } from './commercial-ocr.queue';
 import {
   resolveCommercialOcrRuntimePolicy,
   type CommercialOcrRolloutMode,
 } from './commercial-ocr.runtime';
+import { resolveImageTextStopListOcrRuntimePolicy } from './image-text-stop-list.runtime';
 
 const DEFAULT_MAX_GLOBAL_IMAGE_UNITS = 16;
 const DEFAULT_MAX_CHAT_IMAGE_UNITS = 10;
@@ -58,6 +60,8 @@ export class CommercialOcrEnqueueService {
     sourceCreatedAt: string;
     imageCount: number;
     actionEligible: boolean;
+    commercialScanRequested?: boolean;
+    imageTextScanRequested?: boolean;
     registerPendingActivation?: (
       activation: CommercialOcrPendingActivation,
     ) => void | Promise<void>;
@@ -66,7 +70,20 @@ export class CommercialOcrEnqueueService {
       chatId: params.chatId,
       configService: this.configService,
     });
-    if (!runtimePolicy.process || !this.queue || !this.admissionStore) {
+    const imageTextRuntimePolicy = resolveImageTextStopListOcrRuntimePolicy({
+      configService: this.configService,
+      // Producer admission is not action authority. The worker verifies the live sandbox again.
+      sandboxBoundaryVerified: true,
+    });
+    const imageTextScanRequested = normalizeImageTextScanRequested(params.imageTextScanRequested);
+    const commercialScanRequested = params.commercialScanRequested !== false;
+    if (
+      !(commercialScanRequested && runtimePolicy.process) &&
+      !(imageTextScanRequested && imageTextRuntimePolicy.process)
+    ) {
+      return this.finishEnqueue('skipped');
+    }
+    if (!this.queue || !this.admissionStore) {
       return this.finishEnqueue('skipped');
     }
 
@@ -77,9 +94,11 @@ export class CommercialOcrEnqueueService {
       messageId: params.messageId,
       sourceCreatedAt: params.sourceCreatedAt,
       ocrVersion,
+      commercialScanRequested,
+      imageTextScanRequested,
     });
     const requestedActionEligible = normalizeCommercialOcrActionEligibility(params.actionEligible);
-    const limits = this.resolveAdmissionLimits(runtimePolicy.mode);
+    const limits = this.resolveAdmissionLimits(runtimePolicy.mode, imageTextRuntimePolicy.enforce);
     if (!requestedActionEligible) {
       const suppression = await this.admissionStore.suppress({
         jobId,
@@ -95,7 +114,10 @@ export class CommercialOcrEnqueueService {
       chatId: params.chatId,
       sourceCreatedAt: params.sourceCreatedAt,
       imageCount,
-      actionEligible: requestedActionEligible && runtimePolicy.enforce,
+      actionEligible:
+        requestedActionEligible &&
+        ((commercialScanRequested && runtimePolicy.enforce) ||
+          (imageTextScanRequested && imageTextRuntimePolicy.enforce)),
       limits,
     });
     this.recordReservation(reservation);
@@ -143,6 +165,8 @@ export class CommercialOcrEnqueueService {
           schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
           ocrVersion,
           actionEligible: false,
+          commercialScanRequested,
+          imageTextScanRequested,
           idempotencyKey: jobId,
           sourceTag: 'commercial-image-ocr',
           createdAt,
@@ -252,7 +276,10 @@ export class CommercialOcrEnqueueService {
     }
   }
 
-  private resolveAdmissionLimits(rolloutMode: CommercialOcrRolloutMode) {
+  private resolveAdmissionLimits(
+    rolloutMode: CommercialOcrRolloutMode,
+    imageTextEnforcementEnabled: boolean,
+  ) {
     return {
       maxGlobalImageUnits: this.readPositiveInt(
         'COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS',
@@ -265,7 +292,7 @@ export class CommercialOcrEnqueueService {
       // Pure shadow traffic remains unchanged. The reserve is activated only when the environment
       // ceiling permits enforcement, and the admission store applies it only to observations.
       reservedActionableImageUnits:
-        rolloutMode === 'shadow'
+        (rolloutMode === 'off' || rolloutMode === 'shadow') && !imageTextEnforcementEnabled
           ? 0
           : this.readNonNegativeInt(
               'COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS',

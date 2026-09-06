@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import {
   access,
   constants as fsConstants,
@@ -10,7 +11,6 @@ import { readFileSync } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
-import sharp from 'sharp';
 import { z } from 'zod';
 
 import { COMMERCIAL_ENGINE_CONFIG } from '../commercial/commercial-config';
@@ -36,7 +36,7 @@ import {
   resolveCommercialOcrPreprocessLimits,
   type CommercialOcrPreprocessConfigReader,
   type CommercialOcrPreprocessLimits,
-} from './commercial-ocr-preprocessor';
+} from './commercial-ocr-preprocess-config';
 import { COMMERCIAL_OCR_DEFAULT_VERSION } from './commercial-ocr.queue';
 import { SUPPORTED_PHOTO_IMAGE_FORMATS } from '../photo-duplicate/photo-image-format';
 
@@ -950,8 +950,8 @@ function unavailableNativeArtifacts(): PartialCommercialOcrNativeArtifactSnapsho
       nodeVersion: process.version,
       platform: process.platform,
       architecture: process.arch,
-      sharpVersion: sharp.versions.sharp ?? null,
-      libvipsVersion: sharp.versions.vips ?? null,
+      sharpVersion: null,
+      libvipsVersion: null,
     },
     tesseract: {
       version: null,
@@ -980,11 +980,17 @@ function resolveNativeProbeDependencies(
       platform: process.platform,
       architecture: process.arch,
     },
-    sharpVersions: overrides.sharpVersions ?? sharp.versions,
+    sharpVersions: overrides.sharpVersions ?? loadSharpVersions(),
     environment: overrides.environment ?? process.env,
     path: overrides.path ?? process.env.PATH,
     cwd: overrides.cwd ?? process.cwd(),
   };
+}
+
+function loadSharpVersions(): Readonly<{ sharp: string | undefined; vips: string | undefined }> {
+  // Loaded only by the build/eval or sandbox artifact probe, never by the networked OCR client.
+  const runtimeSharp = createRequire(__filename)('sharp') as typeof import('sharp').default;
+  return runtimeSharp.versions;
 }
 
 function nativeProbeEnvironment(

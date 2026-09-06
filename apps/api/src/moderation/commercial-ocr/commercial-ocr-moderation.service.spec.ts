@@ -18,7 +18,11 @@ import {
   parseCommercialOcrDeleteBinding,
 } from './commercial-ocr-delete-guard.service';
 import { CommercialOcrModerationService } from './commercial-ocr-moderation.service';
-import { COMMERCIAL_OCR_JOB_SCHEMA_VERSION, type CommercialOcrJob } from './commercial-ocr.queue';
+import {
+  COMMERCIAL_OCR_DEFAULT_VERSION,
+  COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
+  type CommercialOcrJob,
+} from './commercial-ocr.queue';
 import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
 
 const sourceCreatedAt = '2026-08-12T08:00:00.000Z';
@@ -29,6 +33,16 @@ type AnalysisFixture =
   | {
       kind: 'complete';
       decision: CommercialOcrDecision;
+      imageTextStopListDecision?:
+        | { kind: 'no_action' }
+        | {
+            kind: 'match';
+            ruleCode: 'MESSAGE_BLOCKED_WORD' | 'MESSAGE_BLOCKED_DOMAIN';
+            value: string;
+            imageIndex: number;
+            primaryConfidencePermille: number;
+            confirmationConfidencePermille: number;
+          };
     }
   | {
       kind: 'incomplete';
@@ -47,6 +61,9 @@ type AccessFixture = {
 
 type HarnessOptions = {
   mode?: 'on' | 'shadow';
+  imageTextRolloutMode?: 'off' | 'shadow' | 'on';
+  sandboxBoundaryVerified?: boolean;
+  initialSettings?: ChatSettings;
   normalizedUpdate?: MaxUpdate;
   exactRows?: Array<Record<string, unknown> | null>;
   analysis?: AnalysisFixture;
@@ -75,6 +92,197 @@ type HarnessOptions = {
 };
 
 describe('CommercialOcrModerationService', () => {
+  it('persists a confirmed image stop-list deletion without storing recognized text', async () => {
+    const imageSettings = settings({
+      commercialAdsFilterEnabled: false,
+      messageLimitsImageTextScanEnabled: true,
+      messageLimitsBlockedWords: ['казино'],
+      messageLimitsBlockedDomains: [],
+    });
+    const harness = buildHarness({
+      initialSettings: imageSettings,
+      finalSettings: imageSettings,
+      commitSettings: imageSettings,
+      imageTextRolloutMode: 'on',
+      sandboxBoundaryVerified: true,
+      analysis: {
+        kind: 'complete',
+        decision: noActionDecision(['no-independent-delete-source']),
+        imageTextStopListDecision: {
+          kind: 'match',
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          value: 'казино',
+          imageIndex: 0,
+          primaryConfidencePermille: 960,
+          confirmationConfidencePermille: 950,
+        },
+      },
+    });
+
+    await expect(
+      harness.service.processCommercialOcrJob(
+        job({
+          commercialScanRequested: false,
+          imageTextScanRequested: true,
+          ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
+        }),
+        jobId,
+        activeDeadlineAtMs,
+      ),
+    ).resolves.toEqual({ kind: 'completed' });
+
+    const persisted =
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
+    expect(persisted.intent).toMatchObject({
+      ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE,
+      subjectUserId: 'user-1',
+      event: {
+        metadata: {
+          source: 'image_text_ocr',
+          matchedRuleCode: 'MESSAGE_BLOCKED_WORD',
+          imageIndex: 0,
+          blockedWord: 'казино',
+          primaryConfidencePermille: 960,
+          confirmationConfidencePermille: 950,
+        },
+      },
+    });
+    expect(JSON.stringify(persisted)).not.toContain('Buy now');
+    expect(harness.runtimePolicy.resolveEffectivePolicy).not.toHaveBeenCalled();
+  });
+
+  it('suppresses an image stop-list deletion when the toggle changes after analysis', async () => {
+    const initialSettings = settings({
+      commercialAdsFilterEnabled: false,
+      messageLimitsImageTextScanEnabled: true,
+      messageLimitsBlockedWords: ['казино'],
+      messageLimitsBlockedDomains: [],
+    });
+    const harness = buildHarness({
+      initialSettings,
+      finalSettings: settings({
+        ...initialSettings,
+        messageLimitsImageTextScanEnabled: false,
+      }),
+      imageTextRolloutMode: 'on',
+      sandboxBoundaryVerified: true,
+      analysis: {
+        kind: 'complete',
+        decision: noActionDecision(['no-independent-delete-source']),
+        imageTextStopListDecision: {
+          kind: 'match',
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          value: 'казино',
+          imageIndex: 0,
+          primaryConfidencePermille: 960,
+          confirmationConfidencePermille: 950,
+        },
+      },
+    });
+
+    await harness.service.processCommercialOcrJob(
+      job({ commercialScanRequested: false, imageTextScanRequested: true }),
+      jobId,
+      activeDeadlineAtMs,
+    );
+
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+    expect(harness.metrics.recordCounter).toHaveBeenCalledWith(
+      'image_text_stop_list.enforcement.suppressed',
+    );
+  });
+
+  it('continues an independently authorized commercial deletion when image enforcement is suppressed', async () => {
+    const combinedSettings = settings({
+      messageLimitsImageTextScanEnabled: true,
+      messageLimitsBlockedWords: ['казино'],
+      messageLimitsBlockedDomains: [],
+    });
+    const harness = buildHarness({
+      initialSettings: combinedSettings,
+      finalSettings: combinedSettings,
+      commitSettings: combinedSettings,
+      imageTextRolloutMode: 'shadow',
+      sandboxBoundaryVerified: true,
+      analysis: {
+        ...deleteAnalysis(),
+        imageTextStopListDecision: {
+          kind: 'match',
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          value: 'казино',
+          imageIndex: 0,
+          primaryConfidencePermille: 960,
+          confirmationConfidencePermille: 950,
+        },
+      },
+    });
+
+    await harness.service.processCommercialOcrJob(
+      job({ commercialScanRequested: true, imageTextScanRequested: true }),
+      jobId,
+      activeDeadlineAtMs,
+    );
+
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commercialScanEnabled: true,
+        imageTextStopListScanEnabled: true,
+      }),
+    );
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).toHaveBeenCalledTimes(1);
+    const persisted =
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0].intent;
+    expect(persisted.ruleCode).toBe(COMMERCIAL_OCR_DELETE_RULE_CODE);
+    expect(persisted.event.metadata).toEqual({
+      commercialOcrBinding: expect.any(Object),
+    });
+  });
+
+  it('gives a confirmed explicit stop-list match ownership when both OCR decisions can enforce', async () => {
+    const combinedSettings = settings({
+      messageLimitsImageTextScanEnabled: true,
+      messageLimitsBlockedWords: ['казино'],
+      messageLimitsBlockedDomains: [],
+    });
+    const harness = buildHarness({
+      initialSettings: combinedSettings,
+      finalSettings: combinedSettings,
+      commitSettings: combinedSettings,
+      imageTextRolloutMode: 'on',
+      sandboxBoundaryVerified: true,
+      analysis: {
+        ...deleteAnalysis(),
+        imageTextStopListDecision: {
+          kind: 'match',
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          value: 'казино',
+          imageIndex: 0,
+          primaryConfidencePermille: 960,
+          confirmationConfidencePermille: 950,
+        },
+      },
+    });
+
+    await harness.service.processCommercialOcrJob(
+      job({ commercialScanRequested: true, imageTextScanRequested: true }),
+      jobId,
+      activeDeadlineAtMs,
+    );
+
+    const persisted =
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
+    expect(persisted.intent.event.metadata).toMatchObject({
+      source: 'image_text_ocr',
+      enforcementScope: 'delete_only',
+      matchedRuleCode: 'MESSAGE_BLOCKED_WORD',
+    });
+    expect(harness.runtimePolicy.resolveEffectivePolicy).not.toHaveBeenCalled();
+  });
+
   it('does no work for a job whose absolute deadline already expired', async () => {
     const harness = buildHarness();
 
@@ -1049,7 +1257,7 @@ describe('CommercialOcrModerationService', () => {
 });
 
 function buildHarness(options: HarnessOptions = {}) {
-  const initialSettings = settings();
+  const initialSettings = options.initialSettings ?? settings();
   const finalSettings = options.finalSettings ?? initialSettings;
   const commitSettings = options.commitSettings ?? finalSettings;
   const normalizedUpdate = options.normalizedUpdate ?? update();
@@ -1086,16 +1294,19 @@ function buildHarness(options: HarnessOptions = {}) {
           entityType: ChatEntityType.CHAT,
           settings: initialSettings,
           admins: (options.initialAdminUserIds ?? []).map((userId) => ({ userId })),
+          domains: [],
         })
         .mockResolvedValueOnce({
           entityType: ChatEntityType.CHAT,
           settings: finalSettings,
           admins: (options.finalAdminUserIds ?? []).map((userId) => ({ userId })),
+          domains: [],
         })
         .mockResolvedValue({
           entityType: ChatEntityType.CHAT,
           settings: commitSettings,
           admins: (options.finalAdminUserIds ?? []).map((userId) => ({ userId })),
+          domains: [],
         }),
     },
     moderationViolationMessageClaim: {
@@ -1184,9 +1395,19 @@ function buildHarness(options: HarnessOptions = {}) {
   };
   const configService = new ConfigService({
     COMMERCIAL_OCR_ROLLOUT_MODE: options.mode ?? 'on',
+    IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: options.imageTextRolloutMode ?? 'shadow',
     COMMERCIAL_OCR_RESERVATION_TTL_MS: options.reservationTtlMs,
   });
   const metrics = { recordCounter: jest.fn() };
+  const nativeOcr = {
+    isSandboxBoundaryVerified: jest.fn().mockReturnValue(options.sandboxBoundaryVerified ?? false),
+    getRuntimeStatus: jest.fn().mockReturnValue({
+      behaviorIdentity: {
+        verified: options.sandboxBoundaryVerified ?? false,
+        fingerprintSha256: 'b'.repeat(64),
+      },
+    }),
+  };
   const service = new CommercialOcrModerationService(
     prisma as never,
     analysisService as never,
@@ -1200,6 +1421,7 @@ function buildHarness(options: HarnessOptions = {}) {
     runtimePolicy as never,
     configService,
     metrics as never,
+    nativeOcr as never,
   );
 
   return {
@@ -1213,6 +1435,7 @@ function buildHarness(options: HarnessOptions = {}) {
     moderationDeleteIntents,
     runtimePolicy,
     metrics,
+    nativeOcr,
   };
 }
 
@@ -1226,6 +1449,8 @@ function job(overrides: Partial<CommercialOcrJob> = {}): CommercialOcrJob {
     schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
     ocrVersion: 'tesseract-rus-eng-v1',
     actionEligible: true,
+    commercialScanRequested: true,
+    imageTextScanRequested: false,
     idempotencyKey: jobId,
     sourceTag: 'commercial-image-ocr',
     createdAt: sourceCreatedAt,

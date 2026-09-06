@@ -6,6 +6,7 @@ import test from 'node:test';
 import { buildReleaseManifest } from './release-manifest.mjs';
 import { ACTIVE_RELEASE_COMPONENTS } from './release-manifest.mjs';
 import {
+  API_SHARED_SERVICES,
   PRODUCTION_API_SERVICES,
   buildRollbackPlan,
   buildRollbackReleaseId,
@@ -43,7 +44,7 @@ function completeManifest() {
   });
 }
 
-test('default plan selects every active component and all thirteen API roles', () => {
+test('default plan selects every active component, thirteen API roles, and its sandbox', () => {
   const plan = buildRollbackPlan({
     manifest: completeManifest(),
     now: new Date('2026-07-19T12:34:56.789Z'),
@@ -54,11 +55,7 @@ test('default plan selects every active component and all thirteen API roles', (
     plan.components.map(({ id }) => id),
     ACTIVE_RELEASE_COMPONENTS,
   );
-  assert.deepEqual(plan.services, [
-    ...PRODUCTION_API_SERVICES,
-    'miniapp-major-static',
-    'admin-static',
-  ]);
+  assert.deepEqual(plan.services, [...API_SHARED_SERVICES, 'miniapp-major-static', 'admin-static']);
   assert.equal(plan.targetSha, sha('a'));
   assert.equal(plan.rollbackReleaseId, `rollback-20260719T123456789Z-${sha('a').slice(0, 12)}-42`);
 });
@@ -73,7 +70,7 @@ test('component arguments are safe, deduplicated by rejection, and emitted in ca
     plan.components.map(({ id }) => id),
     ['api-shared', 'admin-static'],
   );
-  assert.deepEqual(plan.services, [...PRODUCTION_API_SERVICES, 'admin-static']);
+  assert.deepEqual(plan.services, [...API_SHARED_SERVICES, 'admin-static']);
   assert.throws(
     () =>
       buildRollbackPlan({

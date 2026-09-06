@@ -5,6 +5,11 @@ import {
 } from 'node:child_process';
 
 import { COMMERCIAL_OCR_NATIVE_ORCHESTRATION } from './commercial-ocr-behavior-identity';
+import {
+  nativeProcessGroupSpawnOptions,
+  signalNativeProcessGroup,
+  verifyNativeProcessGroupTeardown,
+} from './native-process-group';
 import { parseNativeTesseractTsv, type ParsedNativeTesseractTsv } from './native-tesseract-tsv';
 import type { NativeTesseractPageSegmentationMode } from './native-tesseract-ocr.types';
 
@@ -49,6 +54,8 @@ export type NativeTesseractRunOptions = {
   ompThreadLimit?: number;
   tessdataPrefix?: string;
   onProcessChange?: (process: ChildProcessWithoutNullStreams | null) => void;
+  requireProcessGroupTeardown?: boolean;
+  onProcessGroupTeardownFailure?: () => void;
 };
 
 export type NativeTesseractProbeOptions = {
@@ -57,6 +64,8 @@ export type NativeTesseractProbeOptions = {
   maxOutputBytes: number;
   tessdataPrefix?: string;
   onProcessChange?: (process: ChildProcessWithoutNullStreams | null) => void;
+  requireProcessGroupTeardown?: boolean;
+  onProcessGroupTeardownFailure?: () => void;
 };
 
 export type NativeTesseractSpawn = (
@@ -75,6 +84,7 @@ export async function probeNativeTesseract(
       child = spawnProcess(options.binary, ['--list-langs'], {
         shell: false,
         windowsHide: true,
+        ...nativeProcessGroupSpawnOptions(),
         env: nativeTesseractEnvironment({ tessdataPrefix: options.tessdataPrefix }),
       });
       options.onProcessChange?.(child);
@@ -89,6 +99,8 @@ export async function probeNativeTesseract(
     let settled = false;
     let forcedReason: NativeTesseractProbeFailureReason | null = null;
     let forceSettleTimer: NodeJS.Timeout | null = null;
+    let teardownPending = false;
+    let processClosedObserved = false;
 
     const onStdout = (chunk: Buffer | string) => {
       if (forcedReason) return;
@@ -105,14 +117,16 @@ export async function probeNativeTesseract(
       stderrBytes += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(chunk);
       if (stderrBytes > options.maxOutputBytes) stop('output_limit');
     };
-    const onError = () => finish({ ok: false, reason: forcedReason ?? 'tesseract_failed' });
+    const onError = () =>
+      finishAfterTeardown({ ok: false, reason: forcedReason ?? 'tesseract_failed' }, false);
     const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      processClosedObserved = true;
       if (forcedReason) {
-        finish({ ok: false, reason: forcedReason }, true);
+        finishAfterTeardown({ ok: false, reason: forcedReason }, true);
         return;
       }
       if (code !== 0 || signal) {
-        finish({ ok: false, reason: 'tesseract_failed' }, true);
+        finishAfterTeardown({ ok: false, reason: 'tesseract_failed' }, true);
         return;
       }
       const languages = new Set(
@@ -121,7 +135,7 @@ export async function probeNativeTesseract(
           .split(/\r?\n/u)
           .map((line) => line.trim()),
       );
-      finish(
+      finishAfterTeardown(
         REQUIRED_TESSERACT_LANGUAGES.every((language) => languages.has(language))
           ? { ok: true }
           : { ok: false, reason: 'missing_languages' },
@@ -151,19 +165,54 @@ export async function probeNativeTesseract(
       if (processClosed) options.onProcessChange?.(null);
       resolve(result);
     };
+    const finishAfterTeardown = (
+      result: NativeTesseractProbeResult,
+      processClosed: boolean,
+    ): void => {
+      if (settled || teardownPending) return;
+      teardownPending = true;
+      clearTimeout(timeout);
+      if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      void verifyNativeProcessGroupTeardown(child, {
+        graceMs: POST_KILL_SETTLE_GRACE_MS,
+        requireIsolatedGroup: options.requireProcessGroupTeardown,
+      }).then(
+        (verified) => {
+          teardownPending = false;
+          if (!verified) {
+            options.onProcessGroupTeardownFailure?.();
+          }
+          finish(
+            verified ? result : { ok: false, reason: 'tesseract_failed' },
+            processClosed || processClosedObserved,
+          );
+        },
+        () => {
+          teardownPending = false;
+          options.onProcessGroupTeardownFailure?.();
+          finish({ ok: false, reason: 'tesseract_failed' }, processClosed || processClosedObserved);
+        },
+      );
+    };
     const stop = (reason: NativeTesseractProbeFailureReason) => {
       if (settled || forcedReason) {
         return;
       }
       forcedReason = reason;
-      try {
-        child.kill('SIGKILL');
-      } catch {
+      if (
+        !signalNativeProcessGroup(child, 'SIGKILL', {
+          requireIsolatedGroup: options.requireProcessGroupTeardown,
+        })
+      ) {
+        options.onProcessGroupTeardownFailure?.();
         finish({ ok: false, reason });
         return;
       }
       if (settled) return;
-      forceSettleTimer = setTimeout(() => finish({ ok: false, reason }), POST_KILL_SETTLE_GRACE_MS);
+      forceSettleTimer = setTimeout(
+        () => finishAfterTeardown({ ok: false, reason }, false),
+        POST_KILL_SETTLE_GRACE_MS,
+      );
       forceSettleTimer.unref();
     };
 
@@ -192,6 +241,8 @@ export async function runNativeTesseract(
         {
           shell: false,
           windowsHide: true,
+          // FLAG: The negative PGID teardown below is valid only for this dedicated process group.
+          ...nativeProcessGroupSpawnOptions(),
           env: nativeTesseractEnvironment({
             tessdataPrefix: options.tessdataPrefix,
             ompThreadLimit: options.ompThreadLimit,
@@ -210,6 +261,8 @@ export async function runNativeTesseract(
     let settled = false;
     let forcedReason: NativeTesseractRunFailureReason | null = null;
     let forceSettleTimer: NodeJS.Timeout | null = null;
+    let teardownPending = false;
+    let processClosedObserved = false;
 
     const onStdout = (chunk: Buffer | string) => {
       if (forcedReason) return;
@@ -227,18 +280,20 @@ export async function runNativeTesseract(
         stderrBytes + (Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(chunk)),
       );
     };
-    const onError = () => finish({ ok: false, reason: forcedReason ?? 'tesseract_failed' });
+    const onError = () =>
+      finishAfterTeardown({ ok: false, reason: forcedReason ?? 'tesseract_failed' }, false);
     const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      processClosedObserved = true;
       if (forcedReason) {
-        finish({ ok: false, reason: forcedReason }, true);
+        finishAfterTeardown({ ok: false, reason: forcedReason }, true);
         return;
       }
       if (code !== 0 || signal) {
-        finish({ ok: false, reason: 'tesseract_failed' }, true);
+        finishAfterTeardown({ ok: false, reason: 'tesseract_failed' }, true);
         return;
       }
       try {
-        finish(
+        finishAfterTeardown(
           {
             ok: true,
             payload: parseNativeTesseractTsv(
@@ -248,7 +303,7 @@ export async function runNativeTesseract(
           true,
         );
       } catch {
-        finish({ ok: false, reason: 'invalid_output' }, true);
+        finishAfterTeardown({ ok: false, reason: 'invalid_output' }, true);
       }
     };
     const onStdinError = () => undefined;
@@ -274,19 +329,54 @@ export async function runNativeTesseract(
       if (processClosed) options.onProcessChange?.(null);
       resolve(result);
     };
+    const finishAfterTeardown = (
+      result: NativeTesseractRunResult,
+      processClosed: boolean,
+    ): void => {
+      if (settled || teardownPending) return;
+      teardownPending = true;
+      clearTimeout(timeout);
+      if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      void verifyNativeProcessGroupTeardown(child, {
+        graceMs: POST_KILL_SETTLE_GRACE_MS,
+        requireIsolatedGroup: options.requireProcessGroupTeardown,
+      }).then(
+        (verified) => {
+          teardownPending = false;
+          if (!verified) {
+            options.onProcessGroupTeardownFailure?.();
+          }
+          finish(
+            verified ? result : { ok: false, reason: 'tesseract_failed' },
+            processClosed || processClosedObserved,
+          );
+        },
+        () => {
+          teardownPending = false;
+          options.onProcessGroupTeardownFailure?.();
+          finish({ ok: false, reason: 'tesseract_failed' }, processClosed || processClosedObserved);
+        },
+      );
+    };
     const stop = (reason: NativeTesseractRunFailureReason) => {
       if (settled || forcedReason) {
         return;
       }
       forcedReason = reason;
-      try {
-        child.kill('SIGKILL');
-      } catch {
+      if (
+        !signalNativeProcessGroup(child, 'SIGKILL', {
+          requireIsolatedGroup: options.requireProcessGroupTeardown,
+        })
+      ) {
+        options.onProcessGroupTeardownFailure?.();
         finish({ ok: false, reason });
         return;
       }
       if (settled) return;
-      forceSettleTimer = setTimeout(() => finish({ ok: false, reason }), POST_KILL_SETTLE_GRACE_MS);
+      forceSettleTimer = setTimeout(
+        () => finishAfterTeardown({ ok: false, reason }, false),
+        POST_KILL_SETTLE_GRACE_MS,
+      );
       forceSettleTimer.unref();
     };
 
