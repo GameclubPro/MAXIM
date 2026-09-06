@@ -53,7 +53,10 @@ describe('ModerationService', () => {
           findFirst: jest.fn().mockResolvedValue(null),
           create: jest.fn(),
           upsert: jest.fn(
-            async (args: { where: { id: string }; create: { metadata?: unknown } }) => {
+            async (args: {
+              where: { id: string };
+              create: { metadata?: unknown; ruleCode?: unknown };
+            }) => {
               const existing = persistedModerationEvents.get(args.where.id);
               if (existing) {
                 return existing;
@@ -74,6 +77,57 @@ describe('ModerationService', () => {
         chatRules: {
           update: jest.fn(),
         },
+      };
+    }
+
+    function createRequiredSubscriptionMediaUpdate(params: {
+      messageId: string;
+      createdAt: string;
+      mediaGroupId?: string;
+      chatId?: string;
+      userId?: string;
+    }): MaxUpdate {
+      const update = createUpdate();
+      update.updateId = `update-${params.messageId}`;
+      if (!update.message) return update;
+      update.message.messageId = params.messageId;
+      update.message.createdAt = params.createdAt;
+      update.message.chatId = params.chatId ?? 'chat-1';
+      update.message.senderId = params.userId ?? 'user-1';
+      update.message.text = '';
+      update.raw = {
+        message: {
+          body: {
+            ...(params.mediaGroupId ? { media_group_id: params.mediaGroupId } : {}),
+            attachments: [
+              {
+                type: 'image',
+                payload: { url: `https://cdn.example/${params.messageId}.jpg` },
+              },
+            ],
+          },
+        },
+      };
+      return update;
+    }
+
+    function createRequiredSubscriptionMaxClient(
+      sendMessage: jest.Mock = jest.fn().mockResolvedValue(undefined),
+    ) {
+      return {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage,
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
       };
     }
 
@@ -2791,6 +2845,182 @@ describe('ModerationService', () => {
       ]);
       expect(prisma.violation.create).toHaveBeenCalledTimes(2);
       expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(4);
+    });
+
+    it('coalesces an explicit MAX media group into one notice and one counted violation', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = createRequiredSubscriptionMaxClient();
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const anchorCreatedAt = Date.parse('2026-09-06T12:00:00.000Z');
+
+      for (let index = 0; index < 10; index += 1) {
+        await service.handleUpdate(
+          createRequiredSubscriptionMediaUpdate({
+            messageId: `album-message-${index + 1}`,
+            createdAt: new Date(anchorCreatedAt + index * 60_000).toISOString(),
+            mediaGroupId: 'album-1',
+          }),
+        );
+      }
+
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(10);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(
+        prisma.moderationEvent.upsert.mock.calls.filter(
+          ([args]) => args?.create?.ruleCode === 'REQUIRED_SUBSCRIPTION_NOTICE_COVERAGE',
+        ),
+      ).toHaveLength(9);
+      const mediaLockKeys = redisCounter.acquireLock.mock.calls.map(([key]) => key);
+      expect(mediaLockKeys[0]).toMatch(
+        /^moderation:required-subscription:media-notice-lock:v1:[a-f0-9]{64}$/,
+      );
+      expect(new Set(mediaLockKeys)).toEqual(new Set([mediaLockKeys[0]]));
+    });
+
+    it('coalesces fallback media bursts by source time without extending the window', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = createRequiredSubscriptionMaxClient();
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const anchorCreatedAt = Date.parse('2026-09-06T12:00:00.000Z');
+
+      for (const [messageId, offsetMs] of [
+        ['burst-message-1', 0],
+        ['burst-message-2', 9_999],
+        ['burst-message-3', 10_001],
+      ] as const) {
+        await service.handleUpdate(
+          createRequiredSubscriptionMediaUpdate({
+            messageId,
+            createdAt: new Date(anchorCreatedAt + offsetMs).toISOString(),
+          }),
+        );
+      }
+
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(3);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses durable media coverage after the Redis delivered marker expires', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = createRequiredSubscriptionMaxClient();
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const createdAt = '2026-09-06T12:00:00.000Z';
+      const first = createRequiredSubscriptionMediaUpdate({
+        messageId: 'coverage-message-1',
+        createdAt,
+        mediaGroupId: 'coverage-album',
+      });
+      const second = createRequiredSubscriptionMediaUpdate({
+        messageId: 'coverage-message-2',
+        createdAt,
+        mediaGroupId: 'coverage-album',
+      });
+
+      await service.handleUpdate(first);
+      await service.handleUpdate(second);
+      for (const key of redisCounter.stringCache.keys()) {
+        if (key.includes('media-notice-state')) redisCounter.stringCache.delete(key);
+      }
+      await service.handleUpdate(second);
+
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(3);
+    });
+
+    it('recovers one planned media notice after send failure before deleting the package', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = { detect: jest.fn().mockResolvedValue({ violations: [] }) };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const sendMessage = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('MAX send failed'))
+        .mockResolvedValue(undefined);
+      const maxClient = createRequiredSubscriptionMaxClient(sendMessage);
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      const createdAt = '2026-09-06T12:00:00.000Z';
+      const first = createRequiredSubscriptionMediaUpdate({
+        messageId: 'recovery-message-1',
+        createdAt,
+        mediaGroupId: 'recovery-album',
+      });
+      const second = createRequiredSubscriptionMediaUpdate({
+        messageId: 'recovery-message-2',
+        createdAt,
+        mediaGroupId: 'recovery-album',
+      });
+
+      await expect(service.handleUpdate(first)).rejects.toThrow('MAX send failed');
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+
+      await service.handleUpdate(second);
+      await service.handleUpdate(first);
+
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(sendMessage.mock.calls[1]?.[3]).toEqual(
+        expect.objectContaining({
+          idempotencyKey: 'required-subscription:notice:v1:chat-1:recovery-message-1',
+        }),
+      );
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
     });
 
     it('sends the required subscription explanation for every counted violation', async () => {

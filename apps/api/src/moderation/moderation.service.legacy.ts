@@ -187,9 +187,14 @@ import {
   buildRequiredSubscriptionNoticePlan,
   withRequiredSubscriptionHtmlMessageOptions,
   type RequiredSubscriptionNoticeAction,
-  type RequiredSubscriptionNoticePlan,
   type RequiredSubscriptionPersistedDecision,
 } from './required-subscription-notice-plan';
+import {
+  RequiredSubscriptionMediaNoticeCoordinator,
+  bindRequiredSubscriptionMediaNoticeScope,
+  resolveRequiredSubscriptionMediaNoticeScope,
+  type RequiredSubscriptionMediaNoticeScope,
+} from './required-subscription-media-notice';
 import { ModerationReleaseCallbackService } from './moderation-release-callback.service';
 import {
   ModerationSanctionStateFenceService,
@@ -245,6 +250,7 @@ import {
   calculateEffectiveMessageLength,
   collectForwardedNodes,
   detectMediaFlags,
+  extractDirectMediaBatchId,
   extractRawMessageNode,
   hasForwardedMessage,
   shouldSkipAntiSpamBurstForForward,
@@ -336,7 +342,6 @@ import {
   REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC,
   REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC,
   REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS,
-  REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS,
   REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS,
   REQUIRED_SUBSCRIPTION_RULE_CODE,
   INVITATION_ACCESS_ESCALATION_WINDOW_HOURS,
@@ -621,6 +626,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   >();
   private readonly requiredSubscriptionNoticePlans: RequiredSubscriptionNoticePlanStore;
+  private readonly requiredSubscriptionMediaNoticeCoordinator: RequiredSubscriptionMediaNoticeCoordinator;
   private readonly moderationActionPermissionSkipLogAtMs = new Map<string, number>();
   private readonly moderationActionBotBackoffUntilMs = new Map<string, number>();
   private readonly moderationActionSnapshotRefreshUntilMs = new Map<string, number>();
@@ -757,6 +763,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
     );
+    this.requiredSubscriptionMediaNoticeCoordinator =
+      new RequiredSubscriptionMediaNoticeCoordinator(prisma.moderationEvent, redisCounter);
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.channelAutoPostMutationGuard = new ChannelAutoPostMutationGuard({
       maxClient,
@@ -1593,6 +1601,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const mediaFlags = detectMediaFlags(update);
+      const requiredSubscriptionMediaNoticeScope = resolveRequiredSubscriptionMediaNoticeScope({
+        chatId,
+        userId: senderId,
+        sourceCreatedAt: createdAt,
+        mediaGroupId: extractDirectMediaBatchId(update),
+        mediaEligible:
+          updateType === 'message_created' &&
+          (mediaFlags.hasPhotoAttachment ||
+            mediaFlags.hasStickerAttachment ||
+            mediaFlags.hasVideoAttachment ||
+            mediaFlags.hasFileAttachment ||
+            mediaFlags.hasVoiceAttachment ||
+            mediaFlags.hasMediaBatch),
+      });
       const photoDuplicateEnqueueBase =
         webhookEventId &&
         messageId &&
@@ -1817,6 +1839,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             hotPathProfile,
             suppressEscalation: true,
             knownAppliedSanctionAction: SanctionAction.MUTE,
+            mediaNoticeScope: requiredSubscriptionMediaNoticeScope,
           });
           if (requiredSubscriptionHandled) {
             return;
@@ -1950,6 +1973,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         rulesPublishedUrl,
         rulesPublishedMessageId,
         hotPathProfile,
+        mediaNoticeScope: requiredSubscriptionMediaNoticeScope,
       });
       if (requiredSubscriptionHandled) {
         await suppressDeferredPhotoAnalysisActions();
@@ -10178,6 +10202,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     hotPathProfile?: WebhookHotPathProfile | null;
     suppressEscalation?: boolean;
     knownAppliedSanctionAction?: typeof SanctionAction.MUTE;
+    mediaNoticeScope?: RequiredSubscriptionMediaNoticeScope | null;
   }): Promise<boolean> {
     if (!isRequiredSubscriptionCurrentlyActive(params.settings)) {
       return false;
@@ -10226,12 +10251,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
           return !metadata || !metadata.usable;
         });
+    const mediaNoticeScope =
+      this.requiredSubscriptionMediaNoticeCoordinator.canCoordinateMediaNotice() &&
+      params.mediaNoticeScope
+        ? bindRequiredSubscriptionMediaNoticeScope({
+            scope: params.mediaNoticeScope,
+            requiredChannelIds: requiredMembershipChannelIds,
+            missingChannelIds: membership.missingChannelIds,
+          })
+        : null;
     const requiredSubscriptionChannelMetadata = {
       channelIds: requiredChannelIds,
       requiredChannelIds,
       missingChannelIds: membership.missingChannelIds,
       unresolvedChannelIds: membership.unresolvedChannelIds,
       terminalChannelIds: membership.terminalChannelIds,
+      ...(mediaNoticeScope
+        ? {
+            mediaNoticeScope: {
+              kind: mediaNoticeScope.kind,
+              digest: mediaNoticeScope.scopeDigest,
+            },
+          }
+        : {}),
     };
     const missingChannels = membership.missingChannelIds
       .map((channelId) => resolvedRequiredChannelsById.get(channelId) ?? null)
@@ -10260,68 +10302,67 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       },
     };
-    return this.runRequiredSubscriptionNoticeExclusive(
-      params.chatId,
-      params.messageId,
-      async (assertNoticeLeaseOwned) => {
-        const noticeIdempotencyKey = `required-subscription:notice:v1:${params.chatId}:${params.messageId}`;
-        const sendRequiredSubscriptionNoticePlan = (plan: RequiredSubscriptionNoticePlan) =>
-          this.sendBotMessageWithOptionalAutoDelete({
-            chatId: params.chatId,
-            text: plan.renderedText,
-            messageOptions: plan.messageOptions,
-            media: this.resolveBotSpeechMedia(params.settings, plan.mediaFieldKey ?? undefined),
-            deleteBotMessagesEnabled: plan.deleteBotMessagesEnabled,
-            deleteBotMessagesDelayMinutes: plan.deleteBotMessagesDelayMinutes,
-            userFacing: true,
-            bypassNoticeBucket: true,
-            idempotencyKey: noticeIdempotencyKey,
-            beforeSend: assertNoticeLeaseOwned,
-          });
-        const executeRequiredSubscriptionDelete = async () => {
-          await assertNoticeLeaseOwned();
-          await this.ensureModerationDeleteIntent(deleteIntent);
-          await assertNoticeLeaseOwned();
-          const deleteResult = await this.executeModerationDelete(deleteIntent);
-          this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
-          if (deleteResult.gone) {
-            this.markWebhookHotPathSuccessBoundary(
-              params.hotPathProfile,
-              'required-subscription.delete',
-            );
-          }
-          if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
-            await this.createBotModerationEvent({
-              data: {
-                chatId: params.chatId,
-                userId: params.userId,
-                messageId: params.messageId,
-                eventType: EventType.MESSAGE,
-                ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
-                action: SanctionAction.DELETE_MESSAGE,
-                maskedExcerpt: maskText(params.text),
-                score: 1,
-                operator: Operator.BOT,
-                metadata: {
-                  action: SanctionAction.DELETE_MESSAGE,
-                  ...requiredSubscriptionChannelMetadata,
-                  missingChannelTitles,
-                },
-              },
-            });
-          }
-        };
-
-        const persistedNoticePlan = await this.requiredSubscriptionNoticePlans.read(
-          params.chatId,
-          params.messageId,
-        );
-        if (persistedNoticePlan) {
-          await sendRequiredSubscriptionNoticePlan(persistedNoticePlan);
-          await executeRequiredSubscriptionDelete();
-          return true;
+    return this.requiredSubscriptionMediaNoticeCoordinator.run({
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: params.messageId,
+      botId: this.maxBotContextService?.getActiveBotId() ?? null,
+      mediaScope: mediaNoticeScope,
+      readNoticePlan: (messageId) =>
+        this.requiredSubscriptionNoticePlans.read(params.chatId, messageId),
+      handoffNoticePlan: async (plan, noticeIdempotencyKey, assertNoticeLeaseOwned) => {
+        const sent = await this.sendBotMessageWithOptionalAutoDelete({
+          chatId: params.chatId,
+          text: plan.renderedText,
+          messageOptions: plan.messageOptions,
+          media: this.resolveBotSpeechMedia(params.settings, plan.mediaFieldKey ?? undefined),
+          deleteBotMessagesEnabled: plan.deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes: plan.deleteBotMessagesDelayMinutes,
+          userFacing: true,
+          bypassNoticeBucket: true,
+          idempotencyKey: noticeIdempotencyKey,
+          beforeSend: assertNoticeLeaseOwned,
+        });
+        if (!sent) throw new Error('Required subscription notice was not handed off');
+      },
+      executeDelete: async (assertNoticeLeaseOwned) => {
+        await assertNoticeLeaseOwned();
+        await this.ensureModerationDeleteIntent(deleteIntent);
+        await assertNoticeLeaseOwned();
+        const deleteResult = await this.executeModerationDelete(deleteIntent);
+        this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
+        if (deleteResult.gone) {
+          this.markWebhookHotPathSuccessBoundary(
+            params.hotPathProfile,
+            'required-subscription.delete',
+          );
         }
-
+        if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+          await this.createBotModerationEvent({
+            data: {
+              chatId: params.chatId,
+              userId: params.userId,
+              messageId: params.messageId,
+              eventType: EventType.MESSAGE,
+              ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
+              action: SanctionAction.DELETE_MESSAGE,
+              maskedExcerpt: maskText(params.text),
+              score: 1,
+              operator: Operator.BOT,
+              metadata: {
+                action: SanctionAction.DELETE_MESSAGE,
+                ...requiredSubscriptionChannelMetadata,
+                missingChannelTitles,
+              },
+            },
+          });
+        }
+      },
+      lead: async ({
+        assertOwned: assertNoticeLeaseOwned,
+        noticeIdempotencyKey,
+        settleNoticePlan,
+      }) => {
         await assertNoticeLeaseOwned();
         const claimed = await this.claimAndPersistMessageScopedModerationViolation({
           chatId: params.chatId,
@@ -10519,12 +10560,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           botId: this.maxBotContextService?.getActiveBotId() ?? null,
           plan: candidateNoticePlan,
         });
-        await sendRequiredSubscriptionNoticePlan(durableNoticePlan);
-        await executeRequiredSubscriptionDelete();
+        await settleNoticePlan(durableNoticePlan);
 
         return true;
       },
-    );
+    });
   }
 
   private async handleInvitationAccessMembershipUpdate(params: {
@@ -18085,82 +18125,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }),
     );
     return true;
-  }
-
-  private async runRequiredSubscriptionNoticeExclusive<T>(
-    chatId: string,
-    messageId: string,
-    task: (assertOwned: () => Promise<void>) => Promise<T>,
-  ): Promise<T> {
-    const redis = this.redisCounter as Partial<RedisCounterService> | undefined;
-    if (!redis) {
-      if (process.env.NODE_ENV === 'test') {
-        return task(async () => undefined);
-      }
-      throw new Error('Required subscription notice lock service is unavailable');
-    }
-    if (
-      typeof redis.acquireLock !== 'function' ||
-      typeof redis.renewLock !== 'function' ||
-      typeof redis.releaseLock !== 'function'
-    ) {
-      throw new Error('Required subscription notice lock API is unavailable');
-    }
-
-    const lockKey = `moderation:required-subscription:notice-lock:v1:${chatId}:${messageId}`;
-    const lockToken = await redis.acquireLock(lockKey, REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS);
-    if (!lockToken) {
-      throw new Error('Required subscription notice handoff is already in progress');
-    }
-
-    let leaseError: Error | null = null;
-    const assertOwned = async () => {
-      if (leaseError) {
-        throw leaseError;
-      }
-
-      try {
-        const renewed = await redis.renewLock!(
-          lockKey,
-          lockToken,
-          REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS,
-        );
-        if (!renewed) {
-          throw new Error('Required subscription notice lease was lost');
-        }
-      } catch (error: unknown) {
-        leaseError =
-          error instanceof Error
-            ? error
-            : new Error('Required subscription notice lease renewal failed');
-        throw leaseError;
-      }
-    };
-    const renewalTimer = setInterval(
-      () => {
-        void assertOwned().catch(() => undefined);
-      },
-      Math.max(1_000, Math.trunc(REQUIRED_SUBSCRIPTION_NOTICE_LOCK_TTL_MS / 3)),
-    );
-    renewalTimer.unref?.();
-
-    try {
-      const result = await task(assertOwned);
-      await assertOwned();
-      return result;
-    } finally {
-      clearInterval(renewalTimer);
-      await redis.releaseLock(lockKey, lockToken).catch((error: unknown) => {
-        this.logger.warn(
-          {
-            chatId,
-            messageId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to release required subscription notice lock',
-        );
-      });
-    }
   }
 
   private resolveBotSpeechMedia(

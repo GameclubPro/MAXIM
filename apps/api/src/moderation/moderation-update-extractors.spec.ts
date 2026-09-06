@@ -2,6 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import {
   collectForwardedTextSnippets,
   detectMediaFlags,
+  extractDirectMediaBatchId,
   hasForwardedMessage,
   shouldSkipAntiSpamBurstForForward,
 } from './moderation-update-extractors';
@@ -329,5 +330,42 @@ describe('moderation update media flag extraction', () => {
     const update = createUpdate(raw);
     expect(hasForwardedMessage(update)).toBe(true);
     expect(shouldSkipAntiSpamBurstForForward(update)).toBe(true);
+  });
+});
+
+describe('direct media batch identity extraction', () => {
+  it.each([
+    ['snake-case body marker', { message: { body: { media_group_id: ' group-1 ' } } }, 'group-1'],
+    ['camel-case payload marker', { message: { payload: { albumId: 12345 } } }, '12345'],
+    [
+      'nested MAX envelope marker',
+      { message_created: { message: { content: { mediaGroupId: 'group-2' } } } },
+      'group-2',
+    ],
+  ])('reads %s', (_label, raw, expected) => {
+    expect(extractDirectMediaBatchId(createUpdate(raw))).toBe(expected);
+  });
+
+  it('does not trust group markers from forwarded or reply content', () => {
+    expect(
+      extractDirectMediaBatchId(
+        createUpdate({
+          message: {
+            body: {
+              forwarded_message: { media_group_id: 'forwarded-group' },
+              reply_to: { album_id: 'reply-group' },
+            },
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects oversized media batch identifiers', () => {
+    expect(
+      extractDirectMediaBatchId(
+        createUpdate({ message: { body: { media_group_id: 'x'.repeat(513) } } }),
+      ),
+    ).toBeNull();
   });
 });

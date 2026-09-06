@@ -2,6 +2,16 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { selectMaxMessageCandidate } from '../max/max-message-candidate.util';
 
 const MAX_FORWARD_SCAN_DEPTH = 8;
+const MAX_MEDIA_BATCH_ID_LENGTH = 512;
+const MEDIA_BATCH_ID_KEYS = [
+  'media_group_id',
+  'mediaGroupId',
+  'media_group',
+  'mediaGroup',
+  'album_id',
+  'albumId',
+  'album',
+] as const;
 
 export type ModerationMediaFlags = {
   hasPhotoAttachment: boolean;
@@ -163,6 +173,39 @@ export function detectMediaFlags(update: MaxUpdate): ModerationMediaFlags {
   const flags = createEmptyMediaFlags();
   collectMediaFlags(messageNode, flags);
   return flags;
+}
+
+export function extractDirectMediaBatchId(update: MaxUpdate): string | null {
+  const rawRecord = asRecord(update.raw);
+  if (!rawRecord) {
+    return null;
+  }
+
+  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
+  const containers = [
+    messageNode,
+    asRecord(messageNode.body),
+    asRecord(messageNode.content),
+    asRecord(messageNode.payload),
+  ];
+
+  for (const container of containers) {
+    if (!container) {
+      continue;
+    }
+    for (const key of MEDIA_BATCH_ID_KEYS) {
+      const value = container[key];
+      if (typeof value !== 'string' && typeof value !== 'number') {
+        continue;
+      }
+      const normalized = String(value).trim();
+      if (normalized && normalized.length <= MAX_MEDIA_BATCH_ID_LENGTH) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
 }
 
 function collectTextSnippets(node: unknown, acc: Set<string>, depth = 0): void {
