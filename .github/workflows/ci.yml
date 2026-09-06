@@ -230,7 +230,7 @@ jobs:
             --memory 1g
             --cpus 1
             --tmpfs '/tmp:rw,nosuid,size=64m,uid=1000,gid=1000'
-            --mount type=volume,source="$socket_volume",target=/run/maxim-ocr
+            --mount "type=volume,source=$socket_volume,target=/run/maxim-ocr"
           )
           docker run -d --name "$sandbox_name" \
             "${sandbox_flags[@]}" "${native_env[@]}" \
