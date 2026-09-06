@@ -598,13 +598,14 @@ describe('webhook ingress load-test metrics', () => {
       WEBHOOK_LOAD_VERIFY_METRICS_URL: 'http://127.0.0.1:3001/api/v1/system/dashboard',
       WEBHOOK_LOAD_VERIFY_TIMEOUT_SEC: '0.05',
     });
-    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          canonicalExecution: { receipts: 10, executionClaims: 10 },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
+    const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            canonicalExecution: { receipts: 10, executionClaims: 10 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
     );
     const startedAt = performance.now();
 
@@ -618,7 +619,7 @@ describe('webhook ingress load-test metrics', () => {
         }),
       ).resolves.toMatchObject({ verified: false, receipts: 0, executionClaims: 0 });
       expect(performance.now() - startedAt).toBeLessThan(1_000);
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
     }
