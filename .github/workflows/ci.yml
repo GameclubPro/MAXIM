@@ -256,7 +256,7 @@ jobs:
           docker inspect --format \
             '{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.PidsLimit}}|{{.HostConfig.Memory}}|{{.HostConfig.NanoCpus}}|{{.Config.User}}|{{index .Config.Labels "com.maxim.ocr-native-sandbox"}}|{{index .Config.Labels "com.maxim.ocr-native-sandbox-capable"}}' \
             "$sandbox_name" | grep -Fx 'none|true|128|1073741824|1000000000|1000:1000|true|true'
-          docker top "$sandbox_name" -eo comm | awk 'NR > 1 && $1 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'
+          docker top "$sandbox_name" -eo pid,comm | awk 'NR > 1 && $2 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'
       - name: Package immutable production image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

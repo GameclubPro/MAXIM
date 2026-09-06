@@ -420,7 +420,7 @@ docker() {
     *'checks?.ocr?.ready'*) return 0 ;;
     *'smoke-commercial-ocr-worker.js'*) printf '%s\\n' 'Commercial OCR worker smoke passed.' ;;
     *'ps --status running -q ocr-native-sandbox'*) printf '%s' sandbox-container ;;
-    'top sandbox-container -eo comm') printf '%s\\n' COMMAND node ;;
+    'top sandbox-container -eo pid,comm') printf '%s\\n' 'PID COMMAND' '1 node' ;;
     *) return 8 ;;
   esac
 }
@@ -882,8 +882,8 @@ docker() {
   count="$(cat "$count_file")"
   count=$((count + 1))
   printf '%s' "$count" >"$count_file"
-  printf '%s\\n' COMMAND
-  if [[ "$count" -eq 1 ]]; then printf '%s\\n' tesseract; else printf '%s\\n' node; fi
+  printf '%s\\n' 'PID COMMAND'
+  if [[ "$count" -eq 1 ]]; then printf '%s\\n' '1 tesseract'; else printf '%s\\n' '1 node'; fi
 }
 sleep() { :; }
 maxim_topology_wait_for_no_ocr_native_processes sandbox-container 3
@@ -893,7 +893,7 @@ cat "$count_file"
   assert.equal(reaped.stdout.trim(), '2');
 
   const retained = runTopologyProbe(`
-docker() { printf '%s\\n' COMMAND tesseract; }
+docker() { printf '%s\\n' 'PID COMMAND' '1 tesseract'; }
 sleep() { :; }
 if maxim_topology_wait_for_no_ocr_native_processes sandbox-container 3; then exit 9; fi
 `);

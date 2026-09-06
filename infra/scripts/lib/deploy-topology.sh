@@ -846,8 +846,8 @@ maxim_topology_wait_for_no_ocr_native_processes() {
     return 2
   fi
   for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
-    if docker top "$sandbox_id" -eo comm 2>/dev/null \
-      | awk 'NR > 1 && $1 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'; then
+    if docker top "$sandbox_id" -eo pid,comm 2>/dev/null \
+      | awk 'NR > 1 && $2 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'; then
       return 0
     fi
     [[ "$attempt" -eq "$max_attempts" ]] || sleep 1

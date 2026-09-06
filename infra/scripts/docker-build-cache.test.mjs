@@ -240,7 +240,7 @@ test('runs the compiled native OCR raster smoke through an isolated UDS sidecar'
   assert.match(smokeStep, /COMMERCIAL_OCR_NATIVE_SANDBOX_SOCKET_PATH="\$socket_path"/u);
   assert.match(smokeStep, /native-ocr-sandbox\.entrypoint\.js/u);
   assert.match(smokeStep, /"\$entrypoint" --probe/u);
-  assert.match(smokeStep, /docker top "\$sandbox_name" -eo comm/u);
+  assert.match(smokeStep, /docker top "\$sandbox_name" -eo pid,comm/u);
   assert.match(
     smokeStep,
     /apps\/api\/dist\/apps\/api\/src\/scripts\/smoke-commercial-ocr-worker\.js/u,
