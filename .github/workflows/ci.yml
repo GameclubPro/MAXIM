@@ -229,7 +229,7 @@ jobs:
             --pids-limit 128
             --memory 1g
             --cpus 1
-            --tmpfs /tmp:rw,nosuid,size=64m,uid=1000,gid=1000
+            --tmpfs '/tmp:rw,nosuid,size=64m,uid=1000,gid=1000'
             --mount type=volume,source="$socket_volume",target=/run/maxim-ocr
           )
           docker run -d --name "$sandbox_name" \

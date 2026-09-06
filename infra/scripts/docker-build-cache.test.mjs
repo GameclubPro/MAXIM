@@ -232,7 +232,7 @@ test('runs the compiled native OCR raster smoke through an isolated UDS sidecar'
   assert.match(smokeStep, /--cap-drop ALL/u);
   assert.match(smokeStep, /--memory 1g/u);
   assert.match(smokeStep, /--cpus 1/u);
-  assert.match(smokeStep, /--tmpfs \/tmp:rw,nosuid,size=64m,uid=1000,gid=1000/u);
+  assert.match(smokeStep, /--tmpfs '\/tmp:rw,nosuid,size=64m,uid=1000,gid=1000'/u);
   assert.match(smokeStep, /target=\/run\/maxim-ocr,readonly/u);
   assert.match(smokeStep, /--env APP_SERVICE_NAME=api-media-analysis/u);
   assert.match(smokeStep, /--env APP_ROLE=moderation/u);
