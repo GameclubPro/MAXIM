@@ -836,6 +836,25 @@ maxim_topology_require_ocr_native_sandbox_image_capability() {
   return 1
 }
 
+maxim_topology_wait_for_no_ocr_native_processes() {
+  local sandbox_id="$1"
+  local max_attempts="${2:-15}"
+  local attempt
+
+  if [[ -z "$sandbox_id" || ! "$max_attempts" =~ ^[1-9][0-9]*$ || "$max_attempts" -gt 60 ]]; then
+    echo "Invalid OCR native process cleanup wait arguments." >&2
+    return 2
+  fi
+  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
+    if docker top "$sandbox_id" -eo comm 2>/dev/null \
+      | awk 'NR > 1 && $1 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'; then
+      return 0
+    fi
+    [[ "$attempt" -eq "$max_attempts" ]] || sleep 1
+  done
+  return 1
+}
+
 maxim_topology_smoke_ocr_native_sandbox_uds() {
   local compose_args_var="$1"
   local expected_image_id="${2:-}"
@@ -891,8 +910,7 @@ maxim_topology_smoke_ocr_native_sandbox_uds() {
     echo "Pre-fence native OCR UDS smoke lost the unique sandbox container." >&2
     return 1
   fi
-  if ! docker top "$sandbox_id" -eo comm 2>/dev/null \
-    | awk 'NR > 1 && $1 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'; then
+  if ! maxim_topology_wait_for_no_ocr_native_processes "$sandbox_id" 15; then
     echo "Pre-fence native OCR UDS smoke left a Tesseract process behind." >&2
     return 1
   fi
@@ -1049,8 +1067,7 @@ maxim_topology_smoke_media_analysis_tesseract() {
       echo "Could not resolve the unique OCR sandbox after raster smoke." >&2
       return 1
     fi
-    if ! docker top "$sandbox_container_id" -eo comm 2>/dev/null \
-      | awk 'NR > 1 && $1 == "tesseract" { found=1 } END { exit found ? 1 : 0 }'; then
+    if ! maxim_topology_wait_for_no_ocr_native_processes "$sandbox_container_id" 15; then
       echo "OCR sandbox retained a Tesseract process after raster smoke." >&2
       return 1
     fi

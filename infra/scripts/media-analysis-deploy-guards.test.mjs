@@ -871,3 +871,31 @@ test('runtime OCR attestation accepts only Docker empty or none network metadata
     /Object\.keys\(sandbox\?\.NetworkSettings\?\.Networks \?\? \{\}\)\.length === 0/u,
   );
 });
+
+test('native OCR cleanup wait tolerates reaping but rejects a retained process', () => {
+  const reaped = runTopologyProbe(`
+count_file="$(mktemp)"
+printf '0' >"$count_file"
+trap 'rm -f "$count_file"' EXIT
+docker() {
+  local count
+  count="$(cat "$count_file")"
+  count=$((count + 1))
+  printf '%s' "$count" >"$count_file"
+  printf '%s\\n' COMMAND
+  if [[ "$count" -eq 1 ]]; then printf '%s\\n' tesseract; else printf '%s\\n' node; fi
+}
+sleep() { :; }
+maxim_topology_wait_for_no_ocr_native_processes sandbox-container 3
+cat "$count_file"
+`);
+  assert.equal(reaped.status, 0, reaped.stderr);
+  assert.equal(reaped.stdout.trim(), '2');
+
+  const retained = runTopologyProbe(`
+docker() { printf '%s\\n' COMMAND tesseract; }
+sleep() { :; }
+if maxim_topology_wait_for_no_ocr_native_processes sandbox-container 3; then exit 9; fi
+`);
+  assert.equal(retained.status, 0, retained.stderr);
+});
