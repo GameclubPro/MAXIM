@@ -701,6 +701,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
         const sandboxMounts = Array.isArray(sandbox?.Mounts) ? sandbox.Mounts : [];
         const socketMount = sandboxMounts[0];
         const tmpfs = sandbox?.HostConfig?.Tmpfs ?? {};
+        const networkNames = Object.keys(sandbox?.NetworkSettings?.Networks ?? {});
         const securityOpt = sandbox?.HostConfig?.SecurityOpt ?? [];
         const capDrop = sandbox?.HostConfig?.CapDrop ?? [];
         const expectedCommand = [
@@ -753,7 +754,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
           sandboxMounts.length === 1 && socketMount?.Type === "volume" &&
           socketMount?.Name === `${project}_ocr_native_ipc` &&
           socketMount?.Destination === "/run/maxim-ocr" && socketMount?.RW === true &&
-          Object.keys(sandbox?.NetworkSettings?.Networks ?? {}).length === 0;
+          networkNames.every((networkName) => networkName === "none");
         if (mediaPolicy === "with-media") {
           const mediaMounts = (media?.Mounts ?? []).filter(
             (mount) => mount?.Destination === "/run/maxim-ocr",

@@ -857,3 +857,17 @@ test('production OCR uses a singleton no-network sandbox connected only over UDS
     );
   }
 });
+
+test('runtime OCR attestation accepts only Docker empty or none network metadata', () => {
+  const topology = read('infra/scripts/lib/deploy-topology.sh');
+
+  assert.match(
+    topology,
+    /const networkNames = Object\.keys\(sandbox\?\.NetworkSettings\?\.Networks \?\? \{\}\);/u,
+  );
+  assert.match(topology, /networkNames\.every\(\(networkName\) => networkName === "none"\)/u);
+  assert.doesNotMatch(
+    topology,
+    /Object\.keys\(sandbox\?\.NetworkSettings\?\.Networks \?\? \{\}\)\.length === 0/u,
+  );
+});
