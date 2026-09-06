@@ -2397,17 +2397,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setRulesButtonErrors([]);
     }
 
+    /* eslint-disable @typescript-eslint/no-unused-vars -- Rest excludes server-only metadata. */
+    const {
+      publishedMessageId: _publishedMessageId,
+      publishedUrl: _publishedUrl,
+      publishedAt: _publishedAt,
+      ...editableDraft
+    } = value;
+    /* eslint-enable @typescript-eslint/no-unused-vars */
     return {
-      autoTextEnabled: value.autoTextEnabled,
-      text: value.text,
-      imageBase64: value.imageBase64,
-      imageMimeType: value.imageMimeType,
-      imageFileName: value.imageFileName,
-      buttons: value.buttons,
-      buttonEnabled: value.buttonEnabled,
+      ...editableDraft,
       buttonUrl: normalizedButtonState.buttonUrl,
       buttonText: normalizedButtonState.buttonText,
-      adminContactButtonEnabled: value.adminContactButtonEnabled,
       adminContactButtonUrl: value.adminContactButtonEnabled ? value.adminContactButtonUrl : '',
     };
   }
@@ -2432,6 +2433,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ...value,
       autoTextEnabled: true,
       text: buildRulesTextFromSettingsScreen(currentRulesTextSource),
+      textFormat: 'plain',
     };
   }
 
@@ -6116,6 +6118,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     <LazyBroadcastContentComposer
                                       className="rules-content-composer"
                                       text={rulesDraft.text}
+                                      sourceFormat={rulesDraft.textFormat}
                                       maxLength={MAX_CHAT_RULES_TEXT_LENGTH}
                                       image={{
                                         enabled: rulesHasImage,
@@ -6137,6 +6140,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                 ...current,
                                                 autoTextEnabled: false,
                                                 text: nextText,
+                                                textFormat: 'markdown',
                                               }
                                             : current,
                                         );
@@ -6228,15 +6232,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                 autoTextEnabled: true,
                                               });
                                               setRulesTextError('');
-                                              setRulesDraft((current) =>
-                                                current
-                                                  ? {
-                                                      ...current,
-                                                      autoTextEnabled: true,
-                                                      text: nextDraft.text,
-                                                    }
-                                                  : current,
-                                              );
+                                              setRulesDraft(nextDraft);
                                             } catch (error) {
                                               reportRulesAutofillError(error);
                                             }

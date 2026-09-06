@@ -28,6 +28,7 @@ function createPersistedChatRules(overrides: Record<string, unknown> = {}) {
     id: 'rules-1',
     chatId: 'chat-1',
     text: 'Пишите по теме.',
+    textFormat: 'markdown',
     imageBase64: '',
     imageMimeType: '',
     imageFileName: '',
@@ -2611,6 +2612,7 @@ describe('AdminSettingsService chat rules', () => {
       'chat-1',
       'Пишите по теме.',
       {
+        textFormat: 'markdown',
         adminContactButtonEnabled: false,
         adminContactButtonUrl: '',
       },

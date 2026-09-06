@@ -3120,6 +3120,7 @@ describe('VkParsingService', () => {
   });
 
   it('treats a current schedule fingerprint as authoritative during forced reconciliation', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-04T10:00:00.000Z'));
     const { publishService, prisma } = createFixture();
     const source = createSource({
       publishIntervalMinutes: 30,

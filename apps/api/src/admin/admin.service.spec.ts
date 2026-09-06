@@ -30400,6 +30400,7 @@ describe('AdminService chat rules', () => {
 
     expect(result).toEqual({
       text: 'Пишите по теме.',
+      textFormat: 'markdown',
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
@@ -30550,6 +30551,7 @@ describe('AdminService chat rules', () => {
       where: { chatId: 'chat-1' },
       data: expect.objectContaining({
         text: '1. Без спама.\n2. Без ссылок.',
+        textFormat: 'markdown',
         autoTextEnabled: false,
         publishedMessageId: 'mid-rules-source-1',
         publishedUrl: 'https://max.ru/chats/chat-1/message/321',
@@ -30595,6 +30597,7 @@ describe('AdminService chat rules', () => {
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(result).toEqual({
       text: '1. Без спама.\n2. Без ссылок.',
+      textFormat: 'markdown',
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
@@ -30686,6 +30689,7 @@ describe('AdminService chat rules', () => {
       where: { chatId: 'chat-1' },
       data: expect.objectContaining({
         text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+        textFormat: 'markdown',
         autoTextEnabled: false,
         publishedMessageId: 'mid-rules-source-2',
         publishedUrl: 'https://max.ru/chats/chat-1/message/654',
@@ -30792,9 +30796,7 @@ describe('AdminService chat rules', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
       'Опубликуйте только по теме.',
-      {
-        textFormat: 'html',
-      },
+      undefined,
       expectChatRulesSendOptions(),
     );
     expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
@@ -30890,9 +30892,7 @@ describe('AdminService chat rules', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
       expect.stringContaining('Пожалуйста, без мата и грубой лексики.'),
-      {
-        textFormat: 'html',
-      },
+      undefined,
       expectChatRulesSendOptions(),
     );
     expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
@@ -31641,6 +31641,7 @@ describe('AdminService chat rules', () => {
     );
     expect(result).toEqual({
       text: 'Правила чата',
+      textFormat: 'markdown',
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',

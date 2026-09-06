@@ -1236,6 +1236,7 @@ export type ChatSettings = z.infer<typeof chatSettingsSchema>;
 
 const chatRulesObjectSchema = z.object({
   text: chatRulesTextSchema,
+  textFormat: broadcastTextFormatSchema.default('markdown'),
   imageBase64: chatRulesImageBase64Schema,
   imageMimeType: chatRulesImageMimeTypeSchema,
   imageFileName: chatRulesImageFileNameSchema,
@@ -1335,6 +1336,7 @@ export type ChatRules = z.infer<typeof chatRulesSchema>;
 export const updateChatRulesRequestSchema = chatRulesObjectSchema
   .pick({
     text: true,
+    textFormat: true,
     imageBase64: true,
     imageMimeType: true,
     imageFileName: true,

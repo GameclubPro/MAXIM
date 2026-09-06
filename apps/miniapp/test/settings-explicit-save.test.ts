@@ -38,6 +38,10 @@ const nightModeTimeFieldsSource = readFileSync(
   new URL('../src/pages/settings/night-mode-time-fields.tsx', import.meta.url),
   'utf8',
 );
+const broadcastAutopostPolishSource = readFileSync(
+  new URL('../src/styles/broadcast-autopost-polish.css', import.meta.url),
+  'utf8',
+);
 
 test('chat comment settings belong to Publik instead of Major settings', () => {
   assert.doesNotMatch(settingsPageSource, /handleSaveComments|mutateCommentsAsync/u);
@@ -99,6 +103,8 @@ test('rules autosave keeps draft editors enabled so mobile keyboard focus surviv
     settingsPageSource.indexOf('</Suspense>', settingsPageSource.indexOf('rules-panel')),
   );
   assert.match(rulesComposerSource, /disabled=\{isRulesDraftEditingDisabled\}/u);
+  assert.match(rulesComposerSource, /sourceFormat=\{rulesDraft\.textFormat\}/u);
+  assert.match(rulesComposerSource, /textFormat: 'markdown'/u);
   assert.doesNotMatch(rulesComposerSource, /disabled=\{isRulesBusy\}/u);
 
   const rulesButtonsSheetStart = settingsPageSource.indexOf('<LazyBroadcastButtonsSheet');
@@ -126,6 +132,15 @@ test('rules expose an explicit save action and commit successful saves to query 
   assert.match(
     settingsPageSource,
     /handlePublishRules\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\.isCurrent\)[\s\S]*?Правила изменились[\s\S]*?return;[\s\S]*?publishRulesMutation\.mutate\(\)/u,
+  );
+});
+
+test('rules publication errors keep their actionable detail visible', () => {
+  assert.match(settingsPageSource, /title: 'Не удалось опубликовать правила'/u);
+  assert.match(settingsPageSource, /description: formatApiError\(error\)/u);
+  assert.match(
+    broadcastAutopostPolishSource,
+    /body\.settings-drilldown-open \.toast--danger \.toast__body p \{[\s\S]*?display: -webkit-box;/u,
   );
 });
 

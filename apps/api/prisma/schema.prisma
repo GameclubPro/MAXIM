@@ -1231,6 +1231,7 @@ model ChatRules {
   id                        String    @id @default(cuid())
   chatId                    String    @unique @map("chat_id")
   text                      String    @default("")
+  textFormat                String    @default("markdown") @map("text_format")
   imageBase64               String    @default("") @map("image_base64")
   imageMimeType             String    @default("") @map("image_mime_type")
   imageFileName             String    @default("") @map("image_file_name")

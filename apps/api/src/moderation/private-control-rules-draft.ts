@@ -3,6 +3,7 @@ import type { ChatRules, UpdateChatRulesRequest } from '@maxim/contracts';
 type PrivateChatRulesDraft = Pick<
   ChatRules,
   | 'text'
+  | 'textFormat'
   | 'imageBase64'
   | 'imageMimeType'
   | 'imageFileName'
@@ -21,6 +22,7 @@ export function buildPrivateChatRulesDraft(
 ): UpdateChatRulesRequest {
   return {
     text: current.text,
+    textFormat: current.textFormat,
     imageBase64: current.imageBase64,
     imageMimeType: current.imageMimeType,
     imageFileName: current.imageFileName,

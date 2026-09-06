@@ -3118,6 +3118,7 @@ export class PrivateControlService {
           context.actor,
           buildPrivateChatRulesDraft(settingsScreen.rules, {
             text: generatedText,
+            textFormat: 'plain',
             autoTextEnabled: true,
           }),
           'private_bot',
@@ -4868,8 +4869,9 @@ export class PrivateControlService {
 
     const textPayload = extractIncomingFormattedTextPayload(context.update, rawText);
     const sourceText = extractIncomingSuggestionTextPayload(context.update, rawText).text;
-    const formattedText =
-      textPayload.text.length <= MAX_CHAT_RULES_TEXT_LENGTH ? textPayload.text : sourceText;
+    const formattedTextFits = textPayload.text.length <= MAX_CHAT_RULES_TEXT_LENGTH;
+    const formattedText = formattedTextFits ? textPayload.text : sourceText;
+    const formattedTextFormat = formattedTextFits ? textPayload.textFormat : 'plain';
     const normalizedText = formattedText.trim();
     const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
     const fileAttachment = extractPrivateFirstFileAttachment(context.update);
@@ -4934,6 +4936,7 @@ export class PrivateControlService {
       context.actor,
       buildPrivateChatRulesDraft(currentRules, {
         text: nextText,
+        textFormat: normalizedText ? formattedTextFormat : currentRules.textFormat,
         imageBase64,
         imageMimeType,
         imageFileName,
@@ -5875,7 +5878,9 @@ export class PrivateControlService {
       '',
       `Чат: ${escapePrivateMarkdown(chatTitle)}`,
       '',
-      hasText ? buildPrivateRulesScreenTextPreview(rules.text) : '_Текст правила пока не задан._',
+      hasText
+        ? buildPrivateRulesScreenTextPreview(rules.text, rules.textFormat)
+        : '_Текст правила пока не задан._',
     ];
 
     if (waitingHint) {

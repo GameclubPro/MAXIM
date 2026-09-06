@@ -1,4 +1,4 @@
-import { MAX_CHAT_RULES_TEXT_LENGTH } from '@maxim/contracts';
+import { MAX_CHAT_RULES_TEXT_LENGTH, type BroadcastTextFormat } from '@maxim/contracts';
 import type { MaxSendMessageOptions } from '../max/max-client.service';
 import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
 
@@ -8,6 +8,7 @@ type RulesTextRuntimeHarness = {
     chatId: string,
     sourceText: string,
     options: {
+      textFormat: BroadcastTextFormat;
       adminContactButtonEnabled: boolean;
       adminContactButtonUrl: string;
     },
@@ -40,6 +41,7 @@ describe('AdminChatRulesTextRuntime publication formatting', () => {
         'chat-1',
         '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n~~Зачеркнутый~~\n\n  Второй абзац с  пробелами',
         {
+          textFormat: 'markdown',
           adminContactButtonEnabled: false,
           adminContactButtonUrl: '',
         },
@@ -59,6 +61,7 @@ describe('AdminChatRulesTextRuntime publication formatting', () => {
 
     await expect(
       runtime.buildFormattedRulesPublicationText('chat-1', '**Правила**', {
+        textFormat: 'markdown',
         adminContactButtonEnabled: true,
         adminContactButtonUrl: `https://max.ru/id1_bot?start=${mentionPayload}`,
       }),
@@ -74,15 +77,47 @@ describe('AdminChatRulesTextRuntime publication formatting', () => {
 
     await expect(
       runtime.buildFormattedRulesPublicationText('chat-1', exact, {
+        textFormat: 'markdown',
         adminContactButtonEnabled: false,
         adminContactButtonUrl: '',
       }),
     ).resolves.toEqual({ text: exact, textFormat: 'markdown' });
     await expect(
       runtime.buildFormattedRulesPublicationText('chat-1', 'A'.repeat(MAX_CHAT_RULES_TEXT_LENGTH), {
+        textFormat: 'markdown',
         adminContactButtonEnabled: true,
         adminContactButtonUrl: 'https://max.ru/admin',
       }),
     ).rejects.toThrow('Текст правил после форматирования слишком длинный');
+  });
+
+  it('keeps plain markdown-like punctuation literal like Publik', async () => {
+    const runtime = createRuntime();
+
+    await expect(
+      runtime.buildFormattedRulesPublicationText('chat-1', '**не жирный**\n# не заголовок', {
+        textFormat: 'plain',
+        adminContactButtonEnabled: false,
+        adminContactButtonUrl: '',
+      }),
+    ).resolves.toEqual({
+      text: '**не жирный**\n# не заголовок',
+      textFormat: undefined,
+    });
+  });
+
+  it('escapes plain rules before adding a formatted admin contact', async () => {
+    const runtime = createRuntime();
+
+    await expect(
+      runtime.buildFormattedRulesPublicationText('chat-1', '<правила> & **буквально**', {
+        textFormat: 'plain',
+        adminContactButtonEnabled: true,
+        adminContactButtonUrl: 'https://max.ru/admin',
+      }),
+    ).resolves.toEqual({
+      text: '&lt;правила&gt; &amp; **буквально**\n\n<a href="https://max.ru/admin">Связь с админом</a>',
+      textFormat: 'html',
+    });
   });
 });

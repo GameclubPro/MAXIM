@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260904131000_index_vk_pending_autopublish_recovery",
-  "baselineNamesSha256": "de7e50cad2ec17b5fa57ffc170fd0502fb9594c31ac5c29e31e99764afe2dd59",
-  "baselineContentsSha256": "3157826c125a7f07aab9e5783adb8ff2a914dc2d97038b5125b64e414392a489",
+  "baselineThrough": "20260906090000_add_chat_rules_text_format",
+  "baselineNamesSha256": "7ee433bb1aeebbc7f16b9fb2c84f10baaf73d5ee3f0263f7a90f29282030865d",
+  "baselineContentsSha256": "a8c87889e4b2b7b6ee9de9d05103f4ad6d2fac5db8997065fef493dd718115d8",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."

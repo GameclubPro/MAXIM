@@ -189,6 +189,7 @@ import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import {
   MAX_MESSAGE_TEXT_LENGTH,
   prepareMarkdownForMaxDelivery,
+  renderSupportedMarkdownAsHtml,
 } from '../common/max-markdown.util';
 import {
   escapeHtml,
@@ -664,6 +665,7 @@ export class AdminChatRulesTextRuntime {
     chatId: string,
     sourceText: string,
     options: {
+      textFormat: BroadcastTextFormat;
       adminContactButtonEnabled: boolean;
       adminContactButtonUrl: string;
     },
@@ -675,12 +677,36 @@ export class AdminChatRulesTextRuntime {
       ? await this.resolveAdminContactFallbackDisplayName(chatId, options.adminContactButtonUrl)
       : null;
 
-    const markdown = appendAdminContactMarkdownLinkText(sourceText, {
+    const adminContactOptions = {
       enabled: options.adminContactButtonEnabled,
       url: options.adminContactButtonUrl,
       botTokens: this.maxBotTokenValidationSecrets,
       fallbackDisplayName,
-    });
+    };
+
+    if (options.textFormat === 'plain') {
+      if (!options.adminContactButtonEnabled) {
+        if (sourceText.length > MAX_MESSAGE_TEXT_LENGTH) {
+          throw new BadRequestException(
+            `Текст правил слишком длинный. Максимум ${MAX_MESSAGE_TEXT_LENGTH} символов.`,
+          );
+        }
+        return { text: sourceText, textFormat: undefined };
+      }
+
+      const contactMarkdown = appendAdminContactMarkdownLinkText('', adminContactOptions).trim();
+      const contactHtml = renderSupportedMarkdownAsHtml(contactMarkdown, { blockMode: 'raw' });
+      const plainHtml = escapeHtmlPreservingWhitespace(sourceText);
+      const combinedHtml = `${plainHtml}\n\n${contactHtml}`;
+      if (combinedHtml.length > MAX_MESSAGE_TEXT_LENGTH) {
+        throw new BadRequestException(
+          `Текст правил после форматирования слишком длинный. Максимум ${MAX_MESSAGE_TEXT_LENGTH} символов.`,
+        );
+      }
+      return { text: combinedHtml, textFormat: 'html' };
+    }
+
+    const markdown = appendAdminContactMarkdownLinkText(sourceText, adminContactOptions);
 
     const prepared = prepareMarkdownForMaxDelivery(markdown);
     if (!prepared) {

@@ -1,15 +1,24 @@
+import type { BroadcastTextFormat } from '@maxim/contracts';
 import { stripSupportedMarkdownToPlainText } from '../common/max-markdown.util';
-import { escapePrivateMarkdown } from './private-control-launcher-renderer';
 
 const PRIVATE_RULES_SCREEN_PREVIEW_MAX_LENGTH = 3_200;
 const PRIVATE_RULES_SCREEN_PREVIEW_SUFFIX = '\n\n_Показан фрагмент. Полный текст сохранён._';
 
-export function buildPrivateRulesScreenTextPreview(text: string): string {
+function escapePrivateRulesPlainText(value: string): string {
+  return value.replace(/([\\`#^>*_[\]()~+])/gu, '\\$1');
+}
+
+export function buildPrivateRulesScreenTextPreview(
+  text: string,
+  textFormat: BroadcastTextFormat = 'markdown',
+): string {
   if (text.length <= PRIVATE_RULES_SCREEN_PREVIEW_MAX_LENGTH) {
-    return text;
+    return textFormat === 'markdown' ? text : escapePrivateRulesPlainText(text);
   }
 
-  const plainText = stripSupportedMarkdownToPlainText(text).trim() || text.trim();
+  const plainText =
+    (textFormat === 'markdown' ? stripSupportedMarkdownToPlainText(text) : text).trim() ||
+    text.trim();
   const ellipsis = '…';
   const escapedTextBudget =
     PRIVATE_RULES_SCREEN_PREVIEW_MAX_LENGTH -
@@ -18,7 +27,7 @@ export function buildPrivateRulesScreenTextPreview(text: string): string {
   let escapedPreview = '';
 
   for (const character of plainText) {
-    const escapedCharacter = escapePrivateMarkdown(character);
+    const escapedCharacter = escapePrivateRulesPlainText(character);
     if (escapedPreview.length + escapedCharacter.length > escapedTextBudget) {
       break;
     }

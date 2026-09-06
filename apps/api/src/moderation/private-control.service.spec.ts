@@ -537,6 +537,7 @@ const TINY_PNG = Buffer.from(
 function createRules(overrides: Partial<ChatRules> = {}): ChatRules {
   return {
     text: '',
+    textFormat: 'markdown',
     imageBase64: '',
     imageMimeType: '',
     imageFileName: '',
@@ -2528,6 +2529,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
         text: 'Новый текст правил',
+        textFormat: 'plain',
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
@@ -2561,6 +2563,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
         text: '**Жирный** текст правил',
+        textFormat: 'markdown',
         autoTextEnabled: false,
       }),
       'private_bot',
@@ -2587,7 +2590,11 @@ describe('PrivateControlService', () => {
     expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({ text: sourceText, autoTextEnabled: false }),
+      expect.objectContaining({
+        text: sourceText,
+        textFormat: 'plain',
+        autoTextEnabled: false,
+      }),
       'private_bot',
     );
   });
@@ -2612,6 +2619,7 @@ describe('PrivateControlService', () => {
 
     const updatePayload = adminSettingsService.updateRules.mock.calls.at(-1)?.[2];
     expect(updatePayload?.text).toBe(storedText);
+    expect(updatePayload?.textFormat).toBe('markdown');
     expect(String(updatePayload?.text ?? '')).toHaveLength(MAX_CHAT_RULES_TEXT_LENGTH);
 
     const preview = getLastUiText(maxClient);
@@ -2663,6 +2671,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
         text: sourceText,
+        textFormat: 'plain',
         autoTextEnabled: false,
       }),
       'private_bot',
@@ -2709,6 +2718,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
         text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+        textFormat: 'markdown',
         autoTextEnabled: false,
       }),
       'private_bot',

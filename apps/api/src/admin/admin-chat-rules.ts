@@ -40,7 +40,7 @@ type ChatRulesMessageOptions =
 
 type ChatRulesFormattedPublication = {
   text: string;
-  textFormat: MaxSendMessageOptions['textFormat'];
+  textFormat?: MaxSendMessageOptions['textFormat'];
 };
 
 type ChatRulesDeleteOutcome = 'confirmed' | 'accepted' | 'failed';
@@ -229,6 +229,7 @@ export function normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateCh
   });
   const baseDraft = {
     text: value.text,
+    textFormat: value.textFormat,
     autoTextEnabled: value.autoTextEnabled,
     buttons: buttonState.buttons,
     buttonEnabled: value.buttonEnabled,
@@ -239,6 +240,7 @@ export function normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateCh
   } satisfies Pick<
     UpdateChatRulesRequest,
     | 'text'
+    | 'textFormat'
     | 'autoTextEnabled'
     | 'buttons'
     | 'buttonEnabled'
@@ -274,6 +276,7 @@ export function mapChatRules(rules: PersistedChatRules): ChatRules {
 
   return chatRulesSchema.parse({
     text: rules.text,
+    textFormat: normalizeChatRulesTextFormat(rules.textFormat),
     imageBase64: rules.imageBase64,
     imageMimeType: rules.imageMimeType,
     imageFileName: rules.imageFileName,
@@ -299,6 +302,10 @@ function normalizeOptionalBotId(value: string | null | undefined): string | unde
   return normalized || undefined;
 }
 
+function normalizeChatRulesTextFormat(value: unknown): ChatRules['textFormat'] {
+  return value === 'plain' ? 'plain' : 'markdown';
+}
+
 export function extractMaxApiErrorMessage(error: unknown): string {
   const responseData = (error as { response?: { data?: unknown } })?.response?.data;
   if (!responseData || typeof responseData !== 'object') {
@@ -317,6 +324,63 @@ export function extractMaxApiErrorMessage(error: unknown): string {
   }
 
   return '';
+}
+
+function readMaxApiErrorDetails(error: unknown): {
+  status: number | null;
+  code: string;
+  message: string;
+} {
+  const response = (error as { response?: { status?: unknown; data?: unknown } })?.response;
+  const data =
+    response?.data && typeof response.data === 'object' && !Array.isArray(response.data)
+      ? (response.data as Record<string, unknown>)
+      : null;
+  const nestedError =
+    data?.error && typeof data.error === 'object' && !Array.isArray(data.error)
+      ? (data.error as Record<string, unknown>)
+      : null;
+  const code = String(nestedError?.code ?? data?.code ?? '')
+    .trim()
+    .toLowerCase();
+  const message = String(nestedError?.message ?? data?.message ?? '')
+    .trim()
+    .toLowerCase();
+
+  return {
+    status: typeof response?.status === 'number' ? response.status : null,
+    code,
+    message,
+  };
+}
+
+export function describeChatRulesPublishError(error: unknown): string {
+  if (isAmbiguousMaxSendError(error)) {
+    return 'MAX не подтвердил отправку. Проверьте чат и обратитесь в поддержку перед повтором.';
+  }
+
+  const { status, code, message } = readMaxApiErrorDetails(error);
+  const combined = `${code} ${message}`;
+  if (status === 403 || /chat\.denied|forbidden|permission|not (?:a )?member/u.test(combined)) {
+    return 'Бот не может писать в этот чат. Верните ему доступ и право отправлять сообщения.';
+  }
+  if (status === 404 || /chat\.not\.found|dialog\.not\.found|chat not found/u.test(combined)) {
+    return 'Бот больше не видит этот чат. Добавьте его в чат снова и обновите доступ.';
+  }
+  if (status === 429 || /rate[ ._-]?limit|too many requests/u.test(combined)) {
+    return 'MAX временно ограничил отправку. Подождите немного и повторите.';
+  }
+  if (/attachment[ ._-]?not[ ._-]?ready|media|upload/u.test(combined)) {
+    return 'MAX не подготовил фото. Выберите изображение заново и повторите.';
+  }
+  if (status === 400 && /format|markup|markdown|html|parse/u.test(combined)) {
+    return 'MAX не принял форматирование текста. Упростите выделение и повторите.';
+  }
+  if (status === 400) {
+    return 'MAX отклонил содержимое правил. Проверьте текст, фото и кнопки.';
+  }
+
+  return 'MAX не принял публикацию. Проверьте доступ бота и повторите позже.';
 }
 
 export function isMaxMessageMissingError(error: unknown): boolean {
@@ -636,6 +700,7 @@ export async function publishChatRules(params: {
   buildFormattedText: (
     sourceText: string,
     options: {
+      textFormat: ChatRules['textFormat'];
       adminContactButtonEnabled: boolean;
       adminContactButtonUrl: string;
     },
@@ -702,6 +767,7 @@ export async function publishChatRules(params: {
   let published: MaxPublishedMessage;
   const buttonRows = buildChatRulesButtonRows(rules);
   const formattedMessage = await params.buildFormattedText(messageText, {
+    textFormat: rules.autoTextEnabled ? 'plain' : normalizeChatRulesTextFormat(rules.textFormat),
     adminContactButtonEnabled: rules.adminContactButtonEnabled,
     adminContactButtonUrl: rules.adminContactButtonUrl,
   });
@@ -721,25 +787,43 @@ export async function publishChatRules(params: {
     },
   });
   if (claimed.count !== 1) {
+    const latest = await params.prisma.chatRules
+      .findUnique({ where: { chatId: params.chatId } })
+      .catch(() => null);
+    if (latest && latest.updatedAt.getTime() !== rules.updatedAt.getTime()) {
+      throw new BadRequestException(
+        'Черновик правил изменился во время публикации. Обновите экран и повторите.',
+      );
+    }
+    if (latest?.pendingCleanupMessageId) {
+      throw new BadRequestException(
+        'Предыдущий пост правил ещё удаляется. Подождите немного и повторите.',
+      );
+    }
     throw new BadRequestException(
-      'Предыдущая публикация правил имеет неопределённый результат. Проверьте Safety Desk перед повтором.',
+      'Предыдущая публикация правил ещё проверяется. Проверьте чат и обратитесь в поддержку перед повтором.',
     );
   }
+  const messageOptions: ChatRulesMessageOptions =
+    formattedMessage.textFormat || imagePayload || buttonRows
+      ? {
+          ...(formattedMessage.textFormat ? { textFormat: formattedMessage.textFormat } : {}),
+          ...(imagePayload ? { imagePayload } : {}),
+          ...(buttonRows ? { buttons: buttonRows } : {}),
+        }
+      : undefined;
   try {
     published = await publishChatRulesMessageWithRetry({
       maxClient: params.maxClient,
       chatId: params.chatId,
       text: formattedMessage.text,
-      options: {
-        textFormat: formattedMessage.textFormat,
-        ...(imagePayload ? { imagePayload } : {}),
-        ...(buttonRows ? { buttons: buttonRows } : {}),
-      },
+      options: messageOptions,
       botId: resolvedBotId,
       sleep: params.sleep,
     });
   } catch (error: unknown) {
-    if (!isAmbiguousMaxSendError(error)) {
+    const ambiguous = isAmbiguousMaxSendError(error);
+    if (!ambiguous) {
       await params.prisma.chatRules
         .updateMany({
           where: { chatId: params.chatId, publishOperationId },
@@ -760,8 +844,19 @@ export async function publishChatRules(params: {
           );
         });
     }
-    const maxApiMessage = extractMaxApiErrorMessage(error);
-    throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
+    const details = readMaxApiErrorDetails(error);
+    params.logger.warn(
+      {
+        chatId: params.chatId,
+        actorUserId: params.actorUserId,
+        botId: resolvedBotId ?? null,
+        statusCode: details.status,
+        errorCode: details.code || null,
+        ambiguous,
+      },
+      'Chat rules publication failed before confirmation',
+    );
+    throw new BadRequestException(describeChatRulesPublishError(error));
   }
 
   const publishedAt = new Date();
@@ -775,7 +870,7 @@ export async function publishChatRules(params: {
         publishOperationId,
       },
       data: {
-        ...(autofilledText !== null ? { text: autofilledText } : {}),
+        ...(autofilledText !== null ? { text: autofilledText, textFormat: 'plain' } : {}),
         publishedMessageId: published.messageId,
         publishedBotId: resolvedBotId ?? null,
         publishedUrl: published.url,
@@ -894,6 +989,9 @@ export async function publishChatRules(params: {
           adminContactButtonEnabled: rules.adminContactButtonEnabled,
           hasImage: Boolean(imagePayload),
           autofilledTextApplied: autofilledText !== null,
+          textFormat: rules.autoTextEnabled
+            ? 'plain'
+            : normalizeChatRulesTextFormat(rules.textFormat),
           replacedPreviousPost: Boolean(
             previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
           ),
@@ -918,7 +1016,7 @@ export async function publishChatRules(params: {
 
   const committedRules: PersistedChatRules = {
     ...rules,
-    ...(autofilledText !== null ? { text: autofilledText } : {}),
+    ...(autofilledText !== null ? { text: autofilledText, textFormat: 'plain' } : {}),
     publishedMessageId: published.messageId,
     publishedBotId: resolvedBotId ?? null,
     publishedUrl: published.url,
@@ -1198,6 +1296,7 @@ export async function saveChatRulesDraft(params: {
       action: 'UPDATE_CHAT_RULES',
       payload: {
         autoTextEnabled: normalizedDraft.autoTextEnabled,
+        textFormat: normalizedDraft.textFormat,
         buttonEnabled: normalizedDraft.buttonEnabled,
         adminContactButtonEnabled: normalizedDraft.adminContactButtonEnabled,
         hasImage: Boolean(normalizedDraft.imageBase64),

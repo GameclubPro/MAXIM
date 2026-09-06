@@ -29,6 +29,19 @@
     display: none;
   }
 
+  body.settings-drilldown-open .toast--danger .toast__body {
+    gap: 2px;
+  }
+
+  body.settings-drilldown-open .toast--danger .toast__body p {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+
   body.settings-drilldown-open .toast__close {
     width: 28px;
     height: 28px;

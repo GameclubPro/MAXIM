@@ -561,6 +561,16 @@ describe('chatSettingsSchema duplicate flow validation', () => {
 });
 
 describe('updateChatRulesRequestSchema button normalization', () => {
+  it('tracks the plain or markdown source format like Publik', () => {
+    expect(chatRulesSchema.parse({ text: '**legacy markdown**' }).textFormat).toBe('markdown');
+    expect(
+      updateChatRulesRequestSchema.parse({
+        text: '**literal plain text**',
+        textFormat: 'plain',
+      }).textFormat,
+    ).toBe('plain');
+  });
+
   it('accepts rules up to the same text limit as Publik', () => {
     expect(MAX_CHAT_RULES_TEXT_LENGTH).toBe(MAX_PUBLICATION_TEXT_LENGTH);
     expect(

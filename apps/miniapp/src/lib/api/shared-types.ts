@@ -113,6 +113,7 @@ export type DeleteChannelDialogMessagePayload = {
 export type UpdateChatRulesPayload = Pick<
   ChatRules,
   | 'text'
+  | 'textFormat'
   | 'imageBase64'
   | 'imageMimeType'
   | 'imageFileName'

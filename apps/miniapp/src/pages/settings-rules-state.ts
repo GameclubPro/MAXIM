@@ -11,6 +11,7 @@ import type { UpdateChatRulesPayload } from '../lib/api/shared-types';
 type RulesDraftSerializable = Pick<
   ChatRules,
   | 'text'
+  | 'textFormat'
   | 'imageBase64'
   | 'imageMimeType'
   | 'imageFileName'
@@ -25,6 +26,7 @@ type RulesDraftSerializable = Pick<
   Pick<
     UpdateChatRulesPayload,
     | 'text'
+    | 'textFormat'
     | 'imageBase64'
     | 'imageMimeType'
     | 'imageFileName'
@@ -51,6 +53,7 @@ function isRequiredSubscriptionCurrentlyActive(
 export function serializeRulesDraftPayload(value: RulesDraftSerializable): string {
   return JSON.stringify({
     text: value.text,
+    textFormat: value.textFormat,
     imageBase64: value.imageBase64,
     imageMimeType: value.imageMimeType,
     imageFileName: value.imageFileName,

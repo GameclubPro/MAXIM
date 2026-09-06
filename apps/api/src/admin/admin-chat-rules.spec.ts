@@ -1,4 +1,5 @@
 import {
+  describeChatRulesPublishError,
   isMaxMessageMissingError,
   publishChatRules,
   readChatRules,
@@ -10,6 +11,7 @@ function createRules() {
     id: 'rules-1',
     chatId: 'chat-1',
     text: 'Правила чата',
+    textFormat: 'markdown',
     imageBase64: '',
     imageMimeType: '',
     imageFileName: '',
@@ -217,7 +219,7 @@ describe('admin chat rules MAX errors', () => {
       Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' }),
     );
 
-    await expect(publish()).rejects.toThrow('Не удалось опубликовать правила.');
+    await expect(publish()).rejects.toThrow('MAX не подтвердил отправку');
 
     expect(prisma.chatRules.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.chatRules.updateMany).toHaveBeenCalledWith(
@@ -229,6 +231,31 @@ describe('admin chat rules MAX errors', () => {
         }),
       }),
     );
+  });
+
+  it.each([
+    [
+      { response: { status: 403, data: { code: 'chat.denied' } } },
+      'Бот не может писать в этот чат.',
+    ],
+    [
+      { response: { status: 404, data: { error: { code: 'chat.not.found' } } } },
+      'Бот больше не видит этот чат.',
+    ],
+    [
+      { response: { status: 429, data: { message: 'rate limit exceeded' } } },
+      'MAX временно ограничил отправку.',
+    ],
+    [
+      { response: { status: 400, data: { code: 'attachment.not.ready' } } },
+      'MAX не подготовил фото.',
+    ],
+    [
+      { response: { status: 400, data: { message: 'invalid markdown format' } } },
+      'MAX не принял форматирование текста.',
+    ],
+  ])('returns an actionable rules publication error for %#', (error, expected) => {
+    expect(describeChatRulesPublishError(error)).toContain(expected);
   });
 
   it('does not delete the old rules post when final publication state persistence fails', async () => {
@@ -268,8 +295,12 @@ describe('admin chat rules MAX errors', () => {
   it('blocks a second publish while previous-post cleanup is still owned', async () => {
     const { maxClient, prisma, publish } = createPublishFixture();
     prisma.chatRules.updateMany.mockResolvedValueOnce({ count: 0 });
+    prisma.chatRules.findUnique.mockResolvedValueOnce({
+      ...createRules(),
+      pendingCleanupMessageId: 'rules-old',
+    });
 
-    await expect(publish()).rejects.toThrow('Предыдущая публикация правил');
+    await expect(publish()).rejects.toThrow('Предыдущий пост правил ещё удаляется');
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
@@ -277,8 +308,12 @@ describe('admin chat rules MAX errors', () => {
   it('does not send after the formatted rules revision loses its claim', async () => {
     const { maxClient, prisma, publish } = createPublishFixture();
     prisma.chatRules.updateMany.mockResolvedValueOnce({ count: 0 });
+    prisma.chatRules.findUnique.mockResolvedValueOnce({
+      ...createRules(),
+      updatedAt: new Date('2026-07-15T10:01:00.000Z'),
+    });
 
-    await expect(publish()).rejects.toThrow('Предыдущая публикация правил');
+    await expect(publish()).rejects.toThrow('Черновик правил изменился');
 
     expect(prisma.chatRules.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({

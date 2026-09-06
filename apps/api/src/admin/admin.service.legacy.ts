@@ -6778,6 +6778,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     let normalizedSourceText = this.normalizeImportedRulesText(input.text);
+    let normalizedSourceTextFormat: ChatRules['textFormat'] = 'plain';
     const maxClientWithMessageMarkdown = this.maxClient as MaxClientService & {
       getMessageTextAsMarkdown?: MaxClientService['getMessageTextAsMarkdown'];
     };
@@ -6791,6 +6792,7 @@ export class AdminService implements OnModuleDestroy {
         const normalizedFormattedSourceText = this.normalizeImportedRulesText(formattedSourceText);
         if (normalizedFormattedSourceText) {
           normalizedSourceText = normalizedFormattedSourceText;
+          normalizedSourceTextFormat = 'markdown';
         }
       } catch (error: unknown) {
         this.logger.warn(
@@ -6813,6 +6815,7 @@ export class AdminService implements OnModuleDestroy {
         ...(normalizedSourceText !== null
           ? {
               text: normalizedSourceText,
+              textFormat: normalizedSourceTextFormat,
               autoTextEnabled: false,
             }
           : {}),
@@ -6861,6 +6864,7 @@ export class AdminService implements OnModuleDestroy {
           messageId: sourceMessageId ?? null,
           url: sourceMessageUrl,
           copiedText: normalizedSourceText !== null,
+          textFormat: normalizedSourceText !== null ? normalizedSourceTextFormat : null,
           textLength: normalizedSourceText?.length ?? 0,
           rulesAttachViolationsEnabled: true,
           botId: resolvedBotId ?? null,
@@ -14202,6 +14206,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     sourceText: string,
     options: {
+      textFormat: ChatRules['textFormat'];
       adminContactButtonEnabled: boolean;
       adminContactButtonUrl: string;
     },
