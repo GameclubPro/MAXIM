@@ -1,5 +1,7 @@
 import {
   AUDIT_MESSAGE_EVENT_TYPES,
+  assessCommercialExecution,
+  assessCommercialSanitizationParity,
   assertCommercialAuditNotAborted,
   buildAuditCandidatePageSql,
   buildAuditCandidateCursorSql,
@@ -693,6 +695,35 @@ describe('audit export privacy', () => {
 });
 
 describe('corpus sanitized baseline scheduling', () => {
+  it('reports actual cleanup eligibility without claiming a completed deletion', () => {
+    expect(
+      assessCommercialExecution({
+        ...emptySnapshot,
+        hit: true,
+        actionable: true,
+        actionBand: 'WARN',
+      }),
+    ).toEqual({ messageDeleteEligible: true, executionVerified: false });
+    expect(
+      assessCommercialExecution({ ...emptySnapshot, hit: true, actionBand: 'WARN' })
+        .messageDeleteEligible,
+    ).toBe(false);
+  });
+
+  it('flags action changes introduced by sanitization separately from explanations', () => {
+    const warn = { ...emptySnapshot, hit: true, actionable: true, actionBand: 'WARN' };
+    expect(assessCommercialSanitizationParity(emptySnapshot, warn)).toEqual({
+      decisionEquivalent: false,
+      changedFields: ['hit', 'actionBand', 'actionable'],
+    });
+    expect(
+      assessCommercialSanitizationParity(warn, {
+        ...warn,
+        matchedSignals: ['contact:contextual-phone'],
+      }),
+    ).toEqual({ decisionEquivalent: true, changedFields: [] });
+  });
+
   it('does not run the sanitized detector without a requested retained corpus record', async () => {
     const detectSanitized = jest.fn(async () => emptySnapshot);
     const current = { ...emptySnapshot, hit: true };

@@ -32,6 +32,7 @@ type CliOptions = CommercialCorpusGateOptions & {
 };
 
 export type CommercialCorpusGateOptions = {
+  requireSanitizationParity?: boolean;
   minPositive: number;
   minNegative: number;
   minGray: number;
@@ -42,6 +43,7 @@ export type CommercialCorpusGateOptions = {
 };
 
 export type CommercialCorpusMetrics = {
+  autoLabelSanitizationDriftCount: number;
   records: number;
   positiveCount: number;
   negativeCount: number;
@@ -120,6 +122,7 @@ function readCliOptions(argv: readonly string[]): CliOptions {
 
   return {
     inputPath,
+    requireSanitizationParity: argv.includes('--require-sanitization-parity'),
     minPositive:
       readNumberOption(argv, '--min-positive') ?? DEFAULT_COMMERCIAL_CORPUS_GATES.minPositive,
     minNegative:
@@ -296,6 +299,7 @@ export function analyzeCommercialCorpusRecords(
   let trustedManualSubtypeComparableCount = 0;
   let trustedManualSubtypeMismatchCount = 0;
   let campaignOnlyDeleteCount = 0;
+  let autoLabelSanitizationDriftCount = 0;
 
   for (const [index, record] of records.entries()) {
     const lineNumber = index + 1;
@@ -315,6 +319,19 @@ export function analyzeCommercialCorpusRecords(
     const currentSubtype = readString(current.primarySubtype) ?? readString(current.subtype);
     const currentHit = current.hit === true;
     const historicalHit = historical.hit === true;
+
+    let hasAutoLabelSanitizationDrift = false;
+    if (labelSource === COMMERCIAL_CORPUS_AUTO_LABEL_SOURCE && record.sanitizedBaseline) {
+      const original = readSnapshot(record.current);
+      if (
+        original.hit !== current.hit ||
+        original.actionBand !== current.actionBand ||
+        original.primarySubtype !== current.primarySubtype
+      ) {
+        hasAutoLabelSanitizationDrift = true;
+        autoLabelSanitizationDriftCount += 1;
+      }
+    }
 
     if (!label || !LABELS.has(label as CommercialCorpusLabel)) {
       errors.push(`line ${lineNumber}: unknown label ${label ?? 'null'}`);
@@ -348,7 +365,8 @@ export function analyzeCommercialCorpusRecords(
       pushCount(safeContextHitCounts, safeContextBucket);
     }
 
-    const isAuto = labelSource === COMMERCIAL_CORPUS_AUTO_LABEL_SOURCE;
+    const isAuto =
+      labelSource === COMMERCIAL_CORPUS_AUTO_LABEL_SOURCE && !hasAutoLabelSanitizationDrift;
     const isTrustedManual = labelSource === COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE;
     if (isTrustedManual) {
       trustedManualCount += 1;
@@ -463,8 +481,11 @@ export function analyzeCommercialCorpusRecords(
   }
 
   if (trustedManualNegativeCount === 0) {
+    diagnostics.push('trusted_manual_negative_gates=not_evaluated trusted_manual_negative_count=0');
+  }
+  if (autoLabelSanitizationDriftCount > 0) {
     diagnostics.push(
-      'trusted_manual_negative_gates=not_evaluated trusted_manual_negative_count=0',
+      `auto_label_sanitization_drift=${autoLabelSanitizationDriftCount} excluded_from_auto_quality_metrics=yes`,
     );
   }
 
@@ -472,6 +493,7 @@ export function analyzeCommercialCorpusRecords(
     errors,
     diagnostics,
     metrics: {
+      autoLabelSanitizationDriftCount,
       records: records.length,
       positiveCount,
       negativeCount,
@@ -525,6 +547,12 @@ export function validateCommercialCorpusRecords(
   const errors = [...analysis.errors];
   const diagnostics = [...analysis.diagnostics];
   const { metrics } = analysis;
+
+  if (options.requireSanitizationParity && metrics.autoLabelSanitizationDriftCount > 0) {
+    errors.push(
+      `auto_label_sanitization_drift=${metrics.autoLabelSanitizationDriftCount}; independent manual labels are required`,
+    );
+  }
 
   if (metrics.positiveCount < options.minPositive) {
     errors.push(`positive_count=${metrics.positiveCount} below min=${options.minPositive}`);

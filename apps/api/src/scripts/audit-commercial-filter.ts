@@ -26,6 +26,7 @@ import {
   type CommercialAuditRunLock,
 } from './commercial-audit-run-lock.util';
 import { sanitizeCommercialCorpusText } from './commercial-corpus-sanitization.util';
+import { isCommercialMessageDeleteEligible } from '../moderation/commercial';
 
 const DEFAULT_LOOKBACK_DAYS = 7;
 const DEFAULT_LIMIT = 1500;
@@ -1433,6 +1434,7 @@ export function serializeAuditRecord(record: AuditRecord): Record<string, unknow
     commercialCampaignContext: record.commercialCampaignContext,
     historical: record.historical,
     current: record.current,
+    executionAssessment: assessCommercialExecution(record.current),
     ...(record.sanitizedBaseline ? { sanitizedBaseline: record.sanitizedBaseline } : {}),
   };
 }
@@ -1461,6 +1463,11 @@ export function serializeAuditCorpusRecord(record: AuditRecord): Record<string, 
     historical: record.historical,
     current: record.current,
     sanitizedBaseline: record.sanitizedBaseline,
+    executionAssessment: assessCommercialExecution(record.current),
+    sanitizationParity: assessCommercialSanitizationParity(
+      record.current,
+      record.sanitizedBaseline,
+    ),
   };
 }
 
@@ -1848,11 +1855,29 @@ function pickAuditCorpusSettings(settings: ChatSettings): AuditCorpusSettings {
 }
 
 export function sanitizeAuditText(value: string): string {
-  return sanitizeCommercialCorpusText(value);
+  return sanitizeCommercialCorpusText(value, { preserveLayout: true });
 }
 
 export function isCommercialEnforcementAction(actionBand: string | null): boolean {
-  return actionBand === 'WARN' || actionBand === 'DELETE' || actionBand === 'DELETE_AND_ESCALATE';
+  return isCommercialMessageDeleteEligible(actionBand, true);
+}
+
+export function assessCommercialExecution(snapshot: CommercialSnapshot) {
+  return {
+    messageDeleteEligible:
+      snapshot.hit && isCommercialMessageDeleteEligible(snapshot.actionBand, snapshot.actionable),
+    executionVerified: false,
+  };
+}
+
+export function assessCommercialSanitizationParity(
+  current: CommercialSnapshot,
+  sanitized: CommercialSnapshot,
+) {
+  const changedFields = (['hit', 'actionBand', 'actionable', 'primarySubtype'] as const).filter(
+    (field) => current[field] !== sanitized[field],
+  );
+  return { decisionEquivalent: changedFields.length === 0, changedFields };
 }
 
 export async function resolveCorpusSanitizedBaseline(params: {
@@ -2061,6 +2086,10 @@ async function runCommercialAudit(
     let enforcementFalsePositiveCandidates = 0;
     let grayEnforcementCandidates = 0;
     let campaignOnlyEnforcementCandidates = 0;
+    let messageDeleteEligibleCount = 0;
+    let sanitizationComparedCount = 0;
+    let sanitizationDecisionDriftCount = 0;
+    const actionBandCounts = new Map<string, number>();
     let processedCandidateCount = 0;
     let retainedRecordCount = 0;
     const auditedRecords: AuditRecord[] = [];
@@ -2202,6 +2231,10 @@ async function runCommercialAudit(
         pushCount(segmentCounts, `${category}:${segment}`);
         pushCount(safeContextBucketCounts, safeContextBucket);
         pushCount(eventTypeCounts, row.eventType);
+        pushCount(actionBandCounts, current.actionBand ?? 'NONE');
+        if (assessCommercialExecution(current).messageDeleteEligible) {
+          messageDeleteEligibleCount += 1;
+        }
         for (const signal of current.matchedSignals) {
           pushCount(currentSignalCounts, signal);
         }
@@ -2261,6 +2294,14 @@ async function runCommercialAudit(
                   ),
                 ),
             });
+            if (sanitizedBaseline) {
+              sanitizationComparedCount += 1;
+              if (
+                !assessCommercialSanitizationParity(current, sanitizedBaseline).decisionEquivalent
+              ) {
+                sanitizationDecisionDriftCount += 1;
+              }
+            }
             const auditRecord: AuditRecord = {
               category,
               policyCategory,
@@ -2409,6 +2450,11 @@ async function runCommercialAudit(
       }`,
     );
     console.log(`current_review_recommended=${currentReviewRecommendedCount}`);
+    console.log(`action_band_breakdown=${formatCounts(actionBandCounts) || 'none'}`);
+    console.log(`message_delete_eligible=${messageDeleteEligibleCount} execution_verified=no`);
+    console.log(
+      `sanitization_compared=${sanitizationComparedCount} sanitization_decision_drift=${sanitizationDecisionDriftCount}`,
+    );
     console.log(`delete_false_positive_candidates=${deleteFalsePositiveCandidates}`);
     console.log(`gray_delete_candidates=${grayDeleteCandidates}`);
     console.log(`campaign_only_delete_candidates=${campaignOnlyDeleteCandidates}`);

@@ -1,9 +1,11 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import { isCommercialMessageDeleteEligible } from '../moderation/commercial/commercial-action-policy';
 
 type AuditSnapshot = {
   hit?: unknown;
+  actionable?: unknown;
   actionBand?: unknown;
   campaignStrength?: unknown;
   evidenceTier?: unknown;
@@ -27,6 +29,7 @@ type AuditSummaryRecord = {
   safeContextBucket?: unknown;
   current?: unknown;
   historical?: unknown;
+  sanitizedBaseline?: unknown;
 };
 
 export type CommercialAuditAlert = {
@@ -37,6 +40,10 @@ export type CommercialAuditAlert = {
 
 export type CommercialAuditSummary = {
   records: number;
+  messageDeleteEligible: number;
+  executionVerified: false;
+  sanitizationCompared: number;
+  sanitizationDecisionDrift: number;
   labels: Record<string, number>;
   actions: Record<string, number>;
   policyCategories: Record<string, number>;
@@ -99,6 +106,9 @@ export function summarizeCommercialAuditRecords(
   let recruitmentDeleteWithoutRisk = 0;
   let recruitmentEnforcementWithoutRisk = 0;
   let riskyRulesOrNewsContext = 0;
+  let messageDeleteEligible = 0;
+  let sanitizationCompared = 0;
+  let sanitizationDecisionDrift = 0;
 
   for (const record of records) {
     const label = readString(record.label) ?? 'unknown';
@@ -115,6 +125,27 @@ export function summarizeCommercialAuditRecords(
     const negativeSignals = readStringArray(current.negativeSignals);
     const isDelete = DELETE_ACTIONS.has(action);
     const isEnforcement = ENFORCEMENT_ACTIONS.has(action);
+    if (
+      current.hit === true &&
+      isCommercialMessageDeleteEligible(
+        action,
+        typeof current.actionable === 'boolean' ? current.actionable : isEnforcement,
+      )
+    ) {
+      messageDeleteEligible += 1;
+    }
+    if (record.sanitizedBaseline) {
+      sanitizationCompared += 1;
+      const sanitized = readSnapshot(record.sanitizedBaseline);
+      if (
+        current.hit !== sanitized.hit ||
+        current.actionBand !== sanitized.actionBand ||
+        current.primarySubtype !== sanitized.primarySubtype ||
+        current.actionable !== sanitized.actionable
+      ) {
+        sanitizationDecisionDrift += 1;
+      }
+    }
     const grayOverEnforcement =
       label === 'gray_candidate' && isActionOverExpected(action, expectedAction);
     const deleteProfile = readDeleteProfile(current, reasonCodes, matchedSignals);
@@ -184,6 +215,10 @@ export function summarizeCommercialAuditRecords(
 
   const summary: CommercialAuditSummary = {
     records: records.length,
+    messageDeleteEligible,
+    executionVerified: false,
+    sanitizationCompared,
+    sanitizationDecisionDrift,
     labels: toSortedRecord(labels),
     actions: toSortedRecord(actions),
     policyCategories: toSortedRecord(policyCategories),

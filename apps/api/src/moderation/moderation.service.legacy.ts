@@ -10,6 +10,7 @@ import {
   type Type,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { isCommercialMessageDeleteEligible } from './commercial';
 import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
@@ -2400,10 +2401,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         topViolation.ruleCode === 'COMMERCIAL_AD' && !commercialRecordable;
       const shouldDeleteByCommercialPolicy =
         topViolation.ruleCode !== 'COMMERCIAL_AD' ||
-        (commercialActionable &&
-          (commercialActionBand === 'WARN' ||
-            commercialActionBand === 'DELETE' ||
-            commercialActionBand === 'DELETE_AND_ESCALATE'));
+        isCommercialMessageDeleteEligible(commercialActionBand, commercialActionable);
       const isLinkBlockedDelete = topViolation.ruleCode === 'LINK_BLOCKED';
       const violationDeleteIntent: EnsureModerationDeleteIntentInput | null =
         shouldDeleteByCommercialPolicy

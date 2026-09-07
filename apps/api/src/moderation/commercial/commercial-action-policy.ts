@@ -39,6 +39,17 @@ export type CommercialActionPolicyInput = {
   hasIndependentCommercialOfferEvidence: boolean;
 };
 
+// FLAG: WARN includes message cleanup; the separate text-filter ladder owns user sanctions.
+export function isCommercialMessageDeleteEligible(
+  actionBand: string | null,
+  actionable: boolean,
+): boolean {
+  return (
+    actionable &&
+    (actionBand === 'WARN' || actionBand === 'DELETE' || actionBand === 'DELETE_AND_ESCALATE')
+  );
+}
+
 export function resolveCommercialActionPolicy(
   input: CommercialActionPolicyInput,
 ): CommercialActionPolicyDecision {

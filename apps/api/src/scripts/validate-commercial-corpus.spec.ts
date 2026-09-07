@@ -55,6 +55,36 @@ const SMALL_CORPUS_GATES = {
 };
 
 describe('commercial corpus trust-aware validation', () => {
+  it('rejects auto-label quality claims when sanitization changes the original decision', () => {
+    const record = corpusRecord({
+      label: 'negative_candidate',
+      expectedAction: 'ALLOW',
+      action: null,
+    });
+    record.sanitizedBaseline = { hit: true, actionBand: 'WARN', primarySubtype: 'SERVICES' };
+    const analysis = analyzeCommercialCorpusRecords([record]);
+    expect(analysis.metrics.autoLabelSanitizationDriftCount).toBe(1);
+    expect(analysis.metrics.autoNegativeCount).toBe(0);
+    expect(
+      validateCommercialCorpusRecords([record], {
+        ...SMALL_CORPUS_GATES,
+        requireSanitizationParity: true,
+      }).errors,
+    ).toContain('auto_label_sanitization_drift=1; independent manual labels are required');
+  });
+
+  it('allows independently reviewed sanitized decisions despite original action drift', () => {
+    const record = corpusRecord({
+      label: 'positive_candidate',
+      labelSource: COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE,
+      expectedAction: 'WARN',
+      action: 'WARN',
+    });
+    record.sanitizedBaseline = record.current;
+    record.current = { hit: false, actionBand: null, primarySubtype: null };
+    expect(analyzeCommercialCorpusRecords([record]).errors).toEqual([]);
+  });
+
   it('measures auto-label recall without enforcing the stale exact action rank', () => {
     const result = analyzeCommercialCorpusRecords([
       corpusRecord({

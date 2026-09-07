@@ -4,6 +4,9 @@ const EMOJI_PHONE_SEPARATOR_PATTERN = String.raw`\p{Extended_Pictographic}\uFE0F
 const OBFUSCATED_PHONE_SEPARATOR_PATTERN = String.raw`(?:${KEYCAP_MARK_PATTERN}|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})`;
 const PHONE_SEPARATOR_PATTERN = String.raw`(?:[${NUMBER_SEPARATOR_CHARS}]|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})*`;
 const PHONE_DIGIT_PATTERN = String.raw`\d(?:${KEYCAP_MARK_PATTERN})?`;
+// FLAG: A new line or phone label separates contacts, not digits of one identifier.
+const ADJACENT_DIGIT_SEPARATOR_PATTERN = String.raw`(?:(?![\r\n\u260E\u{1F4DE}\u{1F4F1}\u{1F4F2}])(?:[${NUMBER_SEPARATOR_CHARS}]|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN}))*`;
+const INLINE_NUMBER_SEPARATOR_PATTERN = String.raw`(?:(?![\r\n])[${NUMBER_SEPARATOR_CHARS}])*`;
 const PHONE_CONTEXT_TERM = String.raw`(?:телефон(?:а|у|ом|ы)?|тел\.?|номер\s+телефона|(?:пишите?|звоните?|обращайтесь)\s+по\s+номер[у]?|звон(?:ить|ите|ок|ки)|контакт(?:ы|ный\s+номер)?|связь|для\s+связи|ватсап|whats?app|viber)`;
 const NON_PHONE_IDENTIFIER_CONTEXT_TERM = String.raw`(?:заказ(?:а|у|ом|е|ы)?|код(?:а|у|ом|е|ы)?|номер\s+заказа|маркировк\p{L}*|парти\p{L}*|инн|огрн|снилс)`;
 const PHONE_ADJACENT_CONTEXT_SEPARATOR = String.raw`(?:[\s:;,#№()./\\‐‑‒–—―-]|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})`;
@@ -19,19 +22,19 @@ const CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN = new RegExp(
   'gu',
 );
 const RUSSIAN_PHONE_CANDIDATE_PATTERN = new RegExp(
-  String.raw`(?<![\d+])\+?[78](?:${KEYCAP_MARK_PATTERN})?(?:${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN}){10}(?![${NUMBER_SEPARATOR_CHARS}]*\d)`,
+  String.raw`(?<![\d+])\+?[78](?:${KEYCAP_MARK_PATTERN})?(?:${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN}){10}(?!${INLINE_NUMBER_SEPARATOR_PATTERN}\d)`,
   'gu',
 );
 const LOCAL_PHONE_CANDIDATE_PATTERN = new RegExp(
-  String.raw`(?<!\d)\d(?:[${NUMBER_SEPARATOR_CHARS}]*\d){9}(?![${NUMBER_SEPARATOR_CHARS}]*\d)`,
+  String.raw`(?<!\d)\d(?:[${NUMBER_SEPARATOR_CHARS}]*\d){9}(?!${INLINE_NUMBER_SEPARATOR_PATTERN}\d)`,
   'gu',
 );
 const ADJACENT_NUMERIC_SEQUENCE_BEFORE_PATTERN = new RegExp(
-  String.raw`\d${PHONE_SEPARATOR_PATTERN}$`,
+  String.raw`\d${ADJACENT_DIGIT_SEPARATOR_PATTERN}$`,
   'u',
 );
 const ADJACENT_NUMERIC_SEQUENCE_AFTER_PATTERN = new RegExp(
-  String.raw`^${PHONE_SEPARATOR_PATTERN}\d`,
+  String.raw`^${ADJACENT_DIGIT_SEPARATOR_PATTERN}\d`,
   'u',
 );
 const SHORT_LOCAL_PHONE_CANDIDATE_PATTERN =

@@ -248,6 +248,8 @@ export function deriveCommercialSafeContextBucket(params: {
     hasProfessionalServiceOffer ||
     hasProfessionalApparelRetailOverride ||
     (!hasExplicitPrivateSaleSignal &&
+      matchedSignals.includes('goods-retail:bulk-crop-dispatch-offer')) ||
+    (!hasExplicitPrivateSaleSignal &&
       matchedSignals.includes('goods-retail:professional-retail-structure')) ||
     (hasDirectDealSignal &&
       matchedSignals.some(

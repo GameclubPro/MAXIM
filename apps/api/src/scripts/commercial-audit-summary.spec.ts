@@ -1,6 +1,20 @@
 import { summarizeCommercialAuditRecords } from './commercial-audit-summary';
 
 describe('commercial-audit-summary', () => {
+  it('separates category labels, planned cleanup, and sanitized decision drift', () => {
+    const warn = { hit: true, actionBand: 'WARN', actionable: true };
+    const summary = summarizeCommercialAuditRecords([
+      { current: warn, sanitizedBaseline: { hit: false, actionBand: null, actionable: false } },
+      { current: { ...warn, actionable: false } },
+      { current: { hit: true, actionBand: 'REVIEW_ONLY', actionable: false } },
+    ]);
+    expect(summary.messageDeleteEligible).toBe(1);
+    expect(summary.executionVerified).toBe(false);
+    expect(summary.sanitizationCompared).toBe(1);
+    expect(summary.sanitizationDecisionDrift).toBe(1);
+    expect(summary.actions).toEqual({ REVIEW_ONLY: 1, WARN: 2 });
+  });
+
   it('builds metadata-only alerts for unsafe delete categories', () => {
     const summary = summarizeCommercialAuditRecords([
       {

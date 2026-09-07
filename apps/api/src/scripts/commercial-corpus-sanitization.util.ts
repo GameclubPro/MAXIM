@@ -1,5 +1,5 @@
 import { replaceUrlsInText } from '../common/url-text.util';
-import { normalizeCommercialPhoneConfusables } from '../moderation/commercial/commercial-phone';
+import { replaceCommercialPhoneLikeText } from '../moderation/commercial/commercial-phone';
 
 const NUMBER_SEPARATOR_CHARS = String.raw`\s()./\\‐‑‒–—―-`;
 const EMAIL_ATOM_CHARS = String.raw`\p{L}\p{N}!#$%&'*+/=?^_\x60{|}~\x2d`;
@@ -15,108 +15,25 @@ const PAYMENT_CARD_CANDIDATE_PATTERN = new RegExp(
   String.raw`(?<!\d)\d(?:[${NUMBER_SEPARATOR_CHARS}]*\d){12,18}(?![${NUMBER_SEPARATOR_CHARS}]*\d)`,
   'gu',
 );
-const INTERNATIONAL_PHONE_PATTERN = new RegExp(
-  String.raw`(?<![\d+])\+\d(?:[${NUMBER_SEPARATOR_CHARS}]*\d){6,14}(?![${NUMBER_SEPARATOR_CHARS}]*\d)`,
-  'gu',
-);
-const KEYCAP_MARK_PATTERN = String.raw`\uFE0F?\u20E3`;
-const EMOJI_PHONE_SEPARATOR_PATTERN = String.raw`\p{Extended_Pictographic}\uFE0F?`;
-const OBFUSCATED_PHONE_SEPARATOR_PATTERN = String.raw`(?:${KEYCAP_MARK_PATTERN}|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})`;
-const HAS_OBFUSCATED_PHONE_SEPARATOR_PATTERN = new RegExp(OBFUSCATED_PHONE_SEPARATOR_PATTERN, 'u');
-const PHONE_SEPARATOR_PATTERN = String.raw`(?:[${NUMBER_SEPARATOR_CHARS}]|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})*`;
-const PHONE_DIGIT_PATTERN = String.raw`\d(?:${KEYCAP_MARK_PATTERN})?`;
-const ADJACENT_NUMERIC_SEQUENCE_BEFORE_PATTERN = new RegExp(
-  String.raw`\d${PHONE_SEPARATOR_PATTERN}$`,
-  'u',
-);
-const ADJACENT_NUMERIC_SEQUENCE_AFTER_PATTERN = new RegExp(
-  String.raw`^${PHONE_SEPARATOR_PATTERN}\d`,
-  'u',
-);
-const CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN = new RegExp(
-  String.raw`(?<![\d+])\+[1-9](?:${KEYCAP_MARK_PATTERN})?(?:${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN}){6,14}(?!${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN})`,
-  'gu',
-);
-const RUSSIAN_PHONE_CANDIDATE_PATTERN = new RegExp(
-  String.raw`(?<![\d+])\+?[78](?:${KEYCAP_MARK_PATTERN})?(?:${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN}){10}(?![${NUMBER_SEPARATOR_CHARS}]*\d)`,
-  'gu',
-);
-const LOCAL_PHONE_CANDIDATE_PATTERN = new RegExp(
-  String.raw`(?<!\d)\d(?:[${NUMBER_SEPARATOR_CHARS}]*\d){9}(?![${NUMBER_SEPARATOR_CHARS}]*\d)`,
-  'gu',
-);
-const SHORT_LOCAL_PHONE_CANDIDATE_PATTERN =
-  /(?<!\d)\d{2}[\u2010-\u2015-]\d{2}[\u2010-\u2015-]\d{2}(?!\d)/gu;
 const MAX_DEEP_LINK_PATTERN = /max:\/\/[^\s<>'"`()[\]{}]+/giu;
 const HANDLE_PATTERN = /@[a-z0-9_]{4,32}/giu;
-
-const PHONE_CONTEXT_TERM = String.raw`(?:телефон(?:а|у|ом|ы)?|тел\.?|номер\s+телефона|(?:пишите?|звоните?|обращайтесь)\s+по\s+номер[у]?|звон(?:ить|ите|ок|ки)|контакт(?:ы|ный\s+номер)?|связь|для\s+связи|ватсап|whats?app|viber)`;
 const FINANCIAL_CONTEXT_TERM = String.raw`(?:р\s*[/.\\-]\s*с|расч[её]тн\p{L}*\s+сч[её]т\p{L}*|банковск\p{L}*\s+сч[её]т\p{L}*|корр?(?:еспондентск\p{L}*)?\.?\s*сч[её]т\p{L}*|сч[её]т\s+(?:получателя|банка)|номер\s+сч[её]та|карт(?:а|ы|у|е|ой)|card|pan|сч[её]т)`;
 const ADJACENT_CONTEXT_SEPARATOR = String.raw`[\s:;,#№()./\\‐‑‒–—―-]`;
-const PHONE_ADJACENT_CONTEXT_SEPARATOR = String.raw`(?:${ADJACENT_CONTEXT_SEPARATOR}|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})`;
-
-function createAdjacentContextPatterns(
-  contextTerm: string,
-  separatorPattern = ADJACENT_CONTEXT_SEPARATOR,
-): {
-  before: RegExp;
-  after: RegExp;
-} {
-  return {
-    before: new RegExp(
-      String.raw`(?:^|[^\p{L}\p{N}_])${contextTerm}(?![\p{L}\p{N}_])${separatorPattern}{0,12}$`,
-      'iu',
-    ),
-    after: new RegExp(String.raw`^${separatorPattern}{0,12}${contextTerm}(?![\p{L}\p{N}_])`, 'iu'),
-  };
-}
-
-const PHONE_CONTEXT_PATTERNS = createAdjacentContextPatterns(
-  PHONE_CONTEXT_TERM,
-  PHONE_ADJACENT_CONTEXT_SEPARATOR,
+const FINANCIAL_CONTEXT_BEFORE_PATTERN = new RegExp(
+  String.raw`(?:^|[^\p{L}\p{N}_])${FINANCIAL_CONTEXT_TERM}(?![\p{L}\p{N}_])${ADJACENT_CONTEXT_SEPARATOR}{0,12}$`,
+  'iu',
 );
-const FINANCIAL_CONTEXT_PATTERNS = createAdjacentContextPatterns(FINANCIAL_CONTEXT_TERM);
-const NON_PHONE_IDENTIFIER_CONTEXT_PATTERNS = createAdjacentContextPatterns(
-  String.raw`(?:заказ(?:а|у|ом|е|ы)?|код(?:а|у|ом|е|ы)?|номер\s+заказа|маркировк\p{L}*|парти\p{L}*|инн|огрн|снилс)`,
+const FINANCIAL_CONTEXT_AFTER_PATTERN = new RegExp(
+  String.raw`^${ADJACENT_CONTEXT_SEPARATOR}{0,12}${FINANCIAL_CONTEXT_TERM}(?![\p{L}\p{N}_])`,
+  'iu',
 );
 
-function hasAdjacentContext(
-  source: string,
-  start: number,
-  matchLength: number,
-  patterns: { before: RegExp; after: RegExp },
-): boolean {
+function hasFinancialContext(source: string, start: number, matchLength: number): boolean {
   const before = source.slice(Math.max(0, start - 80), start);
   const after = source.slice(start + matchLength, start + matchLength + 80);
-  return patterns.before.test(before) || patterns.after.test(after);
-}
-
-function isEmbeddedInLongerNumericSequence(
-  source: string,
-  start: number,
-  matchLength: number,
-): boolean {
-  const before = source.slice(Math.max(0, start - 32), start);
-  const after = source.slice(start + matchLength, start + matchLength + 32);
   return (
-    ADJACENT_NUMERIC_SEQUENCE_BEFORE_PATTERN.test(before) ||
-    ADJACENT_NUMERIC_SEQUENCE_AFTER_PATTERN.test(after)
+    FINANCIAL_CONTEXT_BEFORE_PATTERN.test(before) || FINANCIAL_CONTEXT_AFTER_PATTERN.test(after)
   );
-}
-
-function redactCandidates(
-  source: string,
-  pattern: RegExp,
-  replacement: string,
-  shouldRedact: (match: string, offset: number, input: string) => boolean,
-): string {
-  return source.replace(pattern, (match: string, offset: number, input: string) =>
-    shouldRedact(match, offset, input) ? replacement : match,
-  );
-}
-
-function digitCount(value: string): number {
-  return value.replace(/\D/gu, '').length;
 }
 
 function passesLuhnCheck(value: string): boolean {
@@ -141,123 +58,33 @@ function passesLuhnCheck(value: string): boolean {
   return sum % 10 === 0;
 }
 
-function looksLikeStructuredPhone(value: string): boolean {
-  if (/[()]/u.test(value)) {
-    return true;
-  }
-  if (!/[\s\u2010-\u2015-]/u.test(value) || /^\d{3}(?:\.\d{2,3}){3}$/u.test(value)) {
-    return false;
-  }
-  return digitCount(value) >= 10;
-}
-
-function looksLikeBareRussianPhone(value: string): boolean {
-  return /^[78]\d{10}$/u.test(value);
-}
-
-function hasObfuscatedPhoneSeparator(value: string): boolean {
-  return HAS_OBFUSCATED_PHONE_SEPARATOR_PATTERN.test(value);
-}
-
 function redactFinancialNumbers(value: string): string {
-  const withoutAccounts = redactCandidates(
-    value,
+  const withoutAccounts = value.replace(
     BANK_ACCOUNT_CANDIDATE_PATTERN,
-    '[account]',
-    (match, offset, input) =>
-      hasAdjacentContext(input, offset, match.length, FINANCIAL_CONTEXT_PATTERNS),
+    (match: string, offset: number, input: string) =>
+      hasFinancialContext(input, offset, match.length) ? '[account]' : match,
   );
-  return redactCandidates(
-    withoutAccounts,
+  return withoutAccounts.replace(
     PAYMENT_CARD_CANDIDATE_PATTERN,
-    '[card]',
-    (match, offset, input) =>
-      passesLuhnCheck(match) ||
-      hasAdjacentContext(input, offset, match.length, FINANCIAL_CONTEXT_PATTERNS),
+    (match: string, offset: number, input: string) =>
+      passesLuhnCheck(match) || hasFinancialContext(input, offset, match.length) ? '[card]' : match,
   );
 }
 
-function redactPhones(value: string): string {
-  const normalized = normalizeCommercialPhoneConfusables(value);
-  const withoutInternationalPhones = normalized.replace(INTERNATIONAL_PHONE_PATTERN, '[phone]');
-  const withoutObfuscatedInternationalPhones = redactCandidates(
-    withoutInternationalPhones,
-    CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN,
-    '[phone]',
-    (match, offset, input) =>
-      hasObfuscatedPhoneSeparator(match) &&
-      hasAdjacentContext(input, offset, match.length, PHONE_CONTEXT_PATTERNS),
-  );
-  const withoutRussianPhones = redactCandidates(
-    withoutObfuscatedInternationalPhones,
-    RUSSIAN_PHONE_CANDIDATE_PATTERN,
-    '[phone]',
-    (match, offset, input) => {
-      if (isEmbeddedInLongerNumericSequence(input, offset, match.length)) {
-        return false;
-      }
-      const hasPhoneContext = hasAdjacentContext(
-        input,
-        offset,
-        match.length,
-        PHONE_CONTEXT_PATTERNS,
-      );
-      const hasIdentifierContext = hasAdjacentContext(
-        input,
-        offset,
-        match.length,
-        NON_PHONE_IDENTIFIER_CONTEXT_PATTERNS,
-      );
-      if (hasIdentifierContext && !hasPhoneContext) {
-        return false;
-      }
-      return hasObfuscatedPhoneSeparator(match)
-        ? true
-        : looksLikeStructuredPhone(match) || hasPhoneContext || looksLikeBareRussianPhone(match);
-    },
-  );
-  const withoutLocalPhones = redactCandidates(
-    withoutRussianPhones,
-    LOCAL_PHONE_CANDIDATE_PATTERN,
-    '[phone]',
-    (match, offset, input) => {
-      if (isEmbeddedInLongerNumericSequence(input, offset, match.length)) {
-        return false;
-      }
-      const hasPhoneContext = hasAdjacentContext(
-        input,
-        offset,
-        match.length,
-        PHONE_CONTEXT_PATTERNS,
-      );
-      const hasIdentifierContext = hasAdjacentContext(
-        input,
-        offset,
-        match.length,
-        NON_PHONE_IDENTIFIER_CONTEXT_PATTERNS,
-      );
-      return !hasIdentifierContext && (looksLikeStructuredPhone(match) || hasPhoneContext);
-    },
-  );
-  return redactCandidates(
-    withoutLocalPhones,
-    SHORT_LOCAL_PHONE_CANDIDATE_PATTERN,
-    '[phone]',
-    (match, offset, input) =>
-      hasAdjacentContext(input, offset, match.length, PHONE_CONTEXT_PATTERNS),
-  );
-}
-
-export function sanitizeCommercialCorpusText(value: string): string {
+export function sanitizeCommercialCorpusText(
+  value: string,
+  options: { preserveLayout?: boolean } = {},
+): string {
   const withoutEmails = value.replace(EMAIL_PATTERN, '[email]');
   const withoutWebUrls = replaceUrlsInText(withoutEmails, '[url]');
   const withoutUrls = withoutWebUrls.replace(MAX_DEEP_LINK_PATTERN, '[url]');
-  return redactPhones(redactFinancialNumbers(withoutUrls))
-    .replace(HANDLE_PATTERN, '@[handle]')
-    .replace(/\s+/gu, ' ')
-    .trim();
+  const sanitized = replaceCommercialPhoneLikeText(redactFinancialNumbers(withoutUrls)).replace(
+    HANDLE_PATTERN,
+    '@[handle]',
+  );
+  return (options.preserveLayout ? sanitized : sanitized.replace(/\s+/gu, ' ')).trim();
 }
 
 export function isCommercialCorpusTextSanitized(value: string): boolean {
-  return sanitizeCommercialCorpusText(value) === value;
+  return sanitizeCommercialCorpusText(value, { preserveLayout: true }) === value;
 }

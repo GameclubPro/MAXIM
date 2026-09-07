@@ -2,6 +2,43 @@
 
 Дата ревизии: 2026-07-24.
 
+## September Audit And Runtime Contract
+
+Implementation revision: 2026-09-08. The July measurements below are historical,
+not quality claims for the current detector.
+
+- `WARN` is eligible for message cleanup in the moderation runtime. User warnings,
+  mutes, and bans follow the separate text-filter escalation ladder. Audit category
+  counters named `delete_*` count only `DELETE` and `DELETE_AND_ESCALATE`; use
+  `messageDeleteEligible` / `message_delete_eligible` for projected cleanup.
+  `executionVerified: false` means the audit did not verify MAX deletion receipts.
+- The detector and corpus sanitizer share the bounded phone parser. Phone labels
+  and line boundaries separate complete contacts; identifier and long-number
+  guards remain in effect. New audit exports preserve assertion layout.
+- Corpus rows expose `sanitizationParity` beside original `current` and recomputed
+  `sanitizedBaseline` snapshots. Replacement tokens are not semantically identical
+  to real contacts. Drifted auto-label rows are excluded from automatic quality
+  metrics; new quality runs must use `--require-sanitization-parity` and independently
+  review drifted rows. Historical corpora retain their labels and explicit diagnostics.
+- The September recall additions require a first-person multi-service catalog with
+  contact evidence, or a named bulk crop with tonnage, VAT, dispatch, supplier offer,
+  and contact evidence. They do not lower global sensitivity thresholds.
+- Do not automatically restore the July warning labels for ambiguous single-vehicle,
+  small private inventory, or short resale texts. Review the product context first.
+  A `WARN` to `DELETE` category change alone is not a change in message cleanup.
+- Keep held-out evaluation temporally separate from development examples and group
+  duplicate campaigns together. Manually assess both hit and non-hit samples;
+  auto labels and repeated copies cannot establish population precision or recall.
+- Run the performance wrapper locally with the explicit CI threshold profile:
+  `COMMERCIAL_BENCHMARK_PROFILE=github-hosted npm run test:api:commercial-benchmark:ci`.
+  It compares three fresh local processes against CI limits, not GitHub hardware.
+
+For a bounded production audit, split large windows into sequential non-overlapping
+time slices, retain the `--page-size 250 --current-only --sample 0` controls, and
+check readiness between slices. Do not extend query timeouts to force a full-day
+scan to finish. Deduplicate shared inclusive time-boundary events by fingerprint.
+Commercial OCR promotion remains outside this text-filter rollout.
+
 Документ описывает практический план дальнейшего апгрейда commercial ad filter после точечных runtime-исправлений по 48h-аудиту. Цель: поднять precision на safe-context сообщениях, сохранить recall по явной коммерции и сделать каждую блокировку объяснимой для аудита.
 
 ## Scope
@@ -247,17 +284,17 @@ action evidence before adding broad suppressors.
 SINCE="${SINCE:?Set SINCE to the audit window start in ISO-8601}"
 UNTIL="${UNTIL:?Set UNTIL to the audit window end in ISO-8601}"
 npm run moderation:audit-commercial --workspace @maxim/api -- \
-  --since "$SINCE" --until "$UNTIL" --limit all \
+  --since "$SINCE" --until "$UNTIL" --limit all --page-size 250 --current-only \
   --export-corpus-jsonl src/moderation/commercial-corpus.next.jsonl \
   --export-all-corpus
 
 npm run moderation:audit-commercial --workspace @maxim/api -- \
-  --since "$SINCE" --until "$UNTIL" --limit all --shadow-all-chats \
+  --since "$SINCE" --until "$UNTIL" --limit all --page-size 250 --current-only --shadow-all-chats \
   --export-corpus-jsonl src/moderation/commercial-corpus.shadow.jsonl \
   --export-all-corpus
 
 npm run moderation:validate-commercial-corpus --workspace @maxim/api -- \
-  --input src/moderation/commercial-corpus.next.jsonl
+  --input src/moderation/commercial-corpus.next.jsonl --require-sanitization-parity
 ```
 
 ## Corpus Gates

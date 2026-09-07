@@ -4,6 +4,26 @@ import {
 } from './commercial-corpus-sanitization.util';
 
 describe('commercial corpus sanitization', () => {
+  it('preserves assertion boundaries for new replay corpora without retaining contacts', () => {
+    const text = 'Новости: предложение обсуждается.\n\nОтдельно: услуги, телефон 8-900-000-10-42';
+    const sanitized = sanitizeCommercialCorpusText(text, { preserveLayout: true });
+    expect(sanitized).toBe(
+      'Новости: предложение обсуждается.\n\nОтдельно: услуги, телефон [phone]',
+    );
+    expect(isCommercialCorpusTextSanitized(sanitized)).toBe(true);
+  });
+
+  it.each([' 📲 ', '\n📲 ', '\n', ', ', '; '])(
+    'redacts every adjacent contact, not just an isolated number: %j',
+    (separator) => {
+      const text = `📲 8-900-000-10-42${separator}8-900-000-10-43`;
+      expect(isCommercialCorpusTextSanitized(text)).toBe(false);
+      expect(sanitizeCommercialCorpusText(text)).toBe(
+        `📲 [phone]${separator}[phone]`.replace(/\s+/gu, ' '),
+      );
+    },
+  );
+
   it.each([
     ['Телефон 999.123.45.67', 'Телефон [phone]'],
     ['Телефон +7 (999).123.45.67', 'Телефон [phone]'],

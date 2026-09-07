@@ -27,6 +27,24 @@ function detect(text: string) {
 }
 
 describe('commercial phone matching', () => {
+  it.each([' 📲 ', '\n📲 ', '\n', ', ', '; '])(
+    'keeps adjacent complete contacts separate with %j',
+    (separator) => {
+      const text = `📲 8-900-000-10-42${separator}8-900-000-10-43`;
+      expect(hasCommercialPhoneLikeText(text)).toBe(true);
+      expect(replaceCommercialPhoneLikeText(text)).toBe(`📲 [phone]${separator}[phone]`);
+    },
+  );
+
+  it.each([
+    'Код партии 8🟢900🟢000🟢10🟢42🟢12345',
+    'Код партии 8900000104212345',
+    'Код заказа 8-900-000-10-42 12345',
+  ])('does not extract a contact from a longer numeric sequence: %s', (text) => {
+    expect(hasCommercialPhoneLikeText(text)).toBe(false);
+    expect(replaceCommercialPhoneLikeText(text)).toBe(text);
+  });
+
   it.each([
     ['+7 900 123 45 67', '+7 900 123 45 67'],
     ['+7 9O0 123 45 67', '+7 900 123 45 67'],

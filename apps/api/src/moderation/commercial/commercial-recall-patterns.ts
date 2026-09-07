@@ -15,6 +15,13 @@ const RESPONSE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:звон[\p{L}\p{N}_-]*|пишите?|личк[\p{L}\p{N}_-]*|лс|заказ[\p{L}\p{N}_-]*|брон[\p{L}\p{N}_-]*|обраща[\p{L}\p{N}_-]*|вопрос[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 
 const MAX_BOUNDED_RECALL_TEXT_LENGTH = 6_000;
+const BULK_CROP_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:ячмен[ья]|пшениц[аыу]|кукуруз[аыу]|рожь|ов[её]с|л[её]н)(?=$|[^\p{L}\p{N}_-])/iu;
+const BULK_CROP_VOLUME_PATTERN = /(?:^|[^\d])\d{2,6}\s*(?:тонн[а-яё]*|т)(?=$|[^\p{L}\p{N}_-])/iu;
+const BULK_CROP_DISPATCH_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:отгрузк[а-яё]*|погрузк[а-яё]*)\s+(?:навалом|маниту|манитоу|со\s+склада|самовывозом)(?=$|[^\p{L}\p{N}_-])/iu;
+const BULK_CROP_OFFER_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:прода(?:м|ем|ём|ю)|предлага(?:ю|ем)|жд[её]м\s+предложени[йя]\s+по\s+цене)(?=$|[^\p{L}\p{N}_-])/iu;
 const RETAIL_RECALL_PREFILTER =
   /(?:прода|продаж|покуп|производител|магазин|каталог|ассортимент|товар|одеж|вещ|обув|плать|двойк|костюм|блуз|носк|хлопков|турецк|веник|издел|букет|сувенир|кукл|корзин|сотуар|амулет|космет|крем|корег|парфюм|аромат|ed[pt]|диван|мойк|горш|кашпо|зеркал|вентилятор|зонт|ласт|маск|приставк|джойстик|запчаст|полуос|автоцистерн|обо(?:и|ев|ям|ями|ях)|корм|пчел|щен|кот|птиц|индюш|бройлер|обезьян|овц|коров|бычк|растен|цвет|рассад|монард|астильб|хост|ту[яи]|ел[ьи]|кедр|гортенз|лил|яблок|томат|помидор|перец|огур|картоф|капуст|укроп|салат|баклаж|чеснок|малин|смород|ежевик|гриб|лисич|рыб|форел|карась|судак|линь|омул|ряпуш|корюш|кет|пеляд|рак|м[её]д|икр|свин|говяж|мясн|суш|ролл|молоч|пельмен|вареник|пастил|рулет|солом|кирпич|плитк|бордюр|сбор\s+открыт|ручн[а-яё-]*\s+работ|отправк)/iu;
 const LOCAL_SERVICE_RECALL_PREFILTER =
@@ -121,6 +128,22 @@ export function resolveProfessionalRetailRecall(params: {
   campaignContext?: CommercialCampaignContext | null;
 }): CommercialRecallMatch | null {
   const { text, campaignContext } = params;
+  if (
+    text.length <= MAX_BOUNDED_RECALL_TEXT_LENGTH &&
+    BULK_CROP_PATTERN.test(text) &&
+    BULK_CROP_VOLUME_PATTERN.test(text) &&
+    /(?:^|[^\p{L}\p{N}_-])ндс(?=$|[^\p{L}\p{N}_-])/iu.test(text) &&
+    BULK_CROP_DISPATCH_PATTERN.test(text) &&
+    BULK_CROP_OFFER_PATTERN.test(text) &&
+    PHONE_OR_LINK_PATTERN.test(text) &&
+    !RETAIL_SOURCE_SIDE_DEMAND_FRAME_PATTERN.test(text) &&
+    !RETAIL_SOURCE_SIDE_ATTRIBUTION_FRAME_PATTERN.test(text) &&
+    !/(?:^|[^\p{L}\p{N}_-])(?:куплю|закупаем|нужн[а-яё]*|ищем|не\s+прода[а-яё]*|обсужда[а-яё]*|новост[а-яё]*|мошенни[а-яё]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    )
+  ) {
+    return { label: 'bulk-crop-dispatch-offer', cap: 'WARN' };
+  }
   if (shouldSkipBoundedRecall(text, RETAIL_RECALL_PREFILTER)) {
     return null;
   }
@@ -590,6 +613,24 @@ export function resolveLocalServiceRecall(text: string): CommercialRecallMatch |
   }
   if (isServiceDemandOrRecommendation(text)) {
     return null;
+  }
+
+  if (
+    text.length <= 1_200 &&
+    /^[^\p{L}\p{N}_]{0,16}(?:предоставля(?:ю|ем)|оказыва(?:ю|ем)|предлага(?:ю|ем))\s+услуг[иуы](?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    ) &&
+    PHONE_OR_LINK_PATTERN.test(text) &&
+    !RETAIL_SOURCE_SIDE_ATTRIBUTION_FRAME_PATTERN.test(text) &&
+    [
+      /(?:мелкий\s+ремонт|ремонт\s+квартир)/iu,
+      /(?:сборк[а-яё]*|установк[а-яё]*)\s+(?:и\s+установк[а-яё]*\s+)?(?:корпусной\s+)?мебели/iu,
+      /грузоперевозк[а-яё]*/iu,
+      /вывоз\s+мусора/iu,
+      /(?:производство|изготовление)\s+(?:корпусной\s+)?(?:мебели|окон)/iu,
+    ].filter((pattern) => pattern.test(text)).length >= 2
+  ) {
+    return { label: 'owned-multi-service-contact-catalog', cap: 'WARN' };
   }
 
   const warnPatterns: readonly [string, RegExp][] = [

@@ -2,9 +2,22 @@ import {
   normalizeCommercialRawText,
   normalizeCommercialConfusables,
   normalizeCommercialText,
+  normalizePreparedCommercialText,
 } from './commercial-normalization';
 
 describe('normalizeCommercialText', () => {
+  it.each([
+    'П Р О Д А Е М мебель',
+    'hxxps://max dot ru/join/sale',
+    'Услуги +7 9О0 123 45 67',
+    'Л𝐎𝐓 𝐂 П𝐎𝐁𝐓𝐎𝐏𝐎𝐌',
+    'п\u200bр\u200bо\u200bд\u200bа\u200bм',
+  ])('reuses prepared raw text without changing normalization: %s', (text) => {
+    expect(normalizePreparedCommercialText(normalizeCommercialRawText(text))).toBe(
+      normalizeCommercialText(text),
+    );
+  });
+
   it('collapses intentionally spaced commercial words', () => {
     expect(normalizeCommercialText('П Р О Д А Е М мебель')).toContain('продаем мебель');
     expect(normalizeCommercialText('П.Р.О.Д.А.Е.М мебель')).toContain('продаем мебель');

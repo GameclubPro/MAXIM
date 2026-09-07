@@ -1,4 +1,7 @@
-import { resolveCommercialActionPolicy } from './commercial-action-policy';
+import {
+  isCommercialMessageDeleteEligible,
+  resolveCommercialActionPolicy,
+} from './commercial-action-policy';
 import type { CommercialActionPolicyInput } from './commercial-action-policy';
 import type { CommercialSafeContextBucket } from './commercial-safe-context';
 
@@ -42,6 +45,21 @@ const actionOf = (input: Partial<CommercialActionPolicyInput>) =>
   resolveCommercialActionPolicy({ ...BASE_INPUT, ...input }).actionBand;
 
 describe('commercial action policy', () => {
+  it.each(['WARN', 'DELETE', 'DELETE_AND_ESCALATE'])(
+    'maps actionable %s to message cleanup',
+    (band) => {
+      expect(isCommercialMessageDeleteEligible(band, true)).toBe(true);
+      expect(isCommercialMessageDeleteEligible(band, false)).toBe(false);
+    },
+  );
+
+  it.each([null, 'ALLOW', 'REVIEW_ONLY', 'UNKNOWN'])(
+    'never cleans up a non-enforcement band %s',
+    (band) => {
+      expect(isCommercialMessageDeleteEligible(band, true)).toBe(false);
+    },
+  );
+
   it('allows messages below warn threshold', () => {
     const decision = resolveCommercialActionPolicy({
       ...BASE_INPUT,

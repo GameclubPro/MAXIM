@@ -41,7 +41,11 @@ const COMMERCIAL_UPPERCASE_LATIN_CONFUSABLES: Readonly<Record<string, string>> =
 };
 
 export function normalizeCommercialText(value: string): string {
-  const normalized = normalizeForDetection(normalizeCommercialRawText(value));
+  return normalizePreparedCommercialText(normalizeCommercialRawText(value));
+}
+
+export function normalizePreparedCommercialText(rawLoweredText: string): string {
+  const normalized = normalizeForDetection(rawLoweredText);
   if (!normalized) {
     return '';
   }

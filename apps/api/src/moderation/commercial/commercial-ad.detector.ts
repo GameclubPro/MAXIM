@@ -25,7 +25,11 @@ import {
 } from './commercial-local-context';
 import { collectFirstPatternLabels, createCommercialTextMatcher } from './commercial-match-utils';
 import { CommercialSecondStageScorer } from './commercial-scorer';
-import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
+import {
+  normalizeCommercialRawText,
+  normalizeCommercialText,
+  normalizePreparedCommercialText,
+} from './commercial-normalization';
 import {
   ADS_AMBIGUOUS_TRANSPORT_REVIEW_PATTERNS,
   ADS_BOUNDED_WHERE_TO_BUY_REQUEST_PATTERN,
@@ -420,7 +424,9 @@ export class CommercialAdDetector {
     const { settings, commercialCampaignContext } = params;
     let analysisCampaignContext = commercialCampaignContext;
     let rawLoweredText = normalizeCommercialRawText(params.rawLoweredText);
-    let normalizedText = normalizeCommercialText(rawLoweredText || params.normalizedText);
+    let normalizedText = rawLoweredText
+      ? normalizePreparedCommercialText(rawLoweredText)
+      : normalizeCommercialText(params.normalizedText);
 
     if (!normalizedText || normalizedText.length < 6) {
       return null;
@@ -471,7 +477,7 @@ export class CommercialAdDetector {
     let isolatedIndependentOffer = false;
     if (localOfferText) {
       const localRawLoweredText = normalizeCommercialRawText(localOfferText);
-      const localNormalizedText = normalizeCommercialText(localRawLoweredText);
+      const localNormalizedText = normalizePreparedCommercialText(localRawLoweredText);
       const localCampaignContext = retainSenderCommercialCampaignContext(commercialCampaignContext);
       const localState = collectCommercialSignals({
         normalizedText: localNormalizedText,
@@ -496,7 +502,7 @@ export class CommercialAdDetector {
         const offerIndex = rawLoweredText.lastIndexOf(localOfferText);
         const prefixRawLoweredText = rawLoweredText.slice(0, Math.max(0, offerIndex)).trim();
         const prefixState = collectCommercialSignals({
-          normalizedText: normalizeCommercialText(prefixRawLoweredText),
+          normalizedText: normalizePreparedCommercialText(prefixRawLoweredText),
           rawLoweredText: prefixRawLoweredText,
           profile: appliedThresholds,
           commercialCampaignContext,
