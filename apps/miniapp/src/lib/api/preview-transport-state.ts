@@ -817,8 +817,8 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       canAccessSystem: !publisherProfile,
       profile: publisherProfile ? 'publisher' : 'moderation',
       capabilities: publisherProfile
-        ? ['publisher_workspace', 'publisher_entities', 'chat_comments']
-        : ['moderation_workspace', 'publisher_policy_write'],
+        ? ['publisher_workspace', 'publisher_entities', 'chat_comments', 'publisher_policy_write']
+        : ['moderation_workspace'],
       homeRoute: '/',
     },
     systemModeSelection: 'auto',

@@ -101,7 +101,7 @@ describe('Admin legacy facade ports', () => {
     await broadcastService.processDueDeadlinePublicationBroadcasts(7);
 
     expect(managedBroadcastProvider.inject).toEqual([AdminService]);
-    expect(processDueDeadlinePublicationBroadcasts).toHaveBeenCalledWith(7);
+    expect(processDueDeadlinePublicationBroadcasts).not.toHaveBeenCalled();
     expect(
       providers.some(
         (provider) =>

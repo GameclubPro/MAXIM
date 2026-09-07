@@ -3,6 +3,14 @@ import { ManagedBroadcastService } from './managed-broadcast.service';
 import { LEGACY_PUBLICATION_WRITES_DISABLED_CODE } from './legacy-publication-write-freeze';
 
 describe('ManagedBroadcastService', () => {
+  const originalRole = process.env.APP_ROLE;
+  beforeEach(() => {
+    process.env.APP_ROLE = 'publisher';
+  });
+  afterEach(() => {
+    if (originalRole === undefined) delete process.env.APP_ROLE;
+    else process.env.APP_ROLE = originalRole;
+  });
   const user = {
     userId: 'admin-1',
     username: null,
@@ -61,7 +69,7 @@ describe('ManagedBroadcastService', () => {
         status: 410,
         response: expect.objectContaining({
           code: LEGACY_PUBLICATION_WRITES_DISABLED_CODE,
-          message: expect.stringContaining('«Публикации»'),
+          message: expect.stringContaining('Публик'),
         }),
       });
     }
@@ -151,12 +159,25 @@ describe('ManagedBroadcastService', () => {
     });
   });
 
-  it('delegates background processing directly to the runtime', async () => {
+  it('never runs the retired Major broadcast background processor', async () => {
     const { runtime, service } = createService();
 
     await service.processDueManagedBroadcasts('scheduled');
 
-    expect(runtime.processDueManagedBroadcasts).toHaveBeenCalledWith('scheduled');
+    expect(runtime.processDueManagedBroadcasts).not.toHaveBeenCalled();
+  });
+
+  it('never dispatches publication envelopes through the Major action runtime', async () => {
+    process.env.APP_ROLE = 'action';
+    const { runtime, service } = createService();
+    await expect(service.processDueImmediatePublicationBroadcasts()).resolves.toEqual({
+      remaining: 0,
+    });
+    await expect(service.processDueDeadlinePublicationBroadcasts()).resolves.toEqual({
+      remaining: 0,
+    });
+    expect(runtime.processDueImmediatePublicationBroadcasts).not.toHaveBeenCalled();
+    expect(runtime.processDueDeadlinePublicationBroadcasts).not.toHaveBeenCalled();
   });
 
   it('delegates immediate publication recovery directly to the runtime', async () => {

@@ -6,11 +6,10 @@ export type BotStartSpeechProfile = {
   characterName: string;
 };
 
-export const BOT_START_APP_LINE =
-  'Все настройки, модерация, публикации и работа с каналами доступны в приложении.';
+export const BOT_START_APP_LINE = 'Настройки модерации чатов и каналов доступны в приложении.';
 
 export const BOT_PRIVATE_MENU_APP_LINE =
-  'Открывайте приложение для настроек, модерации, публикаций и работы с каналами.';
+  'Настройки модерации чатов и каналов доступны в приложении.';
 
 export function buildBotStartIntroLines(
   profile: BotStartSpeechProfile,
@@ -46,20 +45,8 @@ export function buildBotStartIntroLines(
   ];
 }
 
-export function buildBotStartQuickActionText(profile: BotStartSpeechProfile): string {
-  if (isRexSpeechProfile(profile)) {
-    return 'Быстро замечает новые задачи и помогает держать порядок.';
-  }
-
-  if (profile.persona === 'female') {
-    return 'Я готова быстро принять текст, фото или видео для публикации.';
-  }
-
-  if (profile.persona === 'neutral') {
-    return 'Быстро приму текст, фото или видео для публикации.';
-  }
-
-  return 'Я готов быстро принять текст, фото или видео для публикации.';
+export function buildBotStartQuickActionText(_profile: BotStartSpeechProfile): string {
+  return 'Посты и автопостинг теперь в боте Публик.';
 }
 
 function isRexSpeechProfile(profile: BotStartSpeechProfile): boolean {

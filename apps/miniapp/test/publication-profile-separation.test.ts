@@ -61,7 +61,7 @@ test('publication route binds an explicit workspace profile', () => {
   assert.doesNotMatch(appSource, /LazyPublicationsPage api=\{apiClient\} profile=\{me\.profile\}/u);
   assert.equal(
     appSource.match(/<LazyPublicationsPage[\s\S]*?userId=\{me\.userId\}[\s\S]*?\/>/gu)?.length,
-    2,
+    1,
   );
 });
 

@@ -22,6 +22,7 @@ import { useOptionalManagedEntityNavigation } from '../lib/managed-entity-naviga
 import { runNativeBackHandlers, useNativeBackHandlersAvailable } from '../lib/native-back';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
+import { openPublikBot, PUBLIK_BOT_URL } from '../lib/publik-bot';
 
 type ScreenInfo = {
   title: string;
@@ -466,17 +467,30 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             <span className="bottom-nav__label">Каналы</span>
           </Link>
 
-          <NavLink
-            to="/publications"
-            className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
-          >
-            <span className="bottom-nav__icon" aria-hidden>
-              <BottomNavIcon name="publications" />
-            </span>
-            <span className="bottom-nav__label">
-              {profile === 'publisher' ? 'Посты' : 'Расписания'}
-            </span>
-          </NavLink>
+          {profile === 'publisher' ? (
+            <NavLink
+              to="/publications"
+              className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+            >
+              <span className="bottom-nav__icon" aria-hidden>
+                <BottomNavIcon name="publications" />
+              </span>
+              <span className="bottom-nav__label">Посты</span>
+            </NavLink>
+          ) : (
+            <a
+              className="bottom-nav__item"
+              href={PUBLIK_BOT_URL}
+              onClick={openPublikBot}
+              aria-label="Открыть бота Публик"
+              title="Открыть бота Публик"
+            >
+              <span className="bottom-nav__icon" aria-hidden>
+                <BottomNavIcon name="publications" />
+              </span>
+              <span className="bottom-nav__label">Публик</span>
+            </a>
+          )}
         </nav>
       ) : null}
     </div>

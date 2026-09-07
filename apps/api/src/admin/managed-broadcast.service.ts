@@ -13,6 +13,7 @@ import {
 } from './admin-managed-broadcast-runtime';
 import type { ManagedBroadcastPublicationVerificationBudget } from './admin-managed-broadcast-publication-verification';
 import { throwLegacyPublicationWritesDisabled } from './legacy-publication-write-freeze';
+import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 
 type AdminReadBypassOptions = {
   skipAdminCheck?: boolean;
@@ -190,13 +191,16 @@ export class ManagedBroadcastService {
     throwLegacyPublicationWritesDisabled();
   }
 
-  processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
-    return this.runtime.processDueManagedBroadcasts(reason);
+  processDueManagedBroadcasts(_reason: 'startup' | 'scheduled'): Promise<void> {
+    return Promise.resolve();
   }
 
   processDueImmediatePublicationBroadcasts(
     verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
   ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    if (!roleRunsPublisher(getAppRole())) {
+      return Promise.resolve(verificationBudget ?? { remaining: 0 });
+    }
     return verificationBudget
       ? this.runtime.processDueImmediatePublicationBroadcasts(verificationBudget)
       : this.runtime.processDueImmediatePublicationBroadcasts();
@@ -207,6 +211,9 @@ export class ManagedBroadcastService {
     occurrenceId?: string,
     verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
   ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    if (!roleRunsPublisher(getAppRole())) {
+      return Promise.resolve(verificationBudget ?? { remaining: 0 });
+    }
     return verificationBudget
       ? this.runtime.processTargetedImmediatePublicationBroadcasts(
           publicationId,
@@ -221,6 +228,9 @@ export class ManagedBroadcastService {
     occurrenceId?: string,
     verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
   ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    if (!roleRunsPublisher(getAppRole())) {
+      return Promise.resolve(verificationBudget ?? { remaining: 0 });
+    }
     return verificationBudget
       ? this.runtime.processTargetedDeadlinePublicationBroadcasts(
           publicationId,
@@ -234,6 +244,9 @@ export class ManagedBroadcastService {
     limit?: number,
     verificationBudget?: ManagedBroadcastPublicationVerificationBudget,
   ): Promise<ManagedBroadcastPublicationVerificationBudget> {
+    if (!roleRunsPublisher(getAppRole())) {
+      return Promise.resolve(verificationBudget ?? { remaining: 0 });
+    }
     return verificationBudget
       ? this.runtime.processDueDeadlinePublicationBroadcasts(limit, verificationBudget)
       : this.runtime.processDueDeadlinePublicationBroadcasts(limit);

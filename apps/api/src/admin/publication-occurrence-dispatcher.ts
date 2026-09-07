@@ -89,6 +89,9 @@ export async function dispatchScheduledPublicationOccurrences(
   scheduleModes?: PublicationScheduleMode[],
   scope: PublicationOccurrenceDispatchScope = {},
 ): Promise<void> {
+  if (scope.dispatchProfile && scope.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1) {
+    return;
+  }
   const now = new Date();
   const horizon = new Date(now.getTime() + PUBLICATION_EXECUTION_HORIZON_MS);
   const blockedRetryBefore = context.publisherRouting.blockedRetryBefore(now);
@@ -96,13 +99,13 @@ export async function dispatchScheduledPublicationOccurrences(
     where: {
       ...(scope.publicationId ? { publicationId: scope.publicationId } : {}),
       ...(scope.occurrenceId ? { id: scope.occurrenceId } : {}),
-      ...(scope.dispatchProfile ? { dispatchProfile: scope.dispatchProfile } : {}),
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       status: PublicationOccurrenceStatus.SCHEDULED,
       scheduledAt: { lte: horizon, ...(scope.notBefore ? { gte: scope.notBefore } : {}) },
       publication: {
         is: {
           lifecycle: PublicationLifecycle.ACTIVE,
-          ...(scope.dispatchProfile ? { dispatchProfile: scope.dispatchProfile } : {}),
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         },
       },
       schedule: {

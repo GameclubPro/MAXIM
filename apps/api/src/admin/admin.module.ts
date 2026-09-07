@@ -21,8 +21,6 @@ import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.que
 import { AdminSuggestionDeliveryRecoveryService } from './admin-suggestion-delivery-recovery.service';
 import { AdminSuperBanProcessor } from './admin-super-ban.processor';
 import { ADMIN_SUPER_BAN_QUEUE } from './admin-super-ban.queue';
-import { AdminAutopostController } from './admin-autopost.controller';
-import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
 import { AdminGiveawayController } from './admin-giveaway.controller';
 import { AdminManualModerationController } from './admin-manual-moderation.controller';
@@ -37,9 +35,7 @@ import { ChannelDialogService } from './channel-dialog.service';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { CHANNEL_DIALOG_LEGACY_PORT } from './channel-dialog-legacy.port';
 import { ManualModerationService } from './manual-moderation.service';
-import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
-import { ManagedAutopostRunnerService } from './managed-autopost-runner.service';
 import { ManagedAutopostService } from './managed-autopost.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
@@ -51,7 +47,6 @@ import { ManagedPollService } from './managed-poll.service';
 import { ManagedPollRunnerService } from './managed-poll-runner.service';
 import { PublicationController } from './publication.controller';
 import { PublicationContentService } from './publication-content.service';
-import { PublicationLegacyService } from './publication-legacy.service';
 import { PublicationMetricsInterceptor } from './publication-metrics.interceptor';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationPublisherTargetRefreshService } from './publication-publisher-target-refresh.service';
@@ -128,8 +123,6 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
   controllers: [
     AdminManagedEntitiesController,
     AdminSettingsController,
-    AdminAutopostController,
-    AdminBroadcastController,
     PublisherVkParsingController,
     AdminDialogController,
     AdminGiveawayController,
@@ -160,7 +153,6 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ManualModerationService,
     GlobalSpammerIntelligenceService,
     ManagedAutopostService,
-    ManagedAutopostRunnerService,
     {
       provide: ManagedBroadcastService,
       useFactory: (adminService: AdminService) => new ManagedBroadcastService(adminService),
@@ -169,12 +161,10 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,
-    ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedPollService,
     ManagedPollRunnerService,
     PublicationContentService,
-    PublicationLegacyService,
     PublicationMetricsInterceptor,
     PublicationPresenterService,
     PublicationPublisherTargetRefreshService,

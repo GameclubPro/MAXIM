@@ -140,7 +140,7 @@ export function PublisherPolicyCard({
       aria-busy={policyQuery.isLoading || isMutating || policyQuery.isFetching}
     >
       <strong className="publisher-policy-card__title">Публик</strong>
-      <label className="settings-native-switch publisher-policy-card__switch">
+      <label className="publisher-module-switch publisher-policy-card__switch">
         <input
           type="checkbox"
           checked={policy?.publikEnabled ?? false}
@@ -148,8 +148,8 @@ export function PublisherPolicyCard({
           aria-label={switchLabel}
           onChange={(event) => mutation.mutate(event.target.checked)}
         />
-        <span className="toggle-switch" aria-hidden>
-          <span className="toggle-switch__thumb" />
+        <span className="publisher-module-switch__track" aria-hidden>
+          <span className="publisher-module-switch__thumb" />
         </span>
       </label>
 

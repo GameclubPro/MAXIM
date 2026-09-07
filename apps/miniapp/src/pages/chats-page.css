@@ -1,4 +1,14 @@
 @layer pages {
+  .chats-home__publik {
+    min-height: 132px;
+  }
+
+  @media (min-width: 600px) {
+    .chats-home__publik {
+      min-height: 80px;
+    }
+  }
+
   .chat-card__avatar {
     width: 44px;
     height: 44px;

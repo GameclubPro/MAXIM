@@ -249,13 +249,12 @@ export class PublisherController {
   }
 
   @Get('entities/:entityType/:entityId/policy')
-  @MiniappProfiles('moderation')
   getPolicy(
     @Param('entityType') entityType: string,
     @Param('entityId') entityId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.policyService.getPolicyForModeration(
+    return this.policyService.getPolicyForPublisher(
       this.parseEntityType(entityType),
       entityId,
       user,
@@ -263,7 +262,6 @@ export class PublisherController {
   }
 
   @Patch('entities/:entityType/:entityId/policy')
-  @MiniappProfiles('moderation')
   updatePolicy(
     @Param('entityType') entityType: string,
     @Param('entityId') entityId: string,

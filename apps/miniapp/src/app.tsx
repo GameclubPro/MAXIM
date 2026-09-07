@@ -39,6 +39,7 @@ import {
 } from './lib/max-bridge';
 import { PUBLIC_ROUTER_BASENAME } from './lib/public-config';
 import { isPublicLegalPathnameFromWindow } from './lib/public-legal-route';
+import { isRetiredPublishingSettingsRoute } from './lib/retired-publishing-route';
 import {
   LazyChannelDialogPage,
   LazyChannelSuggestDialogPage,
@@ -82,9 +83,14 @@ const LazyAppStartupState = lazy(async () => {
   return { default: module.AppStartupState };
 });
 
-function LegacyAutopostsRedirect() {
+const LazyPublikHandoff = lazy(async () => {
+  const module = await import('./components/publik-handoff');
+  return { default: module.PublikHandoff };
+});
+
+function MajorSettingsRoute({ children }: { children: ReactNode }) {
   const location = useLocation();
-  return <Navigate to={`/publications${location.search}`} replace />;
+  return isRetiredPublishingSettingsRoute(location.search) ? <LazyPublikHandoff /> : children;
 }
 
 function ProfileHomeRedirect({ homeRoute }: Pick<Me, 'homeRoute'>) {
@@ -523,12 +529,7 @@ function AppRoutes({
             />
           )}
           {moderationProfile ? (
-            <Route
-              path="/publications"
-              element={
-                <LazyPublicationsPage api={apiClient} profile="moderation" userId={me.userId} />
-              }
-            />
+            <Route path="/publications" element={<LazyPublikHandoff />} />
           ) : (
             <Route
               path="/publications"
@@ -537,9 +538,7 @@ function AppRoutes({
               }
             />
           )}
-          {moderationProfile ? (
-            <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
-          ) : null}
+          {moderationProfile ? <Route path="/autoposts" element={<LazyPublikHandoff />} /> : null}
           {!moderationProfile ? (
             <Route
               path="/publisher/:entityType/:entityId"
@@ -583,10 +582,21 @@ function AppRoutes({
               />
             }
           >
-            <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
+            <Route
+              path="/chat/:chatId/settings"
+              element={
+                <MajorSettingsRoute>
+                  <LazySettingsPage api={apiClient} />
+                </MajorSettingsRoute>
+              }
+            />
             <Route
               path="/channel/:chatId/settings"
-              element={<LazyChannelSettingsPage api={apiClient} />}
+              element={
+                <MajorSettingsRoute>
+                  <LazyChannelSettingsPage api={apiClient} />
+                </MajorSettingsRoute>
+              }
             />
             <Route
               path="/channel/:chatId/stats"

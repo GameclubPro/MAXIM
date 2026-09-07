@@ -76,12 +76,15 @@ test('entity cards expose settings, favorite, statistics and category edit targe
 test('moderation and Publik navigation keep profile-aware publishing labels', () => {
   const labels = shellSource.match(/className="bottom-nav__label"/gu) ?? [];
 
-  assert.equal(labels.length, 3);
+  assert.equal(labels.length, 4);
   assert.match(shellSource, /buildManagedEntitiesRoute\('chat'\)/u);
   assert.match(shellSource, /buildManagedEntitiesRoute\('channel'\)/u);
   assert.match(shellSource, />Чаты</u);
   assert.match(shellSource, />Каналы</u);
-  assert.match(shellSource, /profile === 'publisher' \? 'Посты' : 'Расписания'/u);
+  assert.match(shellSource, /href=\{PUBLIK_BOT_URL\}/u);
+  assert.match(shellSource, /onClick=\{openPublikBot\}/u);
+  assert.match(shellSource, />Публик</u);
+  assert.doesNotMatch(shellSource, /bottom-nav__label[^\n]*Расписания/u);
   assert.match(shellSource, /selectedRootEntityType === 'chat'/u);
   assert.match(shellSource, /selectedRootEntityType === 'channel'/u);
   assert.doesNotMatch(chatsPageSource, /chats-command__tabs/u);

@@ -60,7 +60,6 @@ import {
   type BroadcastHistoryFilter,
   type BroadcastWorkspaceView,
 } from '../components/broadcast-studio-workspace';
-import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import { GlassCard } from '../components/ui/glass-card';
@@ -160,11 +159,7 @@ import {
   resolveLegacyBroadcastEditorTarget,
   resolveLegacyPublicationReturnPath,
 } from '../features/publications/legacy-autoposts';
-import {
-  BroadcastPublishBar,
-  PublisherPolicyCard,
-  SettingsLoadErrorState,
-} from './settings/settings-lazy-surfaces';
+import { BroadcastPublishBar, SettingsLoadErrorState } from './settings/settings-lazy-surfaces';
 
 type ChannelRouteState = {
   chatTitle: string;
@@ -1113,7 +1108,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     queryKey: queryKeys.channelBroadcastComposerClientReset(chatId),
     queryFn: ({ signal }) =>
       getChannelBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
-    enabled: Boolean(chatId),
+    enabled: false,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
   });
@@ -1139,10 +1134,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           : focusSection === 'postSuggestions'
             ? { postSuggestions: true }
             : focusSection === 'polls'
-                ? { polls: true }
-                : focusSection === 'giveaway'
-                  ? { giveaway: true }
-                  : { broadcast: true }),
+              ? { polls: true }
+              : focusSection === 'giveaway'
+                ? { giveaway: true }
+                : { broadcast: true }),
     }));
   }, [focusSection]);
 
@@ -1162,14 +1157,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       getChannelManagedBroadcastCalendar(api, chatId ?? '', {
         targetChatIds: chatId ? [chatId] : [],
       }),
-    enabled: Boolean(chatId) && expandedSections.broadcast,
+    enabled: legacyBroadcastWorkspaceRequested && Boolean(chatId) && expandedSections.broadcast,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
   const managedAutopostRulesQuery = useQuery({
     queryKey: queryKeys.channelManagedAutopostRules(chatId),
     queryFn: () => getChannelManagedAutopostRules(api, chatId ?? ''),
-    enabled: Boolean(chatId) && expandedSections.broadcast,
+    enabled: legacyBroadcastWorkspaceRequested && Boolean(chatId) && expandedSections.broadcast,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
@@ -3298,11 +3293,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <LazySettingsOverviewSearch
           key={chatId}
           containerId="channel-settings-overview"
-          entrySelector=".channel-settings-card, .publisher-policy-card"
+          entrySelector=".channel-settings-card"
         />
       </Suspense>
-
-      {chatId ? <PublisherPolicyCard api={api} entityType="channel" entityId={chatId} /> : null}
 
       <GlassCard
         className={cn(
@@ -3402,7 +3395,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         postSignatureTextError && 'field--error',
                       )}
                     >
-                      <span>{postSignature.presentation === 'button' ? 'Текст кнопки' : 'Текст ссылки'}</span>
+                      <span>
+                        {postSignature.presentation === 'button' ? 'Текст кнопки' : 'Текст ссылки'}
+                      </span>
                       <input
                         id="channel-post-signature-text"
                         type="text"
@@ -3505,7 +3500,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           type="button"
                           className="channel-post-signature__message-button"
                           disabled={!postSignature.enabled || !effectivePostSignatureUrl}
-                          onClick={() => effectivePostSignatureUrl && openLink(effectivePostSignatureUrl)}
+                          onClick={() =>
+                            effectivePostSignatureUrl && openLink(effectivePostSignatureUrl)
+                          }
                         >
                           {postSignatureLabel}
                         </button>
@@ -3801,21 +3798,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </div>
         </SettingsDrilldownPanel>
       </GlassCard>
-
-      {!legacyBroadcastWorkspaceRequested ? (
-        <GlassCard
-          className="channel-settings-card settings-home-entry settings-home-entry--priority"
-          elevated
-          padding="sm"
-          aria-label="Расписания"
-        >
-          <PublicationWorkspaceHandoff
-            entityType="channel"
-            entityId={chatId}
-            variant="settings-tile"
-          />
-        </GlassCard>
-      ) : null}
 
       {legacyBroadcastWorkspaceRequested ? (
         <GlassCard className="channel-settings-card" elevated>

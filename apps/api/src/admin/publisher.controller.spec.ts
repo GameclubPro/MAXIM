@@ -124,16 +124,16 @@ describe('PublisherController', () => {
     ).toBe(202);
   });
 
-  it('keeps the catalog publisher-only and exposes only exact policy handlers to moderation', () => {
+  it('keeps catalog and policy handlers exclusively in Publisher', () => {
     expect(Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublisherController)).toEqual([
       'publisher',
     ]);
     expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublisherController.prototype.updatePolicy),
-    ).toEqual(['moderation']);
+    ).toBeUndefined();
     expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublisherController.prototype.getPolicy),
-    ).toEqual(['moderation']);
+    ).toBeUndefined();
     expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublisherController.prototype.updateModules),
     ).toBeUndefined();
@@ -157,7 +157,7 @@ describe('PublisherController', () => {
     const policyService = {
       listEntities: jest.fn().mockResolvedValue({ items: [] }),
       getEntity: jest.fn().mockResolvedValue({ id: 'channel-1', policy }),
-      getPolicyForModeration: jest.fn().mockResolvedValue(policy),
+      getPolicyForPublisher: jest.fn().mockResolvedValue(policy),
       updatePolicy: jest.fn().mockResolvedValue(policy),
       updateModuleSettings: jest.fn().mockResolvedValue(moduleSettings),
       resolveEntities: jest.fn().mockResolvedValue({ items: [] }),
@@ -240,8 +240,8 @@ describe('PublisherController', () => {
     expect(entityRefreshService.requestBulkRefresh).toHaveBeenCalledWith(user);
     expect(policyService.getEntity).toHaveBeenCalledTimes(1);
     expect(policyService.getEntity).toHaveBeenCalledWith('channel', 'channel-1', user);
-    expect(policyService.getPolicyForModeration).toHaveBeenCalledTimes(1);
-    expect(policyService.getPolicyForModeration).toHaveBeenCalledWith('channel', 'channel-1', user);
+    expect(policyService.getPolicyForPublisher).toHaveBeenCalledTimes(1);
+    expect(policyService.getPolicyForPublisher).toHaveBeenCalledWith('channel', 'channel-1', user);
     expect(policyService.updatePolicy).toHaveBeenCalledWith('chat', 'chat-1', user, body);
     expect(policyService.updateModuleSettings).toHaveBeenCalledWith(
       'channel',

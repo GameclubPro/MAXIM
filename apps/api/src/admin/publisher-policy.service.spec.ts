@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import {
   PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
   decodePublisherEntitiesCursor,
@@ -289,6 +289,46 @@ function createPolicyMutationFixture(
     callback(tx),
   );
   const prisma = {
+    managedEntityAccessEdge: {
+      findMany: jest
+        .fn()
+        .mockImplementation(
+          (request: { where: { chatId: string; entityType: ChatEntityType } }) => {
+            const entityType = options.storedEntityType ?? ChatEntityType.CHANNEL;
+            return Promise.resolve(
+              request.where.entityType !== entityType
+                ? []
+                : [
+                    {
+                      chatId: request.where.chatId,
+                      botId: 'publik-bot',
+                      entityType,
+                      chat: {
+                        id: request.where.chatId,
+                        entityType,
+                        publicationPolicy:
+                          options.publicationPolicy === undefined
+                            ? null
+                            : { ...storedPolicy, ...options.publicationPolicy },
+                        publisherSettings: existingPublisherSettings,
+                        publisherBinding: createConnectedPublisherBinding(),
+                      },
+                    },
+                  ],
+            );
+          },
+        ),
+    },
+    managedBotChatCatalog: {
+      findFirst: jest
+        .fn()
+        .mockResolvedValue({
+          entityType: options.storedEntityType ?? ChatEntityType.CHANNEL,
+          title: 'Публик',
+          link: null,
+          avatarUrl: null,
+        }),
+    },
     chat: {
       findUnique: jest.fn().mockResolvedValue({
         entityType: options.storedEntityType ?? ChatEntityType.CHANNEL,
@@ -391,10 +431,6 @@ describe('PublisherPolicyService', () => {
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
           botId: 'publik-bot',
           chat: {
-            OR: [
-              { publicationPolicy: { is: null } },
-              { publicationPolicy: { is: { publikEnabled: true } } },
-            ],
             publisherBinding: {
               is: {
                 publisherBotId: 'publik-bot',
@@ -500,7 +536,7 @@ describe('PublisherPolicyService', () => {
 
     const listed = await fixture.service.listEntities(user);
     expect(listed.items.map((entity) => entity.id).sort()).toEqual(
-      [confirmedAdmin.id, confirmedMember.id, webhookObserved.id].sort(),
+      [confirmedAdmin.id, confirmedMember.id, webhookObserved.id, disabled.id].sort(),
     );
 
     await expect(
@@ -518,9 +554,10 @@ describe('PublisherPolicyService', () => {
     await expect(fixture.service.getEntity('chat', bootstrapOnly.id, user)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    await expect(fixture.service.getEntity('chat', disabled.id, user)).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(fixture.service.getEntity('chat', disabled.id, user)).resolves.toMatchObject({
+      id: disabled.id,
+      policy: { publikEnabled: false },
+    });
   });
 
   it('selects only bounded user-authorized refresh candidates with Publik evidence', async () => {
@@ -1603,14 +1640,15 @@ describe('PublisherPolicyService', () => {
     });
   });
 
-  it('does not start a Prisma mutation when live caller admin access is denied', async () => {
-    const denied = new ForbiddenException('Caller is not a chat administrator');
-    const assertManagedEntityAdminAccess = jest.fn().mockRejectedValue(denied);
+  it('rejects a policy mutation without exact Publisher access even if Major access exists', async () => {
+    const assertManagedEntityAdminAccess = jest.fn().mockResolvedValue(undefined);
+    const findMany = jest.fn().mockResolvedValue([]);
     const findUnique = jest.fn();
     const transaction = jest.fn();
     const service = new PublisherPolicyService(
       {
         chat: { findUnique },
+        managedEntityAccessEdge: { findMany },
         $transaction: transaction,
       } as never,
       createBotRegistry() as never,
@@ -1623,8 +1661,17 @@ describe('PublisherPolicyService', () => {
         expectedRevision: 0,
         publikEnabled: false,
       }),
-    ).rejects.toBe(denied);
-    expect(assertManagedEntityAdminAccess).toHaveBeenCalledWith('chat-foreign', user, 'chat');
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-foreign',
+          botId: 'publik-bot',
+          userId: user.userId,
+        }),
+      }),
+    );
     expect(findUnique).not.toHaveBeenCalled();
     expect(transaction).not.toHaveBeenCalled();
   });
@@ -1845,7 +1892,7 @@ describe('PublisherPolicyService', () => {
     expect(fixture.transaction).not.toHaveBeenCalled();
   });
 
-  it('keeps Major ownership checks for the primary Publik toggle', async () => {
+  it('uses exact Publisher access for the Publik toggle without Major ownership', async () => {
     const fixture = createPolicyMutationFixture({ publicationPolicy: { revision: 1 } });
 
     await fixture.service.updatePolicy('channel', 'channel-1', user, {
@@ -1853,10 +1900,15 @@ describe('PublisherPolicyService', () => {
       publikEnabled: false,
     });
 
-    expect(fixture.managedEntities.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
-      'channel-1',
-      user,
-      'channel',
+    expect(fixture.managedEntities.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: user.userId,
+          botId: 'publik-bot',
+          state: ManagedEntityAccessState.GRANTED,
+        }),
+      }),
     );
   });
 
@@ -2167,28 +2219,30 @@ describe('PublisherPolicyService', () => {
     expect(fixture.transaction).not.toHaveBeenCalled();
   });
 
-  it('reads the Major toggle without loading Publisher catalog or readiness state', async () => {
+  it('reads the Publik toggle through its exact catalog and access edge without probing readiness', async () => {
     const fixture = createPolicyMutationFixture({
       publicationPolicy: { revision: 1 },
     });
 
     await expect(
-      fixture.service.getPolicyForModeration('channel', 'channel-1', user),
+      fixture.service.getPolicyForPublisher('channel', 'channel-1', user),
     ).resolves.toEqual({
       publikEnabled: true,
       revision: 1,
       updatedAt: '2026-08-26T10:00:00.000Z',
     });
 
-    expect(fixture.managedEntities.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
-      'channel-1',
-      user,
-      'channel',
+    expect(fixture.managedEntities.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: user.userId,
+          botId: 'publik-bot',
+          state: ManagedEntityAccessState.GRANTED,
+        }),
+      }),
     );
-    expect(fixture.prisma.chat.findUnique).toHaveBeenCalledWith({
-      where: { id: 'channel-1' },
-      select: { entityType: true, publicationPolicy: true },
-    });
+    expect(fixture.prisma.chat.findUnique).not.toHaveBeenCalled();
     expect(fixture.readiness.isRuntimeAvailable).not.toHaveBeenCalled();
     expect(fixture.readiness.resolveReadiness).not.toHaveBeenCalled();
   });
@@ -2218,10 +2272,15 @@ describe('PublisherPolicyService', () => {
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
-    expect(fixture.managedEntities.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
-      'channel-1',
-      user,
-      'chat',
+    expect(fixture.managedEntities.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: user.userId,
+          botId: 'publik-bot',
+          state: ManagedEntityAccessState.GRANTED,
+        }),
+      }),
     );
     expect(fixture.transaction).not.toHaveBeenCalled();
   });

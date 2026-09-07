@@ -77,7 +77,6 @@ import {
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
-import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { DateField } from '../components/ui/date-field';
 import { GlassCard } from '../components/ui/glass-card';
@@ -363,7 +362,6 @@ import {
 import {
   AdminContactToggle,
   BroadcastPublishBar,
-  PublisherPolicyCardEntry,
   SettingsLoadErrorState,
   SettingsPollsSection,
   SettingsStorefrontSection,
@@ -609,7 +607,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const broadcastComposerClientResetQuery = useQuery({
     queryKey: ['broadcast-composer-client-reset', chatId],
     queryFn: ({ signal }) => getBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
-    enabled: Boolean(chatId),
+    enabled: false,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
   });
@@ -4655,7 +4653,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         targetMode: mailingAudiencePayload.targetMode,
         targetChatIds: mailingCalendarTargetChatIds,
       }),
-    enabled: Boolean(chatId) && expandedSections.mailing,
+    enabled: legacyBroadcastWorkspaceRequested && Boolean(chatId) && expandedSections.mailing,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
@@ -4674,7 +4672,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const managedAutopostRulesQuery = useQuery({
     queryKey: ['managed-autopost-rules', chatId],
     queryFn: () => getManagedAutopostRules(api, chatId ?? ''),
-    enabled: Boolean(chatId) && expandedSections.mailing,
+    enabled: legacyBroadcastWorkspaceRequested && Boolean(chatId) && expandedSections.mailing,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
@@ -5479,9 +5477,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <h2 className="settings-home-group-head__title">Контент</h2>
             </div>
 
-            {chatId ? (
-              <PublisherPolicyCardEntry api={api} entityType="chat" entityId={chatId} />
-            ) : null}
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
               style={{ order: 1 }}
@@ -7079,20 +7074,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               updateDraftButtonGroup={updateDraftButtonGroup}
             />
 
-            {!legacyBroadcastWorkspaceRequested ? (
-              <GlassCard
-                className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-                style={{ animationDelay: '315ms', order: 5 }}
-                aria-label="Расписания"
-                padding="sm"
-              >
-                <PublicationWorkspaceHandoff
-                  entityType="chat"
-                  entityId={chatId}
-                  variant="settings-tile"
-                />
-              </GlassCard>
-            ) : null}
             {legacyBroadcastWorkspaceRequested ? (
               <GlassCard
                 className="settings-section settings-home-entry settings-home-entry--priority stagger-in"

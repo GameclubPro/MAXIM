@@ -31,7 +31,7 @@ const broadcastStudioCss = readFileSync(
   'utf8',
 );
 
-test('Major exposes exactly one compact Publik toggle without secondary UI', () => {
+test('Publik owns one compact policy switch without secondary rows', () => {
   assert.equal(cardSource.match(/type="checkbox"/gu)?.length, 1);
   assert.equal(cardSource.match(/>Публик<\/strong>/gu)?.length, 1);
   assert.match(cardSource, /mutationFn: \(publikEnabled: boolean\)/u);
@@ -62,30 +62,21 @@ test('Publik permission preview keeps a semantic surface in dark settings', () =
   );
 });
 
-test('Publik policy sits after settings search and participates in filtering', () => {
-  const chatSearchIndex = chatSettingsSource.indexOf('<LazySettingsOverviewSearch');
-  const chatCardIndex = chatSettingsSource.indexOf('<PublisherPolicyCardEntry');
-  assert.ok(chatSearchIndex >= 0 && chatCardIndex > chatSearchIndex);
-  assert.match(
-    chatSettingsLazySurfacesSource,
-    /publisher-policy-card-entry settings-home-entry stagger-in/u,
+test('Publik policy belongs to its entity module page, never Major settings', () => {
+  const modules = readFileSync(
+    new URL('../src/pages/publisher-entity-modules-page.tsx', import.meta.url),
+    'utf8',
   );
-
-  const channelSearchIndex = channelSettingsSource.indexOf('<LazySettingsOverviewSearch');
-  const channelCardIndex = channelSettingsSource.indexOf(
-    '<PublisherPolicyCard api={api} entityType="channel"',
-  );
-  assert.ok(channelSearchIndex >= 0 && channelCardIndex > channelSearchIndex);
-  assert.match(
-    channelSettingsSource,
-    /entrySelector="\.channel-settings-card, \.publisher-policy-card"/u,
-  );
+  assert.ok(modules.includes('<PublisherPolicyCard api={api}'));
+  assert.doesNotMatch(chatSettingsSource + channelSettingsSource, /PublisherPolicyCard/u);
+  assert.doesNotMatch(chatSettingsLazySurfacesSource, /PublisherPolicyCard/u);
 });
 
-test('Major home and entity settings contain no second Publik surface', () => {
-  assert.doesNotMatch(chatsPageSource, /PublisherPolicy|>Публик</u);
-  assert.equal(chatSettingsSource.match(/<PublisherPolicyCardEntry/gu)?.length, 1);
-  assert.equal(channelSettingsSource.match(/<PublisherPolicyCard api=/gu)?.length, 1);
+test('Major offers only a bot handoff, not Publisher controls', () => {
+  assert.doesNotMatch(chatsPageSource, /PublisherPolicy/u);
+  assert.equal(chatsPageSource.match(/<LazyPublikHandoff \/>/gu)?.length, 1);
+  assert.doesNotMatch(chatSettingsSource, /<PublisherPolicyCardEntry/u);
+  assert.doesNotMatch(channelSettingsSource, /<PublisherPolicyCard api=/u);
   assert.doesNotMatch(
     chatSettingsSource,
     /MAJOR_CHAT_COMMENTS_MODULE_VISIBLE|SettingsCommentsSection/u,

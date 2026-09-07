@@ -664,7 +664,7 @@ describe('AdminSettingsService chat rules', () => {
       }),
     ]);
     expect(result.domains).toHaveLength(1);
-    expect(result.managedBroadcasts).toHaveLength(1);
+    expect(result.managedBroadcasts).toEqual([]);
     expect(result.botSpeechPreviewProfile).toEqual({
       persona: 'female',
       characterName: 'Майор Максимова',
@@ -687,10 +687,7 @@ describe('AdminSettingsService chat rules', () => {
     expect(manualModerationService.getDomainAllowlistDetails).toHaveBeenCalledWith('chat-1', user, {
       skipAdminCheck: true,
     });
-    expect(managedBroadcastService.listManagedBroadcasts).toHaveBeenCalledWith('chat-1', user, {
-      skipAdminCheck: true,
-      skipEntityCheck: true,
-    });
+    expect(managedBroadcastService.listManagedBroadcasts).not.toHaveBeenCalled();
     expect(
       legacyAdminService.resolveRequiredSubscriptionChannelHeadersForSettings,
     ).toHaveBeenCalledWith(['channel-1']);
@@ -1508,7 +1505,7 @@ describe('AdminSettingsService chat rules', () => {
       url: '',
     });
     expect(result.header).toEqual(channelHeader);
-    expect(result.managedBroadcasts).toHaveLength(1);
+    expect(result.managedBroadcasts).toEqual([]);
     expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'channel-1',
       'admin-1',
@@ -1523,14 +1520,7 @@ describe('AdminSettingsService chat rules', () => {
       skipAdminCheck: true,
       skipEntityCheck: true,
     });
-    expect(managedBroadcastService.listChannelManagedBroadcasts).toHaveBeenCalledWith(
-      'channel-1',
-      user,
-      {
-        skipAdminCheck: true,
-        skipEntityCheck: true,
-      },
-    );
+    expect(managedBroadcastService.listChannelManagedBroadcasts).not.toHaveBeenCalled();
   });
 
   it('checks channel access and delegates independent post signature reads and updates', async () => {

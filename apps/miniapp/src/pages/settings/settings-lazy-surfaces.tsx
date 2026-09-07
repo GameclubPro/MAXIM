@@ -8,11 +8,6 @@ const LazyAdminContactToggle = lazy(() =>
   })),
 );
 const LazyBroadcastPublishBar = lazy(() => import('../../components/broadcast-publish-bar'));
-const LazyPublisherPolicyCard = lazy(() =>
-  import('../../components/publisher-policy-card').then((module) => ({
-    default: module.PublisherPolicyCard,
-  })),
-);
 const LazySettingsLoadErrorState = lazy(() =>
   import('../../components/settings-load-error-state').then((module) => ({
     default: module.SettingsLoadErrorState,
@@ -42,25 +37,6 @@ export function BroadcastPublishBar(props: ComponentProps<typeof LazyBroadcastPu
     <Suspense fallback={null}>
       <LazyBroadcastPublishBar {...props} />
     </Suspense>
-  );
-}
-
-export function PublisherPolicyCard(props: ComponentProps<typeof LazyPublisherPolicyCard>) {
-  return (
-    <Suspense fallback={null}>
-      <LazyPublisherPolicyCard {...props} />
-    </Suspense>
-  );
-}
-
-export function PublisherPolicyCardEntry(props: ComponentProps<typeof LazyPublisherPolicyCard>) {
-  return (
-    <div
-      className="publisher-policy-card-entry settings-home-entry stagger-in"
-      style={{ animationDelay: '64ms', order: 23 }}
-    >
-      <PublisherPolicyCard {...props} />
-    </div>
   );
 }
 

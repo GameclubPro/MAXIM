@@ -13,7 +13,6 @@ import {
   USER_AGREEMENT_SHORT_NOTICE,
   USER_AGREEMENT_START_NOTICE,
 } from '../common/user-agreement-notice';
-import { LEGACY_PUBLICATION_WRITES_DISABLED_CODE } from '../admin/legacy-publication-write-freeze';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
@@ -1179,11 +1178,6 @@ function getLastButtons(maxClient: { sendMessage: jest.Mock; answerCallback: jes
   return (callbackButtons ?? []) as Array<Array<unknown>>;
 }
 
-async function flushBackgroundBroadcast(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await new Promise<void>((resolve) => setImmediate(resolve));
-}
-
 function getLastCustomMessagePayload(maxClient: {
   sendCustomMessageImmediateWithResolvedLink: jest.Mock;
 }) {
@@ -1266,17 +1260,15 @@ describe('PrivateControlService', () => {
 
     expect(getLastUiText(maxClient)).toContain('**Майор Максимов**');
     expect(getLastUiText(maxClient)).toContain(
-      'Все настройки, модерация, публикации и работа с каналами доступны в приложении.',
+      'Настройки модерации чатов и каналов доступны в приложении.',
     );
-    expect(getLastUiText(maxClient)).toContain(
-      'Я готов быстро принять текст, фото или видео для публикации.',
-    );
+    expect(getLastUiText(maxClient)).toContain('Посты и автопостинг теперь в боте Публик.');
     expect(
       getLastButtons(maxClient)
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
-    ).toEqual(['📱 Приложение', '🆘 Поддержка', 'Сообщить о проблеме']);
-    expect(getLastButtons(maxClient).map((row) => row.length)).toEqual([1, 1, 1]);
+    ).toEqual(['📱 Приложение', '🆘 Поддержка', 'Сообщить о проблеме', 'Открыть бота Публик']);
+    expect(getLastButtons(maxClient).map((row) => row.length)).toEqual([1, 1, 1, 1]);
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 
@@ -1360,9 +1352,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('привет'));
 
     expect(getLastUiText(maxClient)).toContain('**Майор Максимова**');
-    expect(getLastUiText(maxClient)).toContain(
-      'Я готова быстро принять текст, фото или видео для публикации.',
-    );
+    expect(getLastUiText(maxClient)).toContain('Посты и автопостинг теперь в боте Публик.');
   });
 
   it('shows the one-time launcher intro only on the first plain bot start', async () => {
@@ -1389,7 +1379,7 @@ describe('PrivateControlService', () => {
 
     expect(getLastSentText(maxClient)).toContain('**Майор Максимов**');
     expect(getLastSentText(maxClient)).toContain(
-      'Все настройки, модерация, публикации и работа с каналами доступны в приложении.',
+      'Настройки модерации чатов и каналов доступны в приложении.',
     );
     expect(getLastSentText(maxClient)).toContain(USER_AGREEMENT_SHORT_NOTICE);
     expect(getLastSentText(maxClient)).not.toContain('Техподдержка ниже.');
@@ -1509,7 +1499,7 @@ describe('PrivateControlService', () => {
 
     expect(getLastUiText(maxClient)).toContain('**Майор Максимов**');
     const buttons = getLastButtons(maxClient).flat();
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(4);
     expect(buttons[0]).toEqual(
       expect.objectContaining({
         text: '📱 Приложение',
@@ -1563,7 +1553,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('меню'));
 
     expect(getLastUiText(maxClient)).toContain(
-      'Все настройки, модерация, публикации и работа с каналами доступны в приложении.',
+      'Настройки модерации чатов и каналов доступны в приложении.',
     );
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_refresh'));
@@ -1575,7 +1565,12 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toEqual(['📱 Приложение', '🆘 Поддержка', 'Сообщить о проблеме']);
+    expect(buttonTexts).toEqual([
+      '📱 Приложение',
+      '🆘 Поддержка',
+      'Сообщить о проблеме',
+      'Открыть бота Публик',
+    ]);
   });
 
   it('does not expose sticker-from-photo action in the private bot navigation', async () => {
@@ -2979,659 +2974,77 @@ describe('PrivateControlService', () => {
     expect(summary.join('\n')).not.toContain('Обсуж');
   });
 
-  it('sends a channel broadcast from private control and posts a success follow-up', async () => {
-    const { service, adminService, maxClient, channels } = createHarness();
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Новый пост для канала'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await flushBackgroundBroadcast();
-
-    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
-      channels[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: 'Новый пост для канала',
-        applyToAllChats: false,
-      }),
-      'private_bot',
-    );
-    expect(getLastEditedText(maxClient)).toContain('Автопостинг запускается.');
-    expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
-    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
-  });
-
-  it('uses the managed broadcast domain service when publishing from private control', async () => {
-    const managedBroadcastService = {
-      sendBroadcast: jest.fn().mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
-      sendChannelBroadcast: jest
-        .fn()
-        .mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
-    };
-    const { service, adminService, maxClient, chats } = createHarness({
-      managedBroadcastService,
-    });
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Новости для чата'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await flushBackgroundBroadcast();
-
-    expect(managedBroadcastService.sendBroadcast).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: 'Новости для чата',
-        applyToAllChats: false,
-      }),
-      'private_bot',
-    );
-    expect(adminService.sendBroadcast).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
-  });
-
-  it('fails closed with the legacy 410 and directs admins to Publications without fallback', async () => {
-    const { service, adminService, maxClient, chats } = createHarness({
-      managedBroadcastService: null,
-    });
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-    };
-
-    await expect(
-      (
-        service as unknown as {
-          sendBroadcastDraft(params: {
-            selectedChatId: string;
-            selectedEntityType: 'chat';
-            actor: typeof actor;
-            draft: ReturnType<typeof createDefaultPrivateControlSession>['broadcastDraft'];
-          }): Promise<unknown>;
-        }
-      ).sendBroadcastDraft({
-        selectedChatId: chats[0].id,
-        selectedEntityType: 'chat',
-        actor,
-        draft: createDefaultPrivateControlSession().broadcastDraft,
-      }),
-    ).rejects.toMatchObject({
-      status: 410,
-      response: expect.objectContaining({
-        code: LEGACY_PUBLICATION_WRITES_DISABLED_CODE,
-      }),
+  it.each([
+    'open_broadcast',
+    'broadcast_input_prompt|text',
+    'broadcast_input_prompt|photo',
+    'broadcast_send',
+    'broadcast_toggle|cycle_enabled',
+    'broadcast_view|advanced',
+    'broadcast_clear_content',
+    'broadcast_clear_timer',
+    'broadcast_clear_photo',
+  ])('redirects retired callback %s to Publik without publishing', async (action) => {
+    const { service, maxClient, adminService, managedBroadcastService } = createHarness();
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|' + action));
+    expect(getLastEditedText(maxClient)).toBe('Посты и автопостинг теперь в Публике.');
+    expect(getLastEditedButtons(maxClient).flat()).toContainEqual({
+      type: 'link',
+      text: 'Открыть бота Публик',
+      url: 'https://max.ru/se14088825_bot',
     });
     expect(adminService.sendBroadcast).not.toHaveBeenCalled();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Новая публикация'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await flushBackgroundBroadcast();
-
-    expect(adminService.sendBroadcast).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('«Публикации»');
-    expect(getLastSentText(maxClient)).not.toContain('Попробуйте ещё раз');
+    expect(adminService.sendChannelBroadcast).not.toHaveBeenCalled();
+    expect(managedBroadcastService!.sendBroadcast).not.toHaveBeenCalled();
+    expect(managedBroadcastService!.sendChannelBroadcast).not.toHaveBeenCalled();
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(maxClient.uploadVideo).not.toHaveBeenCalled();
   });
 
-  it('formats scheduled broadcast time in the broadcast timezone for private bot messages', async () => {
-    const { service, maxClient, channels } = createHarness({
-      adminService: {
-        sendChannelBroadcast: jest.fn().mockResolvedValue({
-          targetChats: 1,
-          sentChats: 0,
-          failedChats: 0,
-          nextSendAt: '2026-03-24T12:00:00.000Z',
-          scheduleTimezone: 'Asia/Yekaterinburg',
-          scheduledOccurrences: 1,
-        }),
-      },
-    });
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Пост по расписанию'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await flushBackgroundBroadcast();
-
-    expect(getLastEditedText(maxClient)).toContain('Автопостинг запускается.');
-    expect(getLastSentText(maxClient)).toContain(
-      '✅ Всё успешно. Автопостинг запланирован на 24.03.2026, 17:00.',
-    );
-  });
-
-  it('preserves incoming MAX text markup in markdown broadcast preview from private bot', async () => {
-    const { service, adminService, maxClient, channels } = createHarness();
-    const sourceText = 'Важный анонс\n\n  Второй абзац с  пробелом';
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate(sourceText, [
-        {
-          type: 'strong',
-          from: 0,
-          length: 6,
-        },
-      ]),
-    );
-
-    expect(getLastSendOptions(maxClient)).toEqual(
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-    );
-    expect(getLastSentText(maxClient)).toContain('**Автопостинг**');
-    expect(getLastSentText(maxClient)).toContain('**Контент**');
-    expect(getLastSentText(maxClient)).toContain('**Важный** анонс\n\n  Второй абзац с  пробелом');
-    expect(getLastSentText(maxClient)).toContain('Дальше: Пришлите новый текст, фото или видео.');
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
-      channels[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: '**Важный** анонс\n\n  Второй абзац с  пробелом',
-        textFormat: 'markdown',
-        applyToAllChats: false,
-      }),
-      'private_bot',
-    );
-  });
-
-  it('preserves MAX markup spans that cover multiple broadcast paragraphs', async () => {
-    const { service, adminService, maxClient, channels } = createHarness();
-    const sourceText = 'Важный анонс\n\n  Второй абзац с  пробелом';
-    const expectedMarkdown = '**Важный анонс**\n\n**  Второй абзац с  пробелом**';
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate(sourceText, [
-        {
-          type: 'strong',
-          from: 0,
-          length: countMessageOffsetUnits(sourceText),
-        },
-      ]),
-    );
-
-    expect(getLastSendOptions(maxClient)).toEqual(
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-    );
-    expect(getLastSentText(maxClient)).toContain(expectedMarkdown);
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
-      channels[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: expectedMarkdown,
-        textFormat: 'markdown',
-      }),
-      'private_bot',
-    );
-  });
-
-  it('preserves emoji-prefixed formatted broadcast text with MAX string offsets', async () => {
-    const { service, adminService, channels } = createHarness();
-    const sourceText = '🔥MAX Docs';
-    const prefixLength = countMessageOffsetUnits('🔥');
-    const labelLength = countMessageOffsetUnits('MAX Docs');
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate(sourceText, [
-        {
-          type: 'strong',
-          from: prefixLength,
-          length: labelLength,
-        },
-      ]),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
-      channels[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: '🔥**MAX Docs**',
-        textFormat: 'markdown',
-      }),
-      'private_bot',
-    );
-  });
-
-  it('renders broadcast preview with separate plain-text blocks', async () => {
-    const { service, maxClient, chats } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateTextUpdate('Промо блок'));
-
-    expect(getLastUiText(maxClient)).toContain('Автопостинг');
-    expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastUiText(maxClient)).toContain('Контент:');
-    expect(getLastUiText(maxClient)).toContain('Промо блок');
-    expect(getLastUiText(maxClient)).toContain('Статус: Контент сохранён.');
-    expect(getLastUiText(maxClient)).toContain('Дальше: Пришлите новый текст, фото или видео.');
-  });
-
-  it('renders bold hyperlink preview as markdown in private bot', async () => {
-    const { service, maxClient, chats } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate('Вррвврврврврвв', [
-        {
-          type: 'strong',
-          from: 0,
-          length: 14,
-        },
-        {
-          type: 'link',
-          from: 0,
-          length: 14,
-          url: 'https://business.max.ru/self/?#/chat-bots',
-        },
-      ]),
-    );
-
-    expect(getLastSendOptions(maxClient)).toEqual(
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-    );
-    expect(getLastSentText(maxClient)).toContain(
-      '[**Вррвврврврврвв**](https://business.max.ru/self/?#/chat-bots)',
-    );
-  });
-
-  it('keeps bold italic underline hyperlink formatting for broadcast drafts from private bot', async () => {
-    const { service, maxClient, chats, adminService } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate('MAX Docs', [
-        {
-          type: 'strong',
-          from: 0,
-          length: 8,
-        },
-        {
-          type: 'emphasized',
-          from: 0,
-          length: 8,
-        },
-        {
-          type: 'underline',
-          from: 0,
-          length: 8,
-        },
-        {
-          type: 'link',
-          from: 0,
-          length: 8,
-          url: 'https://dev.max.ru/docs-api',
-        },
-      ]),
-    );
-
-    expect(getLastSendOptions(maxClient)).toEqual(
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-    );
-    expect(getLastSentText(maxClient)).toContain(
-      '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
-    );
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
-        textFormat: 'markdown',
-        applyToAllChats: false,
-      }),
-      'private_bot',
-    );
-  });
-
-  it('blocks concurrent duplicate broadcast publish callbacks for the same chat', async () => {
-    let resolveSend!: (value: {
-      targetChats: number;
-      sentChats: number;
-      failedChats: number;
-    }) => void;
-    const pendingSend = new Promise<{
-      targetChats: number;
-      sentChats: number;
-      failedChats: number;
-    }>((resolve) => {
-      resolveSend = resolve;
-    });
-    const sendChannelBroadcast = jest.fn().mockReturnValue(pendingSend);
-    const { service, maxClient, channels } = createHarness({
-      adminService: {
-        sendChannelBroadcast,
-      },
-    });
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateTextUpdate('Дубль публикации'));
-
-    const firstSend = service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    const secondSend = service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    await secondSend;
-
-    expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
-    expect(getLastEditedText(maxClient)).toContain('Этот автопостинг уже отправляется.');
-
-    resolveSend({ targetChats: 1, sentChats: 1, failedChats: 0 });
-    await firstSend;
-  });
-
-  it('drops stale duplicate broadcast publish callback for the same draft', async () => {
-    const sendChannelBroadcast = jest
-      .fn()
-      .mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 });
-    const { service, maxClient, channels } = createHarness({
-      adminService: {
-        sendChannelBroadcast,
-      },
-    });
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateTextUpdate('Старый callback'));
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await flushBackgroundBroadcast();
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
-    expect(getLastEditedText(maxClient)).toContain('Этот автопостинг уже был запущен.');
-  });
-
-  it('hands off chat broadcast from miniapp into private bot content flow and sends success follow-up', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-    };
-
-    const result = await service.handoffBroadcastFromMiniapp(
-      chats[0].id,
-      actor,
-      {
-        applyToAllChats: true,
-        buttonEnabled: true,
-        buttonUrl: 'https://max.ru/channel/test',
-        buttonText: 'Открыть',
-        sendAt: '2026-03-13T12:00:00.000Z',
-        cycleEnabled: true,
-        cycleEveryHours: 6,
-        cycleCount: 3,
-      },
-      'chat',
-    );
-
-    expect(result.botUrl).toBe('https://max.ru/777000_bot?start=broadcast_handoff');
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-
-    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пришлите текст, фото или видео.');
-
-    await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
-    await flushBackgroundBroadcast();
-
-    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: 'Контент из лички бота',
-        applyToAllChats: true,
-        buttonEnabled: true,
-        buttonUrl: 'https://max.ru/channel/test',
-        sendAt: '2026-03-13T12:00:00.000Z',
-        cycleEnabled: true,
-        cycleEveryHours: 6,
-        cycleCount: 3,
-      }),
-      'private_bot',
-    );
-    expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
-    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
-  });
-
-  it('proactively delivers broadcast handoff into a known private chat and skips duplicate bot_started reply', async () => {
-    const { service, maxClient, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-    };
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate(''));
-    const sentBeforeHandoff = maxClient.sendMessage.mock.calls.length;
-
-    const result = await service.handoffBroadcastFromMiniapp(
-      chats[0].id,
-      actor,
-      {
-        applyToAllChats: false,
-        buttonEnabled: false,
-      },
-      'chat',
-    );
-
-    expect(result.botUrl).toBe('https://max.ru/777000_bot?start=broadcast_handoff');
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeHandoff + 1);
-    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пришлите текст, фото или видео.');
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeHandoff + 1);
-  });
-
-  it('reuses the remembered private bot for miniapp broadcast handoff url and delivery', async () => {
-    const { service, maxClient, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-      launchBotId: '888000_bot',
-    };
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate('', { botId: '888000_bot' }));
-    const sentBeforeHandoff = maxClient.sendMessage.mock.calls.length;
-
-    const result = await service.handoffBroadcastFromMiniapp(
-      chats[0].id,
-      actor,
-      {
-        applyToAllChats: false,
-        buttonEnabled: false,
-      },
-      'chat',
-    );
-
-    expect(result.botUrl).toBe('https://max.ru/888000_bot?start=broadcast_handoff');
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeHandoff + 1);
-    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
-      '152517912',
-      expect.any(String),
-      expect.any(Object),
-      expect.objectContaining({
-        immediate: true,
-        botId: '888000_bot',
-      }),
-    );
-  });
-
-  it('uploads broadcast preview images through the remembered private bot after miniapp handoff', async () => {
-    const { service, maxClient, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-      launchBotId: '888000_bot',
-    };
-    const imageMock = mockImageFetch();
-
-    try {
-      await service.handleBotStarted(createBotStartedPrivateUpdate('', { botId: '888000_bot' }));
-      await service.handoffBroadcastFromMiniapp(
-        chats[0].id,
-        actor,
-        {
-          applyToAllChats: false,
-          buttonEnabled: false,
-        },
-        'chat',
-      );
-      maxClient.uploadImage.mockClear();
-      maxClient.sendMessage.mockClear();
-
-      await service.handleUpdate(createPrivatePhotoUpdate({ botId: '888000_bot' }));
-    } finally {
-      imageMock.restore();
-    }
-
-    expect(maxClient.uploadImage).toHaveBeenCalledWith(
-      TINY_PNG,
-      'private-broadcast-photo-1.png',
-      'image/png',
-      { botId: '888000_bot' },
-    );
-    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
-      '152517912',
-      expect.any(String),
-      expect.objectContaining({
-        imagePayload: { token: 'upload-token-1' },
-      }),
-      expect.objectContaining({
-        botId: '888000_bot',
-      }),
-    );
-  });
-
-  it('keeps a remembered private bot for the first handoff update without bot metadata', async () => {
-    const { service, maxClient, chats } = createHarness();
-    const session = createDefaultPrivateControlSession();
-    session.lastPrivateBotId = '888000_bot';
-    session.lastPrivateChatId = null;
-    session.selectedChatId = chats[0].id;
-    session.selectedEntityType = 'chat';
-    session.screen = 'broadcast';
-    session.broadcastDraft = {
-      ...session.broadcastDraft,
-      imageEnabled: true,
-      imageBase64: TINY_PNG.toString('base64'),
-      imageMimeType: 'image/png',
-      imageFileName: 'handoff.png',
-    };
-
-    await (
-      service as unknown as {
-        saveSession(userId: string, nextSession: unknown): Promise<void>;
-      }
-    ).saveSession('user-1', session);
-
+  it('redirects the retired broadcast start payload without restoring a draft', async () => {
+    const { service, maxClient, adminService } = createHarness();
     await service.handleBotStarted(createBotStartedPrivateUpdate('broadcast_handoff'));
-
-    expect(maxClient.uploadImage).toHaveBeenCalledWith(TINY_PNG, 'handoff.png', 'image/png', {
-      botId: '888000_bot',
+    expect(getLastSentText(maxClient)).toBe('Посты и автопостинг теперь в Публике.');
+    expect(getLastButtons(maxClient).flat()).toContainEqual({
+      type: 'link',
+      text: 'Открыть бота Публик',
+      url: 'https://max.ru/se14088825_bot',
     });
-    expect(maxClient.sendMessage).toHaveBeenLastCalledWith(
-      '152517912',
-      expect.any(String),
-      expect.objectContaining({
-        imagePayload: { token: 'upload-token-1' },
-      }),
-      expect.objectContaining({
-        botId: '888000_bot',
-      }),
-    );
+    expect(adminService.sendBroadcast).not.toHaveBeenCalled();
   });
 
-  it('acknowledges mass confirm immediately and ignores stale duplicate confirmations', async () => {
-    const sendBroadcast = jest
-      .fn()
-      .mockResolvedValue({ targetChats: 2, sentChats: 2, failedChats: 0 });
-    const { service, adminService, maxClient, chats } = createHarness({
-      adminService: {
-        sendBroadcast,
-      },
-    });
+  it('never restores the broadcast editor from persisted Back navigation', async () => {
+    const { service, maxClient, adminService, chats } = createHarness();
+    const session = createDefaultPrivateControlSession();
+    session.screen = 'rules';
+    session.selectedChatId = chats[0].id;
+    session.lastScreenStack = [JSON.stringify({ screen: 'broadcast', selectedEntityType: 'chat' })];
+    await (
+      service as unknown as { saveSession(userId: string, value: unknown): Promise<void> }
+    ).saveSession('user-1', session);
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|back'));
+    expect(getLastEditedText(maxClient)).toBe('Посты и автопостинг теперь в Публике.');
+    expect(adminService.sendBroadcast).not.toHaveBeenCalled();
+    expect(adminService.sendChannelBroadcast).not.toHaveBeenCalled();
+  });
 
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateTextUpdate('Массовый автопостинг'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_toggle|apply_to_all'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
-    await flushBackgroundBroadcast();
-
-    expect(adminService.sendBroadcast).toHaveBeenCalledTimes(1);
-    expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
-    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
-
-    expect(adminService.sendBroadcast).toHaveBeenCalledTimes(1);
+  it('does not capture content or confirm a send from a persisted retired session', async () => {
+    for (const update of [
+      createPrivateTextUpdate('Новый пост'),
+      createPrivateCallbackUpdate('pc2|mass_confirm'),
+    ]) {
+      const { service, maxClient, adminService } = createHarness();
+      const session = createDefaultPrivateControlSession();
+      session.screen = 'broadcast';
+      session.pendingInput = { kind: 'broadcast_content' };
+      await (
+        service as unknown as { saveSession(userId: string, value: unknown): Promise<void> }
+      ).saveSession('user-1', session);
+      await service.handleUpdate(update);
+      expect(getLastUiText(maxClient)).toBe('Посты и автопостинг теперь в Публике.');
+      expect(adminService.sendBroadcast).not.toHaveBeenCalled();
+      expect(adminService.sendChannelBroadcast).not.toHaveBeenCalled();
+    }
   });
 
   it('opens channel suggestion callback intro through the callback bot', async () => {
@@ -4419,55 +3832,6 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).not.toContain('Request failed with status code 403');
   });
 
-  it('shows only channel comments status on the handoff broadcast screen without footer links', async () => {
-    const { service, maxClient, channels } = createHarness({
-      channelSettings: {
-        ...defaultChannelSettings,
-        commentsEnabled: true,
-        postSuggestionsEnabled: true,
-        postSuggestionsButtonEnabled: false,
-      },
-    });
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: channels[0].id,
-      chatTitle: channels[0].title,
-    };
-
-    await service.handoffBroadcastFromMiniapp(
-      channels[0].id,
-      actor,
-      {
-        applyToAllChats: false,
-        buttonEnabled: false,
-        buttonUrl: '',
-        buttonText: 'Открыть',
-        sendAt: null,
-        cycleEnabled: false,
-        cycleEveryHours: 24,
-        cycleCount: 1,
-      },
-      'channel',
-    );
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-
-    expect(getLastSentText(maxClient)).toContain(`Канал: ${channels[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пришлите текст, фото или видео.');
-    expect(getLastSentText(maxClient)).not.toContain('Комменты:');
-    expect(getLastSentText(maxClient)).not.toContain('Предложка:');
-    expect(getLastSentText(maxClient)).not.toContain('Кнопка предложки:');
-
-    const buttonTexts = getLastButtons(maxClient)
-      .flat()
-      .map((button) => String((button as { text?: string }).text ?? ''));
-
-    expect(buttonTexts).not.toContain('Открыть приложение');
-    expect(buttonTexts).not.toContain('Поддержка');
-  });
-
   it('hands off Karavan allowlist, accepts one forwarded user, and grants a selected duration', async () => {
     const { service, maxClient, karavanStorefrontAllowlistService } = createHarness();
     const actor = {
@@ -4564,474 +3928,6 @@ describe('PrivateControlService', () => {
     expect(retryText).toContain('Чат: Тестовый чат 1');
     expect(retryText).not.toContain('Идентификатор пользователя вручную');
     expect(retryText).not.toContain('123456789');
-  });
-
-  it('preserves channel timer and cycle from miniapp handoff', async () => {
-    const { service, adminService, channels } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: channels[0].id,
-      chatTitle: channels[0].title,
-    };
-
-    await service.handoffBroadcastFromMiniapp(
-      channels[0].id,
-      actor,
-      {
-        applyToAllChats: false,
-        buttonEnabled: false,
-        buttonUrl: '',
-        buttonText: 'Открыть',
-        sendAt: '2026-03-20T12:00:00.000Z',
-        cycleEnabled: true,
-        cycleEveryHours: 24,
-        cycleCount: 3,
-      },
-      'channel',
-    );
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-    await service.handleUpdate(createPrivateTextUpdate('Контент для канала по таймеру'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
-      channels[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: 'Контент для канала по таймеру',
-        sendAt: '2026-03-20T12:00:00.000Z',
-        cycleEnabled: true,
-        cycleEveryHours: 24,
-        cycleCount: 3,
-      }),
-      'private_bot',
-    );
-  });
-
-  it('round-trips selected chat targets from miniapp handoff and confirms multi-chat selected sends', async () => {
-    const sendBroadcast = jest
-      .fn()
-      .mockResolvedValue({ targetChats: 2, sentChats: 2, failedChats: 0 });
-    const { service, adminService, maxClient, chats } = createHarness({
-      adminService: {
-        sendBroadcast,
-      },
-    });
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-    };
-
-    await service.handoffBroadcastFromMiniapp(
-      chats[0].id,
-      actor,
-      {
-        targetMode: 'selected',
-        targetChatIds: [chats[0].id, 'chat-selected-2'],
-        applyToAllChats: false,
-        buttonEnabled: false,
-        buttonUrl: '',
-        buttonText: 'Открыть',
-        sendAt: null,
-        cycleEnabled: false,
-        cycleEveryHours: 1,
-        cycleCount: 1,
-      },
-      'chat',
-    );
-
-    const handoffState = await service.getBroadcastHandoffState(chats[0].id, actor, 'chat');
-
-    expect(handoffState.targetMode).toBe('selected');
-    expect(handoffState.targetChatIds).toEqual([chats[0].id, 'chat-selected-2']);
-    expect(handoffState.applyToAllChats).toBe(false);
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-    await service.handleUpdate(createPrivateTextUpdate('Точный автопостинг'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(getLastEditedText(maxClient)).toContain('Подтвердите массовый автопостинг');
-    expect(sendBroadcast).not.toHaveBeenCalled();
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
-    await flushBackgroundBroadcast();
-
-    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: 'Точный автопостинг',
-        targetMode: 'selected',
-        targetChatIds: [chats[0].id, 'chat-selected-2'],
-        applyToAllChats: false,
-      }),
-      'private_bot',
-    );
-  });
-
-  it('preserves bot broadcast content across repeated miniapp handoff for the same chat', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-    };
-
-    await service.handoffBroadcastFromMiniapp(
-      chats[0].id,
-      actor,
-      {
-        applyToAllChats: false,
-        buttonEnabled: false,
-        buttonUrl: '',
-        buttonText: 'Открыть',
-        scheduleMode: 'calendar',
-        scheduleTimezone: 'Europe/Moscow',
-        scheduledSlots: ['2026-03-20T12:00:00.000Z', '2026-03-21T12:00:00.000Z'],
-        sendAt: null,
-        cycleEnabled: false,
-        cycleEveryHours: 24,
-        cycleCount: 2,
-      },
-      'chat',
-    );
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-    await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
-
-    await service.handoffBroadcastFromMiniapp(
-      chats[0].id,
-      actor,
-      {
-        applyToAllChats: false,
-        buttonEnabled: false,
-        buttonUrl: '',
-        buttonText: 'Открыть',
-        scheduleMode: 'calendar',
-        scheduleTimezone: 'Europe/Moscow',
-        scheduledSlots: ['2026-03-22T12:00:00.000Z', '2026-03-23T12:00:00.000Z'],
-        sendAt: null,
-        cycleEnabled: false,
-        cycleEveryHours: 24,
-        cycleCount: 2,
-      },
-      'chat',
-    );
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-
-    expect(getLastSentText(maxClient)).toContain('Контент из лички бота');
-    const buttonTexts = getLastButtons(maxClient)
-      .flat()
-      .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('🚀 Опубликовать');
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: 'Контент из лички бота',
-        scheduleMode: 'calendar',
-        scheduleTimezone: 'Europe/Moscow',
-        scheduledSlots: ['2026-03-22T12:00:00.000Z', '2026-03-23T12:00:00.000Z'],
-        cycleEnabled: false,
-        cycleCount: 2,
-      }),
-      'private_bot',
-    );
-  });
-
-  it('clears broadcast handoff draft from miniapp reset for the same chat', async () => {
-    const { service, maxClient, redisCounter, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-    };
-
-    await service.handoffBroadcastFromMiniapp(
-      chats[0].id,
-      actor,
-      {
-        applyToAllChats: false,
-        buttonEnabled: false,
-        buttonUrl: '',
-        buttonText: 'Открыть',
-        scheduleMode: 'calendar',
-        scheduleTimezone: 'Europe/Moscow',
-        scheduledSlots: ['2026-03-24T12:00:00.000Z'],
-        sendAt: null,
-        cycleEnabled: false,
-        cycleEveryHours: 24,
-        cycleCount: 1,
-      },
-      'chat',
-    );
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-    await service.handleUpdate(createPrivateTextUpdate('Черновик для сброса'));
-
-    const beforeClear = await service.getBroadcastHandoffState(chats[0].id, actor, 'chat');
-    expect(beforeClear.hasContent).toBe(true);
-    expect(beforeClear.scheduledSlots).toEqual(['2026-03-24T12:00:00.000Z']);
-
-    const cleared = await service.clearBroadcastHandoffState(chats[0].id, actor, 'chat');
-    expect(cleared.hasContent).toBe(false);
-    expect(cleared.scheduledSlots).toEqual([]);
-    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-      `miniapp:broadcast-composer-reset:v1:chat:${chats[0].id}:${actor.userId}`,
-      expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
-      7 * 24 * 60 * 60,
-    );
-
-    const clientReset = await service.getBroadcastComposerClientResetState(
-      chats[0].id,
-      actor,
-      'chat',
-    );
-    expect(clientReset.resetAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
-
-    const afterClear = await service.getBroadcastHandoffState(chats[0].id, actor, 'chat');
-    expect(afterClear.hasContent).toBe(false);
-    expect(afterClear.scheduledSlots).toEqual([]);
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate());
-    expect(getLastUiText(maxClient)).not.toContain('Черновик для сброса');
-  });
-
-  it('clears broadcast content from the private bot reset action', async () => {
-    const { service, maxClient, chats } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Текст для очистки'));
-
-    expect(getLastUiText(maxClient)).toContain('Текст для очистки');
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_clear_content'));
-
-    expect(getLastEditedText(maxClient)).not.toContain('Текст для очистки');
-    const buttonTexts = getLastEditedButtons(maxClient)
-      .flat()
-      .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('✍️ Добавить');
-    expect(buttonTexts).not.toContain('🚀 Опубликовать');
-  });
-
-  it('allows adding photo after text on the broadcast screen without extra button press', async () => {
-    const { service, adminService, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-    };
-    const originalFetch = global.fetch;
-    const imageBuffer = Buffer.from('test-image');
-
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      headers: {
-        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'image/jpeg' : null),
-      },
-      arrayBuffer: async () =>
-        imageBuffer.buffer.slice(
-          imageBuffer.byteOffset,
-          imageBuffer.byteOffset + imageBuffer.byteLength,
-        ),
-    }) as typeof fetch;
-
-    try {
-      await service.handoffBroadcastFromMiniapp(
-        chats[0].id,
-        actor,
-        {
-          applyToAllChats: false,
-          buttonEnabled: false,
-          buttonUrl: '',
-          buttonText: 'Открыть',
-          sendAt: null,
-          cycleEnabled: false,
-          cycleEveryHours: 1,
-          cycleCount: 1,
-        },
-        'chat',
-      );
-
-      await service.handleBotStarted(createBotStartedPrivateUpdate());
-      await service.handleUpdate(createPrivateTextUpdate('Текст перед фото'));
-      await service.handleUpdate(createPrivatePhotoUpdate());
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-      expect(adminService.sendBroadcast).toHaveBeenCalledWith(
-        chats[0].id,
-        expect.objectContaining({ userId: 'user-1' }),
-        expect.objectContaining({
-          text: 'Текст перед фото',
-          imageEnabled: true,
-          imageMimeType: 'image/jpeg',
-          imageFileName: expect.stringContaining('private-broadcast-photo-1'),
-        }),
-        'private_bot',
-      );
-    } finally {
-      global.fetch = originalFetch;
-    }
-  });
-
-  it('allows adding video after text on the broadcast screen and sends it as media payload', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
-    const actor = {
-      userId: 'user-1',
-      username: null,
-      displayName: 'Тестовый пользователь',
-      chatId: chats[0].id,
-      chatTitle: chats[0].title,
-    };
-    const originalFetch = global.fetch;
-    const videoBuffer = Buffer.from('test-video');
-
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      headers: {
-        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'video/mp4' : null),
-      },
-      arrayBuffer: async () =>
-        videoBuffer.buffer.slice(
-          videoBuffer.byteOffset,
-          videoBuffer.byteOffset + videoBuffer.byteLength,
-        ),
-    }) as typeof fetch;
-
-    try {
-      await service.handoffBroadcastFromMiniapp(
-        chats[0].id,
-        actor,
-        {
-          applyToAllChats: false,
-          buttonEnabled: false,
-          buttonUrl: '',
-          buttonText: 'Открыть',
-          sendAt: null,
-          cycleEnabled: false,
-          cycleEveryHours: 1,
-          cycleCount: 1,
-        },
-        'chat',
-      );
-
-      await service.handleBotStarted(createBotStartedPrivateUpdate());
-      await service.handleUpdate(createPrivateTextUpdate('Текст перед видео'));
-      await service.handleUpdate(createPrivateVideoUpdate());
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-
-      expect(maxClient.uploadVideo).not.toHaveBeenCalled();
-      expect(adminService.sendBroadcast).toHaveBeenCalledWith(
-        chats[0].id,
-        expect.objectContaining({ userId: 'user-1' }),
-        expect.objectContaining({
-          text: 'Текст перед видео',
-          imageEnabled: false,
-          mediaType: 'video',
-          mediaPayload: { token: 'incoming-video-token' },
-          mediaMimeType: 'video/mp4',
-          mediaFileName: 'channel-suggestion-video.mp4',
-        }),
-        'private_bot',
-      );
-    } finally {
-      global.fetch = originalFetch;
-    }
-  });
-
-  it('logs callback and session details for bad request errors in broadcast flow', async () => {
-    const sendChannelBroadcast = jest.fn().mockRejectedValue(
-      new BadRequestException({
-        message: 'Автопостинг недоступен',
-        reason: 'quota',
-      }),
-    );
-    const { service, channels, maxClient } = createHarness({
-      adminService: {
-        sendChannelBroadcast,
-      },
-    });
-    const warnSpy = jest.spyOn(
-      (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
-      'warn',
-    );
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Новый пост для канала'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await flushBackgroundBroadcast();
-
-    expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        badRequestDetails: 'Автопостинг недоступен',
-        badRequestResponse: expect.objectContaining({
-          message: 'Автопостинг недоступен',
-          reason: 'quota',
-        }),
-        callbackAction: 'broadcast_send',
-        callbackArgs: [],
-        callbackPayload: 'pc2|broadcast_send',
-        selectedChatId: channels[0].id,
-        selectedEntityType: 'channel',
-        screen: 'broadcast',
-        pendingInput: null,
-        pendingMassAction: null,
-      }),
-      'Async private broadcast publish failed after confirmation',
-    );
-    expect(getLastSentText(maxClient)).toContain('Автопостинг недоступен');
-  });
-
-  it('shows nested validation details instead of generic bad request exception in broadcast flow', async () => {
-    const sendBroadcast = jest.fn().mockRejectedValue(
-      new BadRequestException({
-        _errors: [],
-        text: {
-          _errors: ['Текст автопостинга слишком длинный. Максимум 2000 символов.'],
-        },
-      }),
-    );
-    const { service, chats, maxClient } = createHarness({
-      adminService: {
-        sendBroadcast,
-      },
-    });
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Слишком длинный автопостинг'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
-    await flushBackgroundBroadcast();
-
-    expect(sendBroadcast).toHaveBeenCalledTimes(1);
-    expect(getLastSentText(maxClient)).toContain(
-      'Текст автопостинга слишком длинный. Максимум 2000 символов.',
-    );
-    expect(getLastSentText(maxClient)).not.toContain('Bad Request Exception');
   });
 
   it('hands off giveaway from miniapp into a mini app return screen in private bot', async () => {

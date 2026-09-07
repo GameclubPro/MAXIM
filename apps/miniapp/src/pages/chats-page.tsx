@@ -137,6 +137,11 @@ const LazyChatOnboardingSection = lazy(async () => {
   return { default: module.ChatOnboardingSection };
 });
 
+const LazyPublikHandoff = lazy(async () => {
+  const module = await import('../components/publik-handoff');
+  return { default: module.PublikHandoff };
+});
+
 let homeEntitySheetsPromise: Promise<typeof import('./home-entity-sheets')> | null = null;
 function preloadHomeEntitySheets() {
   homeEntitySheetsPromise ??= import('./home-entity-sheets').catch((error: unknown) => {
@@ -1956,6 +1961,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           )}
         </div>
       </GlassCard>
+
+      {!categoryEditMode ? (
+        <div className="chats-home__publik">
+          <Suspense fallback={null}>
+            <LazyPublikHandoff />
+          </Suspense>
+        </div>
+      ) : null}
 
       {activeFavoriteFilterLabel && !categoryEditMode ? (
         <button

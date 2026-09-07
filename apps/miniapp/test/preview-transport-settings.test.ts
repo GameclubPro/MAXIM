@@ -5,7 +5,7 @@ import type { VkParsingFeed } from '@maxim/contracts/vk-parsing';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
-test('preview settings include schema-complete managed broadcast summaries', async () => {
+test('Major preview settings keep publishing data empty', async () => {
   const api = createPreviewApiTransport();
 
   const chatSettings = (await api.request('/chats/preview-chat/settings-screen')) as {
@@ -61,27 +61,13 @@ test('preview settings include schema-complete managed broadcast summaries', asy
   assert.deepEqual(chatSettings.header.assignedBots, []);
   assert.equal(chatSettings.requiredSubscriptionChannels[0]?.primaryBotId, null);
   assert.deepEqual(chatSettings.requiredSubscriptionChannels[0]?.assignedBots, []);
-  assert.equal(chatSettings.managedBroadcasts[0]?.targetMode, 'current');
-  assert.equal(chatSettings.managedBroadcasts[0]?.blockedChats, 0);
-  assert.deepEqual(chatSettings.managedBroadcasts[0]?.failureBreakdown, {
-    transient: 0,
-    permanentTarget: 0,
-    quarantined: 0,
-    unknown: 0,
-  });
-  assert.equal(channelSettings.managedBroadcasts[0]?.targetMode, 'current');
+  assert.deepEqual(chatSettings.managedBroadcasts, []);
+  assert.deepEqual(channelSettings.managedBroadcasts, []);
   assert.deepEqual(channelSettings.postSignature, {
     enabled: false,
     presentation: 'signature',
     text: 'Подписаться на канал',
     url: '',
-  });
-  assert.equal(channelSettings.managedBroadcasts[0]?.blockedChats, 0);
-  assert.deepEqual(channelSettings.managedBroadcasts[0]?.failureBreakdown, {
-    transient: 0,
-    permanentTarget: 0,
-    quarantined: 0,
-    unknown: 0,
   });
 });
 

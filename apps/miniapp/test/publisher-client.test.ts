@@ -372,6 +372,7 @@ test('preview can render the isolated publisher profile', () => {
     'publisher_workspace',
     'publisher_entities',
     'chat_comments',
+    'publisher_policy_write',
   ]);
 });
 

@@ -260,7 +260,7 @@ function createService(
 describe('ManagedEntitiesService getMe', () => {
   const moderationProfileProjection = {
     profile: 'moderation',
-    capabilities: ['moderation_workspace', 'publisher_policy_write'],
+    capabilities: ['moderation_workspace'],
     homeRoute: '/',
   } as const;
   const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');

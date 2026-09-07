@@ -208,7 +208,7 @@ export function buildChatSettingsScreen(
       },
     ),
     domains: state.chatDomains,
-    managedBroadcasts: state.chatBroadcasts.map(buildBroadcastSummary),
+    managedBroadcasts: [],
   });
 }
 
@@ -240,7 +240,7 @@ export function buildChannelSettingsScreen(
       hasSharedAutomation: assignedBots.length > 1,
       ...(state.accessDiagnostics ? { accessDiagnostics: state.accessDiagnostics } : {}),
     },
-    managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
+    managedBroadcasts: [],
   });
 }
 

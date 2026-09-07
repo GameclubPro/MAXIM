@@ -127,7 +127,7 @@ export class AdminSettingsService {
       this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat'),
     );
 
-    const [settings, rules, headerBundle, domains, managedBroadcasts] = await Promise.all([
+    const [settings, rules, headerBundle, domains] = await Promise.all([
       this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.getRules(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.managedEntitiesService.getChatHeaderWithBotSpeechPreviewProfile(chatId, user, {
@@ -136,10 +136,6 @@ export class AdminSettingsService {
       }),
       this.manualModerationService.getDomainAllowlistDetails(chatId, user, {
         skipAdminCheck: true,
-      }),
-      this.managedBroadcastService.listManagedBroadcasts(chatId, user, {
-        skipAdminCheck: true,
-        skipEntityCheck: true,
       }),
     ]);
     const [requiredSubscriptionChannels, duplicatePhotoPolicyMatrix] = await Promise.all([
@@ -165,7 +161,7 @@ export class AdminSettingsService {
         sanitizePublicManagedEntityHeader(channel),
       ),
       domains,
-      managedBroadcasts,
+      managedBroadcasts: [],
     });
   }
 
@@ -450,15 +446,11 @@ export class AdminSettingsService {
       this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel'),
     );
 
-    const [settings, postSignature, header, managedBroadcasts] = await Promise.all([
+    const [settings, postSignature, header] = await Promise.all([
       this.getChannelSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.channelPostSignatureService?.getSettings(chatId) ??
         Promise.resolve({ enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT, url: '' }),
       this.managedEntitiesService.getChannelHeader(chatId, user, {
-        skipAdminCheck: true,
-        skipEntityCheck: true,
-      }),
-      this.managedBroadcastService.listChannelManagedBroadcasts(chatId, user, {
         skipAdminCheck: true,
         skipEntityCheck: true,
       }),
@@ -468,7 +460,7 @@ export class AdminSettingsService {
       settings,
       postSignature,
       header,
-      managedBroadcasts,
+      managedBroadcasts: [],
     });
   }
 

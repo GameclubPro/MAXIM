@@ -57,11 +57,11 @@
 
 ## Publications And Settings
 
-- `/publications` is the ordinary chat/channel publishing workspace. Chat/channel settings are compatibility handoff surfaces; VK parsing is a separate flow.
+- `/publications` is Publisher-only. Major `/publications`, `/autoposts`, and retired publishing settings links render only `PublikHandoff`; they must never mount a publishing editor or fetch legacy publishing data.
 - The Publisher profile home is its own `/` cabinet with `Чаты`, `Каналы`, and `Посты` navigation. Its entity catalog comes from exact Publik connections, never from the Major catalog.
-- Major chat/channel settings expose exactly one compact `Публик` enable switch. Keep readiness, recheck actions, suggestions routing, and future Publisher module controls inside the Publik profile; do not add secondary Publik rows or explanatory status copy to Major.
+- Major home uses `PublikHandoff` and its third navigation item opens the Publik bot through `publik-bot.ts` and the MAX Bridge. Major settings contain no Publik policy or publishing controls. The compact `PublisherPolicyCard` belongs to Publik entity modules and uses their switch styles; disabled connections stay visible in that cabinet so their owners can re-enable them without Major.
 - Publik entity module screens own chat comments, channel comments, channel suggestions, and VK import. Major keeps its independent channel comments. VK transport uses only `/publisher/entities/:entityType/:entityId/vk-parsing`; Major routes, deep links, settings state, API clients, search aliases, and CSS must not contain VK parsing controls or compatibility paths.
-- Open legacy publishing only for `workspace=autoposts`, an exact `legacyKind` + `legacyId`, or `handoff=1` backed by a real private-bot draft. A bare handoff flag cannot restore legacy creation.
+- Never restore Major publishing from `workspace=autoposts`, `legacyKind`/`legacyId`, `focus=broadcast`, or a private-bot handoff. `MajorSettingsRoute` intercepts those links before the settings page mounts.
 - Publication search, entity/status filters, and schedules are server-side and cursor-bound; never fetch every page for client filtering.
 - Rows with `publicationOccurrenceId != null` are Publication envelopes and must stay hidden from legacy broadcast/autopost APIs and UI.
 - Channel publication buttons are derived directly from `commentsEnabled` and `postSuggestionsEnabled`; do not add a separate button-mode control or preview filter.

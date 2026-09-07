@@ -39,13 +39,11 @@ describe('private control launcher renderer', () => {
     });
 
     expect(view.text).toContain('**Майор Максимова**');
-    expect(view.text).toContain(
-      'Все настройки, модерация, публикации и работа с каналами доступны в приложении.',
-    );
+    expect(view.text).toContain('Настройки модерации чатов и каналов доступны в приложении.');
     expect(view.text).toContain(
       'Документы: [пользовательское соглашение](https://major-maksimov.ru/app/legal/agreement)',
     );
-    expect(view.text).toContain('Я готова быстро принять текст, фото или видео для публикации.');
+    expect(view.text).toContain('Посты и автопостинг теперь в боте Публик.');
     expect(view.options).toEqual({
       buttons: [[appButton], [supportButton]],
       textFormat: 'markdown',

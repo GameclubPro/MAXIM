@@ -5,7 +5,6 @@ export const LEGACY_PUBLICATION_WRITES_DISABLED_CODE = 'LEGACY_PUBLICATION_WRITE
 export function throwLegacyPublicationWritesDisabled(): never {
   throw new GoneException({
     code: LEGACY_PUBLICATION_WRITES_DISABLED_CODE,
-    message:
-      'Старый автопостинг и рассылки доступны только для просмотра и остановки. Создавайте новые отправки в разделе «Публикации».',
+    message: 'Посты и автопостинг теперь в боте Публик: https://max.ru/se14088825_bot',
   });
 }

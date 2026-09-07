@@ -66,7 +66,7 @@ test('getMe parses the current admin profile from /me', async () => {
     botDialogUrl: 'https://max.ru/777000_bot',
     canAccessSystem: true,
     profile: 'moderation',
-    capabilities: ['moderation_workspace', 'publisher_policy_write'],
+    capabilities: ['moderation_workspace'],
     homeRoute: '/',
   });
   assert.deepEqual(calls, ['/me']);

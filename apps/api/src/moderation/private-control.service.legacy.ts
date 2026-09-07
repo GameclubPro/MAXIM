@@ -267,6 +267,7 @@ import {
   SECTION_SETTING_KEYS,
 } from './private-control-settings-schema';
 import * as publicationWriteFreeze from './private-control-publication-write-freeze';
+import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
 import { RedisCounterService } from './redis-counter.service';
 
 @Injectable()
@@ -274,6 +275,7 @@ export class PrivateControlService {
   private readonly logger = new Logger(PrivateControlService.name);
   private readonly appBaseUrl: string | null;
   private readonly botDeepLinkId: string | null;
+  private readonly publisherBotId: string;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
@@ -311,6 +313,9 @@ export class PrivateControlService {
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
+    this.publisherBotId =
+      this.normalizeBotDeepLinkId(configService?.get<string>('MAX_PUBLISHER_BOT_ID')) ||
+      DEFAULT_MAX_PUBLISHER_BOT_ID;
     this.explicitBotContactId = this.normalizeBotContactId(
       configService?.get<string>('MAX_BOT_CONTACT_ID'),
     );
@@ -514,6 +519,16 @@ export class PrivateControlService {
 
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatRoute(session, context);
+    if (
+      startPayload === BROADCAST_HANDOFF_START_PAYLOAD ||
+      this.hasRetiredPublishingSession(session)
+    ) {
+      await this.respond(context, session, this.renderPublikHandoff(session), {
+        callbackId: null,
+        notification: null,
+      });
+      return;
+    }
     if (
       !startPayload &&
       wasPrivateHandoffRecentlyDelivered(
@@ -1475,6 +1490,13 @@ export class PrivateControlService {
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatRoute(session, context);
+    if (this.hasRetiredPublishingSession(session)) {
+      await this.respond(context, session, this.renderPublikHandoff(session), {
+        callbackId: null,
+        notification: null,
+      });
+      return;
+    }
     if (session.pendingKaravanAllowlist) {
       await this.processKaravanAllowlistText(context, session);
       return;
@@ -2073,6 +2095,21 @@ export class PrivateControlService {
     const callback = this.parseCallbackAction(context.callbackPayload);
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatRoute(session, context);
+
+    if (
+      callback &&
+      (callback.action === 'open_broadcast' ||
+        callback.action.startsWith('broadcast_') ||
+        MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS.has(callback.action) ||
+        (this.hasRetiredPublishingSession(session) &&
+          ['mass_confirm', 'mass_cancel', 'input_cancel', 'back'].includes(callback.action)))
+    ) {
+      await this.respond(context, session, this.renderPublikHandoff(session), {
+        callbackId: context.callbackId,
+        notification: 'Посты и автопостинг теперь в Публике',
+      });
+      return;
+    }
 
     if (!callback) {
       const view = session.selectedChatId
@@ -3217,21 +3254,6 @@ export class PrivateControlService {
         return;
       }
 
-      case 'open_broadcast': {
-        if (!session.selectedChatId) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-        this.pushHistory(session);
-        session.screen = 'broadcast';
-        session.broadcastView = 'basic';
-        const view = await this.renderBroadcastScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Открываю автопостинг',
-        });
-        return;
-      }
-
       case 'open_giveaway': {
         if (!session.selectedChatId || !session.selectedEntityType) {
           throw new BadRequestException('Сначала выберите чат или канал.');
@@ -3589,28 +3611,6 @@ export class PrivateControlService {
         return;
       }
 
-      case 'broadcast_view': {
-        this.assertChatSelected(session);
-        session.broadcastView = callback.args[0] === 'advanced' ? 'advanced' : 'basic';
-        const view = await this.renderBroadcastScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: session.broadcastView === 'advanced' ? 'Ещё параметры' : 'Основное',
-        });
-        return;
-      }
-
-      case 'broadcast_toggle': {
-        this.assertChatSelected(session);
-        this.toggleBroadcastFlag(session, callback.args[0] ?? '');
-        const view = await this.renderBroadcastScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Настройка обновлена',
-        });
-        return;
-      }
-
       case 'broadcast_input_prompt': {
         this.assertChatSelected(session);
         const flag = callback.args[0] ?? '';
@@ -3645,56 +3645,6 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Жду ввод',
-        });
-        return;
-      }
-
-      case 'broadcast_clear_timer': {
-        this.assertChatSelected(session);
-        session.broadcastDraft.sendAt = null;
-        const view = await this.renderBroadcastScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Таймер выключен',
-        });
-        return;
-      }
-
-      case 'broadcast_clear_content': {
-        this.assertChatSelected(session);
-        session.broadcastDraft.text = '';
-        session.broadcastDraft.textFormat = 'plain';
-        session.broadcastDraft.imageEnabled = false;
-        session.broadcastDraft.imageBase64 = '';
-        session.broadcastDraft.imageMimeType = '';
-        session.broadcastDraft.imageFileName = '';
-        session.broadcastDraft.mediaType = null;
-        session.broadcastDraft.mediaPayload = null;
-        session.broadcastDraft.mediaMimeType = '';
-        session.broadcastDraft.mediaFileName = '';
-        session.pendingInput = null;
-        const view = await this.renderBroadcastScreen(context, session, 'Черновик очищен.');
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Черновик очищен',
-        });
-        return;
-      }
-
-      case 'broadcast_clear_photo': {
-        this.assertChatSelected(session);
-        session.broadcastDraft.imageEnabled = false;
-        session.broadcastDraft.imageBase64 = '';
-        session.broadcastDraft.imageMimeType = '';
-        session.broadcastDraft.imageFileName = '';
-        session.broadcastDraft.mediaType = null;
-        session.broadcastDraft.mediaPayload = null;
-        session.broadcastDraft.mediaMimeType = '';
-        session.broadcastDraft.mediaFileName = '';
-        const view = await this.renderBroadcastScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Медиа удалено',
         });
         return;
       }
@@ -5438,6 +5388,10 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
   ): Promise<PrivateView> {
+    // FLAG: Back navigation can restore a retired draft independently of its blocked callbacks.
+    if (this.hasRetiredPublishingSession(session)) {
+      return this.renderPublikHandoff(session);
+    }
     if (session.screen === 'chat_select') {
       return this.renderHomeScreen(context, session);
     }
@@ -5459,9 +5413,6 @@ export class PrivateControlService {
     }
     if (session.screen === 'rules') {
       return this.renderRulesScreen(context, session);
-    }
-    if (session.screen === 'broadcast') {
-      return this.renderBroadcastScreen(context, session);
     }
     if (session.screen === 'giveaway') {
       this.resetSessionToPrimaryScreen(session);
@@ -9205,7 +9156,16 @@ export class PrivateControlService {
       profile,
       appBaseUrl: this.appBaseUrl,
       notice,
-      footerButtons: this.buildFooterButtons({ includeProblemReport: true, singleColumn: true }),
+      footerButtons: [
+        ...this.buildFooterButtons({ includeProblemReport: true, singleColumn: true }),
+        [
+          {
+            type: 'link',
+            text: 'Открыть бота Публик',
+            url: `https://max.ru/${this.publisherBotId}`,
+          },
+        ],
+      ],
     });
   }
 
@@ -9523,6 +9483,35 @@ export class PrivateControlService {
     return {
       action: parts[1],
       args: parts.slice(2),
+    };
+  }
+
+  private hasRetiredPublishingSession(session: PrivateSession): boolean {
+    return (
+      session.screen === 'broadcast' ||
+      session.pendingInput?.kind.startsWith('broadcast_') === true ||
+      session.pendingMassAction?.kind === 'broadcast'
+    );
+  }
+
+  private renderPublikHandoff(session: PrivateSession): PrivateView {
+    session.pendingInput = null;
+    session.pendingMassAction = null;
+    session.screen = 'home';
+    session.lastScreenStack = [];
+    return {
+      text: 'Посты и автопостинг теперь в Публике.',
+      options: {
+        buttons: [
+          [
+            {
+              type: 'link',
+              text: 'Открыть бота Публик',
+              url: `https://max.ru/${this.publisherBotId}`,
+            },
+          ],
+        ],
+      },
     };
   }
 

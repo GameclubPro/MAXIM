@@ -454,7 +454,7 @@ describe('ManagedAutopostService', () => {
         status: 410,
         response: expect.objectContaining({
           code: LEGACY_PUBLICATION_WRITES_DISABLED_CODE,
-          message: expect.stringContaining('«Публикации»'),
+          message: expect.stringContaining('Публик'),
         }),
       });
     }

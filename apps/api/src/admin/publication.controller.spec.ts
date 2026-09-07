@@ -9,7 +9,7 @@ describe('PublicationController', () => {
     displayName: null,
   };
 
-  it('allows new publication work only in Publik and keeps legacy reads in moderation', () => {
+  it('exposes all publication handlers exclusively to Publik', () => {
     expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublicationController.prototype.create),
     ).toEqual(['publisher']);
@@ -27,7 +27,7 @@ describe('PublicationController', () => {
     ).toEqual(['publisher']);
     expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublicationController.prototype.listLegacy),
-    ).toEqual(['moderation']);
+    ).toEqual(['publisher']);
 
     for (const handler of [
       PublicationController.prototype.list,
@@ -41,10 +41,7 @@ describe('PublicationController', () => {
       PublicationController.prototype.retryOccurrence,
       PublicationController.prototype.resolveAmbiguous,
     ]) {
-      expect(Reflect.getMetadata(MINIAPP_PROFILES_METADATA, handler)).toEqual([
-        'moderation',
-        'publisher',
-      ]);
+      expect(Reflect.getMetadata(MINIAPP_PROFILES_METADATA, handler)).toEqual(['publisher']);
     }
   });
 
@@ -63,11 +60,9 @@ describe('PublicationController', () => {
       resolveAmbiguousDelivery: jest.fn(),
       sendTest: jest.fn(),
     };
-    const publicationLegacyService = { list: jest.fn() };
     const publisherTargetRefresh = { request: jest.fn() };
     const controller = new PublicationController(
       publicationService as never,
-      publicationLegacyService as never,
       publisherTargetRefresh as never,
     );
     const query = { view: 'plan' };
@@ -77,15 +72,15 @@ describe('PublicationController', () => {
     controller.create(user, body, 'publisher');
     controller.calendarAvailability(user, body, 'publisher');
     controller.refreshTargets('publication-1', user);
-    controller.get('publication-1', user, 'moderation');
+    controller.get('publication-1', user, 'publisher');
     controller.update('publication-1', user, body, 'publisher');
-    controller.pause('publication-1', user, body, 'moderation');
+    controller.pause('publication-1', user, body, 'publisher');
     controller.resume('publication-1', user, body, 'publisher');
-    controller.cancel('publication-1', user, body, 'moderation');
+    controller.cancel('publication-1', user, body, 'publisher');
     controller.remove('publication-1', user, body, 'publisher');
-    controller.deliveries('publication-1', user, query, 'moderation');
+    controller.deliveries('publication-1', user, query, 'publisher');
     controller.retryOccurrence('publication-1', 'occurrence-1', user, body, 'publisher');
-    controller.resolveAmbiguous('publication-1', 'occurrence-1', user, body, 'moderation');
+    controller.resolveAmbiguous('publication-1', 'occurrence-1', user, body, 'publisher');
 
     expect(publicationService.list).toHaveBeenCalledWith(
       user,
@@ -106,7 +101,7 @@ describe('PublicationController', () => {
     expect(publicationService.get).toHaveBeenCalledWith(
       'publication-1',
       user,
-      PublicationDispatchProfile.LEGACY_ROUTED,
+      PublicationDispatchProfile.PUBLIK_V1,
     );
     expect(publicationService.update).toHaveBeenCalledWith(
       'publication-1',
@@ -118,7 +113,7 @@ describe('PublicationController', () => {
       'publication-1',
       user,
       body,
-      PublicationDispatchProfile.LEGACY_ROUTED,
+      PublicationDispatchProfile.PUBLIK_V1,
     );
     expect(publicationService.resume).toHaveBeenCalledWith(
       'publication-1',
@@ -131,7 +126,7 @@ describe('PublicationController', () => {
       'publication-1',
       user,
       body,
-      PublicationDispatchProfile.LEGACY_ROUTED,
+      PublicationDispatchProfile.PUBLIK_V1,
     );
     expect(publicationService.cancel).toHaveBeenNthCalledWith(
       2,
@@ -144,7 +139,7 @@ describe('PublicationController', () => {
       'publication-1',
       user,
       query,
-      PublicationDispatchProfile.LEGACY_ROUTED,
+      PublicationDispatchProfile.PUBLIK_V1,
     );
     expect(publicationService.retryOccurrence).toHaveBeenCalledWith(
       'publication-1',
@@ -158,22 +153,18 @@ describe('PublicationController', () => {
       'occurrence-1',
       user,
       body,
-      PublicationDispatchProfile.LEGACY_ROUTED,
+      PublicationDispatchProfile.PUBLIK_V1,
     );
   });
 
-  it('does not expose the legacy test sender to the publisher profile', () => {
+  it('never exposes the retired test sender to either profile', () => {
     const publicationService = { sendTest: jest.fn() };
-    const controller = new PublicationController(
-      publicationService as never,
-      {} as never,
-      {} as never,
-    );
+    const controller = new PublicationController(publicationService as never, {} as never);
 
     expect(() => controller.test(user, {}, 'publisher')).toThrow();
     expect(publicationService.sendTest).not.toHaveBeenCalled();
 
-    controller.test(user, {}, 'moderation');
-    expect(publicationService.sendTest).toHaveBeenCalledWith(user, {});
+    expect(() => controller.test(user, {}, 'moderation')).toThrow();
+    expect(publicationService.sendTest).not.toHaveBeenCalled();
   });
 });

@@ -43,6 +43,7 @@ import {
   type PublisherChatCommentSettingKey,
 } from './publisher-entity-modules-page-model';
 import './publisher-entity-modules-page.css';
+import { PublisherPolicyCard } from '../components/publisher-policy-card';
 
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
 const PUBLISHER_CATALOG_QUERY_ROOT = ['publications', 'sources', 'publisher'] as const;
@@ -339,6 +340,8 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           <Refresh aria-hidden />
         </button>
       </header>
+
+      <PublisherPolicyCard api={api} entityType={entity.entityType} entityId={entity.id} />
 
       <div
         className={cn('publisher-entity-modules-page__readiness', `is-${readiness.tone}`)}

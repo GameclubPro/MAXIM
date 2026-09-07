@@ -787,8 +787,10 @@ const scenarioBehaviors = [
   {
     name: 'publications',
     beforeShot: async (page) => {
-      await page.locator('.publications-page').waitFor({ state: 'visible' });
-      await page.waitForTimeout(600);
+      await page.locator('.publik-handoff').waitFor({ state: 'visible' });
+      if ((await page.locator('.publications-page').count()) !== 0) {
+        throw new Error('Publisher controls leaked into Major.');
+      }
     },
   },
   {
@@ -1182,52 +1184,37 @@ const scenarioBehaviors = [
   {
     name: 'chat-settings-publisher-policy-setup',
     beforeShot: async (page) => {
-      const card = page.locator('.publisher-policy-card');
-      await card.waitFor({ state: 'visible' });
-      await card.scrollIntoViewIfNeeded();
-      if ((await card.getByRole('checkbox').count()) !== 1) {
-        throw new Error('Major must expose exactly one compact Publik toggle.');
-      }
-      if ((await card.getByRole('button').count()) !== 0) {
-        throw new Error('Publik readiness actions leaked into the Major overview.');
+      await page.locator('.settings-sections--chat-home').waitFor({ state: 'visible' });
+      if ((await page.locator('.publisher-policy-card').count()) !== 0) {
+        throw new Error('Publisher controls leaked into Major.');
       }
     },
   },
   {
     name: 'chat-settings-publisher-policy-error',
     beforeShot: async (page) => {
-      const card = page.locator('.publisher-policy-card');
-      await card.waitFor({ state: 'visible' });
-      await card.scrollIntoViewIfNeeded();
-      await card
-        .getByRole('checkbox', { name: 'Настройка Публика недоступна' })
-        .waitFor({ state: 'visible' });
+      await page.locator('.settings-sections--chat-home').waitFor({ state: 'visible' });
+      if ((await page.locator('.publisher-policy-card').count()) !== 0) {
+        throw new Error('Publisher controls leaked into Major.');
+      }
     },
   },
   {
     name: 'channel-settings-publisher-policy',
     beforeShot: async (page) => {
-      const card = page.locator('.publisher-policy-card');
-      await card.waitFor({ state: 'visible' });
-      await card.scrollIntoViewIfNeeded();
-      if ((await card.getByRole('checkbox').count()) !== 1) {
-        throw new Error('Channel settings must expose one Publik toggle.');
+      await page.locator('.channel-settings-screen').waitFor({ state: 'visible' });
+      if ((await page.locator('.publisher-policy-card').count()) !== 0) {
+        throw new Error('Publisher controls leaked into Major.');
       }
     },
   },
   {
     name: 'channel-settings-publisher-policy-permission',
     beforeShot: async (page) => {
-      const card = page.locator('.publisher-policy-card');
-      await card.waitFor({ state: 'visible' });
-      await card.scrollIntoViewIfNeeded();
-      await card.getByRole('checkbox', { name: 'Включить Публик для канала' }).click();
-      const dialog = page.getByRole('alertdialog', { name: 'Нужно проверить доступ бота' });
-      await dialog.waitFor({ state: 'visible' });
-      await dialog.getByText('Актуальная проверка доступа', { exact: true }).waitFor({
-        state: 'visible',
-      });
-      await dialog.getByRole('button', { name: 'Проверить снова' }).waitFor({ state: 'visible' });
+      await page.locator('.channel-settings-screen').waitFor({ state: 'visible' });
+      if ((await page.locator('.publisher-policy-card').count()) !== 0) {
+        throw new Error('Publisher controls leaked into Major.');
+      }
     },
   },
   {
@@ -1311,24 +1298,19 @@ const scenarioBehaviors = [
   {
     name: 'publications-legacy',
     beforeShot: async (page) => {
-      const firstLegacyRow = page.locator('.legacy-publications-row').first();
-      await firstLegacyRow.waitFor({ state: 'visible' });
-      await firstLegacyRow.scrollIntoViewIfNeeded();
-      await page.waitForTimeout(250);
+      await page.locator('.publik-handoff').waitFor({ state: 'visible' });
+      if ((await page.locator('.publications-page').count()) !== 0) {
+        throw new Error('Publisher controls leaked into Major.');
+      }
     },
   },
   {
     name: 'publications-compose',
     beforeShot: async (page) => {
-      await page.locator('.publications-page').waitFor({ state: 'visible' });
-      await page.waitForFunction(() => {
-        const params = new URLSearchParams(window.location.search);
-        return !params.has('compose') && !params.has('entityType') && !params.has('entityId');
-      });
-      if ((await page.locator('.publications-editor').count()) !== 0) {
-        throw new Error('Major entered the Publisher-only publication editor.');
+      await page.locator('.publik-handoff').waitFor({ state: 'visible' });
+      if ((await page.locator('.publications-page').count()) !== 0) {
+        throw new Error('Publisher controls leaked into Major.');
       }
-      await page.waitForTimeout(600);
     },
   },
   {

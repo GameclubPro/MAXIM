@@ -137,7 +137,7 @@ const ROUTE_DEFINITIONS = {
     pattern: '/publications',
     previewPath: '/publications',
     manifestEntry: 'src/pages/publications-page.tsx',
-    readySelector: '.publications-page',
+    readySelector: '.publications-page, .publik-handoff',
     coldScenario: 'publications',
     features: ['publications'],
     sourceGlobs: FEATURE_SOURCE_GLOBS.publications,
@@ -623,9 +623,9 @@ const baseScenarios = [
         features: ['publisher', 'broadcast'],
       },
     ],
-    'publications-actions',
-    'publications-edit-discard',
-    'publications-retry-choice',
+    ['publications-actions', { searchParams: { profile: 'publisher' } }],
+    ['publications-edit-discard', { searchParams: { profile: 'publisher' } }],
+    ['publications-retry-choice', { searchParams: { profile: 'publisher' } }],
     ['publications-legacy', { searchParams: { legacy: '1' }, features: ['legacy'] }],
     [
       'publications-compose',
@@ -636,7 +636,7 @@ const baseScenarios = [
     ],
   ]),
   defineScenario('autoposts', 'autoposts-redirect', {
-    readySelector: '.publications-page',
+    readySelector: '.publik-handoff',
   }),
   ...defineRouteScenarios('chat-events', [
     'events-moderation',

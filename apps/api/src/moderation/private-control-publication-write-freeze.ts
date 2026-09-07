@@ -6,7 +6,7 @@ import {
 } from '../admin/legacy-publication-write-freeze';
 
 const LEGACY_PUBLICATION_PRIVATE_CONTROL_MESSAGE =
-  'Старый автопостинг отключён. Создавайте новые отправки в разделе «Публикации».';
+  'Посты и автопостинг теперь в боте Публик: https://max.ru/se14088825_bot';
 
 export function requireService(
   service: ManagedBroadcastService | undefined,

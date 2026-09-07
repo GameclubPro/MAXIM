@@ -20,12 +20,17 @@ export function buildMiniappProfileProjection(profile: MiniappProfile): MiniappP
   return profile === 'publisher'
     ? {
         profile,
-        capabilities: ['publisher_workspace', 'publisher_entities', 'chat_comments'],
+        capabilities: [
+          'publisher_workspace',
+          'publisher_entities',
+          'chat_comments',
+          'publisher_policy_write',
+        ],
         homeRoute: '/',
       }
     : {
         profile,
-        capabilities: ['moderation_workspace', 'publisher_policy_write'],
+        capabilities: ['moderation_workspace'],
         homeRoute: '/',
       };
 }

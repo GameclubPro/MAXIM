@@ -2002,13 +2002,14 @@ export class PublicationService {
   }
 
   private async materializeRecurringSchedules(limit: number): Promise<void> {
+    const dispatchProfile = PublicationDispatchProfile.PUBLIK_V1;
     const now = new Date();
     const schedules = await this.prisma.publicationSchedule.findMany({
       where: {
         mode: PublicationScheduleMode.RECURRENCE,
         status: PublicationScheduleStatus.ACTIVE,
         nextMaterializeAt: { lte: now },
-        publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+        publication: { is: { lifecycle: PublicationLifecycle.ACTIVE, dispatchProfile } },
       },
       orderBy: { nextMaterializeAt: 'asc' },
       take: limit,

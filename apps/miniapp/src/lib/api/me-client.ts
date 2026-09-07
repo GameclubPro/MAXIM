@@ -52,8 +52,13 @@ function parseMe(value: unknown): Me {
           typeof item === 'string' && allowedCapabilities.has(item as MiniappCapability),
       )
     : profile === 'publisher'
-      ? (['publisher_workspace', 'publisher_entities', 'chat_comments'] as MiniappCapability[])
-      : (['moderation_workspace', 'publisher_policy_write'] as MiniappCapability[]);
+      ? ([
+          'publisher_workspace',
+          'publisher_entities',
+          'chat_comments',
+          'publisher_policy_write',
+        ] as MiniappCapability[])
+      : (['moderation_workspace'] as MiniappCapability[]);
   const homeRoute =
     value.homeRoute === '/' || value.homeRoute === '/publications'
       ? value.homeRoute
