@@ -26,6 +26,7 @@
 - `miniapp-major-static` serves `https://major-maksimov.ru/app/` on local port 3003. `miniapp-static` serves legacy support host `maxim.play-team.ru` on port 3000 and is not a routine target.
 - `admin-static` serves the closed Safety Desk on local port 3004 behind `admin.major-maksimov.ru` Basic Auth.
 - Current canonical user host is `https://major-maksimov.ru`; `/app/` is the only routine production mini app path.
+- Sibling Svyazka marketplace owns `/market/`, proxied with that prefix stripped to local port 4311. Its source, images, database, and releases are separate under `/var/www/svyazka`; preserve the route during nginx operations, but never include Svyazka in MAXIM container deploys or database operations.
 - CDN, Object Storage, and app2 delivery are paused. Do not deploy, publish, smoke, or propose them as fallback. Historical context is non-authoritative under `docs/operations/archive/`.
 
 ## VPS Access

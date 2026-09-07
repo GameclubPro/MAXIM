@@ -319,6 +319,16 @@ Nginx site changes are applied separately after config review. For the closed ad
 Before applying `maxim.play-team.ru` nginx config, compare it with the live backend file because
 sibling application routes may exist there.
 
+## Sibling Marketplace
+
+Svyazka is an independent MAX mini app at `https://major-maksimov.ru/market/`.
+The canonical nginx site strips `/market/` and proxies to `127.0.0.1:4311`.
+Its `svyazka` Compose project, PostgreSQL volume, immutable source releases, and
+secrets under `/var/www/svyazka` are not part of MAXIM deploys or database audits.
+Use the separate MAX-MARKET repository's deployment runbook for that service.
+Preserve the `/market/` location when changing the canonical nginx site. A routing
+smoke is `https://major-maksimov.ru/market/api/health`; it must identify `svyazka`.
+
 ## Health And Smoke Checks
 
 - Local ingress live: `http://127.0.0.1:3001/api/health/live`
