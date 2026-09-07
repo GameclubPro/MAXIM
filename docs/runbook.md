@@ -328,6 +328,9 @@ secrets under `/var/www/svyazka` are not part of MAXIM deploys or database audit
 Use the separate MAX-MARKET repository's deployment runbook for that service.
 Preserve the `/market/` location when changing the canonical nginx site. A routing
 smoke is `https://major-maksimov.ru/market/api/health`; it must identify `svyazka`.
+Only `/market/api/media` accepts photo uploads up to the 9 MiB nginx envelope;
+the marketplace validates a single JPEG/PNG up to 8 MiB. Other API routes remain
+limited to 64 KiB. Marketplace publication workers are separate from MAXIM roles.
 
 ## Health And Smoke Checks
 

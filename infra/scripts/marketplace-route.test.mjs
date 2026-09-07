@@ -19,5 +19,10 @@ test('the sibling marketplace has a distinct prefix-stripping upstream and compl
   ])
     assert.ok(location.includes(`add_header ${header} `));
   assert.doesNotMatch(location, /X-Frame-Options|3001|3002|3003/);
+  const upload = source.match(/location = \/market\/api\/media \{([\s\S]*?)\n {2}\}/)?.[1];
+  assert.ok(upload);
+  assert.match(upload, /client_max_body_size 9m;/);
+  assert.match(upload, /proxy_request_buffering off;/);
+  assert.match(upload, /proxy_pass http:\/\/127\.0\.0\.1:4311\/api\/media;/);
   assert.match(source, /location \/app\/ \{\s+proxy_pass http:\/\/127\.0\.0\.1:3003;/);
 });

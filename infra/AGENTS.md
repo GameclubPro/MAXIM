@@ -27,6 +27,7 @@
 - `admin-static` serves the closed Safety Desk on local port 3004 behind `admin.major-maksimov.ru` Basic Auth.
 - Current canonical user host is `https://major-maksimov.ru`; `/app/` is the only routine production mini app path.
 - Sibling Svyazka marketplace owns `/market/`, proxied with that prefix stripped to local port 4311. Its source, images, database, and releases are separate under `/var/www/svyazka`; preserve the route during nginx operations, but never include Svyazka in MAXIM container deploys or database operations.
+- Only Svyazka's exact `/market/api/media` upload route has a 9 MiB body limit; the rest of `/market/` stays at 64 KiB. Do not widen the entire prefix for uploads.
 - CDN, Object Storage, and app2 delivery are paused. Do not deploy, publish, smoke, or propose them as fallback. Historical context is non-authoritative under `docs/operations/archive/`.
 
 ## VPS Access
