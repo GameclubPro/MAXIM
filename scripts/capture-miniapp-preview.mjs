@@ -2177,6 +2177,7 @@ const scenarioBehaviors = [
       if (!(await toggle.isChecked())) {
         throw new Error('Quick button setting was not saved.');
       }
+      await page.waitForTimeout(250);
     },
   },
   {
