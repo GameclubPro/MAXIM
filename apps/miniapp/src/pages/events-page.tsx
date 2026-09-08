@@ -22,6 +22,8 @@ import '../styles/dashboard-events.css';
 import '../styles/statistics-experience.css';
 import {
   startTransition,
+  Suspense,
+  type ComponentProps,
   type CSSProperties,
   type MouseEvent,
   useDeferredValue,
@@ -30,8 +32,8 @@ import {
   useState,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import { ChatParticipantSheet } from '../components/dashboard/chat-participant-sheet';
-import { ChatParticipantsRoster } from '../components/dashboard/chat-participants-roster';
+import type { ChatParticipantSheet as ChatParticipantSheetComponent } from '../components/dashboard/chat-participant-sheet';
+import type { ChatParticipantsRoster as ChatParticipantsRosterComponent } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { PersonAvatar } from '../components/ui/person-avatar';
@@ -100,6 +102,14 @@ import {
 import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
+import { recoverableLazyNamedComponent } from '../lib/recoverable-lazy';
+
+const ChatParticipantsRoster = recoverableLazyNamedComponent<
+  ComponentProps<typeof ChatParticipantsRosterComponent>
+>(() => import('../components/dashboard/chat-participants-roster'), 'ChatParticipantsRoster');
+const ChatParticipantSheet = recoverableLazyNamedComponent<
+  ComponentProps<typeof ChatParticipantSheetComponent>
+>(() => import('../components/dashboard/chat-participant-sheet'), 'ChatParticipantSheet');
 
 type ViolationItem = LogsDashboardViolation;
 type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
@@ -2116,7 +2126,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
 
     const snapshot = readStatsSnapshotMirror<ChatParticipantsPage>(
-      'chat-participants-feed',
+      'chat-participants-feed-v2',
       buildChatParticipantsSnapshotParts(chatId, range, '', participantsRoleFilter),
     );
     return isChatParticipantsPage(snapshot) ? snapshot : null;
@@ -2521,6 +2531,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return () => window.clearTimeout(timeoutId);
   }, [chatId, spammerDiagnosticsLight, spammerDiagnosticsUserId]);
   const participantsFeed = useChatParticipantsFeed({
+    chatId: chatId ?? '',
     enabled: Boolean(chatId) && section === 'participants',
     range,
     roleFilter: participantsRoleFilter,
@@ -2530,7 +2541,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });
   const fullParticipantsTotal =
-    currentChatIdentity?.participantsCount ?? participantsFeed.totalCount;
+    section === 'participants' && participantsFeed.updatedAt !== null
+      ? (participantsFeed.totalCount ?? currentChatIdentity?.participantsCount)
+      : (currentChatIdentity?.participantsCount ?? participantsFeed.totalCount);
 
   useEffect(() => {
     if (
@@ -2541,27 +2554,19 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     ) {
       return;
     }
-    if (participantsFeed.items.length === 0 && participantsFeed.totalCount === null) {
+    if (!participantsFeed.firstPage) {
       return;
     }
 
     saveStatsSnapshot(
-      'chat-participants-feed',
+      'chat-participants-feed-v2',
       buildChatParticipantsSnapshotParts(chatId, range, '', participantsRoleFilter),
-      {
-        items: participantsFeed.items.slice(0, 100),
-        totalCount: participantsFeed.totalCount,
-        hasMore: participantsFeed.hasMore,
-        nextCursor: participantsFeed.nextCursor,
-      } satisfies ChatParticipantsPage,
+      participantsFeed.firstPage,
     );
   }, [
     chatId,
     debouncedParticipantsSearch,
-    participantsFeed.hasMore,
-    participantsFeed.items,
-    participantsFeed.nextCursor,
-    participantsFeed.totalCount,
+    participantsFeed.firstPage,
     participantsRoleFilter,
     range,
     section,
@@ -2663,6 +2668,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         title: result.message,
       });
       void dashboardQuery.refetch();
+      void participantsIdentityQuery.refetch();
       void participantsFeed.retry();
     },
     onError: (error: unknown) => {
@@ -2687,6 +2693,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: `Проверено: ${result.scannedCount}. Найдено: ${result.matchedCount}.`,
       });
       void dashboardQuery.refetch();
+      void participantsIdentityQuery.refetch();
       void participantsFeed.retry();
     },
     onError: (error: unknown) => {
@@ -2828,6 +2835,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
   }, [section]);
 
+  useEffect(() => {
+    setSelectedParticipantId(null);
+    setCleanupUnavailableConfirmOpen(false);
+    setPendingScopeAction(null);
+    setParticipantsSearch('');
+    setParticipantsRoleFilter('all');
+  }, [chatId]);
+
   const selectedParticipant = useMemo(
     () =>
       selectedParticipantId
@@ -2837,7 +2852,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   );
 
   useEffect(() => {
-    if (selectedParticipantId && participantsFeed.items.length > 0 && !selectedParticipant) {
+    if (selectedParticipantId && !selectedParticipant) {
       setSelectedParticipantId(null);
     }
   }, [participantsFeed.items.length, selectedParticipant, selectedParticipantId]);
@@ -3212,36 +3227,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   : 'Сводка по модерации'
             }
           >
-            <div className="events-dashboard__head">
-              <SegmentedControl
-                value={range}
-                options={periodOptions}
-                onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
-                className="events-dashboard__range"
-                ariaLabel="Период статистики"
-              />
-            </div>
-
-            {section !== 'participants' && isDashboardPending ? (
-              <EventsDashboardSkeleton section={section} />
-            ) : section !== 'participants' && hasBlockingDashboardError ? (
-              <GlassCard className="events-inline-state">
-                <StatusState
-                  tone="danger"
-                  title="Не удалось загрузить статистику"
-                  description={normalizeLoadErrorMessage(dashboardQuery.error)}
-                  action={
-                    <button
-                      type="button"
-                      className="button button--danger"
-                      onClick={() => void dashboardQuery.refetch()}
-                    >
-                      Повторить
-                    </button>
-                  }
-                />
-              </GlassCard>
-            ) : section === 'participants' ? (
+            {section === 'participants' ? (
               <div className="events-dashboard__body events-dashboard__body--participants">
                 <article
                   className={`events-dashboard__hero events-dashboard__hero--${participantsHeroMetric.tone}`}
@@ -3269,7 +3255,39 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   </strong>
                 </article>
               </div>
-            ) : section === 'activity' ? (
+            ) : null}
+            <div className="events-dashboard__head">
+              <SegmentedControl
+                value={range}
+                options={periodOptions}
+                onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
+                className="events-dashboard__range"
+                ariaLabel={
+                  section === 'participants' ? 'Период подсчёта нарушений' : 'Период статистики'
+                }
+              />
+            </div>
+
+            {section !== 'participants' && isDashboardPending ? (
+              <EventsDashboardSkeleton section={section} />
+            ) : section !== 'participants' && hasBlockingDashboardError ? (
+              <GlassCard className="events-inline-state">
+                <StatusState
+                  tone="danger"
+                  title="Не удалось загрузить статистику"
+                  description={normalizeLoadErrorMessage(dashboardQuery.error)}
+                  action={
+                    <button
+                      type="button"
+                      className="button button--danger"
+                      onClick={() => void dashboardQuery.refetch()}
+                    >
+                      Повторить
+                    </button>
+                  }
+                />
+              </GlassCard>
+            ) : section === 'participants' ? null : section === 'activity' ? (
               <div className="events-dashboard__activity">
                 <article
                   className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
@@ -3379,25 +3397,35 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       {section === 'participants' ? (
-        <ChatParticipantsRoster
-          items={participantsFeed.items}
-          search={participantsSearch}
-          rangeLabel={formatStatisticsRangeLabel(range)}
-          roleFilter={participantsRoleFilter}
-          onRoleFilterChange={setParticipantsRoleFilter}
-          hasMore={participantsFeed.hasMore}
-          isReloading={participantsFeed.isReloading}
-          isLoadingMore={participantsFeed.isLoadingMore}
-          error={participantsFeed.error}
-          onSearchChange={setParticipantsSearch}
-          onLoadMore={() => void participantsFeed.loadMore()}
-          onRetry={() => void participantsFeed.retry()}
-          onParticipantActivate={(item: ChatParticipantItem) =>
-            setSelectedParticipantId(item.userId)
-          }
-          onCleanupUnavailable={() => setCleanupUnavailableConfirmOpen(true)}
-          isCleanupUnavailableBusy={cleanupUnavailableParticipantsMutation.isPending}
-        />
+        <Suspense fallback={<Spinner size="lg" label="Загружаем участников" />}>
+          <ChatParticipantsRoster
+            items={participantsFeed.items}
+            search={participantsSearch}
+            rangeLabel={formatStatisticsRangeLabel(range)}
+            roleFilter={participantsRoleFilter}
+            onRoleFilterChange={setParticipantsRoleFilter}
+            hasMore={participantsFeed.hasMore}
+            isReloading={participantsFeed.isReloading}
+            isLoadingMore={participantsFeed.isLoadingMore}
+            isSearchPending={participantsSearch.trim() !== debouncedParticipantsSearch}
+            updatedAt={participantsFeed.updatedAt}
+            error={
+              participantsFeed.error ? normalizeLoadErrorMessage(participantsFeed.error) : null
+            }
+            onSearchChange={setParticipantsSearch}
+            onLoadMore={() => void participantsFeed.loadMore()}
+            onRetry={() => void participantsFeed.retryFailed()}
+            onRefresh={() => {
+              void participantsFeed.retry();
+              void participantsIdentityQuery.refetch();
+            }}
+            onParticipantActivate={(item: ChatParticipantItem) =>
+              setSelectedParticipantId(item.userId)
+            }
+            onCleanupUnavailable={() => setCleanupUnavailableConfirmOpen(true)}
+            isCleanupUnavailableBusy={cleanupUnavailableParticipantsMutation.isPending}
+          />
+        </Suspense>
       ) : null}
 
       {section === 'moderation' ? (
@@ -3674,6 +3702,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         id={pendingScopeAction?.id ?? 'manual-moderation-scope'}
         open={Boolean(pendingScopeAction)}
         title={pendingScopeAction?.action === 'BAN' ? 'Бан' : 'Мут'}
+        summary={
+          pendingScopeAction?.source === 'participant'
+            ? selectedParticipant?.userDisplayName
+            : spammerDiagnosticsTarget?.displayName
+        }
+        previewMeta={
+          pendingScopeAction?.action === 'MUTE'
+            ? `Срок: ${pendingScopeAction.muteDurationHours ?? 24} ч`
+            : undefined
+        }
         confirmLabel="В этом чате"
         confirmBusyLabel="Применяем..."
         cancelLabel="Отмена"
@@ -3717,80 +3755,97 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         onConfirm={() => cleanupUnavailableParticipantsMutation.mutate()}
       />
 
-      <ChatParticipantSheet
-        open={Boolean(selectedParticipant)}
-        item={selectedParticipant}
-        rangeLabel={formatStatisticsRangeLabel(range)}
-        isSavingImmunity={
-          participantImmunityMutation.isPending || participantImmunityClearMutation.isPending
-        }
-        isApplyingModeration={participantModerationMutation.isPending}
-        onClose={() => setSelectedParticipantId(null)}
-        onSaveImmunity={(payload) => {
-          if (!selectedParticipant) {
-            return;
+      {selectedParticipant ? (
+        <Suspense
+          fallback={
+            <SettingsDrilldownPanel
+              id="participant-sheet-loading"
+              open
+              title={selectedParticipant.userDisplayName}
+              onClose={() => setSelectedParticipantId(null)}
+            >
+              <Spinner size="lg" label="Загружаем карточку участника" />
+            </SettingsDrilldownPanel>
           }
+        >
+          <ChatParticipantSheet
+            open={Boolean(selectedParticipant)}
+            item={selectedParticipant}
+            rangeLabel={formatStatisticsRangeLabel(range)}
+            isSavingImmunity={
+              participantImmunityMutation.isPending || participantImmunityClearMutation.isPending
+            }
+            isApplyingModeration={participantModerationMutation.isPending}
+            isOpeningProfile={profileHandoffMutation.isPending}
+            onClose={() => setSelectedParticipantId(null)}
+            onSaveImmunity={(payload) => {
+              if (!selectedParticipant) {
+                return;
+              }
 
-          participantImmunityMutation.mutate({
-            userId: selectedParticipant.userId,
-            ...payload,
-          });
-        }}
-        onClearImmunity={() => {
-          if (!selectedParticipant) {
-            return;
-          }
+              participantImmunityMutation.mutate({
+                userId: selectedParticipant.userId,
+                ...payload,
+              });
+            }}
+            onClearImmunity={() => {
+              if (!selectedParticipant) {
+                return;
+              }
 
-          participantImmunityClearMutation.mutate({
-            userId: selectedParticipant.userId,
-          });
-        }}
-        onProfileActivate={() => {
-          if (!selectedParticipant) {
-            return;
-          }
+              participantImmunityClearMutation.mutate({
+                userId: selectedParticipant.userId,
+              });
+            }}
+            onProfileActivate={() => {
+              if (!selectedParticipant) {
+                return;
+              }
 
-          activateProfile(selectedParticipant.userId, selectedParticipant.userDisplayName);
-        }}
-        onSpammerDiagnostics={() => {
-          if (!selectedParticipant) {
-            return;
-          }
+              activateProfile(selectedParticipant.userId, selectedParticipant.userDisplayName);
+            }}
+            onSpammerDiagnostics={() => {
+              if (!selectedParticipant) {
+                return;
+              }
 
-          openSpammerDiagnostics({
-            userId: selectedParticipant.userId,
-            displayName: selectedParticipant.userDisplayName || selectedParticipant.username || '',
-            avatarUrl: selectedParticipant.avatarUrl,
-            profileUrl: selectedParticipant.profileUrl,
-            profileHandoffUrl: selectedParticipant.profileHandoffUrl,
-          });
-        }}
-        onMute={(durationHours) => {
-          if (!selectedParticipant) {
-            return;
-          }
+              openSpammerDiagnostics({
+                userId: selectedParticipant.userId,
+                displayName:
+                  selectedParticipant.userDisplayName || selectedParticipant.username || '',
+                avatarUrl: selectedParticipant.avatarUrl,
+                profileUrl: selectedParticipant.profileUrl,
+                profileHandoffUrl: selectedParticipant.profileHandoffUrl,
+              });
+            }}
+            onMute={(durationHours) => {
+              if (!selectedParticipant) {
+                return;
+              }
 
-          openPendingScopeAction({
-            id: `participant-mute-${selectedParticipant.userId}`,
-            userId: selectedParticipant.userId,
-            action: 'MUTE',
-            source: 'participant',
-            muteDurationHours: clampMuteDurationHours(durationHours),
-          });
-        }}
-        onBan={() => {
-          if (!selectedParticipant) {
-            return;
-          }
+              openPendingScopeAction({
+                id: `participant-mute-${selectedParticipant.userId}`,
+                userId: selectedParticipant.userId,
+                action: 'MUTE',
+                source: 'participant',
+                muteDurationHours: clampMuteDurationHours(durationHours),
+              });
+            }}
+            onBan={() => {
+              if (!selectedParticipant) {
+                return;
+              }
 
-          openPendingScopeAction({
-            id: `participant-ban-${selectedParticipant.userId}`,
-            userId: selectedParticipant.userId,
-            action: 'BAN',
-            source: 'participant',
-          });
-        }}
-      />
+              openPendingScopeAction({
+                id: `participant-ban-${selectedParticipant.userId}`,
+                userId: selectedParticipant.userId,
+                action: 'BAN',
+                source: 'participant',
+              });
+            }}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

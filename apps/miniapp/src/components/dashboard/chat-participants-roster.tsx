@@ -1,6 +1,17 @@
 import type { ChatParticipantItem, ChatParticipantRoleFilter } from '@maxim/contracts';
-import { MoreHoriz as IconMoreHoriz, UserXmark as IconUserXmark } from 'iconoir-react';
-import { useEffect, useRef } from 'react';
+import {
+  MoreHoriz,
+  UserXmark,
+  Search,
+  Xmark,
+  Refresh,
+  NavArrowRight,
+  ShieldCheck,
+  WarningCircle,
+} from 'iconoir-react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { describeParticipantViolations } from '../../lib/chat-participants-feed';
+import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
 import './chat-participants-roster.css';
@@ -24,6 +35,9 @@ type ChatParticipantsRosterProps = {
   hasMore: boolean;
   isReloading: boolean;
   isLoadingMore: boolean;
+  isSearchPending: boolean;
+  updatedAt: number | null;
+  onRefresh: () => void;
   error: string | null;
   onSearchChange: (value: string) => void;
   onRoleFilterChange: (value: ChatParticipantRoleFilter) => void;
@@ -113,14 +127,6 @@ function formatViolationCount(count: number): string {
   return String(Math.max(0, Math.trunc(count)));
 }
 
-function describeViolationCount(count: number): string {
-  if (count === 1) {
-    return '1 нарушение за выбранный период';
-  }
-
-  return `${count} нарушений за выбранный период`;
-}
-
 function resolveImmunity(item: ChatParticipantItem): ChatParticipantImmunityView | null {
   return item.immunity ? (item.immunity as ChatParticipantImmunityView) : null;
 }
@@ -189,20 +195,13 @@ function describeImmunity(immunity: ChatParticipantImmunityView | null): string 
   return 'Защита с дневным лимитом';
 }
 
-function SearchIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M13.4 13.4 17 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 export function ChatParticipantsRoster({
   items,
   hasMore,
   isReloading,
   isLoadingMore,
+  isSearchPending,
+  updatedAt,
   error,
   search,
   rangeLabel,
@@ -211,108 +210,195 @@ export function ChatParticipantsRoster({
   onRoleFilterChange,
   onLoadMore,
   onRetry,
+  onRefresh,
   onParticipantActivate = null,
   onCleanupUnavailable = null,
   isCleanupUnavailableBusy = false,
 }: ChatParticipantsRosterProps) {
-  const isSearching = search.trim().length > 0;
-  const isSearchBusy = isSearching && (isReloading || isLoadingMore);
-  const showSearchScanning =
-    !error && isSearching && items.length === 0 && (isReloading || isLoadingMore || hasMore);
+  const searchId = useId();
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const menuRef = useRef<HTMLDetailsElement | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [autoLoadCount, setAutoLoadCount] = useState(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const autoLoadLockRef = useRef(false);
+  const isSearching = search.trim().length > 0;
+  const isBusy = isReloading || isLoadingMore || isSearchPending;
+  const visibleError = isSearchPending ? null : error;
+  const isScanning =
+    !visibleError && items.length === 0 && (isBusy || (hasMore && autoLoadCount < 3));
+  const isEmpty = !visibleError && !isBusy && !hasMore && items.length === 0;
+  const hasFilters = isSearching || roleFilter !== 'all';
+
+  const closeMenu = useCallback((restoreFocus = false) => {
+    if (menuRef.current) menuRef.current.open = false;
+    setMenuOpen(false);
+    if (restoreFocus) menuRef.current?.querySelector('summary')?.focus();
+  }, []);
+  useNativeBackHandler(
+    () => {
+      closeMenu(true);
+      return true;
+    },
+    { enabled: menuOpen, priority: 620 },
+  );
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        menuRef.current?.open &&
+        event.target instanceof Node &&
+        !menuRef.current.contains(event.target)
+      )
+        closeMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && menuRef.current?.open) {
+        event.preventDefault();
+        closeMenu(true);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [closeMenu]);
 
   useEffect(() => {
-    if (!isLoadingMore) {
-      autoLoadLockRef.current = false;
-    }
-  }, [isLoadingMore]);
+    setAutoLoadCount(0);
+  }, [search, roleFilter, items.length]);
 
   useEffect(() => {
-    if (!hasMore || isLoadingMore || isReloading || typeof IntersectionObserver === 'undefined') {
+    if (!isLoadingMore) autoLoadLockRef.current = false;
+  }, [isLoadingMore, isReloading, search, roleFilter]);
+
+  useEffect(() => {
+    if (
+      !hasMore ||
+      isBusy ||
+      visibleError ||
+      autoLoadCount >= 3 ||
+      typeof IntersectionObserver === 'undefined'
+    )
       return;
-    }
-
     const node = sentinelRef.current;
-    if (!node) {
-      return;
-    }
-
+    if (!node) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) {
-          return;
-        }
-
-        if (autoLoadLockRef.current) {
-          return;
-        }
-
+        if (!entries.some((entry) => entry.isIntersecting) || autoLoadLockRef.current) return;
         autoLoadLockRef.current = true;
+        setAutoLoadCount((count) => count + 1);
         onLoadMore();
       },
-      {
-        rootMargin: '320px 0px 320px 0px',
-      },
+      { rootMargin: '240px 0px' },
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [hasMore, isLoadingMore, isReloading, onLoadMore]);
+  }, [hasMore, isBusy, visibleError, autoLoadCount, onLoadMore]);
 
-  const showSearch = true;
-  const showEmptySearch =
-    !error && !isReloading && !isLoadingMore && !hasMore && isSearching && items.length === 0;
-  const showEmptyRoster = !error && !isReloading && !isSearching && !hasMore && items.length === 0;
   const roleOptions: Array<{ value: ChatParticipantRoleFilter; label: string }> = [
     { value: 'all', label: 'Все' },
     { value: 'admins', label: 'Админы' },
     { value: 'members', label: 'Участники' },
     { value: 'bots', label: 'Боты' },
   ];
+  const clearSearch = () => {
+    onSearchChange('');
+    searchRef.current?.focus();
+  };
+  const resetFilters = () => {
+    onSearchChange('');
+    onRoleFilterChange('all');
+  };
+  const resultLabel = isSearchPending
+    ? 'Ищем участников...'
+    : isReloading
+      ? 'Обновляем список...'
+      : isLoadingMore
+        ? hasFilters
+          ? 'Поиск продолжается...'
+          : 'Загружаем участников...'
+        : `${isSearching ? 'Найдено' : 'В списке'}: ${items.length}${hasMore ? '+' : ''}`;
 
   return (
     <section className="participants-roster" aria-label="Список участников">
-      {showSearch ? (
-        <div className="participants-roster__toolbar">
-          <label className={`participants-roster__search ${isSearchBusy ? 'is-busy' : ''}`}>
-            <span className="participants-roster__search-icon" aria-hidden="true">
-              <SearchIcon />
-            </span>
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Поиск"
-              aria-label="Поиск участника"
-              autoComplete="off"
-              spellCheck={false}
-            />
-            {isSearchBusy ? (
-              <span className="participants-roster__search-progress" aria-hidden="true" />
-            ) : null}
+      <div className="participants-roster__toolbar">
+        <div className={`participants-roster__search ${isBusy ? 'is-busy' : ''}`}>
+          <label
+            htmlFor={searchId}
+            className="participants-roster__search-icon"
+            title="Поиск участника"
+            aria-label="Поиск участника"
+          >
+            <Search width={18} height={18} aria-hidden />
           </label>
-          {onCleanupUnavailable ? (
-            <details className="participants-roster__manage">
-              <summary aria-label="Управление участниками" title="Управление участниками">
-                <IconMoreHoriz width={20} height={20} strokeWidth={2.05} aria-hidden />
-              </summary>
-              <div className="participants-roster__manage-menu">
-                <button
-                  type="button"
-                  className="participants-roster__cleanup-button"
-                  onClick={onCleanupUnavailable}
-                  disabled={isCleanupUnavailableBusy || isReloading || isLoadingMore}
-                >
-                  <IconUserXmark width={18} height={18} strokeWidth={2.05} aria-hidden />
-                  <span>
-                    {isCleanupUnavailableBusy ? 'Проверяем...' : 'Удалить заблокированных'}
-                  </span>
-                </button>
-              </div>
-            </details>
-          ) : null}
+          <input
+            ref={searchRef}
+            id={searchId}
+            type="search"
+            value={search}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Имя или ID"
+            aria-label="Поиск участника"
+            maxLength={100}
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            enterKeyHint="search"
+          />
+          <div className="participants-roster__search-end">
+            {search ? (
+              <button
+                type="button"
+                className="participants-roster__icon-button"
+                onClick={clearSearch}
+                aria-label="Очистить поиск"
+                title="Очистить поиск"
+              >
+                <Xmark width={18} height={18} aria-hidden />
+              </button>
+            ) : isBusy ? (
+              <Spinner size="sm" label="Загружаем участников" />
+            ) : null}
+          </div>
         </div>
-      ) : null}
+        <button
+          type="button"
+          className="participants-roster__icon-button participants-roster__refresh"
+          onClick={onRefresh}
+          disabled={isBusy}
+          aria-label="Обновить участников"
+          title="Обновить участников"
+        >
+          <Refresh width={20} height={20} aria-hidden />
+        </button>
+        {onCleanupUnavailable ? (
+          <details
+            ref={menuRef}
+            className="participants-roster__manage"
+            onToggle={(event) => setMenuOpen(event.currentTarget.open)}
+          >
+            <summary aria-label="Управление участниками" title="Управление участниками">
+              <MoreHoriz width={20} height={20} aria-hidden />
+            </summary>
+            <div className="participants-roster__manage-menu">
+              <button
+                type="button"
+                className="participants-roster__cleanup-button"
+                onClick={() => {
+                  closeMenu(true);
+                  onCleanupUnavailable();
+                }}
+                disabled={isCleanupUnavailableBusy || isBusy}
+              >
+                <UserXmark width={18} height={18} aria-hidden />
+                <span>{isCleanupUnavailableBusy ? 'Проверяем...' : 'Удалить заблокированных'}</span>
+              </button>
+            </div>
+          </details>
+        ) : null}
+      </div>
 
       <div className="participants-roster__scope">
         <div
@@ -336,63 +422,93 @@ export function ChatParticipantsRoster({
           <h2>{resolveRosterHeading(roleFilter)}</h2>
           <p>Нарушения {rangeLabel}</p>
         </div>
+        <div
+          className="participants-roster__results"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span>
+            {visibleError
+              ? items.length
+                ? 'Список не обновлён'
+                : 'Список недоступен'
+              : resultLabel}
+          </span>
+          {updatedAt && !isBusy && !visibleError ? (
+            <time dateTime={new Date(updatedAt).toISOString()}>
+              Обновлено{' '}
+              {new Date(updatedAt).toLocaleTimeString('ru-RU', {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </time>
+          ) : null}
+        </div>
       </div>
 
-      {error ? (
-        <div className="participants-roster__status">
-          <p>{error}</p>
-          <button type="button" className="button button--ghost" onClick={onRetry}>
-            Повторить
+      {visibleError ? (
+        <div
+          className="participants-roster__status participants-roster__status--error"
+          role="alert"
+        >
+          <WarningCircle width={22} height={22} aria-hidden />
+          <div>
+            <strong>Не удалось загрузить участников</strong>
+            <p>{visibleError}</p>
+          </div>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={onRetry}
+            disabled={isBusy}
+          >
+            <Refresh width={18} height={18} aria-hidden /> Повторить
           </button>
         </div>
       ) : null}
 
-      {!error && isReloading && items.length === 0 && !isSearching ? (
-        <div className="participants-roster__status">
-          <Spinner size="lg" label="Загружаем участников" />
+      {isScanning ? (
+        <div
+          className="participants-roster__status participants-roster__status--search"
+          role="status"
+        >
+          <Spinner size="sm" label={hasFilters ? 'Ищем участников' : 'Загружаем участников'} />
+          <p>{hasFilters ? 'Ищем участников...' : 'Загружаем участников...'}</p>
         </div>
       ) : null}
 
-      {showSearchScanning ? (
-        <div className="participants-roster__status participants-roster__status--search">
-          <span className="participants-roster__search-status-spinner" aria-hidden="true" />
-          <p>Ищем по участникам...</p>
-        </div>
-      ) : null}
-
-      {showEmptyRoster ? (
-        <div className="participants-roster__status">
-          <p>Участников пока нет.</p>
-        </div>
-      ) : null}
-
-      {showEmptySearch ? (
-        <div className="participants-roster__status">
-          <p>Ничего не найдено.</p>
+      {isEmpty ? (
+        <div className="participants-roster__status participants-roster__status--empty">
+          <Search width={28} height={28} aria-hidden />
+          <strong>{hasFilters ? 'Участники не найдены' : 'Нет доступных участников'}</strong>
+          {isSearching ? <p>По запросу «{search.trim()}»</p> : null}
+          {hasFilters ? (
+            <button type="button" className="button button--ghost" onClick={resetFilters}>
+              <Xmark width={18} height={18} aria-hidden /> Сбросить фильтры
+            </button>
+          ) : null}
         </div>
       ) : null}
 
       {items.length > 0 ? (
-        <div className="participants-roster__list">
+        <div className="participants-roster__list" aria-busy={isReloading || isSearchPending}>
           {items.map((item) => {
             const displayName = resolveDisplayName(item);
             const username = item.username?.replace(/^@+/u, '').trim() ?? '';
             const canOpenDetails =
               item.userId.trim().length > 0 && typeof onParticipantActivate === 'function';
-            const roleTone = resolveRoleTone(item);
             const roleLabel = resolveRoleLabel(item);
             const violationCount = Number.isFinite(item.violationCount)
               ? Math.max(0, Math.trunc(item.violationCount))
               : 0;
-            const violationTone = resolveViolationTone(violationCount);
             const immunity = resolveImmunity(item);
             const immunityValue = formatImmunityValue(immunity);
             const immunityDescription = describeImmunity(immunity);
-            const hasAlwaysImmunity = isAlwaysImmunity(immunity);
             const itemBody = (
               <>
                 <div
-                  className={`participants-roster__avatar-shell ${item.immunity ? 'participants-roster__avatar-shell--immune' : ''}`}
+                  className={`participants-roster__avatar-shell ${immunity ? 'participants-roster__avatar-shell--immune' : ''}`}
                 >
                   <PersonAvatar
                     avatarUrl={item.avatarUrl?.trim() || null}
@@ -400,18 +516,16 @@ export function ChatParticipantsRoster({
                     className="participants-roster__avatar"
                   />
                 </div>
-
                 <div className="participants-roster__content">
                   <div className="participants-roster__identity">
                     <strong>{displayName}</strong>
-                    {username ? <span>@{username}</span> : null}
+                    <span>{username ? `@${username}` : `ID ${item.userId}`}</span>
                   </div>
-
-                  {roleLabel || item.isBot ? (
+                  {roleLabel || item.isBot || immunity ? (
                     <div className="participants-roster__meta">
                       {roleLabel ? (
                         <span
-                          className={`participants-roster__pill participants-roster__pill--${roleTone}`}
+                          className={`participants-roster__pill participants-roster__pill--${resolveRoleTone(item)}`}
                         >
                           {roleLabel}
                         </span>
@@ -421,71 +535,53 @@ export function ChatParticipantsRoster({
                           Бот
                         </span>
                       ) : null}
+                      {immunity && immunityValue ? (
+                        <span
+                          className={`participants-roster__immunity ${isAlwaysImmunity(immunity) ? 'participants-roster__immunity--always' : ''}`}
+                          role="img"
+                          aria-label={immunityDescription ?? undefined}
+                          title={immunityDescription ?? undefined}
+                        >
+                          <ShieldCheck width={14} height={14} aria-hidden />
+                          <span aria-hidden="true">
+                            {isAlwaysImmunity(immunity) ? 'Всегда' : immunityValue}
+                          </span>
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
-
-                {item.immunity || violationCount > 0 || canOpenDetails ? (
-                  <div className="participants-roster__aside">
-                    {item.immunity && immunityValue ? (
-                      <span
-                        className={`participants-roster__immunity ${
-                          hasAlwaysImmunity ? 'participants-roster__immunity--always' : ''
-                        }`}
-                        role="img"
-                        aria-label={immunityDescription ?? undefined}
-                        title={immunityDescription ?? undefined}
-                      >
-                        <span className="participants-roster__immunity-shield" aria-hidden="true">
-                          <svg viewBox="0 0 20 20" fill="none" focusable="false">
-                            <path
-                              d="M10 2.8 15.8 5v4.2c0 3.2-1.9 5.8-5.8 8-3.9-2.2-5.8-4.8-5.8-8V5L10 2.8Z"
-                              stroke="currentColor"
-                              strokeWidth="1.7"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                        </span>
-                        <span aria-hidden="true">{immunityValue}</span>
-                      </span>
-                    ) : null}
-
-                    {violationCount > 0 ? (
-                      <span
-                        className={`participants-roster__violations participants-roster__violations--${violationTone}`}
-                        role="img"
-                        aria-label={describeViolationCount(violationCount)}
-                        title={describeViolationCount(violationCount)}
-                      >
-                        <span aria-hidden="true">{formatViolationCount(violationCount)}</span>
-                      </span>
-                    ) : null}
-
-                    {canOpenDetails ? (
-                      <span className="participants-roster__chevron" aria-hidden="true">
-                        ›
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
+                <div className="participants-roster__aside">
+                  <span
+                    className={`participants-roster__violations participants-roster__violations--${violationCount ? resolveViolationTone(violationCount) : 'none'}`}
+                    role="img"
+                    aria-label={describeParticipantViolations(violationCount)}
+                    title={describeParticipantViolations(violationCount)}
+                  >
+                    <span aria-hidden="true">{formatViolationCount(violationCount)}</span>
+                  </span>
+                  {canOpenDetails ? (
+                    <NavArrowRight
+                      className="participants-roster__chevron"
+                      width={16}
+                      height={16}
+                      aria-hidden
+                    />
+                  ) : null}
+                </div>
               </>
             );
-
-            if (canOpenDetails) {
-              return (
-                <button
-                  key={item.userId}
-                  type="button"
-                  className="participants-roster__item participants-roster__item--interactive"
-                  onClick={() => onParticipantActivate?.(item)}
-                >
-                  {itemBody}
-                </button>
-              );
-            }
-
-            return (
+            return canOpenDetails ? (
+              <button
+                key={item.userId}
+                type="button"
+                className="participants-roster__item participants-roster__item--interactive"
+                disabled={isSearchPending || isReloading}
+                onClick={() => onParticipantActivate?.(item)}
+              >
+                {itemBody}
+              </button>
+            ) : (
               <article key={item.userId} className="participants-roster__item">
                 {itemBody}
               </article>
@@ -495,15 +591,17 @@ export function ChatParticipantsRoster({
       ) : null}
 
       <div ref={sentinelRef} className="participants-roster__sentinel" aria-hidden="true" />
-
-      {hasMore && !showSearchScanning ? (
+      {hasMore && !visibleError ? (
         <button
           type="button"
           className="button button--ghost participants-roster__load-more"
-          onClick={onLoadMore}
-          disabled={isLoadingMore || isReloading}
+          onClick={() => {
+            setAutoLoadCount(0);
+            onLoadMore();
+          }}
+          disabled={isBusy}
         >
-          {isLoadingMore ? (isSearching ? 'Ищем...' : 'Загружаем...') : 'Показать ещё'}
+          {isLoadingMore ? 'Загружаем...' : hasFilters ? 'Продолжить поиск' : 'Показать ещё'}
         </button>
       ) : null}
     </section>

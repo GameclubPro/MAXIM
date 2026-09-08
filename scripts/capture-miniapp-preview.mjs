@@ -1315,7 +1315,20 @@ const scenarioBehaviors = [
   },
   {
     name: 'events-moderation',
-    beforeShot: waitForModerationEventsReady,
+    beforeShot: async (page) => {
+      await waitForModerationEventsReady(page);
+      const sections = page.getByRole('group', { name: 'Раздел статистики' });
+      await sections.getByRole('button', { name: 'Участники', exact: true }).click();
+      await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+      await page
+        .getByRole('searchbox', { name: 'Поиск участника' })
+        .fill('несуществующий участник');
+      await page.getByText('Участники не найдены', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Сбросить фильтры' }).click();
+      await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+      await sections.getByRole('button', { name: 'Модерация', exact: true }).click();
+      await waitForModerationEventsReady(page);
+    },
   },
   {
     name: 'events-moderation-scrolled',
@@ -1341,6 +1354,65 @@ const scenarioBehaviors = [
     name: 'events-participants',
     beforeShot: async (page) => {
       await page.locator('.participants-roster').waitFor({ state: 'visible' });
+      await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+    },
+  },
+  {
+    name: 'events-participants-search',
+    beforeShot: async (page) => {
+      await page.getByRole('searchbox', { name: 'Поиск участника' }).fill('sergey-market');
+      await page
+        .locator('.participants-roster__results')
+        .filter({ hasText: 'Найдено: 1' })
+        .waitFor();
+      if ((await page.locator('.participants-roster__item').count()) !== 1) {
+        throw new Error('Participant search retained rows from a previous query.');
+      }
+    },
+  },
+  {
+    name: 'events-participants-empty',
+    beforeShot: async (page) => {
+      await page
+        .getByRole('searchbox', { name: 'Поиск участника' })
+        .fill('несуществующий участник');
+      await page.getByText('Участники не найдены', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Сбросить фильтры' }).click();
+      await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+      await page
+        .getByRole('searchbox', { name: 'Поиск участника' })
+        .fill('несуществующий участник');
+      await page.getByText('Участники не найдены', { exact: true }).waitFor();
+    },
+  },
+  {
+    name: 'events-participants-bots',
+    beforeShot: async (page) => {
+      await page
+        .getByRole('group', { name: 'Фильтр участников по роли' })
+        .getByRole('button', { name: 'Боты', exact: true })
+        .click();
+      await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+      const rows = page.locator('.participants-roster__item');
+      if (
+        (await rows.count()) === 0 ||
+        (await rows.count()) !==
+          (await rows.filter({ has: page.locator('.participants-roster__pill--bot') }).count())
+      ) {
+        throw new Error('Bot filter displayed non-bot participants.');
+      }
+    },
+  },
+  {
+    name: 'events-participants-menu',
+    beforeShot: async (page) => {
+      const menu = page.locator('.participants-roster__manage');
+      await menu.locator('summary').click();
+      await page.keyboard.press('Escape');
+      if ((await menu.getAttribute('open')) !== null)
+        throw new Error('Participant menu did not close on Escape.');
+      await menu.locator('summary').click();
+      await page.getByRole('button', { name: 'Удалить заблокированных', exact: true }).waitFor();
     },
   },
   {

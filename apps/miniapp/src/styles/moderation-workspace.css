@@ -1196,6 +1196,95 @@
     font-weight: 650;
   }
 
+  body[data-miniapp-profile='moderation'] .participants-roster {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .participants-roster__item {
+    border: 0;
+    border-bottom: 1px solid var(--major-border);
+    border-radius: 0;
+    background: transparent;
+    padding: 10px 2px;
+    gap: 10px;
+  }
+  body[data-miniapp-profile='moderation'] .participants-roster__list {
+    gap: 0;
+  }
+  body[data-miniapp-profile='moderation'] .participants-roster__avatar {
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.participants-roster__violations--none, .participants-roster__chevron) {
+    background: transparent;
+  }
+  body[data-miniapp-profile='moderation'] .participants-roster__role-filters {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  body[data-miniapp-profile='moderation'] .participants-roster__manage-menu {
+    box-shadow: var(--major-overlay-shadow);
+  }
+  body[data-miniapp-profile='moderation'] .participants-roster__violations--high {
+    color: var(--major-danger);
+    background: var(--major-danger-soft);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .participants-roster__violations--low,
+      .participants-roster__violations--medium,
+      .participants-roster__pill--bot
+    ) {
+    color: var(--major-warning);
+    background: var(--major-warning-soft);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.participants-roster__immunity, .participants-roster__pill--admin) {
+    color: var(--major-positive);
+    background: var(--major-positive-soft);
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard--participants {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard--participants .events-dashboard__head {
+    margin: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-dashboard__body--participants
+    .events-dashboard__hero {
+    min-height: 48px;
+    padding-block: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard--participants .events-dashboard__range {
+    width: 100%;
+    max-width: none;
+  }
+  body[data-miniapp-profile='moderation'] .participant-sheet__identity strong {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  body[data-miniapp-profile='moderation'] .participant-sheet__slider-block {
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--major-border);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  @media (hover: hover) {
+    body[data-miniapp-profile='moderation']
+      .participants-roster__item--interactive:hover:not(:disabled) {
+      background: var(--major-subtle);
+    }
+  }
+
   @media (min-width: 760px) {
     body[data-miniapp-profile='moderation'] .channel-insights__overview-top {
       grid-template-columns: minmax(0, 1fr) minmax(340px, 0.7fr);

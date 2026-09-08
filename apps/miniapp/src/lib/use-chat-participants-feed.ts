@@ -1,16 +1,21 @@
 import type { ChatParticipantsPage, ChatParticipantsQuery } from '@maxim/contracts';
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
-
-type LoadChatParticipantsPage = (
-  query: ChatParticipantsQuery,
-  request?: Pick<RequestInit, 'signal'>,
-) => Promise<ChatParticipantsPage>;
+import {
+  buildParticipantsFeedKey,
+  mergeParticipants,
+  normalizeParticipantsSearch,
+  validateParticipantsCursor,
+} from './chat-participants-feed';
 
 type UseChatParticipantsFeedOptions = {
+  chatId: string;
   enabled?: boolean;
   initialPage?: ChatParticipantsPage | null;
   refetchInitialPage?: boolean;
-  loadPage: LoadChatParticipantsPage;
+  loadPage: (
+    query: ChatParticipantsQuery,
+    request?: Pick<RequestInit, 'signal'>,
+  ) => Promise<ChatParticipantsPage>;
   range?: ChatParticipantsQuery['range'];
   roleFilter?: ChatParticipantsQuery['roleFilter'];
   limit?: number;
@@ -18,56 +23,36 @@ type UseChatParticipantsFeedOptions = {
 };
 
 type FeedState = {
-  items: ChatParticipantsPage['items'];
-  totalCount: number | null;
-  hasMore: boolean;
-  nextCursor: string | null;
+  key: string;
+  page: ChatParticipantsPage;
+  firstPage: ChatParticipantsPage | null;
+  status: 'idle' | 'reloading' | 'loadingMore';
+  error: string | null;
+  errorKind: 'reload' | 'more' | null;
+  updatedAt: number | null;
 };
 
-const EMPTY_FEED: FeedState = {
+const EMPTY_PAGE: ChatParticipantsPage = {
   items: [],
   totalCount: null,
   hasMore: false,
   nextCursor: null,
 };
 
-function toFeedState(page: ChatParticipantsPage): FeedState {
+function createFeed(key: string, page: ChatParticipantsPage | null): FeedState {
   return {
-    items: page.items,
-    totalCount: page.totalCount,
-    hasMore: page.hasMore,
-    nextCursor: page.nextCursor,
+    key,
+    page: page ?? EMPTY_PAGE,
+    firstPage: null,
+    status: 'idle',
+    error: null,
+    errorKind: null,
+    updatedAt: null,
   };
 }
 
-function isAbortError(cause: unknown): boolean {
-  return (
-    (cause instanceof DOMException && cause.name === 'AbortError') ||
-    (cause instanceof Error &&
-      (cause.name === 'AbortError' || cause.message.toLowerCase().includes('abort')))
-  );
-}
-
-function mergeParticipants(
-  current: ChatParticipantsPage['items'],
-  next: ChatParticipantsPage['items'],
-): ChatParticipantsPage['items'] {
-  const merged = [...current];
-  const seen = new Set(current.map((item) => item.userId));
-
-  for (const item of next) {
-    if (seen.has(item.userId)) {
-      continue;
-    }
-
-    seen.add(item.userId);
-    merged.push(item);
-  }
-
-  return merged;
-}
-
 export function useChatParticipantsFeed({
+  chatId,
   enabled = true,
   initialPage = null,
   refetchInitialPage = false,
@@ -77,207 +62,119 @@ export function useChatParticipantsFeed({
   limit = 100,
   search = '',
 }: UseChatParticipantsFeedOptions) {
-  const [feed, setFeed] = useState<FeedState>(() =>
-    initialPage ? toFeedState(initialPage) : EMPTY_FEED,
-  );
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<'idle' | 'reloading' | 'loadingMore'>('idle');
-  const requestIdRef = useRef(0);
-  const activeControllerRef = useRef<AbortController | null>(null);
-  const feedRef = useRef(feed);
-  const queryKeyRef = useRef('');
-  const runLoadPage = useEffectEvent(loadPage);
-  const normalizedSearch = search.trim();
+  const normalizedSearch = normalizeParticipantsSearch(search);
   const requestLimit = normalizedSearch ? Math.min(limit, 24) : limit;
+  const query: ChatParticipantsQuery = {
+    range,
+    roleFilter,
+    limit: requestLimit,
+    search: normalizedSearch || undefined,
+  };
+  const key = buildParticipantsFeedKey(chatId, query);
+  const seed = !normalizedSearch ? initialPage : null;
+  const [state, setState] = useState(() => createFeed(key, seed));
+  const activeControllerRef = useRef<AbortController | null>(null);
+  const visitedCursorsRef = useRef(new Set<string>());
+  // FLAG: Never expose another chat/filter's rows, counts, actions, or snapshot before effects run.
+  const current = state.key === key ? state : createFeed(key, seed);
+
+  async function requestPage(mode: 'reload' | 'more') {
+    if (!enabled || !chatId) return;
+    if (
+      mode === 'more' &&
+      (activeControllerRef.current ||
+        state.key !== key ||
+        !current.page.hasMore ||
+        !current.page.nextCursor)
+    )
+      return;
+
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+    const cursor = mode === 'more' ? current.page.nextCursor : null;
+    const visited = mode === 'more' ? new Set(visitedCursorsRef.current) : new Set<string>();
+    if (cursor) visited.add(cursor);
+    setState({
+      ...current,
+      status: mode === 'more' ? 'loadingMore' : 'reloading',
+      error: null,
+      errorKind: null,
+    });
+
+    try {
+      const page = await loadPage(
+        { ...query, ...(cursor ? { cursor } : {}) },
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted || activeControllerRef.current !== controller) return;
+      validateParticipantsCursor(page, visited);
+      const normalizedPage = { ...page, items: mergeParticipants([], page.items) };
+      visitedCursorsRef.current = visited;
+      setState((previous) => ({
+        key,
+        page:
+          mode === 'more'
+            ? {
+                ...normalizedPage,
+                items: mergeParticipants(previous.page.items, normalizedPage.items),
+                totalCount: page.totalCount ?? previous.page.totalCount,
+              }
+            : normalizedPage,
+        // FLAG: Persist the actual first page with its own cursor, never a truncated merged list.
+        firstPage: mode === 'more' ? previous.firstPage : normalizedPage,
+        status: 'idle',
+        error: null,
+        errorKind: null,
+        updatedAt: Date.now(),
+      }));
+    } catch (cause: unknown) {
+      if (controller.signal.aborted || activeControllerRef.current !== controller) return;
+      setState((previous) => ({
+        ...previous,
+        status: 'idle',
+        errorKind: mode,
+        error: cause instanceof Error ? cause.message : 'Не удалось загрузить участников.',
+      }));
+    } finally {
+      if (activeControllerRef.current === controller) activeControllerRef.current = null;
+    }
+  }
+
+  const startInitialRequest = useEffectEvent(() => {
+    if (seed && !refetchInitialPage) {
+      setState(createFeed(key, seed));
+      return;
+    }
+    void requestPage('reload');
+  });
 
   useEffect(() => {
-    feedRef.current = feed;
-  }, [feed]);
-
-  useEffect(() => {
-    requestIdRef.current += 1;
     activeControllerRef.current?.abort();
     activeControllerRef.current = null;
-
-    if (!enabled) {
-      setError(null);
-      setStatus('idle');
-      return;
-    }
-
-    const queryKey = `${range}\u0000${roleFilter}\u0000${requestLimit}\u0000${normalizedSearch}`;
-    const shouldClearItems = feedRef.current.items.length === 0 || queryKeyRef.current !== queryKey;
-    queryKeyRef.current = queryKey;
-
-    if (initialPage && !normalizedSearch) {
-      setFeed(toFeedState(initialPage));
-      setError(null);
-      setStatus('idle');
-      if (!refetchInitialPage) {
-        return;
-      }
-    }
-
-    const requestId = requestIdRef.current;
-    const controller = new AbortController();
-    activeControllerRef.current = controller;
-    setStatus('reloading');
-    setError(null);
-    if (shouldClearItems && !initialPage) {
-      setFeed(EMPTY_FEED);
-    }
-
-    void runLoadPage(
-      { limit: requestLimit, range, roleFilter, search: normalizedSearch || undefined },
-      { signal: controller.signal },
-    )
-      .then((page) => {
-        if (requestId !== requestIdRef.current || controller.signal.aborted) {
-          return;
-        }
-
-        setFeed(toFeedState(page));
-        setStatus('idle');
-        if (activeControllerRef.current === controller) {
-          activeControllerRef.current = null;
-        }
-      })
-      .catch((cause: unknown) => {
-        if (
-          requestId !== requestIdRef.current ||
-          controller.signal.aborted ||
-          isAbortError(cause)
-        ) {
-          return;
-        }
-
-        setError(cause instanceof Error ? cause.message : 'Не удалось загрузить участников.');
-        setStatus('idle');
-        if (activeControllerRef.current === controller) {
-          activeControllerRef.current = null;
-        }
-      });
+    visitedCursorsRef.current = new Set();
+    if (enabled && chatId) startInitialRequest();
 
     return () => {
-      controller.abort();
-      if (activeControllerRef.current === controller) {
-        activeControllerRef.current = null;
-      }
+      activeControllerRef.current?.abort();
+      activeControllerRef.current = null;
     };
-  }, [enabled, initialPage, normalizedSearch, range, requestLimit, refetchInitialPage, roleFilter]);
-
-  async function loadMore() {
-    if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
-      return;
-    }
-
-    const requestId = requestIdRef.current + 1;
-    activeControllerRef.current?.abort();
-    const controller = new AbortController();
-    activeControllerRef.current = controller;
-    requestIdRef.current = requestId;
-    setStatus('loadingMore');
-    setError(null);
-
-    try {
-      const nextPage = await runLoadPage(
-        {
-          limit: requestLimit,
-          range,
-          roleFilter,
-          cursor: feed.nextCursor,
-          search: normalizedSearch || undefined,
-        },
-        { signal: controller.signal },
-      );
-      if (requestId !== requestIdRef.current || controller.signal.aborted) {
-        return;
-      }
-
-      setFeed((current) => ({
-        items: mergeParticipants(current.items, nextPage.items),
-        totalCount: nextPage.totalCount ?? current.totalCount,
-        hasMore: nextPage.hasMore,
-        nextCursor: nextPage.nextCursor,
-      }));
-      setStatus('idle');
-      if (activeControllerRef.current === controller) {
-        activeControllerRef.current = null;
-      }
-    } catch (cause: unknown) {
-      if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
-        return;
-      }
-
-      setError(cause instanceof Error ? cause.message : 'Не удалось догрузить участников.');
-      setStatus('idle');
-      if (activeControllerRef.current === controller) {
-        activeControllerRef.current = null;
-      }
-    }
-  }
-
-  async function retry() {
-    if (!enabled) {
-      setError(null);
-      setStatus('idle');
-      return;
-    }
-
-    if (initialPage && !normalizedSearch && !refetchInitialPage) {
-      setFeed(toFeedState(initialPage));
-      setError(null);
-      setStatus('idle');
-      return;
-    }
-
-    const requestId = requestIdRef.current + 1;
-    activeControllerRef.current?.abort();
-    const controller = new AbortController();
-    activeControllerRef.current = controller;
-    requestIdRef.current = requestId;
-    setStatus('reloading');
-    setError(null);
-    if (feedRef.current.items.length === 0) {
-      setFeed(EMPTY_FEED);
-    }
-
-    try {
-      const page = await runLoadPage(
-        { limit: requestLimit, range, roleFilter, search: normalizedSearch || undefined },
-        { signal: controller.signal },
-      );
-      if (requestId !== requestIdRef.current || controller.signal.aborted) {
-        return;
-      }
-
-      setFeed(toFeedState(page));
-      setStatus('idle');
-      if (activeControllerRef.current === controller) {
-        activeControllerRef.current = null;
-      }
-    } catch (cause: unknown) {
-      if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
-        return;
-      }
-
-      setError(cause instanceof Error ? cause.message : 'Не удалось загрузить участников.');
-      setStatus('idle');
-      if (activeControllerRef.current === controller) {
-        activeControllerRef.current = null;
-      }
-    }
-  }
+  }, [chatId, enabled, key, initialPage, refetchInitialPage]);
 
   return {
-    items: feed.items,
-    totalCount: feed.totalCount,
-    hasMore: feed.hasMore,
-    nextCursor: feed.nextCursor,
-    error,
-    isReloading: status === 'reloading',
-    isLoadingMore: status === 'loadingMore',
-    loadMore,
-    retry,
+    ...current.page,
+    firstPage: current.firstPage,
+    error: current.error,
+    errorKind: current.errorKind,
+    updatedAt: current.updatedAt,
+    isReloading:
+      enabled &&
+      (state.key !== key ||
+        current.status === 'reloading' ||
+        (!seed && current.updatedAt === null && current.error === null)),
+    isLoadingMore: enabled && current.status === 'loadingMore',
+    loadMore: () => requestPage('more'),
+    retry: () => requestPage('reload'),
+    retryFailed: () => requestPage(current.errorKind === 'more' ? 'more' : 'reload'),
   };
 }

@@ -1,6 +1,6 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
 import { InfoCircle } from 'iconoir-react';
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent } from 'react';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
@@ -43,6 +43,7 @@ type ChatParticipantSheetProps = {
   rangeLabel: string;
   isSavingImmunity: boolean;
   isApplyingModeration: boolean;
+  isOpeningProfile: boolean;
   onClose: () => void;
   onSaveImmunity: (payload: SaveImmunityPayload) => void;
   onClearImmunity: () => void;
@@ -105,7 +106,8 @@ function formatImmunityLeft(expiresAt: string): string {
     return '0ч';
   }
 
-  const diffMs = Math.max(0, expiresAtMs - Date.now());
+  const diffMs = expiresAtMs - Date.now();
+  if (diffMs <= 0) return 'Истекла';
   const diffHours = Math.max(1, Math.ceil(diffMs / (60 * 60 * 1000)));
   return formatDuration(diffHours);
 }
@@ -336,6 +338,7 @@ export function ChatParticipantSheet({
   rangeLabel,
   isSavingImmunity,
   isApplyingModeration,
+  isOpeningProfile,
   onClose,
   onSaveImmunity,
   onClearImmunity,
@@ -364,8 +367,8 @@ export function ChatParticipantSheet({
         return true;
       }
 
-      if (isSavingImmunity || isApplyingModeration) {
-        return false;
+      if (isSavingImmunity || isApplyingModeration || isOpeningProfile) {
+        return true;
       }
 
       onClose();
@@ -374,7 +377,7 @@ export function ChatParticipantSheet({
     { enabled: open, priority: 660 },
   );
 
-  useEffect(() => {
+  const resetParticipantDraft = useEffectEvent(() => {
     if (!item || !open) {
       return;
     }
@@ -386,7 +389,10 @@ export function ChatParticipantSheet({
     setImmunityMode(isAlwaysImmunity(immunity) ? 'always' : 'limited');
     setImmunityDurationDays(resolveInitialImmunityDurationDays(immunity));
     setDailyViolationLimit(resolveInitialDailyViolationLimit(immunity));
-  }, [item, open]);
+  });
+  useEffect(() => {
+    resetParticipantDraft();
+  }, [item?.userId, open]);
 
   useEffect(() => {
     if (activeComposer !== 'immunity' && openHintKey !== null) {
@@ -410,7 +416,7 @@ export function ChatParticipantSheet({
     ? Math.max(0, Math.trunc(item.violationCount))
     : 0;
   const canManageParticipant = !item.isBot && item.role === 'member';
-  const isBusy = isSavingImmunity || isApplyingModeration;
+  const isBusy = isSavingImmunity || isApplyingModeration || isOpeningProfile;
   const immunity = resolveImmunity(item);
   const immunityValue = formatImmunityValue(immunity);
   const immunityDescription = describeImmunity(immunity);
@@ -444,7 +450,9 @@ export function ChatParticipantSheet({
       title={displayName}
       summary={username ? `@${username}` : roleLabel}
       tone="sky"
-      onClose={onClose}
+      onClose={() => {
+        if (!isBusy) onClose();
+      }}
       className="participant-sheet"
     >
       <section className="participant-sheet__hero">
@@ -504,7 +512,7 @@ export function ChatParticipantSheet({
               disabled={isBusy}
             >
               <ProfileIcon />
-              <span>Профиль</span>
+              <span>{isOpeningProfile ? 'Открываем...' : 'Профиль'}</span>
             </button>
 
             <button
@@ -514,7 +522,7 @@ export function ChatParticipantSheet({
               disabled={isBusy}
             >
               <ShieldIcon />
-              <span>База</span>
+              <span>Спам-база</span>
             </button>
 
             {canManageParticipant ? (
