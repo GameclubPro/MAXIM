@@ -216,6 +216,15 @@ describe('commercial OCR eval gates', () => {
     );
   });
 
+  it('rejects certification evidence from the vulnerable Sharp runtime', () => {
+    const report = buildReport(passingCases());
+    setProvenanceValue(report, ['runtime', 'sharpVersion'], '0.35.3');
+
+    expect(evaluateCommercialOcrEvalGates(report, SMALL_PROFILE).failures).toContain(
+      'Certification runtime must use the production Sharp version',
+    );
+  });
+
   it('binds policy identities and execution limits to the production behavior', () => {
     const report = buildReport(passingCases());
     setProvenanceValue(report, ['fingerprints', 'ocr', 'version'], 'legacy-ocr');
@@ -267,11 +276,7 @@ describe('commercial OCR eval gates', () => {
         sourceCaseDurationMs: summarizeCommercialOcrEvalDurationSamples(sourceCaseSamplesMs),
       },
     };
-    setProvenanceValue(
-      report,
-      ['benchmarkEnvironment', 'reviewedDescriptorSha256'],
-      null,
-    );
+    setProvenanceValue(report, ['benchmarkEnvironment', 'reviewedDescriptorSha256'], null);
 
     const failures = evaluateCommercialOcrEvalGates(report, SMALL_PROFILE).failures.join('\n');
     expect(failures).toMatch(/benchmark environment was not bound to a reviewed descriptor/u);
@@ -872,8 +877,7 @@ function buildValidProvenance(): CommercialOcrEvalReport['provenance'] {
     nativeBuildManifestSha256: '8'.repeat(64),
     nativeBehaviorFingerprintSha256: behaviorIdentity.nativeFingerprintSha256,
   };
-  const benchmarkDescriptorSha256 =
-    calculateCommercialOcrEvalCanonicalSha256(benchmarkDescriptor);
+  const benchmarkDescriptorSha256 = calculateCommercialOcrEvalCanonicalSha256(benchmarkDescriptor);
   return {
     run: {
       startedAt: '2026-08-14T00:00:00.000Z',
@@ -917,8 +921,8 @@ function buildValidProvenance(): CommercialOcrEvalReport['provenance'] {
     },
     runtime: {
       nodeVersion: 'v24.16.0',
-      sharpVersion: '0.35.3',
-      libvipsVersion: '8.18.3',
+      sharpVersion: '0.35.4',
+      libvipsVersion: '8.18.6',
       tesseractVersion: 'tesseract 5.5.2',
     },
     sourceImages: {
@@ -1004,8 +1008,8 @@ function buildVerifiedBehaviorIdentity(): CommercialOcrEvalReport['provenance'][
         nodeVersion: 'v24.16.0',
         platform: 'linux',
         architecture: 'x64',
-        sharpVersion: '0.35.3',
-        libvipsVersion: '8.18.3',
+        sharpVersion: '0.35.4',
+        libvipsVersion: '8.18.6',
       },
       tesseract: {
         version: 'tesseract 5.5.2',

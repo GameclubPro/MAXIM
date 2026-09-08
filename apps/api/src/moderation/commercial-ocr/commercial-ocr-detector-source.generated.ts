@@ -7,7 +7,7 @@ export const COMMERCIAL_OCR_POLICY_SOURCE_SHA256 = 'c94c9a2cc11c3d87833279c936e0
 export const COMMERCIAL_OCR_POLICY_SOURCE_FILE_COUNT = 4 as const;
 export const COMMERCIAL_OCR_PREPROCESS_SOURCE_SHA256 = '3955342eb77f6d4f69becf94058b858e5bc58dfcd902e449148e7301cf1c63af' as const;
 export const COMMERCIAL_OCR_PREPROCESS_SOURCE_FILE_COUNT = 4 as const;
-export const COMMERCIAL_OCR_AUDIT_TOOL_SOURCE_SHA256 = 'b190e298006526657424b6af3bbfdb9665f4200415979118b50d84d1e66c8a93' as const;
+export const COMMERCIAL_OCR_AUDIT_TOOL_SOURCE_SHA256 = '7e711c73049f0b610bcccacc82881dcfadcf66fc328c758bf15e05cbc132cece' as const;
 export const COMMERCIAL_OCR_AUDIT_TOOL_SOURCE_FILE_COUNT = 32 as const;
 export const COMMERCIAL_OCR_BUILD_IDENTITY = {
   "nodeBaseImage": {
@@ -17,8 +17,8 @@ export const COMMERCIAL_OCR_BUILD_IDENTITY = {
   "packages": {
     "sharp": {
       "name": "sharp",
-      "version": "0.35.3",
-      "integrity": "sha512-ej0zVHuZGHCiABXcNxeYhpRnPNPAcvbG8RMdBAhDAxLKkCRVSpK3Iyu7qbqw3JMzoj0REeM6f3tJLtVwl0023Q=="
+      "version": "0.35.4",
+      "integrity": "sha512-n++8XWcj+jCOr2IOl7h8LbKnGBDY4aPbmprMONBNFdn0ImXqpGVv5zliDs0V9HbmbCQLpbuo2ej9rAoOQTvMDA=="
     },
     "tesseract": {
       "name": "tesseract-ocr",

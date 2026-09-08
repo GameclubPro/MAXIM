@@ -35,8 +35,8 @@ const LOWER_GIT_SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const LOWER_SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
 const NODE_24_VERSION_PATTERN = /^v24\.\d+\.\d+$/u;
 export const CERTIFICATION_RUNTIME_VERSIONS = Object.freeze({
-  sharp: '0.35.3',
-  libvips: '8.18.3',
+  sharp: '0.35.4',
+  libvips: '8.18.6',
   tesseract: 'tesseract 5.5.2',
 });
 const CERTIFICATION_NATIVE_RUNTIME_CONTROLS = resolveCommercialOcrNativeRuntimeControls(
