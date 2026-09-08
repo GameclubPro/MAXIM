@@ -27,6 +27,57 @@ describe('structured profanity rule-engine decision', () => {
     }
   });
 
+  describe.each(['on', 'legacy'] as const)('numeric lists in %s rollout', (rolloutMode) => {
+    beforeEach(() => {
+      process.env.PROFANITY_V2_ROLLOUT_MODE = rolloutMode;
+    });
+
+    it.each(['CORE_ONLY', 'BALANCED', 'STRICT'] as const)(
+      'allows numeric listings without hiding abuse at %s sensitivity',
+      async (profanitySensitivity) => {
+        const service = new RuleEngineService({} as never);
+        const safeTexts = [
+          'Новая обувь. ОТДАМ ПО ЦЕНЕ ЗАКУПА. МНОГО 32.33.36.37......ОТ 1000',
+          'Размеры 32, 33, 36, 37 от 1000 руб.',
+          '36.37.ОТ 1000',
+          '36 37 от 1000',
+          'Цены 36, 37, 38 руб.',
+          'Ты носишь 36/37 размер?',
+        ];
+        const abusiveTexts = [
+          'Новая обувь 32.33.36.37 от 1000, блять',
+          '36.37.блять',
+          'блять.36.37',
+          '36.37.6лять',
+          '36.37.36л',
+          '36.37.е..бать',
+          '36.37.б л я т ь',
+          '36.37.p1zda',
+          'p1zda.36.37',
+          'Размеры 36, 37, а ты 36л',
+          '3 6 а т ь',
+          '36 а т ь',
+          '36/37ать',
+        ];
+
+        for (const text of [...safeTexts, ...abusiveTexts]) {
+          const result = await service.detect({
+            chatId: 'chat-1',
+            userId: 'user-1',
+            text,
+            settings: { ...BASE_SETTINGS, profanitySensitivity } as never,
+            domainAllowlist: [],
+          });
+
+          expect({
+            text,
+            hasProfanity: result.violations.some(({ ruleCode }) => ruleCode === 'PROFANITY'),
+          }).toEqual({ text, hasProfanity: abusiveTexts.includes(text) });
+        }
+      },
+    );
+  });
+
   it('uses BALANCED when generated settings do not contain sensitivity yet', async () => {
     const service = new RuleEngineService({} as never);
     const result = await service.detect({

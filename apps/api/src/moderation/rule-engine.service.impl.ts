@@ -725,6 +725,8 @@ const PROFANITY_LATIN_JOINABLE_TOKENS = new Set([
 const PROFANITY_JOIN_WINDOW_SEGMENTS = 14;
 const PROFANITY_JOIN_MAX_FRAGMENTS = 8;
 const PROFANITY_JOIN_NOISE_BUDGET = 12;
+const PROFANITY_NUMERIC_LIST_PATTERN =
+  /(?<![\p{L}\p{N}])\d{2,}(?:[\s.,;:/-]+\d{2,})+(?![\p{L}\p{N}])/gu;
 const PROFANITY_DIRECT_ADDRESS_MARKERS = new Set([
   'ты',
   'вы',
@@ -2303,7 +2305,12 @@ export class RuleEngineService {
       return [];
     }
 
-    const rawStripped = this.normalizeProfanityUnicode(stripUrlsFromText(value));
+    // FLAG: Numeric lists are not letter fragments. Mask only complete multi-digit numbers;
+    // preserve offsets, mixed alphanumeric tokens, and single-digit leetspeak for detection.
+    const rawStripped = this.normalizeProfanityUnicode(stripUrlsFromText(value)).replace(
+      PROFANITY_NUMERIC_LIST_PATTERN,
+      (match) => ' '.repeat(match.length),
+    );
     const stripped = rawStripped.toLowerCase();
     const whitespaceSegments = [...rawStripped.matchAll(/\S+/gu)];
     const candidates: ProfanityCandidate[] = [];

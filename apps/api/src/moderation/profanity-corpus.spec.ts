@@ -138,6 +138,22 @@ describe('profanity corpus', () => {
     }).toEqual({ count: 0, samples: [] });
   });
 
+  it('allows numeric size lists across separators and price labels', () => {
+    const falsePositiveCases: string[] = [];
+    for (let size = 20; size <= 52; size += 1) {
+      for (const separator of ['.', ', ', ';', '/', '-', ' ', '\n']) {
+        for (const priceLabel of ['от', 'за', 'по']) {
+          const text = `Обувь ${size}${separator}${size + 1}${separator}${size + 2} ${priceLabel} 1000 руб.`;
+          if (probe.hasProfanity(text)) {
+            falsePositiveCases.push(text);
+          }
+        }
+      }
+    }
+
+    expect(falsePositiveCases).toEqual([]);
+  });
+
   it('blocks generated abusive profanity and insult scenarios', () => {
     expect(PROFANITY_GENERATED_SHOULD_BLOCK_CASES.length).toBeGreaterThanOrEqual(250);
 
