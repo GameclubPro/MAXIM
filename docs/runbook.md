@@ -13,6 +13,11 @@ This is the active production entrypoint. Historical delivery/cloud experiments 
   `api-admin`.
 - CDN, Object Storage, and app2 are not production deploy or smoke targets.
 
+Publisher private greetings use the `publisher-start` queue on `api-publisher`. The worker requires
+enabled dispatch, attested Publisher identity, and healthy dispatch. Events older than one day are
+discarded; retained jobs carry a pre-send marker that prevents replay after an ambiguous send or
+worker restart. Do not remove that marker or manually retry a greeting that already attempted send.
+
 ## First Deployment
 
 1. On the VPS, create root `.env` from `.env.example` and set real database, MAX, webhook, admin,

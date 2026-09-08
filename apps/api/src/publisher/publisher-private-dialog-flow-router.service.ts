@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { PublisherAutoReplyAuthoringService } from './publisher-auto-reply-authoring.service';
 import { PublisherPostImportService } from './publisher-post-import.service';
 import { PublisherSuggestionAdminCallbackObserverService } from './publisher-suggestion-admin-callback-observer.service';
+import { PublisherStartQueueService } from './publisher-start.queue';
 
 @Injectable()
 export class PublisherPrivateDialogFlowRouterService {
@@ -10,6 +11,7 @@ export class PublisherPrivateDialogFlowRouterService {
     private readonly suggestionAdminCallbacks: PublisherSuggestionAdminCallbackObserverService,
     private readonly autoReplyAuthoring: PublisherAutoReplyAuthoringService,
     private readonly postImport: PublisherPostImportService,
+    private readonly start: PublisherStartQueueService,
   ) {}
 
   async observeWebhook(
@@ -23,6 +25,9 @@ export class PublisherPrivateDialogFlowRouterService {
     if (await this.autoReplyAuthoring.observeWebhook(update, webhookEventId, options)) {
       return true;
     }
-    return this.postImport.observeWebhook(update, webhookEventId, options);
+    if (await this.postImport.observeWebhook(update, webhookEventId, options)) {
+      return true;
+    }
+    return this.start.observeWebhook(update);
   }
 }

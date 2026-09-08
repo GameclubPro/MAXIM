@@ -56,6 +56,8 @@ import {
   PublisherSuggestionAdminQueueService,
 } from './publisher-suggestion-admin.queue';
 import { PublisherSuggestionAdminCallbackObserverService } from './publisher-suggestion-admin-callback-observer.service';
+import { PUBLISHER_START_QUEUE, PublisherStartQueueService } from './publisher-start.queue';
+import { PublisherStartProcessor } from './publisher-start.processor';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -70,6 +72,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherPostImportRecoveryService,
       PublisherAutoReplyAuthoringRecoveryService,
       PublisherAutoReplyContentCaptureService,
+      PublisherStartProcessor,
     ]
   : [];
 
@@ -95,6 +98,7 @@ const sharedPublisherProviders = [
   PublisherSuggestionAdminCallbackObserverService,
   PublisherPrivateFlowLeaseService,
   PublisherPrivateDialogFlowRouterService,
+  PublisherStartQueueService,
 ];
 
 @Global()
@@ -108,6 +112,7 @@ const sharedPublisherProviders = [
       { name: PUBLISHER_AUTO_REPLY_QUEUE },
       { name: PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE },
       { name: PUBLISHER_SUGGESTION_ADMIN_QUEUE },
+      { name: PUBLISHER_START_QUEUE },
     ),
   ],
   providers: [...sharedPublisherProviders, ...publisherRuntimeProviders],

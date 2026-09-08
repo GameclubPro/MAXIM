@@ -786,6 +786,7 @@ test('read-only BullMQ monitor batches counters and includes every Publisher que
     'publisher-publication-wakeup',
     'publisher-suggestion-publication',
     'publisher-suggestion-admin',
+    'publisher-start',
     'vk-parsing-publisher',
   ]) {
     assert.equal([...queueBlock.matchAll(new RegExp(`^ {2}${queue}$`, 'gmu'))].length, 1);

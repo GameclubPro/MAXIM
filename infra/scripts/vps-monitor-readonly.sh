@@ -653,6 +653,7 @@ queues=(
   publisher-publication-wakeup
   publisher-suggestion-publication
   publisher-suggestion-admin
+  publisher-start
   vk-parsing-sync
   vk-parsing-publish
   vk-parsing-publisher
