@@ -103,6 +103,10 @@
     cursor: not-allowed;
   }
 
+  .duplicate-stage .duplicate-count-stepper {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+  }
+
   @media (max-width: 520px) {
     .duplicate-stage {
       grid-template-columns: minmax(0, 1fr);
@@ -114,10 +118,6 @@
     .duplicate-stage__controls {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
-    }
-
-    .duplicate-stage__field input {
-      padding-right: 48px;
     }
 
     .duplicate-stage__field-label {

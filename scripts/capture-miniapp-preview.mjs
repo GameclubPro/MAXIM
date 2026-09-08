@@ -1699,6 +1699,13 @@ const scenarioBehaviors = [
       await panel.getByRole('radio', { name: '3 дня', exact: true }).click();
       if ((await hours.inputValue()) !== '72')
         throw new Error('Duplicate window preset was not applied');
+      const countControlsOverlap = await panel
+        .locator('.duplicate-count-stepper')
+        .evaluate((element) => {
+          const boxes = [...element.children].map((child) => child.getBoundingClientRect());
+          return boxes.some((box, index) => index > 0 && box.left < boxes[index - 1].right - 1);
+        });
+      if (countControlsOverlap) throw new Error('Duplicate allowance controls overlap');
       await panel.getByLabel('Сообщение о дублях', { exact: true }).check();
       await panel.getByLabel('Включить предупреждение за повторы', { exact: true }).check();
       await panel.getByLabel('Включить ограничение сообщений за повторы', { exact: true }).check();
