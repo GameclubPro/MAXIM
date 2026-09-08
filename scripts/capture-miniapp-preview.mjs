@@ -1674,11 +1674,39 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
       const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await panel
+        .getByLabel('Включить проверку повторных фото', { exact: true })
+        .waitFor({ state: 'visible' });
       await assertHintDismissal(
         page,
         panel,
         panel.getByRole('button', { name: 'Пояснение для антидубля', exact: true }),
       );
+    },
+  },
+  {
+    name: 'chat-settings-duplicates-flow',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      const hours = panel.getByRole('spinbutton', { name: 'Период проверки дублей, часы' });
+      await hours.fill('');
+      if ((await hours.inputValue()) !== '') throw new Error('Duplicate window cannot be cleared');
+      await hours.fill('24');
+      await hours.blur();
+      if ((await hours.inputValue()) !== '24')
+        throw new Error('Duplicate window lost the edited value');
+      await panel.getByRole('radio', { name: '3 дня', exact: true }).click();
+      if ((await hours.inputValue()) !== '72')
+        throw new Error('Duplicate window preset was not applied');
+      await panel.getByLabel('Сообщение о дублях', { exact: true }).check();
+      await panel.getByLabel('Включить предупреждение за повторы', { exact: true }).check();
+      await panel.getByLabel('Включить ограничение сообщений за повторы', { exact: true }).check();
+      await panel.getByLabel('Включить блокировку за повторы', { exact: true }).check();
+      const preview = panel.locator('.duplicate-action-preview');
+      await preview.getByText('Первое сообщение', { exact: true }).waitFor();
+      await preview.getByText('Удаление и блокировка навсегда', { exact: true }).waitFor();
+      await preview.scrollIntoViewIfNeeded();
     },
   },
   {

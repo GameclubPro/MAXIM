@@ -1,4 +1,5 @@
 import type { ChatSettings } from '../prisma/prisma-client';
+import { normalizeForDetection } from './rule-engine-normalization';
 import { adaptMaxMessageNavigationView } from './navigation/max-navigation-view.adapter';
 import { extractNavigationEvidence } from './navigation/navigation-evidence.extractor';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
@@ -125,7 +126,7 @@ function detectRevision(params: {
     messageId: params.messageId,
     eventTimestampMs: params.revision,
     rawText: params.text,
-    compactText: params.text,
+    compactText: normalizeForDetection(params.text),
     settings: params.settings ?? buildSettings(),
     trackCurrentText: params.trackCurrentText,
   });
@@ -135,6 +136,141 @@ describe('RuleEngineDuplicateDetector', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  describe.each(['STANDARD', 'STRICT', 'CUSTOM'] as const)('%s text identity', (preset) => {
+    it.each([
+      [
+        'price digits',
+        'Стоимость заказа составляет 100 рублей',
+        'Стоимость заказа составляет 1000 рублей',
+      ],
+      [
+        'mixed alphabet',
+        'Код предложения ABC доступен для оформления',
+        'Код предложения АБС доступен для оформления',
+      ],
+      [
+        'short words',
+        'Подробная инструкция для участников встречи доступна до начала регистрации',
+        'Подробная инструкция для участников встречи доступна от начала регистрации',
+      ],
+      [
+        'negation position',
+        'Сегодня продаю оборудование не покупаю материалы доставка доступна участникам встречи',
+        'Сегодня не продаю оборудование покупаю материалы доставка доступна участникам встречи',
+      ],
+      [
+        'word order',
+        'Продавец переводит покупателю деньги после подтверждения получения товара',
+        'Покупатель переводит продавцу деньги после подтверждения получения товара',
+      ],
+      [
+        'numeric order',
+        'Стоимость доставки сегодня 100 рублей завтра 200 рублей для каждого участника',
+        'Стоимость доставки сегодня 200 рублей завтра 100 рублей для каждого участника',
+      ],
+      [
+        'signed number',
+        'Температура хранения оборудования составляет -10 градусов согласно инструкции производителя',
+        'Температура хранения оборудования составляет +10 градусов согласно инструкции производителя',
+      ],
+    ])('does not merge different %s', async (_name, first, second) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: preset,
+        duplicateNearMatchEnabled: true,
+      });
+      await detectRevision({ detector, messageId: 'first', revision: 100, text: first, settings });
+      await expect(
+        detectRevision({ detector, messageId: 'second', revision: 200, text: second, settings }),
+      ).resolves.toEqual({});
+      await expect(
+        detectRevision({ detector, messageId: 'repeat', revision: 300, text: second, settings }),
+      ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+    });
+
+    it('matches case and whitespace changes', async () => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({ duplicateDetectionPreset: preset });
+      await detectRevision({
+        detector,
+        messageId: 'first',
+        revision: 100,
+        text: 'Стоимость заказа составляет 100 рублей',
+        settings,
+      });
+      await expect(
+        detectRevision({
+          detector,
+          messageId: 'repeat',
+          revision: 200,
+          text: ' СТОИМОСТЬ  заказа\nсоставляет 100 рублей ',
+          settings,
+        }),
+      ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+    });
+  });
+
+  it.each(['STRICT', 'CUSTOM'] as const)(
+    'does not merge long text with different hidden destinations in %s',
+    async (preset) => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const text =
+        'Подробная инструкция для участников встречи доступна после завершения регистрации';
+      const params = {
+        chatId: 'chat-1',
+        userId: 'user-1',
+        rawText: text,
+        compactText: normalizeForDetection(text),
+        settings: buildSettings({
+          duplicateDetectionPreset: preset,
+          duplicateNearMatchEnabled: true,
+        }),
+      };
+      await detector.detectWithin({
+        ...params,
+        messageId: 'first',
+        eventTimestampMs: 100,
+        navigationTargets: [navigationTarget('https://example.com/one')],
+      });
+      await expect(
+        detector.detectWithin({
+          ...params,
+          messageId: 'second',
+          eventTimestampMs: 200,
+          navigationTargets: [navigationTarget('https://example.com/two')],
+        }),
+      ).resolves.toEqual({});
+    },
+  );
+
+  it('retains STRICT rotated visible-link matching with real navigation evidence', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const settings = buildSettings({ duplicateDetectionPreset: 'STRICT' });
+    const detect = (messageId: string, eventTimestampMs: number, link: string) => {
+      const text = `Подробная инструкция для участников встречи доступна после завершения регистрации ${link}`;
+      return detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId,
+        eventTimestampMs,
+        rawText: text,
+        compactText: normalizeForDetection(text),
+        settings,
+        navigationTargets: navigationTargetsFromMessage({ body: { text } }),
+      });
+    };
+    await expect(detect('first', 100, 'https://example.com/one')).resolves.toEqual({});
+    await expect(detect('second', 200, 'https://example.com/two')).resolves.toMatchObject({
+      hit: { count: 1, fingerprintType: 'content' },
+    });
   });
 
   it('waits for the side-effecting Redis result and enforces the same message', async () => {
@@ -498,10 +634,10 @@ describe('RuleEngineDuplicateDetector', () => {
         userId: 'user-1',
         messageId: 'normalized-hidden-2',
         eventTimestampMs: 200,
-        rawText: 'ПОДРОБНЕЕ!',
+        rawText: 'ПОДРОБНЕЕ',
         compactText: 'подробнее',
         settings,
-        navigationTargets: targets('ПОДРОБНЕЕ!'),
+        navigationTargets: targets('ПОДРОБНЕЕ'),
       }),
     ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
   });

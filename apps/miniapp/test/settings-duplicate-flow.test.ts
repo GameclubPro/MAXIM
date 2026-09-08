@@ -7,6 +7,7 @@ import {
   resolveDuplicateAllowedCount,
   resolveDuplicateAllowedCountMax,
 } from '../src/pages/settings/settings-duplicate-flow';
+import { buildDuplicateTextActionPreview } from '../src/pages/settings/settings-duplicate-action-preview';
 
 const flowCases = [
   {
@@ -109,6 +110,84 @@ test('WARN-only threshold 20 survives miniapp normalization', () => {
 
   assert.equal(resolveDuplicateAllowedCount(settings), 19);
   assert.deepEqual(normalizeDuplicateFlowSettings(settings), settings);
+});
+
+test('duplicate preview separates the original, allowed repeats and enabled sanctions', () => {
+  assert.deepEqual(
+    buildDuplicateTextActionPreview(
+      {
+        duplicateBotMessageEnabled: true,
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateBanEnabled: true,
+        duplicateMuteDurationHours: 6,
+      },
+      1,
+    ),
+    [
+      { label: 'Первое сообщение', action: 'Остаётся в чате' },
+      { label: 'Дубль №1', action: 'Остаётся в чате' },
+      { label: 'Дубль №2', action: 'Удаление и объяснение' },
+      { label: 'Дубль №3', action: 'Удаление и предупреждение' },
+      { label: 'Дубль №4', action: 'Удаление и ограничение на 6 ч' },
+      { label: 'Дубль №5 и далее', action: 'Удаление и блокировка навсегда' },
+    ],
+  );
+});
+
+test('delete-only preview starts on the first repeat and keeps later repeats actionable', () => {
+  assert.deepEqual(
+    buildDuplicateTextActionPreview(
+      {
+        duplicateBotMessageEnabled: false,
+        duplicateWarnEnabled: false,
+        duplicateMuteEnabled: false,
+        duplicateBanEnabled: false,
+        duplicateMuteDurationHours: 6,
+      },
+      0,
+    ),
+    [
+      { label: 'Первое сообщение', action: 'Остаётся в чате' },
+      { label: 'Дубль №1 и далее', action: 'Удаление' },
+    ],
+  );
+});
+
+test('preview sanctions follow the shared thresholds for every stage combination', () => {
+  for (let mask = 0; mask < 16; mask += 1) {
+    const settings = {
+      duplicateBotMessageEnabled: Boolean(mask & 1),
+      duplicateWarnEnabled: Boolean(mask & 2),
+      duplicateMuteEnabled: Boolean(mask & 4),
+      duplicateBanEnabled: Boolean(mask & 8),
+      duplicateMuteDurationHours: 6,
+    };
+    const allowedCount = resolveDuplicateAllowedCountMax(settings);
+    const thresholds = buildDuplicateFlowSettings({ ...settings, allowedCount, windowSec: 3600 });
+    const preview = buildDuplicateTextActionPreview(settings, allowedCount);
+    for (const [enabled, threshold, action] of [
+      [
+        settings.duplicateWarnEnabled,
+        thresholds.duplicateWarnMaxCount,
+        'Удаление и предупреждение',
+      ],
+      [
+        settings.duplicateMuteEnabled,
+        thresholds.duplicateMuteMaxCount,
+        'Удаление и ограничение на 6 ч',
+      ],
+      [
+        settings.duplicateBanEnabled,
+        thresholds.duplicateBanMaxCount,
+        'Удаление и блокировка навсегда',
+      ],
+    ] as const) {
+      const row = preview.find((item) => item.action === action);
+      assert.equal(Boolean(row), enabled);
+      if (row) assert.match(row.label, new RegExp(`^Дубль №${threshold}(?: и далее)?$`, 'u'));
+    }
+  }
 });
 
 test('duplicate flow clamps the shared window without changing saturated thresholds', () => {

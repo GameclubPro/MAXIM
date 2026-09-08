@@ -700,6 +700,7 @@ const baseScenarios = [
     'chat-settings-commercial',
     'chat-settings-duplicates',
     'chat-settings-help',
+    'chat-settings-duplicates-flow',
     'chat-settings-duplicates-photos',
     'chat-settings-duplicates-duration',
     'chat-settings-limits',

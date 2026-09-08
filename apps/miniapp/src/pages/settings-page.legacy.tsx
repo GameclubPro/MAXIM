@@ -561,7 +561,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingWorkspaceView, setMailingWorkspaceView] = useState<MailingWorkspaceView>('compose');
   const [mailingHistoryFilter, setMailingHistoryFilter] =
     useState<BroadcastHistoryFilter>('future');
-  const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
+  const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState<string | null>(null);
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
   const [isPreparingRulesPublish, setIsPreparingRulesPublish] = useState(false);
   const rulesDraftRef = useRef<ChatRules | null>(null);
@@ -704,7 +704,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingWorkspaceView('compose');
     const restoreEpoch = ++broadcastDraftRestoreEpochRef.current;
     setBroadcastDraftRestoreReady(false);
-    setDuplicateWindowInputValue('');
+    setDuplicateWindowInputValue(null);
     setPendingSpeechStyle(null);
     setRequiredSubscriptionChannelsRefreshRequest({
       nonce: 0,
@@ -1145,7 +1145,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setDraft(nextServerDraft);
     setFieldErrors({});
-    setDuplicateWindowInputValue('');
+    setDuplicateWindowInputValue(null);
   }, [settingsQuery.data]);
 
   useEffect(() => {
@@ -2561,24 +2561,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const hours = Number.parseInt(normalized, 10);
-    if (Number.isNaN(hours)) {
+    const hours = Number(normalized);
+    if (!Number.isFinite(hours)) {
       return;
     }
 
-    const safeHours = Math.min(168, Math.max(1, hours));
+    const safeHours = Math.min(168, Math.max(1, Math.round(hours)));
     applyDuplicateFlowConfig({ windowSec: safeHours * 3600 });
   }
 
   function handleDuplicateWindowHoursBlur() {
     const rawValue = duplicateWindowInputValue;
-    const normalized = rawValue.trim();
-    const parsed = Number.parseInt(normalized, 10);
+    const normalized = rawValue?.trim() ?? '';
+    const parsed = normalized ? Number(normalized) : Number.NaN;
 
     const fallbackHours = draft ? secondsToHours(resolveDuplicateSharedWindowSec(draft)) : 1;
-    const safeHours = Number.isNaN(parsed) ? fallbackHours : Math.min(168, Math.max(1, parsed));
+    const safeHours = !Number.isFinite(parsed)
+      ? fallbackHours
+      : Math.min(168, Math.max(1, Math.round(parsed)));
     applyDuplicateFlowConfig({ windowSec: safeHours * 3600 });
-    setDuplicateWindowInputValue('');
+    setDuplicateWindowInputValue(null);
   }
 
   function formatMuteDurationCompact(hours: number) {
@@ -5136,7 +5138,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const savedSettings = normalizeSectionDraftSettings(settingsQuery.data, section);
 
     if (section === 'duplicates') {
-      setDuplicateWindowInputValue('');
+      setDuplicateWindowInputValue(null);
     }
 
     setDraft((current) =>

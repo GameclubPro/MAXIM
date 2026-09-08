@@ -70,7 +70,7 @@ test('anti-duplicate master toggle preserves configured child actions', () => {
 });
 
 test('anti-duplicate screen keeps the requested task order and effective photo status boundary', () => {
-  const contentOrder = ['Что проверять', 'Когда срабатывать', 'Что делать', 'Итог'].map((label) =>
+  const contentOrder = ['Что проверять', 'Когда срабатывать', 'Что делать'].map((label) =>
     duplicatesSectionSource.indexOf(`>${label}<`),
   );
 
@@ -85,7 +85,12 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.match(photoControlsSource, /\{enabled \? \(\s*<p className="policy-mode-hint">/u);
   assert.match(duplicatesSectionSource, /title="Антидубль"/u);
-  assert.match(duplicatesSectionSource, /Находит повторный текст и изображения/u);
+  assert.match(duplicatesSectionSource, /Текст сравнивается с сообщениями того же участника/u);
+  assert.match(duplicatesSectionSource, /<LazySettingsDuplicateActionPreview/u);
+  assert.match(
+    duplicatesSectionSource,
+    /duplicateWindowInputValue \?\? String\(duplicateSharedWindowHours\)/u,
+  );
   assert.doesNotMatch(duplicatesSectionSource, /DUPLICATE_DETECTION_HINTS/u);
   assert.equal(
     duplicatesSectionSource.replace(/\s+/gu, ' ').match(/Остальной текст может отличаться\./gu)
@@ -94,7 +99,7 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.match(
     duplicatesSectionSource.replace(/\s+/gu, ' '),
-    /Проверяются только длинные сообщения/u,
+    /Сравнивает длинные сообщения с изменённой пунктуацией/u,
   );
   assert.match(duplicatesSectionSource, /aria-invalid=\{Boolean\(fieldErrors\.duplicateWarn/u);
   assert.match(settingsSectionToggleSource, /Антидубль: '.*фото'/u);
@@ -111,7 +116,7 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.match(
     settingsPageSource,
-    /if \(section === 'duplicates'\) \{\s*setDuplicateWindowInputValue\(''\);\s*\}/u,
+    /if \(section === 'duplicates'\) \{\s*setDuplicateWindowInputValue\(null\);\s*\}/u,
   );
   assert.doesNotMatch(duplicateStageStyles, /duplicate-settings-group__title/u);
   assert.match(

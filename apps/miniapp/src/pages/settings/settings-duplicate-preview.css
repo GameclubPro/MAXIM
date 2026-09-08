@@ -1,0 +1,32 @@
+@layer pages {
+  .duplicate-action-preview {
+    min-width: 0;
+    padding-block: 12px;
+  }
+
+  .duplicate-action-preview__rows {
+    margin: 8px 0 0;
+  }
+
+  .duplicate-action-preview__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+    gap: 12px;
+    padding-block: 10px;
+    border-top: 1px solid var(--glass-border);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .duplicate-action-preview__row dt {
+    color: var(--text-muted);
+  }
+
+  .duplicate-action-preview__row dd {
+    margin: 0;
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+}

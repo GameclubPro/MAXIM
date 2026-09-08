@@ -529,6 +529,8 @@ export type HintKey =
   | 'duplicateIgnorePhones'
   | 'duplicateNearMatch'
   | 'duplicateModerationStart'
+  | 'duplicateTextMode'
+  | 'duplicateActionSummary'
   | 'duplicateBotMessage'
   | 'duplicateBotButton'
   | 'duplicateWarnStage'

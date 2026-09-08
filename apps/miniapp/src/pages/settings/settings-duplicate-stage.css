@@ -64,7 +64,7 @@
     text-align: left;
     font-size: 0.84rem;
     font-weight: 700;
-    padding: 6px 84px 6px 10px;
+    padding: 6px 48px 6px 10px;
     background: rgba(255, 255, 255, 0.82);
   }
 
@@ -117,7 +117,7 @@
     }
 
     .duplicate-stage__field input {
-      padding-right: 86px;
+      padding-right: 48px;
     }
 
     .duplicate-stage__field-label {

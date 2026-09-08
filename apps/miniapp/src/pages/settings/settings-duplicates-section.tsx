@@ -1,5 +1,6 @@
 import type { ChatSettings, DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 import { lazy, Suspense } from 'react';
+import './settings-duplicate-preview.css';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SegmentedControl } from '../../components/ui/segmented-control';
@@ -15,7 +16,6 @@ import {
   DUPLICATE_DETECTION_OPTIONS,
   type DuplicateDetectionPreset,
 } from '../settings-page.constants';
-import { formatDuplicateActionSummary } from './settings-duplicate-photo-status';
 import {
   ClockIcon,
   DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
@@ -69,7 +69,7 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     duplicateBotButtonErrors: BroadcastLinkButtonFieldErrors[];
     duplicatePhotoModerationPolicy: DuplicatePhotoEffectivePolicy;
     duplicateSharedWindowHours: number;
-    duplicateWindowInputValue: string;
+    duplicateWindowInputValue: string | null;
     duplicatesCardStatus: string;
     duplicatesHeaderSummary: string;
     fieldErrors: FieldErrors;
@@ -80,6 +80,9 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
 
 const LazySettingsDuplicatePhotoControls = lazy(
   () => import('./settings-duplicate-photo-controls'),
+);
+const LazySettingsDuplicateActionPreview = lazy(
+  () => import('./settings-duplicate-action-preview'),
 );
 
 export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps) {
@@ -122,11 +125,6 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
     toggleSection,
     updateDraftButtonGroup,
   } = props;
-  const duplicateActionSummary = formatDuplicateActionSummary(
-    draft,
-    duplicateAllowedCount,
-    duplicatePhotoModerationPolicy,
-  );
 
   return (
     <GlassCard
@@ -160,10 +158,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
         onDiscardChanges={() => discardSectionChanges('duplicates')}
         footer={renderSectionSaveFooter('duplicates')}
       >
-        <div
-          id="settings-duplicates-content"
-          className={cn('settings-section__collapse', expanded && 'is-open')}
-        >
+        <div className={cn('settings-section__collapse', expanded && 'is-open')}>
           {expanded ? (
             <div className="settings-section__collapse-inner">
               <div className="settings-native-toggle">
@@ -176,9 +171,9 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       onToggleHint={toggleHint}
                       label="Пояснение для антидубля"
                     >
-                      Находит повторный текст и изображения за выбранный период. Можно разрешить
-                      несколько повторов, а затем удалять сообщения, предупреждать участника или
-                      ограничивать его. Доступные действия для фото показаны ниже.
+                      Текст сравнивается с сообщениями того же участника в этом чате. Первое
+                      сообщение не считается дублем. Короткие обычные ответы и подписи к вложениям
+                      не проверяются. Доступные действия для фото показаны отдельно.
                     </SettingsHintAnchor>
                   </div>
                   <label className="settings-native-switch" aria-label="Включить антидубль">
@@ -203,6 +198,18 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                   <div className="settings-policy">
                     <div className="settings-policy__label-row">
                       <span className="field__label">Текст</span>
+                      <SettingsHintAnchor
+                        hintKey="duplicateTextMode"
+                        openHintKey={openHintKey}
+                        onToggleHint={toggleHint}
+                        label="Пояснение для режима сравнения текста"
+                      >
+                        {draft.duplicateDetectionPreset === 'STANDARD'
+                          ? 'Одинаковый текст без учёта регистра и пробелов. Числа, слова и ссылки должны совпадать.'
+                          : draft.duplicateDetectionPreset === 'STRICT'
+                            ? 'Также проверяется длинный текст с изменённой пунктуацией или заменёнными открытыми ссылками и телефонами. Порядок слов и числа сохраняются; скрытые ссылки и кнопки сравниваются точно.'
+                            : 'Точное сравнение всегда включено. Дополнительные совпадения по ссылке, телефону или длинному тексту выбираются ниже.'}
+                      </SettingsHintAnchor>
                     </div>
                     <SegmentedControl
                       value={draft.duplicateDetectionPreset}
@@ -293,8 +300,8 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для близких совпадений дублей"
                         >
-                          Находит повтор даже после небольших правок в тексте. Проверяются только
-                          длинные сообщения: короткие ответы не считаются похожими автоматически.
+                          Сравнивает длинные сообщения с изменённой пунктуацией. Слова, их порядок и
+                          числа должны совпадать. Короткие ответы не сравниваются приблизительно.
                         </SettingsHintAnchor>
                       </div>
 
@@ -355,7 +362,8 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для условий удаления дублей"
                         >
-                          За какой срок искать повторы и сколько дублей разрешить до удаления.
+                          Период отсчитывается назад от каждого сообщения, а не с начала дня. Лимит
+                          относится к повторам одного текста от одного участника.
                         </SettingsHintAnchor>
                       </div>
                     </div>
@@ -374,7 +382,8 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                             min={1}
                             max={168}
                             step={1}
-                            value={duplicateWindowInputValue || String(duplicateSharedWindowHours)}
+                            inputMode="numeric"
+                            value={duplicateWindowInputValue ?? String(duplicateSharedWindowHours)}
                             onChange={(event) =>
                               handleDuplicateWindowHoursChange(event.target.value)
                             }
@@ -440,6 +449,19 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       </div>
                     </div>
 
+                    <SegmentedControl
+                      value={String(duplicateSharedWindowHours)}
+                      options={[
+                        { value: '1', label: '1 ч' },
+                        { value: '12', label: '12 ч' },
+                        { value: '24', label: '1 день' },
+                        { value: '72', label: '3 дня' },
+                        { value: '168', label: '7 дней' },
+                      ]}
+                      onChange={handleDuplicateWindowHoursChange}
+                      ariaLabel="Быстрый выбор периода проверки"
+                    />
+
                     {fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount ? (
                       <div className="duplicate-stage__errors" aria-live="polite">
                         {fieldErrors.duplicateWarnWindowSec ? (
@@ -464,7 +486,9 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
                     <div className="settings-native-toggle__title-wrap">
-                      <span className="settings-native-toggle__title">Объяснить удаление</span>
+                      <span className="settings-native-toggle__title">
+                        Сначала объяснить удаление
+                      </span>
                       <div className="settings-native-toggle__title-actions">
                         <EditToggleButton
                           label="Текст о дублях"
@@ -687,12 +711,16 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                     </div>
                   </div>
 
-                  <article className="duplicate-stage" aria-label="Итог действий антидубля">
-                    <div className="duplicate-stage__top">
-                      <span className="duplicate-stage__title">Итог</span>
-                    </div>
-                    <p className="settings-native-toggle__hint">{duplicateActionSummary}</p>
-                  </article>
+                  <Suspense fallback={null}>
+                    <LazySettingsDuplicateActionPreview
+                      draft={draft}
+                      allowedCount={duplicateAllowedCount}
+                      windowHours={duplicateSharedWindowHours}
+                      photoPolicy={duplicatePhotoModerationPolicy}
+                      openHintKey={openHintKey}
+                      toggleHint={toggleHint}
+                    />
+                  </Suspense>
                 </>
               ) : null}
             </div>

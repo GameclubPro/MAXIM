@@ -5068,7 +5068,7 @@ describe('RuleEngineService', () => {
     expect(third.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
-  it('detects strict near duplicates when meaningful words are reordered', async () => {
+  it('detects strict near duplicates when punctuation changes without reordering words', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({
       duplicateDetectionPreset: 'STRICT',
@@ -5078,9 +5078,9 @@ describe('RuleEngineService', () => {
     const first =
       'Пожалуйста проверьте расписание встречи завтра утром команда собирается возле главного входа';
     const second =
-      'Команда завтра утром пожалуйста проверьте расписание встречи собирается возле главного входа';
+      'Пожалуйста, проверьте расписание встречи завтра утром! Команда собирается возле главного входа';
     const third =
-      'Возле главного входа команда собирается завтра утром пожалуйста проверьте расписание встречи';
+      'Пожалуйста: проверьте расписание встречи завтра утром. Команда собирается возле главного входа.';
 
     await service.detect({
       chatId: 'chat-1',
