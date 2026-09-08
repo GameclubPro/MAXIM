@@ -385,12 +385,6 @@ export class VkParsingService {
       sourceIds: parsed.data.sourceIds,
       force: true,
     });
-    if (parsed.data.preset === 'CLEAN') {
-      return this.updateSettings(chatId, user, {
-        stripLinksEnabled: true,
-        skipAdsEnabled: true,
-      });
-    }
     return this.feedService.buildFeed(
       chatId,
       VK_PARSING_AVAILABLE_CAPABILITY,

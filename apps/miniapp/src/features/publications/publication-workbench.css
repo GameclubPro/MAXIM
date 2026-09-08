@@ -1,4 +1,39 @@
 @layer pages {
+  .publications-page .publication-date-loading {
+    min-height: 72px;
+  }
+  .publications-page.is-publisher .publication-schedule-timezone {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--color-ink-muted);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .publication-schedule-timezone svg {
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+  }
+
+  .publications-page.is-publisher
+    .publication-editor-section--timing
+    .publication-editor-section__head {
+    align-items: start;
+  }
+
+  .publications-page.is-publisher
+    .publication-editor-section--timing
+    .publication-editor-section__head
+    > small {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: right;
+    line-height: 1.4;
+  }
   .app-shell:has(.publications-page) {
     grid-template-columns: minmax(0, 1fr);
   }

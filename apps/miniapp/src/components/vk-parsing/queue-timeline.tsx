@@ -1,4 +1,10 @@
+import { useEffect, useState } from 'react';
+import { DateTime } from 'luxon';
+import { Check, Send, Xmark } from 'iconoir-react';
 import type { VkParsingPost } from '@maxim/contracts';
+import { TimeField } from '../ui/time-field';
+import { ActionConfirmSheet } from '../ui/action-confirm-sheet';
+import { parseVkQueueDate, resolveVkQueueQuickSlot } from './queue-time';
 
 type QueueTimelineProps = {
   posts: VkParsingPost[];
@@ -10,43 +16,143 @@ type QueueTimelineProps = {
   onPublishNow: (postId: string) => void;
 };
 
-const DROP_SLOTS = [
-  { label: '+30м', offsetMs: 30 * 60_000 },
-  { label: '+2ч', offsetMs: 2 * 60 * 60_000 },
-  { label: '09:00', offsetMs: null },
-];
-
-function toDatetimeLocal(value: string | null): string {
-  const date = value ? new Date(value) : new Date();
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
-function fromDatetimeLocal(value: string): string {
-  return new Date(value).toISOString();
-}
-
-function resolveSlotDate(slot: (typeof DROP_SLOTS)[number]): string {
-  const now = new Date();
-  if (typeof slot.offsetMs === 'number') {
-    return new Date(now.getTime() + slot.offsetMs).toISOString();
-  }
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(9, 0, 0, 0);
-  return tomorrow.toISOString();
-}
-
-function formatQueueTime(value: string | null): string {
-  if (!value) {
-    return '-';
-  }
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+function QueueItem({
+  post,
+  busy,
+  timezone,
+  onSchedule,
+  onAction,
+}: {
+  post: VkParsingPost;
+  busy: boolean;
+  timezone: string;
+  onSchedule: (at: string) => void;
+  onAction: (action: 'publish' | 'cancel') => void;
+}) {
+  const at = post.publishScheduledAt ?? post.publishQueuedAt;
+  const server = at ? DateTime.fromISO(at, { zone: timezone }).toFormat("yyyy-MM-dd'T'HH:mm") : '';
+  const [draft, setDraft] = useState(server);
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setDraft(server);
+  }, [server, editing]);
+  const [date = '', time = ''] = draft.split('T');
+  const parsed = parseVkQueueDate(draft, timezone);
+  const dirty = draft !== server;
+  useEffect(() => {
+    if (editing && draft === server) setEditing(false);
+  }, [draft, editing, server]);
+  return (
+    <article className="vk-queue-item">
+      <div className="vk-queue-item__main">
+        <strong>{post.sourceTitle}</strong>
+        <span>
+          {at
+            ? DateTime.fromISO(at, { zone: timezone }).setLocale('ru').toFormat('d MMM, HH:mm')
+            : 'Время не задано'}
+        </span>
+      </div>
+      <div className="vk-queue-item__preview">{post.text || 'Медиапубликация'}</div>
+      <div className="vk-queue-item__schedule">
+        <label>
+          <span>Дата</span>
+          <input
+            type="date"
+            aria-label={`Дата публикации: ${post.sourceTitle}`}
+            value={date}
+            disabled={busy}
+            onChange={(event) => {
+              setEditing(true);
+              setDraft(`${event.target.value}T${time}`);
+            }}
+          />
+        </label>
+        <div className="vk-queue-item__time">
+          <span>Время</span>
+          <TimeField
+            label={`Время публикации: ${post.sourceTitle}`}
+            variant="compact"
+            value={time}
+            allowEmpty
+            disabled={busy}
+            onChange={(value) => {
+              setEditing(true);
+              setDraft(`${date}T${value}`);
+            }}
+          />
+        </div>
+      </div>
+      {dirty ? (
+        <div className="vk-queue-item__edit-actions">
+          {!parsed ? <span role="status">Нужны будущая дата и время</span> : null}
+          <button
+            type="button"
+            title="Отменить изменение времени"
+            aria-label="Отменить изменение времени"
+            disabled={busy}
+            onClick={() => {
+              setEditing(false);
+              setDraft(server);
+            }}
+          >
+            <Xmark aria-hidden />
+          </button>
+          <button
+            type="button"
+            disabled={busy || !parsed}
+            onClick={() => {
+              if (parsed) onSchedule(parsed);
+            }}
+          >
+            <Check aria-hidden />
+            <span>Сохранить время</span>
+          </button>
+        </div>
+      ) : null}
+      <div className="vk-queue-item__actions">
+        {(
+          [
+            { label: '+30 мин', minutes: 30 },
+            { label: '+2 часа', minutes: 120 },
+            { label: 'Завтра, 09:00', minutes: null },
+          ] as const
+        ).map((slot) => (
+          <button
+            key={slot.label}
+            type="button"
+            className="vk-source-preset"
+            disabled={busy}
+            onClick={() => {
+              setEditing(false);
+              onSchedule(resolveVkQueueQuickSlot(slot.minutes, timezone));
+            }}
+          >
+            {slot.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="vk-source-preset"
+          title="Опубликовать сейчас"
+          aria-label={`Опубликовать сейчас: ${post.sourceTitle}`}
+          disabled={busy}
+          onClick={() => onAction('publish')}
+        >
+          <Send aria-hidden />
+        </button>
+        <button
+          type="button"
+          className="vk-source-preset"
+          title="Снять с очереди"
+          aria-label={`Снять с очереди: ${post.sourceTitle}`}
+          disabled={busy}
+          onClick={() => onAction('cancel')}
+        >
+          <Xmark aria-hidden />
+        </button>
+      </div>
+    </article>
+  );
 }
 
 export function QueueTimeline({
@@ -58,72 +164,45 @@ export function QueueTimeline({
   onCancelPost,
   onPublishNow,
 }: QueueTimelineProps) {
-  if (posts.length === 0) {
-    return null;
-  }
-
+  const [confirmation, setConfirmation] = useState<{
+    post: VkParsingPost;
+    action: 'publish' | 'cancel';
+  } | null>(null);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const busy = Boolean(schedulingPostId || cancelingPostId || publishingNowPostId);
+  if (!posts.length) return null;
   return (
     <section className="vk-queue-timeline" aria-label="Очередь публикаций">
-      <div className="vk-queue-drop-row">
-        {DROP_SLOTS.map((slot) => (
-          <button
-            key={slot.label}
-            type="button"
-            className="vk-queue-drop-slot"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault();
-              const postId = event.dataTransfer.getData('text/plain');
-              if (postId) {
-                onSchedulePost(postId, resolveSlotDate(slot));
-              }
-            }}
-          >
-            {slot.label}
-          </button>
-        ))}
-      </div>
-
+      <div className="vk-queue-timezone">{timezone}</div>
       <div className="vk-queue-list">
         {posts.map((post) => (
-          <article
+          <QueueItem
             key={post.id}
-            className="vk-queue-item"
-            draggable
-            onDragStart={(event) => event.dataTransfer.setData('text/plain', post.id)}
-          >
-            <div className="vk-queue-item__main">
-              <strong>{post.sourceTitle}</strong>
-              <span>{formatQueueTime(post.publishScheduledAt ?? post.publishQueuedAt)}</span>
-            </div>
-            <input
-              type="datetime-local"
-              aria-label={`Время публикации: ${post.sourceTitle}`}
-              value={toDatetimeLocal(post.publishScheduledAt ?? post.publishQueuedAt)}
-              disabled={schedulingPostId === post.id}
-              onChange={(event) => onSchedulePost(post.id, fromDatetimeLocal(event.target.value))}
-            />
-            <div className="vk-queue-item__actions">
-              <button
-                type="button"
-                className="vk-source-preset"
-                disabled={publishingNowPostId === post.id}
-                onClick={() => onPublishNow(post.id)}
-              >
-                Сейчас
-              </button>
-              <button
-                type="button"
-                className="vk-source-preset"
-                disabled={cancelingPostId === post.id}
-                onClick={() => onCancelPost(post.id)}
-              >
-                Снять
-              </button>
-            </div>
-          </article>
+            post={post}
+            timezone={timezone}
+            busy={busy}
+            onSchedule={(at) => onSchedulePost(post.id, at)}
+            onAction={(action) => setConfirmation({ post, action })}
+          />
         ))}
       </div>
+      <ActionConfirmSheet
+        id="vk-queue-confirm"
+        open={confirmation !== null}
+        title={confirmation?.action === 'publish' ? 'Опубликовать сейчас?' : 'Снять с очереди?'}
+        previewTitle={confirmation?.post.sourceTitle}
+        previewMeta={confirmation?.post.text.slice(0, 160)}
+        confirmLabel={confirmation?.action === 'publish' ? 'Опубликовать' : 'Снять с очереди'}
+        tone={confirmation?.action === 'publish' ? 'accent' : 'danger'}
+        isBusy={busy}
+        onClose={() => setConfirmation(null)}
+        onConfirm={() => {
+          if (!confirmation || busy) return;
+          if (confirmation.action === 'publish') onPublishNow(confirmation.post.id);
+          else onCancelPost(confirmation.post.id);
+          setConfirmation(null);
+        }}
+      />
     </section>
   );
 }

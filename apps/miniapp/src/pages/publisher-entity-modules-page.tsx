@@ -387,6 +387,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               to={buildPublisherCreateRoute(entity)}
               className="publisher-entity-module__action"
               aria-label={`Создать пост для ${entity.title || entity.id}`}
+              title="Создать пост"
             >
               <span>Создать</span>
               <NavArrowRight aria-hidden />
@@ -452,6 +453,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               state={{ chatTitle: entity.title }}
               className="publisher-entity-module__action"
               aria-label={`Открыть автоответы для ${entity.title || entity.id}`}
+              title="Открыть автоответы"
             >
               <span>Открыть</span>
               <NavArrowRight aria-hidden />
@@ -509,6 +511,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               type="button"
               className={cn('publisher-entity-module__action', vkOpen && 'is-open')}
               aria-label={vkOpen ? 'Закрыть посты из VK' : 'Открыть посты из VK'}
+              title={vkOpen ? 'Закрыть посты из VK' : 'Открыть посты из VK'}
               aria-expanded={vkOpen}
               aria-controls="publisher-vk-workspace"
               onClick={() => setVkOpen((current) => !current)}

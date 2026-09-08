@@ -43,6 +43,7 @@ describe('VkSourceService autopublish cleanup', () => {
       },
       vkParsingSettings: {
         findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({}),
       },
       vkParsingPost: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -183,6 +184,56 @@ describe('VkSourceService autopublish cleanup', () => {
     await service.removeSource('channel-1', 'source-1');
 
     expectCleanupQuery(prisma.vkParsingPost.updateMany.mock.calls[0]?.[0], ['source-1']);
+  });
+
+  it('commits CLEAN filters before enabling sources without changing the global Auto switch', async () => {
+    const { prisma, service } = createFixture();
+    await service.applyBulkPreset(
+      'channel-1',
+      { userId: 'admin-1' },
+      {
+        sourceIds: ['source-1'],
+        preset: 'CLEAN',
+      },
+    );
+    expect(prisma.vkParsingSettings.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_ownerProfile_ownerBotId: {
+          chatId: 'channel-1',
+          ownerProfile: 'PUBLISHER',
+          ownerBotId: 'publisher-bot',
+        },
+      },
+      create: {
+        chatId: 'channel-1',
+        ownerProfile: 'PUBLISHER',
+        ownerBotId: 'publisher-bot',
+        stripLinksEnabled: true,
+        skipAdsEnabled: true,
+      },
+      update: { stripLinksEnabled: true, skipAdsEnabled: true },
+    });
+    expect(prisma.vkParsingSettings.upsert.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.vkParsingSource.updateMany.mock.invocationCallOrder[0]!,
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not activate CLEAN sources when persisting its safety filters fails', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingSettings.upsert.mockRejectedValue(new Error('settings unavailable'));
+    await expect(
+      service.applyBulkPreset(
+        'channel-1',
+        { userId: 'admin-1' },
+        {
+          sourceIds: ['source-1'],
+          preset: 'CLEAN',
+        },
+      ),
+    ).rejects.toThrow('settings unavailable');
+    expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('rejects enabling a source whose quiet window covers the global work window', async () => {

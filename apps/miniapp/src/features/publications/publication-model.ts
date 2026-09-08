@@ -26,10 +26,10 @@ import {
 import type { PublisherEntityReadiness } from '@maxim/contracts/publisher';
 import { trimBroadcastLinkButtons } from '../../lib/broadcast-link-buttons';
 import {
-  formatLocalDateTimeInputValue,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
 } from '../../lib/broadcast-schedule';
+import { formatPublicationScheduleField } from './publication-time-presentation';
 import {
   buildChannelBroadcastSystemButtons,
   type BroadcastSystemButtonPreview,
@@ -1154,7 +1154,8 @@ export function createPublicationDraftFromDetails(
           maxOccurrences: schedule.maxOccurrences,
         }
       : fallback.recurrence;
-  const onceValue = schedule?.mode === 'once' ? formatLocalDateTimeInputValue(schedule.at) : '';
+  const onceValue =
+    schedule?.mode === 'once' ? formatPublicationScheduleField(schedule.at, schedule.timezone) : '';
   const [onceDate = '', onceTime = ''] = onceValue.split('T');
 
   return {

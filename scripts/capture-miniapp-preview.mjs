@@ -658,6 +658,52 @@ const scenarioBehaviors = [
       await page.waitForTimeout(350);
     },
   },
+  ...['publication', 'time', 'safety', 'preset', 'queue'].map((section) => ({
+    name: `publisher-entity-modules-vk-scheduler-${section}`,
+    beforeShot: async (page) => {
+      await page
+        .getByRole('link', { name: /разделы/iu })
+        .first()
+        .click();
+      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      const panel = page.locator('.vk-autopost-panel');
+      await panel.waitFor({ state: 'visible' });
+      if (section === 'queue') {
+        await page.locator('.vk-parsing-fold--secondary > summary').click();
+        const queue = page.locator('.vk-queue-timeline');
+        await queue.locator('input[type="date"]').first().fill('');
+        await queue
+          .getByText('Нужны будущая дата и время', { exact: true })
+          .first()
+          .waitFor({ state: 'visible' });
+        await queue.evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      } else {
+        await panel.locator('summary').click();
+        if (section === 'time' || section === 'safety') {
+          await panel
+            .getByRole('button', { name: section === 'time' ? 'Время' : 'Защита', exact: true })
+            .click();
+        }
+        if (section === 'preset') {
+          const originalMode = await panel.locator('.vk-autopost-mode .is-active').textContent();
+          await panel.getByRole('button', { name: 'Безопасно', exact: true }).click();
+          await page
+            .getByRole('dialog', { name: 'Применить пресет?' })
+            .waitFor({ state: 'visible' });
+          await page.keyboard.press('Escape');
+          if (
+            (await panel.locator('.vk-autopost-mode .is-active').textContent()) !== originalMode
+          ) {
+            throw new Error('Preset confirmation changed Auto before approval.');
+          }
+          await panel.getByRole('button', { name: 'Безопасно', exact: true }).click();
+        } else {
+          await panel.evaluate((element) => element.scrollIntoView({ block: 'start' }));
+        }
+      }
+      await page.waitForTimeout(150);
+    },
+  })),
   {
     name: 'publisher-entities-empty',
     beforeShot: async (page) => {
@@ -887,6 +933,27 @@ const scenarioBehaviors = [
       await sheet.waitFor({ state: 'visible' });
       await assertPublisherButtonsSheetIsDirect(sheet);
       await assertPublisherButtonsSheetHasDefaultButton(sheet, 'reopen after backdrop');
+    },
+  },
+  {
+    name: 'publications-publisher-compose-recurrence',
+    beforeShot: async (page) => {
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: 'Расписание', exact: true }).click();
+      await page.getByRole('button', { name: 'Повтор', exact: true }).click();
+      await page.getByRole('button', { name: 'По неделям', exact: true }).click();
+      const interval = page.getByRole('spinbutton', { name: 'Интервал повтора' });
+      await interval.fill('');
+      await interval.pressSequentially('12');
+      await interval.blur();
+      if ((await interval.inputValue()) !== '12')
+        throw new Error('Recurrence interval lost multi-digit input.');
+      await page.getByRole('button', { name: 'Добавить время', exact: true }).click();
+      await page.getByRole('button', { name: 'Добавить время', exact: true }).click();
+      await page
+        .locator('.publication-editor-section--timing')
+        .evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      await page.waitForTimeout(150);
     },
   },
   {

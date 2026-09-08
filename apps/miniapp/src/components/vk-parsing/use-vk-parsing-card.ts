@@ -76,10 +76,18 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   const [pageOffset, setPageOffset] = useState(0);
   const [openHintKey, setOpenHintKey] = useState<VkParsingHintKey | null>(null);
   const [selectedBulkSourceIds, setSelectedBulkSourceIds] = useState<string[]>([]);
+  const [presetConfirmation, setPresetConfirmation] =
+    useState<BulkUpdateVkParsingSourcesRequest | null>(null);
   const settingsUpdateInFlightRef = useRef(false);
   const [isSettingsUpdateInFlight, setIsSettingsUpdateInFlight] = useState(false);
   const sourceUpdateInFlightRef = useRef(false);
   const [isSourceUpdateInFlight, setIsSourceUpdateInFlight] = useState(false);
+  const [saveFeedbackRevision, setSaveFeedbackRevision] = useState(0);
+  useEffect(() => {
+    if (!saveFeedbackRevision) return;
+    const timer = window.setTimeout(() => setSaveFeedbackRevision(0), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [saveFeedbackRevision]);
 
   const feedQueryScope = useMemo<Partial<VkParsingFeedQuery>>(
     () => ({
@@ -183,7 +191,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     onSuccess: (nextFeed) => {
       updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
-      pushToast({ tone: 'success', title: 'Настройки сохранены' });
+      setSaveFeedbackRevision((revision) => revision + 1);
       maxNotify('success');
     },
     onError: (error) => {
@@ -207,7 +215,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     onSuccess: (nextFeed) => {
       updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
-      pushToast({ tone: 'success', title: 'Источник сохранён' });
+      setSaveFeedbackRevision((revision) => revision + 1);
       maxNotify('success');
     },
     onError: (error) => {
@@ -240,7 +248,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     onSuccess: (nextFeed) => {
       updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
-      pushToast({ tone: 'success', title: 'Источники сохранены' });
+      setSaveFeedbackRevision((revision) => revision + 1);
       maxNotify('success');
     },
     onError: (error) => {
@@ -518,10 +526,15 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   }
 
   async function updateSetting(payload: UpdateVkParsingSettingsRequest): Promise<boolean> {
-    if (settingsUpdateInFlightRef.current || updateSettingsMutation.isPending) {
+    if (
+      settingsUpdateInFlightRef.current ||
+      sourceUpdateInFlightRef.current ||
+      updateSettingsMutation.isPending
+    ) {
       return false;
     }
 
+    setSaveFeedbackRevision(0);
     settingsUpdateInFlightRef.current = true;
     setIsSettingsUpdateInFlight(true);
     try {
@@ -569,12 +582,14 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   ): Promise<boolean> {
     if (
       sourceUpdateInFlightRef.current ||
+      settingsUpdateInFlightRef.current ||
       updateSourceMutation.isPending ||
       updateSourcesMutation.isPending
     ) {
       return false;
     }
 
+    setSaveFeedbackRevision(0);
     sourceUpdateInFlightRef.current = true;
     setIsSourceUpdateInFlight(true);
     try {
@@ -624,11 +639,13 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       updateSourceMutation.isPending ||
       updateSourcesMutation.isPending ||
       sourceUpdateInFlightRef.current ||
+      settingsUpdateInFlightRef.current ||
       sourceIds.length === 0
     ) {
       return false;
     }
 
+    setSaveFeedbackRevision(0);
     sourceUpdateInFlightRef.current = true;
     setIsSourceUpdateInFlight(true);
     try {
@@ -644,6 +661,22 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
 
   function toggleHint(key: VkParsingHintKey) {
     setOpenHintKey((current) => (current === key ? null : key));
+  }
+
+  async function confirmSourcePreset(): Promise<void> {
+    if (!presetConfirmation || sourceUpdateInFlightRef.current || settingsUpdateInFlightRef.current)
+      return;
+    sourceUpdateInFlightRef.current = true;
+    setIsSourceUpdateInFlight(true);
+    try {
+      await sourcePresetMutation.mutateAsync(presetConfirmation);
+      setPresetConfirmation(null);
+    } catch {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+    } finally {
+      sourceUpdateInFlightRef.current = false;
+      setIsSourceUpdateInFlight(false);
+    }
   }
 
   function toggleBulkSource(sourceId: string) {
@@ -664,6 +697,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     feed,
     feedQuery,
     settings,
+    settingsSaved: saveFeedbackRevision > 0,
     posts,
     sources,
     sourceUrl,
@@ -672,6 +706,9 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     pageOffset,
     openHintKey,
     selectedBulkSourceIds,
+    presetConfirmation,
+    closePresetConfirmation: () => setPresetConfirmation(null),
+    confirmSourcePreset,
     editingPostId,
     draftText,
     draftTextFormat,
@@ -690,9 +727,13 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     refreshingSourceId: refreshSourceMutation.isPending
       ? (refreshSourceMutation.variables ?? null)
       : null,
-    isSavingSettings: isSettingsUpdateInFlight || updateSettingsMutation.isPending,
+    isSavingSettings:
+      isSettingsUpdateInFlight || updateSettingsMutation.isPending || isSourceUpdateInFlight,
     isSavingSource:
-      isSourceUpdateInFlight || updateSourceMutation.isPending || updateSourcesMutation.isPending,
+      isSourceUpdateInFlight ||
+      isSettingsUpdateInFlight ||
+      updateSourceMutation.isPending ||
+      updateSourcesMutation.isPending,
     isApplyingPreset: sourcePresetMutation.isPending,
     schedulingPostId: scheduleMutation.isPending
       ? (scheduleMutation.variables?.postId ?? null)
@@ -722,13 +763,13 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     selectAllBulkSources,
     applySourcePreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => {
       if (selectedBulkSourceIds.length > 0) {
-        sourcePresetMutation.mutate({ sourceIds: selectedBulkSourceIds, preset });
+        setPresetConfirmation({ sourceIds: [...selectedBulkSourceIds], preset });
       }
     },
     applyPresetToAllSources: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => {
       const sourceIds = feedQuery.data?.sources.map((source) => source.id) ?? [];
       if (sourceIds.length > 0) {
-        sourcePresetMutation.mutate({ sourceIds, preset });
+        setPresetConfirmation({ sourceIds, preset });
       }
     },
     schedulePost: (postId: string, scheduledAt: string) =>

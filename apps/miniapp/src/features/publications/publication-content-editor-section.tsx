@@ -120,6 +120,7 @@ export function PublicationContentEditorSection({
           value={draft.title}
           maxLength={120}
           placeholder="Название расписания"
+          aria-label="Название расписания"
           onChange={(event) =>
             setDraft((current) => ({ ...current, title: event.currentTarget.value }))
           }

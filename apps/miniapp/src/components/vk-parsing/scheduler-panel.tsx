@@ -1,4 +1,5 @@
 import { CheckCircle, Clock, Pause, WarningCircle } from 'iconoir-react';
+import { useState } from 'react';
 import type {
   BulkUpdateVkParsingSourcesRequest,
   UpdateVkParsingSettingsRequest,
@@ -8,7 +9,8 @@ import type {
 } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
 import { AsyncRadioGroup } from '../ui/async-radio-group';
-import { TimeField } from '../ui/time-field';
+import { ScheduleTimePanel } from './schedule-time-panel';
+import type { AutopostStatusModel, AutopostStatusTone } from './autopost-status';
 import { CommittedNumberField } from './committed-number-field';
 import {
   buildVkParsingAutopostModeUpdate,
@@ -27,17 +29,10 @@ type SchedulerPanelProps = {
   publishedCount: number;
   isSaving: boolean;
   isSavingSource: boolean;
+  settingsSaved: boolean;
   onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => Promise<boolean>;
   onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => Promise<boolean>;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
-};
-
-export type AutopostStatusTone = 'success' | 'warning' | 'danger' | 'muted';
-
-export type AutopostStatusModel = {
-  title: string;
-  reason: string;
-  tone: AutopostStatusTone;
 };
 
 const AUTOPOST_MODES: ReadonlyArray<{ value: VkParsingAutopostMode; label: string }> = [
@@ -56,9 +51,9 @@ const SOURCE_MODE_OPTIONS: Array<{
 ];
 
 const FREQUENCY_OPTIONS = [
-  { value: 'SLOW', label: 'Редко', minutes: 180 },
-  { value: 'NORMAL', label: 'Норма', minutes: 60 },
-  { value: 'FAST', label: 'Чаще', minutes: 20 },
+  { value: 'SLOW', label: '3 часа', minutes: 180 },
+  { value: 'NORMAL', label: '1 час', minutes: 60 },
+  { value: 'FAST', label: '20 мин', minutes: 20 },
   { value: 'CUSTOM', label: 'Свой', minutes: null },
 ] as const;
 
@@ -144,10 +139,12 @@ export function SchedulerPanel({
   publishedCount,
   isSaving,
   isSavingSource,
+  settingsSaved,
   onUpdateSetting,
   onUpdateSources,
   onApplyPreset,
 }: SchedulerPanelProps) {
+  const [section, setSection] = useState<'publication' | 'time' | 'safety'>('publication');
   const sourceIds = sources.map((source) => source.id);
   const sourceMode = resolveCommonVkParsingSourceValue(sources.map((source) => source.publishMode));
   const intervalInput = resolveVkParsingCommonNumericInput(
@@ -158,7 +155,7 @@ export function SchedulerPanel({
     sources.map((source) => source.dailyLimit),
   );
   const frequencyPreset = commonInterval === null ? null : resolveFrequencyPreset(commonInterval);
-  const sourceControlsDisabled = sourceIds.length === 0 || isSavingSource;
+  const sourceControlsDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
   const presetDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
   const autopostMode: VkParsingAutopostMode = resolveVkParsingAutopostMode(settings, sources);
 
@@ -167,8 +164,18 @@ export function SchedulerPanel({
       className={`vk-scheduler-panel vk-autopost-panel vk-autopost-panel--${status.tone}`}
       aria-label="Публикация VK"
     >
+      <header className="vk-autopost-panel__heading">
+        <h2>Автопостинг</h2>
+        <span aria-live="polite">
+          {isSaving || isSavingSource
+            ? 'Сохраняю...'
+            : settingsSaved
+              ? 'Сохранено'
+              : `${sources.length} ист.`}
+        </span>
+      </header>
       <div className="vk-autopost-panel__main" aria-label="Автопостинг">
-        <div className="vk-autopost-status" aria-label="Статус автопостинга">
+        <div className="vk-autopost-status" role="status" aria-label="Статус автопостинга">
           <span className="vk-autopost-status__icon">{renderAutopostStatusIcon(status.tone)}</span>
           <span className="vk-autopost-status__copy">
             <strong>{status.title}</strong>
@@ -179,11 +186,11 @@ export function SchedulerPanel({
         <div className="vk-autopost-metrics" aria-label="Сводка автопостинга">
           <span>
             <b>{queueCount}</b>
-            <small>Очередь</small>
+            <small>В очереди</small>
           </span>
           <span>
             <b>{publishedCount}</b>
-            <small>Опубликовано</small>
+            <small>Вышло</small>
           </span>
         </div>
 
@@ -192,16 +199,49 @@ export function SchedulerPanel({
           ariaLabel="Режим автопостинга"
           value={autopostMode}
           options={AUTOPOST_MODES}
-          disabled={isSaving}
+          disabled={isSaving || isSavingSource}
           onChange={(mode) => onUpdateSetting(buildVkParsingAutopostModeUpdate(mode))}
         />
       </div>
 
+      <div className="vk-autopost-panel__schedule">
+        <Clock aria-hidden />
+        <span>
+          {settings.workHoursStart === settings.workHoursEnd
+            ? 'Круглосуточно'
+            : `${settings.workHoursStart} - ${settings.workHoursEnd}`}
+        </span>
+        <span>{settings.schedulerTimezone}</span>
+      </div>
+
       <details className="vk-autopost-advanced">
-        <summary>Параметры</summary>
+        <summary>Настройки автопостинга</summary>
         <div className="vk-autopost-advanced__body">
-          <section className="vk-advanced-group">
-            <h3>Быстро</h3>
+          <div
+            className="vk-scheduler-sections vk-segmented-buttons"
+            role="group"
+            aria-label="Раздел настроек автопостинга"
+          >
+            {(
+              [
+                { value: 'publication', label: 'Публикация' },
+                { value: 'time', label: 'Время' },
+                { value: 'safety', label: 'Защита' },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                aria-pressed={section === item.value}
+                className={cn(section === item.value && 'is-active')}
+                onClick={() => setSection(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <section className="vk-advanced-group" hidden={section !== 'publication'}>
+            <h3>Пресет для всех источников</h3>
             <div className="vk-quick-preset-row" aria-label="Быстрые настройки автопостинга">
               {QUICK_PRESETS.map((preset) => (
                 <button
@@ -209,13 +249,7 @@ export function SchedulerPanel({
                   type="button"
                   disabled={presetDisabled}
                   title={preset.title}
-                  onClick={() => {
-                    void onUpdateSetting(buildVkParsingAutopostModeUpdate('auto')).then((saved) => {
-                      if (saved) {
-                        onApplyPreset(preset.value);
-                      }
-                    });
-                  }}
+                  onClick={() => onApplyPreset(preset.value)}
                 >
                   {preset.label}
                 </button>
@@ -223,8 +257,12 @@ export function SchedulerPanel({
             </div>
           </section>
 
-          <section id="vk-parsing-publish-mode" className="vk-advanced-group">
-            <h3>Режим</h3>
+          <section
+            id="vk-parsing-publish-mode"
+            className="vk-advanced-group"
+            hidden={section !== 'publication'}
+          >
+            <h3>Режим источников{sourceMode === null && sources.length ? ' · разные' : ''}</h3>
             <div className="vk-quick-setup__row">
               <div
                 className="vk-segmented-buttons vk-segmented-buttons--mode"
@@ -236,6 +274,7 @@ export function SchedulerPanel({
                     key={option.value}
                     type="button"
                     className={cn(sourceMode === option.value && 'is-active')}
+                    aria-pressed={sourceMode === option.value}
                     disabled={sourceControlsDisabled}
                     onClick={() => {
                       void onUpdateSources(sourceIds, { publishMode: option.value });
@@ -248,8 +287,8 @@ export function SchedulerPanel({
             </div>
           </section>
 
-          <section className="vk-advanced-group">
-            <h3>Темп</h3>
+          <section className="vk-advanced-group" hidden={section !== 'publication'}>
+            <h3>Темп каждого источника</h3>
             <div className="vk-tempo-controls">
               <div className="vk-tempo-controls__frequency">
                 <div className="vk-segmented-buttons" role="group" aria-label="Темп публикации">
@@ -258,6 +297,7 @@ export function SchedulerPanel({
                       key={option.value}
                       type="button"
                       className={cn(frequencyPreset === option.value && 'is-active')}
+                      aria-pressed={frequencyPreset === option.value}
                       disabled={sourceControlsDisabled}
                       onClick={() => {
                         void onUpdateSources(
@@ -304,80 +344,44 @@ export function SchedulerPanel({
             </div>
           </section>
 
-          <section id="vk-parsing-work-time" className="vk-advanced-group">
-            <h3>Время</h3>
-            <div className="vk-scheduler-grid vk-scheduler-grid--time">
-              <div className="vk-time-field">
-                <span>Работает с</span>
-                <TimeField
-                  label="Работает с"
-                  value={settings.workHoursStart}
-                  variant="compact"
-                  disabled={isSaving}
-                  onChange={(nextValue) => onUpdateSetting({ workHoursStart: nextValue })}
-                />
-              </div>
-              <div className="vk-time-field">
-                <span>Работает до</span>
-                <TimeField
-                  label="Работает до"
-                  value={settings.workHoursEnd}
-                  variant="compact"
-                  disabled={isSaving}
-                  onChange={(nextValue) => onUpdateSetting({ workHoursEnd: nextValue })}
-                />
-              </div>
-              <div className="vk-time-field">
-                <span>Тишина с</span>
-                <TimeField
-                  label="Тишина с"
-                  value={settings.quietHoursStart ?? ''}
-                  variant="compact"
-                  allowEmpty
-                  disabled={isSaving}
-                  onChange={(nextValue) => onUpdateSetting({ quietHoursStart: nextValue || null })}
-                />
-              </div>
-              <div className="vk-time-field">
-                <span>Тишина до</span>
-                <TimeField
-                  label="Тишина до"
-                  value={settings.quietHoursEnd ?? ''}
-                  variant="compact"
-                  allowEmpty
-                  disabled={isSaving}
-                  onChange={(nextValue) => onUpdateSetting({ quietHoursEnd: nextValue || null })}
-                />
-              </div>
-            </div>
+          <section
+            id="vk-parsing-work-time"
+            className="vk-advanced-group"
+            hidden={section !== 'time'}
+          >
+            <ScheduleTimePanel
+              settings={settings}
+              disabled={isSaving || isSavingSource}
+              onUpdate={onUpdateSetting}
+            />
           </section>
 
-          <section className="vk-advanced-group">
-            <h3>Правила</h3>
+          <section className="vk-advanced-group" hidden={section !== 'safety'}>
+            <h3>Контент и очередь</h3>
             <div className="vk-scheduler-toggles">
               <SwitchRow
-                label="Без ссылок"
+                label="Удалять ссылки"
                 checked={settings.stripLinksEnabled}
                 disabled={isSaving}
                 title="Удалять ссылки перед публикацией"
                 onChange={(checked) => onUpdateSetting({ stripLinksEnabled: checked })}
               />
               <SwitchRow
-                label="Без рекламы"
+                label="Пропускать рекламу"
                 checked={settings.skipAdsEnabled}
                 disabled={isSaving}
                 title="Пропускать рекламные посты"
                 onChange={(checked) => onUpdateSetting({ skipAdsEnabled: checked })}
               />
               <SwitchRow
-                label="Распределять"
+                label="Равномерно по времени"
                 checked={settings.distributeEvenlyEnabled}
                 disabled={isSaving}
                 title="Распределять публикации по рабочему времени"
                 onChange={(checked) => onUpdateSetting({ distributeEvenlyEnabled: checked })}
               />
               <SwitchRow
-                label="Чередовать"
+                label="Чередовать источники"
                 checked={settings.roundRobinEnabled}
                 disabled={isSaving}
                 title="Чередовать источники"
@@ -386,42 +390,36 @@ export function SchedulerPanel({
             </div>
           </section>
 
-          <section className="vk-advanced-group">
-            <h3>Защита</h3>
+          <section className="vk-advanced-group" hidden={section !== 'safety'}>
+            <h3>Защита от всплеска</h3>
             <div className="vk-scheduler-protection">
               <SwitchRow
-                label="Останов при всплеске"
+                label="Приостанавливать автопостинг"
                 checked={settings.circuitBreakerEnabled}
                 disabled={isSaving}
                 title="Останавливать автопостинг при подозрительном всплеске"
                 onChange={(checked) => onUpdateSetting({ circuitBreakerEnabled: checked })}
               />
-              <label>
-                <span>Окно, мин</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={1440}
-                  value={settings.circuitBreakerWindowMinutes}
-                  disabled={isSaving}
-                  onChange={(event) =>
-                    onUpdateSetting({ circuitBreakerWindowMinutes: Number(event.target.value) })
-                  }
-                />
-              </label>
-              <label>
-                <span>Порог постов</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={settings.circuitBreakerPostLimit}
-                  disabled={isSaving}
-                  onChange={(event) =>
-                    onUpdateSetting({ circuitBreakerPostLimit: Number(event.target.value) })
-                  }
-                />
-              </label>
+              <CommittedNumberField
+                label="Окно, мин"
+                ariaLabel="Окно защиты в минутах"
+                min={1}
+                max={1440}
+                value={settings.circuitBreakerWindowMinutes}
+                disabled={isSaving || isSavingSource || !settings.circuitBreakerEnabled}
+                onCommit={(circuitBreakerWindowMinutes) =>
+                  onUpdateSetting({ circuitBreakerWindowMinutes })
+                }
+              />
+              <CommittedNumberField
+                label="Порог постов"
+                ariaLabel="Порог постов для защиты"
+                min={1}
+                max={500}
+                value={settings.circuitBreakerPostLimit}
+                disabled={isSaving || isSavingSource || !settings.circuitBreakerEnabled}
+                onCommit={(circuitBreakerPostLimit) => onUpdateSetting({ circuitBreakerPostLimit })}
+              />
             </div>
           </section>
         </div>

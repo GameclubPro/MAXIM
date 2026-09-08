@@ -1,4 +1,4 @@
-import type { ChangeEvent } from 'react';
+import { PublicationNumberInput } from './publication-number-input';
 import {
   getPublicationRecurrenceIntervalNotice,
   type PublicationRecurrenceFrequency,
@@ -19,20 +19,17 @@ export function PublicationRecurrenceIntervalField({
   onChange,
 }: PublicationRecurrenceIntervalFieldProps) {
   const notice = getPublicationRecurrenceIntervalNotice(frequency, interval);
-  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onChange(Math.max(1, Math.min(31, Number(event.currentTarget.value) || 1)));
-  };
 
   return (
     <>
       <label className="publication-recurrence__interval">
         <span>Интервал</span>
-        <input
-          type="number"
+        <PublicationNumberInput
+          label="Интервал повтора"
           min={1}
           max={31}
           value={interval}
-          onChange={handleChange}
+          onChange={onChange}
           disabled={disabled}
         />
         <small>{frequency === 'daily' ? 'дней' : 'недель'}</small>

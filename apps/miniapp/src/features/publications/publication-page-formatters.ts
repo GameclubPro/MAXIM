@@ -3,6 +3,7 @@ import { formatRussianCountLabel } from '../../lib/broadcast-audience';
 import {
   formatLocalDateTimeInputValue,
   sortAndUniqueBroadcastSlots,
+  resolveBroadcastScheduleTimezone,
 } from '../../lib/broadcast-schedule';
 import type { PublicationFeedTone } from './publication-feed-card';
 import {
@@ -11,6 +12,7 @@ import {
   type PublicationDraft,
   type PublicationTarget,
 } from './publication-model';
+import { PUBLICATION_WEEKDAYS } from './publication-page-options';
 
 export function formatDateTime(value: string | null, timezone = 'Europe/Moscow'): string {
   if (!value) {
@@ -86,7 +88,20 @@ function formatRecurrence(draft: PublicationDraft): string {
       : interval === 1
         ? 'Каждую неделю'
         : `Каждые ${interval} нед.`;
-  return `${frequency} · ${draft.recurrence.times.join(', ')}`;
+  const weekdays =
+    draft.recurrence.frequency === 'weekly'
+      ? PUBLICATION_WEEKDAYS.filter((day) => draft.recurrence.weekdays.includes(day.value))
+          .map((day) => day.label)
+          .join(', ')
+      : '';
+  const limit = draft.recurrence.maxOccurrences
+    ? formatRussianCountLabel(draft.recurrence.maxOccurrences, 'запуск', 'запуска', 'запусков')
+    : draft.recurrence.endsAt
+      ? `до ${new Intl.DateTimeFormat('ru-RU', { timeZone: draft.scheduleTimezone, day: 'numeric', month: 'short' }).format(new Date(draft.recurrence.endsAt))}`
+      : 'без лимита';
+  return [frequency, weekdays, [...draft.recurrence.times].sort().join(', '), limit]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 export function formatDraftTiming(draft: PublicationDraft): string {
@@ -106,7 +121,7 @@ export function formatDraftTiming(draft: PublicationDraft): string {
     return 'Время не выбрано';
   }
   return slots.length === 1
-    ? formatDateTime(slots[0] ?? null, draft.scheduleTimezone)
+    ? formatDateTime(slots[0] ?? null, resolveBroadcastScheduleTimezone())
     : formatRussianCountLabel(slots.length, 'отправка', 'отправки', 'отправок');
 }
 

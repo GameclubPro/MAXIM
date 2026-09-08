@@ -8,7 +8,16 @@ import {
   type PublicationSummary,
 } from '@maxim/contracts/publication';
 import type { MiniappProfile, PublisherPostImportOmission } from '@maxim/contracts/publisher';
-import { FilterList, NavArrowLeft, Plus, Refresh, Search, Trash, Xmark } from 'iconoir-react';
+import {
+  Clock,
+  FilterList,
+  NavArrowLeft,
+  Plus,
+  Refresh,
+  Search,
+  Trash,
+  Xmark,
+} from 'iconoir-react';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
@@ -23,7 +32,6 @@ import { TimeField } from '../components/ui/time-field';
 import { useToast } from '../components/ui/toast';
 import { PublicationHubHeader } from '../features/publications/publication-hub-header';
 import {
-  formatDateInput,
   formatDraftTiming,
   formatLoadedCount,
   formatPublicationSchedule,
@@ -45,6 +53,7 @@ import { PublicationFeedCard } from '../features/publications/publication-feed-c
 import { PublicationCreateSheet } from '../features/publications/publication-create-sheet';
 import { PublicationButtonsSheet } from '../features/publications/publication-buttons-sheet';
 import { PublicationRecurrenceIntervalField } from '../features/publications/publication-recurrence-interval-field';
+import { getNextPublicationRecurrenceTime } from '../features/publications/publication-time-presentation';
 import {
   buildCreatePublicationRequest,
   buildPublicationSaveFeedback,
@@ -137,7 +146,7 @@ import {
   validateBroadcastLinkButtons,
 } from '../lib/broadcast-link-buttons';
 import { readBlobAsBase64 } from '../lib/broadcast-image';
-import { parseLocalDateTimeInputValue } from '../lib/broadcast-schedule';
+import { resolveBroadcastScheduleTimezone } from '../lib/broadcast-schedule';
 import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
@@ -152,6 +161,21 @@ import '../features/publications/publication-workbench.css';
 const LazyPublicationDetailsSheet = lazy(() =>
   import('../features/publications/publication-details-sheet').then((module) => ({
     default: module.PublicationDetailsSheet,
+  })),
+);
+const LazyPublicationRecurrenceLimit = lazy(() =>
+  import('../features/publications/publication-recurrence-limit').then((module) => ({
+    default: module.PublicationRecurrenceLimit,
+  })),
+);
+const LazyPublicationZonedDateField = lazy(() =>
+  import('../features/publications/publication-zoned-fields').then((module) => ({
+    default: module.PublicationZonedDateField,
+  })),
+);
+const LazyPublicationOnceFields = lazy(() =>
+  import('../features/publications/publication-zoned-fields').then((module) => ({
+    default: module.PublicationOnceFields,
   })),
 );
 const LazyPublicationContentEditorSection = lazy(() =>
@@ -1580,12 +1604,8 @@ export function PublicationsPage({
       ?.onClick();
   }
 
-  function updateOnceSlot(part: 'date' | 'time', value: string) {
+  function updateOnceSlot(onceDate: string, onceTime: string, scheduledAt: string | null) {
     setDraft((current) => {
-      const onceDate = part === 'date' ? value : current.onceDate;
-      const onceTime = part === 'time' ? value : current.onceTime;
-      const scheduledAt =
-        onceDate && onceTime ? parseLocalDateTimeInputValue(`${onceDate}T${onceTime}`) : null;
       return {
         ...current,
         onceDate,
@@ -2121,11 +2141,6 @@ export function PublicationsPage({
   }
 
   function renderRecurrence() {
-    const endMode = draft.recurrence.endsAt
-      ? 'date'
-      : draft.recurrence.maxOccurrences
-        ? 'count'
-        : 'never';
     return (
       <div className="publication-recurrence">
         <div className="publication-recurrence__frequency" role="group" aria-label="Частота">
@@ -2192,7 +2207,7 @@ export function PublicationsPage({
 
         <div className="publication-recurrence__times">
           {draft.recurrence.times.map((time, index) => (
-            <div key={`${index}-${time}`}>
+            <div key={index}>
               <TimeField
                 label={`Время ${index + 1}`}
                 value={time}
@@ -2231,7 +2246,10 @@ export function PublicationsPage({
                   ...current,
                   recurrence: {
                     ...current.recurrence,
-                    times: [...current.recurrence.times, '18:00'],
+                    times: [
+                      ...current.recurrence.times,
+                      getNextPublicationRecurrenceTime(current.recurrence.times),
+                    ],
                   },
                 }))
               }
@@ -2243,13 +2261,12 @@ export function PublicationsPage({
           ) : null}
         </div>
 
-        <label className="publication-recurrence__date">
-          <span>Начать с</span>
-          <input
-            type="date"
-            value={formatDateInput(draft.recurrence.startsAt)}
-            onChange={(event) => {
-              const startsAt = parseLocalDateTimeInputValue(`${event.currentTarget.value}T00:00`);
+        <Suspense fallback={<div className="publication-date-loading" aria-busy="true" />}>
+          <LazyPublicationZonedDateField
+            label="Начать с"
+            value={draft.recurrence.startsAt}
+            timezone={draft.scheduleTimezone}
+            onChange={(startsAt) => {
               setDraft((current) => ({
                 ...current,
                 recurrence: { ...current.recurrence, startsAt },
@@ -2258,82 +2275,21 @@ export function PublicationsPage({
             }}
             disabled={isBusy}
           />
-        </label>
+        </Suspense>
 
-        <div className="publication-recurrence__end" role="group" aria-label="Завершение">
-          {(
-            [
-              { value: 'count', label: 'По числу' },
-              { value: 'date', label: 'По дате' },
-              { value: 'never', label: 'Без лимита' },
-            ] as const
-          ).map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={endMode === option.value}
-              className={cn(endMode === option.value && 'is-active')}
-              onClick={() =>
-                setDraft((current) => ({
-                  ...current,
-                  recurrence: {
-                    ...current.recurrence,
-                    endsAt:
-                      option.value === 'date'
-                        ? (current.recurrence.endsAt ??
-                          new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString())
-                        : null,
-                    maxOccurrences:
-                      option.value === 'count' ? (current.recurrence.maxOccurrences ?? 30) : null,
-                  },
-                }))
-              }
-              disabled={isBusy}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        {endMode === 'count' ? (
-          <label className="publication-recurrence__limit">
-            <span>Запусков</span>
-            <input
-              type="number"
-              min={1}
-              max={365}
-              value={draft.recurrence.maxOccurrences ?? 30}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  recurrence: {
-                    ...current.recurrence,
-                    maxOccurrences: Math.max(
-                      1,
-                      Math.min(365, Number(event.currentTarget.value) || 1),
-                    ),
-                  },
-                }))
-              }
-              disabled={isBusy}
-            />
-          </label>
-        ) : endMode === 'date' ? (
-          <label className="publication-recurrence__date">
-            <span>До даты</span>
-            <input
-              type="date"
-              value={formatDateInput(draft.recurrence.endsAt)}
-              onChange={(event) => {
-                const parsed = parseLocalDateTimeInputValue(`${event.currentTarget.value}T23:59`);
-                setDraft((current) => ({
-                  ...current,
-                  recurrence: { ...current.recurrence, endsAt: parsed },
-                }));
-              }}
-              disabled={isBusy}
-            />
-          </label>
-        ) : null}
+        <Suspense fallback={<div className="publication-date-loading" aria-busy="true" />}>
+          <LazyPublicationRecurrenceLimit
+            recurrence={draft.recurrence}
+            timezone={draft.scheduleTimezone}
+            disabled={isBusy}
+            onChange={(patch) =>
+              setDraft((current) => ({
+                ...current,
+                recurrence: { ...current.recurrence, ...patch },
+              }))
+            }
+          />
+        </Suspense>
       </div>
     );
   }
@@ -2389,26 +2345,27 @@ export function PublicationsPage({
           ))}
         </div>
 
-        {draft.timingMode === 'once' ? (
-          <div className="publication-once-fields">
-            <label>
-              <span>Дата</span>
-              <input
-                type="date"
-                value={onceDate}
-                onChange={(event) => updateOnceSlot('date', event.currentTarget.value)}
-                disabled={isBusy}
-              />
-            </label>
-            <TimeField
-              label="Время"
-              value={onceTime}
-              allowEmpty
-              minuteStep={30}
-              onChange={(value) => updateOnceSlot('time', value)}
-              disabled={isBusy}
-            />
+        {draft.timingMode !== 'now' ? (
+          <div className="publication-schedule-timezone">
+            <Clock aria-hidden />
+            <span>
+              {draft.timingMode === 'schedule' && draft.scheduleKind === 'slots'
+                ? resolveBroadcastScheduleTimezone()
+                : draft.scheduleTimezone}
+            </span>
           </div>
+        ) : null}
+
+        {draft.timingMode === 'once' ? (
+          <Suspense fallback={<div className="publication-date-loading" aria-busy="true" />}>
+            <LazyPublicationOnceFields
+              date={onceDate}
+              time={onceTime}
+              timezone={draft.scheduleTimezone}
+              disabled={isBusy}
+              onChange={updateOnceSlot}
+            />
+          </Suspense>
         ) : draft.timingMode === 'schedule' ? (
           <>
             <div className="publication-schedule-kind" role="group" aria-label="Тип расписания">

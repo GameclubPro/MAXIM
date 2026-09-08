@@ -353,6 +353,14 @@ export class VkSourceService {
     const sources = await this.prisma.$transaction(async (tx) => {
       await this.lockChat(tx, chatId);
       const now = new Date();
+      // FLAG: CLEAN filters and source activation must commit together before sync/dispatch.
+      if (parsed.data.preset === 'CLEAN') {
+        await tx.vkParsingSettings.upsert({
+          where: { chatId_ownerProfile_ownerBotId: { chatId, ...ownerScope } },
+          create: { chatId, ...ownerScope, stripLinksEnabled: true, skipAdsEnabled: true },
+          update: { stripLinksEnabled: true, skipAdsEnabled: true },
+        });
+      }
       const sourceWhere = {
         chatId,
         ...ownerScope,

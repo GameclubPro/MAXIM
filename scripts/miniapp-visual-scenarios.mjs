@@ -395,6 +395,14 @@ const baseScenarios = [
         features: ['publisher', 'vk-parsing'],
       },
     ],
+    ...['publication', 'time', 'safety', 'preset', 'queue'].map((section) => [
+      `publisher-entity-modules-vk-scheduler-${section}`,
+      {
+        searchParams: { profile: 'publisher' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher', 'vk-parsing'],
+      },
+    ]),
     [
       'publisher-channel-modules-vk-editor',
       {
@@ -528,6 +536,13 @@ const baseScenarios = [
       },
     ],
     [
+      'publications-publisher-compose-recurrence',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
       'publications-publisher-buttons-empty',
       {
         searchParams: { profile: 'publisher', compose: '1' },
@@ -642,6 +657,7 @@ const baseScenarios = [
     'events-moderation',
     'events-moderation-scrolled',
     'events-moderation-expanded',
+    ['events-moderation-scope', { searchParams: { moderationState: 'slow' } }],
     ['events-activity', { searchParams: { section: 'activity' } }],
     ['events-participants', { searchParams: { section: 'participants' } }],
     ['events-participants-search', { searchParams: { section: 'participants' } }],
@@ -650,8 +666,13 @@ const baseScenarios = [
     ['events-participants-menu', { searchParams: { section: 'participants' } }],
     ['events-participant-sheet', { searchParams: { section: 'participants' } }],
     ['events-participant-controls', { searchParams: { section: 'participants' } }],
+    [
+      'events-participant-scope',
+      { searchParams: { section: 'participants', moderationState: 'slow' } },
+    ],
     'events-spam-review',
     'events-spam-diagnostics',
+    'events-spam-help',
   ]),
   ...defineRouteScenarios('chat-settings', [
     'chat-settings',
@@ -677,6 +698,7 @@ const baseScenarios = [
     'chat-settings-profanity',
     'chat-settings-commercial',
     'chat-settings-duplicates',
+    'chat-settings-help',
     'chat-settings-duplicates-photos',
     'chat-settings-duplicates-duration',
     'chat-settings-limits',

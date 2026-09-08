@@ -2,17 +2,14 @@ import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   type ChannelPostSignatureSettings,
 } from '@maxim/contracts/channel-post-signature';
-import { type VkParsingSettings, type VkParsingSource } from '@maxim/contracts/vk-parsing';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { Pagination } from './vk-parsing/pagination';
 import { PostList } from './vk-parsing/post-list';
-import { QueueTimeline } from './vk-parsing/queue-timeline';
-import {
-  SchedulerPanel,
-  type AutopostStatusModel,
-  type AutopostStatusTone,
-} from './vk-parsing/scheduler-panel';
+import { SchedulerPanel } from './vk-parsing/scheduler-panel';
+import { buildAutopostStatus } from './vk-parsing/autopost-status';
+import { ActionConfirmSheet } from './ui/action-confirm-sheet';
 import { SourceDashboard } from './vk-parsing/source-dashboard';
 import { StatusFilterBar } from './vk-parsing/status-filter-bar';
 import { normalizeApiError } from './vk-parsing/format';
@@ -20,6 +17,10 @@ import { useVkParsingCard } from './vk-parsing/use-vk-parsing-card';
 import { SkeletonCard } from './ui/skeleton';
 import { StatusState } from './ui/status-state';
 import '../styles/vk-parsing.css';
+
+const LazyQueueTimeline = lazy(() =>
+  import('./vk-parsing/queue-timeline').then((module) => ({ default: module.QueueTimeline })),
+);
 
 type VkParsingCardProps = {
   api: ApiTransport;
@@ -29,133 +30,6 @@ type VkParsingCardProps = {
   channelLinkUrl?: string;
   postSignature?: ChannelPostSignatureSettings;
 };
-
-function parseTimeMinutes(value: string | null | undefined): number | null {
-  if (!value) {
-    return null;
-  }
-  const match = /^(\d{2}):(\d{2})$/u.exec(value);
-  if (!match) {
-    return null;
-  }
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
-    return null;
-  }
-  return hours * 60 + minutes;
-}
-
-function isWithinRange(now: number, start: number, end: number): boolean {
-  if (start === end) {
-    return true;
-  }
-  if (start < end) {
-    return now >= start && now < end;
-  }
-  return now >= start || now < end;
-}
-
-function getNowMinutes(timeZone: string): number {
-  try {
-    const parts = new Intl.DateTimeFormat('ru-RU', {
-      hour: '2-digit',
-      hour12: false,
-      minute: '2-digit',
-      timeZone,
-    }).formatToParts(new Date());
-    const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? '0');
-    const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? '0');
-    if (Number.isFinite(hour) && Number.isFinite(minute)) {
-      return hour * 60 + minute;
-    }
-  } catch {
-    // Fall through to local browser time if the runtime does not know this timezone.
-  }
-
-  const now = new Date();
-  return now.getHours() * 60 + now.getMinutes();
-}
-
-function resolveTimeWindow(settings: VkParsingSettings): { ready: boolean; label: string } {
-  const now = getNowMinutes(settings.schedulerTimezone);
-  const workStart = parseTimeMinutes(settings.workHoursStart) ?? 0;
-  const workEnd = parseTimeMinutes(settings.workHoursEnd) ?? 24 * 60;
-  const quietStart = parseTimeMinutes(settings.quietHoursStart);
-  const quietEnd = parseTimeMinutes(settings.quietHoursEnd);
-  const insideWork = isWithinRange(now, workStart, workEnd);
-  const insideQuiet =
-    quietStart !== null && quietEnd !== null ? isWithinRange(now, quietStart, quietEnd) : false;
-
-  return {
-    ready: insideWork && !insideQuiet,
-    label:
-      insideWork && !insideQuiet
-        ? `${settings.workHoursStart}-${settings.workHoursEnd}`
-        : 'Тихие часы',
-  };
-}
-
-function buildAutopostStatus(
-  settings: VkParsingSettings,
-  sources: VkParsingSource[],
-): AutopostStatusModel {
-  const activeSourceCount = sources.filter((source) => source.importEnabled).length;
-  const autoSourceCount = sources.filter(
-    (source) => source.importEnabled && source.autoPublishEnabled,
-  ).length;
-  const hasSourceError = sources.some(
-    (source) =>
-      source.syncStatus === 'ERROR' || source.autoPublishPausedReason === 'circuit_breaker',
-  );
-  const timeWindow = resolveTimeWindow(settings);
-  const isPaused = settings.autoPublishKillSwitchEnabled;
-  const isWorking =
-    settings.autoPublishEnabled &&
-    !isPaused &&
-    activeSourceCount > 0 &&
-    autoSourceCount > 0 &&
-    timeWindow.ready;
-
-  let title = 'Ручной';
-  let reason = 'Автопостинг выключен';
-  let tone: AutopostStatusTone = 'muted';
-
-  if (isPaused) {
-    title = 'Пауза';
-    reason = 'Автопубликация приостановлена';
-    tone = 'danger';
-  } else if (hasSourceError) {
-    title = 'Ошибка';
-    reason = 'Проверьте источники';
-    tone = 'danger';
-  } else if (!settings.autoPublishEnabled) {
-    title = 'Ручной';
-    reason = 'Автопубликация выключена';
-  } else if (activeSourceCount === 0) {
-    title = 'Ручной';
-    reason = 'Нет активных источников';
-    tone = 'warning';
-  } else if (autoSourceCount === 0) {
-    title = 'Ручной';
-    reason = 'Авто выключено у источников';
-    tone = 'warning';
-  } else if (!timeWindow.ready) {
-    title = 'Авто';
-    reason = 'Пауза по расписанию';
-    tone = 'warning';
-  } else if (isWorking) {
-    title = 'Авто';
-    reason = 'Готово к публикации';
-    tone = 'success';
-  }
-
-  return {
-    title,
-    reason,
-    tone,
-  };
-}
 
 export function VkParsingCard({
   api,
@@ -167,11 +41,27 @@ export function VkParsingCard({
 }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;
+  const [now, setNow] = useState(() => new Date());
+  const [queueOpen, setQueueOpen] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [active]);
   const publishedCount =
     sources.length > 0
       ? sources.reduce((sum, source) => sum + source.publishedPostCount, 0)
       : posts.filter((post) => post.status === 'PUBLISHED').length;
-  const autopostStatus = feed ? buildAutopostStatus(settings, sources) : null;
+  const autopostStatus = feed ? buildAutopostStatus(settings, sources, now) : null;
+  const preset = state.presetConfirmation?.preset;
+  const presetDetails =
+    preset === 'NEWS'
+      ? 'Очередь · 20 мин · до 12 постов в день · высокий приоритет'
+      : preset === 'SLOW'
+        ? 'Очередь · 180 мин · до 3 постов в день'
+        : preset === 'REVIEW'
+          ? 'Ручная проверка · автопубликация источников выключена'
+          : 'Очередь · 90 мин · до 4 постов в день. Ссылки удаляются, реклама пропускается во всех источниках этого чата или канала.';
   const effectivePostSignature = postSignature ?? {
     enabled: settings.appendChannelLinkEnabled,
     presentation: 'signature' as const,
@@ -186,10 +76,11 @@ export function VkParsingCard({
           settings={settings}
           sources={sources}
           status={autopostStatus}
-          queueCount={feed.queue.length}
+          queueCount={sources.reduce((sum, source) => sum + source.queuedPostCount, 0)}
           publishedCount={publishedCount}
           isSaving={state.isSavingSettings}
           isSavingSource={state.isSavingSource}
+          settingsSaved={state.settingsSaved}
           onUpdateSetting={state.updateSetting}
           onUpdateSources={state.updateSources}
           onApplyPreset={state.applyPresetToAllSources}
@@ -284,20 +175,39 @@ export function VkParsingCard({
 
       {feed && feed.queue.length > 0 ? (
         <section className="vk-parsing-service-section" aria-label="Запланированные публикации">
-          <details className="vk-parsing-fold vk-parsing-fold--secondary">
-            <summary>Очередь · {feed.queue.length}</summary>
-            <QueueTimeline
-              posts={feed.queue}
-              schedulingPostId={state.schedulingPostId}
-              cancelingPostId={state.cancelingPostId}
-              publishingNowPostId={state.publishingNowPostId}
-              onSchedulePost={state.schedulePost}
-              onCancelPost={state.cancelScheduledPost}
-              onPublishNow={state.publishPostNow}
-            />
+          <details
+            className="vk-parsing-fold vk-parsing-fold--secondary"
+            onToggle={(event) => setQueueOpen(event.currentTarget.open)}
+          >
+            <summary>Ближайшие публикации · {feed.queue.length}</summary>
+            {queueOpen ? (
+              <Suspense fallback={<SkeletonCard lines={3} />}>
+                <LazyQueueTimeline
+                  posts={feed.queue}
+                  schedulingPostId={state.schedulingPostId}
+                  cancelingPostId={state.cancelingPostId}
+                  publishingNowPostId={state.publishingNowPostId}
+                  onSchedulePost={state.schedulePost}
+                  onCancelPost={state.cancelScheduledPost}
+                  onPublishNow={state.publishPostNow}
+                />
+              </Suspense>
+            ) : null}
           </details>
         </section>
       ) : null}
+      <ActionConfirmSheet
+        id="vk-preset-confirm"
+        open={state.presetConfirmation !== null}
+        title="Применить пресет?"
+        tone="accent"
+        summary={`Источников: ${state.presetConfirmation?.sourceIds.length ?? 0}. ${settings.autoPublishEnabled && !settings.autoPublishKillSwitchEnabled ? 'Автопостинг включен; новые параметры вступят в силу сразу.' : 'Общий режим автопостинга останется без изменений.'}`}
+        previewTitle={presetDetails}
+        confirmLabel="Применить"
+        isBusy={state.isApplyingPreset}
+        onClose={state.closePresetConfirmation}
+        onConfirm={() => void state.confirmSourcePreset()}
+      />
     </div>
   );
 }
