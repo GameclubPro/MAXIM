@@ -13,12 +13,15 @@ import {
   type MaxTextMarkup,
 } from '../common/max-text-markup.util';
 import type { MaxMessageButton, MaxSendMessageOptions } from '../max/max-client.service';
+import { readStrictEditableAttachments } from '../max/max-editable-message-preservation';
 import type { ChannelSettings as PersistedChannelSettings } from '../prisma/prisma-client';
 import { extractRawMessageNode } from './moderation-update-extractors';
+import { extractChannelQuickButtons, type ChannelQuickButtons } from './channel-quick-buttons';
 
 export type ChannelAutoPostMessageText = {
   text: string | null;
   textFormat: MaxSendMessageOptions['textFormat'] | null;
+  quickButtons?: ChannelQuickButtons;
 };
 
 export type ChannelAutoPostScanState = {
@@ -61,6 +64,7 @@ type ProcessChannelAutoPostListedMessagesParams = {
   adminUserIds: readonly string[];
   settingsUpdatedAtMs: number;
   maxNewMessagesPerScan: number;
+  quickButtonsEnabled?: boolean;
   attach: (message: ChannelAutoPostListedMessage) => Promise<ChannelAutoPostAttachOutcome>;
 };
 
@@ -133,10 +137,7 @@ function normalizeMessageMarkup(value: unknown): MaxTextMarkup | null {
     length,
     type,
     url: readString(row.url),
-    userLink: normalizeMaxUserMentionLink(
-      row.user_link ?? row.userLink,
-      row.user_id ?? row.userId,
-    ),
+    userLink: normalizeMaxUserMentionLink(row.user_link ?? row.userLink, row.user_id ?? row.userId),
   };
 }
 
@@ -232,10 +233,25 @@ function resolveMessageTextSource(
 export function resolveChannelAutoPostMessageText(
   message: Record<string, unknown> | null,
   fallbackText: string | null,
+  quickButtonsEnabled = false,
 ): ChannelAutoPostMessageText {
   const source = resolveMessageTextSource(message, fallbackText);
   if (typeof source.text !== 'string' || source.text.trim().length === 0) {
     return { text: null, textFormat: null };
+  }
+
+  if (quickButtonsEnabled && !source.textFormat) {
+    const prepared = extractChannelQuickButtons(source.text, source.markup);
+    if (prepared) {
+      try {
+        prepared.quickButtons.sourceAttachmentTypes = readStrictEditableAttachments(message).map(
+          (attachment) => readLowerString(asRecord(attachment)?.type) ?? '',
+        );
+        return prepared;
+      } catch {
+        // FLAG: An incomplete media snapshot must never authorize consuming button templates.
+      }
+    }
   }
 
   if (source.markup.length > 0) {
@@ -251,6 +267,7 @@ export function resolveChannelAutoPostMessageText(
 export function parseChannelAutoPostListedMessage(
   message: Record<string, unknown>,
   expectedChatId?: string,
+  quickButtonsEnabled = false,
 ): ChannelAutoPostListedMessage | null {
   if (hasNativeChannelParentPost(message)) {
     return null;
@@ -280,7 +297,7 @@ export function parseChannelAutoPostListedMessage(
     return null;
   }
 
-  const messageText = resolveChannelAutoPostMessageText(message, null);
+  const messageText = resolveChannelAutoPostMessageText(message, null, quickButtonsEnabled);
   const sender = asRecord(message.sender);
   const senderId = readIdentifier(
     sender?.user_id,
@@ -293,8 +310,7 @@ export function parseChannelAutoPostListedMessage(
 
   return {
     messageId: String(messageIdCandidate),
-    text: messageText.text,
-    textFormat: messageText.textFormat,
+    ...messageText,
     linkType: readLowerString(link?.type),
     timestampMs,
     senderId,
@@ -684,7 +700,9 @@ export class ChannelAutoPostScanManager {
 
   async processListedMessages(params: ProcessChannelAutoPostListedMessagesParams): Promise<void> {
     const normalizedMessages = params.messages
-      .map((message) => parseChannelAutoPostListedMessage(message, params.chatId))
+      .map((message) =>
+        parseChannelAutoPostListedMessage(message, params.chatId, params.quickButtonsEnabled),
+      )
       .filter((item): item is ChannelAutoPostListedMessage => item !== null)
       .sort(
         (left, right) =>

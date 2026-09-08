@@ -5048,6 +5048,202 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('preserves all media, existing buttons and explicit rich text when converting channel templates', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    const media = ['image', 'video', 'audio', 'file'].map((type) => ({
+      type,
+      payload: { token: `${type}-token` },
+    }));
+    const existingButton = { type: 'callback', text: 'Vote', payload: 'poll|one' };
+    const newButton = { type: 'link' as const, text: 'Read', url: 'https://example.com/' };
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue({
+      body: {
+        text: 'Post "Read"="https://example.com"',
+        attachments: [
+          ...media,
+          { type: 'inline_keyboard', payload: { buttons: [[existingButton]] } },
+        ],
+      },
+    });
+    await service.editMessageInlineKeyboard('channel-1', 'mid-quick', '<strong>Post</strong> ', {
+      textFormat: 'html',
+      expectedSourceText: 'Post "Read"="https://example.com"',
+      requireAllAttachmentsPreserved: true,
+      mergeExistingInlineKeyboard: true,
+      buttons: [[newButton]],
+    });
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'put',
+        data: {
+          text: '<strong>Post</strong> ',
+          format: 'html',
+          attachments: [
+            ...media,
+            { type: 'inline_keyboard', payload: { buttons: [[newButton], [existingButton]] } },
+          ],
+        },
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('copies nested forwarded media with cleaned rich text before source cleanup can run', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValue(of({ status: 200, data: { message: { body: { mid: 'new-copy' } } } })),
+    };
+    const service = createService(httpService);
+    const attachment = { type: 'video', payload: { token: 'video-token' } };
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue({
+      body: { text: '' },
+      link: {
+        type: 'forward',
+        message: { body: { text: 'Post "Read"="https://example.com"', attachments: [attachment] } },
+      },
+    });
+    const beforeSend = jest.fn().mockResolvedValue(undefined);
+    const copy = await service.sendMessageCopyWithInlineKeyboard(
+      'channel-1',
+      'mid-quick',
+      '<strong>Post</strong> ',
+      {
+        textFormat: 'html',
+        expectedSourceText: 'Post "Read"="https://example.com"',
+        requireAllAttachmentsPreserved: true,
+        mergeExistingInlineKeyboard: true,
+        buttons: [[{ type: 'link', text: 'Read', url: 'https://example.com/' }]],
+        beforeSend,
+      },
+    );
+    expect(copy.messageId).toBe('new-copy');
+    expect(beforeSend).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        data: expect.objectContaining({
+          text: '<strong>Post</strong> ',
+          format: 'html',
+          attachments: expect.arrayContaining([attachment]),
+        }),
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it.each(['edit', 'copy'] as const)(
+    'does not mutate a changed source during strict %s',
+    async (mode) => {
+      const httpService = { request: jest.fn() };
+      const service = createService(httpService);
+      jest
+        .spyOn(service as any, 'getMessageById')
+        .mockResolvedValue({ body: { text: 'Changed by admin', attachments: [] } });
+      const options = {
+        expectedSourceText: 'Original template',
+        requireAllAttachmentsPreserved: true,
+      };
+      const operation =
+        mode === 'edit'
+          ? service.editMessageInlineKeyboard('channel-1', 'mid-quick', 'Replacement', options)
+          : service.sendMessageCopyWithInlineKeyboard(
+              'channel-1',
+              'mid-quick',
+              'Replacement',
+              options,
+            );
+      await expect(operation).rejects.toThrow('Source text changed');
+      expect(httpService.request).not.toHaveBeenCalled();
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each(['missing-media-payload', 'keyboard-overflow'] as const)(
+    'leaves the original untouched on %s',
+    async (failure) => {
+      const httpService = { request: jest.fn() };
+      const service = createService(httpService);
+      const attachments =
+        failure === 'missing-media-payload'
+          ? [{ type: 'image' }]
+          : [
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: Array.from({ length: 30 }, (_, i) => [
+                    { type: 'link', text: `${i}`, url: `https://example.com/${i}` },
+                  ]),
+                },
+              },
+            ];
+      jest
+        .spyOn(service as any, 'getMessageById')
+        .mockResolvedValue({ body: { text: 'Post', attachments } });
+      await expect(
+        service.editMessageInlineKeyboard('channel-1', 'mid-quick', 'Post', {
+          expectedSourceText: 'Post',
+          requireAllAttachmentsPreserved: true,
+          mergeExistingInlineKeyboard: true,
+          buttons: [[{ type: 'link', text: 'Read', url: 'https://example.com/new' }]],
+        }),
+      ).rejects.toThrow('would be lost');
+      expect(httpService.request).not.toHaveBeenCalled();
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('does not overwrite newer formatting on unchanged source text', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue({
+      body: { text: 'Post', markup: [{ type: 'strong', from: 0, length: 4 }] },
+    });
+    await expect(
+      service.editMessageInlineKeyboard('channel-1', 'mid-quick', 'Post', {
+        expectedSourceText: 'Post',
+        expectedSourceMarkup: [],
+        requireAllAttachmentsPreserved: true,
+      }),
+    ).rejects.toThrow('Source formatting changed');
+    expect(httpService.request).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it('requires an affirmative MAX response for a strict post edit', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(of({ status: 200, data: { success: false } })),
+    };
+    const service = createService(httpService);
+    jest
+      .spyOn(service as any, 'getMessageById')
+      .mockResolvedValue({ body: { text: 'Post', attachments: [] } });
+    await expect(
+      service.editMessageInlineKeyboard('channel-1', 'mid-quick', 'Post', {
+        requireAllAttachmentsPreserved: true,
+      }),
+    ).rejects.toThrow();
+    await service.onModuleDestroy();
+  });
+
+  it('does not clear media when the message GET omits webhook attachments', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue({ body: { text: 'Post' } });
+    await expect(
+      service.editMessageInlineKeyboard('channel-1', 'mid-quick', 'Post', {
+        expectedSourceAttachmentTypes: ['image'],
+        requireAllAttachmentsPreserved: true,
+        buttons: [[{ type: 'link', text: 'Read', url: 'https://example.com/' }]],
+      }),
+    ).rejects.toThrow('Source attachments changed');
+    expect(httpService.request).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
   it('preserves an existing inline keyboard when a text-only decorator edits the message', async () => {
     const existingKeyboard = {
       type: 'inline_keyboard',

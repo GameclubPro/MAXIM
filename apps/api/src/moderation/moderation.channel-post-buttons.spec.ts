@@ -328,6 +328,73 @@ function configureDefaultChannelAutoPostDeleteRoute(service: ModerationService):
 }
 
 describe('ModerationService channel auto post buttons', () => {
+  it('converts new channel templates with other decorations disabled and stops after the toggle is disabled', async () => {
+    const settings = {
+      quickButtonsEnabled: true,
+      commentsEnabled: false,
+      postSuggestionsEnabled: false,
+      postSuggestionsButtonText: 'Suggest',
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+    };
+    const marker = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
+      channelAutoPostAttachMarker: marker.delegate,
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageCopyWithInlineKeyboard: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    configureDefaultChannelAutoPostEditRoute(service);
+    const update = createChannelPostUpdateWithoutSender();
+    const text = 'Post "Read"="https://example.com"';
+    (update.raw as any).message.body.text = text;
+    const context = { channelSettings: settings, adminUserIds: ['admin-1'] };
+    await (service as any).handleChannelUpdate(update, context);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      update.message!.messageId,
+      'Post ',
+      expect.objectContaining({
+        textFormat: 'html',
+        expectedSourceText: text,
+        requireAllAttachmentsPreserved: true,
+        mergeExistingInlineKeyboard: true,
+        buttons: [[{ type: 'link', text: 'Read', url: 'https://example.com/' }]],
+      }),
+      expectChannelAutoPostOptions(),
+    );
+    const options = (maxClient.editMessageInlineKeyboard.mock.calls as any)[0][3];
+    await expect(options.beforeEditMutation()).resolves.toBeUndefined();
+    await (service as any).handleChannelUpdate(update, context);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    settings.quickButtonsEnabled = false;
+    await expect(options.beforeEditMutation()).rejects.toThrow('disabled');
+    maxClient.editMessageInlineKeyboard.mockClear();
+    await (service as any).handleChannelUpdate(update, context);
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    settings.quickButtonsEnabled = true;
+    settings.updatedAt = new Date('2026-03-07T00:00:00Z');
+    update.message!.messageId = 'old-post-before-toggle';
+    await (service as any).handleChannelUpdate(update, context);
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
   it('auto-attaches fresh runtime-bot and admin-authored channel posts', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
@@ -3055,6 +3122,9 @@ describe('ModerationService channel auto post buttons', () => {
           entityType: 'CHANNEL',
         },
         OR: [
+          {
+            quickButtonsEnabled: true,
+          },
           {
             postSignatureEnabled: true,
           },

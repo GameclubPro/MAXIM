@@ -311,9 +311,11 @@ import {
   resolveChannelAutoPostEventTimestampMs,
   resolveChannelAutoPostMessageText,
   type ChannelAutoPostAttachOutcome,
+  type ChannelAutoPostMessageText,
   type ChannelAutoPostScanState,
 } from './channel-auto-post-runtime';
 import { ChannelAutoPostMutationGuard } from './channel-auto-post-mutation-guard';
+import { loadManagedChannelAutoPostContext } from './channel-auto-post-context';
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
 import {
   buildMaxMessageFallbackUrl,
@@ -14906,6 +14908,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageText = resolveChannelAutoPostMessageText(
       rawMessage,
       typeof text === 'string' ? text : null,
+      managedChannel.channelSettings.quickButtonsEnabled === true &&
+        eventTimestampMs >= managedChannel.channelSettings.updatedAt.getTime(),
     );
     const existingDialogButtons = extractChannelAutoPostDialogButtons(rawMessage, chatId);
 
@@ -14914,6 +14918,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text: messageText.text,
       textFormat: messageText.textFormat,
+      quickButtons: messageText.quickButtons,
       linkType,
       existingDialogButtonKinds: existingDialogButtons.kinds,
       existingDialogThreadId: existingDialogButtons.threadId,
@@ -14957,6 +14962,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             entityType: ChatEntityType.CHANNEL,
           },
           OR: [
+            {
+              quickButtonsEnabled: true,
+            },
             {
               postSignatureEnabled: true,
             },
@@ -15134,12 +15142,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       adminUserIds: managedChannel.adminUserIds,
       settingsUpdatedAtMs: managedChannel.channelSettings.updatedAt.getTime(),
       maxNewMessagesPerScan,
+      quickButtonsEnabled: managedChannel.channelSettings.quickButtonsEnabled === true,
       attach: (normalized) =>
         this.tryAutoAttachChannelMessageButtons({
           chatId,
           messageId: normalized.messageId,
           text: normalized.text,
           textFormat: normalized.textFormat,
+          quickButtons: normalized.quickButtons,
           linkType: normalized.linkType,
           existingDialogButtonKinds: normalized.existingDialogButtonKinds,
           existingDialogThreadId: normalized.existingDialogThreadId,
@@ -15285,11 +15295,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
+  private async assertChannelQuickButtonsEnabled(chatId: string): Promise<void> {
+    const settings = await this.prisma.channelSettings.findUnique({
+      where: { chatId },
+      select: { quickButtonsEnabled: true },
+    });
+    if (settings?.quickButtonsEnabled !== true) {
+      throw new BadRequestException('Channel quick buttons are disabled.');
+    }
+  }
+
   private async tryAutoAttachChannelMessageButtons(params: {
     chatId: string;
     messageId: string;
     text: string | null;
     textFormat?: MaxSendMessageOptions['textFormat'] | null;
+    quickButtons?: ChannelAutoPostMessageText['quickButtons'];
     linkType: string | null;
     existingDialogButtonKinds?: readonly ('comments' | 'suggest')[];
     existingDialogThreadId?: string | null;
@@ -15336,10 +15357,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const includeSuggestButton =
       buttonVisibility.includeSuggestButton && !existingButtonKinds.has('suggest');
     const postSignatureEnabled = managedChannel.channelSettings.postSignatureEnabled === true;
+    const quickButtons = params.quickButtons;
     if (!normalizedSenderId && !senderlessEngagementAllowed && !postSignatureEnabled) {
       return 'skipped';
     }
-    if (!includeCommentsButton && !includeSuggestButton && !postSignatureEnabled) {
+    if (!includeCommentsButton && !includeSuggestButton && !postSignatureEnabled && !quickButtons) {
       return 'noop';
     }
     if (postSignatureEnabled && !this.channelPostSignatureService) {
@@ -15395,7 +15417,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : null;
     const buttons = buildChannelAutoPostButtons(
       managedChannel.channelSettings,
-      buttonVisibility,
+      quickButtons ? { includeCommentsButton, includeSuggestButton } : buttonVisibility,
       (type, buttonText, suggestionEntryMode) =>
         this.buildChannelDialogButton(
           chatId,
@@ -15407,6 +15429,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ),
       ctaButton,
     );
+    buttons.push(...(quickButtons?.buttons ?? []));
+    const quickButtonMutationOptions = quickButtons
+      ? {
+          expectedSourceText: quickButtons.sourceText,
+          expectedSourceMarkup: quickButtons.sourceMarkup,
+          expectedSourceAttachmentTypes: quickButtons.sourceAttachmentTypes,
+          requireAllAttachmentsPreserved: true,
+        }
+      : {};
     let deliveryMode: 'edit_message' | 'replace_with_bot_message' = 'edit_message';
     let replacementMessageId: string | null = null;
     let publishedUrl: string | null =
@@ -15453,11 +15484,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           preparedText.text,
           {
             buttons,
+            ...quickButtonMutationOptions,
             appendNewInlineKeyboardRows: true,
             mergeExistingInlineKeyboard: true,
             ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
             ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
             beforeSend: async () => {
+              if (quickButtons) {
+                await this.assertChannelQuickButtonsEnabled(chatId);
+              }
               // FLAG: Re-read MAX and local authorization in the final callback before publishing.
               await this.channelAutoPostMutationGuard.assertForwardSendAuthorized(
                 chatId,
@@ -15557,11 +15592,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             preparedText.text,
             {
               buttons,
+              ...quickButtonMutationOptions,
               mergeExistingInlineKeyboard: true,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
-              beforeEditMutation: () =>
-                this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId),
+              beforeEditMutation: async () => {
+                if (quickButtons) {
+                  await this.assertChannelQuickButtonsEnabled(chatId);
+                }
+                await this.channelAutoPostMutationGuard.assertEditAuthorized(
+                  chatId,
+                  autoAttachBotId,
+                );
+              },
               debugContext: {
                 screen: 'channel-auto-post',
                 action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
@@ -15573,6 +15616,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           const mergedEditStatus = this.extractStatusCode(mergedEditError);
           const mergedEditFailure = classifyMaxTerminalChatActionError(mergedEditError);
           const canRetryWithReplacementKeyboard =
+            !quickButtons &&
             buttons.length > 0 &&
             mergedEditStatus !== null &&
             mergedEditStatus < 500 &&
@@ -15869,72 +15913,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     chatTitle?: string,
   ): Promise<ManagedChannelContext | null> {
-    if (typeof this.prisma.chat.findUnique !== 'function') {
-      return null;
-    }
-
-    let channel = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      include: {
-        channelSettings: true,
-        admins: {
-          select: {
-            userId: true,
-          },
-        },
-      },
-    });
-
-    if (!channel || channel.entityType !== ChatEntityType.CHANNEL) {
-      return null;
-    }
-
-    if (!channel.channelSettings || (chatTitle?.trim() && channel.title !== chatTitle.trim())) {
-      if (typeof this.prisma.chat.update !== 'function') {
-        return channel.channelSettings
-          ? {
-              channelSettings: channel.channelSettings,
-              adminUserIds: channel.admins.map((item) => item.userId),
-            }
-          : null;
-      }
-
-      channel = await this.prisma.chat.update({
-        where: { id: chatId },
-        data: {
-          ...(chatTitle?.trim()
-            ? {
-                title: chatTitle.trim(),
-              }
-            : {}),
-          channelSettings: {
-            upsert: {
-              update: {},
-              create: {
-                commentsEnabled: false,
-              },
-            },
-          },
-        },
-        include: {
-          channelSettings: true,
-          admins: {
-            select: {
-              userId: true,
-            },
-          },
-        },
-      });
-    }
-
-    if (!channel.channelSettings) {
-      return null;
-    }
-
-    return {
-      channelSettings: channel.channelSettings,
-      adminUserIds: channel.admins.map((item) => item.userId),
-    };
+    return loadManagedChannelAutoPostContext(this.prisma, chatId, chatTitle);
   }
 
   private isChannelMessage(update: MaxUpdate): boolean {

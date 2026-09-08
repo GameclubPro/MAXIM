@@ -1284,6 +1284,7 @@ model ChannelSettings {
   commentsLimitTwoInRowEnabled Boolean                    @default(false) @map("comments_limit_two_in_row_enabled")
   commentsMessageText          String                     @default("") @map("comments_message_text")
   postSignatureEnabled         Boolean                    @default(false) @map("post_signature_enabled")
+  quickButtonsEnabled          Boolean                    @default(false) @map("quick_buttons_enabled")
   postSignaturePresentation    ChannelPostSignaturePresentation @default(SIGNATURE) @map("post_signature_presentation")
   postSignatureText            String                     @default("Подписаться на канал") @map("post_signature_text")
   postSignatureUrl             String                     @default("") @map("post_signature_url")

@@ -1,10 +1,11 @@
 import { HttpService } from '@nestjs/axios';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UnrecoverableError, type Job, type Queue } from 'bullmq';
 import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import {
@@ -39,6 +40,10 @@ import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry
 import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
+import {
+  assertEditableAttachmentsPreserved,
+  readStrictEditableAttachments,
+} from './max-editable-message-preservation';
 import {
   markMaxMemberMutationAttempted,
   markMaxMemberMutationConfirmed,
@@ -420,6 +425,10 @@ type MaxEditableMessageOptions = Pick<
   preserveExistingInlineKeyboard?: boolean;
   replaceCallbackPayloadPrefixes?: readonly string[];
   beforeEditMutation?: () => Promise<void>;
+  expectedSourceText?: string;
+  expectedSourceMarkup?: readonly MaxTextMarkup[];
+  expectedSourceAttachmentTypes?: readonly string[];
+  requireAllAttachmentsPreserved?: boolean;
 };
 
 type MaxImmediateSendMessageOptions = MaxSendMessageOptions & {
@@ -1317,6 +1326,7 @@ export class MaxClientService implements OnModuleDestroy {
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage> {
     const sourceMessage = await this.getMessageById(sourceMessageId, requestOptions);
+    this.assertExpectedEditableMessageText(sourceMessage, options);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
     const messageTextPayload = this.buildOutgoingMessageTextPayload(
@@ -1423,6 +1433,7 @@ export class MaxClientService implements OnModuleDestroy {
   ) {
     return this.runWithMessageKeyboardEditLock(messageId, async (assertOwnership) => {
       const message = await this.getMessageById(messageId, requestOptions);
+      this.assertExpectedEditableMessageText(message, options);
       const attachments = this.buildEditableMessageAttachments(message, options);
       const sourceBody = this.asRecord(message?.body);
       const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
@@ -1452,7 +1463,7 @@ export class MaxClientService implements OnModuleDestroy {
             MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
           );
           await assertOwnership();
-          await this.request('put', '/messages', {
+          const response = await this.request<{ success?: boolean }>('put', '/messages', {
             params: {
               message_id: messageId,
             },
@@ -1468,6 +1479,9 @@ export class MaxClientService implements OnModuleDestroy {
               attachments,
             },
           });
+          if (options?.requireAllAttachmentsPreserved && response.success !== true) {
+            throw new BadRequestException('MAX did not confirm the post update.');
+          }
         },
         requestOptions,
       );
@@ -5606,6 +5620,26 @@ export class MaxClientService implements OnModuleDestroy {
     message: Record<string, unknown> | null,
     options?: MaxEditableMessageOptions,
   ): Record<string, unknown>[] {
+    if (options?.requireAllAttachmentsPreserved) {
+      const sourceAttachments = readStrictEditableAttachments(message);
+      if (
+        options.expectedSourceAttachmentTypes !== undefined &&
+        !isDeepStrictEqual(
+          sourceAttachments.map(
+            (attachment) => this.readLowerString(this.asRecord(attachment)?.type) ?? '',
+          ),
+          options.expectedSourceAttachmentTypes,
+        )
+      ) {
+        throw new BadRequestException('Source attachments changed; preserving the current post.');
+      }
+      const result = this.buildEditableMessageAttachments(
+        { body: { attachments: sourceAttachments } },
+        { ...options, requireAllAttachmentsPreserved: false },
+      );
+      assertEditableAttachmentsPreserved(sourceAttachments, result, options.buttons ?? []);
+      return result;
+    }
     const editableAttachments = this.extractEditableAttachments(message);
     const existingAttachmentsWithoutKeyboard = editableAttachments.filter(
       (attachment) => this.readLowerString(attachment.type) !== 'inline_keyboard',
@@ -5926,6 +5960,27 @@ export class MaxClientService implements OnModuleDestroy {
       text,
       textFormat: null,
     };
+  }
+
+  private assertExpectedEditableMessageText(
+    message: Record<string, unknown> | null,
+    options?: MaxEditableMessageOptions,
+  ): void {
+    if (
+      options?.expectedSourceText !== undefined &&
+      this.resolveOutgoingMessageTextSource(message, null).text !== options.expectedSourceText
+    ) {
+      throw new BadRequestException('Source text changed; preserving the current post.');
+    }
+    if (
+      options?.expectedSourceMarkup !== undefined &&
+      !isDeepStrictEqual(
+        this.resolveOutgoingMessageTextSource(message, null).markup,
+        options.expectedSourceMarkup,
+      )
+    ) {
+      throw new BadRequestException('Source formatting changed; preserving the current post.');
+    }
   }
 
   private resolveOutgoingMessageTextSource(

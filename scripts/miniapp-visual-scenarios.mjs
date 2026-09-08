@@ -796,6 +796,7 @@ const baseScenarios = [
       { searchParams: { settingsError: 'access-denied' }, readySelector: '.status-state' },
     ],
     'channel-settings-post-signature',
+    'channel-settings-quick-buttons',
     ['channel-settings-access-degraded', { searchParams: { access: 'degraded' } }],
     'channel-settings-comments',
     'channel-settings-post-suggestions',

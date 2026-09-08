@@ -1381,6 +1381,7 @@ export type PublishChatRulesResult = z.infer<typeof publishChatRulesResultSchema
 
 export const channelSettingsSchema = z
   .object({
+    quickButtonsEnabled: z.boolean().default(false),
     postSuggestionsEnabled: z.boolean().default(false),
     postSuggestionsText: botMessageTextSchema,
     postSuggestionsDailyLimit: z.number().int().min(1).max(10).default(10),

@@ -228,6 +228,7 @@ function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
 }
 
 type ChannelSettingsSectionKey =
+  | 'quickButtons'
   | 'postSignature'
   | 'comments'
   | 'postSuggestions'
@@ -281,6 +282,7 @@ const DESKTOP_TOGGLE_ROW_BLOCKERS = [
   '.settings-native-toggle__hint',
 ].join(', ');
 const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boolean> = {
+  quickButtons: false,
   postSignature: false,
   comments: false,
   postSuggestions: false,
@@ -3578,6 +3580,39 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               </div>
             ) : null}
           </div>
+        </SettingsDrilldownPanel>
+      </GlassCard>
+
+      <GlassCard className="channel-settings-card" elevated>
+        <div className="settings-section__head settings-section__head--interactive">
+          <SettingsSectionToggle
+            title="Быстрые кнопки"
+            summary={draft.quickButtonsEnabled ? 'Включены' : 'Выключены'}
+            status={draft.quickButtonsEnabled ? 'Вкл' : 'Выкл'}
+            icon="links"
+            tone="sky"
+            open={expandedSections.quickButtons}
+            controls="channel-settings-quick-buttons"
+            onClick={() => toggleSection('quickButtons')}
+          />
+        </div>
+        <SettingsDrilldownPanel
+          id="channel-settings-quick-buttons"
+          open={expandedSections.quickButtons}
+          title="Быстрые кнопки"
+          tone="sky"
+          onClose={() => toggleSection('quickButtons')}
+          footer={renderChannelSectionFooter('quickButtons')}
+          confirmCloseWhen={isDirty}
+          onDiscardChanges={discardChannelSettingsChanges}
+        >
+          <ChannelSettingsToggleCard
+            title="Быстрые кнопки"
+            openHintKey={openHintKey}
+            onToggleHint={toggleHint}
+            checked={draft.quickButtonsEnabled}
+            onChange={(nextValue) => patchDraft('quickButtonsEnabled', nextValue)}
+          />
         </SettingsDrilldownPanel>
       </GlassCard>
 

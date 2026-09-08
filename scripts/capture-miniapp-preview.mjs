@@ -2164,6 +2164,22 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'channel-settings-quick-buttons',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: 'Быстрые кнопки', exact: true }).click();
+      const toggle = page.getByRole('checkbox', { name: 'Быстрые кнопки', exact: true });
+      if (await toggle.isChecked()) {
+        throw new Error('Quick buttons must default off.');
+      }
+      await toggle.check();
+      await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+      await page.getByRole('button', { name: 'Быстрые кнопки', exact: true }).click();
+      if (!(await toggle.isChecked())) {
+        throw new Error('Quick button setting was not saved.');
+      }
+    },
+  },
+  {
     name: 'channel-settings-access-degraded',
     beforeShot: async (page) => {
       await page.locator('.managed-access-alert').waitFor({ state: 'visible' });
