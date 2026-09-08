@@ -3805,9 +3805,14 @@ describe('PrivateControlService', () => {
       }),
       'publish',
     );
-    expect(getLastEditedText(maxClient)).toContain('Предложка уже обрабатывается');
-    expect(getLastEditedText(maxClient)).not.toContain('Предложка отклонена');
-    expect(getLastEditedButtons(maxClient)).toEqual([]);
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      expect.any(String),
+      'Предложка обрабатывается. Результат пока не подтверждён.',
+      undefined,
+      expect.any(Object),
+    );
+    expect(getLastEditedText(maxClient)).toBe('');
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('does not expose raw MAX transport errors from suggestion review callbacks', async () => {
@@ -3827,7 +3832,7 @@ describe('PrivateControlService', () => {
     );
 
     expect(getLastSentText(maxClient)).toContain(
-      'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.',
+      'Проверьте, что вы и бот по-прежнему администраторы канала',
     );
     expect(getLastSentText(maxClient)).not.toContain('Request failed with status code 403');
   });

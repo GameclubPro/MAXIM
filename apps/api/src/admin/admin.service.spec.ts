@@ -31380,7 +31380,7 @@ describe('AdminService chat rules', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
-    const deleteBotAuthoredMessage = jest.fn().mockResolvedValue('accepted');
+    const deleteChatRulesMessage = jest.fn().mockResolvedValue('accepted');
 
     const service = new AdminService(
       prisma as never,
@@ -31388,7 +31388,7 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    (service as any).manualMessageCleanupService = { deleteBotAuthoredMessage };
+    (service as any).manualMessageCleanupService = { deleteChatRulesMessage };
     jest.spyOn(service as any, 'resolveManualActionBotAssignment').mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
@@ -31399,17 +31399,13 @@ describe('AdminService chat rules', () => {
       chatTitle: null,
     });
 
-    expect(deleteBotAuthoredMessage).toHaveBeenCalledWith({
+    expect(deleteChatRulesMessage).toHaveBeenCalledWith({
       chatId: 'chat-1',
       messageId: 'mid-rules-old-1',
-      originBotId: 'old-rules-bot',
-      reasonKey: 'chat_rules_republish_previous_message_cleanup',
-      ruleCode: 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
-      metadata: {
-        source: 'miniapp',
-        actorUserId: 'admin-1',
-        cleanupKind: 'chat_rules_republish',
-      },
+      botId: 'old-rules-bot',
+      cleanupKind: 'republish_previous',
+      source: 'miniapp',
+      actorUserId: 'admin-1',
       directOptions: expectChatRulesDeleteOptions({ botId: 'old-rules-bot' }),
     });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();

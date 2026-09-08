@@ -237,6 +237,35 @@ export class AdminManualMessageCleanupService {
     );
   }
 
+  async deleteChatRulesMessage(params: {
+    chatId: string;
+    messageId: string;
+    botId?: string;
+    cleanupKind: 'republish_previous' | 'reset_current';
+    source: string;
+    actorUserId: string;
+    directOptions: MaxActionDispatchOptions;
+  }): Promise<ManualDeleteOutcome> {
+    const republish = params.cleanupKind === 'republish_previous';
+    return this.deleteBotAuthoredMessage({
+      chatId: params.chatId,
+      messageId: params.messageId,
+      originBotId: params.botId,
+      reasonKey: republish
+        ? 'chat_rules_republish_previous_message_cleanup'
+        : 'chat_rules_reset_published_message_cleanup',
+      ruleCode: republish
+        ? 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP'
+        : 'CHAT_RULES_RESET_PUBLISHED_MESSAGE_CLEANUP',
+      metadata: {
+        source: params.source,
+        actorUserId: params.actorUserId,
+        cleanupKind: republish ? 'chat_rules_republish' : 'chat_rules_reset',
+      },
+      directOptions: params.directOptions,
+    });
+  }
+
   private async deleteWithDurableIntent(
     params: {
       chatId: string;

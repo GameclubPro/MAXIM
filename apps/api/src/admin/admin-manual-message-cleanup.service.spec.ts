@@ -1,6 +1,46 @@
 import { AdminManualMessageCleanupService } from './admin-manual-message-cleanup.service';
 
 describe('AdminManualMessageCleanupService', () => {
+  it.each([
+    [
+      'republish_previous',
+      'chat_rules_republish_previous_message_cleanup',
+      'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+    ],
+    [
+      'reset_current',
+      'chat_rules_reset_published_message_cleanup',
+      'CHAT_RULES_RESET_PUBLISHED_MESSAGE_CLEANUP',
+    ],
+  ] as const)(
+    'preserves the durable identity when reconciling %s rules cleanup',
+    async (cleanupKind, reasonKey, ruleCode) => {
+      const service = new AdminManualMessageCleanupService({} as never, {} as never);
+      const cleanup = jest
+        .spyOn(service, 'deleteBotAuthoredMessage')
+        .mockResolvedValue('confirmed');
+      await expect(
+        service.deleteChatRulesMessage({
+          chatId: 'chat-1',
+          messageId: 'old-rules',
+          botId: 'original-bot',
+          cleanupKind,
+          source: 'miniapp',
+          actorUserId: 'admin-1',
+          directOptions: { immediate: true },
+        }),
+      ).resolves.toBe('confirmed');
+      expect(cleanup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          messageId: 'old-rules',
+          originBotId: 'original-bot',
+          reasonKey,
+          ruleCode,
+        }),
+      );
+    },
+  );
   it('routes exact replacement cleanup through the durable executor outside the global rollout', async () => {
     const maxClient = { deleteMessage: jest.fn() };
     const deleteIntents = {

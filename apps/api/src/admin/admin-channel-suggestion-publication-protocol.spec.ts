@@ -149,6 +149,52 @@ describe('channel suggestion publication protocol', () => {
   });
 
   it.each([
+    ['claim-token-1', 'release_pre_dispatch'],
+    ['another-owner', 'waiting'],
+  ])('releases a fresh failed attempt only for its returning owner: %s', (token, kind) => {
+    expect(
+      classifyChannelSuggestionPublicationRecovery({
+        payload: createPayload(),
+        suggestionId,
+        chatId,
+        ledger: createLedger({ status: 'FAILED_RETRYABLE' }),
+        nowMs: new Date(claimedAt).getTime() + 1000,
+        completedAttemptClaimToken: token,
+      }).kind,
+    ).toBe(kind);
+  });
+
+  it.each([
+    { dispatchToken: 'dispatch-token-1' },
+    { dispatchStartedAt: new Date(claimedAt) },
+    { dispatchBotId: 'bot-1' },
+    { ambiguous: true, status: 'AMBIGUOUS', terminal: true },
+  ])('never releases even the returning owner after dispatch evidence: %o', (overrides) => {
+    expect(
+      classifyChannelSuggestionPublicationRecovery({
+        payload: createPayload(),
+        suggestionId,
+        chatId,
+        ledger: createLedger(overrides),
+        nowMs: new Date(claimedAt).getTime() + 1000,
+        completedAttemptClaimToken: 'claim-token-1',
+      }).kind,
+    ).toBe('manual');
+  });
+
+  it('keeps a live concurrent dispatch waiting without misreporting manual verification', () => {
+    expect(
+      classifyChannelSuggestionPublicationRecovery({
+        payload: createPayload(),
+        suggestionId,
+        chatId,
+        ledger: createLedger({ dispatchToken: 'live-dispatch' }),
+        nowMs: new Date(claimedAt).getTime() + 1000,
+      }).kind,
+    ).toBe('waiting');
+  });
+
+  it.each([
     { dispatchToken: 'dispatch-token-1' },
     { dispatchStartedAt: new Date('2026-08-20T10:02:00.000Z') },
     { dispatchBotId: 'bot-1' },
@@ -237,9 +283,7 @@ describe('channel suggestion publication protocol', () => {
       messageDigest: 'b'.repeat(64),
       botId: 'bot-1',
       threadId: null,
-      buttons: [
-        [{ type: 'link', text: '📞 Заказать рекламу', url: 'https://example.test/ads' }],
-      ],
+      buttons: [[{ type: 'link', text: '📞 Заказать рекламу', url: 'https://example.test/ads' }]],
       includeCommentsButton: false,
       includeSuggestButton: false,
       includeCtaButton: true,

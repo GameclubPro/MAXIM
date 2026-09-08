@@ -323,6 +323,103 @@ describe('admin chat rules MAX errors', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
+  it.each(['republish_previous', 'reset_current'] as const)(
+    'reconciles confirmed %s cleanup before the next publish',
+    async (cleanupKind) => {
+      const { deletePreviousPublishedMessage, maxClient, order, prisma, publish } =
+        createPublishFixture();
+      const rules = {
+        ...createRules(),
+        pendingCleanupMessageId: cleanupKind === 'reset_current' ? 'rules-old' : 'rules-older',
+        pendingCleanupBotId: 'bot-original',
+        pendingCleanupKind: cleanupKind,
+      };
+      prisma.chatRules.upsert.mockResolvedValue(rules);
+      prisma.chatRules.findUnique.mockResolvedValue({
+        ...createRules(),
+        ...(cleanupKind === 'reset_current' ? { publishedMessageId: null } : {}),
+        updatedAt: new Date('2026-07-15T10:02:00Z'),
+      });
+      deletePreviousPublishedMessage.mockResolvedValueOnce('confirmed');
+
+      await expect(publish()).resolves.toMatchObject({ messageId: 'rules-new' });
+
+      expect(deletePreviousPublishedMessage).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          messageId: rules.pendingCleanupMessageId,
+          botId: 'bot-original',
+          cleanupKind,
+        }),
+      );
+      expect(prisma.chatRules.updateMany).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          where: expect.objectContaining({
+            updatedAt: rules.updatedAt,
+            pendingCleanupMessageId: rules.pendingCleanupMessageId,
+            pendingCleanupKind: cleanupKind,
+            publishOperationId: null,
+          }),
+        }),
+      );
+      expect(order.indexOf('send')).toBeGreaterThanOrEqual(0);
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['accepted', 'failed'] as const)(
+    'does not send while reconciled cleanup is %s',
+    async (outcome) => {
+      const { deletePreviousPublishedMessage, maxClient, prisma, publish } = createPublishFixture();
+      prisma.chatRules.upsert.mockResolvedValue({
+        ...createRules(),
+        imageBase64: 'aW1hZ2U=',
+        pendingCleanupMessageId: 'rules-older',
+        pendingCleanupBotId: 'bot-original',
+        pendingCleanupKind: 'republish_previous',
+      });
+      deletePreviousPublishedMessage.mockResolvedValue(outcome);
+      await expect(publish()).rejects.toThrow(
+        outcome === 'accepted' ? 'ещё удаляется' : 'остановлено',
+      );
+      expect(prisma.chatRules.updateMany).not.toHaveBeenCalled();
+      expect(maxClient.uploadImage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not overwrite a newer rules revision when cleanup confirmation races with a save', async () => {
+    const { deletePreviousPublishedMessage, maxClient, prisma, publish } = createPublishFixture();
+    prisma.chatRules.upsert.mockResolvedValue({
+      ...createRules(),
+      pendingCleanupMessageId: 'rules-older',
+      pendingCleanupBotId: 'bot-original',
+      pendingCleanupKind: 'republish_previous',
+    });
+    deletePreviousPublishedMessage.mockResolvedValue('confirmed');
+    prisma.chatRules.updateMany.mockResolvedValueOnce({ count: 0 });
+    prisma.chatRules.findUnique.mockResolvedValue(createRules());
+    await expect(publish()).rejects.toThrow('Правила изменились');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { response: { status: 404, data: {} } },
+    { response: { status: 403, data: { code: 'chat.denied' } } },
+  ])('does not clear pending cleanup on unconfirmed MAX errors: %o', async (error) => {
+    const { deletePreviousPublishedMessage, maxClient, prisma, publish } = createPublishFixture();
+    prisma.chatRules.upsert.mockResolvedValue({
+      ...createRules(),
+      pendingCleanupMessageId: 'rules-older',
+      pendingCleanupKind: 'republish_previous',
+    });
+    deletePreviousPublishedMessage.mockRejectedValue(error);
+    await expect(publish()).rejects.toThrow('Не удалось завершить удаление');
+    expect(prisma.chatRules.updateMany).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
   it('does not turn a post-commit audit failure into a repeated MAX send', async () => {
     const { maxClient, prisma, publish } = createPublishFixture();
     prisma.auditLog.create.mockRejectedValue(new Error('audit unavailable'));
@@ -371,6 +468,47 @@ describe('admin chat rules MAX errors', () => {
         payload: expect.objectContaining({ cleanupOutcome: 'accepted', deletedPost: false }),
       }),
     });
+  });
+
+  it('finishes a reset whose deletion completed asynchronously without deleting twice', async () => {
+    const rules = {
+      ...createRules(),
+      pendingCleanupMessageId: 'rules-old',
+      pendingCleanupBotId: 'bot-old',
+      pendingCleanupKind: 'reset_current',
+    };
+    const cleared = {
+      ...createRules(),
+      publishedMessageId: null,
+      publishedBotId: null,
+      publishedUrl: null,
+      publishedAt: null,
+    };
+    const prisma = {
+      chatRules: {
+        upsert: jest.fn().mockResolvedValue(rules),
+        findUnique: jest.fn().mockResolvedValue(cleared),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      auditLog: { create: jest.fn() },
+    };
+    const deletePublishedMessage = jest.fn().mockResolvedValue('confirmed');
+    const result = await resetPublishedChatRules({
+      prisma: prisma as never,
+      chatContextCache: { invalidate: jest.fn().mockResolvedValue(undefined) },
+      maxClient: { deleteMessage: jest.fn() } as never,
+      logger: { warn: jest.fn() },
+      chatId: 'chat-1',
+      actorUserId: 'admin-1',
+      source: 'miniapp',
+      resolveBotId: () => 'bot-new',
+      deletePublishedMessage,
+    });
+    expect(result.publishedMessageId).toBeNull();
+    expect(deletePublishedMessage).toHaveBeenCalledTimes(1);
+    expect(deletePublishedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-old', cleanupKind: 'reset_current' }),
+    );
   });
 
   it('blocks reset while a publication send fence is active', async () => {

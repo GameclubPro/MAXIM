@@ -298,6 +298,7 @@ export function classifyChannelSuggestionPublicationRecovery(params: {
   actorUserId: string;
   ledger: ChannelSuggestionPublicationLedgerRow | null;
   nowMs?: number;
+  completedAttemptClaimToken?: string;
 }): ChannelSuggestionPublicationRecoveryDecision {
   const claim = readChannelSuggestionPublicationClaimV1(params.payload, params.suggestionId);
   if (!claim) {
@@ -339,6 +340,20 @@ export function classifyChannelSuggestionPublicationRecovery(params: {
     };
   }
 
+  const nowMs = params.nowMs ?? Date.now();
+  const fresh =
+    nowMs - new Date(claim.claimedAt).getTime() < CHANNEL_SUGGESTION_PUBLICATION_CLAIM_STALE_MS;
+  const completedAttempt = params.completedAttemptClaimToken === claim.claimToken;
+  if (
+    fresh &&
+    !completedAttempt &&
+    ledger?.status === 'IN_PROGRESS' &&
+    !ledger.ambiguous &&
+    !ledger.terminal
+  ) {
+    return { kind: 'waiting', claim };
+  }
+
   if (
     ledger?.ambiguous ||
     ledger?.status === 'AMBIGUOUS' ||
@@ -355,8 +370,7 @@ export function classifyChannelSuggestionPublicationRecovery(params: {
     return { kind: 'manual', reason: 'context_without_ledger' };
   }
 
-  const nowMs = params.nowMs ?? Date.now();
-  if (nowMs - new Date(claim.claimedAt).getTime() < CHANNEL_SUGGESTION_PUBLICATION_CLAIM_STALE_MS) {
+  if (fresh && !completedAttempt) {
     return { kind: 'waiting', claim };
   }
 

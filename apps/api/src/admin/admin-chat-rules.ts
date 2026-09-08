@@ -44,10 +44,12 @@ type ChatRulesFormattedPublication = {
 };
 
 type ChatRulesDeleteOutcome = 'confirmed' | 'accepted' | 'failed';
+type ChatRulesCleanupKind = 'republish_previous' | 'reset_current';
 type DeletePublishedChatRulesMessage = (params: {
   chatId: string;
   messageId: string;
   botId?: string;
+  cleanupKind: ChatRulesCleanupKind;
   directOptions: MaxActionDispatchOptions;
 }) => Promise<ChatRulesDeleteOutcome>;
 
@@ -98,6 +100,7 @@ async function deletePublishedChatRulesMessage(params: {
   chatId: string;
   messageId: string;
   botId?: string;
+  cleanupKind: ChatRulesCleanupKind;
 }): Promise<ChatRulesDeleteOutcome> {
   const directOptions = buildChatRulesDeleteOptions(params.botId);
   if (params.deleteMessage) {
@@ -105,11 +108,103 @@ async function deletePublishedChatRulesMessage(params: {
       chatId: params.chatId,
       messageId: params.messageId,
       botId: params.botId,
+      cleanupKind: params.cleanupKind,
       directOptions,
     });
   }
   await params.maxClient.deleteMessage(params.chatId, params.messageId, directOptions);
   return 'confirmed';
+}
+
+async function reconcilePendingChatRulesCleanup(params: {
+  prisma: PrismaService;
+  chatContextCache: Pick<ChatContextCacheService, 'invalidate'>;
+  logger: Pick<Logger, 'warn'>;
+  maxClient: Pick<MaxClientService, 'deleteMessage'>;
+  deleteMessage?: DeletePublishedChatRulesMessage;
+  rules: PersistedChatRules;
+  resolveBotId: () => Promise<string | undefined> | string | undefined;
+}): Promise<PersistedChatRules> {
+  const { rules } = params;
+  if (!rules.pendingCleanupMessageId) return rules;
+  const cleanupKind = rules.pendingCleanupKind;
+  if (
+    rules.publishOperationId ||
+    rules.publishSendStartedAt ||
+    (cleanupKind !== 'republish_previous' && cleanupKind !== 'reset_current') ||
+    (cleanupKind === 'republish_previous' &&
+      rules.pendingCleanupMessageId === rules.publishedMessageId) ||
+    (cleanupKind === 'reset_current' && rules.pendingCleanupMessageId !== rules.publishedMessageId)
+  ) {
+    throw new BadRequestException(
+      'Состояние публикации правил требует проверки. Обратитесь в поддержку.',
+    );
+  }
+
+  const botId =
+    normalizeOptionalBotId(rules.pendingCleanupBotId) ??
+    normalizeOptionalBotId(await params.resolveBotId());
+  let outcome: ChatRulesDeleteOutcome;
+  try {
+    outcome = await deletePublishedChatRulesMessage({
+      maxClient: params.maxClient,
+      deleteMessage: params.deleteMessage,
+      chatId: rules.chatId,
+      messageId: rules.pendingCleanupMessageId,
+      botId,
+      cleanupKind,
+    });
+  } catch (error: unknown) {
+    if (!isMaxMessageMissingError(error)) {
+      throw new BadRequestException(
+        'Не удалось завершить удаление прежнего поста правил. Проверьте права исходного бота и повторите.',
+      );
+    }
+    outcome = 'confirmed';
+  }
+  if (outcome !== 'confirmed') {
+    throw new BadRequestException(
+      outcome === 'accepted'
+        ? 'Предыдущий пост правил ещё удаляется. Подождите немного и повторите.'
+        : 'Удаление прежнего поста правил остановлено. Проверьте права исходного бота и обратитесь в поддержку.',
+    );
+  }
+
+  // FLAG: Reconcile only the exact confirmed cleanup; never clear a newer publish/reset fence.
+  const cleared = await params.prisma.chatRules.updateMany({
+    where: {
+      chatId: rules.chatId,
+      updatedAt: rules.updatedAt,
+      publishedMessageId: rules.publishedMessageId,
+      publishOperationId: null,
+      publishSendStartedAt: null,
+      pendingCleanupMessageId: rules.pendingCleanupMessageId,
+      pendingCleanupBotId: rules.pendingCleanupBotId,
+      pendingCleanupKind: cleanupKind,
+    },
+    data: {
+      pendingCleanupMessageId: null,
+      pendingCleanupBotId: null,
+      pendingCleanupIntentId: null,
+      pendingCleanupKind: null,
+      ...(cleanupKind === 'reset_current'
+        ? { publishedMessageId: null, publishedBotId: null, publishedUrl: null, publishedAt: null }
+        : {}),
+    },
+  });
+  const latest = await params.prisma.chatRules.findUnique({ where: { chatId: rules.chatId } });
+  if (cleared.count !== 1 || !latest) {
+    throw new BadRequestException(
+      'Правила изменились во время удаления. Обновите экран и повторите.',
+    );
+  }
+  await params.chatContextCache.invalidate(rules.chatId).catch(() => {
+    params.logger.warn(
+      { chatId: rules.chatId },
+      'Failed to invalidate confirmed rules cleanup cache',
+    );
+  });
+  return latest;
 }
 
 export function decodeRulesImageBase64(value: string): Buffer {
@@ -709,9 +804,10 @@ export async function publishChatRules(params: {
   deletePreviousPublishedMessage?: DeletePublishedChatRulesMessage;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<PublishChatRulesResult> {
-  const rules = await ensureChatRules({
-    prisma: params.prisma,
-    chatId: params.chatId,
+  const rules = await reconcilePendingChatRulesCleanup({
+    ...params,
+    deleteMessage: params.deletePreviousPublishedMessage,
+    rules: await ensureChatRules({ prisma: params.prisma, chatId: params.chatId }),
   });
   const previousPublishedMessageId = rules.publishedMessageId?.trim() || null;
   const previousPublishedBotId = normalizeOptionalBotId(rules.publishedBotId);
@@ -917,6 +1013,7 @@ export async function publishChatRules(params: {
         chatId: params.chatId,
         messageId: previousPublishedMessageId,
         botId: deleteBotId,
+        cleanupKind: 'republish_previous',
       });
       previousCleanupOutcome = outcome;
       if (outcome === 'failed') {
@@ -1099,9 +1196,10 @@ export async function resetPublishedChatRules(params: {
   resolveBotId: () => Promise<string | undefined> | string | undefined;
   deletePublishedMessage?: DeletePublishedChatRulesMessage;
 }): Promise<ChatRules> {
-  const rules = await ensureChatRules({
-    prisma: params.prisma,
-    chatId: params.chatId,
+  const rules = await reconcilePendingChatRulesCleanup({
+    ...params,
+    deleteMessage: params.deletePublishedMessage,
+    rules: await ensureChatRules({ prisma: params.prisma, chatId: params.chatId }),
   });
   const publishedMessageId = rules.publishedMessageId?.trim() ?? '';
   const resolvedBotId = normalizeOptionalBotId(await params.resolveBotId());
@@ -1141,6 +1239,7 @@ export async function resetPublishedChatRules(params: {
         chatId: params.chatId,
         messageId: publishedMessageId,
         botId: deleteBotId,
+        cleanupKind: 'reset_current',
       });
       if (cleanupOutcome === 'failed') {
         throw new Error('Durable chat rules cleanup reached a terminal state');

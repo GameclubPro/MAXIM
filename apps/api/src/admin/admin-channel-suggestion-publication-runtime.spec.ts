@@ -765,11 +765,9 @@ describe('AdminChannelSuggestionPublicationRuntime', () => {
       ledger,
     });
 
-    await expect(runtime.review('suggestion-1', reviewer, 'publish')).resolves.toEqual({
-      status: 'review_in_progress',
-      reviewStatus: 'processing',
-      publishedUrl: null,
-    });
+    await expect(runtime.review('suggestion-1', reviewer, 'publish')).rejects.toThrow(
+      'требует проверки',
+    );
 
     expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
     expect(maxClient.resolveMessageLink).not.toHaveBeenCalled();
@@ -814,13 +812,75 @@ describe('AdminChannelSuggestionPublicationRuntime', () => {
       ledger,
     });
 
-    await expect(runtime.review('suggestion-1', reviewer, 'publish')).resolves.toEqual({
-      status: 'review_in_progress',
-      reviewStatus: 'processing',
-      publishedUrl: null,
-    });
+    await expect(runtime.review('suggestion-1', reviewer, 'publish')).rejects.toThrow(
+      'требует проверки',
+    );
 
     expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
     expect(prisma.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('releases its just-failed pre-dispatch claim without making the user wait fifteen minutes', async () => {
+    const { context, maxRoutedPublicationService, prisma, runtime } = createHarness();
+    const error = new Error('route unavailable');
+    (context.resolveChannelSuggestionPublicationBotAssignment as jest.Mock).mockRejectedValue(
+      error,
+    );
+    prisma.$queryRaw.mockImplementation(async () => {
+      const claimSql = prisma.$executeRaw.mock.calls[0]?.[0] as { values: unknown[] };
+      const [claimedAt, userId, label, token, protocol, jobId] = claimSql.values;
+      return [
+        {
+          id: 'suggestion-1',
+          actorUserId: 'user-1',
+          payload: createVersionedPublishingPayload({
+            reviewClaimedAt: claimedAt,
+            reviewClaimedByUserId: userId,
+            reviewClaimedByDisplayName: label,
+            reviewClaimToken: token,
+            reviewPublicationProtocol: protocol,
+            reviewPublicationLedgerJobId: jobId,
+          }),
+        },
+      ];
+    });
+    await expect(runtime.review('suggestion-1', reviewer, 'publish')).rejects.toBe(error);
+    expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
+      "'reviewStatus', 'pending'",
+    );
+    expect(extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0])).not.toContain(
+      "reviewClaimedAt' <=",
+    );
+  });
+
+  it.each(['publish', 'cancel'] as const)(
+    'does not undo a committed %s when admin card sync fails',
+    async (action) => {
+      const { context, runtime } = createHarness();
+      (context.syncChannelSuggestionAdminReviewMessages as jest.Mock).mockRejectedValue(
+        new Error('database unavailable'),
+      );
+      await expect(runtime.review('suggestion-1', reviewer, action)).resolves.toMatchObject({
+        status: 'reviewed',
+        reviewStatus: action === 'publish' ? 'published' : 'cancelled',
+      });
+    },
+  );
+
+  it('retries terminal card synchronization without republishing the suggestion', async () => {
+    const { context, maxRoutedPublicationService, runtime } = createHarness({
+      payload: {
+        type: 'suggest',
+        reviewStatus: 'published',
+        publishedUrl: 'https://max.ru/post',
+      },
+    });
+    await expect(runtime.review('suggestion-1', reviewer, 'publish')).resolves.toMatchObject({
+      status: 'already_reviewed',
+    });
+    expect(context.syncChannelSuggestionAdminReviewMessages).toHaveBeenCalledTimes(1);
+    expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
   });
 });

@@ -243,6 +243,7 @@ export class AdminChannelSuggestionPublicationRuntime {
     }
     const currentReviewStatus = this.context.readLowerString(payload.reviewStatus);
     if (currentReviewStatus === 'published' || currentReviewStatus === 'cancelled') {
+      await this.syncCommittedReviewMessages(row, payload);
       return {
         status: 'already_reviewed',
         reviewStatus: currentReviewStatus,
@@ -330,16 +331,33 @@ export class AdminChannelSuggestionPublicationRuntime {
         payload: canonicalPayload,
       });
     } catch (error: unknown) {
+      // FLAG: The owning attempt has returned; release only after rechecking the exact SQL fence.
+      const released = await this.releasePreDispatchPublication({
+        suggestionId: row.id,
+        chatId: row.chatId,
+        actorUserId: row.actorUserId,
+        claim,
+        completedAttempt: true,
+      }).catch(() => {
+        this.context.logger.warn(
+          { suggestionId: row.id },
+          'Failed to reconcile suggestion claim after completed publication attempt',
+        );
+        return false;
+      });
       this.context.logger.warn(
         {
           suggestionId: row.id,
           chatId: row.chatId,
           userId: user.userId,
           err: error instanceof Error ? error.message : String(error),
+          released,
         },
-        this.isAmbiguousSendError(error)
-          ? 'Channel suggestion publish send failed ambiguously; keeping versioned review claim for manual verification'
-          : 'Channel suggestion publish failed before finalization; keeping versioned review claim for bounded recovery',
+        released
+          ? 'Channel suggestion failed before dispatch; released the completed attempt for retry'
+          : this.isAmbiguousSendError(error)
+            ? 'Channel suggestion publish send failed ambiguously; keeping versioned review claim for manual verification'
+            : 'Channel suggestion publish failed before finalization; keeping versioned review claim for bounded recovery',
       );
       throw error;
     }
@@ -448,11 +466,7 @@ export class AdminChannelSuggestionPublicationRuntime {
       );
       return this.readReviewResult(params.row.id);
     }
-    await this.context.syncChannelSuggestionAdminReviewMessages(
-      params.row.id,
-      params.row.chatId,
-      updatedPayload as Record<string, unknown>,
-    );
+    await this.syncCommittedReviewMessages(params.row, updatedPayload as Record<string, unknown>);
     return {
       status: 'reviewed',
       reviewStatus: 'published',
@@ -660,11 +674,7 @@ export class AdminChannelSuggestionPublicationRuntime {
       publishedMessageId: null,
       publishedUrl: null,
     };
-    await this.context.syncChannelSuggestionAdminReviewMessages(
-      params.row.id,
-      params.row.chatId,
-      updatedPayload,
-    );
+    await this.syncCommittedReviewMessages(params.row, updatedPayload);
     return {
       status: 'reviewed',
       reviewStatus: 'cancelled',
@@ -743,10 +753,12 @@ export class AdminChannelSuggestionPublicationRuntime {
         },
         'Channel suggestion publishing claim requires manual verification',
       );
-      return { kind: 'result', result: this.processingResult() };
+      throw new BadRequestException(
+        'Результат публикации предложки требует проверки. Проверьте канал и обратитесь в поддержку. Повторная отправка отключена, чтобы не создать дубль.',
+      );
     }
     if (decision.kind === 'release_pre_dispatch') {
-      const released = await this.releaseStalePreDispatchPublication({
+      const released = await this.releasePreDispatchPublication({
         suggestionId: params.row.id,
         chatId: params.row.chatId,
         actorUserId: params.row.actorUserId,
@@ -793,11 +805,7 @@ export class AdminChannelSuggestionPublicationRuntime {
       publishedUrl,
       reviewPublicationContext: decision.context,
     };
-    await this.context.syncChannelSuggestionAdminReviewMessages(
-      params.row.id,
-      params.row.chatId,
-      updatedPayload,
-    );
+    await this.syncCommittedReviewMessages(params.row, updatedPayload);
     return {
       kind: 'result',
       result: {
@@ -830,12 +838,13 @@ export class AdminChannelSuggestionPublicationRuntime {
     });
   }
 
-  // FLAG: Only a stale versioned claim whose exact ledger has no dispatch fence may be released.
-  private async releaseStalePreDispatchPublication(params: {
+  // FLAG: Release only an ended owner attempt or stale claim with no context/dispatch/receipt fence.
+  private async releasePreDispatchPublication(params: {
     suggestionId: string;
     chatId: string;
     actorUserId: string;
     claim: ChannelSuggestionPublicationClaimV1;
+    completedAttempt?: boolean;
   }): Promise<boolean> {
     const staleBefore = new Date(
       Date.now() - CHANNEL_SUGGESTION_PUBLICATION_CLAIM_STALE_MS,
@@ -858,7 +867,7 @@ export class AdminChannelSuggestionPublicationRuntime {
             AND audit.payload->>'reviewPublicationLedgerJobId' = ${params.claim.ledgerJobId}::text
             AND audit.payload->>'reviewClaimToken' = ${params.claim.claimToken}::text
             AND audit.payload->>'reviewClaimedAt' = ${params.claim.claimedAt}::text
-            AND audit.payload->>'reviewClaimedAt' <= ${staleBefore}::text
+            ${params.completedAttempt ? Prisma.empty : Prisma.sql`AND audit.payload->>'reviewClaimedAt' <= ${staleBefore}::text`}
           FOR UPDATE OF audit
         `,
         );
@@ -890,6 +899,9 @@ export class AdminChannelSuggestionPublicationRuntime {
           chatId: params.chatId,
           actorUserId: locked[0]?.actorUserId ?? params.actorUserId,
           ledger,
+          ...(params.completedAttempt
+            ? { completedAttemptClaimToken: params.claim.claimToken }
+            : {}),
         });
         if (lockedDecision.kind !== 'release_pre_dispatch') {
           return false;
@@ -1155,6 +1167,20 @@ export class AdminChannelSuggestionPublicationRuntime {
       reviewStatus: 'processing',
       publishedUrl: null,
     };
+  }
+
+  private async syncCommittedReviewMessages(
+    row: StoredSuggestionRow,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.context.syncChannelSuggestionAdminReviewMessages(row.id, row.chatId, payload);
+    } catch {
+      this.context.logger.warn(
+        { suggestionId: row.id },
+        'Suggestion review is committed; admin card synchronization will retry on the next review',
+      );
+    }
   }
 
   private async publishStoredSuggestion(params: {
@@ -1447,23 +1473,23 @@ export class AdminChannelSuggestionPublicationRuntime {
     const commentsButton =
       includeCommentsButton && threadId
         ? this.context.buildChannelDialogButton(
-          chatId,
-          'comments',
-          threadId,
-          formatCommentsButtonText('💬 Комментарии', 0),
-          botId,
-        )
+            chatId,
+            'comments',
+            threadId,
+            formatCommentsButtonText('💬 Комментарии', 0),
+            botId,
+          )
         : null;
     const suggestButton =
       includeSuggestButton && threadId
         ? this.context.buildChannelDialogButton(
-          chatId,
-          'suggest',
-          threadId,
-          suggestButtonText,
-          botId,
-          settings.postSuggestionsEntryMode,
-        )
+            chatId,
+            'suggest',
+            threadId,
+            suggestButtonText,
+            botId,
+            settings.postSuggestionsEntryMode,
+          )
         : null;
     const buttons = buildChannelPostActionRows({ commentsButton, suggestButton, ctaButton });
     return {

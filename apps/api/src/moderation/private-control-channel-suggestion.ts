@@ -1,5 +1,28 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, HttpException } from '@nestjs/common';
+import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
+import { extractPrivateControlUserErrorDetails } from './private-control-bad-request.util';
 import type { PrivateSuggestionDraft } from './private-control.types';
+
+export function describePrivateSuggestionReviewError(error: unknown): string {
+  const publicMessage = extractPrivateControlUserErrorDetails(
+    error instanceof HttpException ? new BadRequestException(error.getResponse()) : error,
+  );
+  if (publicMessage) return publicMessage;
+  const status =
+    error instanceof HttpException
+      ? error.getStatus()
+      : (error as { response?: { status?: number } } | null)?.response?.status;
+  if (status === 403 || status === 404) {
+    return 'Не удалось обработать предложку. Проверьте, что вы и бот по-прежнему администраторы канала и у бота есть право публикации.';
+  }
+  if (status === 429) {
+    return 'MAX временно ограничил запросы. Предложка сохранена; повторите действие немного позже.';
+  }
+  if (isAmbiguousMaxSendError(error)) {
+    return 'MAX не подтвердил результат. Проверьте канал перед повторным действием; если статус не обновится, обратитесь в поддержку.';
+  }
+  return 'Не удалось подтвердить результат обработки предложки. Проверьте канал и повторно откройте карточку; если ошибка сохраняется, обратитесь в поддержку.';
+}
 
 export function buildPrivateChannelSuggestionSubmissionPayload(draft: PrivateSuggestionDraft) {
   return {

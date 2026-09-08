@@ -6897,19 +6897,11 @@ export class AdminService implements OnModuleDestroy {
         this.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
       sendPrivateConfirmation: (publishedUrl) =>
         this.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
-      deletePreviousPublishedMessage: ({ chatId, messageId, botId, directOptions }) =>
-        this.getManualMessageCleanupService().deleteBotAuthoredMessage({
-          chatId,
-          messageId,
-          originBotId: botId,
-          reasonKey: 'chat_rules_republish_previous_message_cleanup',
-          ruleCode: 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
-          metadata: {
-            source,
-            actorUserId: user.userId,
-            cleanupKind: 'chat_rules_republish',
-          },
-          directOptions,
+      deletePreviousPublishedMessage: (cleanup) =>
+        this.getManualMessageCleanupService().deleteChatRulesMessage({
+          ...cleanup,
+          source,
+          actorUserId: user.userId,
         }),
     });
   }
@@ -6929,19 +6921,11 @@ export class AdminService implements OnModuleDestroy {
       actorUserId: user.userId,
       source,
       resolveBotId: () => this.resolveChatRulesActionBotId(chatId),
-      deletePublishedMessage: ({ chatId, messageId, botId, directOptions }) =>
-        this.getManualMessageCleanupService().deleteBotAuthoredMessage({
-          chatId,
-          messageId,
-          originBotId: botId,
-          reasonKey: 'chat_rules_reset_published_message_cleanup',
-          ruleCode: 'CHAT_RULES_RESET_PUBLISHED_MESSAGE_CLEANUP',
-          metadata: {
-            source,
-            actorUserId: user.userId,
-            cleanupKind: 'chat_rules_reset',
-          },
-          directOptions,
+      deletePublishedMessage: (cleanup) =>
+        this.getManualMessageCleanupService().deleteChatRulesMessage({
+          ...cleanup,
+          source,
+          actorUserId: user.userId,
         }),
     });
   }

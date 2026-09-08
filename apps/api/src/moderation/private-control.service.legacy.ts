@@ -121,6 +121,7 @@ import { resolvePublishedProfanityRuleText } from './profanity/profanity-copy';
 import {
   assertPrivateSuggestionMediaBot,
   assertPrivateSuggestionMediaCaptureBot,
+  describePrivateSuggestionReviewError,
   buildPrivateChannelSuggestionSubmissionPayload,
 } from './private-control-channel-suggestion';
 import {
@@ -2029,52 +2030,56 @@ export class PrivateControlService {
       throw new BadRequestException('Не удалось определить предложку.');
     }
 
-    const result = await this.adminService.reviewChannelSuggestionByAdmin(
-      suggestionId,
-      context.actor,
-      action,
-    );
+    const result = await this.adminService
+      .reviewChannelSuggestionByAdmin(suggestionId, context.actor, action)
+      .catch((error: unknown) => {
+        throw new BadRequestException(describePrivateSuggestionReviewError(error));
+      });
+    if (result.reviewStatus === 'processing') {
+      // FLAG: A pending callback must not overwrite a concurrently finalized admin card.
+      await this.saveSession(context.actor.userId, session);
+      if (context.callbackId) {
+        await this.answerCallbackQuiet(
+          context.callbackId,
+          'Предложка обрабатывается. Результат пока не подтверждён.',
+          this.privateCallbackAckTimeoutMs,
+          this.resolvePrivateDeliveryBotId(context, session),
+          context.chatId,
+        );
+      }
+      return;
+    }
     const publishedUrl = result.publishedUrl?.trim() ?? '';
     const view: PrivateView =
-      result.reviewStatus === 'processing'
+      result.reviewStatus === 'published'
         ? {
             text: [
-              privateMarkdownTitle('⏳ Предложка уже обрабатывается'),
+              privateMarkdownTitle('✅ Предложка опубликована'),
               '',
-              'Подождите обновления карточки перед повторным действием.',
+              ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`, ''] : []),
+              'Решение сохранено.',
             ].join('\n'),
-          }
-        : result.reviewStatus === 'published'
-          ? {
-              text: [
-                privateMarkdownTitle('✅ Предложка опубликована'),
-                '',
-                ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`, ''] : []),
-                'Карточки в личке админов обновлены.',
-              ].join('\n'),
-              ...(publishedUrl
-                ? {
-                    options: {
-                      buttons: [
-                        [
-                          {
-                            type: 'link',
-                            text: 'Открыть пост',
-                            url: publishedUrl,
-                          },
-                        ],
+            ...(publishedUrl
+              ? {
+                  options: {
+                    buttons: [
+                      [
+                        {
+                          type: 'link',
+                          text: 'Открыть пост',
+                          url: publishedUrl,
+                        },
                       ],
-                    },
-                  }
-                : {}),
-            }
-          : {
-              text: [
-                privateMarkdownTitle('✖️ Предложка отклонена'),
-                '',
-                'Карточки в личке админов обновлены.',
-              ].join('\n'),
-            };
+                    ],
+                  },
+                }
+              : {}),
+          }
+        : {
+            text: [privateMarkdownTitle('✖️ Предложка отклонена'), '', 'Решение сохранено.'].join(
+              '\n',
+            ),
+          };
 
     await this.respond(context, session, view, {
       callbackId: context.callbackId,
