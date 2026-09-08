@@ -7,7 +7,8 @@ import {
 } from '../common/max-text-markup.util';
 import type { MaxMessageButton } from '../max/max-client.service';
 
-const TEMPLATE = /"([^"\r\n]+)"[\t ]*=[\t ]*"([^"\r\n]+)"/gu;
+const QUOTED_TEMPLATE = /"([^"\r\n]+)"[\t ]*=[\t ]*"([^"\r\n]+)"/gu;
+const LINE_TEMPLATE = /^([^"=\r\n]+)=([^"\r\n]+)$/gmu;
 const MAX_QUICK_BUTTONS = 20;
 const MAX_BUTTON_TEXT_LENGTH = 32;
 
@@ -24,7 +25,14 @@ export function extractChannelQuickButtons(
 ): { text: string; textFormat: 'html'; quickButtons: ChannelQuickButtons } | null {
   const removals: Array<{ start: number; end: number }> = [];
   const buttons: MaxMessageButton[][] = [];
-  for (const match of text.matchAll(TEMPLATE)) {
+  const templates = [
+    ...text.matchAll(QUOTED_TEMPLATE),
+    ...Array.from(text.matchAll(LINE_TEMPLATE)).filter((match) => !/https?:\/\//iu.test(match[1]!)),
+  ].sort((left, right) => left.index - right.index);
+  for (const match of templates) {
+    if (match.index < (removals.at(-1)?.end ?? 0)) {
+      continue;
+    }
     const label = match[1]!.trim();
     const url = normalizeHttpButtonUrl(match[2]!);
     if (!label || label.length > MAX_BUTTON_TEXT_LENGTH || !url) {

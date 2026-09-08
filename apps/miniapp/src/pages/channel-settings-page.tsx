@@ -795,6 +795,7 @@ function ChannelSettingsHint({
 function ChannelSettingsToggleCard({
   title,
   description,
+  describedBy,
   hintKey,
   openHintKey,
   onToggleHint,
@@ -804,6 +805,7 @@ function ChannelSettingsToggleCard({
 }: {
   title: string;
   description?: string;
+  describedBy?: string;
   hintKey?: ChannelSettingsHintKey;
   openHintKey: ChannelSettingsHintKey | null;
   onToggleHint: (hintKey: ChannelSettingsHintKey) => void;
@@ -854,6 +856,7 @@ function ChannelSettingsToggleCard({
           onChange={(event) => onChange(event.target.checked)}
           disabled={disabled}
           aria-label={title}
+          aria-describedby={describedBy}
         />
         <span className="toggle-switch" aria-hidden>
           <span className="toggle-switch__thumb" />
@@ -3608,11 +3611,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         >
           <ChannelSettingsToggleCard
             title="Быстрые кнопки"
+            describedBy="channel-quick-buttons-help"
             openHintKey={openHintKey}
             onToggleHint={toggleHint}
             checked={draft.quickButtonsEnabled}
             onChange={(nextValue) => patchDraft('quickButtonsEnabled', nextValue)}
           />
+          <p id="channel-quick-buttons-help" className="settings-native-toggle__hint">
+            В новом посте добавьте отдельную строку:
+            <br />
+            <code>Подробнее = https://example.com</code>
+            <br />
+            Бот уберёт эту строку и добавит кнопку под постом. Вложения и оформление текста
+            сохранятся. Для каждой кнопки нужна отдельная строка.
+          </p>
         </SettingsDrilldownPanel>
       </GlassCard>
 

@@ -328,7 +328,10 @@ function configureDefaultChannelAutoPostDeleteRoute(service: ModerationService):
 }
 
 describe('ModerationService channel auto post buttons', () => {
-  it('converts new channel templates with other decorations disabled and stops after the toggle is disabled', async () => {
+  it.each([
+    { text: 'Post "Read"="https://example.com"', expectedText: 'Post ' },
+    { text: 'Post\nRead = https://example.com', expectedText: 'Post\n' },
+  ])('converts channel templates and respects the toggle (%#)', async ({ text, expectedText }) => {
     const settings = {
       quickButtonsEnabled: true,
       commentsEnabled: false,
@@ -360,14 +363,13 @@ describe('ModerationService channel auto post buttons', () => {
     );
     configureDefaultChannelAutoPostEditRoute(service);
     const update = createChannelPostUpdateWithoutSender();
-    const text = 'Post "Read"="https://example.com"';
     (update.raw as any).message.body.text = text;
     const context = { channelSettings: settings, adminUserIds: ['admin-1'] };
     await (service as any).handleChannelUpdate(update, context);
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       update.message!.messageId,
-      'Post ',
+      expectedText,
       expect.objectContaining({
         textFormat: 'html',
         expectedSourceText: text,

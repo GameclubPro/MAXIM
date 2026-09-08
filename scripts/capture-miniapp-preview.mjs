@@ -2168,6 +2168,14 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.getByRole('button', { name: 'Быстрые кнопки', exact: true }).click();
       const toggle = page.getByRole('checkbox', { name: 'Быстрые кнопки', exact: true });
+      const help = page.locator('#channel-quick-buttons-help');
+      await help.waitFor({ state: 'visible' });
+      if (
+        (await toggle.getAttribute('aria-describedby')) !== 'channel-quick-buttons-help' ||
+        !(await help.innerText()).includes('Подробнее = https://example.com')
+      ) {
+        throw new Error('Quick buttons must explain the unquoted syntax below the toggle.');
+      }
       if (await toggle.isChecked()) {
         throw new Error('Quick buttons must default off.');
       }

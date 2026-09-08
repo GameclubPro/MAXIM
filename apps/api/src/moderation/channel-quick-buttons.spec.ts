@@ -5,6 +5,70 @@ import {
 } from './channel-auto-post-runtime';
 
 describe('channel quick buttons', () => {
+  it('converts unquoted lines with optional spacing and preserves URL query parameters', () => {
+    const text =
+      'Post\r\n Read more = https://example.com/a?x=1&y=2 \r\nJoin=https://max.ru/channel\r\nEnd';
+    const result = extractChannelQuickButtons(text, []);
+    expect(result?.text).toBe('Post\r\n\r\n\r\nEnd');
+    expect(result?.quickButtons.buttons).toEqual([
+      [{ type: 'link', text: 'Read more', url: 'https://example.com/a?x=1&y=2' }],
+      [{ type: 'link', text: 'Join', url: 'https://max.ru/channel' }],
+    ]);
+    expect(result?.quickButtons.sourceText).toBe(text);
+  });
+
+  it('preserves formatting and UTF-16 offsets around an unquoted button line', () => {
+    const text = '\u{1f525}Intro\nRead = https://example.com\nAfter';
+    expect(
+      extractChannelQuickButtons(text, [
+        { type: 'strong', from: 2, length: 5, url: null, userLink: null },
+        { type: 'emphasized', from: text.indexOf('After'), length: 5, url: null, userLink: null },
+      ])?.text,
+    ).toBe('\u{1f525}<strong>Intro</strong>\n\n<em>After</em>');
+  });
+
+  it('keeps quoted and unquoted buttons in their original order', () => {
+    const result = extractChannelQuickButtons(
+      'First=https://example.com/1\n"Second"="https://example.com/2"\nThird = https://example.com/3',
+      [],
+    );
+    expect(result?.quickButtons.buttons.flat().map((button) => button.text)).toEqual([
+      'First',
+      'Second',
+      'Third',
+    ]);
+  });
+
+  it.each([
+    '2 + 2 = 4',
+    'Read = javascript:alert(1)',
+    'Read = https://user:password@example.com',
+    'Read = https://example.com/a b',
+    'Read = https://max.ru/bot?start=pmh-secret',
+    'Read = https://max.ru/bot?start=pm2_secret',
+    'Read\n= https://example.com',
+    'Read == https://example.com',
+    'https://example.com/?next=https://max.ru/channel',
+    'See https://example.com/?next=https://max.ru/channel',
+    `A regular sentence longer than a button title = https://example.com`,
+  ])('does not consume an invalid unquoted line or a normal URL: %s', (text) => {
+    expect(extractChannelQuickButtons(text, [])).toBeNull();
+  });
+
+  it('passes unquoted templates through webhook and poll text resolution', () => {
+    const text = 'Post\nRead = https://example.com';
+    const message = { timestamp: 1_800_000_000_000, body: { mid: 'mid-plain', text } };
+    expect(resolveChannelAutoPostMessageText(message, null, true).text).toBe('Post\n');
+    expect(
+      parseChannelAutoPostListedMessage(message, 'channel-1', true)?.quickButtons?.buttons,
+    ).toHaveLength(1);
+    expect(resolveChannelAutoPostMessageText(message, null, false).text).toBe(text);
+  });
+
+  it('handles long whitespace-only prefixes without overlapping whitespace matches', () => {
+    expect(extractChannelQuickButtons(`${' '.repeat(20_000)}not a template`, [])).toBeNull();
+  });
+
   it('removes multiple quoted templates in order without altering other whitespace', () => {
     expect(
       extractChannelQuickButtons(

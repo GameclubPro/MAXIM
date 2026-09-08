@@ -36,7 +36,7 @@
       "label": "Channel settings",
       "entries": ["src/pages/channel-settings-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 107520, "cssGzipBytes": 77824 }
+      "limits": { "jsGzipBytes": 108032, "cssGzipBytes": 77824 }
     },
     {
       "id": "comments",
