@@ -135,6 +135,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                       aria-label='Пояснение для "Фильтровать коммерческую рекламу"'
                       aria-controls="commercial-ads-filter-enabled-hint"
                       aria-expanded={openHintKey === 'textFiltersCommercial'}
+                      data-hint-key="textFiltersCommercial"
                       onClick={() => toggleHint('textFiltersCommercial')}
                     >
                       <InfoCircle aria-hidden />
@@ -198,6 +199,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-label="Пояснение по чувствительности коммерческого фильтра"
                             aria-controls="commercial-sensitivity-hint"
                             aria-expanded={openHintKey === 'commercialSensitivity'}
+                            data-hint-key="commercialSensitivity"
                             onClick={() => toggleHint('commercialSensitivity')}
                           >
                             <InfoCircle aria-hidden />
@@ -261,6 +263,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-label="Пояснение для тумблера сообщений о коммерческих объявлениях"
                             aria-controls="text-filters-bot-message-hint"
                             aria-expanded={openHintKey === 'textFiltersBotMessage'}
+                            data-hint-key="textFiltersBotMessage"
                             onClick={() => toggleHint('textFiltersBotMessage')}
                           >
                             <InfoCircle aria-hidden />
@@ -336,6 +339,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-label="Пояснение для предупреждения о коммерческих объявлениях"
                             aria-controls="text-filters-warn-message-hint"
                             aria-expanded={openHintKey === 'textFiltersWarnMessage'}
+                            data-hint-key="textFiltersWarnMessage"
                             onClick={() => toggleHint('textFiltersWarnMessage')}
                           >
                             <InfoCircle aria-hidden />
@@ -448,6 +452,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-label="Пояснение для кнопки в сообщении о коммерции"
                             aria-controls="text-filters-bot-button-hint"
                             aria-expanded={openHintKey === 'textFiltersBotButton'}
+                            data-hint-key="textFiltersBotButton"
                             onClick={() => toggleHint('textFiltersBotButton')}
                           >
                             <InfoCircle aria-hidden />

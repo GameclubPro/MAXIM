@@ -128,8 +128,13 @@ const CHAT_LIST_VIRTUAL_ROW_PITCH = 80;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
 
-function describeChatsError(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim() ? error.message.trim() : fallback;
+async function describeChatsError(error: unknown, fallback: string): Promise<string> {
+  try {
+    const { describeUserFacingError } = await import('../lib/user-facing-error');
+    return describeUserFacingError(error, fallback);
+  } catch {
+    return fallback;
+  }
 }
 
 const LazyChatOnboardingSection = lazy(async () => {
@@ -479,6 +484,23 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const isLoading = activeEntitiesState.isLoading;
   const isFetching = activeEntitiesState.isRefreshing;
   const queryError = activeEntitiesState.error;
+  const [queryErrorPresentation, setQueryErrorPresentation] = useState<{
+    error: unknown;
+    description: string;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!queryError) {
+      setQueryErrorPresentation(null);
+      return;
+    }
+    void describeChatsError(queryError, 'Попробуйте ещё раз.').then((description) => {
+      if (!cancelled) setQueryErrorPresentation({ error: queryError, description });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [queryError]);
   const refreshState = activeEntitiesState.refreshState;
   const manualRefreshBlockedReason = refreshState?.manualRefreshBlockedReason ?? null;
   const [manualRefreshClockMs, setManualRefreshClockMs] = useState(() => Date.now());
@@ -1440,7 +1462,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       setFavoritePicker((current) =>
         current?.entityType === entityType && current.entity.id === entityId ? null : current,
       );
-    } catch (error: unknown) {
+    } catch {
       pendingFavoriteMutationRef.current = {
         entityType,
         entityId,
@@ -1458,7 +1480,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       });
       pushToast({
         title: 'Не удалось сохранить категорию',
-        description: describeChatsError(error, 'Попробуйте ещё раз.'),
+        description: 'Попробуйте ещё раз.',
         tone: 'danger',
       });
     } finally {
@@ -2024,7 +2046,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="danger"
             title="Не удалось загрузить список"
-            description={describeChatsError(queryError, 'Не удалось загрузить список.')}
+            description={
+              queryErrorPresentation?.error === queryError
+                ? queryErrorPresentation.description
+                : 'Попробуйте ещё раз.'
+            }
             action={
               <button
                 type="button"

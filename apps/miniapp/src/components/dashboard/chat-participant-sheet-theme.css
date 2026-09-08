@@ -105,4 +105,16 @@
     background: color-mix(in srgb, var(--danger) 14%, var(--surface-card-muted));
     color: var(--danger);
   }
+
+  .participant-sheet .participant-sheet__composer-head output,
+  .participant-sheet .participant-sheet__slider-head output {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.4;
+  }
 }

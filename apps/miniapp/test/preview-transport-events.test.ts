@@ -3,6 +3,36 @@ import test from 'node:test';
 import type { ChannelStatsResponse } from '@maxim/contracts/channel-stats';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
+test('slow moderation preview holds only the action and writes one event after completion', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const api = createPreviewApiTransport({ search: '?moderationState=slow' });
+  const readFeed = () =>
+    api.request('/chats/preview-chat/moderation-feed?range=7d') as Promise<{
+      items: Array<{ id: string }>;
+    }>;
+  const before = await readFeed();
+  let completed = false;
+  const action = api
+    .request('/chats/preview-chat/members/sergey-market/moderation-action', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'BAN', scope: 'current_chat' }),
+    })
+    .then((result) => {
+      completed = true;
+      return result;
+    });
+
+  assert.equal((await readFeed()).items.length, before.items.length);
+  assert.equal(completed, false);
+  t.mock.timers.tick(799);
+  await Promise.resolve();
+  assert.equal(completed, false);
+  t.mock.timers.tick(1);
+  await action;
+  assert.equal(completed, true);
+  assert.equal((await readFeed()).items.length, before.items.length + 1);
+});
+
 test('preview channel stats marks empty view buckets with zero posts', async () => {
   const api = createPreviewApiTransport();
 

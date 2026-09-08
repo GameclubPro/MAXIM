@@ -1684,7 +1684,7 @@ function ChannelStatsOverview({
           </small>
           <strong>{formatPercent(err48.value)}</strong>
           <span>
-            {formatReachCaption(err48, `ERR48 · выборка: ${formatCount(err48.sampleSize)}`)}
+            {formatReachCaption(err48, `Постов в расчёте: ${formatCount(err48.sampleSize)}`)}
           </span>
         </article>
       </div>
@@ -2080,11 +2080,11 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         });
       }
     },
-    onError: (error: unknown) => {
+    onError: () => {
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть профиль',
-        description: error instanceof Error ? error.message : 'Попробуйте ещё раз.',
+        description: 'Попробуйте ещё раз.',
       });
     },
   });

@@ -124,6 +124,7 @@ export type PreviewState = {
   channelPartnerAssistEnabled: boolean;
   accessDiagnostics: ManagedEntityAccessDiagnostics | null;
   settingsScreenError: 'auth-expired' | 'access-denied' | null;
+  moderationActionDelayMs: 0 | 800;
   publisherEntitiesVariant: 'mixed' | 'channel-only' | 'large' | 'empty' | 'error';
   publisherPolicyVariant: 'normal' | 'setup' | 'permission' | 'error';
   publisherPostImportVariant: 'none' | PublisherPostImportStatus;
@@ -942,6 +943,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     channelPartnerAssistEnabled: false,
     accessDiagnostics: buildPreviewAccessDiagnostics(search),
     settingsScreenError: resolvePreviewSettingsScreenError(search),
+    moderationActionDelayMs: searchParams.get('moderationState') === 'slow' ? 800 : 0,
     publisherEntitiesVariant:
       publisherState === 'channel-only' ||
       publisherState === 'large' ||

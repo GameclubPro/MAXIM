@@ -718,7 +718,10 @@ function ChannelSettingsInfoButton({
       type="button"
       className={cn('settings-info-button', isOpen && 'is-open')}
       aria-label={label}
+      title={label}
+      data-hint-key={hintKey}
       aria-controls={`channel-settings-hint-${hintKey}`}
+      aria-describedby={isOpen ? `channel-settings-hint-${hintKey}` : undefined}
       aria-expanded={isOpen}
       onClick={(event) => {
         event.preventDefault();
@@ -776,6 +779,7 @@ function ChannelSettingsHint({
     <p
       id={`channel-settings-hint-${hintKey}`}
       className="channel-settings-hint-popover"
+      role="note"
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -2189,7 +2193,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     openManagedBroadcastEditorMutation.mutate(legacyEditorTarget.id);
   }, [chatId, legacyEditorTarget, openManagedBroadcastEditorMutation, settingsScreenQuery.data]);
 
-  useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
+  useHintPopoverAutoPosition(openHintKey !== null, openHintKey, () => setOpenHintKey(null));
 
   useEffect(() => {
     document.body.classList.add('channel-settings-page-open');

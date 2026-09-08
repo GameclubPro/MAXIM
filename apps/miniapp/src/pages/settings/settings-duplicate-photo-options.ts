@@ -36,14 +36,14 @@ export function formatDuplicatePhotoMatchPresetHint(
   policy: DuplicatePhotoEffectivePolicy,
 ): string {
   if (policy.moderationMode === 'OFF') {
-    return 'Серверная проверка фото выключена. Выбранный режим можно сохранить заранее.';
+    return 'Проверка фото пока недоступна. Выбранный режим сохранится.';
   }
   const enforcementActive =
     policy.moderationMode === 'DELETE_ONLY' || policy.moderationMode === 'FULL';
   if (enforcementActive && !policy.allowedMatchKinds.includes('pdq')) {
-    return 'Действия применяются только к точным цифровым совпадениям. Изменённые версии остаются в наблюдении.';
+    return 'Сейчас удаляются только точные копии фото. Изменённые версии бот отмечает, но не удаляет.';
   }
   return preset === 'SAME_IMAGE'
     ? 'Учитываются пересылка, сжатие и изменение размера.'
-    : 'Дополнительно учитываются небольшая обрезка и цветокоррекция.';
+    : 'Дополнительно учитываются небольшая обрезка и изменение цвета.';
 }

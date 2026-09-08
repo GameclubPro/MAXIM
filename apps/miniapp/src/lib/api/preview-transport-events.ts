@@ -1404,7 +1404,7 @@ const CHAT_EVENT_ROOTS = new Set([
 ]);
 const CHANNEL_EVENT_ROOTS = new Set(['stats', 'activity-feed']);
 
-export const handleEventsPreviewRequest: PreviewRequestHandler = (context) => {
+export const handleEventsPreviewRequest: PreviewRequestHandler = async (context) => {
   const entity = resolvePreviewEntityRequest(context);
   if (
     !entity ||
@@ -1413,6 +1413,18 @@ export const handleEventsPreviewRequest: PreviewRequestHandler = (context) => {
       : CHANNEL_EVENT_ROOTS.has(entity.tail[0] ?? ''))
   ) {
     return PREVIEW_NOT_HANDLED;
+  }
+  if (
+    context.state.moderationActionDelayMs > 0 &&
+    entity.entityType === 'chat' &&
+    entity.tail[0] === 'members' &&
+    entity.tail[1] &&
+    entity.tail[2] === 'moderation-action' &&
+    context.method === 'POST'
+  ) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, context.state.moderationActionDelayMs);
+    });
   }
   return entity.entityType === 'chat'
     ? handleChatEventsPreviewRequest(

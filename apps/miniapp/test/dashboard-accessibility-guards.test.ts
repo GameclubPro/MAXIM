@@ -43,6 +43,27 @@ test('participant immunity radios use one tab stop and full radio-group keyboard
   assert.match(participantSheetSource, /data-immunity-mode="\$\{nextMode\}"[\s\S]*?\.focus\(\);/u);
 });
 
+test('participant duration and protection inputs cannot change during a pending action', () => {
+  const inputs = [...participantSheetSource.matchAll(/<input\s[\s\S]*?\/>/gu)];
+  assert.equal(inputs.length, 3);
+  for (const [input] of inputs) {
+    assert.match(input, /disabled=\{isBusy\}/u);
+    assert.match(input, /aria-label=/u);
+    assert.match(input, /aria-describedby=/u);
+  }
+});
+
+test('participant protection progress belongs to the selected save or remove action', () => {
+  assert.match(participantSheetSource, /setPendingImmunityAction\('clear'\)/u);
+  assert.match(participantSheetSource, /setPendingImmunityAction\('save'\)/u);
+  for (const action of ['save', 'clear']) {
+    assert.match(
+      participantSheetSource,
+      new RegExp(`aria-busy=\\{isSavingImmunity && pendingImmunityAction === '${action}'\\}`, 'u'),
+    );
+  }
+});
+
 test('membership activity exposes one keyboard profile action per participant', () => {
   assert.match(
     membershipFeedSource,

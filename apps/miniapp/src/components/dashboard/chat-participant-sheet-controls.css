@@ -1,0 +1,40 @@
+@layer components {
+  .participant-sheet__duration-presets {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .participant-sheet__duration-presets button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 8px 2px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--surface-card);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: 0;
+    cursor: pointer;
+  }
+
+  .participant-sheet__duration-presets button[aria-pressed='true'] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .participant-sheet__duration-presets button:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .participant-sheet__duration-presets button:disabled,
+  .participant-sheet__composer input:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+}

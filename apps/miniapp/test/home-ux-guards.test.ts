@@ -378,7 +378,7 @@ test('home reports favorite persistence failures through the shared toast', () =
   assert.match(chatsPageSource, /const \{ pushToast \} = useToast\(\);/u);
   assert.match(
     chatsPageSource,
-    /catch \(error: unknown\)[\s\S]*?pushToast\(\{[\s\S]*?tone: 'danger'/u,
+    /catch(?: \(error: unknown\))? \{[\s\S]*?pushToast\(\{[\s\S]*?tone: 'danger'/u,
   );
 });
 

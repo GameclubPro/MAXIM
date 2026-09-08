@@ -81,9 +81,9 @@ export function formatDuplicatePhotoModerationHint(
 
   switch (policy.moderationMode) {
     case 'OFF':
-      return 'Проверка фото сейчас выключена на сервере. Настройку можно сохранить, но фото не проверяются.';
+      return 'Проверка фото пока недоступна. Выбор сохранится, но фото не проверяются.';
     case 'OBSERVE':
-      return 'Бот только фиксирует совпадения для проверки. Фото не удаляются, санкции не применяются.';
+      return 'Бот только отмечает повторные фото. Фото не удаляются, участники не получают предупреждений и ограничений.';
     case 'DELETE_ONLY':
       return `${deletionScope} Предупреждение, ограничение и блокировка для фото выключены.${matchScope}`;
     case 'FULL': {
@@ -91,7 +91,7 @@ export function formatDuplicatePhotoModerationHint(
       const sanctionSummary =
         sanctions.length > 0
           ? `Для фото включены: ${sanctions.map(formatPhotoActionCeiling).join(', ')}.`
-          : 'Дополнительные санкции для фото выключены или недоступны при текущем серверном лимите.';
+          : 'Предупреждения и ограничения для фото сейчас не применяются.';
       return `${deletionScope} ${sanctionSummary}${matchScope}`;
     }
   }
@@ -135,8 +135,8 @@ export function formatDuplicateActionSummary(
   }
   textParts.push(
     textSanctions.length > 0
-      ? `Санкции: ${textSanctions.join('; ')}.`
-      : 'Дополнительные санкции выключены.',
+      ? `Дальнейшие действия: ${textSanctions.join('; ')}.`
+      : 'Предупреждения и ограничения выключены.',
   );
 
   if (!settings.duplicatePhotoEnabled) {
@@ -162,8 +162,8 @@ export function formatDuplicateActionSummary(
   }
   photoParts.push(
     photoSanctions.length > 0
-      ? `Санкции для фото: ${photoSanctions.map(formatPhotoActionCeiling).join(', ')}.`
-      : 'Санкции для фото выключены.',
+      ? `Действия для фото: ${photoSanctions.map(formatPhotoActionCeiling).join(', ')}.`
+      : 'Предупреждения и ограничения для фото выключены.',
   );
 
   return `${textParts.join(' ')} ${photoParts.join(' ')}`;

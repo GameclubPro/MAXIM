@@ -98,3 +98,26 @@ test('participant actions retain the real bottom safe area inside their scroll c
     /\.participant-sheet \.settings-drilldown__body \{\s*padding-bottom: calc\(12px \+ env\(safe-area-inset-bottom, 0px\)\);/u,
   );
 });
+
+test('settings summaries remain visible and help fits the measured visible area', () => {
+  const declarationsFor = (selector: string) => {
+    const values = new Map<string, string>();
+    root.walkRules((rule) => {
+      if (!rule.selectors.includes(selector)) return;
+      rule.walkDecls((declaration) => {
+        values.set(declaration.prop, declaration.value);
+      });
+    });
+    return values;
+  };
+  const scope = "body[data-miniapp-profile='moderation']";
+  const summary = declarationsFor(`${scope} .settings-section__summary`);
+  assert.equal(summary.get('position'), 'static');
+  assert.equal(summary.get('max-width'), '100%');
+  assert.equal(summary.get('white-space'), 'normal');
+  assert.equal(summary.get('overflow'), 'visible');
+  const hint = declarationsFor(`${scope} .channel-settings-hint-popover`);
+  assert.equal(hint.get('max-height'), 'var(--hint-popover-max-height, 280px)');
+  assert.equal(hint.get('overflow-y'), 'auto');
+  assert.equal(declarationsFor(`${scope} .settings-info-button`).get('min-height'), '44px');
+});

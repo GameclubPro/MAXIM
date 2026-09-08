@@ -26,7 +26,8 @@ test('link allowlist composer exposes every supported navigation target kind', (
 
   const maxEntity = getNavigationAllowlistTargetOption('MAX_ENTITY');
   assert.equal(maxEntity.inputMode, 'url');
-  assert.match(maxEntity.label, /^Ссылка/u);
+  assert.equal(maxEntity.label, 'Чат или канал MAX');
+  assert.match(maxEntity.ariaLabel, /ссылка/u);
   assert.match(maxEntity.placeholder, /^https:\/\/max\.ru\//u);
   assert.doesNotMatch(maxEntity.placeholder, /\bID\b|^-?\d/u);
 });
@@ -87,5 +88,14 @@ test('strict link policy copy includes structured clickable navigation', () => {
   assert.match(STRICT_NAVIGATION_POLICY_DESCRIPTION, /ссылки/u);
   assert.match(STRICT_NAVIGATION_POLICY_DESCRIPTION, /кнопки/u);
   assert.match(STRICT_NAVIGATION_POLICY_DESCRIPTION, /упоминания/u);
-  assert.match(ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION, /разрешённых целей/u);
+  assert.match(ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION, /список разрешённых/u);
+});
+
+test('allowlist choices and validation use ordinary user-facing terms', () => {
+  assert.equal(getNavigationAllowlistTargetOption('WEB_DOMAIN').label, 'Сайт целиком');
+  assert.equal(getNavigationAllowlistTargetOption('WEB_EXACT').label, 'Только эта ссылка');
+  for (const option of NAVIGATION_ALLOWLIST_TARGET_OPTIONS) {
+    assert.doesNotMatch(option.label, /домен|цель|веб/iu);
+    assert.doesNotMatch(option.invalidMessage, /contact_id|startapp|<id>/u);
+  }
 });

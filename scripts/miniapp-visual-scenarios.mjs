@@ -26,6 +26,7 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/pages/events-page.tsx',
     'apps/miniapp/src/styles/dashboard-events.css',
     'apps/miniapp/src/lib/api/events-client.ts',
+    'apps/miniapp/src/lib/api/preview-transport-events*.ts',
   ],
   favorite: [
     'apps/miniapp/src/pages/home-entity-sheets.tsx',
@@ -825,6 +826,7 @@ const baseScenarios = [
     'channel-stats',
     'channel-stats-24h',
     'channel-stats-top-posts',
+    'channel-stats-publishing-windows',
     ['channel-events', { searchParams: { section: 'events' }, features: ['events'] }],
   ]),
   defineScenario('legal-agreement', 'legal-agreement', {

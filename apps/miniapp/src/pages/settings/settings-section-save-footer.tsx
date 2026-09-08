@@ -36,9 +36,12 @@ export function SettingsSectionSaveFooter({
           type="button"
           className="button button--accent"
           onClick={() => onSaveSection(section)}
-          disabled={isCurrentSectionSaving || isCurrentSectionApplying}
+          disabled={isSavingSettings || isApplyingSectionToAll}
+          aria-busy={isCurrentSectionSaving || isCurrentSectionApplying || undefined}
         >
-          {isCurrentSectionSaving ? 'Сохраняем...' : (options?.saveLabel ?? 'Сохранить')}
+          {isCurrentSectionSaving || isCurrentSectionApplying
+            ? 'Сохраняем...'
+            : (options?.saveLabel ?? 'Сохранить')}
         </button>
       </div>
     </>

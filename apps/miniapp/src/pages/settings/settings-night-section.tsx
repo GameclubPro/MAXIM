@@ -153,6 +153,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                       aria-label="Пояснение для ночного режима"
                       aria-controls="night-mode-enabled-hint"
                       aria-expanded={openHintKey === 'nightModeEnabled'}
+                      data-hint-key="nightModeEnabled"
                       onClick={() => toggleHint('nightModeEnabled')}
                     >
                       <InfoCircle aria-hidden />
@@ -191,7 +192,8 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
 
                 {openHintKey === 'nightModeEnabled' ? (
                   <p id="night-mode-enabled-hint" className="settings-native-toggle__hint">
-                    Во время закрытия сообщения не-админов удаляются автоматически.
+                    В выбранное время бот удаляет новые сообщения участников. Администраторы могут
+                    продолжать писать. Расписание работает по часовому поясу, выбранному ниже.
                   </p>
                 ) : null}
               </div>
@@ -268,6 +270,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                             aria-label="Пояснение для тумблера сообщений ночного режима"
                             aria-controls="night-bot-message-hint"
                             aria-expanded={openHintKey === 'nightBotMessage'}
+                            data-hint-key="nightBotMessage"
                             onClick={() => toggleHint('nightBotMessage')}
                           >
                             <InfoCircle aria-hidden />
@@ -350,6 +353,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                             aria-label="Пояснение для сообщения об открытии группы"
                             aria-controls="night-open-message-hint"
                             aria-expanded={openHintKey === 'nightOpenMessage'}
+                            data-hint-key="nightOpenMessage"
                             onClick={() => toggleHint('nightOpenMessage')}
                           >
                             <InfoCircle aria-hidden />
@@ -458,6 +462,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                             aria-label="Пояснение для кнопки в сообщении ночного режима"
                             aria-controls="night-bot-button-hint"
                             aria-expanded={openHintKey === 'nightBotButton'}
+                            data-hint-key="nightBotButton"
                             onClick={() => toggleHint('nightBotButton')}
                           >
                             <InfoCircle aria-hidden />
@@ -546,6 +551,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                       aria-label="Пояснение для ручного закрытия чата"
                       aria-controls="night-force-close-hint"
                       aria-expanded={openHintKey === 'nightForceClose'}
+                      data-hint-key="nightForceClose"
                       onClick={() => toggleHint('nightForceClose')}
                     >
                       <InfoCircle aria-hidden />
@@ -583,8 +589,9 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
 
                 {openHintKey === 'nightForceClose' ? (
                   <p id="night-force-close-hint" className="settings-native-toggle__hint">
-                    Пока ручное закрытие активно, бот молча удаляет сообщения не-админов без
-                    дополнительного текста.
+                    После сохранения бот начнёт удалять новые сообщения участников без пояснений.
+                    Администраторы смогут продолжать писать. Ручное закрытие действует независимо от
+                    ночного расписания, до конца выбранного срока или пока вы его не выключите.
                   </p>
                 ) : null}
               </div>
@@ -702,11 +709,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                     <small className="field__hint">
                       {nightForceCloseHoursError ?? nightForceCloseDaysError}
                     </small>
-                  ) : (
-                    <p className="settings-native-toggle__hint">
-                      Бот будет молча удалять новые сообщения весь выбранный срок.
-                    </p>
-                  )}
+                  ) : null}
                 </div>
               ) : null}
             </div>

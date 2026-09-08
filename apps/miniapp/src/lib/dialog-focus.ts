@@ -35,7 +35,9 @@ export function resolveDialogTabWrapTarget(
 
 export function isTopmostModalDialog(panel: HTMLElement): boolean {
   const modalDialogs = Array.from(
-    document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'),
+    document.querySelectorAll<HTMLElement>(
+      '[aria-modal="true"]:is([role="dialog"], [role="alertdialog"])',
+    ),
   ).filter(
     (dialog) => !dialog.hasAttribute('hidden') && dialog.getAttribute('aria-hidden') !== 'true',
   );
@@ -55,7 +57,7 @@ export function useDialogFocusTrap<T extends HTMLElement>(
 
     const previousFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const restoreScopeCandidate = previousFocus?.closest('[role="dialog"]');
+    const restoreScopeCandidate = previousFocus?.closest('[role="dialog"], [role="alertdialog"]');
     const restoreScope =
       restoreScopeCandidate instanceof HTMLElement ? restoreScopeCandidate : null;
     const focusFrame = window.requestAnimationFrame(() => {

@@ -88,21 +88,22 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   assert.match(duplicatesSectionSource, /Находит повторный текст и изображения/u);
   assert.doesNotMatch(duplicatesSectionSource, /DUPLICATE_DETECTION_HINTS/u);
   assert.equal(
-    duplicatesSectionSource.match(/Остальной текст может отличаться\./gu)?.length,
+    duplicatesSectionSource.replace(/\s+/gu, ' ').match(/Остальной текст может отличаться\./gu)
+      ?.length,
     2,
   );
-  assert.match(duplicatesSectionSource, /Только для длинных сообщений\./u);
+  assert.match(
+    duplicatesSectionSource.replace(/\s+/gu, ' '),
+    /Проверяются только длинные сообщения/u,
+  );
   assert.match(duplicatesSectionSource, /aria-invalid=\{Boolean\(fieldErrors\.duplicateWarn/u);
   assert.match(settingsSectionToggleSource, /Антидубль: '.*фото'/u);
-  assert.match(settingsPageSource, /доп\. действия \$\{duplicateStagesEnabledCount\}\/4/u);
+  assert.match(settingsPageSource, /действий: \$\{duplicateStagesEnabledCount\} из 4/u);
   assert.match(
     settingsPageSource,
     /refetchInterval: expandedSections\.duplicates \? 60_000 : false/u,
   );
-  assert.match(
-    settingsPageSource,
-    /shouldHydrateSettingsDraftFromServer\(\s*draftRef\.current/u,
-  );
+  assert.match(settingsPageSource, /shouldHydrateSettingsDraftFromServer\(\s*draftRef\.current/u);
   assert.match(settingsPageSource, /if \(!shouldHydrate\) \{\s*return;\s*\}/u);
   assert.match(
     settingsPageSource,
@@ -195,16 +196,16 @@ test('duplicate action summary follows enabled stages and effective photo mode',
 
   assert.equal(
     formatDuplicateActionSummary(settings, 1, deleteOnlyPolicy),
-    'Текст удаляется с дубля №2. Бот объясняет первое удаление. Санкции: ограничение на 24 ч с №3; блокировка с №4. Точные дубли фото удаляются с дубля №2. Объяснение удаления включено. Санкции для фото выключены.',
+    'Текст удаляется с дубля №2. Бот объясняет первое удаление. Дальнейшие действия: ограничение на 24 ч с №3; блокировка с №4. Точные дубли фото удаляются с дубля №2. Объяснение удаления включено. Предупреждения и ограничения для фото выключены.',
   );
   assert.match(
     formatDuplicateActionSummary(settings, 0, mutePolicy),
-    /Санкции для фото: ограничение отправки\./u,
+    /Действия для фото: ограничение отправки\./u,
   );
   assert.doesNotMatch(formatDuplicateActionSummary(settings, 0, mutePolicy), /для фото:.*блок/u);
   assert.match(
     formatDuplicateActionSummary(settings, 0, { ...deleteOnlyPolicy, actionCeiling: 'BAN' }),
-    /Точные дубли фото удаляются с дубля №1\..*Санкции для фото выключены\./u,
+    /Точные дубли фото удаляются с дубля №1\..*Предупреждения и ограничения для фото выключены\./u,
   );
 });
 
@@ -226,7 +227,7 @@ test('duplicate action summary keeps deletion visible when optional stages are o
         allowedMatchKinds: [],
       },
     ),
-    'Текст удаляется с дубля №1. Дополнительные санкции выключены.',
+    'Текст удаляется с дубля №1. Предупреждения и ограничения выключены.',
   );
 });
 
@@ -279,23 +280,39 @@ test('photo match hint does not promise actions for edited images without PDQ', 
       actionCeiling: 'BAN',
       allowedMatchKinds: ['pdq'],
     }),
-    /проверка фото выключена/u,
+    /Проверка фото пока недоступна/u,
   );
   assert.match(
     formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', mutePolicy),
-    /Действия применяются только к точным цифровым совпадениям/u,
+    /удаляются только точные копии фото/u,
   );
   assert.match(
     formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', mutePolicy),
-    /Изменённые версии остаются в наблюдении/u,
+    /Изменённые версии бот отмечает, но не удаляет/u,
   );
   assert.match(
     formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', {
       ...mutePolicy,
       allowedMatchKinds: ['canonical_sha256', 'pdq'],
     }),
-    /обрезка и цветокоррекция/u,
+    /обрезка и изменение цвета/u,
   );
+});
+
+test('photo help keeps unavailable actions factual without internal terminology', () => {
+  for (const moderationMode of ['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL'] as const) {
+    const policy = { ...deleteOnlyPolicy, moderationMode };
+    assert.doesNotMatch(
+      formatDuplicatePhotoModerationHint(policy, disabledSanctions),
+      /сервер|санкци|цифров|PDQ/iu,
+    );
+    assert.doesNotMatch(
+      formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', policy),
+      /сервер|санкци|цифров|PDQ/iu,
+    );
+  }
+  assert.match(photoControlsSource, /hintKey="duplicatePhotoMatch"/u);
+  assert.match(photoControlsSource, /hintKey="duplicatePhotoScope"/u);
 });
 
 test('draft photo preset and scope select the matching server policy', () => {

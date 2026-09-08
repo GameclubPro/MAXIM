@@ -12,7 +12,9 @@ export const NATIVE_BACK_MODAL_CONFIRM_PRIORITY = 740;
 export const NATIVE_BACK_RICH_TEXT_LINK_PRIORITY = 735;
 
 export function isElementInTopmostNativeBackModal(element: Element): boolean {
-  const dialogs = document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]');
+  const dialogs = document.querySelectorAll<HTMLElement>(
+    '[aria-modal="true"]:is([role="dialog"], [role="alertdialog"])',
+  );
   for (let index = dialogs.length - 1; index >= 0; index -= 1) {
     const dialog = dialogs[index];
     if (!dialog || dialog.hasAttribute('hidden') || dialog.getAttribute('aria-hidden') === 'true') {

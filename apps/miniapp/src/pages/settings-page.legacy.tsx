@@ -1649,7 +1649,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       syncSavedSectionSettings(result.section, result.sourceSettings);
       pushToast({
         tone: 'success',
-        title: `Блок «${SECTION_LABELS[result.section]}» применен`,
+        title: `Настройки «${SECTION_LABELS[result.section]}» применены`,
         description: `Обновлено чатов: ${result.updatedChats}.`,
       });
       setApplyTargetSheet(null);
@@ -1691,7 +1691,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'danger',
-        title: 'Не удалось применить блок ко всем чатам',
+        title: 'Не удалось применить настройки',
         description: formatApiError(error),
       });
       maxNotify('error');
@@ -1709,6 +1709,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     let cancelled = false;
+    setApplyTargetPreview(null);
     setApplyTargetPreviewLoading(true);
     setApplyTargetPreviewError(null);
 
@@ -4166,7 +4167,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const stopWordsSegmentOptions = useMemo<Array<SegmentedOption<StopWordsMode>>>(
     () => [
       { value: 'words', label: 'Слова', count: messageLimitsBlockedWords.length },
-      { value: 'domains', label: 'Домены', count: messageLimitsBlockedDomains.length },
+      { value: 'domains', label: 'Сайты', count: messageLimitsBlockedDomains.length },
     ],
     [messageLimitsBlockedDomains.length, messageLimitsBlockedWords.length],
   );
@@ -4229,7 +4230,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? 'Ссылки не удаляются'
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? `Разрешено: ${allowlistEntries.length}`
-        : `${linkStagesEnabledCount} действия из 4`;
+        : `Действий: ${linkStagesEnabledCount} из 4`;
   const linksCardStatus =
     draft?.linkPolicy === 'ALERT_ONLY'
       ? 'Без удаления'
@@ -4447,7 +4448,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
     ? `${duplicateCoverageLabel} • ${formatDuplicateAllowanceLabel(
         duplicateAllowedCount,
-      )} • ${duplicateSharedWindowHours}ч • доп. действия ${duplicateStagesEnabledCount}/4`
+      )} • ${duplicateSharedWindowHours}ч • действий: ${duplicateStagesEnabledCount} из 4`
     : 'Выключено';
   const duplicatesCardStatus = draft?.antiDuplicateEnabled ? 'Вкл' : 'Выкл';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
@@ -4493,7 +4494,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const stopWordsTotalCount = messageLimitsBlockedWords.length + messageLimitsBlockedDomains.length;
   const stopWordsListSummary =
     stopWordsTotalCount > 0
-      ? `Слова: ${messageLimitsBlockedWords.length} · Домены: ${messageLimitsBlockedDomains.length}`
+      ? `Слова: ${messageLimitsBlockedWords.length} · Сайты: ${messageLimitsBlockedDomains.length}`
       : 'Список пуст';
   const stopWordsHeaderSummary = draft?.messageLimitsImageTextScanEnabled
     ? `${stopWordsListSummary} · Изображения: вкл`
@@ -4557,13 +4558,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? `${requiredSubscriptionSelectedCount}`
         : '0';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
-    ? `${profanityStagesEnabledCount} действия из 4 · ${profanitySensitivityLabel.toLowerCase()}`
+    ? `Действий: ${profanityStagesEnabledCount} из 4 · ${profanitySensitivityLabel.toLowerCase()}`
     : 'Выключено';
   const profanityFilterCardStatus = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4`
     : 'Выкл';
   const commercialFilterHeaderSummary = draft?.commercialAdsFilterEnabled
-    ? `${textFiltersStagesEnabledCount} действия из 4 · ${commercialSensitivityLabel.toLowerCase()}`
+    ? `Действий: ${textFiltersStagesEnabledCount} из 4 · ${commercialSensitivityLabel.toLowerCase()}`
     : 'Выключено';
   const commercialFilterCardStatus = draft?.commercialAdsFilterEnabled
     ? `${textFiltersStagesEnabledCount}/4`
@@ -5107,7 +5108,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
   }, [expandedSections.mailing, hasActiveManagedBroadcastCountdown]);
 
-  useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
+  useHintPopoverAutoPosition(openHintKey !== null, openHintKey, () => setOpenHintKey(null));
 
   function resetMailingPlanner() {
     setMailingPlannerState(EMPTY_BROADCAST_PLANNER_STATE);
@@ -5553,13 +5554,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
                             >
                               <div className="allowlist-panel__head">
-                                <span className="field__label">Разрешённые цели</span>
+                                <span className="field__label">Разрешённые ссылки</span>
                               </div>
 
                               <div className="allowlist-composer">
                                 <label className="allowlist-composer__head">
                                   <span className="field__label allowlist-composer__label">
-                                    Тип цели
+                                    Что разрешить
                                   </span>
                                   <select
                                     className="button button--ghost"
@@ -5570,7 +5571,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       );
                                       setDomainInputError('');
                                     }}
-                                    aria-label="Тип разрешённой цели"
+                                    aria-label="Что разрешить"
                                   >
                                     {NAVIGATION_ALLOWLIST_TARGET_OPTIONS.map((option) => (
                                       <option key={option.value} value={option.value}>
@@ -6421,6 +6422,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
                               aria-label="Пояснение для приветствия новых участников"
                               aria-controls="greeting-enabled-hint"
+                              data-hint-key="greetingEnabled"
                               aria-expanded={openHintKey === 'greetingEnabled'}
                               onClick={() => toggleHint('greetingEnabled')}
                             >
@@ -6511,6 +6513,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     )}
                                     aria-label="Пояснение для автоудаления приветствия"
                                     aria-controls="greeting-delete-bot-messages-hint"
+                                    data-hint-key="greetingDeleteBotMessages"
                                     aria-expanded={openHintKey === 'greetingDeleteBotMessages'}
                                     onClick={() => toggleHint('greetingDeleteBotMessages')}
                                   >
@@ -6583,6 +6586,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     )}
                                     aria-label="Пояснение для кнопки в приветствии"
                                     aria-controls="greeting-bot-button-hint"
+                                    data-hint-key="greetingBotButton"
                                     aria-expanded={openHintKey === 'greetingBotButton'}
                                     onClick={() => toggleHint('greetingBotButton')}
                                   >
@@ -6710,6 +6714,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
                               aria-label="Пояснение для фильтра мата и оскорблений"
                               aria-controls="russian-profanity-filter-enabled-hint"
+                              data-hint-key="textFiltersProfanity"
                               aria-expanded={openHintKey === 'textFiltersProfanity'}
                               onClick={() => toggleHint('textFiltersProfanity')}
                             >

@@ -20,37 +20,37 @@ export type NavigationAllowlistTargetOption = {
 export const NAVIGATION_ALLOWLIST_TARGET_OPTIONS: readonly NavigationAllowlistTargetOption[] = [
   {
     value: 'WEB_DOMAIN',
-    label: 'Весь веб-домен',
+    label: 'Сайт целиком',
     placeholder: 'example.com',
-    ariaLabel: 'Разрешённый веб-домен',
+    ariaLabel: 'Адрес разрешённого сайта',
     inputMode: 'text',
-    invalidMessage: 'Введите корректный домен.',
-    successTitle: 'Домен добавлен в разрешённые',
-    errorTitle: 'Не удалось добавить домен',
+    invalidMessage: 'Введите адрес сайта, например example.com.',
+    successTitle: 'Сайт добавлен в разрешённые',
+    errorTitle: 'Не удалось добавить сайт',
   },
   {
     value: 'WEB_EXACT',
-    label: 'Точная веб-ссылка',
+    label: 'Только эта ссылка',
     placeholder: 'https://site.ru/page',
-    ariaLabel: 'Разрешённая веб-ссылка',
+    ariaLabel: 'Разрешённая ссылка',
     inputMode: 'url',
-    invalidMessage: 'Введите корректную ссылку (http/https).',
+    invalidMessage: 'Введите полную ссылку, например https://site.ru/page.',
     successTitle: 'Ссылка добавлена в разрешённые',
     errorTitle: 'Не удалось добавить ссылку',
   },
   {
     value: 'MAX_PROFILE',
     label: 'Профиль MAX',
-    placeholder: '123456789 или user/123456789',
+    placeholder: 'Номер профиля MAX',
     ariaLabel: 'Разрешённый профиль MAX',
     inputMode: 'text',
-    invalidMessage: 'Введите числовой ID профиля или ссылку user/<id>.',
+    invalidMessage: 'Введите номер профиля MAX, например 123456789.',
     successTitle: 'Профиль MAX добавлен в разрешённые',
     errorTitle: 'Не удалось добавить профиль MAX',
   },
   {
     value: 'MAX_ENTITY',
-    label: 'Ссылка на чат/канал MAX',
+    label: 'Чат или канал MAX',
     placeholder: 'https://max.ru/join/...',
     ariaLabel: 'Разрешённая ссылка на чат или канал MAX',
     inputMode: 'url',
@@ -61,10 +61,10 @@ export const NAVIGATION_ALLOWLIST_TARGET_OPTIONS: readonly NavigationAllowlistTa
   {
     value: 'MINI_APP',
     label: 'Мини-приложение MAX',
-    placeholder: '@bot или https://max.ru/bot?startapp=...',
+    placeholder: '@имя_бота',
     ariaLabel: 'Разрешённое мини-приложение MAX',
     inputMode: 'text',
-    invalidMessage: 'Введите имя бота, HTTPS/startapp-ссылку или contact_id мини-приложения.',
+    invalidMessage: 'Введите имя бота или ссылку на его мини-приложение в MAX.',
     successTitle: 'Мини-приложение добавлено в разрешённые',
     errorTitle: 'Не удалось добавить мини-приложение',
   },
@@ -73,7 +73,7 @@ export const NAVIGATION_ALLOWLIST_TARGET_OPTIONS: readonly NavigationAllowlistTa
 export const STRICT_NAVIGATION_POLICY_DESCRIPTION =
   'Удаляются ссылки, кнопки перехода и кликабельные упоминания профилей MAX.';
 export const ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION =
-  'Удаляются ссылки, кнопки перехода и кликабельные упоминания профилей MAX, кроме разрешённых целей ниже.';
+  'Удаляются ссылки, кнопки перехода и упоминания профилей MAX, кроме добавленных в список разрешённых.';
 
 export function getNavigationAllowlistTargetOption(
   kind: NavigationAllowlistKind,
@@ -139,7 +139,7 @@ export function formatNavigationAllowlistEntryTarget(
       return `Бот MAX: ${target.slice('bot:'.length)}`;
     }
     if (target.startsWith('contact-id:')) {
-      return `contact_id: ${target.slice('contact-id:'.length)}`;
+      return `Приложение MAX: ${target.slice('contact-id:'.length)}`;
     }
   }
   return target;
@@ -155,13 +155,13 @@ export function formatAllowlistMetaLabel(
 ): string {
   const targetLabel =
     resolveNavigationAllowlistEntryKind(entry) === 'WEB_DOMAIN'
-      ? 'Домен не удаляется без таймера.'
-      : 'Цель не удаляется без таймера.';
+      ? 'Сайт разрешён без ограничения срока.'
+      : 'Ссылка разрешена без ограничения срока.';
 
   return scheduledAtLabel ? `Удаление: ${scheduledAtLabel}` : targetLabel;
 }
 
 export const ALLOWLIST_MATCH_OPTIONS: Array<{ value: AllowlistMatchType; label: string }> = [
-  { value: 'DOMAIN', label: 'Весь веб-домен' },
-  { value: 'EXACT', label: 'Точная веб-ссылка' },
+  { value: 'DOMAIN', label: 'Сайт целиком' },
+  { value: 'EXACT', label: 'Только эта ссылка' },
 ];

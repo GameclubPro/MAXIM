@@ -1,14 +1,16 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
-import { InfoCircle } from 'iconoir-react';
+import { InfoCircle, Prohibition, Search, ShieldCheck, SoundOff, UserCircle } from 'iconoir-react';
 import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent } from 'react';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 import './chat-participant-sheet.css';
+import './chat-participant-sheet-controls.css';
 import './chat-participant-sheet-theme.css';
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
+const MUTE_DURATION_PRESETS = [1, 6, 24, 72, 168] as const;
 const IMMUNITY_DURATION_MIN_DAYS = 1;
 const IMMUNITY_DURATION_MAX_DAYS = 30;
 const IMMUNITY_DAILY_LIMIT_MIN = 1;
@@ -17,7 +19,7 @@ const MUTE_COMPOSER_ID = 'participant-sheet-mute-composer';
 const IMMUNITY_COMPOSER_ID = 'participant-sheet-immunity-composer';
 
 type ImmunityMode = 'limited' | 'always';
-type ParticipantHintKey = 'immunity' | 'duration' | 'limit';
+type ParticipantHintKey = 'mute' | 'immunity' | 'duration' | 'limit';
 type ChatParticipantImmunityView = Omit<
   NonNullable<ChatParticipantItem['immunity']>,
   'dailyViolationLimit' | 'expiresAt' | 'remainingViolatingMessagesToday'
@@ -89,21 +91,21 @@ function resolveRoleLabel(item: ChatParticipantItem): string {
 }
 
 function formatDuration(hours: number): string {
-  if (hours >= 24 && hours % 24 === 0) {
-    return `${hours / 24}д`;
-  }
-
-  return `${hours}ч`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return [days ? `${days} д` : '', remainingHours ? `${remainingHours} ч` : '']
+    .filter(Boolean)
+    .join(' ');
 }
 
 function formatDays(days: number): string {
-  return `${Math.max(1, Math.trunc(days))}д`;
+  return `${Math.max(1, Math.trunc(days))} д`;
 }
 
 function formatImmunityLeft(expiresAt: string): string {
   const expiresAtMs = new Date(expiresAt).getTime();
   if (!Number.isFinite(expiresAtMs)) {
-    return '0ч';
+    return 'Срок неизвестен';
   }
 
   const diffMs = expiresAtMs - Date.now();
@@ -166,7 +168,7 @@ function resolveInitialDailyViolationLimit(immunity: ChatParticipantImmunityView
 
 function formatImmunityValue(immunity: ChatParticipantImmunityView | null): string {
   if (!immunity) {
-    return 'Выкл';
+    return 'Нет';
   }
 
   if (isAlwaysImmunity(immunity)) {
@@ -244,63 +246,6 @@ function resolveNextImmunityMode(mode: ImmunityMode, key: string): ImmunityMode 
   return null;
 }
 
-function ShieldIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path
-        d="M10 2.8 15.8 5v4.2c0 3.2-1.9 5.8-5.8 8-3.9-2.2-5.8-4.8-5.8-8V5L10 2.8Z"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function MuteIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path
-        d="M9.4 4.5 6.6 7H4.4v6h2.2l2.8 2.5V4.5Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M12.8 7.3 15.8 12.7M15.8 7.3l-3 5.4"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function BanIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <circle cx="10" cy="10" r="6.5" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M6.3 13.7 13.7 6.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ProfileIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <circle cx="10" cy="6.6" r="3.1" stroke="currentColor" strokeWidth="1.8" />
-      <path
-        d="M4.8 15.3c.8-2.3 2.8-3.5 5.2-3.5s4.4 1.2 5.2 3.5"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 function InfoButton({
   hintKey,
   label,
@@ -319,7 +264,8 @@ function InfoButton({
       type="button"
       className={`settings-info-button participant-sheet__info-button ${isOpen ? 'is-open' : ''}`.trim()}
       aria-label={label}
-      aria-controls={`participant-sheet-hint-${hintKey}`}
+      title={label}
+      aria-controls={isOpen ? `participant-sheet-hint-${hintKey}` : undefined}
       aria-expanded={isOpen}
       onClick={(event) => {
         event.preventDefault();
@@ -353,10 +299,16 @@ export function ChatParticipantSheet({
   const [immunityDurationDays, setImmunityDurationDays] = useState(3);
   const [dailyViolationLimit, setDailyViolationLimit] = useState(3);
   const [openHintKey, setOpenHintKey] = useState<ParticipantHintKey | null>(null);
+  const [pendingImmunityAction, setPendingImmunityAction] = useState<'save' | 'clear' | null>(null);
   const immunityModeGroupRef = useRef<HTMLDivElement | null>(null);
+  const immunityDraftStartedRef = useRef(false);
 
   useNativeBackHandler(
     () => {
+      if (isSavingImmunity || isApplyingModeration || isOpeningProfile) {
+        return true;
+      }
+
       if (openHintKey !== null) {
         setOpenHintKey(null);
         return true;
@@ -364,10 +316,6 @@ export function ChatParticipantSheet({
 
       if (activeComposer !== null) {
         setActiveComposer(null);
-        return true;
-      }
-
-      if (isSavingImmunity || isApplyingModeration || isOpeningProfile) {
         return true;
       }
 
@@ -384,6 +332,8 @@ export function ChatParticipantSheet({
 
     setActiveComposer(null);
     setOpenHintKey(null);
+    setPendingImmunityAction(null);
+    immunityDraftStartedRef.current = false;
     setMuteDurationHours(24);
     const immunity = resolveImmunity(item);
     setImmunityMode(isAlwaysImmunity(immunity) ? 'always' : 'limited');
@@ -395,7 +345,10 @@ export function ChatParticipantSheet({
   }, [item?.userId, open]);
 
   useEffect(() => {
-    if (activeComposer !== 'immunity' && openHintKey !== null) {
+    if (
+      openHintKey !== null &&
+      (openHintKey === 'mute' ? activeComposer !== 'mute' : activeComposer !== 'immunity')
+    ) {
       setOpenHintKey(null);
       return;
     }
@@ -479,7 +432,7 @@ export function ChatParticipantSheet({
                   aria-label={immunityDescription}
                   title={immunityDescription}
                 >
-                  <ShieldIcon />
+                  <ShieldCheck aria-hidden />
                   <span aria-hidden={Boolean(immunityDescription)}>{immunityValue}</span>
                 </span>
               ) : null}
@@ -511,7 +464,7 @@ export function ChatParticipantSheet({
               onClick={onProfileActivate}
               disabled={isBusy}
             >
-              <ProfileIcon />
+              <UserCircle aria-hidden />
               <span>{isOpeningProfile ? 'Открываем...' : 'Профиль'}</span>
             </button>
 
@@ -520,9 +473,10 @@ export function ChatParticipantSheet({
               className="participant-sheet__action participant-sheet__action--registry"
               onClick={onSpammerDiagnostics}
               disabled={isBusy}
+              title="Проверить участника по базе спамеров"
             >
-              <ShieldIcon />
-              <span>Спам-база</span>
+              <Search aria-hidden />
+              <span>Проверить</span>
             </button>
 
             {canManageParticipant ? (
@@ -536,8 +490,8 @@ export function ChatParticipantSheet({
                 onClick={() => setActiveComposer((current) => (current === 'mute' ? null : 'mute'))}
                 disabled={isBusy}
               >
-                <MuteIcon />
-                <span>Мут</span>
+                <SoundOff aria-hidden />
+                <span>Без сообщений</span>
               </button>
             ) : null}
 
@@ -549,12 +503,18 @@ export function ChatParticipantSheet({
                 }`}
                 aria-controls={IMMUNITY_COMPOSER_ID}
                 aria-expanded={isImmunityComposerOpen}
-                onClick={() =>
-                  setActiveComposer((current) => (current === 'immunity' ? null : 'immunity'))
-                }
+                onClick={() => {
+                  if (!immunityDraftStartedRef.current) {
+                    setImmunityMode(isAlwaysImmunity(immunity) ? 'always' : 'limited');
+                    setImmunityDurationDays(resolveInitialImmunityDurationDays(immunity));
+                    setDailyViolationLimit(resolveInitialDailyViolationLimit(immunity));
+                    immunityDraftStartedRef.current = true;
+                  }
+                  setActiveComposer((current) => (current === 'immunity' ? null : 'immunity'));
+                }}
                 disabled={isBusy}
               >
-                <ShieldIcon />
+                <ShieldCheck aria-hidden />
                 <span>Защита</span>
               </button>
             ) : null}
@@ -566,8 +526,8 @@ export function ChatParticipantSheet({
                 onClick={onBan}
                 disabled={isBusy}
               >
-                <BanIcon />
-                <span>Бан</span>
+                <Prohibition aria-hidden />
+                <span>Заблокировать</span>
               </button>
             ) : null}
           </div>
@@ -575,8 +535,39 @@ export function ChatParticipantSheet({
           {canManageParticipant && isMuteComposerOpen ? (
             <div id={MUTE_COMPOSER_ID} className="participant-sheet__composer">
               <div className="participant-sheet__composer-head">
-                <span className="participant-sheet__composer-title">Мут</span>
+                <div className="participant-sheet__label-with-info">
+                  <span className="participant-sheet__composer-title">Без сообщений</span>
+                  <InfoButton
+                    hintKey="mute"
+                    label="Как работает ограничение сообщений"
+                    openHintKey={openHintKey}
+                    onToggle={toggleHint}
+                  />
+                </div>
                 <output aria-live="polite">{formatDuration(muteDurationHours)}</output>
+              </div>
+              {openHintKey === 'mute' ? (
+                <p id="participant-sheet-hint-mute" className="participant-sheet__hint">
+                  Участник останется в чате, но бот будет удалять его новые сообщения в течение
+                  выбранного срока. После этого ограничение снимется автоматически.
+                </p>
+              ) : null}
+              <div
+                className="participant-sheet__duration-presets"
+                role="group"
+                aria-label="Срок ограничения сообщений"
+              >
+                {MUTE_DURATION_PRESETS.map((hours) => (
+                  <button
+                    key={hours}
+                    type="button"
+                    aria-pressed={muteDurationHours === hours}
+                    onClick={() => setMuteDurationHours(hours)}
+                    disabled={isBusy}
+                  >
+                    {formatDuration(hours)}
+                  </button>
+                ))}
               </div>
               <input
                 className="settings-length-limit__slider"
@@ -586,7 +577,12 @@ export function ChatParticipantSheet({
                 step={1}
                 value={muteDurationHours}
                 onChange={(event) => setMuteDurationHours(Number(event.target.value))}
-                aria-label="Срок мута в часах"
+                aria-label="Срок ограничения в часах"
+                aria-valuetext={formatDuration(muteDurationHours)}
+                aria-describedby={
+                  openHintKey === 'mute' ? 'participant-sheet-hint-mute' : undefined
+                }
+                disabled={isBusy}
               />
               <div className="participant-sheet__slider-labels" aria-hidden="true">
                 <span>{formatDuration(MUTE_DURATION_MIN_HOURS)}</span>
@@ -600,7 +596,7 @@ export function ChatParticipantSheet({
                   onClick={() => onMute(muteDurationHours)}
                   disabled={isBusy}
                 >
-                  {isApplyingModeration ? 'Применяем…' : 'Выдать'}
+                  {isApplyingModeration ? 'Применяем...' : 'Продолжить'}
                 </button>
               </div>
             </div>
@@ -633,12 +629,12 @@ export function ChatParticipantSheet({
                 </output>
               </div>
               {openHintKey === 'immunity' ? (
-                <p
-                  id="participant-sheet-hint-immunity"
-                  className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint"
-                >
-                  Защита временно не даёт боту наказывать этого участника за нарушения. Обычные
-                  сообщения лимит не тратят.
+                <p id="participant-sheet-hint-immunity" className="participant-sheet__hint">
+                  Защита делает исключение из автоматической модерации для участника в этом чате.
+                  {isAlwaysMode
+                    ? ' В режиме «Всегда» она действует без срока и лимита, пока вы её не снимете.'
+                    : ' Она действует до выбранной даты, пока не исчерпан дневной лимит. Обычные сообщения лимит не тратят.'}{' '}
+                  Ручные ограничения и блокировку защита не отменяет.
                 </p>
               ) : null}
 
@@ -661,7 +657,7 @@ export function ChatParticipantSheet({
                   onKeyDown={(event) => handleImmunityModeKeyDown(event, 'limited')}
                   disabled={isBusy}
                 >
-                  Лимит
+                  На срок
                 </button>
                 <button
                   type="button"
@@ -696,11 +692,9 @@ export function ChatParticipantSheet({
                       <output aria-live="polite">{formatDays(immunityDurationDays)}</output>
                     </div>
                     {openHintKey === 'duration' ? (
-                      <p
-                        id="participant-sheet-hint-duration"
-                        className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint"
-                      >
-                        Срок показывает, сколько дней защита будет действовать для этого участника.
+                      <p id="participant-sheet-hint-duration" className="participant-sheet__hint">
+                        Защита начнёт действовать после сохранения и отключится сама через выбранное
+                        число дней. При повторном сохранении срок отсчитывается заново.
                       </p>
                     ) : null}
                     <input
@@ -712,6 +706,11 @@ export function ChatParticipantSheet({
                       value={immunityDurationDays}
                       onChange={(event) => setImmunityDurationDays(Number(event.target.value))}
                       aria-label="Срок защиты в днях"
+                      aria-valuetext={formatDays(immunityDurationDays)}
+                      aria-describedby={
+                        openHintKey === 'duration' ? 'participant-sheet-hint-duration' : undefined
+                      }
+                      disabled={isBusy}
                     />
                     <div className="participant-sheet__slider-labels" aria-hidden="true">
                       <span>{formatDays(IMMUNITY_DURATION_MIN_DAYS)}</span>
@@ -722,7 +721,7 @@ export function ChatParticipantSheet({
                   <div className="participant-sheet__slider-block">
                     <div className="participant-sheet__slider-head">
                       <div className="participant-sheet__label-with-info">
-                        <span>Лимит</span>
+                        <span>Сообщений в день</span>
                         <InfoButton
                           hintKey="limit"
                           label="Что значит лимит защиты"
@@ -730,15 +729,13 @@ export function ChatParticipantSheet({
                           onToggle={toggleHint}
                         />
                       </div>
-                      <output aria-live="polite">{dailyViolationLimit}/д</output>
+                      <output aria-live="polite">{dailyViolationLimit}</output>
                     </div>
                     {openHintKey === 'limit' ? (
-                      <p
-                        id="participant-sheet-hint-limit"
-                        className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint"
-                      >
-                        Лимит показывает, сколько нарушений в день бот пропустит без санкции. После
-                        лимита модерация снова сработает как обычно.
+                      <p id="participant-sheet-hint-limit" className="participant-sheet__hint">
+                        Столько сообщений с нарушениями бот пропустит за день. Следующее нарушение
+                        будет обработано по обычным правилам. Лимит обновляется в полночь по времени
+                        чата; при сохранении защиты он тоже начинается заново.
                       </p>
                     ) : null}
                     <input
@@ -750,6 +747,10 @@ export function ChatParticipantSheet({
                       value={dailyViolationLimit}
                       onChange={(event) => setDailyViolationLimit(Number(event.target.value))}
                       aria-label="Лимит нарушающих сообщений в день"
+                      aria-describedby={
+                        openHintKey === 'limit' ? 'participant-sheet-hint-limit' : undefined
+                      }
+                      disabled={isBusy}
                     />
                     <div className="participant-sheet__slider-labels" aria-hidden="true">
                       <span>{IMMUNITY_DAILY_LIMIT_MIN}</span>
@@ -764,10 +765,16 @@ export function ChatParticipantSheet({
                   <button
                     type="button"
                     className="button button--ghost"
-                    onClick={onClearImmunity}
+                    onClick={() => {
+                      setPendingImmunityAction('clear');
+                      onClearImmunity();
+                    }}
                     disabled={isBusy}
+                    aria-busy={isSavingImmunity && pendingImmunityAction === 'clear'}
                   >
-                    {isSavingImmunity ? 'Снимаем…' : 'Снять'}
+                    {isSavingImmunity && pendingImmunityAction === 'clear'
+                      ? 'Снимаем...'
+                      : 'Снять защиту'}
                   </button>
                 ) : null}
 
@@ -775,6 +782,7 @@ export function ChatParticipantSheet({
                   type="button"
                   className="button button--accent"
                   onClick={() => {
+                    setPendingImmunityAction('save');
                     if (isAlwaysMode) {
                       onSaveImmunity(createAlwaysImmunityPayload());
                       return;
@@ -787,8 +795,11 @@ export function ChatParticipantSheet({
                     });
                   }}
                   disabled={isBusy}
+                  aria-busy={isSavingImmunity && pendingImmunityAction === 'save'}
                 >
-                  {isSavingImmunity ? 'Сохраняем…' : 'Сохранить'}
+                  {isSavingImmunity && pendingImmunityAction === 'save'
+                    ? 'Сохраняем...'
+                    : 'Сохранить'}
                 </button>
               </div>
             </div>

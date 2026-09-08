@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { isElementInTopmostNativeBackModal, registerNativeBackHandler } from './native-back';
 
 const HINT_MARGIN_PX = 12;
 
@@ -48,6 +49,7 @@ function getViewportMetrics(element?: HTMLElement) {
 
 function resetHintAnchor(anchor: HTMLElement) {
   anchor.style.removeProperty('--hint-popover-max-width');
+  anchor.style.removeProperty('--hint-popover-max-height');
   anchor.style.removeProperty('--hint-popover-shift-x');
   anchor.style.removeProperty('--hint-popover-shift-y');
   delete anchor.dataset.hintPlacement;
@@ -67,6 +69,10 @@ function repositionHintAnchor(anchor: HTMLElement) {
   const viewportBottom = viewport.top + viewport.height;
   const maxPopoverWidth = Math.max(120, Math.floor(viewport.width - HINT_MARGIN_PX * 2));
   anchor.style.setProperty('--hint-popover-max-width', `${maxPopoverWidth}px`);
+  anchor.style.setProperty(
+    '--hint-popover-max-height',
+    `${Math.max(0, Math.floor(viewport.height - HINT_MARGIN_PX * 2))}px`,
+  );
 
   let rect = popover.getBoundingClientRect();
   let shiftX = 0;
@@ -129,7 +135,63 @@ function updateOpenHints(scrollInlineHints: boolean | number = false) {
   });
 }
 
-export function useHintPopoverAutoPosition(active: boolean, updateKey?: unknown) {
+export function useHintPopoverAutoPosition(
+  active: boolean,
+  updateKey?: unknown,
+  onDismiss?: () => void,
+) {
+  const dismissRef = useRef(onDismiss);
+  useEffect(() => {
+    dismissRef.current = onDismiss;
+  }, [onDismiss]);
+
+  useEffect(() => {
+    if (!active || typeof document === 'undefined' || !dismissRef.current) {
+      return;
+    }
+
+    const findTrigger = () =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>('.settings-info-button[aria-expanded="true"]'),
+      ).find(
+        (button) =>
+          button.dataset.hintKey === String(updateKey) &&
+          button.getClientRects().length > 0 &&
+          isElementInTopmostNativeBackModal(button),
+      );
+
+    const dismiss = (restoreFocus: boolean) => {
+      const trigger = findTrigger();
+      if (!trigger) return false;
+      dismissRef.current?.();
+      if (restoreFocus) trigger.focus({ preventScroll: true });
+      return true;
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      const trigger = findTrigger();
+      const target = event.target;
+      if (!trigger || !(target instanceof Node)) return;
+      const hint = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
+      if (trigger.contains(target) || hint?.contains(target)) return;
+      dismiss(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && dismiss(true)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    // Close the explanation before the sheet that contains it.
+    const unregisterBack = registerNativeBackHandler(() => dismiss(true), { priority: 725 });
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      unregisterBack();
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+      window.removeEventListener('keydown', handleKeyDown, true);
+    };
+  }, [active, updateKey]);
+
   useEffect(() => {
     if (!active || typeof window === 'undefined') {
       return;

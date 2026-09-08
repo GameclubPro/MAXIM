@@ -176,8 +176,9 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       onToggleHint={toggleHint}
                       label="Пояснение для антидубля"
                     >
-                      Находит повторный текст и изображения. Действия зависят от выбранных правил и
-                      доступного режима фото.
+                      Находит повторный текст и изображения за выбранный период. Можно разрешить
+                      несколько повторов, а затем удалять сообщения, предупреждать участника или
+                      ограничивать его. Доступные действия для фото показаны ниже.
                     </SettingsHintAnchor>
                   </div>
                   <label className="settings-native-switch" aria-label="Включить антидубль">
@@ -226,7 +227,8 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для одинаковой ссылки в дублях"
                         >
-                          Остальной текст может отличаться.
+                          Сообщения с одной и той же ссылкой считаются повтором. Остальной текст
+                          может отличаться.
                         </SettingsHintAnchor>
                       </div>
 
@@ -258,7 +260,8 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для одинакового номера в дублях"
                         >
-                          Остальной текст может отличаться.
+                          Сообщения с одним и тем же номером телефона считаются повтором. Остальной
+                          текст может отличаться.
                         </SettingsHintAnchor>
                       </div>
 
@@ -290,7 +293,8 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           onToggleHint={toggleHint}
                           label="Пояснение для близких совпадений дублей"
                         >
-                          Только для длинных сообщений.
+                          Находит повтор даже после небольших правок в тексте. Проверяются только
+                          длинные сообщения: короткие ответы не считаются похожими автоматически.
                         </SettingsHintAnchor>
                       </div>
 

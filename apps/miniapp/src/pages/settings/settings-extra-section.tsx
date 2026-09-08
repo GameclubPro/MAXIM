@@ -97,6 +97,7 @@ export function SettingsExtraSection({
                       aria-label="Пояснение для удаления своих сообщений ботом"
                       aria-controls="delete-bot-messages-hint"
                       aria-expanded={openHintKey === 'deleteBotMessages'}
+                      data-hint-key="deleteBotMessages"
                       onClick={() => onToggleHint('deleteBotMessages')}
                     >
                       <InfoCircle aria-hidden />
@@ -152,6 +153,7 @@ export function SettingsExtraSection({
                       aria-label="Пояснение для удаления ботов из группы"
                       aria-controls="remove-bots-hint"
                       aria-expanded={openHintKey === 'removeBotsFromGroup'}
+                      data-hint-key="removeBotsFromGroup"
                       onClick={() => onToggleHint('removeBotsFromGroup')}
                     >
                       <InfoCircle aria-hidden />

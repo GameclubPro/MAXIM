@@ -1,10 +1,7 @@
-import { InfoCircle } from 'iconoir-react';
 import {
   DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
-  MAX_MESSAGE_LENGTH_MAX,
-  MAX_MESSAGE_LENGTH_MIN,
   type BotSpeechMediaImage,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -16,7 +13,7 @@ import {
   type BotSpeechMediaFieldKey,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
-import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Suspense, lazy, type ReactNode } from 'react';
 import botSpeechRobotImage from '../../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../../joker.webp';
@@ -46,6 +43,29 @@ import {
   STRICT_NAVIGATION_POLICY_DESCRIPTION as strictNavigationPolicyDescription,
 } from './settings-link-allowlist';
 export { createDefaultApplySettingsTarget } from './settings-apply-target';
+export {
+  MESSAGE_COUNT_LIMIT_MAX,
+  MESSAGE_COUNT_LIMIT_MIN,
+  MESSAGE_COUNT_LIMIT_WINDOW_MAX_HOURS,
+  MESSAGE_COUNT_LIMIT_WINDOW_MIN_HOURS,
+  MESSAGE_LENGTH_MAX,
+  MESSAGE_LENGTH_MIN,
+  MESSAGE_LENGTH_STEP,
+  MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP,
+  MESSAGE_LIMITS_BOT_BUTTON_GROUP,
+  MaxMessageLengthSlider,
+  PHOTO_COOLDOWN_MAX_HOURS,
+  PHOTO_COOLDOWN_MIN_HOURS,
+  STICKER_COOLDOWN_MAX_MINUTES,
+  STICKER_COOLDOWN_MIN_MINUTES,
+  type MaxMessageLengthSliderProps,
+} from './settings-limits-controls';
+export {
+  EditIcon,
+  EditToggleButton,
+  type EditToggleButtonProps,
+} from './settings-edit-toggle-button';
+export { SettingsHintAnchor } from './settings-hint-anchor';
 export { buildSpeechStylePreviewSamples } from '../../lib/bot-speech-style-preview';
 export {
   ALLOWLIST_MATCH_OPTIONS,
@@ -308,17 +328,6 @@ export const AUTO_SAVE_DELAY_MS = 650;
 export const AUTO_MUTE_DURATION_MIN_HOURS = 1;
 export const AUTO_MUTE_DURATION_MAX_HOURS = 168;
 export const AUTO_MUTE_DURATION_PRESET_HOURS = [1, 6, 24, 168] as const;
-export const MESSAGE_COUNT_LIMIT_MIN = 1;
-export const MESSAGE_COUNT_LIMIT_MAX = 10;
-export const MESSAGE_COUNT_LIMIT_WINDOW_MIN_HOURS = 1;
-export const MESSAGE_COUNT_LIMIT_WINDOW_MAX_HOURS = 24;
-export const MESSAGE_LENGTH_MIN = MAX_MESSAGE_LENGTH_MIN;
-export const MESSAGE_LENGTH_MAX = MAX_MESSAGE_LENGTH_MAX;
-export const MESSAGE_LENGTH_STEP = 10;
-export const PHOTO_COOLDOWN_MIN_HOURS = 1;
-export const PHOTO_COOLDOWN_MAX_HOURS = 24;
-export const STICKER_COOLDOWN_MIN_MINUTES = 1;
-export const STICKER_COOLDOWN_MAX_MINUTES = 60;
 export const NIGHT_FORCE_CLOSE_MIN_HOURS = 0;
 export const NIGHT_FORCE_CLOSE_MAX_HOURS = 23;
 export const NIGHT_FORCE_CLOSE_MIN_DAYS = 0;
@@ -355,12 +364,6 @@ export const DUPLICATE_BOT_BUTTON_GROUP = {
   urlKey: 'duplicateBotButtonUrl',
   textKey: 'duplicateBotButtonText',
 } as const satisfies ChatSettingsButtonGroup;
-export const MESSAGE_LIMITS_BOT_BUTTON_GROUP = {
-  buttonsKey: 'messageLimitsBotButtons',
-  enabledKey: 'messageLimitsBotButtonEnabled',
-  urlKey: 'messageLimitsBotButtonUrl',
-  textKey: 'messageLimitsBotButtonText',
-} as const satisfies ChatSettingsButtonGroup;
 export const NIGHT_MODE_BOT_BUTTON_GROUP = {
   buttonsKey: 'nightModeBotButtons',
   enabledKey: 'nightModeBotButtonEnabled',
@@ -382,10 +385,6 @@ export const TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP = {
 export const DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'duplicateAdminContactButtonEnabled',
   urlKey: 'duplicateAdminContactButtonUrl',
-} as const satisfies AdminContactButtonGroup;
-export const MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP = {
-  enabledKey: 'messageLimitsAdminContactButtonEnabled',
-  urlKey: 'messageLimitsAdminContactButtonUrl',
 } as const satisfies AdminContactButtonGroup;
 export const PHONE_NUMBERS_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'phoneNumbersAdminContactButtonEnabled',
@@ -418,97 +417,6 @@ export const DESKTOP_TOGGLE_ROW_BLOCKERS = [
   '.channel-settings-hint-popover',
   '.settings-native-toggle__hint',
 ].join(', ');
-
-export type MaxMessageLengthSliderProps = {
-  value: ChatSettings['maxMessageLength'];
-  min: number;
-  max: number;
-  step: number;
-  onCommit: (value: ChatSettings['maxMessageLength']) => void;
-};
-
-export function MaxMessageLengthSlider({
-  value,
-  min,
-  max,
-  step,
-  onCommit,
-}: MaxMessageLengthSliderProps) {
-  const [localValue, setLocalValue] = useState(value);
-  const [isDragging, setIsDragging] = useState(false);
-  const isDraggingRef = useRef(false);
-
-  useEffect(() => {
-    if (!isDraggingRef.current) {
-      setLocalValue(value);
-    }
-  }, [value]);
-
-  function normalizeValue(rawValue: string): ChatSettings['maxMessageLength'] {
-    const parsedValue = Number(rawValue);
-    const safeValue = Number.isFinite(parsedValue) ? parsedValue : value;
-    return Math.min(max, Math.max(min, safeValue)) as ChatSettings['maxMessageLength'];
-  }
-
-  function commitValue(nextValue: ChatSettings['maxMessageLength']) {
-    isDraggingRef.current = false;
-    setIsDragging(false);
-    setLocalValue(nextValue);
-    if (nextValue !== value) {
-      onCommit(nextValue);
-    }
-  }
-
-  return (
-    <>
-      <div className="settings-native-toggle__row">
-        <span className="settings-native-toggle__title settings-native-toggle__title--sub">
-          Максимум
-        </span>
-        <output className="settings-length-limit__value" aria-live="polite">
-          {localValue} симв.
-        </output>
-      </div>
-
-      <input
-        className="settings-length-limit__slider"
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={localValue}
-        onPointerDown={() => {
-          isDraggingRef.current = true;
-          setIsDragging(true);
-        }}
-        onChange={(event) => {
-          const nextValue = normalizeValue(event.target.value);
-          setLocalValue(nextValue);
-          if (!isDraggingRef.current) {
-            onCommit(nextValue);
-          }
-        }}
-        onPointerUp={(event) => {
-          commitValue(normalizeValue(event.currentTarget.value));
-        }}
-        onPointerCancel={(event) => {
-          commitValue(normalizeValue(event.currentTarget.value));
-        }}
-        onBlur={(event) => {
-          if (!isDragging && !isDraggingRef.current) {
-            commitValue(normalizeValue(event.currentTarget.value));
-          }
-        }}
-        aria-label="Лимит длины сообщения"
-      />
-
-      <div className="settings-length-limit__labels" aria-hidden>
-        <span>{min}</span>
-        <span>{max}</span>
-      </div>
-    </>
-  );
-}
 
 export function DeleteDelayStepper({
   title,
@@ -614,6 +522,9 @@ export type HintKey =
   | 'textFiltersWarnMessage'
   | 'textFiltersBotButton'
   | 'duplicateDetectionMode'
+  | 'duplicatePhoto'
+  | 'duplicatePhotoMatch'
+  | 'duplicatePhotoScope'
   | 'duplicateIgnoreLinks'
   | 'duplicateIgnorePhones'
   | 'duplicateNearMatch'
@@ -630,6 +541,8 @@ export type HintKey =
   | 'messageLimitsBotMessage'
   | 'messageLimitsBotButton'
   | 'stopWordsDomains'
+  | 'stopWordsText'
+  | 'stopWordsImageText'
   | 'phoneNumbersBotMessage'
   | 'nightModeEnabled'
   | 'nightForceClose'
@@ -1406,20 +1319,6 @@ export function resolveDesktopToggleRowLabel(target: EventTarget | null): HTMLLa
   return switchLabel;
 }
 
-export function EditIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path
-        d="M13.78 4.47L15.53 6.22M5.5 14.5L7.9 13.98C8.2 13.91 8.48 13.76 8.69 13.55L14.96 7.28C15.37 6.87 15.37 6.2 14.96 5.79L14.21 5.04C13.8 4.63 13.13 4.63 12.72 5.04L6.45 11.31C6.24 11.52 6.09 11.8 6.02 12.1L5.5 14.5Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 export function CalendarIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
@@ -1485,75 +1384,6 @@ export function StyleSelectedIcon() {
         strokeLinejoin="round"
       />
     </svg>
-  );
-}
-
-export type EditToggleButtonProps = {
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  isOpen?: boolean;
-};
-
-export function EditToggleButton({ label, onClick, disabled, isOpen }: EditToggleButtonProps) {
-  return (
-    <button
-      type="button"
-      className={cn('settings-edit-button', isOpen && 'is-open')}
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      disabled={disabled}
-    >
-      <EditIcon />
-    </button>
-  );
-}
-
-export function SettingsHintAnchor({
-  hintKey,
-  openHintKey,
-  onToggleHint,
-  label,
-  children,
-}: {
-  hintKey: HintKey;
-  openHintKey: HintKey | null;
-  onToggleHint: (key: HintKey) => void;
-  label: string;
-  children: string;
-}) {
-  const isOpen = openHintKey === hintKey;
-
-  return (
-    <span className="channel-settings-hint-anchor">
-      <button
-        type="button"
-        className={cn('settings-info-button', isOpen && 'is-open')}
-        aria-label={label}
-        aria-controls={`settings-hint-${hintKey}`}
-        aria-expanded={isOpen}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onToggleHint(hintKey);
-        }}
-      >
-        <InfoCircle aria-hidden />
-      </button>
-      {isOpen ? (
-        <p
-          id={`settings-hint-${hintKey}`}
-          className="channel-settings-hint-popover"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          {children}
-        </p>
-      ) : null}
-    </span>
   );
 }
 

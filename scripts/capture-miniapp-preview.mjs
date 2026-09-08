@@ -146,6 +146,74 @@ async function openSettingsSection(page, name, panelSelector) {
   await page.waitForTimeout(350);
 }
 
+async function assertHintDismissal(page, panel, trigger) {
+  const hintId = await trigger.getAttribute('aria-controls');
+  if (!hintId) throw new Error('The explanation button does not identify its text.');
+  const hint = page.locator(`[id=${JSON.stringify(hintId)}]`);
+  const inputs = panel.locator('input[type="checkbox"]');
+  const initialValues = await inputs.evaluateAll((elements) =>
+    elements.map((input) => input.checked),
+  );
+  const openHint = async () => {
+    await trigger.click();
+    await hint.waitFor({ state: 'visible' });
+  };
+  const assertPanelStillOpen = async () => {
+    await hint.waitFor({ state: 'hidden' });
+    if (!(await panel.isVisible())) {
+      throw new Error('Dismissing an explanation also closed its settings sheet.');
+    }
+    const values = await inputs.evaluateAll((elements) => elements.map((input) => input.checked));
+    if (JSON.stringify(values) !== JSON.stringify(initialValues)) {
+      throw new Error('Opening or dismissing an explanation changed a setting.');
+    }
+  };
+
+  await openHint();
+  await page.keyboard.press('Escape');
+  await assertPanelStillOpen();
+  await openHint();
+  await panel.locator('.settings-drilldown__title').click();
+  await assertPanelStillOpen();
+  if (await page.evaluate(() => typeof window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__ === 'function')) {
+    await openHint();
+    await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+    await assertPanelStillOpen();
+  }
+  await openHint();
+}
+
+async function assertModerationScopeBusy(page, choice) {
+  const sheet = page.locator('.action-confirm-sheet');
+  const initialFeedCount = await page.locator('.event-feed-item').count();
+  await sheet.getByRole('button', { name: choice, exact: true }).click();
+  await sheet.getByRole('button', { name: 'Применяем...', exact: true }).waitFor();
+  const busy = await sheet.evaluate((element) => {
+    const buttons = [...element.querySelectorAll('button')];
+    const state = {
+      allDisabled: buttons.every((button) => button.disabled),
+      busyLabels: buttons.filter((button) => button.textContent?.trim() === 'Применяем...').length,
+    };
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__?.();
+    buttons.forEach((button) => button.click());
+    return state;
+  });
+  if (!busy.allDisabled || busy.busyLabels !== 1 || !(await sheet.isVisible())) {
+    throw new Error('A pending moderation action can be dismissed or submitted again.');
+  }
+  await sheet.waitFor({ state: 'hidden', timeout: 10_000 });
+  if (initialFeedCount > 0) {
+    await waitForModerationEventsReady(page);
+    await page.waitForFunction(
+      (count) => document.querySelectorAll('.event-feed-item').length === count + 1,
+      initialFeedCount,
+    );
+  }
+}
+
 async function waitForModerationEventsReady(page) {
   await page
     .locator('.events-dashboard__body--moderation:not(.events-dashboard__body--loading)')
@@ -1414,6 +1482,17 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'events-moderation-scope',
+    beforeShot: async (page) => {
+      await waitForModerationEventsReady(page);
+      const event = page.locator('.event-feed-item').filter({ hasText: 'Мария Ссылкина' });
+      await event.locator('.event-feed-item__trigger').click();
+      await event.locator('.logs-violation-item__quick-button--danger').click();
+      await page.getByRole('dialog', { name: 'Блокировка участника' }).waitFor();
+    },
+    afterShot: (page) => assertModerationScopeBusy(page, 'В этом чате'),
+  },
+  {
     name: 'events-activity',
     beforeShot: waitForActivityEventsReady,
   },
@@ -1507,6 +1586,20 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'events-participant-scope',
+    beforeShot: async (page) => {
+      const participant = page
+        .locator('.participants-roster__item--interactive')
+        .filter({ hasText: '@sergey-market' });
+      await participant.click();
+      const sheet = page.locator('.participant-sheet');
+      await sheet.waitFor({ state: 'visible' });
+      await sheet.getByRole('button', { name: 'Заблокировать', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Блокировка участника' }).waitFor();
+    },
+    afterShot: (page) => assertModerationScopeBusy(page, 'Во всех чатах'),
+  },
+  {
     name: 'events-spam-review',
     beforeShot: async (page) => {
       await page.locator('.spammer-review__entry').click();
@@ -1521,6 +1614,16 @@ const scenarioBehaviors = [
       await firstCandidate.waitFor({ state: 'visible' });
       await firstCandidate.click();
       await page.locator('.spammer-diagnostics-sheet').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'events-spam-help',
+    beforeShot: async (page) => {
+      await page.locator('.spammer-review__entry').click();
+      await page.locator('.spammer-review-sheet__row').first().click();
+      const panel = page.locator('.spammer-diagnostics-sheet');
+      await panel.waitFor({ state: 'visible' });
+      await assertHintDismissal(page, panel, panel.locator('[data-hint-key="spammerReview"]'));
     },
   },
   {
@@ -1564,6 +1667,18 @@ const scenarioBehaviors = [
     name: 'chat-settings-duplicates',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+    },
+  },
+  {
+    name: 'chat-settings-help',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await assertHintDismissal(
+        page,
+        panel,
+        panel.getByRole('button', { name: 'Пояснение для антидубля', exact: true }),
+      );
     },
   },
   {
@@ -2116,6 +2231,16 @@ const scenarioBehaviors = [
         window.scrollBy({ top: -116, behavior: 'instant' });
       });
       await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'channel-stats-publishing-windows',
+    beforeShot: async (page) => {
+      await page.locator('.channel-best-windows__row').first().waitFor({ state: 'visible' });
+      await page
+        .locator('.channel-best-windows-panel')
+        .evaluate((element) => element.scrollIntoView({ block: 'center', behavior: 'instant' }));
+      await page.waitForTimeout(150);
     },
   },
   {
@@ -2892,6 +3017,7 @@ async function assertConfiguredChecks(page, scenario) {
 
   if (strictAccessibility) {
     await assertCriticalAccessibility(page, scenario);
+    await assertModerationTouchTargets(page, scenario);
     await assertPublicationTouchTargets(page, scenario);
   }
 }
@@ -2917,6 +3043,31 @@ async function assertCompactTextContained(page, scenario) {
         )
       ) {
         return label.textContent?.trim() || 'unnamed option';
+      }
+    }
+    if (document.body.dataset.miniappProfile === 'moderation') {
+      for (const label of document.querySelectorAll('.channel-stats-graph__axis-text')) {
+        const canvas = label.closest('.channel-stats-graph__canvas');
+        if (!canvas || getComputedStyle(canvas).overflowX === 'visible') continue;
+        const bounds = canvas.getBoundingClientRect();
+        const text = label.getBoundingClientRect();
+        if (text.left < bounds.left - 1 || text.right > bounds.right + 1) {
+          return `chart axis label "${label.textContent?.trim()}" is clipped by its canvas`;
+        }
+      }
+      const context = document.createElement('canvas').getContext('2d');
+      for (const summary of document.querySelectorAll('.settings-section__summary')) {
+        const bounds = summary.getBoundingClientRect();
+        if (!bounds.width || !bounds.height) continue;
+        const style = getComputedStyle(summary);
+        const text = summary.textContent?.trim() ?? '';
+        const lineHeight =
+          Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.5;
+        if (context) context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const expectedWidth = Math.min(100, context?.measureText(text).width ?? 0);
+        if (bounds.width + 2 < expectedWidth || bounds.height > lineHeight * 3 + 2) {
+          return `settings summary "${text}" is too narrow or exceeds three lines (${bounds.width.toFixed(1)}x${bounds.height.toFixed(1)})`;
+        }
       }
     }
     return null;
@@ -3375,6 +3526,7 @@ async function assertCriticalContrast(page, scenario) {
       '.channel-settings-card',
       '.settings-drilldown',
       '.settings-apply-target',
+      'body[data-miniapp-profile="moderation"] .action-confirm-sheet',
       '.bot-message-editor-sheet',
       '.broadcast-audience-sheet',
       '.managed-poll-workspace',
@@ -3385,6 +3537,7 @@ async function assertCriticalContrast(page, scenario) {
       '.spammer-review-sheet',
       '.spammer-diagnostics-sheet',
       '.channel-stats-page',
+      'body[data-miniapp-profile="moderation"] .channel-insights',
     ];
 
     const parseColor = (value) => {
@@ -3605,6 +3758,46 @@ async function assertCriticalAccessibility(page, scenario) {
     const first = issues[0];
     throw new Error(
       `Scenario ${scenario.name} has accessibility issue: ${first.type} (${first.target}).`,
+    );
+  }
+}
+
+async function assertModerationTouchTargets(page, scenario) {
+  const issues = await page.evaluate(() => {
+    if (document.body.dataset.miniappProfile !== 'moderation') return [];
+    const selectors = [
+      '.settings-info-button',
+      '.settings-native-switch',
+      '.settings-mode-segments button',
+      '.settings-word-banlist__segments button',
+      '.participant-sheet__action',
+      '.participant-sheet__actions button',
+      '.action-confirm-sheet__button',
+      '.settings-drilldown__close',
+    ];
+    return selectors
+      .flatMap((selector) => [...document.querySelectorAll(selector)])
+      .flatMap((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        if (
+          rect.width <= 1 ||
+          rect.height <= 1 ||
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          Number.parseFloat(style.opacity || '1') <= 0.05 ||
+          (rect.width + 0.5 >= 44 && rect.height + 0.5 >= 44)
+        )
+          return [];
+        return [{ target: element.className, width: rect.width, height: rect.height }];
+      })
+      .slice(0, 5);
+  });
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has a moderation touch target below 44px: ` +
+        `${first.target} (${first.width.toFixed(1)}x${first.height.toFixed(1)}).`,
     );
   }
 }
@@ -4378,6 +4571,9 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
         });
       }
 
+      if (scenario.afterShot) {
+        await scenario.afterShot(page);
+      }
       diagnostics.assertClean();
       reportEntry.status = 'passed';
       reportEntry.screenshot = path.relative(ROOT_DIR, screenshotPath);

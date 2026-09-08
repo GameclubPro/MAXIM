@@ -114,6 +114,60 @@ test('photo duplicate controls have a dedicated visual scenario', () => {
   assert.ok(scenario?.features.includes('duplicates'));
 });
 
+test('moderation explanations and pending actions have dedicated interaction scenarios', () => {
+  const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
+  assert.equal(scenarios.get('chat-settings-help')?.routeId, 'chat-settings');
+  assert.equal(scenarios.get('events-spam-help')?.routeId, 'chat-events');
+  assert.deepEqual(scenarios.get('events-moderation-scope')?.searchParams, {
+    moderationState: 'slow',
+  });
+  assert.deepEqual(scenarios.get('events-participant-scope')?.searchParams, {
+    section: 'participants',
+    moderationState: 'slow',
+  });
+  for (const name of [
+    'chat-settings-help',
+    'events-spam-help',
+    'events-moderation-scope',
+    'events-participant-scope',
+  ]) {
+    assert.ok(MINIAPP_VISUAL_PRESETS.moderation.scenarioNames.includes(name));
+  }
+
+  const source = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /await assertModerationTouchTargets\(page, scenario\)/u);
+  assert.match(source, /querySelectorAll\('\.settings-section__summary'\)/u);
+  assert.match(source, /bounds\.height > lineHeight \* 3 \+ 2/u);
+  assert.ok(source.includes('body[data-miniapp-profile="moderation"] .action-confirm-sheet'));
+  assert.match(source, /await scenario\.afterShot\(page\)/u);
+  assert.match(source, /window\.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__/u);
+  const fixtureSelection = selectMiniappVisualScenarios({
+    changedFiles: ['apps/miniapp/src/lib/api/preview-transport-events.ts'],
+  });
+  assert.ok(
+    fixtureSelection.scenarios.some((scenario) => scenario.name === 'events-moderation-scope'),
+  );
+});
+
+test('channel statistics audit reaches publishing windows and checks the current route root', () => {
+  const scenario = MINIAPP_VISUAL_SCENARIOS.find(
+    (candidate) => candidate.name === 'channel-stats-publishing-windows',
+  );
+  assert.ok(scenario);
+  assert.equal(scenario.routeId, 'channel-stats');
+  assert.ok(MINIAPP_VISUAL_PRESETS.moderation.scenarioNames.includes(scenario.name));
+  const source = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.ok(source.includes('body[data-miniapp-profile="moderation"] .channel-insights'));
+  assert.match(source, /querySelectorAll\('\.channel-stats-graph__axis-text'\)/u);
+  assert.match(source, /locator\('\.channel-best-windows-panel'\)/u);
+});
+
 test('chat poll creation, saved draft, and publication have dedicated visual scenarios', () => {
   const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
 

@@ -68,7 +68,6 @@
   .settings-word-banlist__mode-head .channel-settings-hint-popover {
     top: auto;
     bottom: calc(100% + var(--hint-popover-gap));
-    pointer-events: none;
   }
 
   .settings-word-banlist__add-row {

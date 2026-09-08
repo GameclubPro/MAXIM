@@ -15,7 +15,7 @@ import type {
   MembershipActivityItem,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { NavArrowDown as IconNavArrowDown } from 'iconoir-react';
+import { InfoCircle, NavArrowDown as IconNavArrowDown } from 'iconoir-react';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-experience.css';
 import '../styles/dashboard-events.css';
@@ -103,6 +103,9 @@ import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
 import { recoverableLazyNamedComponent } from '../lib/recoverable-lazy';
+import { describeUserFacingError } from '../lib/user-facing-error';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
+import { describeManualModerationFeedback } from '../lib/manual-moderation-feedback';
 
 const ChatParticipantsRoster = recoverableLazyNamedComponent<
   ComponentProps<typeof ChatParticipantsRosterComponent>
@@ -167,10 +170,10 @@ const SPAMMER_DIAGNOSTICS_FULL_QUERY = {
 const actionLabelMap: Record<DisplayAction, string> = {
   DELETE_MESSAGE: 'Удаление',
   WARN: 'Предупреждение',
-  MUTE: 'Мут',
-  BAN: 'Бан',
-  UNMUTE: 'Мут снят',
-  UNBAN: 'Возврат',
+  MUTE: 'Без сообщений',
+  BAN: 'Блокировка',
+  UNMUTE: 'Снова может писать',
+  UNBAN: 'Блокировка снята',
 };
 
 const actionToneMap: Record<DisplayAction, 'neutral' | 'warning' | 'danger' | 'success'> = {
@@ -397,7 +400,7 @@ function formatViolationRule(ruleCode: string): string {
     PROFANITY: 'Нецензурная лексика',
     COMMERCIAL_AD: 'Коммерция',
     MESSAGE_TOO_LONG: 'Слишком длинное сообщение',
-    MESSAGE_RATE_LIMIT: 'Флуд сообщениями',
+    MESSAGE_RATE_LIMIT: 'Слишком частые сообщения',
     MESSAGE_COUNT_LIMIT: 'Лимит сообщений',
     PHOTO_BLOCKED: 'Фото запрещены',
     VIDEO_BLOCKED: 'Видео запрещено',
@@ -411,10 +414,10 @@ function formatViolationRule(ruleCode: string): string {
     DUPLICATE_MUTE: 'Повторяющиеся сообщения',
     DUPLICATE_KICK: 'Повторяющиеся сообщения',
     DUPLICATE_BAN: 'Повторяющиеся сообщения',
-    MANUAL_MUTE: 'Мут вручную',
-    MANUAL_UNMUTE: 'Мут снят',
+    MANUAL_MUTE: 'Запрет сообщений модератором',
+    MANUAL_UNMUTE: 'Сообщения снова разрешены',
     MANUAL_KICK: 'Удаление вручную',
-    MANUAL_BAN: 'Бан вручную',
+    MANUAL_BAN: 'Блокировка модератором',
     MANUAL_UNBAN: 'Возврат в чат',
     THEMATIC_FILTER: 'Объявления по теме',
     GLOBAL_USER_BLACKLIST_KICK: 'Запрет по базе',
@@ -422,7 +425,7 @@ function formatViolationRule(ruleCode: string): string {
     GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Рассылка по чатам',
     GLOBAL_SPAMMER_BAN: 'База спама',
     GLOBAL_SPAMMER_KICK: 'База спама',
-    MUTE_ACTIVE_DELETE: 'Активный мут',
+    MUTE_ACTIVE_DELETE: 'Действует запрет сообщений',
     NIGHT_MODE_DELETE: 'Ночной режим',
     REQUIRED_SUBSCRIPTION: 'Обязательная подписка',
   };
@@ -456,10 +459,10 @@ function resolveModerationCodeLabel(code: string): string {
     return 'Телефон';
   }
   if (normalized.includes('MUTE')) {
-    return 'Мут';
+    return 'Запрет сообщений';
   }
   if (normalized.includes('BAN') || normalized.includes('KICK')) {
-    return 'Бан';
+    return 'Исключение из чата';
   }
   if (normalized.includes('PHOTO')) {
     return 'Фото';
@@ -538,7 +541,7 @@ function resolveViolationBlurb(violation: ViolationItem): string {
   }
 
   if (violation.ruleCode === 'MANUAL_UNBAN') {
-    return 'Модератор снял бан вручную';
+    return 'Модератор снял блокировку';
   }
 
   if (violation.ruleCode === 'MANUAL_MUTE') {
@@ -555,7 +558,9 @@ function resolveViolationBlurb(violation: ViolationItem): string {
         ? metadata.muteDurationHours
         : null;
 
-    return muteDurationHours ? `Мут на ${muteDurationHours}ч` : 'Модератор выдал мут';
+    return muteDurationHours
+      ? `Без сообщений на ${muteDurationHours} ч`
+      : 'Модератор запретил отправлять сообщения';
   }
 
   if (violation.ruleCode === 'MANUAL_KICK') {
@@ -563,7 +568,7 @@ function resolveViolationBlurb(violation: ViolationItem): string {
   }
 
   if (violation.ruleCode === 'MANUAL_BAN') {
-    return 'Модератор выдал бан';
+    return 'Модератор заблокировал участника';
   }
 
   return formatViolationRule(violation.ruleCode);
@@ -591,18 +596,18 @@ function resolveApplyActionLabel(
   muteDurationHours: number,
 ): string {
   if (action === 'MUTE') {
-    return `Мут на ${formatMuteDurationCompact(muteDurationHours)}`;
+    return `Ограничить на ${formatMuteDurationCompact(muteDurationHours)}`;
   }
 
   if (action === 'UNMUTE') {
-    return 'Снять мут';
+    return 'Разрешить писать';
   }
 
   if (action === 'UNBAN') {
     return 'Вернуть участника';
   }
 
-  return 'Бан';
+  return 'Заблокировать';
 }
 
 function resolveConfirmMessage(
@@ -611,11 +616,11 @@ function resolveConfirmMessage(
   violation?: ViolationItem,
 ): string {
   if (action === 'MUTE') {
-    return `Выдать мут на ${muteDurationHours}ч? Новые сообщения будут удаляться до конца срока.`;
+    return `Запретить сообщения на ${muteDurationHours} ч? Участник останется в чате, но его новые сообщения будут удаляться до конца срока.`;
   }
 
   if (action === 'UNMUTE') {
-    return 'Снять мут у участника?';
+    return 'Снять ограничение? Участник снова сможет писать в чате.';
   }
 
   if (action === 'UNBAN') {
@@ -633,7 +638,7 @@ function resolveConfirmMessage(
     return 'Вернуть участника в чат?';
   }
 
-  return 'Выдать бан в чате MAX, пока модератор не вернет участника вручную?';
+  return 'Заблокировать участника? Он не сможет вернуться в чат, пока модератор не снимет блокировку.';
 }
 
 function isMuteActiveFromViolation(violation: ViolationItem): boolean {
@@ -711,66 +716,21 @@ function resolveReleaseAction(
 }
 
 function resolveReleaseLabel(action: Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'>): string {
-  return action === 'UNMUTE' ? 'Снять мут' : 'Вернуть';
+  return action === 'UNMUTE' ? 'Разрешить писать' : 'Снять блокировку';
 }
 
 function normalizeActionErrorMessage(error: unknown): string {
-  const fallback = 'Не удалось выполнить действие. Проверьте права бота и повторите.';
-  if (!(error instanceof Error)) {
-    return fallback;
-  }
-
-  const raw = error.message.trim();
-  if (!raw) {
-    return fallback;
-  }
-
-  if (raw.startsWith('API request failed:')) {
-    const tail = raw.replace(/^API request failed:\s*\d+\s*/u, '').trim();
-    if (!tail) {
-      return fallback;
-    }
-    if (/[A-Za-z]/.test(tail) && !/[А-Яа-яЁё]/.test(tail)) {
-      return fallback;
-    }
-    return tail;
-  }
-
-  if (/[A-Za-z]/.test(raw) && !/[А-Яа-яЁё]/.test(raw)) {
-    return fallback;
-  }
-
-  return raw;
+  return describeUserFacingError(
+    error,
+    'Не удалось выполнить действие. Проверьте права бота и повторите.',
+  );
 }
 
 function normalizeLoadErrorMessage(error: unknown): string {
-  const fallback = 'Не удалось загрузить данные. Попробуйте ещё раз.';
-  const normalizeRaw = (value: string): string => {
-    const raw = value.trim();
-    if (!raw) {
-      return fallback;
-    }
-
-    if (raw.startsWith('API request failed:')) {
-      const tail = raw.replace(/^API request failed:\s*\d+\s*/u, '').trim();
-      if (!tail || (/[A-Za-z]/.test(tail) && !/[А-Яа-яЁё]/.test(tail))) {
-        return fallback;
-      }
-      return tail;
-    }
-
-    if (/[A-Za-z]/.test(raw) && !/[А-Яа-яЁё]/.test(raw)) {
-      return fallback;
-    }
-
-    return raw;
-  };
-
-  if (!(error instanceof Error)) {
-    return typeof error === 'string' ? normalizeRaw(error) : fallback;
-  }
-
-  return normalizeRaw(error.message);
+  return describeUserFacingError(
+    typeof error === 'string' ? new Error(error) : error,
+    'Не удалось загрузить данные. Попробуйте ещё раз.',
+  );
 }
 
 function formatRussianCountLabel(count: number, one: string, few: string, many: string): string {
@@ -941,22 +901,22 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
 function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Автобан выключен';
+    return 'Автоматическая блокировка выключена';
   }
   if (policy.registryStatus === 'LOCAL_BLOCKED') {
-    return policy.action === 'NONE' ? 'Отметка сохранена' : 'Автобан при сообщении';
+    return policy.action === 'NONE' ? 'Отметка сохранена' : 'Блокировка при новом сообщении';
   }
   if (policy.action === 'DELETE_AND_KICK') {
-    return 'Забанит в чате';
+    return 'Участник будет заблокирован';
   }
   if (policy.action === 'SHADOW_DELETE_AND_KICK') {
     return 'Ждёт решения админа';
   }
   if (policy.registryStatus === 'ADMIN_EXEMPT') {
-    return 'Не будет банить';
+    return 'Без автоматической блокировки';
   }
   if (policy.registryStatus === 'SUPPRESSED') {
-    return 'Не будет банить';
+    return 'Без автоматической блокировки';
   }
   if (policy.registryStatus === 'MEDIUM_REVIEW') {
     return 'Ждёт решения админа';
@@ -984,10 +944,6 @@ function resolveDiagnosticsConfidenceScore(
       diagnostics.policy.shadowScore ??
       null,
   );
-}
-
-function formatDiagnosticsScorePercent(score: number): string {
-  return `${Math.round(score * 100)}%`;
 }
 
 function buildScoreMeterStyle(score: number): ScoreMeterStyle {
@@ -1027,7 +983,7 @@ const DIAGNOSTICS_SIGNAL_CATEGORIES: Record<
   { label: string; reasonLabel: string }
 > = {
   fanout: { label: 'Массовая рассылка', reasonLabel: 'массовая рассылка' },
-  bans: { label: 'Баны в других чатах', reasonLabel: 'баны в других чатах' },
+  bans: { label: 'Блокировки в других чатах', reasonLabel: 'блокировки в других чатах' },
   ads: { label: 'Реклама и повторы', reasonLabel: 'реклама и повторы' },
   system: { label: 'Алгоритмы системы', reasonLabel: 'алгоритмы системы' },
 };
@@ -1170,7 +1126,7 @@ function buildDiagnosticsSignalGroups(
 }
 
 function formatDiagnosticsSignalCount(count: number): string {
-  return `${count} ${formatRussianCountLabel(count, 'сигнал', 'сигнала', 'сигналов')}`;
+  return `${count} ${formatRussianCountLabel(count, 'признак', 'признака', 'признаков')}`;
 }
 
 function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics): string | null {
@@ -1429,6 +1385,11 @@ function SpammerDiagnosticsSheet({
   onBan: (userId: string) => void;
   onProfileActivate: (userId: string, displayName: string) => void;
 }) {
+  const [reviewHelpOpen, setReviewHelpOpen] = useState(false);
+  useHintPopoverAutoPosition(open && reviewHelpOpen, 'spammerReview', () =>
+    setReviewHelpOpen(false),
+  );
+  useEffect(() => setReviewHelpOpen(false), [open, target?.userId]);
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const facts = diagnostics ? buildDiagnosticsFacts(diagnostics) : [];
@@ -1459,20 +1420,20 @@ function SpammerDiagnosticsSheet({
           className="spammer-diagnostics__action spammer-diagnostics__action--muted"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'SUPPRESS')}
-          aria-label="Не учитывать пользователя в спам-базе, из чата не исключать"
+          aria-label="Отметить, что это не спам, без удаления из чата"
         >
-          <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не добавлять в базу'}</span>
-          {reviewingAction === 'SUPPRESS' ? null : <small>без действий в чате</small>}
+          <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не спам'}</span>
+          {reviewingAction === 'SUPPRESS' ? null : <small>исключить из проверки</small>}
         </button>
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--accent"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'APPROVE')}
-          aria-label="Подтвердить пользователя как спамера в спам-базе"
+          aria-label="Подтвердить спам, без немедленного удаления из чата"
         >
-          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Подтвердить в базе'}</span>
-          {reviewingAction === 'APPROVE' ? null : <small>без бана сейчас</small>}
+          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Подтвердить спам'}</span>
+          {reviewingAction === 'APPROVE' ? null : <small>без удаления сейчас</small>}
         </button>
       </div>
       <div
@@ -1484,10 +1445,10 @@ function SpammerDiagnosticsSheet({
           className="spammer-diagnostics__action spammer-diagnostics__action--danger"
           disabled={isActionBusy}
           onClick={() => onBan(diagnostics.userId)}
-          aria-label="Забанить пользователя в текущем чате сейчас"
+          aria-label="Заблокировать участника: выбрать чаты"
         >
-          <span>{isBanning ? 'Баним...' : 'Забанить в этом чате'}</span>
-          {isBanning ? null : <small>применить сейчас</small>}
+          <span>{isBanning ? 'Блокируем...' : 'Заблокировать'}</span>
+          {isBanning ? null : <small>выбрать чаты</small>}
         </button>
       </div>
     </div>
@@ -1497,12 +1458,38 @@ function SpammerDiagnosticsSheet({
     <SettingsDrilldownPanel
       id="spammer-diagnostics-sheet"
       open={open}
-      title="Досье спамера"
+      title="Проверка участника"
       summary=""
       tone="sky"
       onClose={onClose}
       className="spammer-diagnostics-sheet"
       overlayClassName="spammer-diagnostics-overlay"
+      headerAction={
+        <span className="channel-settings-hint-anchor">
+          <button
+            type="button"
+            className={`settings-info-button${reviewHelpOpen ? ' is-open' : ''}`}
+            data-hint-key="spammerReview"
+            aria-label="О проверке участника"
+            title="О проверке участника"
+            aria-expanded={reviewHelpOpen}
+            aria-controls="spammer-review-help"
+            aria-describedby={reviewHelpOpen ? 'spammer-review-help' : undefined}
+            onClick={() => setReviewHelpOpen((current) => !current)}
+          >
+            <InfoCircle aria-hidden />
+          </button>
+          {reviewHelpOpen ? (
+            <p id="spammer-review-help" className="channel-settings-hint-popover" role="note">
+              Оценка основана на замеченных повторах, рассылках и блокировках. Это не доказательство
+              нарушения. «Не спам» исключает участника из этой проверки, но не снимает ограничения в
+              чате. «Подтвердить спам» сохраняет ваше решение без немедленного удаления. Дальнейшие
+              действия зависят от настроек защиты чата. Для блокировки выберите «Заблокировать» и
+              подтвердите, в каких чатах она нужна.
+            </p>
+          ) : null}
+        </span>
+      }
       footer={footer}
       keepFooterVisibleWhenKeyboardOpen
     >
@@ -1518,7 +1505,6 @@ function SpammerDiagnosticsSheet({
 
               <div className="spammer-diagnostics__profile-copy">
                 <strong>{profileDisplayName}</strong>
-                {profileUserId ? <span>ID {profileUserId}</span> : null}
               </div>
             </div>
           ) : null}
@@ -1573,7 +1559,6 @@ function SpammerDiagnosticsSheet({
               ) : (
                 <strong>{profileDisplayName}</strong>
               )}
-              {profileUserId ? <span>ID {profileUserId}</span> : null}
             </div>
           </div>
 
@@ -1588,23 +1573,24 @@ function SpammerDiagnosticsSheet({
             <div className="spammer-diagnostics__hero-main">
               <div className="spammer-diagnostics__verdict-copy">
                 <h4>
-                  {diagnostics ? resolveDiagnosticsAutoAction(diagnostics) : 'Проверяем сигналы'}
+                  {diagnostics ? resolveDiagnosticsAutoAction(diagnostics) : 'Проверяем историю'}
                 </h4>
               </div>
 
               {confidenceScore !== null && confidencePercent !== null ? (
                 <div
                   className="spammer-diagnostics__confidence"
-                  role="progressbar"
-                  aria-label="Уверенность"
+                  role="meter"
+                  aria-label="Оценка признаков спама"
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-valuenow={confidencePercent}
+                  aria-valuetext={`${confidencePercent} из 100, не доказательство нарушения`}
                   style={buildScoreMeterStyle(confidenceScore)}
                 >
                   <span className="spammer-diagnostics__confidence-head">
-                    <span>Уверенность</span>
-                    <strong>{formatDiagnosticsScorePercent(confidenceScore)}</strong>
+                    <span>Признаки спама</span>
+                    <strong>{confidencePercent} из 100</strong>
                   </span>
                   <span className="spammer-diagnostics__confidence-track" aria-hidden="true">
                     <span className="spammer-diagnostics__confidence-fill" />
@@ -1631,15 +1617,15 @@ function SpammerDiagnosticsSheet({
             </dl>
           ) : null}
 
-          <section className="spammer-diagnostics__signals" aria-label="Сигналы по пользователю">
+          <section className="spammer-diagnostics__signals" aria-label="Причины проверки участника">
             <div className="spammer-diagnostics__section-head">
-              <span>Сигналы</span>
+              <span>Причины проверки</span>
               <strong>
                 {signalCount > 0
                   ? formatDiagnosticsSignalCount(signalCount)
                   : isSignalsLoading
                     ? 'Загружаем'
-                    : 'Сигналов нет'}
+                    : 'Признаков нет'}
               </strong>
             </div>
             {signalGroups.length > 0 ? (
@@ -1658,11 +1644,13 @@ function SpammerDiagnosticsSheet({
               </div>
             ) : (
               <div className="spammer-diagnostics__empty">
-                <strong>{isSignalsLoading ? 'Загружаем сигналы' : 'Пока нет сигналов'}</strong>
+                <strong>
+                  {isSignalsLoading ? 'Проверяем историю' : 'Пока нет признаков спама'}
+                </strong>
                 <span>
                   {isSignalsLoading
-                    ? 'Профиль уже открыт, подробная диагностика появится следом.'
-                    : 'Можно внести пользователя вручную или закрыть досье.'}
+                    ? 'Проверяем историю участника.'
+                    : 'Повторы и массовые рассылки не найдены.'}
                 </span>
               </div>
             )}
@@ -1689,6 +1677,9 @@ function ViolationModerationControls({
   const releaseAction = resolveReleaseAction(violation);
   const [muteDurationHours, setMuteDurationHours] = useState(6);
   const [muteExpanded, setMuteExpanded] = useState(false);
+  const [pendingScopeChoice, setPendingScopeChoice] = useState<ManualModerationScopeChoice | null>(
+    null,
+  );
   const [pendingScopeAction, setPendingScopeAction] = useState<{
     action: Extract<ManualModerationAction, 'MUTE' | 'BAN'>;
     muteDurationHours?: number;
@@ -1704,15 +1695,17 @@ function ViolationModerationControls({
     mutationFn: async (payload: ManualModerationActionRequest) =>
       applyManualModerationAction(api, chatId, violation.userId, payload),
     onSuccess: (result) => {
-      setStatus({ tone: 'success', text: result.message });
+      setStatus({ tone: 'success', text: describeManualModerationFeedback(result) });
       setMuteExpanded(false);
       setPendingAction(null);
+      setPendingScopeAction(null);
       onApplied();
     },
     onError: (error: unknown) => {
       const message = normalizeActionErrorMessage(error);
       setStatus({ tone: 'danger', text: message });
     },
+    onSettled: () => setPendingScopeChoice(null),
   });
 
   const applyAction = (
@@ -1720,15 +1713,11 @@ function ViolationModerationControls({
     hours?: number,
     scope?: ManualModerationScopeChoice,
   ) => {
+    if (applyMutation.isPending) return;
     const normalizedHours =
       action === 'MUTE' ? clampMuteDurationHours(hours ?? muteDurationHours) : null;
     setStatus(null);
-    if (action !== 'MUTE') {
-      setPendingAction(null);
-    }
-    if (action === 'MUTE' || action === 'BAN') {
-      setPendingScopeAction(null);
-    }
+    setPendingScopeChoice(scope ?? null);
     applyMutation.mutate({
       action,
       ...(scope ? { scope } : {}),
@@ -1780,7 +1769,7 @@ function ViolationModerationControls({
             onOpenDiagnostics();
           }}
         >
-          База спама
+          Проверить
         </button>
         {!releaseAction ? (
           <button
@@ -1796,7 +1785,7 @@ function ViolationModerationControls({
               setMuteExpanded((current) => !current);
             }}
           >
-            Мут
+            Без сообщений
           </button>
         ) : null}
         {!releaseAction ? (
@@ -1817,7 +1806,7 @@ function ViolationModerationControls({
               setPendingAction(null);
             }}
           >
-            Бан
+            Заблокировать
           </button>
         ) : null}
         {releaseAction ? (
@@ -1842,7 +1831,7 @@ function ViolationModerationControls({
           <div className="logs-violation-item__duration-summary">
             <div className="logs-violation-item__duration-label">
               <ClockIcon />
-              <span>Срок мута</span>
+              <span>Срок ограничения</span>
             </div>
             <output className="logs-violation-item__duration-output" aria-live="polite">
               {formatMuteDurationCompact(muteDurationHours)}
@@ -1858,6 +1847,7 @@ function ViolationModerationControls({
                   muteDurationHours === hours ? 'is-active' : ''
                 }`}
                 disabled={applyMutation.isPending}
+                aria-pressed={muteDurationHours === hours}
                 onClick={() => setMuteDurationHours(hours)}
               >
                 {formatMuteDurationCompact(hours)}
@@ -1872,7 +1862,7 @@ function ViolationModerationControls({
                 className="ban-duration-stepper__button"
                 onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev - 1))}
                 disabled={applyMutation.isPending || muteDurationHours <= MUTE_DURATION_MIN_HOURS}
-                aria-label="Уменьшить срок мута"
+                aria-label="Уменьшить срок ограничения"
               >
                 -
               </button>
@@ -1884,7 +1874,7 @@ function ViolationModerationControls({
                 className="ban-duration-stepper__button"
                 onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev + 1))}
                 disabled={applyMutation.isPending || muteDurationHours >= MUTE_DURATION_MAX_HOURS}
-                aria-label="Увеличить срок мута"
+                aria-label="Увеличить срок ограничения"
               >
                 +
               </button>
@@ -1952,14 +1942,26 @@ function ViolationModerationControls({
         <ActionConfirmSheet
           id={`violation-scope-${violation.id}`}
           open
-          title={pendingScopeAction.action === 'BAN' ? 'Бан' : 'Мут'}
+          title={
+            pendingScopeAction.action === 'BAN' ? 'Блокировка участника' : 'Ограничение сообщений'
+          }
+          summary={resolveOffenderName(violation)}
+          previewTitle={resolveConfirmMessage(
+            pendingScopeAction.action,
+            pendingScopeAction.muteDurationHours ?? muteDurationHours,
+          )}
+          previewMeta={
+            status?.tone === 'danger' ? <span role="alert">{status.text}</span> : undefined
+          }
           confirmLabel="В этом чате"
           confirmBusyLabel="Применяем..."
           cancelLabel="Отмена"
           tone={pendingScopeAction.action === 'BAN' ? 'danger' : 'accent'}
           isBusy={applyMutation.isPending}
+          confirmBusy={applyMutation.isPending && pendingScopeChoice === 'current_chat'}
           extraActionLabel="Во всех чатах"
           extraActionBusyLabel="Применяем..."
+          extraActionBusy={applyMutation.isPending && pendingScopeChoice === 'all_chats'}
           extraActionTone={pendingScopeAction.action === 'BAN' ? 'danger' : 'accent'}
           actionOrder="confirm-extra-cancel"
           onExtraAction={() => confirmScopeAction('all_chats')}
@@ -2620,18 +2622,18 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               dailyViolationLimit,
             }),
       }),
-    onSuccess: (result) => {
+    onSuccess: () => {
       setSelectedParticipantId(null);
       pushToast({
         tone: 'success',
-        title: result.message,
+        title: 'Защита сохранена',
       });
       void participantsFeed.retry();
     },
     onError: (error: unknown) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось сохранить',
+        title: 'Не удалось сохранить защиту',
         description: normalizeActionErrorMessage(error),
       });
     },
@@ -2641,18 +2643,18 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       updateChatParticipantImmunity(api, chatId ?? '', userId, {
         enabled: false,
       }),
-    onSuccess: (result) => {
+    onSuccess: () => {
       setSelectedParticipantId(null);
       pushToast({
         tone: 'success',
-        title: result.message,
+        title: 'Защита снята',
       });
       void participantsFeed.retry();
     },
     onError: (error: unknown) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось снять',
+        title: 'Не удалось снять защиту',
         description: normalizeActionErrorMessage(error),
       });
     },
@@ -2665,7 +2667,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       setSelectedParticipantId(null);
       pushToast({
         tone: 'success',
-        title: result.message,
+        title: describeManualModerationFeedback(result),
       });
       void dashboardQuery.refetch();
       void participantsIdentityQuery.refetch();
@@ -2714,7 +2716,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       setSpammerDiagnosticsTarget(null);
       pushToast({
         tone: 'success',
-        title: result.message,
+        title: describeManualModerationFeedback(result),
       });
       void dashboardQuery.refetch();
       void moderationFeed.retry();
@@ -2726,7 +2728,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     onError: (error: unknown) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось забанить',
+        title: 'Не удалось заблокировать участника',
         description: normalizeActionErrorMessage(error),
       });
     },
@@ -2809,9 +2811,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         label: 'Удаления',
         count: violationsSummary.deleteMessage,
       },
-      { value: 'MUTE', label: 'Муты', count: violationsSummary.mute },
-      { value: 'BAN', label: 'Баны', count: violationsSummary.ban },
-      { value: 'UNMUTE', label: 'Мут снят', count: violationsSummary.unmute },
+      { value: 'MUTE', label: 'Без сообщений', count: violationsSummary.mute },
+      { value: 'BAN', label: 'Блокировки', count: violationsSummary.ban },
+      { value: 'UNMUTE', label: 'Снова могут писать', count: violationsSummary.unmute },
       { value: 'UNBAN', label: 'Возвраты', count: violationsSummary.unban },
     ];
 
@@ -3127,7 +3129,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       tone: 'neutral' as const,
     },
     {
-      label: 'Муты и баны',
+      label: 'Ограничения',
       value: String(hardMeasures),
       note: '',
       tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),
@@ -3701,7 +3703,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id={pendingScopeAction?.id ?? 'manual-moderation-scope'}
         open={Boolean(pendingScopeAction)}
-        title={pendingScopeAction?.action === 'BAN' ? 'Бан' : 'Мут'}
+        title={
+          pendingScopeAction?.action === 'BAN' ? 'Блокировка участника' : 'Ограничение сообщений'
+        }
         summary={
           pendingScopeAction?.source === 'participant'
             ? selectedParticipant?.userDisplayName
@@ -3711,6 +3715,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           pendingScopeAction?.action === 'MUTE'
             ? `Срок: ${pendingScopeAction.muteDurationHours ?? 24} ч`
             : undefined
+        }
+        previewTitle={
+          pendingScopeAction?.action === 'BAN'
+            ? 'В выбранных чатах участник будет заблокирован. Вернуться можно только после снятия блокировки.'
+            : 'Участник останется в выбранных чатах. Его новые сообщения будут удаляться до конца срока.'
         }
         confirmLabel="В этом чате"
         confirmBusyLabel="Применяем..."
@@ -3740,7 +3749,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         title="Удалить заблокированные"
         summary="Будут удалены только участники, которых MAX явно пометил как удалённые, заблокированные или отключённые аккаунты."
         previewTitle="Обычные участники, админы, владельцы и боты пропускаются."
-        previewMeta="Список на экране не используется как источник истины: сервер заново сканирует участников перед удалением."
+        previewMeta="Перед удалением бот ещё раз проверит состояние каждого аккаунта."
         confirmLabel="Удалить"
         confirmBusyLabel="Проверяем..."
         cancelLabel="Отмена"

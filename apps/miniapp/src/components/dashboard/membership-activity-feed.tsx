@@ -174,7 +174,7 @@ export function MembershipActivityFeed({
               <div className="membership-feed__day">
                 <div className="membership-feed__day-copy">
                   <span className="membership-feed__day-label">{group.label}</span>
-                  <small>{`${group.items.length} событий`}</small>
+                  <small>Событий: {group.items.length}</small>
                 </div>
                 <div className="membership-feed__day-stats" aria-hidden="true">
                   {group.joinedCount > 0 ? (
