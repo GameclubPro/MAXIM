@@ -275,15 +275,7 @@ export class PublisherPolicyService {
     const commonWhere = {
       ...publisherRefreshEvidenceWhere(publisherBotId),
       chat: {
-        AND: [
-          { accessEdges: { some: accessWhere } },
-          {
-            OR: [
-              { publicationPolicy: { is: null } },
-              { publicationPolicy: { is: { publikEnabled: true } } },
-            ],
-          },
-        ],
+        AND: [{ accessEdges: { some: accessWhere } }],
       },
     } satisfies Prisma.PublisherEntityBindingWhereInput;
     const selectedProblemIds = await this.selectRefreshCandidateIds({

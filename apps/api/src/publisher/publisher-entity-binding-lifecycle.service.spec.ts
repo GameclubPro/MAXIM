@@ -894,7 +894,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
     );
   });
 
-  it('recovers missing actors from bounded authenticated Publisher webhook evidence only', async () => {
+  it('recovers authenticated Publisher actors even while publishing is disabled', async () => {
     const evidenceAt = new Date('2026-08-27T12:00:00.000Z');
     const olderEvidenceAt = new Date(evidenceAt.getTime() - 1_000);
     const scanMeta = {
@@ -911,7 +911,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
         bindingStatus: ChatBotMembershipStatus.ACTIVE,
         catalogEntityType: ChatEntityType.CHANNEL,
         catalogStatus: 'ACTIVE',
-        publikEnabled: null,
+        publikEnabled: false,
         edgeExists: false,
         evidenceAt,
         ...scanMeta,
@@ -931,6 +931,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
       },
     ]);
     const tx = createHistoricalRecoveryTransaction();
+    tx.chat.findUnique.mockResolvedValueOnce({ publicationPolicy: { publikEnabled: false } });
     const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
     const service = new PublisherEntityBindingLifecycleService(
       {
@@ -956,6 +957,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
     expect(evidencePredicate).toBeGreaterThan(sourcePageEnd);
     expect(sql.slice(sourcePageStart, sourcePageEnd)).not.toContain("normalized_payload->>'type'");
     expect(sql).toContain('event."bot_id" = ?');
+    expect(sql).not.toContain('managed_entity_publication_policies');
     expect(sql).toContain('event."status" = \'PROCESSED\'::"WebhookStatus"');
     expect(sql).toContain("recent.normalized_payload->>'eventTimestampSource' = 'payload'");
     expect(sql).toContain("recent.normalized_payload->'message'->>'senderId'");

@@ -53,7 +53,6 @@ type HistoricalPublisherActorScanRow = {
   bindingStatus: ChatBotMembershipStatus | null;
   catalogEntityType: ChatEntityType | null;
   catalogStatus: string | null;
-  publikEnabled: boolean | null;
   edgeExists: boolean;
   evidenceAt: Date | null;
   scannedCount: number;
@@ -591,7 +590,6 @@ export class PublisherEntityBindingLifecycleService {
         binding."status" AS "bindingStatus",
         catalog."entity_type" AS "catalogEntityType",
         catalog."status" AS "catalogStatus",
-        policy."publik_enabled" AS "publikEnabled",
         (edge."chat_id" IS NOT NULL) AS "edgeExists",
         actor.evidence_at AS "evidenceAt",
         page.scanned_count AS "scannedCount",
@@ -604,8 +602,6 @@ export class PublisherEntityBindingLifecycleService {
       LEFT JOIN "managed_bot_chat_catalog" AS catalog
         ON catalog."chat_id" = actor.chat_id
         AND catalog."bot_id" = ${this.publisherBotId}
-      LEFT JOIN "managed_entity_publication_policies" AS policy
-        ON policy."chat_id" = actor.chat_id
       LEFT JOIN "managed_entity_access_edges" AS edge
         ON edge."chat_id" = actor.chat_id
         AND edge."user_id" = actor.user_id
@@ -647,7 +643,6 @@ export class PublisherEntityBindingLifecycleService {
         row.bindingStatus !== ChatBotMembershipStatus.ACTIVE ||
         !row.catalogEntityType ||
         row.catalogStatus !== 'ACTIVE' ||
-        row.publikEnabled === false ||
         row.edgeExists
       ) {
         this.historicalRecoveryCursor = nextCursor;
@@ -668,7 +663,7 @@ export class PublisherEntityBindingLifecycleService {
         const [chat, binding, catalog, edge] = await Promise.all([
           tx.chat.findUnique({
             where: { id: chatId },
-            select: { publicationPolicy: { select: { publikEnabled: true } } },
+            select: { id: true },
           }),
           tx.publisherEntityBinding.findUnique({ where: { chatId } }),
           tx.managedBotChatCatalog.findUnique({
@@ -688,7 +683,6 @@ export class PublisherEntityBindingLifecycleService {
         ]);
         if (
           !chat ||
-          chat.publicationPolicy?.publikEnabled === false ||
           !binding ||
           binding.publisherBotId !== this.publisherBotId ||
           binding.status !== ChatBotMembershipStatus.ACTIVE ||

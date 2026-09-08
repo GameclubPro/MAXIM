@@ -140,9 +140,6 @@ export class PublisherBindingRefreshService {
         where: { id: chatId },
         select: {
           id: true,
-          publicationPolicy: {
-            select: { publikEnabled: true },
-          },
           publisherBinding: true,
         },
       }),
@@ -178,28 +175,15 @@ export class PublisherBindingRefreshService {
       candidateEdge.sourceVersion === job.candidateVersion,
     );
     const forwardedCandidateFlow = hasExactStagedForwardedCandidate;
-    const disabledPolicyEnablementRecheck = Boolean(
-      policyEnablementRecheckRequested &&
-      !candidateJob &&
-      candidate?.publicationPolicy?.publikEnabled === false,
-    );
-    // FLAG: Only an exact Publisher-staged forwarded candidate may establish a binding;
-    // a policy enablement recheck may bypass disabled policy, never missing Publisher evidence.
-    if (
-      !candidate ||
-      (candidate.publicationPolicy?.publikEnabled === false && !disabledPolicyEnablementRecheck) ||
-      (!bindingHasRefreshEvidence && !hasExactStagedForwardedCandidate)
-    ) {
+    // FLAG: Access refresh never enables publishing. A new binding still requires an exact
+    // Publisher-staged candidate, including while the publication policy is disabled.
+    if (!candidate || (!bindingHasRefreshEvidence && !hasExactStagedForwardedCandidate)) {
       if (candidateJob) {
         await this.terminalizeUnverifiedForwardedConnection(job, new Date(), {
           reason: 'publisher_binding_unavailable',
         });
         await this.completeCandidateTerminal(job, {
-          reason: !candidate
-            ? 'publisher_entity_missing'
-            : candidate.publicationPolicy?.publikEnabled === false
-              ? 'publisher_policy_disabled'
-              : 'publisher_binding_unavailable',
+          reason: !candidate ? 'publisher_entity_missing' : 'publisher_binding_unavailable',
         });
         await this.replyForwardedCandidate(job, 'bot_denied');
       }
@@ -296,11 +280,7 @@ export class PublisherBindingRefreshService {
       throw error;
     }
 
-    // FLAG: A disabled-policy probe refreshes only the exact binding snapshot. Catalog and
-    // user-access refresh remain disabled until the Major-owned policy is enabled.
-    if (disabledPolicyEnablementRecheck) {
-      return;
-    }
+    // FLAG: Catalog and actor verification remain available while publishing is disabled.
 
     if (
       forwardedCandidateFlow &&
@@ -504,7 +484,7 @@ export class PublisherBindingRefreshService {
       const [chat, binding, edge] = await Promise.all([
         tx.chat.findUnique({
           where: { id: chatId },
-          select: { title: true, publicationPolicy: { select: { publikEnabled: true } } },
+          select: { title: true },
         }),
         tx.publisherEntityBinding.findUnique({
           where: { chatId },
@@ -527,7 +507,6 @@ export class PublisherBindingRefreshService {
       ]);
       if (
         !chat ||
-        chat.publicationPolicy?.publikEnabled === false ||
         !this.matchesExpectedForwardedBinding(binding, params.expectedBinding) ||
         edge?.source !== PUBLISHER_FORWARDED_CANDIDATE_SOURCE ||
         edge.sourceVersion !== candidateVersion
@@ -1331,7 +1310,6 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         botAccessState: {
           in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
         },
-        chat: this.managedChatFilter(),
         OR: [{ botAccessExpiresAt: null }, { botAccessExpiresAt: { lte: refreshBefore } }],
       },
       select: { chatId: true },
@@ -1371,7 +1349,6 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
       where: {
         ...publisherRefreshEvidenceWhere(this.publisherBotId),
         chatId: { in: catalogRows.map((row) => row.chatId) },
-        chat: this.managedChatFilter(),
         AND: [
           {
             OR: [
@@ -1472,21 +1449,11 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
               {
                 chat: {
                   publisherBinding: { is: publisherRefreshEvidenceWhere(this.publisherBotId) },
-                  OR: [
-                    { publicationPolicy: { is: null } },
-                    { publicationPolicy: { is: { publikEnabled: true } } },
-                  ],
                 },
               },
               {
                 source: PUBLISHER_FORWARDED_CANDIDATE_SOURCE,
                 sourceVersion: { startsWith: 'forwarded:' },
-                chat: {
-                  OR: [
-                    { publicationPolicy: { is: null } },
-                    { publicationPolicy: { is: { publikEnabled: true } } },
-                  ],
-                },
               },
             ],
           },
@@ -1516,14 +1483,5 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
           ? { chatId: rows.at(-1)!.chatId, userId: rows.at(-1)!.userId }
           : null;
     return rows;
-  }
-
-  private managedChatFilter() {
-    return {
-      OR: [
-        { publicationPolicy: { is: null } },
-        { publicationPolicy: { is: { publikEnabled: true } } },
-      ],
-    } satisfies Prisma.ChatWhereInput;
   }
 }

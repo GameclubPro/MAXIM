@@ -320,14 +320,12 @@ function createPolicyMutationFixture(
         ),
     },
     managedBotChatCatalog: {
-      findFirst: jest
-        .fn()
-        .mockResolvedValue({
-          entityType: options.storedEntityType ?? ChatEntityType.CHANNEL,
-          title: 'Публик',
-          link: null,
-          avatarUrl: null,
-        }),
+      findFirst: jest.fn().mockResolvedValue({
+        entityType: options.storedEntityType ?? ChatEntityType.CHANNEL,
+        title: 'Публик',
+        link: null,
+        avatarUrl: null,
+      }),
     },
     chat: {
       findUnique: jest.fn().mockResolvedValue({
@@ -770,6 +768,7 @@ describe('PublisherPolicyService', () => {
     );
 
     const accessFilter = findMany.mock.calls[0]?.[0].where.chat.AND[0].accessEdges.some;
+    expect(JSON.stringify(findMany.mock.calls[0]?.[0].where)).not.toContain('publikEnabled');
     expect(accessFilter).toEqual(
       expect.objectContaining({
         userId: user.userId,

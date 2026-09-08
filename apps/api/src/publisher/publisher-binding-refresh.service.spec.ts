@@ -331,7 +331,7 @@ describe('PublisherBindingRefreshService', () => {
     );
   });
 
-  it('refreshes only an evidenced binding for policy enablement while Publik is disabled', async () => {
+  it('refreshes the exact binding and catalog while publishing stays disabled', async () => {
     const { service, prisma, maxClient, dispatchHealth } = createHarness(
       {
         isAdmin: true,
@@ -362,12 +362,12 @@ describe('PublisherBindingRefreshService', () => {
       }),
     );
     expect(dispatchHealth.recordAuthenticatedSuccess).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
   });
 
-  it('keeps ordinary refresh jobs idle while the Publik policy is disabled', async () => {
-    const { service, maxClient } = createHarness(
+  it('refreshes a disabled Publisher admin access edge without Major or enabling posts', async () => {
+    const { service, maxClient, tx } = createHarness(
       {
         isAdmin: true,
         isOwner: false,
@@ -378,10 +378,25 @@ describe('PublisherBindingRefreshService', () => {
       false,
     );
 
-    await service.refresh({ ...job, reason: 'manual_recheck' });
+    await service.refresh({ ...job, reason: 'manual_recheck', candidateUserId: 'admin-disabled' });
 
-    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
-    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'admin-disabled',
+      expect.objectContaining({ botId: 'publik_bot', bypassCache: true }),
+    );
+    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          state: ManagedEntityAccessState.GRANTED,
+          userRole: ManagedEntityAccessRole.ADMIN,
+        }),
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(tx.chat.updateMany).not.toHaveBeenCalled();
   });
 
   it('does not let a policy enablement recheck bypass missing Publisher evidence', async () => {
@@ -685,7 +700,7 @@ describe('PublisherBindingRefreshService', () => {
     );
   });
 
-  it('aborts provisional materialization when the Publisher policy is disabled under the lock', async () => {
+  it('can establish an authorized Publisher binding while its publication policy stays off', async () => {
     const { service, prisma, tx, edgeState } = createHarness({
       isAdmin: true,
       isOwner: false,
@@ -713,11 +728,12 @@ describe('PublisherBindingRefreshService', () => {
         candidateVersion,
         reason: 'forwarded_private',
       }),
-    ).rejects.toBeInstanceOf(PublisherCandidateRefreshSupersededError);
+    ).resolves.toBeUndefined();
 
-    expect(tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
-    expect(tx.publisherEntityBinding.upsert).not.toHaveBeenCalled();
-    expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
+    expect(tx.publisherEntityBinding.upsert).toHaveBeenCalled();
+    expect(tx.managedBotChatCatalog.upsert).toHaveBeenCalled();
+    expect(JSON.stringify(tx.chat.updateMany.mock.calls)).not.toContain('publikEnabled');
   });
 
   it.each([
