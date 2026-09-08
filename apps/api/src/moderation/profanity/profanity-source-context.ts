@@ -20,7 +20,8 @@ const VOLUME_CONTEXT =
 export function prepareProfanitySource(text: string): string {
   // FLAG: Non-linguistic spans are barriers, not joinable gaps. All candidate offsets refer
   // to this same prepared source; link and stop-word policies still inspect their own input.
-  return replaceUrlsInText(text, '\0').replace(EMAIL_PATTERN, '\0');
+  // FLAG: Only the parser may create barriers; user-supplied nulls remain ordinary obfuscation.
+  return replaceUrlsInText(text.replace(/\0/gu, ''), '\0').replace(EMAIL_PATTERN, '\0');
 }
 
 export function isLiteralLatinProfanityException(candidate: ProfanitySourceCandidate): boolean {

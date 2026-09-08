@@ -13,6 +13,7 @@ describe('profanity source boundaries', () => {
       'До \0 после \0 конец',
     );
     expect(prepareProfanitySource('pizd@')).toBe('pizd@');
+    expect(prepareProfanitySource('б\0лять hue@example.com')).toBe('блять \0');
   });
 
   it('keeps literal financial and color terms distinct from altered words and mat', () => {
