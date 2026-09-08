@@ -12,16 +12,23 @@ import { ParticipantModerationImmunityService } from './participant-moderation-i
 import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
 import { CommercialOcrDeleteGuardService } from './commercial-ocr/commercial-ocr-delete-guard.service';
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr/commercial-ocr-runtime-policy.service';
+import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
+import { RuleEngineModule } from './rule-engine.module';
 
 const actionRoleProviders = roleRunsAction(getAppRole())
   ? [ModerationDeleteIntentProcessor, ModerationDeleteIntentReconcilerService]
   : [];
 
 @Module({
-  imports: [BullModule.registerQueue({ name: MODERATION_DELETE_INTENT_QUEUE }), MaxModule],
+  imports: [
+    BullModule.registerQueue({ name: MODERATION_DELETE_INTENT_QUEUE }),
+    MaxModule,
+    RuleEngineModule,
+  ],
   providers: [
     LinkHistoryDeleteGuardService,
     ParticipantModerationImmunityService,
+    ProfanityDeleteGuardService,
     CommercialOcrDeleteGuardService,
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
@@ -31,6 +38,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
   exports: [
     ModerationDeleteIntentService,
     ParticipantModerationImmunityService,
+    ProfanityDeleteGuardService,
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
   ],

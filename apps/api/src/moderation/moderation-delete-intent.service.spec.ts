@@ -37,6 +37,7 @@ import {
   buildNightModeTransitionSideEffectFingerprint,
 } from './night-mode-transition-generation.util';
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
+import { ProfanityDeleteGuardRejectedError } from './profanity/profanity-delete-guard.service';
 
 type ServiceInternals = {
   assertAccessAmbiguousLedgerEvidenceUnchanged(
@@ -124,6 +125,7 @@ function createService(
   photoDuplicateRuntimePolicyOverrides?: Record<string, unknown>,
   commercialOcrDeleteGuardOverrides?: Record<string, unknown>,
   participantImmunityOverrides?: Record<string, unknown>,
+  profanityDeleteGuardOverrides?: Record<string, unknown>,
 ) {
   const config = {
     MODERATION_DELETE_INTENT_MODE: 'on',
@@ -221,6 +223,10 @@ function createService(
     consumeForMessage: jest.fn().mockResolvedValue('not_granted'),
     ...participantImmunityOverrides,
   };
+  const profanityDeleteGuard = {
+    assertIntentStillActionable: jest.fn().mockResolvedValue('not_applicable'),
+    ...profanityDeleteGuardOverrides,
+  };
   const service = new ModerationDeleteIntentService(
     prisma as never,
     maxClient as never,
@@ -230,6 +236,7 @@ function createService(
     linkHistoryDeleteGuard as never,
     photoDuplicateRuntimePolicy as never,
     commercialOcrDeleteGuard as never,
+    profanityDeleteGuard as never,
     participantImmunity as never,
   );
   return {
@@ -242,6 +249,7 @@ function createService(
     photoDuplicateRuntimePolicy,
     commercialOcrDeleteGuard,
     participantImmunity,
+    profanityDeleteGuard,
   };
 }
 
@@ -406,9 +414,9 @@ function imageTextStopListClaimedIntentInput() {
   const deadlineAt = new Date(Date.now() + 60_000);
   const binding = buildImageTextStopListBinding({
     ocrVersion: 'tesseract-rus-eng-v2',
-    nativeBehaviorFingerprintSha256:
-      resolveExpectedCommercialOcrProductionBehaviorIdentity(new ConfigService()).identity
-        .fingerprintSha256,
+    nativeBehaviorFingerprintSha256: resolveExpectedCommercialOcrProductionBehaviorIdentity(
+      new ConfigService(),
+    ).identity.fingerprintSha256,
     policyFingerprint: fingerprintImageTextStopListPolicy({
       settings: {
         messageLimitsImageTextScanEnabled: true,
@@ -1526,9 +1534,11 @@ describe('ModerationDeleteIntentService', () => {
           }),
         },
         moderationDeleteIntentReason: {
-          findMany: jest.fn().mockResolvedValue([
-            { ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE, metadata: input.intent.event.metadata },
-          ]),
+          findMany: jest
+            .fn()
+            .mockResolvedValue([
+              { ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE, metadata: input.intent.event.metadata },
+            ]),
         },
       },
     );
@@ -1551,15 +1561,15 @@ describe('ModerationDeleteIntentService', () => {
         input.intent.event.metadata.imageTextStopListBinding.nativeBehaviorFingerprintSha256,
     };
 
-    const error = await (
-      service as unknown as ServiceInternals
-    ).assertImageTextStopListDeleteIntentStillActionable(intent, 'bot-1').catch((caught) => caught);
+    const error = await (service as unknown as ServiceInternals)
+      .assertImageTextStopListDeleteIntentStillActionable(intent, 'bot-1')
+      .catch((caught) => caught);
 
     expect(error).toBeInstanceOf(ImageTextStopListDeleteIntentGuardRejectedError);
     expect(error.code).toBe('image_text_stop_list_settings_disabled');
-    expect(
-      (service as unknown as ServiceInternals).isTerminalDeleteGuardRejection(error),
-    ).toBe(true);
+    expect((service as unknown as ServiceInternals).isTerminalDeleteGuardRejection(error)).toBe(
+      true,
+    );
   });
 
   it('preserves independently executable ordinary reasons beside an image sentinel', () => {
@@ -1610,7 +1620,7 @@ describe('ModerationDeleteIntentService', () => {
     await (service as unknown as ServiceInternals).selectDueIntentIds();
 
     const sql = queryRaw.mock.calls[0]![0].strings?.join('?') ?? '';
-    expect(sql).toContain("image_text_reason.\"metadata\"->>'source'");
+    expect(sql).toContain('image_text_reason."metadata"->>\'source\'');
     expect(sql).toContain('image_text_ocr');
     expect(sql).toContain('delete_only');
   });
@@ -4944,6 +4954,301 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
+  it.each(['PENDING', 'RETRYABLE'] as const)(
+    'runs the profanity guard exactly once after the dispatch fence for %s',
+    async (leasedFromStatus) => {
+      const intent = { ...baseIntent, leasedFromStatus };
+      const completed = {
+        ...intent,
+        status: 'SUCCEEDED',
+        succeededBotId: 'bot-1',
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-1',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const events: string[] = [];
+      const executeRaw = jest.fn(async (query: { strings?: string[] }) => {
+        if (query.strings?.join('?').includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) {
+          events.push('dispatch-fence');
+        }
+        return 1;
+      });
+      const { service, profanityDeleteGuard } = createService(
+        {},
+        {
+          $queryRaw: jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]),
+          $executeRaw: executeRaw,
+        },
+        {
+          deleteMessage: jest.fn(async () => {
+            events.push('max-delete');
+          }),
+        },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          assertIntentStillActionable: jest.fn(async () => {
+            events.push('profanity-guard');
+            return 'allowed';
+          }),
+        },
+      );
+
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: 'confirmed',
+        profanityVerified: true,
+      });
+
+      expect(events).toEqual(['dispatch-fence', 'profanity-guard', 'max-delete']);
+      expect(profanityDeleteGuard.assertIntentStillActionable).toHaveBeenCalledWith({
+        intentId: 'intent-1',
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        subjectUserId: 'user-1',
+        botId: 'bot-1',
+      });
+    },
+  );
+
+  it.each([false, true])(
+    'clears a rejected profanity dispatch and preserves concurrent independent reason=%s',
+    async (hasIndependentReason) => {
+      const intent = { ...baseIntent };
+      const freshIntent = { ...baseIntent };
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const txQueryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([{ id: intent.id }])
+        .mockResolvedValueOnce([freshIntent]);
+      const findIndependentReason = jest
+        .fn()
+        .mockResolvedValue(hasIndependentReason ? { id: 'independent-reason' } : null);
+      const remoteDelete = jest.fn();
+      const { service, queue } = createService(
+        {},
+        {
+          $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+          $executeRaw: executeRaw,
+          $transaction: jest.fn(async (callback: (tx: unknown) => unknown) =>
+            callback({
+              $queryRaw: txQueryRaw,
+              $executeRaw: executeRaw,
+              moderationDeleteIntentReason: { findFirst: findIndependentReason },
+            }),
+          ),
+        },
+        { deleteMessage: remoteDelete },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          assertIntentStillActionable: jest
+            .fn()
+            .mockRejectedValue(
+              new ProfanityDeleteGuardRejectedError(
+                'profanity_violation_no_longer_present',
+                'Current message is clean',
+              ),
+            ),
+        },
+      );
+
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: hasIndependentReason ? 'pending' : 'terminal',
+        status: hasIndependentReason ? 'RETRYABLE' : 'FAILED_TERMINAL',
+      });
+
+      expect(remoteDelete).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalledTimes(hasIndependentReason ? 1 : 0);
+      expect(findIndependentReason).toHaveBeenCalledWith({
+        where: { intentId: 'intent-1', ruleCode: { not: 'PROFANITY_DELETE' } },
+        select: { id: true },
+      });
+      expect(txQueryRaw.mock.calls[0]?.[0].strings.join('?')).toContain('FOR UPDATE');
+      expect(
+        executeRaw.mock.calls.some(([query]) =>
+          query.strings?.join('?').includes('"delete_dispatch_started_at" = NULL'),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it('keeps an unavailable profanity guard retryable without attempting MAX deletion', async () => {
+    const intent = { ...baseIntent };
+    const pending = { ...baseIntent, status: 'RETRYABLE', leaseToken: null, leaseExpiresAt: null };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const remoteDelete = jest.fn();
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([pending]),
+        $executeRaw: executeRaw,
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        assertIntentStillActionable: jest
+          .fn()
+          .mockRejectedValue(new Error('MAX lookup unavailable')),
+      },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toThrow(
+      'MAX lookup unavailable',
+    );
+    expect(remoteDelete).not.toHaveBeenCalled();
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(executeRaw.mock.calls.some(([query]) => query.values?.includes('RETRYABLE'))).toBe(true);
+  });
+
+  it('records exact profanity absence without performing DELETE', async () => {
+    const intent = { ...baseIntent };
+    const absent = {
+      ...baseIntent,
+      status: 'ALREADY_ABSENT',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const remoteDelete = jest.fn();
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([absent]),
+        $executeRaw: jest.fn().mockResolvedValue(1),
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { assertIntentStillActionable: jest.fn().mockResolvedValue('absent') },
+    );
+
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+    expect(result).toMatchObject({ kind: 'already_absent' });
+    expect(result).not.toHaveProperty('profanityVerified');
+    expect(remoteDelete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'verified profanity', guardResult: 'allowed', recovered: false, proof: true },
+    {
+      label: 'mixed independent reason',
+      guardResult: 'not_applicable',
+      recovered: false,
+      proof: false,
+    },
+    { label: 'old success recovery', guardResult: 'allowed', recovered: true, proof: false },
+  ])(
+    'fences profanity event materialization for $label',
+    async ({ guardResult, recovered, proof }) => {
+      const intent = {
+        ...baseIntent,
+        ...(recovered
+          ? {
+              remoteDeleteSucceededAt: new Date(),
+              remoteDeleteSucceededBotId: 'bot-1',
+            }
+          : {}),
+      };
+      const completed = {
+        ...intent,
+        status: 'SUCCEEDED',
+        succeededBotId: 'bot-1',
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-1',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const txExecuteRaw = jest.fn().mockResolvedValue(1);
+      const remoteDelete = jest.fn();
+      const { service, profanityDeleteGuard } = createService(
+        {},
+        {
+          $queryRaw: jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]),
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          $transaction: jest.fn(async (callback: (tx: unknown) => unknown) =>
+            callback({
+              $executeRaw: txExecuteRaw,
+            }),
+          ),
+        },
+        { deleteMessage: remoteDelete },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { assertIntentStillActionable: jest.fn().mockResolvedValue(guardResult) },
+      );
+
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: 'confirmed',
+      });
+
+      const queries = txExecuteRaw.mock.calls.map(([query]) => query as Prisma.Sql);
+      const eventInsert = queries.find((query) =>
+        query.strings.join('?').includes('INSERT INTO "moderation_events"'),
+      );
+      const reasonMarker = queries.find((query) =>
+        query.strings.join('?').includes('UPDATE "moderation_delete_intent_reasons" reason'),
+      );
+      expect(eventInsert).toBeDefined();
+      expect(reasonMarker).toBeDefined();
+      for (const query of [eventInsert!, reasonMarker!]) {
+        expect(query.strings.join('?')).toContain('AND (? OR reason."rule_code" <> ?)');
+        expect(query.strings.join('?')).toContain('reason."moderation_event_id" IS NULL');
+        expect(query.values).toEqual(['intent-1', proof, 'PROFANITY_DELETE']);
+      }
+      expect(eventInsert!.strings.join('?')).toContain('ON CONFLICT ("id") DO NOTHING');
+      expect(remoteDelete).toHaveBeenCalledTimes(recovered ? 0 : 1);
+      expect(profanityDeleteGuard.assertIntentStillActionable).toHaveBeenCalledTimes(
+        recovered ? 0 : 1,
+      );
+    },
+  );
+
+  it('does not attribute an independent deletion to an unverified profanity reason', async () => {
+    const intent = { ...baseIntent };
+    const completed = {
+      ...intent,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const remoteDelete = jest.fn();
+    const { service, profanityDeleteGuard } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]),
+        $executeRaw: jest.fn().mockResolvedValue(1),
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(profanityDeleteGuard.assertIntentStillActionable).toHaveBeenCalledTimes(1);
+    expect(remoteDelete).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ kind: 'confirmed' });
+    expect(result).not.toHaveProperty('profanityVerified');
+  });
+
   it('does not run the link-family guard for an ordinary delete intent', async () => {
     const completed = {
       ...baseIntent,
@@ -4967,8 +5272,9 @@ describe('ModerationDeleteIntentService', () => {
       { assertIntentStillActionable },
     );
 
-    await service.executeLeasedIntent('intent-1', 'lease-1');
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
 
+    expect(result).not.toHaveProperty('profanityVerified');
     expect(assertIntentStillActionable).not.toHaveBeenCalled();
   });
 
@@ -6160,6 +6466,62 @@ describe('ModerationDeleteIntentService', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
+  it.each(['MESSAGE_BLOCKED_WORD_DELETE', 'PROFANITY_DELETE'])(
+    'reopens an obsolete profanity intent only for a new independent reason: %s',
+    async (ruleCode) => {
+      const terminal = {
+        ...baseIntent,
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'profanity_violation_no_longer_present',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+      };
+      const reopened = { ...terminal, status: 'PENDING', lastErrorCode: null };
+      const txQueryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([terminal])
+        .mockResolvedValueOnce([reopened]);
+      const txExecuteRaw = jest.fn().mockResolvedValue(1);
+      const { service, queue } = createService(
+        {},
+        {
+          $transaction: jest.fn(async (callback: (tx: unknown) => unknown) =>
+            callback({ $queryRaw: txQueryRaw, $executeRaw: txExecuteRaw }),
+          ),
+        },
+      );
+
+      await expect(
+        service.ensureIntent({
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          reasonKey: 'new-reason',
+          ruleCode,
+          subjectUserId: 'user-1',
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          originBotId: 'bot-1',
+        }),
+      ).resolves.toMatchObject({
+        status: ruleCode === 'PROFANITY_DELETE' ? 'FAILED_TERMINAL' : 'PENDING',
+      });
+
+      expect(txQueryRaw).toHaveBeenCalledTimes(ruleCode === 'PROFANITY_DELETE' ? 1 : 2);
+      expect(queue.add).toHaveBeenCalledTimes(ruleCode === 'PROFANITY_DELETE' ? 0 : 1);
+      if (ruleCode !== 'PROFANITY_DELETE') {
+        const query = txQueryRaw.mock.calls[1]?.[0];
+        const sql = query.strings.join('?');
+        expect(sql).toContain('"last_error_code" LIKE \'profanity_%\'');
+        expect(sql).toContain('"delete_dispatch_started_at" IS NULL');
+        expect(sql).toContain('"remote_delete_succeeded_at" IS NULL');
+        expect(sql).toContain('"retry_until_at" = GREATEST');
+        expect(sql).toContain('current_entity."entity_type" =');
+        expect(query.values).toContain(true);
+      }
+    },
+  );
+
   it('reopens a channel cleanup entity rejection when a later independent reason commits', async () => {
     const independentDeadline = new Date(Date.now() + 120_000);
     const terminalChannelCleanup = {
@@ -7269,6 +7631,7 @@ describe('ModerationDeleteIntentService', () => {
 
     expect(first).toMatchObject({ kind: 'ambiguous', status: 'AMBIGUOUS' });
     expect(second).toMatchObject({ kind: 'confirmed', status: 'SUCCEEDED', botId: 'bot-1' });
+    expect(second).not.toHaveProperty('profanityVerified');
     expect(deleteMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -8696,6 +9059,10 @@ describe('ModerationDeleteIntentService', () => {
       .join('\n');
     expect(executedSql).toContain('INSERT INTO "moderation_events"');
     expect(executedSql).toContain('UPDATE "moderation_delete_intent_reasons"');
+    const eventInsert = executeRaw.mock.calls.find(([query]) =>
+      query.strings?.join('?').includes('INSERT INTO "moderation_events"'),
+    )?.[0] as Prisma.Sql;
+    expect(eventInsert.values).toEqual(['intent-1', false, 'PROFANITY_DELETE']);
     expect(queue.add).not.toHaveBeenCalled();
   });
 

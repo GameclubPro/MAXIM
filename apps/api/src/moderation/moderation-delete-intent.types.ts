@@ -89,6 +89,8 @@ export type ModerationDeleteAttemptResult =
       intentId: string;
       status: 'SUCCEEDED';
       botId: string | null;
+      // FLAG: Ephemeral proof from this dispatch, never reconstructed from a stored success.
+      profanityVerified?: true;
     }
   | {
       kind: 'already_absent';

@@ -66,7 +66,7 @@ describe('profanity corpus', () => {
         matchKind: 'EXACT_VARIANT',
         matchedVariant: 'скотина',
         evidence: expect.arrayContaining(['TARGET_CONTEXT']),
-        detectorVersion: 'profanity-structured-v1',
+        detectorVersion: 'profanity-structured-v2',
       }),
     );
     expect(probe.detect('ты валенок', 'STRICT', 'on')).toEqual(

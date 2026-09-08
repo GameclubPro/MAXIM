@@ -142,6 +142,12 @@ import {
   claimPersistedMessageViolationProcessing,
 } from './moderation-violation-persistence';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
+import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
+import {
+  executeProfanityGuardedLegacyDelete,
+  type ModerationDeleteExecutionResult,
+  type ProfanityDeleteMutationHooks,
+} from './profanity/profanity-delete-execution';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
 import { resolveTrustedDuplicateStateRevision } from './duplicate-message-revision';
 import {
@@ -589,14 +595,6 @@ const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 const WEBHOOK_TIMEOUT_SETTLEMENT_PERSIST_RETRY_MAX_MS = 30_000;
 const WEBHOOK_TIMEOUT_PERSISTENCE_LOG_INTERVAL_MS = 30_000;
 const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
-type ModerationDeleteExecutionResult = {
-  accepted: boolean;
-  gone: boolean;
-  deleted: boolean;
-  eventPersistedByIntent: boolean;
-  botId: string | null;
-};
-
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
@@ -760,6 +758,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly photoDuplicateEnqueueService?: PhotoDuplicateEnqueueService,
     @Optional()
     private readonly commercialOcrEnqueueService?: CommercialOcrEnqueueService,
+    @Optional()
+    private readonly profanityDeleteGuard?: ProfanityDeleteGuardService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -2443,32 +2443,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (violationDeleteIntent) {
         await this.ensureModerationDeleteIntent(violationDeleteIntent);
       }
-      if (!isCommercialReviewOnly) {
-        this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
-      }
-      const violationClaimed = isCommercialReviewOnly
-        ? await this.claimMessageViolationProcessing({
-            chatId,
-            userId: senderId,
-            messageId,
-            ruleCode: topViolation.ruleCode,
-            updateType,
-          })
-        : await claimAndPersistModerationMessageViolation(
-            this.prisma,
-            {
+      const isProfanityViolation = topViolation.ruleCode === 'PROFANITY';
+      const claimViolation = async () => {
+        if (!isCommercialReviewOnly) {
+          this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
+        }
+        return isCommercialReviewOnly
+          ? this.claimMessageViolationProcessing({
               chatId,
               userId: senderId,
               messageId,
               ruleCode: topViolation.ruleCode,
               updateType,
-              score: topViolation.score,
-            },
-            (input) => this.claimMessageViolationProcessing(input),
-            (context) => this.logSkippedDuplicateMessageViolation(context),
-            (claimKey, context) => this.markRedisMessageViolationProcessing(claimKey, context),
-          );
-      if (!violationClaimed) {
+            })
+          : claimAndPersistModerationMessageViolation(
+              this.prisma,
+              {
+                chatId,
+                userId: senderId,
+                messageId,
+                ruleCode: topViolation.ruleCode,
+                updateType,
+                score: topViolation.score,
+              },
+              (input) => this.claimMessageViolationProcessing(input),
+              (context) => this.logSkippedDuplicateMessageViolation(context),
+              (claimKey, context) => this.markRedisMessageViolationProcessing(claimKey, context),
+            );
+      };
+      if (!isProfanityViolation && !(await claimViolation())) {
         this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-dedup');
         return;
       }
@@ -2496,6 +2499,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-delete');
         const deleteResult = await this.executeModerationDelete(violationDeleteIntent);
         messageDeleted = deleteResult.gone;
+        // FLAG: Only a fresh profanity check followed by this attempt's confirmed DELETE may
+        // create a violation or escalate. Absence, independent reasons and background retries do not.
+        if (isProfanityViolation) {
+          if (!deleteResult.deleted || !deleteResult.profanityVerified) {
+            return;
+          }
+          if (!(await claimViolation())) {
+            this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-dedup');
+            return;
+          }
+        }
         if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
           await this.createBotModerationEvent({
             data: {
@@ -5043,6 +5057,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             deleted: result.kind === 'confirmed',
             eventPersistedByIntent: result.kind === 'confirmed',
             botId: result.kind === 'confirmed' ? result.botId : null,
+            ...(result.kind === 'confirmed' && result.profanityVerified
+              ? { profanityVerified: true as const }
+              : {}),
           };
         }
         if (executeExclusively) {
@@ -5070,19 +5087,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const scheduled = Boolean(options?.delayMs && options.delayMs > 0);
-    const execution = await this.deleteMessageImmediatelyLegacy(
-      preparedInput.chatId,
-      preparedInput.messageId,
-      options,
-    );
-    return {
-      accepted: execution.ok,
-      gone: execution.ok && !scheduled,
-      deleted: execution.ok && !scheduled,
-      eventPersistedByIntent: false,
-      botId: execution.botId,
-    };
+    return executeProfanityGuardedLegacyDelete({
+      input: preparedInput,
+      scheduled: Boolean(options?.delayMs && options.delayMs > 0),
+      guard: this.profanityDeleteGuard,
+      execute: (hooks) =>
+        this.deleteMessageImmediatelyLegacy(
+          preparedInput.chatId,
+          preparedInput.messageId,
+          options,
+          hooks,
+        ),
+    });
   }
 
   private async ensureModerationDeleteIntent(
@@ -5132,6 +5148,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     messageId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+    profanityHooks?: ProfanityDeleteMutationHooks,
   ): Promise<ModerationActionExecutionResult> {
     return this.executeModerationActionWithFallbackResult({
       chatId,
@@ -5139,12 +5156,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       explicitBotId: options?.botId,
       operation: async (botId) => {
+        profanityHooks?.beforeAttempt();
         await this.maxClient.deleteMessage(chatId, messageId, {
           trafficClass: 'critical',
           actionHealthLane: 'critical',
           sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
           timeoutMs: MODERATION_ACTION_DISPATCH_TIMEOUT_MS,
           ...(options ?? {}),
+          ...(profanityHooks
+            ? {
+                beforeImmediateDeleteMutation: async () => {
+                  await options?.beforeImmediateDeleteMutation?.();
+                  await profanityHooks.beforeDeleteMutation(botId);
+                },
+              }
+            : {}),
           ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
           ...(botId ? { botId } : {}),
           ...(options?.delayMs ? {} : { immediate: true }),

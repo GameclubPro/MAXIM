@@ -603,6 +603,18 @@ describe('ModerationService', () => {
         ],
       });
 
+      Object.assign(harness.service, {
+        profanityDeleteGuard: {
+          assertMessageStillActionable: jest.fn().mockResolvedValue('allowed'),
+        },
+      });
+
+      harness.maxClient.deleteMessage.mockImplementation(async (...args: unknown[]) => {
+        const options = args[2] as
+          | { beforeImmediateDeleteMutation?: () => Promise<void> }
+          | undefined;
+        await options?.beforeImmediateDeleteMutation?.();
+      });
       await harness.service.handleUpdate(
         createLiveNavigationEnvelopeUpdate('message_created', {
           body: { text: 'https://blocked.example/path' },

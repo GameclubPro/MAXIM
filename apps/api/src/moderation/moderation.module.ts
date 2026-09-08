@@ -56,7 +56,7 @@ import { PrivateControlService } from './private-control.service';
 import { ModerationAccessService } from './moderation-access.service';
 import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
 import { RedisCounterModule } from './redis-counter.module';
-import { RuleEngineService } from './rule-engine.service';
+import { RuleEngineModule } from './rule-engine.module';
 import { SanctionService } from './sanction.service';
 import { BotSpeechMediaService } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
@@ -123,7 +123,6 @@ const moderationProviders = [
   PrivateControlService,
   GlobalSpammerIntelligenceService,
   GlobalSpammerArchiveRunnerService,
-  RuleEngineService,
   SanctionService,
   WebhookCanonicalExecutionService,
   LinkHistoryRecoveryService,
@@ -228,6 +227,7 @@ const moderationProviders = [
     AdminModule,
     NightModeTransitionModule,
     RedisCounterModule,
+    RuleEngineModule,
     KaravanStorefrontRelayModule,
     ModerationDeleteIntentModule,
   ],

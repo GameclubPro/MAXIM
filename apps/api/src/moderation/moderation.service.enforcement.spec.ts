@@ -46,6 +46,19 @@ const NIGHT_MODE_V4_JOB_METADATA = {
   }),
 };
 
+function installProfanityDeleteGuard(service: ModerationService): void {
+  Object.assign(service, {
+    profanityDeleteGuard: { assertMessageStillActionable: jest.fn().mockResolvedValue('allowed') },
+  });
+  const maxClient = (service as unknown as { maxClient: { deleteMessage: jest.Mock } }).maxClient;
+  const originalDelete = maxClient.deleteMessage.getMockImplementation();
+  maxClient.deleteMessage.mockImplementation(async (...args: unknown[]) => {
+    const options = args[2] as { beforeImmediateDeleteMutation?: () => Promise<void> } | undefined;
+    await options?.beforeImmediateDeleteMutation?.();
+    return originalDelete?.(...args);
+  });
+}
+
 jest
   .spyOn(MaxActionLedgerService.prototype, 'inspectCompletedNightModeCloseNoticeDispatch')
   .mockImplementation(async ({ chatId, sessionKey }) => ({
@@ -6415,6 +6428,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installProfanityDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expect(prisma.violation.create).toHaveBeenCalledTimes(1);
@@ -6496,6 +6510,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installProfanityDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
@@ -6564,6 +6579,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installProfanityDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expect(prisma.violation.count).toHaveBeenCalledWith({
@@ -6645,6 +6661,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installProfanityDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
@@ -6766,6 +6783,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installProfanityDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
@@ -6841,6 +6859,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installProfanityDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
@@ -7018,6 +7037,7 @@ describe('ModerationService', () => {
         sanctionStateFence,
       });
 
+      installProfanityDeleteGuard(service);
       await service.handleUpdate(createUpdate());
 
       expect(sanctionStateLock.runExclusive).toHaveBeenCalledTimes(1);
@@ -8130,6 +8150,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installProfanityDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');

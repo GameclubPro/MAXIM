@@ -91,6 +91,67 @@ describe('structured profanity rule-engine decision', () => {
     expect(result.violations).toEqual([]);
   });
 
+  it.each(['on', 'legacy'] as const)(
+    'uses the same side-effect-free decision for dispatch and ingestion in %s rollout',
+    async (rolloutMode) => {
+      process.env.PROFANITY_V2_ROLLOUT_MODE = rolloutMode;
+      const service = new RuleEngineService({} as never);
+      for (const profanitySensitivity of ['CORE_ONLY', 'BALANCED', 'STRICT'] as const) {
+        for (const text of ['Бак 36л', 'ты скотина', 'ты мудак', 'блять']) {
+          const settings = { ...BASE_SETTINGS, profanitySensitivity } as never;
+          const pure = service.detectProfanityForSettings(text, settings);
+          const result = await service.detect({
+            chatId: 'chat-1',
+            userId: 'user-1',
+            text,
+            settings,
+            domainAllowlist: [],
+          });
+          const violation = result.violations.find((item) => item.ruleCode === 'PROFANITY');
+          if (pure) {
+            const { score, ...metadata } = pure;
+            expect(violation).toEqual(expect.objectContaining({ score, metadata }));
+          } else {
+            expect(violation).toBeUndefined();
+          }
+        }
+      }
+      expect(
+        service.detectProfanityForSettings('блять', {
+          russianProfanityFilterEnabled: false,
+          profanitySensitivity: 'STRICT',
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it('keeps explicitly configured stop words independent of automatic profanity exceptions', async () => {
+    const service = new RuleEngineService({} as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'EBITDA',
+      domainAllowlist: [],
+      settings: { ...BASE_SETTINGS, messageLimitsBlockedWords: ['EBITDA'] } as never,
+    });
+    expect(result.violations.map((item) => item.ruleCode)).toEqual(['MESSAGE_BLOCKED_WORD']);
+  });
+
+  it('does not rescan the whole message for words outside contextual exception families', () => {
+    const service = new RuleEngineService({} as never);
+    const probe = service as unknown as {
+      hasUnsafeProfanityContextAroundToken(token: string, context: string): boolean;
+    };
+    const contextScan = jest.spyOn(probe, 'hasUnsafeProfanityContextAroundToken');
+    expect(
+      service.detectProfanityForSettings('Обычный текст. '.repeat(100), {
+        russianProfanityFilterEnabled: true,
+        profanitySensitivity: 'BALANCED',
+      }),
+    ).toBeNull();
+    expect(contextScan).not.toHaveBeenCalled();
+  });
+
   it('emits category score and explainable metadata for a STRICT mild hit', async () => {
     const service = new RuleEngineService({} as never);
     const result = await service.detect({
@@ -114,7 +175,7 @@ describe('structured profanity rule-engine decision', () => {
           matchKind: 'EXACT_VARIANT',
           matchedVariant: 'скотина',
           evidence: ['TARGET_CONTEXT'],
-          detectorVersion: 'profanity-structured-v1',
+          detectorVersion: 'profanity-structured-v2',
         },
       },
     ]);
