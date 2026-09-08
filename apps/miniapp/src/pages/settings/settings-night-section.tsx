@@ -1,3 +1,4 @@
+import { InfoCircle } from 'iconoir-react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { Suspense } from 'react';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
@@ -154,7 +155,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                       aria-expanded={openHintKey === 'nightModeEnabled'}
                       onClick={() => toggleHint('nightModeEnabled')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -269,7 +270,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                             aria-expanded={openHintKey === 'nightBotMessage'}
                             onClick={() => toggleHint('nightBotMessage')}
                           >
-                            <span aria-hidden>i</span>
+                            <InfoCircle aria-hidden />
                           </button>
                         </div>
                       </div>
@@ -351,7 +352,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                             aria-expanded={openHintKey === 'nightOpenMessage'}
                             onClick={() => toggleHint('nightOpenMessage')}
                           >
-                            <span aria-hidden>i</span>
+                            <InfoCircle aria-hidden />
                           </button>
                         </div>
                       </div>
@@ -459,7 +460,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                             aria-expanded={openHintKey === 'nightBotButton'}
                             onClick={() => toggleHint('nightBotButton')}
                           >
-                            <span aria-hidden>i</span>
+                            <InfoCircle aria-hidden />
                           </button>
                         </div>
 
@@ -547,7 +548,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                       aria-expanded={openHintKey === 'nightForceClose'}
                       onClick={() => toggleHint('nightForceClose')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 

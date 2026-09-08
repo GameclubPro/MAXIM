@@ -1,3 +1,14 @@
+const CHART_HOUR_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  hour: '2-digit',
+  minute: '2-digit',
+  timeZone: 'Europe/Moscow',
+});
+
+export function formatChannelStatsHourTick(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? CHART_HOUR_FORMATTER.format(date) : '—';
+}
+
 export type AudienceChartActivePoint = {
   participantsCount: number | null;
   joined: number;

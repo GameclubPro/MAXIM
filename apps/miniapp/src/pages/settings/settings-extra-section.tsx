@@ -1,3 +1,4 @@
+import { InfoCircle } from 'iconoir-react';
 import type { ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -98,7 +99,7 @@ export function SettingsExtraSection({
                       aria-expanded={openHintKey === 'deleteBotMessages'}
                       onClick={() => onToggleHint('deleteBotMessages')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -153,7 +154,7 @@ export function SettingsExtraSection({
                       aria-expanded={openHintKey === 'removeBotsFromGroup'}
                       onClick={() => onToggleHint('removeBotsFromGroup')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 

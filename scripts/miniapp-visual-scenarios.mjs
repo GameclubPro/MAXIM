@@ -860,6 +860,21 @@ export const MINIAPP_VISUAL_SCENARIOS = Object.freeze([
 ]);
 
 export const MINIAPP_VISUAL_PRESETS = Object.freeze({
+  moderation: Object.freeze({
+    device: 'iphone-se',
+    target: 'native',
+    checks: Object.freeze({ layout: true, contrast: true, accessibility: true }),
+    scenarioNames: Object.freeze(
+      MINIAPP_VISUAL_SCENARIOS.filter(
+        (scenario) =>
+          scenario.searchParams?.profile !== 'publisher' &&
+          !scenario.routeId.startsWith('publisher') &&
+          !scenario.features.includes('vk-parsing') &&
+          !scenario.name.includes('broadcast') &&
+          (scenario.routeId !== 'publications' || scenario.name === 'publications'),
+      ).map((scenario) => scenario.name),
+    ),
+  }),
   smoke: Object.freeze({
     device: 'iphone',
     target: 'native',

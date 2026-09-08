@@ -1,3 +1,4 @@
+import { InfoCircle } from 'iconoir-react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
@@ -136,7 +137,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                       aria-expanded={openHintKey === 'textFiltersCommercial'}
                       onClick={() => toggleHint('textFiltersCommercial')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -199,7 +200,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-expanded={openHintKey === 'commercialSensitivity'}
                             onClick={() => toggleHint('commercialSensitivity')}
                           >
-                            <span aria-hidden>i</span>
+                            <InfoCircle aria-hidden />
                           </button>
                         </div>
                         <span className="chip chip--warning">{commercialSensitivityLabel}</span>
@@ -262,7 +263,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-expanded={openHintKey === 'textFiltersBotMessage'}
                             onClick={() => toggleHint('textFiltersBotMessage')}
                           >
-                            <span aria-hidden>i</span>
+                            <InfoCircle aria-hidden />
                           </button>
                         </div>
                       </div>
@@ -337,7 +338,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-expanded={openHintKey === 'textFiltersWarnMessage'}
                             onClick={() => toggleHint('textFiltersWarnMessage')}
                           >
-                            <span aria-hidden>i</span>
+                            <InfoCircle aria-hidden />
                           </button>
                         </div>
                       </div>
@@ -449,7 +450,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
                             aria-expanded={openHintKey === 'textFiltersBotButton'}
                             onClick={() => toggleHint('textFiltersBotButton')}
                           >
-                            <span aria-hidden>i</span>
+                            <InfoCircle aria-hidden />
                           </button>
                         </div>
 

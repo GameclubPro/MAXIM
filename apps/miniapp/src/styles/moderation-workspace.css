@@ -1,0 +1,1215 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] {
+    --major-page: #f5f6f8;
+    --major-surface: #ffffff;
+    --major-subtle: #eef1f4;
+    --major-border: #dce1e7;
+    --major-border-strong: #b9c4d0;
+    --major-ink: #202831;
+    --major-muted: #526171;
+    --major-accent: #155ec2;
+    --major-accent-soft: #e9f1fc;
+    --major-positive: #08785a;
+    --major-positive-soft: #e3f4ed;
+    --major-warning: #8e590c;
+    --major-warning-soft: #fff0d9;
+    --major-danger: #bb3046;
+    --major-danger-soft: #fbe9ed;
+    --major-on-accent: #ffffff;
+    --major-scrim: rgba(17, 22, 28, 0.48);
+    --major-overlay-shadow: 0 12px 48px rgba(17, 22, 28, 0.18);
+    --text-primary: var(--major-ink);
+    --text-secondary: var(--major-muted);
+    --text-muted: var(--major-muted);
+    --color-ink: var(--major-ink);
+    --color-ink-muted: var(--major-muted);
+    --color-ink-subtle: var(--major-muted);
+    --accent: var(--major-accent);
+    --accent-soft: var(--major-accent-soft);
+    --color-accent: var(--major-accent);
+    --color-accent-strong: var(--major-accent);
+    --color-accent-soft: var(--major-accent-soft);
+    --color-on-accent: var(--major-on-accent);
+    --color-surface: var(--major-surface);
+    --color-surface-raised: var(--major-surface);
+    --color-surface-muted: var(--major-page);
+    --color-surface-tint: var(--major-subtle);
+    --surface-page: var(--major-page);
+    --surface-card: var(--major-surface);
+    --surface-card-muted: var(--major-subtle);
+    --surface-overlay: var(--major-surface);
+    --border-subtle: var(--major-border);
+    --border-strong: var(--major-border-strong);
+    --color-border: var(--major-border);
+    --color-border-strong: var(--major-border-strong);
+    --success: var(--major-positive);
+    --warning: var(--major-warning);
+    --danger: var(--major-danger);
+    --color-success: var(--major-positive);
+    --color-warning: var(--major-warning);
+    --color-danger: var(--major-danger);
+    --shadow-xs: none;
+    --shadow-sm: none;
+    --radius-xs: 6px;
+    --radius-sm: 8px;
+    --radius-md: 8px;
+    --radius-lg: 8px;
+    --radius-xl: 8px;
+    --app-shell-max-width: 1040px;
+    background: var(--major-page);
+    color: var(--major-ink);
+    letter-spacing: 0;
+  }
+
+  html[data-max-theme='dark'] body[data-miniapp-profile='moderation'] {
+    --major-page: #111416;
+    --major-surface: #1b1f23;
+    --major-subtle: #262c32;
+    --major-border: #353e47;
+    --major-border-strong: #566575;
+    --major-ink: #edf0f4;
+    --major-muted: #b1bdc9;
+    --major-accent: #91bcff;
+    --major-accent-soft: #233752;
+    --major-positive: #78d6b3;
+    --major-positive-soft: #19392f;
+    --major-warning: #efc079;
+    --major-warning-soft: #42341e;
+    --major-danger: #ffa0af;
+    --major-danger-soft: #492831;
+    --major-on-accent: #14243b;
+    --major-scrim: rgba(0, 0, 0, 0.64);
+  }
+
+  body[data-miniapp-profile='moderation']::after,
+  body[data-miniapp-profile='moderation'] .settings-sections--chat-home::before {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation'] :is(button, input, select, textarea) {
+    letter-spacing: 0;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.chats-home, .events-screen, .settings-sections--chat-home) {
+    width: 100%;
+    max-width: 760px;
+    margin-inline: auto;
+  }
+
+  body[data-miniapp-profile='moderation'] :is(.channel-insights, .channel-settings-screen) {
+    width: 100%;
+    max-width: 1040px;
+    margin-inline: auto;
+  }
+
+  body[data-miniapp-profile='moderation'] .glass-card {
+    border-color: var(--major-border);
+    border-radius: 8px;
+    background: var(--major-surface);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .glass-card:has(> .status-state) {
+    padding: 24px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .button {
+    min-height: 44px;
+    border-radius: 8px;
+    box-shadow: none;
+    font-weight: 650;
+    font-size: 0.84rem;
+  }
+
+  body[data-miniapp-profile='moderation'] .button--accent {
+    background: var(--major-accent);
+    border-color: var(--major-accent);
+    color: var(--major-on-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .button--ghost {
+    background: var(--major-surface);
+    border-color: var(--major-border);
+    color: var(--major-ink);
+  }
+
+  body[data-miniapp-profile='moderation'] .button--danger {
+    background: var(--major-danger-soft);
+    border-color: var(--major-danger);
+    color: var(--major-danger);
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.button--accent, .button--danger)
+    :is(span, strong, small) {
+    color: inherit;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-overview-search,
+      .participants-roster__search,
+      .chats-command__field,
+      .required-subscription__source-search
+    ) {
+    border: 1px solid var(--major-border-strong);
+    border-radius: 8px;
+    background: var(--major-surface);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-overview-search,
+      .participants-roster__search,
+      .chats-command__field,
+      .required-subscription__source-search
+    )
+    input,
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-overview-search,
+      .participants-roster__search,
+      .chats-command__field,
+      .required-subscription__source-search
+    )
+    input:focus-visible {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    outline: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-overview-search,
+      .participants-roster__search,
+      .chats-command__field,
+      .required-subscription__source-search
+    ):focus-within {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 2px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :where(
+      input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not(
+          [type='hidden']
+        ),
+      select,
+      textarea
+    ) {
+    min-height: 44px;
+    border: 1px solid var(--major-border-strong);
+    border-radius: 8px;
+    background: var(--major-surface);
+    color: var(--major-ink);
+    box-shadow: none;
+    font-size: 1rem;
+    font-weight: 500;
+  }
+
+  body[data-miniapp-profile='moderation'] :is(input, textarea)::placeholder {
+    color: var(--major-muted);
+    opacity: 1;
+  }
+
+  body[data-miniapp-profile='moderation'] :is(button, a, input, select, textarea):focus-visible {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 2px;
+  }
+
+  body[data-miniapp-profile='moderation'] .compact-page-header {
+    --compact-page-header-height: 52px;
+    --compact-page-header-radius: 0px;
+  }
+
+  body[data-miniapp-profile='moderation'] .compact-page-header__bar {
+    min-height: calc(var(--compact-page-header-safe-top) + 52px);
+    gap: 10px;
+    padding: calc(var(--compact-page-header-safe-top) + 4px) 12px 4px;
+    border: 0;
+    border-bottom: 1px solid var(--major-border);
+    border-radius: 0;
+    background: var(--major-surface);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .compact-page-header__bar::before,
+  body[data-miniapp-profile='moderation'] .compact-page-header__bar::after {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.compact-page-header__back, .managed-entity-workspace-header__counterpart) {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--major-ink);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .compact-page-header__entity-avatar {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .compact-page-header__title {
+    color: var(--major-ink);
+    font-size: 0.92rem;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  body[data-miniapp-profile='moderation'] .compact-page-header__subtitle {
+    display: block;
+    color: var(--major-muted);
+    font-size: 0.69rem;
+    font-weight: 500;
+    line-height: 1.2;
+  }
+
+  body[data-miniapp-profile='moderation'] .bottom-nav {
+    width: min(calc(100% - 24px), 736px);
+    border: 1px solid var(--major-border);
+    border-radius: 8px;
+    background: var(--major-surface);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .bottom-nav__item {
+    border-radius: 6px;
+    color: var(--major-muted);
+    font-weight: 650;
+  }
+
+  body[data-miniapp-profile='moderation'] .bottom-nav__item.is-active {
+    color: var(--major-accent);
+  }
+  body[data-miniapp-profile='moderation'] .bottom-nav__item::before {
+    border-radius: 6px;
+    background: var(--major-accent-soft);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .chats-command.glass-card {
+    border: 0;
+    border-bottom: 1px solid var(--major-border);
+    border-radius: 0;
+    background: var(--major-page);
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .chats-command__search,
+      .chats-command__icon-button,
+      .chat-card__favorite,
+      .chat-card__action--statistics
+    ) {
+    border-radius: 8px;
+    border-color: var(--major-border);
+    background: var(--major-surface);
+    color: var(--major-accent);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] :is(.chat-card, .chat-grid, .chat-card__avatar) {
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .chats-home__publik {
+    min-height: 90px;
+  }
+  body[data-miniapp-profile='moderation'] .chats-home .publik-handoff {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  body[data-miniapp-profile='moderation'] .chats-home .publik-handoff__copy strong {
+    font-size: 0.8rem;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .chats-home .publik-handoff__copy p {
+    font-size: 0.72rem;
+  }
+  body[data-miniapp-profile='moderation'] .chats-home .publik-bot-link {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    color: var(--major-accent);
+    background: var(--major-accent-soft);
+  }
+  body[data-miniapp-profile='moderation'] .chats-home .publik-bot-link span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  body[data-miniapp-profile='moderation'] :is(.settings-home-entry, .channel-settings-card) {
+    border-radius: 8px;
+    background: var(--major-surface);
+    border-color: var(--major-border);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.settings-section__toggle, .settings-section__head--interactive) {
+    min-height: 60px;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .settings-section__title {
+    font-size: 0.9rem;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+  body[data-miniapp-profile='moderation'] .settings-section__icon-badge {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .settings-home-group-head__title {
+    color: var(--major-muted);
+    font-size: 0.74rem;
+    font-weight: 650;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.settings-drilldown__panel, .action-confirm-sheet__panel) {
+    border: 1px solid var(--major-border);
+    border-radius: 8px 8px 0 0;
+    background: var(--major-surface);
+    box-shadow: var(--major-overlay-shadow);
+    color: var(--major-ink);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.settings-drilldown__backdrop, .action-confirm-sheet__backdrop) {
+    background: var(--major-scrim);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  body[data-miniapp-profile='moderation'] .settings-drilldown__header {
+    min-height: 62px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--major-border);
+    background: var(--major-surface);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .settings-drilldown__header::before,
+  body[data-miniapp-profile='moderation'] .settings-drilldown__header::after {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation'] .settings-drilldown__title {
+    color: var(--major-ink);
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+  body[data-miniapp-profile='moderation'] .settings-drilldown__summary {
+    color: var(--major-muted);
+    font-size: 0.76rem;
+  }
+  body[data-miniapp-profile='moderation'] .settings-drilldown__close {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    border: 0;
+    background: var(--major-subtle);
+    color: var(--major-ink);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.settings-drilldown__content, .settings-drilldown__body) {
+    background: var(--major-surface);
+  }
+  body[data-miniapp-profile='moderation'] .settings-drilldown__body {
+    gap: 16px;
+    padding: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .settings-drilldown__footer {
+    border-top: 1px solid var(--major-border);
+    background: var(--major-surface);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-native-toggle,
+      .participant-sheet__hero,
+      .participant-sheet__dock,
+      .participant-sheet__composer
+    ) {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .settings-native-toggle + .settings-native-toggle {
+    border-top: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-native-toggle__title,
+      .participant-sheet__identity strong,
+      .participant-sheet__composer-title
+    ) {
+    color: var(--major-ink);
+    font-size: 0.88rem;
+    font-weight: 650;
+    line-height: 1.35;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.participant-sheet__stat, .participant-sheet__action, .participant-sheet__mode-switch) {
+    border-radius: 8px;
+    border-color: var(--major-border);
+    background: var(--major-subtle);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .participant-sheet__stat {
+    min-height: 70px;
+    padding: 10px;
+  }
+  body[data-miniapp-profile='moderation'] .participant-sheet__stat small {
+    font-size: 0.69rem;
+    font-weight: 550;
+    text-transform: none;
+  }
+  body[data-miniapp-profile='moderation'] .participant-sheet__stat strong {
+    font-size: 1.2rem;
+    font-weight: 700;
+  }
+  body[data-miniapp-profile='moderation'] .participant-sheet__action {
+    min-height: 52px;
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    font-weight: 650;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-stage, .events-dashboard, .events-dashboard__body, .events-dashboard__activity) {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.events-primary-tabs, .channel-insights__section-tabs) {
+    min-height: 45px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--major-border);
+    border-radius: 0;
+    background: var(--major-page);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .events-primary-tabs__track {
+    gap: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--major-page);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.events-primary-tab, .channel-insights__section-tabs .segmented-control__item) {
+    min-height: 44px;
+    padding: 8px 4px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--major-muted);
+    box-shadow: none;
+    font-weight: 650;
+    justify-content: center;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .events-primary-tab.is-active,
+      .channel-insights__section-tabs .segmented-control__item.is-active
+    ) {
+    border-bottom-color: var(--major-accent);
+    background: transparent;
+    color: var(--major-accent);
+  }
+  body[data-miniapp-profile='moderation'] .events-primary-tab__label {
+    font-size: 0.76rem;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .events-stage__panel {
+    padding: 0;
+    gap: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__head {
+    min-height: 44px;
+    padding: 0;
+    justify-content: flex-start;
+  }
+  body[data-miniapp-profile='moderation'] :is(.events-dashboard__range, .channel-insights__range) {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 144px;
+    min-height: 48px;
+    padding: 2px;
+    gap: 2px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--major-subtle);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.events-dashboard__range, .channel-insights__range)
+    .segmented-control__item {
+    min-height: 44px;
+    padding: 6px;
+    justify-content: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--major-muted);
+    font-size: 0.74rem;
+    font-weight: 650;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.events-dashboard__range, .channel-insights__range)
+    .segmented-control__item.is-active {
+    background: var(--major-surface);
+    color: var(--major-accent);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__body--moderation {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    overflow: visible;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__stack {
+    display: contents;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .events-dashboard__hero,
+      .events-dashboard__metric,
+      .events-dashboard__activity-balance,
+      .events-dashboard__flow-card
+    ) {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    min-width: 0;
+    min-height: 76px;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__metric {
+    border-left: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .events-dashboard__hero,
+      .events-dashboard__metric,
+      .events-dashboard__activity-balance,
+      .events-dashboard__flow-card
+    )
+    > small {
+    font-size: 0.71rem;
+    font-weight: 550;
+    line-height: 1.3;
+    color: var(--major-muted);
+    min-height: 18px;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .events-dashboard__hero,
+      .events-dashboard__metric,
+      .events-dashboard__activity-balance,
+      .events-dashboard__flow-card
+    )
+    > strong {
+    color: var(--major-ink);
+    font-size: 1.55rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__metric--danger > strong {
+    color: var(--major-danger);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-dashboard__body--participants
+    .events-dashboard__hero {
+    min-height: 66px;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding-inline: 0;
+    border-bottom: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__activity {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-bottom: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__activity-ledger {
+    display: contents;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__flow-bar {
+    grid-column: 1 / -1;
+    margin: 0 0 8px;
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__activity-balance--success > strong {
+    color: var(--major-positive);
+  }
+  body[data-miniapp-profile='moderation'] .events-dashboard__flow-card--left > strong {
+    color: var(--major-warning);
+  }
+  body[data-miniapp-profile='moderation'] .events-filter-menu {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 12px;
+    font-size: 0.76rem;
+    font-weight: 550;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(
+      .event-feed-item,
+      .spammer-review,
+      .participants-roster__item,
+      .membership-feed__group-list
+    ) {
+    border-radius: 8px;
+    border-color: var(--major-border);
+    background: var(--major-surface);
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.event-feed-item__name-link, .event-feed-item__identity strong) {
+    font-size: 0.86rem;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] :is(.event-feed-item__stamp, .event-feed-item__summary) {
+    color: var(--major-muted);
+    font-size: 0.72rem;
+    line-height: 1.4;
+  }
+  body[data-miniapp-profile='moderation'] .event-feed-item__avatar {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .event-feed-item__toggle {
+    border: 0;
+    background: transparent;
+  }
+  body[data-miniapp-profile='moderation'] .spammer-review__entry {
+    min-height: 58px;
+    padding: 8px 10px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .spammer-review__copy strong {
+    color: var(--major-ink);
+    font-size: 0.84rem;
+    font-weight: 650;
+  }
+
+  body[data-miniapp-profile='moderation'] .channel-insights__overview-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+  }
+  body[data-miniapp-profile='moderation'] .channel-insights__overview-toolbar > span {
+    color: var(--major-muted);
+    font-size: 0.72rem;
+    font-weight: 550;
+  }
+  body[data-miniapp-profile='moderation'] .channel-insights__summary-metrics--compact {
+    gap: 0;
+    border-bottom: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .channel-summary-card--compact {
+    min-height: 82px;
+    gap: 4px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-summary-card--compact:nth-child(even) {
+    border-left: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .channel-summary-card--compact:nth-child(n + 3) {
+    border-top: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .channel-summary-card--compact > small {
+    min-height: 29px;
+    color: var(--major-muted);
+    font-size: 0.75rem;
+    font-weight: 550;
+    line-height: 1.2;
+  }
+  body[data-miniapp-profile='moderation'] .channel-summary-card--compact > strong {
+    color: var(--major-ink);
+    font-size: 1.32rem;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation'] .channel-summary-card--compact > span {
+    color: var(--major-muted);
+    font-size: 0.69rem;
+    line-height: 1.25;
+  }
+  body[data-miniapp-profile='moderation'] .channel-stats-graph__canvas--audience {
+    grid-template-rows: auto auto minmax(160px, 1fr) auto;
+    gap: 8px;
+    border: 0;
+    border-radius: 0;
+    padding: 10px 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-audience-board__heading strong {
+    font-size: 0.9rem;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .channel-audience-board__metrics {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  body[data-miniapp-profile='moderation'] .channel-audience-metric {
+    min-height: 52px;
+    padding: 6px 8px;
+  }
+  body[data-miniapp-profile='moderation'] .channel-audience-metric :is(b, small, em) {
+    font-weight: 550;
+  }
+  body[data-miniapp-profile='moderation'] .channel-audience-metric b {
+    font-size: 1rem;
+    font-weight: 700;
+  }
+  body[data-miniapp-profile='moderation'] .channel-audience-metric em {
+    font-size: 0.65rem;
+  }
+  body[data-miniapp-profile='moderation'] .channel-audience-board__plot {
+    min-height: 160px;
+  }
+
+  body[data-miniapp-profile='moderation'] .channel-stats-graph__svg {
+    min-height: 160px;
+  }
+
+  body[data-miniapp-profile='moderation'] .events-stage {
+    width: 100%;
+    margin-inline: 0;
+  }
+
+  body[data-miniapp-profile='moderation'] .events-dashboard__range {
+    width: 100%;
+    margin: 0;
+    justify-self: stretch;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.settings-mode-segments, .participants-roster__role-filters, .membership-feed__filters) {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding: 2px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--major-subtle);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-mode-segments .segmented-control__item,
+      .participants-roster__role-filters button,
+      .membership-feed__filters .segmented-control__item
+    ) {
+    min-width: 0;
+    min-height: 44px;
+    padding: 6px 4px;
+    justify-content: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--major-muted);
+    box-shadow: none;
+    font-size: 0.76rem;
+    font-weight: 600;
+    text-align: center;
+    line-height: 1.3;
+    white-space: normal;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .settings-mode-segments .segmented-control__item.is-active,
+      .participants-roster__role-filters button.is-active,
+      .membership-feed__filters .segmented-control__item.is-active
+    ) {
+    background: var(--major-surface);
+    color: var(--major-accent);
+    font-weight: 700;
+  }
+
+  body[data-miniapp-profile='moderation'] .settings-mode-segments .segmented-control__item::before {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .settings-mode-segments .segmented-control__item span {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-line-clamp: unset;
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.settings-native-toggle__info, .participant-sheet__info-button)
+    svg {
+    width: 19px;
+    height: 19px;
+    display: block;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .favorite-picker__panel,
+      .settings-apply-target__panel,
+      .bot-message-editor-sheet__panel,
+      .time-field-sheet__panel
+    ) {
+    border: 1px solid var(--major-border);
+    border-radius: 8px;
+    background: var(--major-surface);
+    color: var(--major-ink);
+    box-shadow: var(--major-overlay-shadow);
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .favorite-picker__header,
+      .favorite-label-editor__actions,
+      .bot-message-editor-sheet__header,
+      .bot-message-editor-sheet__actions
+    ) {
+    background: var(--major-surface);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .favorite-label-editor__field input,
+  body[data-miniapp-profile='moderation'] .favorite-label-editor__field input:focus-visible {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    outline: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .favorite-label-editor__field:focus-within {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 2px;
+  }
+
+  @media (hover: hover) {
+    body[data-miniapp-profile='moderation']
+      :is(
+        .settings-section__toggle,
+        .compact-page-header__back,
+        .managed-entity-workspace-header__counterpart,
+        .participants-roster__item--interactive
+      ):hover {
+      background: var(--major-subtle);
+    }
+    body[data-miniapp-profile='moderation'] .button--ghost:hover {
+      background: var(--major-subtle);
+    }
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.allowlist-panel, .allowlist-composer, .duplicate-stage) {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .allowlist-composer__head {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.allowlist-composer__label, .duplicate-stage__field-label) {
+    color: var(--major-muted);
+    font-size: 0.76rem;
+    font-weight: 550;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .allowlist-item__domain {
+    font-size: 0.88rem;
+    font-weight: 650;
+    line-height: 1.4;
+  }
+
+  body[data-miniapp-profile='moderation'] :is(.allowlist-item__type, .allowlist-item__status) {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--major-muted);
+  }
+
+  body[data-miniapp-profile='moderation'] .allowlist-item__action {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    border: 1px solid var(--major-border);
+    border-radius: 8px;
+    background: var(--major-surface);
+    color: var(--major-accent);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .allowlist-item__action--remove {
+    color: var(--major-danger);
+    background: var(--major-danger-soft);
+  }
+
+  body[data-miniapp-profile='moderation'] .duplicate-stage {
+    padding-top: 14px;
+    border-top: 1px solid var(--major-border);
+  }
+
+  body[data-miniapp-profile='moderation'] .duplicate-stage__title {
+    font-size: 0.88rem;
+    font-weight: 650;
+    color: var(--major-ink);
+  }
+
+  body[data-miniapp-profile='moderation'] .participants-roster__identity strong {
+    font-size: 0.86rem;
+    font-weight: 650;
+    color: var(--major-ink);
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.participants-roster__avatar, .participant-sheet__avatar, .membership-feed__avatar) {
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .participants-roster__item {
+    min-height: 72px;
+  }
+
+  body[data-miniapp-profile='moderation'] .participant-sheet .settings-drilldown__summary {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .participant-sheet .settings-drilldown__body {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  body[data-miniapp-profile='moderation'] .participant-sheet__mode-option {
+    min-height: 44px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--major-muted);
+    box-shadow: none;
+    font-size: 0.84rem;
+    font-weight: 600;
+  }
+
+  body[data-miniapp-profile='moderation'] .participant-sheet__mode-option.is-active {
+    background: var(--major-surface);
+    color: var(--major-accent);
+    font-weight: 700;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(
+      .spammer-diagnostics__profile,
+      .spammer-diagnostics__hero,
+      .spammer-diagnostics__confidence,
+      .spammer-diagnostics__signals
+    ) {
+    padding: 8px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__hero {
+    border-block: 1px solid var(--major-border);
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__verdict-copy h4 {
+    font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.4;
+    color: var(--major-ink);
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__signal-card {
+    padding: 10px 0;
+    border: 0;
+    border-top: 1px solid var(--major-border);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__signal-copy strong {
+    font-size: 0.84rem;
+    font-weight: 550;
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__action {
+    min-height: 52px;
+    padding: 8px;
+    border: 1px solid var(--major-border);
+    border-radius: 8px;
+    background: var(--major-surface);
+    color: var(--major-ink);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__action strong {
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__action small {
+    font-size: 0.69rem;
+    font-weight: 500;
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__action--accent {
+    background: var(--major-accent-soft);
+    color: var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .spammer-diagnostics__action--danger {
+    background: var(--major-danger-soft);
+    border-color: var(--major-danger);
+    color: var(--major-danger);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.channel-summary-table-card, .channel-top-posts-panel, .channel-best-windows-panel) {
+    border: 0;
+    border-top: 1px solid var(--major-border);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-summary-table :is(th, td) {
+    padding: 10px 4px;
+    border-color: var(--major-border);
+    font-size: 0.76rem;
+  }
+
+  body[data-miniapp-profile='moderation'] .channel-summary-table-card {
+    padding: 10px 0;
+    align-self: start;
+    align-content: start;
+  }
+
+  body[data-miniapp-profile='moderation'] .channel-summary-table tr {
+    grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 0.85fr) minmax(0, 1.1fr);
+    column-gap: 6px;
+  }
+
+  body[data-miniapp-profile='moderation'] .channel-summary-table th {
+    font-size: 0.7rem;
+    font-weight: 650;
+    line-height: 1.3;
+    white-space: normal;
+  }
+
+  body[data-miniapp-profile='moderation'] .channel-summary-table__movement-pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    justify-items: end;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-summary-table
+    :is(.channel-summary-table__total-value, .channel-summary-table__growth-value) {
+    font-size: 0.88rem;
+    font-weight: 650;
+  }
+
+  @media (min-width: 760px) {
+    body[data-miniapp-profile='moderation'] .channel-insights__overview-top {
+      grid-template-columns: minmax(0, 1fr) minmax(340px, 0.7fr);
+      align-items: start;
+    }
+    body[data-miniapp-profile='moderation'] .channel-insights__summary-metrics--compact {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    body[data-miniapp-profile='moderation'] .channel-summary-card--compact:nth-child(n + 2) {
+      border-top: 0;
+      border-left: 1px solid var(--major-border);
+    }
+    body[data-miniapp-profile='moderation'] .settings-drilldown__panel {
+      border-radius: 8px;
+    }
+  }
+}

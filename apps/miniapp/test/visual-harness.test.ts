@@ -590,6 +590,32 @@ test('smoke preset is short, local-device focused, and includes navigation order
   );
 });
 
+test('moderation audit covers active screens and sheets without Publisher editors', () => {
+  const preset = MINIAPP_VISUAL_PRESETS.moderation;
+  assert.equal(preset.target, 'native');
+  assert.deepEqual(preset.checks, { layout: true, contrast: true, accessibility: true });
+  const selection = selectMiniappVisualScenarios({ preset: 'moderation' });
+  const names = selection.scenarios.map((scenario) => scenario.name);
+  for (const name of [
+    'home',
+    'events-moderation',
+    'events-participant-controls',
+    'events-spam-diagnostics',
+    'channel-stats',
+    'chat-settings-links-bottom',
+    'channel-settings-auth-expired',
+    'navigation-home-settings-home',
+  ]) {
+    assert.ok(names.includes(name), name);
+  }
+  assert.ok(names.length > 90);
+  for (const scenario of selection.scenarios) {
+    assert.notEqual(scenario.searchParams?.profile, 'publisher');
+    assert.equal(scenario.name.includes('broadcast'), false);
+    assert.equal(scenario.features.includes('vk-parsing'), false);
+  }
+});
+
 test('changed-file selection uses route and feature source globs', () => {
   assert.equal(
     matchesSourceGlob(

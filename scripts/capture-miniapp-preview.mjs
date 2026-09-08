@@ -1958,10 +1958,8 @@ const scenarioBehaviors = [
     name: 'channel-stats-24h',
     beforeShot: async (page) => {
       await page
-        .locator(
-          '.channel-insights__chart-controls .channel-insights__range .segmented-control__item',
-        )
-        .filter({ hasText: /24ч/u })
+        .getByRole('radiogroup', { name: 'Период статистики канала' })
+        .getByRole('radio', { name: '24ч', exact: true })
         .click();
       await page.locator('.channel-stats-graph--continuous').first().waitFor({ state: 'visible' });
       await assertChannelStatsContinuousChart(page);
@@ -2741,6 +2739,7 @@ async function assertConfiguredChecks(page, scenario) {
     await assertPublisherComposerActionInFlow(page, scenario);
     await assertVkSourceSummariesSeparated(page, scenario);
     await assertFavoriteCategoryIndicatorsContained(page, scenario);
+    await assertCompactTextContained(page, scenario);
     await assertPrimaryControlsReachable(page, scenario);
     await assertTimeFieldOptionsReachable(page, scenario);
     await assertChartsPainted(page, scenario);
@@ -2756,6 +2755,34 @@ async function assertConfiguredChecks(page, scenario) {
     await assertCriticalAccessibility(page, scenario);
     await assertPublicationTouchTargets(page, scenario);
   }
+}
+
+async function assertCompactTextContained(page, scenario) {
+  const clipped = await page.evaluate(() => {
+    for (const label of document.querySelectorAll(
+      '.settings-mode-segments .segmented-control__item > span, .channel-summary-table th, .channel-summary-table td',
+    )) {
+      const control = label.closest('button') ?? label;
+      if (!control || !label.getClientRects().length) continue;
+      const bounds = control.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) continue;
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      if (
+        [...range.getClientRects()].some(
+          (rect) =>
+            rect.left < bounds.left - 2 ||
+            rect.right > bounds.right + 2 ||
+            rect.top < bounds.top - 2 ||
+            rect.bottom > bounds.bottom + 2,
+        )
+      ) {
+        return label.textContent?.trim() || 'unnamed option';
+      }
+    }
+    return null;
+  });
+  if (clipped) throw new Error(`Scenario ${scenario.name} clips compact UI text: ${clipped}`);
 }
 
 async function assertPublisherEditorFullBleed(page, scenario) {

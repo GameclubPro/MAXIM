@@ -23,6 +23,7 @@ import { runNativeBackHandlers, useNativeBackHandlersAvailable } from '../lib/na
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { openPublikBot, PUBLIK_BOT_URL } from '../lib/publik-bot';
+import '../styles/moderation-workspace.css';
 
 type ScreenInfo = {
   title: string;
@@ -204,6 +205,12 @@ function resolveScreenInfo(
 }
 
 export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) {
+  useEffect(() => {
+    document.body.dataset.miniappProfile = profile;
+    return () => {
+      delete document.body.dataset.miniappProfile;
+    };
+  }, [profile]);
   const { chatId = '', entityId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();

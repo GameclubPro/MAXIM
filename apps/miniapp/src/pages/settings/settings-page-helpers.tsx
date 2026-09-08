@@ -1,3 +1,4 @@
+import { InfoCircle } from 'iconoir-react';
 import {
   DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
@@ -757,7 +758,7 @@ export const LINK_POLICY_OPTIONS: Array<{
   {
     value: 'ALLOWLIST_ONLY',
     eyebrow: 'Разрешённые',
-    label: 'Только разрешённые',
+    label: 'Разрешать по списку',
     description: allowlistNavigationPolicyDescription,
   },
 ];
@@ -1538,7 +1539,7 @@ export function SettingsHintAnchor({
           onToggleHint(hintKey);
         }}
       >
-        <span aria-hidden>i</span>
+        <InfoCircle aria-hidden />
       </button>
       {isOpen ? (
         <p

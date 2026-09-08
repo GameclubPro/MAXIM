@@ -1,3 +1,4 @@
+import { InfoCircle } from 'iconoir-react';
 import {
   MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
@@ -6423,7 +6424,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               aria-expanded={openHintKey === 'greetingEnabled'}
                               onClick={() => toggleHint('greetingEnabled')}
                             >
-                              <span aria-hidden>i</span>
+                              <InfoCircle aria-hidden />
                             </button>
                           </div>
 
@@ -6513,7 +6514,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     aria-expanded={openHintKey === 'greetingDeleteBotMessages'}
                                     onClick={() => toggleHint('greetingDeleteBotMessages')}
                                   >
-                                    <span aria-hidden>i</span>
+                                    <InfoCircle aria-hidden />
                                   </button>
                                 </div>
 
@@ -6585,7 +6586,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     aria-expanded={openHintKey === 'greetingBotButton'}
                                     onClick={() => toggleHint('greetingBotButton')}
                                   >
-                                    <span aria-hidden>i</span>
+                                    <InfoCircle aria-hidden />
                                   </button>
                                 </div>
 
@@ -6712,7 +6713,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               aria-expanded={openHintKey === 'textFiltersProfanity'}
                               onClick={() => toggleHint('textFiltersProfanity')}
                             >
-                              <span aria-hidden>i</span>
+                              <InfoCircle aria-hidden />
                             </button>
                           </div>
 

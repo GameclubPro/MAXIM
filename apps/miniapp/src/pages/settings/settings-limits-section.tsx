@@ -1,3 +1,4 @@
+import { InfoCircle } from 'iconoir-react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
@@ -162,7 +163,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                       aria-expanded={openHintKey === 'antiSpam'}
                       onClick={() => toggleHint('antiSpam')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -212,7 +213,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         aria-expanded={openHintKey === 'deleteSpammers'}
                         onClick={() => toggleHint('deleteSpammers')}
                       >
-                        <span aria-hidden>i</span>
+                        <InfoCircle aria-hidden />
                       </button>
                     </div>
                   </div>
@@ -268,7 +269,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                       aria-expanded={openHintKey === 'messageCountLimit'}
                       onClick={() => toggleHint('messageCountLimit')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -384,7 +385,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                       aria-expanded={openHintKey === 'maxMessageLength'}
                       onClick={() => toggleHint('maxMessageLength')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -452,7 +453,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                       aria-expanded={openHintKey === 'photoCooldown'}
                       onClick={() => toggleHint('photoCooldown')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -539,7 +540,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                       aria-expanded={openHintKey === 'stickerCooldown'}
                       onClick={() => toggleHint('stickerCooldown')}
                     >
-                      <span aria-hidden>i</span>
+                      <InfoCircle aria-hidden />
                     </button>
                   </div>
 
@@ -792,7 +793,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         aria-expanded={openHintKey === 'messageLimitsBotMessage'}
                         onClick={() => toggleHint('messageLimitsBotMessage')}
                       >
-                        <span aria-hidden>i</span>
+                        <InfoCircle aria-hidden />
                       </button>
                     </div>
                   </div>
@@ -929,7 +930,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                         aria-expanded={openHintKey === 'messageLimitsBotButton'}
                         onClick={() => toggleHint('messageLimitsBotButton')}
                       >
-                        <span aria-hidden>i</span>
+                        <InfoCircle aria-hidden />
                       </button>
                     </div>
 

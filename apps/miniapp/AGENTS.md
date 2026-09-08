@@ -21,12 +21,14 @@
 - Narrow screenshots with `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and an explicit base URL when necessary. Output lives under `artifacts/miniapp-screenshots/`.
 - Native emulator/screenshots install the safe MAX Bridge shim by default. Use `--no-max-bridge` or `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only for a deliberate bridge-free check.
 - Material UI work is not complete from code review alone. Check iPhone and Android sizes, light/dark, safe areas, scrolling, and keyboard overlap.
+- `MINIAPP_SCREENSHOT_PRESET=moderation npm run screenshots:miniapp` covers the moderation profile's active screens, sheets, errors, and navigation with strict layout/contrast/accessibility checks. Override `MINIAPP_SCREENSHOT_DEVICE` and `MINIAPP_SCREENSHOT_COLOR_SCHEME` for the second device/theme.
 
 ## CSS And Layout
 
 - `src/styles.css` is the only global CSS entrypoint. Its imports use `@import ... layer(...)`; CSS imported directly from TS/TSX must be fully wrapped in an explicit `@layer`.
 - Run `npm run check:miniapp-css` after CSS ownership/import changes.
 - Lazy-route CSS remains loaded for the SPA session. Scope route polish to route-specific body/root selectors and test both cold loads and cross-route navigation.
+- `moderation-workspace.css` owns final moderation presentation in the `workspace` layer after route CSS. Scope every rule to `body[data-miniapp-profile='moderation']`; Shell sets/clears that profile for portal sheets as well. Publisher styling must remain unchanged across profile navigation.
 - Do not put global `touch-action` or root `overscroll-behavior-y` locks on `html`/`body`; MAX WebViews can stop page and nested-list scrolling. Put `pan-y` and momentum scrolling on the actual scroll container.
 - Do not apply MAX `safeTop` or CSS safe-area values as a blanket content offset; some WebViews already account for system UI. Use `visualViewport` and real element measurements around floating controls.
 - Keep stable dimensions and responsive constraints on boards, grids, controls, counters, and fixed-format UI. Text and controls must not overlap at supported mobile sizes.

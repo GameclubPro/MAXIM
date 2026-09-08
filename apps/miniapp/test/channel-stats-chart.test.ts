@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  formatChannelStatsHourTick,
   isChannelStatsResponseForRange,
   resolveAudienceChartAverageGrowthLabel,
   resolveAudienceChartDisplayValue,
@@ -12,6 +13,12 @@ import {
   shouldPreferMembershipFlowForAudienceChart,
   shouldRenderChannelStatsPointMarkers,
 } from '../src/lib/channel-stats-chart';
+
+test('hourly chart ticks show Moscow time including the date boundary', () => {
+  assert.equal(formatChannelStatsHourTick('2026-09-07T08:30:00.000Z'), '11:30');
+  assert.equal(formatChannelStatsHourTick('2026-09-07T21:00:00.000Z'), '00:00');
+  assert.equal(formatChannelStatsHourTick('invalid'), '—');
+});
 
 test('selects the latest informative audience bucket instead of a trailing zero bucket', () => {
   assert.equal(

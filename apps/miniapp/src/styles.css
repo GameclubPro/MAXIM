@@ -1,4 +1,4 @@
-@layer fonts, tokens, base, layout, components, pages, motion;
+@layer fonts, tokens, base, layout, components, pages, workspace, motion;
 
 @import './styles/fonts.css' layer(fonts);
 @import './styles/tokens.css' layer(tokens);

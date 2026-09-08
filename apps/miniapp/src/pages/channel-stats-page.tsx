@@ -60,6 +60,7 @@ import {
   saveStatsSnapshot,
 } from '../lib/stats-snapshot-cache';
 import {
+  formatChannelStatsHourTick,
   isChannelStatsResponseForRange,
   resolveAudienceChartAverageGrowthLabel,
   resolveAudienceChartDisplayValue,
@@ -1464,7 +1465,9 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                           textAnchor={dateTextAnchor}
                           className="channel-stats-graph__x-label"
                         >
-                          {formatChartDayMonth(point.at)}
+                          {stats.period.bucket === 'hour'
+                            ? formatChannelStatsHourTick(point.at)
+                            : formatChartDayMonth(point.at)}
                         </text>
                       ) : null}
                     </g>
@@ -1639,57 +1642,56 @@ function ChannelStatsOverview({
       className="channel-insights__summary channel-insights__summary--command stagger-in"
       aria-label="Сводка по каналу"
     >
+      <div className="channel-insights__overview-toolbar">
+        <span>
+          {formatPeriodRange(stats.period.from, stats.period.to)}
+          {stats.period.bucket === 'hour' ? ' · МСК' : ''}
+        </span>
+        <SegmentedControl
+          value={range}
+          options={periodOptions}
+          onChange={(next) => onRangeChange(next as ChannelStatsRange)}
+          className="channel-insights__range"
+          ariaLabel="Период статистики канала"
+        />
+      </div>
+      <div className="channel-insights__summary-metrics channel-insights__summary-metrics--compact">
+        <article className="channel-summary-card channel-summary-card--compact">
+          <small>Подписчики</small>
+          <strong>{formatCount(summary.subscribers.current)}</strong>
+          <span>Сейчас</span>
+        </article>
+        <article className="channel-summary-card channel-summary-card--compact">
+          <small>
+            Средние просмотры за <span className="channel-summary-card__unit">24 ч</span>
+          </small>
+          <strong>{formatCount(averageViews24h.value)}</strong>
+          <span>{formatReachCaption(averageViews24h)}</span>
+        </article>
+        <article className="channel-summary-card channel-summary-card--compact">
+          <small>
+            Средние просмотры за <span className="channel-summary-card__unit">48 ч</span>
+          </small>
+          <strong>{formatCount(averageViews48h.value)}</strong>
+          <span>{formatReachCaption(averageViews48h)}</span>
+        </article>
+        <article
+          className="channel-summary-card channel-summary-card--compact"
+          title="Средние просмотры поста за первые 48 часов / подписчики × 100"
+        >
+          <small>
+            Охват подписчиков за <span className="channel-summary-card__unit">48 ч</span>
+          </small>
+          <strong>{formatPercent(err48.value)}</strong>
+          <span>
+            {formatReachCaption(err48, `ERR48 · выборка: ${formatCount(err48.sampleSize)}`)}
+          </span>
+        </article>
+      </div>
+
       <div className="channel-insights__overview-top">
         <div className="channel-insights__primary-stack">
-          <div className="channel-insights__summary-metrics channel-insights__summary-metrics--compact">
-            <article className="channel-summary-card channel-summary-card--compact">
-              <small>Подписчики</small>
-              <strong>{formatCount(summary.subscribers.current)}</strong>
-              <span>Сейчас</span>
-            </article>
-            <article className="channel-summary-card channel-summary-card--compact">
-              <small>
-                Средние просмотры за <span className="channel-summary-card__unit">24 ч</span>
-              </small>
-              <strong>{formatCount(averageViews24h.value)}</strong>
-              <span>{formatReachCaption(averageViews24h)}</span>
-            </article>
-            <article className="channel-summary-card channel-summary-card--compact">
-              <small>
-                Средние просмотры за <span className="channel-summary-card__unit">48 ч</span>
-              </small>
-              <strong>{formatCount(averageViews48h.value)}</strong>
-              <span>{formatReachCaption(averageViews48h)}</span>
-            </article>
-            <article
-              className="channel-summary-card channel-summary-card--compact"
-              title="Средние просмотры поста за первые 48 часов / подписчики × 100"
-            >
-              <small>
-                Охват подписчиков за <span className="channel-summary-card__unit">48 ч</span>
-              </small>
-              <strong>{formatPercent(err48.value)}</strong>
-              <span>
-                {formatReachCaption(err48, `ERR48 · выборка: ${formatCount(err48.sampleSize)}`)}
-              </span>
-            </article>
-          </div>
-
           <article className="channel-insights__chart-card channel-insights__chart-card--executive channel-insights__chart-card--audience">
-            <header className="channel-insights__chart-header">
-              <strong className="channel-insights__chart-title">Подписчики</strong>
-
-              <div className="channel-insights__chart-controls">
-                <SegmentedControl
-                  value={range}
-                  options={periodOptions}
-                  onChange={(next) => onRangeChange(next as ChannelStatsRange)}
-                  className="channel-insights__range"
-                  ariaLabel="Период статистики канала"
-                />
-              </div>
-            </header>
-
             <AudienceChart stats={stats} />
           </article>
         </div>

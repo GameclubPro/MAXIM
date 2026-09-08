@@ -4,7 +4,12 @@ import './publik-handoff.css';
 
 export function PublikBotLink() {
   return (
-    <a className="publik-bot-link" href={PUBLIK_BOT_URL} onClick={openPublikBot}>
+    <a
+      className="publik-bot-link"
+      href={PUBLIK_BOT_URL}
+      onClick={openPublikBot}
+      title="Открыть бота Публик"
+    >
       <span>Открыть бота Публик</span>
       <ArrowUpRight aria-hidden />
     </a>

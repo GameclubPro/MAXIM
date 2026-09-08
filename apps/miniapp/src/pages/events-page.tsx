@@ -2043,8 +2043,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
     useState<SpammerDiagnosticsTarget | null>(null);
   const [pendingScopeAction, setPendingScopeAction] = useState<PendingScopeAction | null>(null);
-  const [pendingScopeChoice, setPendingScopeChoice] =
-    useState<ManualModerationScopeChoice | null>(null);
+  const [pendingScopeChoice, setPendingScopeChoice] = useState<ManualModerationScopeChoice | null>(
+    null,
+  );
   const [spammerDiagnosticsFullEnabledFor, setSpammerDiagnosticsFullEnabledFor] = useState<
     string | null
   >(null);
@@ -3105,7 +3106,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   };
   const moderationSecondaryMetrics = [
     {
-      label: 'Затронуто',
+      label: 'Участников',
       value: String(violationsSummary.affectedUsers),
       note: '',
       tone: 'neutral' as const,

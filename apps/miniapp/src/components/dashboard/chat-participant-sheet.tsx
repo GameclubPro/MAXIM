@@ -1,4 +1,5 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
+import { InfoCircle } from 'iconoir-react';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
@@ -324,7 +325,7 @@ function InfoButton({
         onToggle(hintKey);
       }}
     >
-      <span aria-hidden>i</span>
+      <InfoCircle aria-hidden />
     </button>
   );
 }
