@@ -71,7 +71,7 @@ test('public suggestion submissions lazy-load the validated client', () => {
   );
   assert.match(
     suggestDialogPageSource,
-    /loadChannelDialogClient\(\)\.then\(\(\{ createChannelDialogMessage \}\) =>[\s\S]*?createChannelDialogMessage\(api, chatId, 'suggest', \{[\s\S]*?requestId: payload\.requestId/u,
+    /loadChannelDialogClient\(\)[\s\S]*?createChannelDialogMessage\(api, chatId, 'suggest', \{[\s\S]*?requestId: payload\.requestId/u,
   );
   assert.doesNotMatch(suggestDialogPageSource, /publisherSuggestions\(chatId\)/u);
   assert.doesNotMatch(
@@ -81,10 +81,10 @@ test('public suggestion submissions lazy-load the validated client', () => {
   assert.doesNotMatch(suggestDialogPageSource, /response as CreateChannelDialogMessageResponse/u);
 });
 
-test('suggestion dialog state is remounted for every chat and token pair', () => {
+test('suggestion dialog state is remounted for every user, profile, chat and token pair', () => {
   assert.match(
     appSource,
-    /function KeyedChannelSuggestDialogPage[\s\S]*?key=\{location\.pathname \+ location\.search\}/u,
+    /function KeyedChannelSuggestDialogPage[\s\S]*?key=\{JSON\.stringify\(\[userId, profile, location\.pathname, location\.search\]\)\}/u,
   );
   assert.match(
     suggestDialogPageSource,

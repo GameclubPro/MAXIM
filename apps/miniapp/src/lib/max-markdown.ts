@@ -6,6 +6,7 @@ type InlineToken =
   | { type: 'link'; href: string; children: InlineToken[] };
 
 type RenderMarkdownOptions = {
+  resolveLinkHref?: (value: string) => string | null;
   linkMode?: 'anchor' | 'underline';
   blockMode?: 'paragraphs' | 'raw' | 'inline' | 'editor';
   preserveCurlyBracePlaceholders?: boolean;
@@ -322,10 +323,7 @@ export function renderSupportedMarkdownAsHtml(
     const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
     if (quoteMatch) {
       flushParagraph();
-      const content = renderInlineTokens(
-        parseInlineTokens(quoteMatch[1] ?? '', options),
-        options,
-      );
+      const content = renderInlineTokens(parseInlineTokens(quoteMatch[1] ?? '', options), options);
       blocks.push(renderQuoteHtml(content));
       continue;
     }
@@ -697,7 +695,8 @@ function renderLinkHtml(
     return `<u>${labelHtml}</u>`;
   }
 
-  return `<a href="${escapeAttribute(token.href)}">${labelHtml}</a>`;
+  const href = options.resolveLinkHref ? options.resolveLinkHref(token.href) : token.href;
+  return href ? `<a href="${escapeAttribute(href)}">${labelHtml}</a>` : labelHtml;
 }
 
 function renderLinkLabelHtml(

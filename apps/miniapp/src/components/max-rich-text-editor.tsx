@@ -42,6 +42,7 @@ export type MaxRichTextEditorProps = {
   className?: string;
   onPasteFiles?: (files: File[]) => void;
   onNormalizationReadyChange?: (ready: boolean) => void;
+  onActiveToolsChange?: (tools: ReadonlySet<MaxMarkdownTool>) => void;
 };
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
@@ -73,6 +74,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       className,
       onPasteFiles,
       onNormalizationReadyChange,
+      onActiveToolsChange,
     },
     ref,
   ) {
@@ -86,6 +88,9 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
     const [linkDraft, setLinkDraft] = useState(LINK_PLACEHOLDER_URL);
     const [linkError, setLinkError] = useState('');
     const [activeTools, setActiveTools] = useState<ReadonlySet<MaxMarkdownTool>>(() => new Set());
+    useEffect(() => {
+      onActiveToolsChange?.(activeTools);
+    }, [activeTools, onActiveToolsChange]);
     const normalizedValue = useNormalizedMarkdownSource(value, sourceFormat === 'markdown', true);
     const normalizationReady = normalizedValue.status === 'ready';
     const interactive = !disabled && normalizationReady;
@@ -99,6 +104,8 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
         sourceFormat === 'plain' || !normalizationReady
           ? renderPlainTextAsEditorHtml(value)
           : renderSupportedMarkdownAsHtml(normalizedValue.value, {
+              // FLAG: Imported sources use the same link boundary as typing and paste.
+              resolveLinkHref: parseEditorLinkHref,
               blockMode: 'editor',
               linkMode: 'anchor',
               preserveCurlyBracePlaceholders,
@@ -688,6 +695,7 @@ function insertSupportedMarkdownAtCurrentRange(
   }
 
   const html = renderSupportedMarkdownAsHtml(markdown, {
+    resolveLinkHref: parseEditorLinkHref,
     blockMode: 'editor',
     linkMode: 'anchor',
     preserveCurlyBracePlaceholders: options.preserveCurlyBracePlaceholders,

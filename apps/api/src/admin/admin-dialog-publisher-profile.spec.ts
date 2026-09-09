@@ -4,6 +4,22 @@ import { AdminDialogController } from './admin-dialog.controller';
 const user = { userId: 'user-1', username: null, displayName: null };
 
 describe('AdminDialogController Publisher profile boundary', () => {
+  it.each(['moderation', 'publisher'] as const)(
+    'keeps the video endpoint on the exact %s dialog profile',
+    (profile) => {
+      const dialogService = { createChannelDialogMessage: jest.fn().mockReturnValue({ ok: true }) };
+      const controller = new AdminDialogController(dialogService as never);
+      const body = { token: 'token-1', video: { base64: 'dmlkZW8=', mimeType: 'video/mp4' } };
+      controller.createChannelSuggestionVideo('channel-1', user, body, profile);
+      expect(dialogService.createChannelDialogMessage).toHaveBeenCalledWith(
+        'channel-1',
+        user,
+        'suggest',
+        body,
+        profile,
+      );
+    },
+  );
   it('passes Publisher profile to its channel suggestion dialog', () => {
     const dialogService = { getChannelDialog: jest.fn().mockReturnValue({ ok: true }) };
     const controller = new AdminDialogController(dialogService as never);

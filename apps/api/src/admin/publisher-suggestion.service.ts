@@ -844,6 +844,17 @@ export class PublisherSuggestionService {
     return images.map((image) => {
       const base64 = this.readString(image.base64);
       const mimeType = this.readString(image.mimeType)?.toLowerCase();
+      if (image.type === 'video') {
+        if (!base64 || !mimeType?.startsWith('video/'))
+          throw new BadRequestException('Сохранённое видео предложки повреждено.');
+        return {
+          type: 'video',
+          payload: null,
+          base64,
+          mimeType,
+          fileName: this.readString(image.fileName) ?? '',
+        };
+      }
       if (!base64 || !mimeType?.startsWith('image/')) {
         throw new BadRequestException('Сохранённое фото предложки повреждено.');
       }

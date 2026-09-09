@@ -1,4 +1,8 @@
-import { MAX_CHANNEL_DIALOG_SUGGEST_IMAGES } from '@maxim/contracts';
+import {
+  MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
+  MAX_CHANNEL_SUGGESTION_VIDEO_BYTES,
+  type ChannelSuggestionVideoInput,
+} from '@maxim/contracts';
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 
@@ -15,6 +19,65 @@ import {
 import type { ChannelSuggestionImageAsset } from './admin.service.support';
 
 export const CHANNEL_SUGGESTION_IMAGE_STORAGE_VERSION = 1;
+export const CHANNEL_SUGGESTION_VIDEO_STORAGE_VERSION = 1;
+
+export async function prepareChannelSuggestionMediaRows(
+  images: readonly ChannelSuggestionImageInput[],
+  video?: ChannelSuggestionVideoInput,
+): Promise<PreparedChannelSuggestionImageRow[]> {
+  if (!video) return prepareChannelSuggestionImageRows(images);
+  if (images.length)
+    throw new BadRequestException('Фото и видео отправляются отдельными предложениями.');
+  const bytes = decodeChannelSuggestionImageBase64(video.base64, 'Видео');
+  if (bytes.length > MAX_CHANNEL_SUGGESTION_VIDEO_BYTES)
+    throw new BadRequestException('Видео слишком большое. Максимум 24 МБ.');
+  try {
+    const validated = await validateMaxMediaUploadPayload('video', bytes);
+    return [
+      {
+        position: 0,
+        bytes: Uint8Array.from(bytes),
+        mimeType: validated.mimeType,
+        fileName: canonicalizeAdminMaxMediaFileName(
+          video.fileName,
+          validated.extension,
+          'suggestion-video',
+        ),
+        sizeBytes: bytes.length,
+      },
+    ];
+  } catch (error: unknown) {
+    if (error instanceof MaxMediaUploadValidationError)
+      throw new BadRequestException(error.publicMessage);
+    throw error;
+  }
+}
+
+export function buildChannelSuggestionMediaMetadata(
+  rows: readonly PreparedChannelSuggestionImageRow[],
+) {
+  const video = rows.find((row) => row.mimeType.startsWith('video/'));
+  return video
+    ? {
+        hasImage: false,
+        imageCount: 0,
+        hasVideo: true,
+        videoFileName: video.fileName,
+        mediaType: 'video',
+        mediaFileName: video.fileName,
+        mediaMimeType: video.mimeType,
+        // FLAG: Pre-video readers must reject this format on rollback, not publish only text.
+        imageStorageVersion: 2,
+        videoStorageVersion: CHANNEL_SUGGESTION_VIDEO_STORAGE_VERSION,
+      }
+    : {
+        hasImage: rows.length > 0,
+        imageCount: rows.length,
+        hasVideo: false,
+        imageFileNames: rows.map((row) => row.fileName),
+        imageStorageVersion: CHANNEL_SUGGESTION_IMAGE_STORAGE_VERSION,
+      };
+}
 
 export type ChannelSuggestionImageInput = {
   base64: string;
@@ -139,6 +202,35 @@ export async function loadStoredChannelSuggestionImages(params: {
     },
   });
 
+  // FLAG: The historical image relation stores opaque media bytes. Video has an explicit
+  // storage discriminator so no image path can interpret a video as an image or drop it.
+  if (params.payload.videoStorageVersion !== undefined) {
+    const row = persistedRows[0];
+    if (
+      params.payload.videoStorageVersion !== CHANNEL_SUGGESTION_VIDEO_STORAGE_VERSION ||
+      params.payload.imageStorageVersion !== 2 ||
+      params.payload.hasVideo !== true ||
+      params.payload.imageCount !== 0 ||
+      persistedRows.length !== 1 ||
+      row?.position !== 0 ||
+      !row.bytes?.length ||
+      row.durablePayload != null ||
+      row.sizeBytes !== row.bytes.length ||
+      row.bytes.length > MAX_CHANNEL_SUGGESTION_VIDEO_BYTES ||
+      !row.mimeType?.startsWith('video/')
+    ) {
+      throw new ServiceUnavailableException('Видео предложки временно недоступно.');
+    }
+    return [
+      {
+        type: 'video',
+        base64: Buffer.from(row.bytes).toString('base64'),
+        mimeType: row.mimeType,
+        fileName: row.fileName,
+      },
+    ];
+  }
+
   if (persistedRows.length === 0) {
     if (
       hasUnsupportedStorageVersion ||
@@ -233,14 +325,14 @@ export function readLegacyChannelSuggestionImages(
     : [];
 }
 
-function decodeChannelSuggestionImageBase64(value: string): Buffer {
+function decodeChannelSuggestionImageBase64(value: string, label = 'Фото'): Buffer {
   const normalized = value.trim().replace(/^data:[^;]+;base64,/u, '');
   if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized) || normalized.length % 4 !== 0) {
-    throw new BadRequestException('Фото повреждено. Добавьте файл заново.');
+    throw new BadRequestException(`${label} повреждено. Добавьте файл заново.`);
   }
   const bytes = Buffer.from(normalized, 'base64');
   if (bytes.length === 0) {
-    throw new BadRequestException('Фото пустое.');
+    throw new BadRequestException(`${label} пустое.`);
   }
   return bytes;
 }

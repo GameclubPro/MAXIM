@@ -3,14 +3,9 @@ import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Attachment as IconoirAttachment,
-  Bold as IconoirBold,
-  Code as IconoirCode,
-  Italic as IconoirItalic,
-  Link as IconoirLink,
   SendDiagonalSolid as IconoirSend,
-  Strikethrough as IconoirStrikethrough,
-  Type as IconoirType,
-  Underline as IconoirUnderline,
+  VideoCamera,
+  Page as FileTextIcon,
 } from 'iconoir-react';
 import {
   Suspense,
@@ -24,10 +19,7 @@ import {
   type FormEvent as ReactFormEvent,
 } from 'react';
 import { useParams, useSearchParams } from 'react-router';
-import {
-  MAX_MARKDOWN_TOOL_DEFINITIONS,
-  type MaxMarkdownTool,
-} from '../components/max-markdown-editor';
+import type { MaxMarkdownTool } from '../components/max-markdown-editor';
 import { PublicDialogUnavailableState } from '../components/public-dialog-unavailable-state';
 import type { MaxRichTextEditorHandle } from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
@@ -56,7 +48,7 @@ import {
 } from '../lib/client-request-id';
 import { resolveChannelDialogProfileCapabilities } from '../lib/channel-dialog-profile-capabilities';
 import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/dialog-api-error';
-import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments';
+import type { PreparedSuggestionAttachment } from '../lib/channel-suggestion-media';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { maxSelectionChanged, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
@@ -130,8 +122,19 @@ const LazyMaxRichTextEditor = lazySuggestionComponent(
   'MaxRichTextEditor',
   true,
 );
+const LazySuggestionFormatToolbar = lazySuggestionComponent(
+  () => import('../components/channel-suggestion-format-toolbar'),
+  'ChannelSuggestionFormatToolbar',
+  true,
+);
 
-type SuggestDraftAttachment = PreparedCommentDialogAttachment;
+type SuggestDraftAttachment = PreparedSuggestionAttachment;
+
+const LazySuggestionPreview = lazy(() =>
+  import('../components/max-markdown-preview').then((module) => ({
+    default: module.MaxMarkdownPreview,
+  })),
+);
 
 type PreparingImageState = {
   total: number;
@@ -229,25 +232,6 @@ function buildAttachmentSelectionSignature(files: File[]): string {
     .join('|');
 }
 
-function SuggestMarkdownToolIcon({ tool }: { tool: MaxMarkdownTool }) {
-  switch (tool) {
-    case 'heading':
-      return <IconoirType aria-hidden focusable="false" />;
-    case 'bold':
-      return <IconoirBold aria-hidden focusable="false" />;
-    case 'italic':
-      return <IconoirItalic aria-hidden focusable="false" />;
-    case 'underline':
-      return <IconoirUnderline aria-hidden focusable="false" />;
-    case 'strike':
-      return <IconoirStrikethrough aria-hidden focusable="false" />;
-    case 'code':
-      return <IconoirCode aria-hidden focusable="false" />;
-    case 'link':
-      return <IconoirLink aria-hidden focusable="false" />;
-  }
-}
-
 function SuggestionRequirements({ text }: { text: string }) {
   const paragraphs = text
     .split(/\n{2,}/u)
@@ -259,14 +243,14 @@ function SuggestionRequirements({ text }: { text: string }) {
   }
 
   return (
-    <section className="channel-suggest-requirements" aria-label="Требования">
-      <span className="channel-suggest-requirements__label">Требования</span>
+    <details className="channel-suggest-requirements">
+      <summary className="channel-suggest-requirements__label">Требования канала</summary>
       <div className="channel-suggest-requirements__text">
         {paragraphs.map((paragraph, index) => (
           <p key={`${paragraph}-${index}`}>{paragraph}</p>
         ))}
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -284,6 +268,9 @@ export function ChannelSuggestDialogPage({
   const token = searchParams.get('token')?.trim() ?? '';
   const draftThreadScope = buildChannelSuggestionThreadScope(token) ?? '';
   const [draft, setDraft] = useState('');
+  const [view, setView] = useState<'compose' | 'preview' | 'history'>('compose');
+  const [isImportingText, setIsImportingText] = useState(false);
+  const [activeTools, setActiveTools] = useState<ReadonlySet<MaxMarkdownTool>>(() => new Set());
   const [editorReady, setEditorReady] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<SuggestDraftAttachment[]>([]);
   const [draftHydrated, setDraftHydrated] = useState(false);
@@ -319,7 +306,11 @@ export function ChannelSuggestDialogPage({
     typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
   );
   const useNativeTapFileInputs = fileInputActivationMode === 'native-tap';
-  const dialogQueryKey = queryKeys.entityDialog('channel', chatId, 'suggest', token);
+  const dialogQueryKey = [
+    ...queryKeys.entityDialog('channel', chatId, 'suggest', token),
+    profile,
+    userId,
+  ];
   const terminalDialogError =
     terminalDialogErrorState?.[0] === chatId && terminalDialogErrorState[1] === token
       ? terminalDialogErrorState[2]
@@ -340,7 +331,7 @@ export function ChannelSuggestDialogPage({
         return false;
       }
 
-      return 8_000;
+      return view === 'history' ? 8_000 : false;
     },
   });
 
@@ -364,6 +355,7 @@ export function ChannelSuggestDialogPage({
   const isPreparingImage = preparingImageState !== null;
   const canSubmitMessage =
     !isPreparingImage &&
+    !isImportingText &&
     !draftImagesNeedReselection &&
     draftLength <= SUGGEST_DRAFT_MAX_LENGTH &&
     (draftLength > 0 || (canUploadImages && draftAttachments.length > 0));
@@ -743,6 +735,15 @@ export function ChannelSuggestDialogPage({
   };
 
   const prepareDraftImagesFromFiles = async (files: File[]) => {
+    if (draftAttachmentsRef.current.some((attachment) => attachment.type === 'video')) {
+      pushToast({
+        tone: 'info',
+        title: 'В предложении уже есть видео',
+        description: 'Уберите его, чтобы добавить фотографии.',
+      });
+      resetAttachmentPicker();
+      return;
+    }
     if (files.length === 0) {
       if (!imagePreparationGuard.isActive()) {
         resetAttachmentPicker();
@@ -805,7 +806,7 @@ export function ChannelSuggestDialogPage({
           if (!imagePreparationGuard.owns(preparationRun)) {
             return;
           }
-          prepared.push(attachment);
+          prepared.push({ ...attachment, type: 'image' });
         } catch (error: unknown) {
           if (!imagePreparationGuard.owns(preparationRun)) {
             return;
@@ -939,6 +940,87 @@ export function ChannelSuggestDialogPage({
     handleDraftImageInputSelection(event.currentTarget);
   };
 
+  const handleVideoFile = async (file: File | undefined) => {
+    if (!file || isSubmitPending) return;
+    if (draftAttachmentsRef.current.length) {
+      pushToast({
+        tone: 'info',
+        title: 'Сначала уберите выбранные вложения',
+        description: 'Можно отправить до 10 фото или одно видео.',
+      });
+      return;
+    }
+    const run = imagePreparationGuard.tryStart();
+    if (!run) return;
+    setPreparingImageState({ total: 1, done: 0 });
+    try {
+      const { prepareSuggestionVideo } = await import('../lib/channel-suggestion-media');
+      const attachment = await prepareSuggestionVideo(file);
+      if (!imagePreparationGuard.owns(run)) return;
+      markDraftContentChanged();
+      draftAttachmentsRef.current = [attachment];
+      setDraftAttachments([attachment]);
+      setDraftImagesNeedReselection(false);
+      setMissingDraftImageCount(0);
+      maxSelectionChanged();
+    } catch (error: unknown) {
+      if (imagePreparationGuard.owns(run))
+        pushToast({
+          tone: 'danger',
+          title: 'Видео не добавлено',
+          description: describeUserFacingError(error, 'Не удалось прочитать видео'),
+        });
+    } finally {
+      if (imagePreparationGuard.finish(run)) setPreparingImageState(null);
+    }
+  };
+
+  const moveDraftAttachment = (index: number, direction: -1 | 1) => {
+    const next = [...draftAttachmentsRef.current];
+    const target = index + direction;
+    if (isSubmitPending || imagePreparationGuard.isActive() || target < 0 || target >= next.length)
+      return;
+    [next[index], next[target]] = [next[target]!, next[index]!];
+    markDraftContentChanged();
+    draftAttachmentsRef.current = next;
+    setDraftAttachments(next);
+    maxSelectionChanged();
+  };
+
+  const importTextFile = async (file: File | undefined) => {
+    if (!file || isComposerBusy) return;
+    const run = imagePreparationGuard.tryStart();
+    if (!run) return;
+    setIsImportingText(true);
+    const initialRevision = requestIdentityRef.current.draftRevision;
+    try {
+      const { readSuggestionTextFile } = await import('../lib/channel-suggestion-media');
+      const next = await readSuggestionTextFile(
+        file,
+        draftValueRef.current,
+        SUGGEST_DRAFT_MAX_LENGTH,
+      );
+      if (!imagePreparationGuard.owns(run)) return;
+      if (requestIdentityRef.current.draftRevision !== initialRevision) {
+        pushToast({
+          tone: 'info',
+          title: 'Текст изменился во время загрузки',
+          description: 'Выберите файл ещё раз, чтобы добавить его к текущему тексту.',
+        });
+        return;
+      }
+      handleDraftTextChange(next);
+    } catch (error: unknown) {
+      pushToast({
+        tone: 'danger',
+        title: 'Текст не добавлен',
+        description: describeUserFacingError(error, 'Не удалось прочитать текст'),
+      });
+    } finally {
+      if (imagePreparationGuard.finish(run)) setIsImportingText(false);
+    }
+  };
+
   const handleDraftImagesInput = (event: ReactFormEvent<HTMLInputElement>) => {
     handleDraftImageInputSelection(event.currentTarget);
   };
@@ -975,18 +1057,15 @@ export function ChannelSuggestDialogPage({
       text: string;
       attachments: SuggestDraftAttachment[];
     }) =>
-      loadChannelDialogClient().then(({ createChannelDialogMessage }) =>
-        createChannelDialogMessage(api, chatId, 'suggest', {
-          token,
-          requestId: payload.requestId,
-          text: payload.text,
-          textFormat: 'markdown',
-          images: (canUploadImages ? payload.attachments : []).map((attachment) => ({
-            base64: attachment.base64,
-            mimeType: attachment.mimeType,
-            fileName: attachment.fileName,
-          })),
-        }),
+      Promise.all([loadChannelDialogClient(), import('../lib/channel-suggestion-media')]).then(
+        ([{ createChannelDialogMessage }, { toSuggestionMediaPayload }]) =>
+          createChannelDialogMessage(api, chatId, 'suggest', {
+            token,
+            requestId: payload.requestId,
+            text: payload.text,
+            textFormat: 'markdown',
+            ...toSuggestionMediaPayload(canUploadImages ? payload.attachments : []),
+          }),
       ),
     onSuccess: (result) => {
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
@@ -997,6 +1076,7 @@ export function ChannelSuggestDialogPage({
         title: 'Предложение отправлено',
       });
       setDraft('');
+      setView('history');
       draftValueRef.current = '';
       setDraftAttachments([]);
       draftAttachmentsRef.current = [];
@@ -1017,7 +1097,7 @@ export function ChannelSuggestDialogPage({
             requestAnimationFrame(() => {
               const viewport = scrollViewportRef.current;
               viewport?.scrollTo({
-                top: viewport.scrollHeight,
+                top: 0,
                 behavior: 'smooth',
               });
             });
@@ -1043,7 +1123,7 @@ export function ChannelSuggestDialogPage({
   });
 
   const isSubmitPending = sendMutation.isPending;
-  const isComposerBusy = isSubmitPending || isPreparingImage || !editorReady;
+  const isComposerBusy = isSubmitPending || isPreparingImage || isImportingText || !editorReady;
   const submitDisabled = !canSubmitMessage || isSubmitPending || !editorReady;
 
   useEffect(() => {
@@ -1143,6 +1223,7 @@ export function ChannelSuggestDialogPage({
 
   const shouldProtectClose =
     isSubmitPending ||
+    isImportingText ||
     isPreparingImage ||
     draftImagesNeedReselection ||
     Boolean(draft.trim()) ||
@@ -1360,48 +1441,73 @@ export function ChannelSuggestDialogPage({
         </>
       )}
 
-      {suggestPreparingImageLabel || draftAttachments.length > 0 ? (
-        <span className="channel-suggest-composer__asset">
-          {suggestPreparingImageLabel ?? `${draftAttachments.length}/${MAX_SUGGEST_IMAGES}`}
-        </span>
+      <label
+        className={cn('channel-suggest-composer__tool', isComposerBusy && 'is-disabled')}
+        title="Добавить видео до 24 МБ"
+      >
+        <VideoCamera aria-hidden />
+        <input
+          className="channel-dialog-compose__attach-input"
+          type="file"
+          accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv"
+          aria-label="Добавить видео"
+          disabled={isComposerBusy}
+          onClick={blurSuggestComposerFocus}
+          onChange={(event) => {
+            const input = event.currentTarget;
+            void handleVideoFile(input.files?.[0]).finally(() => {
+              input.value = '';
+            });
+          }}
+        />
+      </label>
+      <label
+        className={cn('channel-suggest-composer__tool', isComposerBusy && 'is-disabled')}
+        title="Добавить текст из файла"
+      >
+        <FileTextIcon aria-hidden />
+        <input
+          className="channel-dialog-compose__attach-input"
+          type="file"
+          accept="text/plain,text/markdown,.txt,.md,.markdown"
+          aria-label="Добавить текст из файла"
+          disabled={isComposerBusy}
+          onClick={blurSuggestComposerFocus}
+          onChange={(event) => {
+            const input = event.currentTarget;
+            void importTextFile(input.files?.[0]).finally(() => {
+              input.value = '';
+            });
+          }}
+        />
+      </label>
+      {suggestPreparingImageLabel ? (
+        <span className="channel-suggest-composer__asset">{suggestPreparingImageLabel}</span>
       ) : null}
     </div>
   ) : null;
+
+  const formatToolbar = (
+    <Suspense
+      fallback={<div className="channel-suggest-composer__modifier-row" aria-busy="true" />}
+    >
+      <LazySuggestionFormatToolbar
+        disabled={isComposerBusy}
+        activeTools={activeTools}
+        onApply={applySuggestTextModifier}
+      />
+    </Suspense>
+  );
 
   const suggestBar =
     !dialogQuery.isLoading && !dialogQuery.error ? (
       <div
         ref={suggestBarRef}
         className="channel-suggest-composer__bar channel-suggest-composer__bar--anchored"
+        hidden={view === 'history'}
       >
         {suggestImageControl}
-
-        <div
-          className="channel-suggest-composer__modifier-row"
-          role="toolbar"
-          aria-label="Форматирование"
-        >
-          {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
-            <button
-              key={tool.id}
-              type="button"
-              className={cn(
-                'channel-suggest-composer__modifier',
-                tool.id === 'italic' && 'is-italic',
-                tool.id === 'code' && 'is-code',
-              )}
-              onMouseDown={(event) => {
-                event.preventDefault();
-              }}
-              onClick={() => applySuggestTextModifier(tool.id)}
-              disabled={isComposerBusy}
-              title={tool.title}
-              aria-label={tool.title}
-            >
-              <SuggestMarkdownToolIcon tool={tool.id} />
-            </button>
-          ))}
-        </div>
+        <span />
 
         <button
           type="button"
@@ -1423,10 +1529,40 @@ export function ChannelSuggestDialogPage({
     <div
       ref={screenRef}
       className="channel-dialog-screen channel-dialog-screen--suggest page-enter"
+      data-view={view}
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
       <div className="channel-dialog-shell channel-dialog-shell--suggest">
+        <header className="channel-suggest-heading">
+          <h1>Предложка</h1>
+          <span>{profile === 'publisher' ? 'Публик' : 'Майор'}</span>
+        </header>
+        <div className="channel-suggest-tabs" role="tablist" aria-label="Предложения">
+          {(
+            [
+              { value: 'compose', label: 'Написать' },
+              { value: 'preview', label: 'Предпросмотр' },
+              { value: 'history', label: `Мои${messages.length ? ` · ${messages.length}` : ''}` },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.value}
+              type="button"
+              role="tab"
+              aria-selected={view === tab.value}
+              aria-controls={`suggest-${tab.value}`}
+              id={`suggest-tab-${tab.value}`}
+              onClick={() => {
+                blurSuggestComposerFocus();
+                setView(tab.value);
+                scrollViewportRef.current?.scrollTo({ top: 0 });
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
         <section ref={scrollViewportRef} className="channel-dialog-body channel-suggest-body">
           {dialogQuery.isLoading ? (
             <div className="channel-dialog-skeletons" aria-label="Загрузка">
@@ -1466,7 +1602,7 @@ export function ChannelSuggestDialogPage({
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-suggest-workspace">
-              {introText ? <SuggestionRequirements text={introText} /> : null}
+              {introText && view === 'compose' ? <SuggestionRequirements text={introText} /> : null}
 
               <section
                 ref={suggestComposerRef}
@@ -1476,33 +1612,40 @@ export function ChannelSuggestDialogPage({
                   isComposerBusy && 'is-busy',
                 )}
                 aria-label="Предложить объявление"
+                id="suggest-compose"
+                role="tabpanel"
+                aria-labelledby="suggest-tab-compose"
+                hidden={view !== 'compose'}
               >
-                {draftImagesNeedReselection || SUGGEST_DRAFT_MAX_LENGTH - draftLength <= 200 ? (
-                  <div className="channel-suggest-composer__head">
-                    {draftImagesNeedReselection ? (
-                      <span className="channel-suggest-composer__status">Нужно фото</span>
-                    ) : null}
-                    {SUGGEST_DRAFT_MAX_LENGTH - draftLength <= 200 ? (
-                      <span className="channel-suggest-composer__counter">
-                        {draftLength}/{SUGGEST_DRAFT_MAX_LENGTH}
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
+                <div className="channel-suggest-composer__head">
+                  <span className="channel-suggest-composer__status">
+                    {isImportingText ? 'Загрузка текста' : 'Черновик'}
+                  </span>
+                  <span
+                    className={cn(
+                      'channel-suggest-composer__counter',
+                      draftLength > SUGGEST_DRAFT_MAX_LENGTH && 'is-limit',
+                    )}
+                    aria-live="polite"
+                  >
+                    {draftLength}/{SUGGEST_DRAFT_MAX_LENGTH}
+                  </span>
+                </div>
+                {formatToolbar}
 
                 {draftImagesNeedReselection ? (
                   <div className="channel-suggest-composer__restore-warning" role="alert">
                     <span>
                       {missingDraftImageCount > 1
-                        ? `Не удалось восстановить ${missingDraftImageCount} фото. Добавьте их снова.`
-                        : 'Не удалось восстановить фото. Добавьте его снова.'}
+                        ? `Не удалось восстановить ${missingDraftImageCount} вложений. Добавьте их снова.`
+                        : 'Не удалось восстановить вложение. Добавьте файл снова.'}
                     </span>
                     <button
                       type="button"
                       disabled={isSubmitPending || isPreparingImage}
                       onClick={handleDiscardMissingDraftImages}
                     >
-                      {draftAttachments.length > 0 ? 'Оставить выбранные' : 'Без фото'}
+                      {draftAttachments.length > 0 ? 'Оставить выбранные' : 'Без вложений'}
                     </button>
                   </div>
                 ) : null}
@@ -1553,6 +1696,7 @@ export function ChannelSuggestDialogPage({
                           busy={isSubmitPending || suggestPreparingImageSlots > 0}
                           maxImages={MAX_SUGGEST_IMAGES}
                           onRemove={handleDraftAttachmentRemove}
+                          onMove={moveDraftAttachment}
                         />
                       </Suspense>
                     ) : null}
@@ -1576,6 +1720,7 @@ export function ChannelSuggestDialogPage({
                           maxLength={SUGGEST_DRAFT_MAX_LENGTH}
                           disabled={isSubmitPending}
                           onNormalizationReadyChange={setEditorReady}
+                          onActiveToolsChange={setActiveTools}
                           ariaLabel="Текст объявления"
                           className="channel-suggest-composer__rich-editor"
                           onPasteFiles={canUploadImages ? prepareDraftImagesFromFiles : undefined}
@@ -1588,22 +1733,57 @@ export function ChannelSuggestDialogPage({
                 </div>
               </section>
 
-              {messages.length ? (
-                <Suspense
-                  fallback={
-                    <div className="channel-dialog-skeletons" aria-label="Загрузка истории">
-                      <div className="channel-dialog-skeleton">
-                        <span className="channel-dialog-skeleton__avatar" />
-                        <div className="channel-dialog-skeleton__body">
-                          <span className="channel-dialog-skeleton__line is-short" />
-                          <span className="channel-dialog-skeleton__line" />
-                        </div>
-                      </div>
-                    </div>
-                  }
+              {view === 'preview' ? (
+                <section
+                  className="channel-suggest-preview"
+                  role="tabpanel"
+                  id="suggest-preview"
+                  aria-labelledby="suggest-tab-preview"
                 >
-                  <LazyChannelSuggestionHistory messages={messages} />
-                </Suspense>
+                  {draftAttachments.length > 0 ? (
+                    <Suspense fallback={null}>
+                      <LazyChannelSuggestionComposeImageGrid
+                        attachments={draftAttachments}
+                        maxImages={MAX_SUGGEST_IMAGES}
+                        onRemove={handleDraftAttachmentRemove}
+                        preview
+                      />
+                    </Suspense>
+                  ) : null}
+                  <Suspense fallback={null}>
+                    <LazySuggestionPreview
+                      value={draft}
+                      preserveLinks
+                      fallback={<span className="channel-suggest-empty">Текст не добавлен</span>}
+                    />
+                  </Suspense>
+                </section>
+              ) : null}
+
+              {view === 'history' ? (
+                <section role="tabpanel" id="suggest-history" aria-labelledby="suggest-tab-history">
+                  {messages.length ? (
+                    <Suspense
+                      fallback={
+                        <div className="channel-dialog-skeletons" aria-label="Загрузка истории">
+                          <div className="channel-dialog-skeleton">
+                            <span className="channel-dialog-skeleton__avatar" />
+                            <div className="channel-dialog-skeleton__body">
+                              <span className="channel-dialog-skeleton__line is-short" />
+                              <span className="channel-dialog-skeleton__line" />
+                            </div>
+                          </div>
+                        </div>
+                      }
+                    >
+                      <LazyChannelSuggestionHistory messages={messages} />
+                    </Suspense>
+                  ) : (
+                    <p className="channel-suggest-empty" role="status">
+                      Предложений пока нет
+                    </p>
+                  )}
+                </section>
               ) : null}
             </div>
           ) : null}

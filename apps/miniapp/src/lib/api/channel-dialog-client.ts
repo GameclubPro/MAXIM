@@ -100,7 +100,10 @@ export async function createEntityDialogMessage(
   payload: CreateChannelDialogMessagePayload,
 ): Promise<CreateChannelDialogMessageResponse> {
   const requestBody = createChannelDialogMessageRequestSchema.parse(payload);
-  const response = await api.request(buildDialogMessagesApiPath(entityType, chatId, dialogType), {
+  const path = requestBody.video
+    ? `${buildDialogApiPath(entityType, chatId, dialogType)}/video`
+    : buildDialogMessagesApiPath(entityType, chatId, dialogType);
+  const response = await api.request(path, {
     method: 'POST',
     body: JSON.stringify(requestBody),
   });

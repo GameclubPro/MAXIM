@@ -10,7 +10,9 @@ function formatMessageTime(value: string): string {
     return value;
   }
 
-  return date.toLocaleTimeString('ru-RU', {
+  return date.toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -42,62 +44,65 @@ export default function ChannelSuggestionHistory({
 }) {
   return (
     <div className="channel-suggest-list channel-suggest-list--history">
-      {messages.map((message) => {
-        const status = resolveSuggestionStatus(message);
-        const suggestionText = message.text.trim();
-        const hasSuggestionText = suggestionText.length > 0;
-        const hasMedia =
-          message.hasImage ||
-          message.hasVideo ||
-          Boolean(message.imageFileName || message.videoFileName);
+      {messages
+        .slice()
+        .reverse()
+        .map((message) => {
+          const status = resolveSuggestionStatus(message);
+          const suggestionText = message.text.trim();
+          const hasSuggestionText = suggestionText.length > 0;
+          const hasMedia =
+            message.hasImage ||
+            message.hasVideo ||
+            Boolean(message.imageFileName || message.videoFileName);
 
-        return (
-          <article key={message.id} className={cn('channel-suggest-card', `is-${status.tone}`)}>
-            <div className="channel-suggest-card__head">
-              <span className={cn('channel-suggest-status', `is-${status.tone}`)}>
-                {status.badge}
-              </span>
-              <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
-            </div>
+          return (
+            <article key={message.id} className={cn('channel-suggest-card', `is-${status.tone}`)}>
+              <div className="channel-suggest-card__head">
+                <span className={cn('channel-suggest-status', `is-${status.tone}`)}>
+                  {status.badge}
+                </span>
+                <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
+              </div>
 
-            {hasSuggestionText ? (
-              <p>
-                {message.textFormat === 'markdown' ? (
-                  <MaxMarkdownPreview
-                    value={message.text}
-                    preserveLinks
-                    fallback={suggestionText}
-                  />
-                ) : (
-                  suggestionText
-                )}
-              </p>
-            ) : null}
+              {hasSuggestionText ? (
+                <p>
+                  {message.textFormat === 'markdown' ? (
+                    <MaxMarkdownPreview
+                      value={message.text}
+                      preserveLinks
+                      fallback={suggestionText}
+                    />
+                  ) : (
+                    suggestionText
+                  )}
+                </p>
+              ) : null}
 
-            {hasMedia ? (
-              <span className="channel-suggest-card__media">
-                <IconoirAttachment aria-hidden focusable="false" />
-                {resolveSuggestionAttachmentLabel(message)}
-              </span>
-            ) : null}
+              {hasMedia ? (
+                <span className="channel-suggest-card__media">
+                  <IconoirAttachment aria-hidden focusable="false" />
+                  {resolveSuggestionAttachmentLabel(message)}
+                </span>
+              ) : null}
 
-            {status.detail ? (
-              <p className="channel-suggest-card__status-detail">{status.detail}</p>
-            ) : null}
+              {status.detail ? (
+                <p className="channel-suggest-card__status-detail">{status.detail}</p>
+              ) : null}
 
-            {message.publishedUrl ? (
-              <a
-                className="channel-suggest-card__link"
-                href={message.publishedUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Открыть пост
-              </a>
-            ) : null}
-          </article>
-        );
-      })}
+              {message.publishedUrl ? (
+                <a
+                  className="channel-suggest-card__link"
+                  href={message.publishedUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Открыть пост
+                </a>
+              ) : null}
+            </article>
+          );
+        })}
     </div>
   );
 }

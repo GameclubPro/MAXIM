@@ -292,6 +292,7 @@ export type ChannelSuggestionAuthorAttribution = {
 };
 
 export type ChannelSuggestionImageAsset = {
+  type?: 'image' | 'video';
   base64?: string | null;
   payload?: Record<string, unknown> | null;
   mimeType?: string | null;

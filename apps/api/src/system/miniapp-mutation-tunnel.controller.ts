@@ -42,8 +42,7 @@ type TunnelRouteRule = {
 
 const ENTITY_ID_SEGMENT = '[^/?#]+';
 const DIALOG_TYPE_SEGMENT = '[^/?#]+';
-const PUBLISHER_VK_PARSING_PATH =
-  `/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/vk-parsing`;
+const PUBLISHER_VK_PARSING_PATH = `/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/vk-parsing`;
 
 const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   { method: 'POST', pattern: /^\/system\/miniapp-boot-trace$/u },
@@ -258,6 +257,10 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     ),
   },
   {
+    method: 'POST',
+    pattern: new RegExp(`^/channels/${ENTITY_ID_SEGMENT}/dialog/suggest/video$`),
+  },
+  {
     method: 'PUT',
     pattern: new RegExp(
       `^/(chats|channels)/${ENTITY_ID_SEGMENT}/dialog/${DIALOG_TYPE_SEGMENT}/notifications$`,
@@ -304,9 +307,7 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   },
   {
     method: 'POST',
-    pattern: new RegExp(
-      `^${PUBLISHER_VK_PARSING_PATH}/sources/${ENTITY_ID_SEGMENT}/refresh$`,
-    ),
+    pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/sources/${ENTITY_ID_SEGMENT}/refresh$`),
   },
   {
     method: 'PATCH',

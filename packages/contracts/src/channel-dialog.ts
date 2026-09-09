@@ -8,6 +8,15 @@ export const MAX_CHANNEL_DIALOG_ATTACHMENTS = 5;
 export const MAX_CHANNEL_DIALOG_COMMENT_FILES = 3;
 export const MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 = 24_000_000;
+export const MAX_CHANNEL_SUGGESTION_VIDEO_BYTES = 24_000_000;
+export const MAX_CHANNEL_SUGGESTION_VIDEO_BASE64_LENGTH = 32_000_000;
+
+export const channelSuggestionVideoInputSchema = /*#__PURE__*/ z.object({
+  base64: z.string().trim().min(4).max(MAX_CHANNEL_SUGGESTION_VIDEO_BASE64_LENGTH),
+  mimeType: z.enum(['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska']),
+  fileName: z.string().trim().max(128).default(''),
+});
+export type ChannelSuggestionVideoInput = z.infer<typeof channelSuggestionVideoInputSchema>;
 
 export const publishChannelEngagementRequestSchema = /*#__PURE__*/ z.object({
   text: z
@@ -107,6 +116,7 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
       .optional(),
     text: z.string().trim().max(2_000).default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
+    video: channelSuggestionVideoInputSchema.optional(),
     replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),
     attachments: z
       .array(channelDialogAttachmentInputSchema)
@@ -121,6 +131,16 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
       .default([]),
   })
   .superRefine((value, ctx) => {
+    if (
+      value.video &&
+      (value.images.length > 0 || value.attachments.length > 0 || value.imageBase64)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['video'],
+        message: 'Добавьте фотографии или одно видео в отдельном предложении.',
+      });
+    }
     if (
       value.images.length === 0 &&
       value.imageBase64 &&

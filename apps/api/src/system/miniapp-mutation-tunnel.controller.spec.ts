@@ -328,6 +328,11 @@ describe('MiniappMutationTunnelController', () => {
       '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review',
       { action: 'publish' },
     ],
+    [
+      'POST',
+      '/channels/channel-1/dialog/suggest/video',
+      { video: { base64: 'dmlkZW8=', mimeType: 'video/mp4' } },
+    ],
   ])('forwards exact Publisher control mutation %s %s', async (method, path, payload) => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();
@@ -376,6 +381,10 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/publisher/entities/channel/channel-1/suggestions/review'],
     ['POST', '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review/'],
     ['POST', '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review/extra'],
+    ['POST', '/chats/chat-1/dialog/suggest/video'],
+    ['POST', '/channels/channel-1/dialog/comments/video'],
+    ['POST', '/channels/channel-1/dialog/suggest/video/extra'],
+    ['PUT', '/channels/channel-1/dialog/suggest/video'],
   ])('rejects non-exact Publisher control target %s %s', async (method, path) => {
     const controller = new MiniappMutationTunnelController();
     const body = Buffer.from('{}', 'utf8').toString('base64url');

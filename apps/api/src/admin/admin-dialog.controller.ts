@@ -57,6 +57,18 @@ export class AdminDialogController {
     return this.dialogService.createChannelDialogMessage(chatId, user, dialogType, body, profile);
   }
 
+  // FLAG: A separate endpoint prevents older APIs from silently stripping video on rollback.
+  @Post('channels/:chatId/dialog/suggest/video')
+  @MiniappProfiles('moderation', 'publisher')
+  createChannelSuggestionVideo(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
+  ) {
+    return this.createChannelDialogMessage(chatId, 'suggest', user, body, profile);
+  }
+
   @Put('channels/:chatId/dialog/:dialogType/notifications')
   @MiniappProfiles('moderation', 'publisher')
   updateChannelDialogNotifications(

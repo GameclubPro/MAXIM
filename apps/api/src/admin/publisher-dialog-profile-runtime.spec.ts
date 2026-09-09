@@ -11,6 +11,7 @@ import {
   extractSqlText,
 } from './admin-service-test-support';
 import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
+import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
 
 const CHAT_ID = 'chat-shared';
 const CHANNEL_ID = 'channel-shared';
@@ -370,6 +371,38 @@ describe('Publisher channel comment profile ownership', () => {
 });
 
 describe('Publisher channel suggestions with photos', () => {
+  it('stores and replays a video-only Publisher suggestion without crossing the Major action', async () => {
+    const h = createSuggestionHarness();
+    const video = {
+      base64: TINY_VALID_MP4.toString('base64'),
+      mimeType: 'video/mp4',
+      fileName: 'video.mp4',
+    };
+    const request = {
+      chatId: CHANNEL_ID,
+      user,
+      dialogType: 'suggest' as const,
+      body: { token: TOKEN, requestId: 'publisher_video_0001', video },
+      mapAuditLog: h.mapAuditLog,
+    };
+    const first = await h.runtime.createChannelSuggestion(request);
+    const replay = await h.runtime.createChannelSuggestion(request);
+    expect(first.message.hasVideo).toBe(true);
+    expect(replay.message.id).toBe(first.message.id);
+    const finalized = h.prisma.auditLog.update.mock.calls.find(
+      ([call]: any[]) => call.data.action === 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION',
+    )[0];
+    expect(finalized.data.channelSuggestionImageAssets.create).toEqual([
+      expect.objectContaining({ mimeType: 'video/mp4' }),
+    ]);
+    expect(JSON.stringify(finalized.data.payload)).not.toContain(video.base64);
+    await expect(
+      h.runtime.createChannelSuggestion({
+        ...request,
+        body: { ...request.body, video: { ...video, fileName: 'different.mp4' } },
+      }),
+    ).rejects.toThrow();
+  });
   it('does not synthesize channel requirements when none are configured', async () => {
     const { mapAuditLog, prisma, runtime } = createSuggestionHarness();
     prisma.auditLog.findMany.mockResolvedValue([]);

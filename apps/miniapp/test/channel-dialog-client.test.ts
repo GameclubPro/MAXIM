@@ -12,6 +12,26 @@ const RESPONSE_MESSAGE = {
   createdAt: '2026-09-01T12:00:00.000Z',
 };
 
+test('video uses a rollback-safe endpoint and never falls back to a text-only submission', async () => {
+  const calls: string[] = [];
+  const api = {
+    request: async (path: string) => {
+      calls.push(path);
+      throw new Error('HTTP 404');
+    },
+    requestKeepalive: () => undefined,
+  } satisfies ApiTransport;
+  await assert.rejects(
+    createChannelDialogMessage(api, 'channel-1', 'suggest', {
+      token: 'suggest-token-123456',
+      text: 'Caption',
+      video: { base64: 'dmlkZW8=', mimeType: 'video/mp4', fileName: 'clip.mp4' },
+    }),
+    /404/u,
+  );
+  assert.deepEqual(calls, ['/channels/channel-1/dialog/suggest/video']);
+});
+
 test('channel dialog client validates and forwards suggestion request identities', async () => {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const api = {

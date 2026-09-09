@@ -88,6 +88,8 @@ export function buildPreviewDialogMessage(payload: {
   reviewStatus?: ChannelDialogMessage['reviewStatus'];
   publishedUrl?: string | null;
   hasImage?: boolean;
+  hasVideo?: boolean;
+  videoFileName?: string | null;
   imageCount?: number;
   imageFileName?: string | null;
   imageFileNames?: string[];
@@ -118,6 +120,8 @@ export function buildPreviewDialogMessage(payload: {
     ...(payload.reviewStatus !== undefined ? { reviewStatus: payload.reviewStatus } : {}),
     ...(payload.publishedUrl !== undefined ? { publishedUrl: payload.publishedUrl } : {}),
     ...(payload.hasImage !== undefined ? { hasImage: payload.hasImage } : {}),
+    ...(payload.hasVideo !== undefined ? { hasVideo: payload.hasVideo } : {}),
+    ...(payload.videoFileName !== undefined ? { videoFileName: payload.videoFileName } : {}),
     ...(payload.imageCount !== undefined ? { imageCount: payload.imageCount } : {}),
     ...(payload.imageFileName !== undefined ? { imageFileName: payload.imageFileName } : {}),
     ...(payload.imageFileNames !== undefined ? { imageFileNames: payload.imageFileNames } : {}),
@@ -422,6 +426,8 @@ function handleChatDialogPreviewRequest(
               deliveredToUserId: 'preview-admin-2',
               reviewStatus: 'pending',
               textFormat: payload.textFormat,
+              hasVideo: Boolean(payload.video),
+              videoFileName: payload.video?.fileName ?? null,
               hasImage: payload.images.length > 0 || Boolean(payload.imageBase64),
               imageCount: payload.images.length || (payload.imageBase64 ? 1 : 0),
               imageFileName: payload.images[0]?.fileName || payload.imageFileName || null,
@@ -535,7 +541,10 @@ function handleChannelDialogPreviewRequest(
       );
     }
 
-    if (tail[2] === 'messages' && method === 'POST') {
+    if (
+      (tail[2] === 'messages' || (tail[1] === 'suggest' && tail[2] === 'video')) &&
+      method === 'POST'
+    ) {
       const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
       const bucket = getPreviewDialogBucket(state, 'channel', dialogType, payload.token);
       const replyTarget = findPreviewDialogMessage(bucket, payload.replyToMessageId);
@@ -564,6 +573,8 @@ function handleChannelDialogPreviewRequest(
               deliveredToUserId: 'preview-admin-2',
               reviewStatus: 'pending',
               textFormat: payload.textFormat,
+              hasVideo: Boolean(payload.video),
+              videoFileName: payload.video?.fileName ?? null,
               hasImage: payload.images.length > 0 || Boolean(payload.imageBase64),
               imageCount: payload.images.length || (payload.imageBase64 ? 1 : 0),
               imageFileName: payload.images[0]?.fileName || payload.imageFileName || null,

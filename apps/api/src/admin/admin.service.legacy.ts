@@ -1,4 +1,9 @@
 import {
+  buildChannelSuggestionMediaMetadata,
+  prepareChannelSuggestionMediaRows,
+} from './admin-channel-suggestion-image-storage';
+import { uploadChannelSuggestionVideo } from './admin-channel-suggestion-video';
+import {
   addAdminRequestSchema,
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   chatSettingsScreenResponseSchema,
@@ -29,6 +34,7 @@ import {
   type ChatParticipantsQuery,
   type ChatUnavailableParticipantsCleanupResult,
   type ChannelDialogType,
+  type ChannelSuggestionVideoInput,
   type ChannelStatsBucket,
   type ChannelStatsQuery,
   type ChannelStatsRange,
@@ -7354,8 +7360,12 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('В предложке пока поддерживаются только фото.');
     }
 
-    if (dialogType === 'suggest' && !text && images.length === 0) {
-      throw new BadRequestException('Введите текст или добавьте фото.');
+    if (dialogType !== 'suggest' && parsed.data.video) {
+      throw new BadRequestException('Видео доступно только в предложке.');
+    }
+
+    if (dialogType === 'suggest' && !text && images.length === 0 && !parsed.data.video) {
+      throw new BadRequestException('Введите текст или добавьте фото или видео.');
     }
 
     if (dialogType === 'suggest') {
@@ -7385,6 +7395,7 @@ export class AdminService implements OnModuleDestroy {
         text,
         textFormat: parsed.data.textFormat,
         images,
+        video: parsed.data.video,
       });
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
@@ -7577,6 +7588,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
+    if (parsed.data.video) throw new BadRequestException('Видео доступно только в предложке.');
     const threadId = this.publisherDialogProfileRuntime.resolveChatThreadId(
       chatId,
       dialogType,
@@ -15357,6 +15369,7 @@ export class AdminService implements OnModuleDestroy {
     for (const image of params.images ?? []) {
       if (image.payload && Object.keys(image.payload).length > 0) {
         normalizedImages.push({
+          ...(image.type === 'video' ? { type: 'video' as const } : {}),
           payload: image.payload,
           mimeType: image.mimeType?.trim() || null,
           fileName: image.fileName?.trim() || null,
@@ -15368,6 +15381,7 @@ export class AdminService implements OnModuleDestroy {
         }
 
         normalizedImages.push({
+          ...(image.type === 'video' ? { type: 'video' as const } : {}),
           base64,
           mimeType: image.mimeType?.trim() || null,
           fileName: image.fileName?.trim() || null,
@@ -17542,6 +17556,7 @@ export class AdminService implements OnModuleDestroy {
     textFormat?: BroadcastTextFormat | null;
     textMarkup?: ChannelSuggestionTextMarkup[] | null;
     images?: ChannelSuggestionImageAsset[] | null;
+    video?: ChannelSuggestionVideoInput;
     imageBase64?: string | null;
     imageMimeType?: string | null;
     imageFileName?: string | null;
@@ -17569,6 +17584,7 @@ export class AdminService implements OnModuleDestroy {
     const imageFileNames = normalizedImages
       .map((image) => image.fileName?.trim() ?? '')
       .filter((fileName): fileName is string => fileName.length > 0);
+    const videoRows = params.video ? await prepareChannelSuggestionMediaRows([], params.video) : [];
 
     const created = await this.prisma.auditLog.create({
       data: {
@@ -17602,20 +17618,25 @@ export class AdminService implements OnModuleDestroy {
           deliveries: [],
           source: params.source,
           reviewStatus: 'pending',
-          hasImage: normalizedImages.length > 0,
-          imageCount: normalizedImages.length,
-          imageFileNames,
-          images: normalizedImages as Prisma.InputJsonValue,
-          hasVideo: params.mediaType === 'video',
-          imageBase64: null,
-          imageMimeType: null,
-          imageFileName: imageFileNames[0] ?? null,
-          mediaType: params.mediaType ?? null,
-          mediaPayload: (params.mediaPayload ?? null) as Prisma.InputJsonValue | null,
-          mediaMimeType: params.mediaMimeType ?? null,
-          mediaFileName: params.mediaFileName ?? null,
+          ...(params.video
+            ? buildChannelSuggestionMediaMetadata(videoRows)
+            : {
+                hasImage: normalizedImages.length > 0,
+                imageCount: normalizedImages.length,
+                imageFileNames,
+                images: normalizedImages as Prisma.InputJsonValue,
+                hasVideo: params.mediaType === 'video',
+                imageBase64: null,
+                imageMimeType: null,
+                imageFileName: imageFileNames[0] ?? null,
+                mediaType: params.mediaType ?? null,
+                mediaPayload: (params.mediaPayload ?? null) as Prisma.InputJsonValue | null,
+                mediaMimeType: params.mediaMimeType ?? null,
+                mediaFileName: params.mediaFileName ?? null,
+              }),
           mediaBotId: params.mediaBotId ?? null,
         },
+        ...(videoRows.length ? { channelSuggestionImageAssets: { create: videoRows } } : {}),
       },
       select: {
         id: true,
@@ -17643,7 +17664,7 @@ export class AdminService implements OnModuleDestroy {
         text: params.text,
         ...(params.textFormat ? { textFormat: params.textFormat } : {}),
         ...(params.textMarkup ? { textMarkup: params.textMarkup } : {}),
-        images: normalizedImages,
+        images: params.video ? [{ type: 'video', ...params.video }] : normalizedImages,
         imageBase64: params.imageBase64,
         imageMimeType: params.imageMimeType,
         imageFileName: params.imageFileName,
@@ -19943,6 +19964,12 @@ export class AdminService implements OnModuleDestroy {
     imagePayload?: Record<string, unknown>;
     attachments?: MaxAttachmentPayload[];
   }> {
+    const video = suggestion.images?.find((asset) => asset.type === 'video');
+    if (video) {
+      if (suggestion.images?.length !== 1)
+        throw new BadRequestException('Фото и видео отправляются отдельными предложениями.');
+      return uploadChannelSuggestionVideo(video, this.maxClient, botId);
+    }
     const normalizedImages = this.normalizeChannelSuggestionImages({
       images: suggestion.images,
       imageBase64: suggestion.imageBase64,

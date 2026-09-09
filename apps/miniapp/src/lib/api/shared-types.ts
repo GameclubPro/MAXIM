@@ -67,6 +67,7 @@ export type BroadcastHandoffPayload = {
 };
 
 export type CreateChannelDialogMessagePayload = {
+  video?: import('@maxim/contracts/channel-dialog').ChannelSuggestionVideoInput;
   token: string;
   requestId?: string;
   text: string;

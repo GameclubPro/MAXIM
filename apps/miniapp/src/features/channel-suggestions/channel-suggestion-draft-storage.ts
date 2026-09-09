@@ -1,9 +1,10 @@
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import {
   advanceContentBoundRequestIdentity,
+  createClientRequestId,
   type ContentBoundRequestIdentity,
 } from '../../lib/client-request-id';
-import type { PreparedCommentDialogAttachment } from '../../lib/dialog-attachments';
+import type { PreparedSuggestionAttachment as PreparedCommentDialogAttachment } from '../../lib/channel-suggestion-media';
 
 const DB_NAME = 'maxim-channel-suggestion-drafts';
 const DB_VERSION = 2;
@@ -16,6 +17,8 @@ const MAX_TEXT_LENGTH = 2_000;
 const MAX_IMAGES = 10;
 const MAX_IMAGE_BASE64_LENGTH = 8_000_000;
 const MAX_TOTAL_BASE64_LENGTH = 24_000_000;
+// FLAG: Cold draft restore stays schema-free; parity with the wire limit is tested.
+export const MAX_STORED_SUGGESTION_VIDEO_BASE64_LENGTH = 32_000_000;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/u;
 const THREAD_SCOPE_PATTERN = /^[0-9a-f]{32}$/u;
 const FNV_1A_128_OFFSET = 0x6c62272e07bb014262b821756295c58dn;
@@ -38,6 +41,7 @@ export type StoredChannelSuggestionDraft = {
   imageCount: number;
   missingImageCount: number;
   threadScope: string | null;
+  mediaKey?: string;
 };
 
 type StoredAttachment = Omit<PreparedCommentDialogAttachment, 'previewUrl'>;
@@ -50,14 +54,17 @@ type ChannelSuggestionDraftEnvelope = {
   imageCount: number;
   requestIdentity: ContentBoundRequestIdentity;
   threadScope: string;
+  mediaKey?: string;
 };
 
 type ChannelSuggestionMediaEnvelope = {
   version: 1;
+  mediaKey?: string;
   attachments: StoredAttachment[];
 };
 
 const storageQueues = new Map<string, Promise<void>>();
+const mediaKeys = new WeakMap<readonly PreparedCommentDialogAttachment[], string>();
 const mediaCache = new Map<
   string,
   { attachments: readonly PreparedCommentDialogAttachment[]; stored: boolean }
@@ -136,10 +143,14 @@ function readAttachment(value: unknown): StoredAttachment | null {
   const mimeType = typeof value.mimeType === 'string' ? value.mimeType.trim().toLowerCase() : '';
   const fileName = typeof value.fileName === 'string' ? value.fileName.slice(0, 240) : '';
   const size = typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : 0;
+  const isVideo =
+    value.type === 'video' &&
+    ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska'].includes(mimeType);
   if (
     !base64 ||
-    base64.length > MAX_IMAGE_BASE64_LENGTH ||
-    !mimeType.startsWith('image/') ||
+    base64.length >
+      (isVideo ? MAX_STORED_SUGGESTION_VIDEO_BASE64_LENGTH : MAX_IMAGE_BASE64_LENGTH) ||
+    (!isVideo && !mimeType.startsWith('image/')) ||
     mimeType === 'image/svg+xml'
   ) {
     return null;
@@ -153,7 +164,7 @@ function readAttachment(value: unknown): StoredAttachment | null {
       ? value.height
       : undefined;
   return {
-    type: 'image',
+    type: isVideo ? 'video' : 'image',
     base64,
     mimeType,
     fileName,
@@ -211,7 +222,10 @@ export function parseChannelSuggestionDraftEnvelope(
     return null;
   }
   const rawMediaAttachments =
-    isObject(mediaValue) && mediaValue.version === 1 && Array.isArray(mediaValue.attachments)
+    isObject(mediaValue) &&
+    mediaValue.version === 1 &&
+    Array.isArray(mediaValue.attachments) &&
+    (value.mediaKey === undefined || value.mediaKey === mediaValue.mediaKey)
       ? mediaValue.attachments
       : [];
   const storedAttachments = rawMediaAttachments.map(readAttachment);
@@ -220,16 +234,27 @@ export function parseChannelSuggestionDraftEnvelope(
   );
   const mediaValid =
     validAttachments.length <= imageCount &&
+    (!validAttachments.some((attachment) => attachment.type === 'video') ||
+      validAttachments.length === 1) &&
     validAttachments.reduce((total, attachment) => total + attachment.base64.length, 0) <=
-      MAX_TOTAL_BASE64_LENGTH;
+      (validAttachments[0]?.type === 'video'
+        ? MAX_STORED_SUGGESTION_VIDEO_BASE64_LENGTH
+        : MAX_TOTAL_BASE64_LENGTH);
   const attachments = mediaValid ? validAttachments : [];
   const missingImageCount = Math.max(0, imageCount - attachments.length);
+  const mediaKey =
+    typeof value.mediaKey === 'string' && REQUEST_ID_PATTERN.test(value.mediaKey)
+      ? value.mediaKey
+      : undefined;
+  const restoredAttachments = attachments.map((attachment) => ({
+    ...attachment,
+    previewUrl: buildPreviewUrl(attachment),
+  }));
+  if (mediaKey) mediaKeys.set(restoredAttachments, mediaKey);
   return {
     text,
-    attachments: attachments.map((attachment) => ({
-      ...attachment,
-      previewUrl: buildPreviewUrl(attachment),
-    })),
+    attachments: restoredAttachments,
+    ...(mediaKey ? { mediaKey } : {}),
     requestIdentity,
     savedAt: new Date(savedAtMs).toISOString(),
     imagesNeedReselection: missingImageCount > 0,
@@ -362,10 +387,13 @@ async function writeState(
         if (mediaUpdate && mediaUpdate.length > 0) {
           const attachments = mediaUpdate.map(({ previewUrl: _previewUrl, ...attachment }) => ({
             ...attachment,
-            type: 'image' as const,
           }));
           mediaStore.put(
-            { version: 1, attachments } satisfies ChannelSuggestionMediaEnvelope,
+            {
+              version: 1,
+              attachments,
+              mediaKey: envelope.mediaKey,
+            } satisfies ChannelSuggestionMediaEnvelope,
             storageKey,
           );
         } else {
@@ -500,9 +528,29 @@ export function resolveChannelSuggestionDraftLoadState(params: {
     return left.source === 'indexed' ? -1 : 1;
   });
   const selected = candidates[0] ?? null;
-  const draft = selected
+  let draft = selected
     ? bindChannelSuggestionDraftToThread(selected.draft, params.threadScope)
     : null;
+  // FLAG: A page-close metadata write can outlive its IndexedDB transaction. Reuse older
+  // bytes only when the exact media identity matches, never by count or text similarity.
+  const reuseIndexedMedia = Boolean(
+    selected?.source === 'local' &&
+    draft?.imagesNeedReselection &&
+    draft.mediaKey &&
+    indexed.candidate?.draft.mediaKey === draft.mediaKey &&
+    indexed.candidate.draft.attachments.length > 0 &&
+    indexed.candidate.draft.imageCount === draft.imageCount,
+  );
+  if (reuseIndexedMedia && draft && indexed.candidate) {
+    const attachments = indexed.candidate.draft.attachments;
+    const missingImageCount = draft.imageCount - attachments.length;
+    draft = {
+      ...draft,
+      attachments,
+      imagesNeedReselection: missingImageCount > 0,
+      missingImageCount,
+    };
+  }
 
   return {
     draft,
@@ -510,6 +558,7 @@ export function resolveChannelSuggestionDraftLoadState(params: {
     discardIndexed:
       indexed.discard ||
       Boolean(
+        !reuseIndexedMedia &&
         selected?.source === 'local' &&
         indexed.candidate &&
         indexed.candidate.savedAtMs < selected.savedAtMs,
@@ -578,12 +627,15 @@ export async function saveChannelSuggestionDraft(
     return;
   }
   const savedAt = new Date();
+  const mediaKey = mediaKeys.get(draft.attachments) ?? createClientRequestId('suggestion-media');
+  mediaKeys.set(draft.attachments, mediaKey);
   const threadScope = readThreadScope(scope.threadScope);
   if (!threadScope) {
     return;
   }
   const envelope: ChannelSuggestionDraftEnvelope = {
     version: STORAGE_VERSION,
+    mediaKey,
     savedAt: savedAt.toISOString(),
     expiresAt: new Date(savedAt.getTime() + DRAFT_TTL_MS).toISOString(),
     text: draft.text.slice(0, MAX_TEXT_LENGTH),

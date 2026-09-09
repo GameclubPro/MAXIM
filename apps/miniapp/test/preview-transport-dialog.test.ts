@@ -2,6 +2,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
+test('preview video submissions use the same dedicated route and media metadata as production', async () => {
+  const api = createPreviewApiTransport();
+  const response = (await api.request('/channels/preview-channel/dialog/suggest/video', {
+    method: 'POST',
+    body: JSON.stringify({
+      token: 'preview-suggest-token-0001',
+      text: 'Caption',
+      video: { base64: 'dmlkZW8=', mimeType: 'video/mp4', fileName: 'clip.mp4' },
+    }),
+  })) as {
+    message: { hasVideo: boolean; imageCount: number; videoFileName: string; text: string };
+  };
+  assert.equal(response.message.hasVideo, true);
+  assert.equal(response.message.imageCount, 0);
+  assert.equal(response.message.videoFileName, 'clip.mp4');
+  assert.equal(response.message.text, 'Caption');
+});
+
 test('preview channel comment threads stay isolated per token', async () => {
   const api = createPreviewApiTransport();
   const tokenA = 'preview-comments-token-0001';

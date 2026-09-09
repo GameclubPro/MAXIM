@@ -445,7 +445,7 @@ function KeyedChannelSuggestDialogPage({
   const location = useLocation();
   return (
     <LazyChannelSuggestDialogPage
-      key={location.pathname + location.search}
+      key={JSON.stringify([userId, profile, location.pathname, location.search])}
       api={api}
       profile={profile}
       userId={userId}

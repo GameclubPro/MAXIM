@@ -1981,12 +1981,13 @@ const scenarioBehaviors = [
     name: 'channel-dialog-suggest',
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
-      await page.getByText('Требования', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('Требования канала', { exact: true }).click();
       await page
         .getByText('Только события нашего города с датой, адресом и контактами.', {
           exact: true,
         })
         .waitFor({ state: 'visible' });
+      await page.getByText('Требования канала', { exact: true }).click();
     },
   },
   {
@@ -1994,13 +1995,15 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       await page.getByRole('textbox', { name: 'Текст объявления' }).waitFor({ state: 'visible' });
-      if ((await page.getByText('Требования', { exact: true }).count()) !== 0) {
+      if ((await page.getByText('Требования канала', { exact: true }).count()) !== 0) {
         throw new Error('Publisher suggestion dialog rendered synthetic requirements.');
       }
 
+      await page.locator('#suggest-tab-history').click();
       const imageOnlyCard = page.locator('.channel-suggest-card').filter({
         has: page.getByText('Фото · market-evening.webp', { exact: true }),
       });
+      await imageOnlyCard.waitFor({ state: 'visible' });
       if ((await imageOnlyCard.count()) !== 1) {
         throw new Error('Public image-only suggestion fixture is missing or ambiguous.');
       }
@@ -2014,6 +2017,7 @@ const scenarioBehaviors = [
       if (((await page.locator('body').textContent()) ?? '').includes('Предложение отправлено')) {
         throw new Error('Public suggestion history rendered generated media fallback copy.');
       }
+      await page.locator('#suggest-tab-compose').click();
     },
   },
   {

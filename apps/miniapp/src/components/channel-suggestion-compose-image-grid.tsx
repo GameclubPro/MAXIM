@@ -1,5 +1,11 @@
-import { Camera as IconoirCamera, Xmark as IconoirXmark } from 'iconoir-react';
-import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Camera as IconoirCamera,
+  Xmark as IconoirXmark,
+} from 'iconoir-react';
+import type { PreparedSuggestionAttachment } from '../lib/channel-suggestion-media';
+import { formatDialogAttachmentSize } from '../lib/dialog-attachments';
 import { cn } from '../lib/cn';
 
 export default function ChannelSuggestionComposeImageGrid({
@@ -8,12 +14,16 @@ export default function ChannelSuggestionComposeImageGrid({
   busy = false,
   maxImages,
   onRemove,
+  onMove,
+  preview = false,
 }: {
-  attachments: PreparedCommentDialogAttachment[];
+  attachments: PreparedSuggestionAttachment[];
   preparingCount?: number;
   busy?: boolean;
   maxImages: number;
   onRemove: (index: number) => void;
+  onMove?: (index: number, direction: -1 | 1) => void;
+  preview?: boolean;
 }) {
   const cappedPreparingCount = Math.max(
     0,
@@ -27,9 +37,10 @@ export default function ChannelSuggestionComposeImageGrid({
         'channel-suggest-composer__image-grid',
         `is-count-${visibleCount}`,
         busy && 'is-busy',
+        preview && 'is-preview',
       )}
       role="list"
-      aria-label={`Фото: ${visibleCount}`}
+      aria-label={`Вложения: ${visibleCount}`}
     >
       {attachments.map((attachment, attachmentIndex) => {
         const previewUrl = attachment.previewUrl?.trim() ?? '';
@@ -42,21 +53,63 @@ export default function ChannelSuggestionComposeImageGrid({
             role="listitem"
             aria-label={fileName}
           >
-            {previewUrl ? (
+            {attachment.type === 'video' && previewUrl ? (
+              <video
+                src={previewUrl}
+                controls
+                playsInline
+                preload="metadata"
+                aria-label={fileName}
+              />
+            ) : previewUrl ? (
               <img src={previewUrl} alt={fileName} loading="lazy" />
             ) : (
               <IconoirCamera aria-hidden focusable="false" />
             )}
 
-            <button
-              type="button"
-              className="channel-suggest-composer__image-remove"
-              disabled={busy}
-              onClick={() => onRemove(attachmentIndex)}
-              aria-label={`Убрать ${fileName}`}
-            >
-              <IconoirXmark aria-hidden focusable="false" />
-            </button>
+            {!preview ? (
+              <button
+                type="button"
+                className="channel-suggest-composer__image-remove"
+                disabled={busy}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => onRemove(attachmentIndex)}
+                aria-label={`Убрать ${fileName}`}
+                title={`Убрать ${fileName}`}
+              >
+                <IconoirXmark aria-hidden focusable="false" />
+              </button>
+            ) : null}
+            <div className="channel-suggest-composer__image-caption">
+              <span>
+                {attachment.type === 'video' ? 'Видео' : `Фото ${attachmentIndex + 1}`} ·{' '}
+                {formatDialogAttachmentSize(attachment.size)}
+              </span>
+              {!preview && attachments.length > 1 && onMove ? (
+                <span className="channel-suggest-composer__image-order">
+                  <button
+                    type="button"
+                    disabled={busy || attachmentIndex === 0}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => onMove(attachmentIndex, -1)}
+                    aria-label={`Переместить фото ${attachmentIndex + 1} раньше`}
+                    title="Переместить раньше"
+                  >
+                    <ArrowLeft aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || attachmentIndex === attachments.length - 1}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => onMove(attachmentIndex, 1)}
+                    aria-label={`Переместить фото ${attachmentIndex + 1} позже`}
+                    title="Переместить позже"
+                  >
+                    <ArrowRight aria-hidden />
+                  </button>
+                </span>
+              ) : null}
+            </div>
           </div>
         );
       })}

@@ -32,8 +32,8 @@ import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.s
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 import {
-  CHANNEL_SUGGESTION_IMAGE_STORAGE_VERSION,
-  prepareChannelSuggestionImageRows,
+  buildChannelSuggestionMediaMetadata,
+  prepareChannelSuggestionMediaRows,
   type PreparedChannelSuggestionImageRow,
 } from './admin-channel-suggestion-image-storage';
 import { buildPublisherChatCommentsQuery } from './publisher-chat-comment-store';
@@ -201,8 +201,8 @@ export class PublisherDialogProfileRuntime {
             fileName: image.fileName.trim(),
           }))
         : attachmentImages;
-    if (!text && images.length === 0) {
-      throw new BadRequestException('Введите текст или добавьте фото.');
+    if (!text && images.length === 0 && !parsed.data.video) {
+      throw new BadRequestException('Введите текст или добавьте фото или видео.');
     }
     const threadId = this.resolveChannelThreadId(
       params.chatId,
@@ -214,7 +214,7 @@ export class PublisherDialogProfileRuntime {
       threadId,
       text,
       textFormat: parsed.data.textFormat,
-      images,
+      images: parsed.data.video ? [parsed.data.video] : images,
     });
     const admission = await this.admitPublisherChannelSuggestion({
       chatId: params.chatId,
@@ -232,7 +232,7 @@ export class PublisherDialogProfileRuntime {
 
     let preparedImages: PreparedChannelSuggestionImageRow[];
     try {
-      preparedImages = await prepareChannelSuggestionImageRows(images);
+      preparedImages = await prepareChannelSuggestionMediaRows(images, parsed.data.video);
     } catch (error: unknown) {
       await this.settlePublisherSuggestionAdmissionFailure(
         params.chatId,
@@ -698,9 +698,7 @@ export class PublisherDialogProfileRuntime {
               unreachableCount: 0,
             },
             deliveries: [],
-            hasImage: params.preparedImages.length > 0,
-            imageCount: params.preparedImages.length,
-            imageStorageVersion: CHANNEL_SUGGESTION_IMAGE_STORAGE_VERSION,
+            ...buildChannelSuggestionMediaMetadata(params.preparedImages),
             ...(params.requestId ? { requestId: params.requestId } : {}),
             requestInputHash: params.admission.inputHash,
             requestContentHash: params.admission.inputHash,

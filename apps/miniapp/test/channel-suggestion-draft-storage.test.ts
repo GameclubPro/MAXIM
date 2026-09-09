@@ -364,6 +364,7 @@ test('localStorage fallback preserves text and retry identity without photo byte
     const partialEnvelope = JSON.parse(values.get(storageKey) ?? 'null');
     const partialReload = parseChannelSuggestionDraftEnvelope(partialEnvelope, Date.now(), {
       version: 1,
+      mediaKey: partialEnvelope.mediaKey,
       attachments: [
         {
           type: 'image',
@@ -393,7 +394,7 @@ test('suggestion route wires the authoritative user and protects non-empty draft
   assert.match(appSource, /KeyedChannelSuggestDialogPage[\s\S]*?userId=\{me\.userId\}/u);
   assert.match(suggestionPageSource, /setMaxClosingConfirmation\(shouldProtectClose\)/u);
   assert.match(suggestionPageSource, /document\.visibilityState === 'hidden'/u);
-  assert.match(suggestionPageSource, /draftImagesNeedReselection[\s\S]*?Без фото/u);
+  assert.match(suggestionPageSource, /draftImagesNeedReselection[\s\S]*?Без вложений/u);
   assert.match(
     suggestionPageSource,
     /clearChannelSuggestionDraft\(\{[\s\S]*?threadScope: draftThreadScope/u,

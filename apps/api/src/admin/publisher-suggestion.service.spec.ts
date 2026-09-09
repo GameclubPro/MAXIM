@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PublicationDispatchProfile } from '../prisma/prisma-client';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
+import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
 import {
   buildLegacyPublisherSuggestionPublicationRequestId,
   buildPublisherSuggestionPublicationRequestId,
@@ -617,6 +618,47 @@ describe('PublisherSuggestionService', () => {
     expect(fixture.prisma.channelSuggestionImageAsset.deleteMany).toHaveBeenCalledWith({
       where: { auditLogId: 'suggestion-1' },
     });
+  });
+
+  it('moves the Publisher-owned video bytes into Publication without dropping or retyping them', async () => {
+    const fixture = createFixture(
+      createClaimedPayload({
+        text: '',
+        imageCount: 0,
+        hasVideo: true,
+        videoStorageVersion: 1,
+        imageStorageVersion: 2,
+      }),
+    );
+    fixture.prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
+      {
+        position: 0,
+        bytes: TINY_VALID_MP4,
+        durablePayload: null,
+        mimeType: 'video/mp4',
+        fileName: 'clip.mp4',
+        sizeBytes: TINY_VALID_MP4.length,
+      },
+    ]);
+    jest.spyOn(fixture.service as any, 'finalizeClaim').mockResolvedValue(fixture.row() as never);
+    await fixture.service.processPublicationJob('suggestion-1', 'claim-1');
+    expect(fixture.publications.create).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: user.userId }),
+      expect.objectContaining({
+        content: expect.objectContaining({
+          media: [
+            {
+              type: 'video',
+              payload: null,
+              base64: TINY_VALID_MP4.toString('base64'),
+              mimeType: 'video/mp4',
+              fileName: 'clip.mp4',
+            },
+          ],
+        }),
+      }),
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
   });
 
   it('creates an unscheduled draft with the exact ordered stored photos', async () => {
