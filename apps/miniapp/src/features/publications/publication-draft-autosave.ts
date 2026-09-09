@@ -36,6 +36,7 @@ type Dependencies = {
   persist: (draft: PublicationDraft) => Promise<void>;
   changed: (draft: PublicationDraft) => void;
   stateChanged: (state: DraftSaveState) => void;
+  canSave: () => boolean;
 };
 
 function statusCode(error: unknown): number | undefined {
@@ -126,7 +127,7 @@ export class PublicationDraftAutosave {
         }
         this.recoveryId = null;
       }
-      while (this.active && (this.pending || this.dirty)) {
+      while (this.active && this.dependencies.canSave() && (this.pending || this.dirty)) {
         this.report('saving');
         if (!this.pending) {
           const requestId = this.current.cloudDraft
@@ -152,13 +153,14 @@ export class PublicationDraftAutosave {
         };
         this.saved = acknowledged;
         this.pending = null;
-        const current = samePublicationDraftMedia(this.current, pending.snapshot)
-          ? withSavedPublicationMedia(this.current, response.publication.content.media)
-          : this.current;
+        const current =
+          this.dependencies.canSave() && samePublicationDraftMedia(this.current, pending.snapshot)
+            ? withSavedPublicationMedia(this.current, response.publication.content.media)
+            : this.current;
         this.replace({ ...current, cloudDraft: identity });
         await this.dependencies.persist(this.current);
       }
-      this.report(this.current.cloudDraft ? 'saved' : 'idle');
+      this.report(this.dirty ? 'pending' : this.current.cloudDraft ? 'saved' : 'idle');
       return this.current;
     } catch (error) {
       if ([400, 403, 404, 422].includes(statusCode(error) ?? 0)) this.pending = null;

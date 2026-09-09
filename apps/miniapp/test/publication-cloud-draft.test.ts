@@ -41,6 +41,7 @@ function setup(draft = initial()) {
       changes.push(value);
     },
     stateChanged: () => undefined,
+    canSave: () => true,
   };
   return {
     api,
@@ -152,6 +153,33 @@ test('changed media is never replaced by an old acknowledgment', async () => {
   };
   const saved = await engine.flush();
   assert.equal(saved.retainedAssets[0].fileName, 'new.png');
+});
+
+test('an acknowledgment waits for an in-progress photo batch before replacing inline media', async () => {
+  const photo = { base64: 'aGVsbG8=', mimeType: 'image/jpeg', fileName: 'first.jpg' };
+  const fixture = setup({ ...initial(), images: [photo] });
+  const originalSave = fixture.dependencies.save;
+  fixture.dependencies.save = async (id, request) => {
+    fixture.dependencies.canSave = () => false;
+    return originalSave(id, request);
+  };
+  const engine = fixture.make();
+  const first = await engine.flush();
+  assert.equal(first.images.length, 1);
+  assert.equal(first.retainedAssets.length, 0);
+  assert.equal(fixture.writes.length, 1);
+  engine.setSnapshot({
+    ...first,
+    images: [photo, { ...photo, base64: 'bmV3', fileName: 'second.jpg' }],
+  });
+  fixture.dependencies.canSave = () => true;
+  fixture.dependencies.save = originalSave;
+  const complete = await engine.flush();
+  assert.deepEqual(
+    complete.retainedAssets.map((asset) => asset.fileName),
+    ['first.jpg', 'second.jpg'],
+  );
+  assert.equal(complete.images.length, 0);
 });
 
 test('recovering an unknown create asks for a version choice and never overwrites', async () => {

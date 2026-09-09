@@ -49,6 +49,7 @@ export function usePublicationCloudDraft(options: {
           : Promise.resolve(),
       changed: (draft) => latest.current.setDraft(draft),
       stateChanged: setState,
+      canSave: () => latest.current.enabled,
     });
   }, [options.api, options.sessionKey, options.userId]);
   controller?.setSnapshot(options.draft);
