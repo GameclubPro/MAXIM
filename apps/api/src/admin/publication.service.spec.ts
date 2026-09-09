@@ -590,6 +590,17 @@ describe('PublicationService', () => {
 
   it('returns occupied calendar slots only for the selected publication targets', async () => {
     const scheduledAt = new Date('2026-07-12T09:00:00.000Z');
+    const occurrenceFindMany = jest.fn().mockResolvedValue([
+      {
+        scheduledAt,
+        publication: {
+          targets: [
+            { entityType: ChatEntityType.CHAT, targetChatId: 'chat-1' },
+            { entityType: ChatEntityType.CHANNEL, targetChatId: 'channel-1' },
+          ],
+        },
+      },
+    ]);
     const { service, prisma } = createService({
       managedBroadcastCalendarReservation: {
         findMany: jest.fn().mockResolvedValue([
@@ -602,17 +613,7 @@ describe('PublicationService', () => {
         ]),
       },
       publicationOccurrence: {
-        findMany: jest.fn().mockResolvedValue([
-          {
-            scheduledAt,
-            publication: {
-              targets: [
-                { entityType: ChatEntityType.CHAT, targetChatId: 'chat-1' },
-                { entityType: ChatEntityType.CHANNEL, targetChatId: 'channel-1' },
-              ],
-            },
-          },
-        ]),
+        findMany: occurrenceFindMany,
       },
     });
     jest.spyOn(service as any, 'resolveAudienceTargets').mockResolvedValue([
@@ -654,9 +655,92 @@ describe('PublicationService', () => {
       expect.objectContaining({
         where: expect.objectContaining({
           scheduledAt: { gte: expect.any(Date), lte: expect.any(Date) },
+          broadcast: {
+            is: expect.objectContaining({ dispatchProfile: PublicationDispatchProfile.PUBLIK_V1 }),
+          },
         }),
       }),
     );
+    expect(occurrenceFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          publication: {
+            is: expect.objectContaining({ dispatchProfile: PublicationDispatchProfile.PUBLIK_V1 }),
+          },
+        }),
+      }),
+    );
+  });
+
+  it('ignores retired Major reservations and occurrences in availability and scheduling conflicts', async () => {
+    const slot = new Date('2026-07-12T09:00:00.000Z');
+    const legacyReservation = {
+      broadcastId: 'major-broadcast',
+      entityType: ChatEntityType.CHAT,
+      targetChatId: 'chat-1',
+      scheduledAt: slot,
+      broadcast: { publicationOccurrence: { publicationId: 'major-publication' } },
+    };
+    const legacyOccurrence = {
+      id: 'major-occurrence',
+      publicationId: 'major-publication',
+      scheduleId: 'major-schedule',
+      scheduleRevision: 1,
+      scheduledAt: slot,
+      schedule: { revision: 1 },
+      publication: {
+        actorUserId: 'other-admin',
+        targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+      },
+    };
+    const occurrenceFindMany = jest.fn(async ({ where }) =>
+      where.publication?.is?.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? []
+        : [legacyOccurrence],
+    );
+    const { service, prisma } = createService({
+      managedBroadcastCalendarReservation: {
+        findMany: jest.fn(async ({ where }) =>
+          where.broadcast?.is?.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+            ? []
+            : [legacyReservation],
+        ),
+      },
+      publicationOccurrence: {
+        findMany: occurrenceFindMany,
+      },
+    });
+    const targets = [{ chatId: 'chat-1', entityType: 'chat' }];
+
+    await expect(
+      service.getCalendarAvailability({ userId: 'user-1' } as never, {
+        audience: { selection: 'SELECTED', mode: 'SNAPSHOT', targets },
+        from: '2026-07-11T00:00:00.000Z',
+        to: '2026-07-31T23:59:59.999Z',
+      }),
+    ).resolves.toMatchObject({ slots: [] });
+    await expect(
+      (service as any).assertCalendarAvailability(
+        targets,
+        [slot],
+        { mode: 'once', timezone: 'UTC', at: slot.toISOString(), replaceConflicts: false },
+        'user-1',
+      ),
+    ).resolves.toBeUndefined();
+    const tx = { ...prisma, $executeRaw: jest.fn().mockResolvedValue(1) };
+    await expect(
+      (service as any).reservePublicationCalendar(
+        tx,
+        targets,
+        [slot],
+        { mode: 'once', timezone: 'UTC', at: slot.toISOString(), replaceConflicts: false },
+        'new-publication',
+        'user-1',
+      ),
+    ).resolves.toBeUndefined();
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.managedBroadcastCalendarReservation.findMany).toHaveBeenCalledTimes(3);
+    expect(occurrenceFindMany).toHaveBeenCalledTimes(3);
   });
 
   it('anchors recurrence and rejects off-grid local times', () => {
@@ -1950,121 +2034,224 @@ describe('PublicationService', () => {
     },
   );
 
-  it('creates separate chat and channel execution envelopes linked to one occurrence', async () => {
-    const managedBroadcastCreate = jest
-      .fn()
-      .mockResolvedValueOnce({ id: 'broadcast-chat' })
-      .mockResolvedValueOnce({ id: 'broadcast-channel' });
+  it.each(['now', 'once'] as const)(
+    'reclaims retired Major slots before creating chat and channel execution envelopes (%s)',
+    async (mode) => {
+      const managedBroadcastCreate = jest
+        .fn()
+        .mockResolvedValueOnce({ id: 'broadcast-chat' })
+        .mockResolvedValueOnce({ id: 'broadcast-channel' });
+      const tx = {
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        managedBroadcast: {
+          count: jest.fn().mockResolvedValue(0),
+          create: managedBroadcastCreate,
+          updateMany: jest.fn(),
+        },
+        managedBroadcastOccurrence: { create: jest.fn().mockResolvedValue({}) },
+        managedBroadcastDelivery: {
+          createMany: jest.fn().mockResolvedValue({ count: 1 }),
+          updateMany: jest.fn(),
+        },
+        managedBroadcastCalendarReservation: {
+          findMany: jest.fn().mockResolvedValue([]),
+          createMany: jest.fn().mockResolvedValue({ count: 1 }),
+          deleteMany: jest.fn(),
+        },
+        publicationOccurrence: {
+          update: jest.fn().mockResolvedValue({}),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+      };
+      const { service } = createService({
+        $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+      });
+      const occurrence = {
+        id: 'occurrence-1',
+        publicationId: 'publication-1',
+        scheduleId: 'schedule-1',
+        contentRevisionId: 'content-1',
+        scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
+        legacyBroadcastId: null,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: 'publisher-bot',
+        schedule: { timezone: 'Europe/Moscow' },
+        contentRevision: {
+          text: 'Проверка',
+          textFormat: PublicationContentFormat.PLAIN,
+          buttons: [{ text: 'Открыть', url: 'https://max.ru/example', row: 0 }],
+        },
+        publication: { actorUserId: 'user-1' },
+      };
+
+      await (service as any).createOccurrenceExecution(
+        occurrence,
+        [
+          {
+            chatId: 'chat-1',
+            entityType: 'chat',
+            title: 'Чат',
+            avatarUrl: null,
+            link: null,
+          },
+          {
+            chatId: 'channel-1',
+            entityType: 'channel',
+            title: 'Канал',
+            avatarUrl: null,
+            link: null,
+          },
+        ],
+        mode === 'now'
+          ? { mode, timezone: 'Europe/Moscow' }
+          : {
+              mode,
+              timezone: 'Europe/Moscow',
+              at: occurrence.scheduledAt.toISOString(),
+              replaceConflicts: false,
+            },
+      );
+
+      expect(managedBroadcastCreate).toHaveBeenCalledTimes(2);
+      expect(managedBroadcastCreate).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          data: expect.objectContaining({
+            entityType: ChatEntityType.CHAT,
+            publicationOccurrenceId: 'occurrence-1',
+            publicationContentRevisionId: 'content-1',
+            targetChatIds: ['chat-1'],
+          }),
+        }),
+      );
+      expect(managedBroadcastCreate).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          data: expect.objectContaining({
+            entityType: ChatEntityType.CHANNEL,
+            publicationOccurrenceId: 'occurrence-1',
+            targetChatIds: ['channel-1'],
+          }),
+        }),
+      );
+      expect(tx.managedBroadcastDelivery.createMany).toHaveBeenCalledTimes(2);
+      expect(tx.managedBroadcastDelivery.createMany).toHaveBeenNthCalledWith(1, {
+        data: [
+          expect.objectContaining({
+            broadcastId: 'broadcast-chat',
+            targetChatId: 'chat-1',
+            publicationOccurrenceId: 'occurrence-1',
+          }),
+        ],
+      });
+      expect(tx.managedBroadcastDelivery.createMany).toHaveBeenNthCalledWith(2, {
+        data: [
+          expect.objectContaining({
+            broadcastId: 'broadcast-channel',
+            targetChatId: 'channel-1',
+            publicationOccurrenceId: 'occurrence-1',
+            occurrenceIndex: 1,
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            requiredBotId: 'publisher-bot',
+            dialogBotId: 'primary-bot',
+            publicationPolicyRevision: 1,
+          }),
+        ],
+      });
+      expect(tx.managedBroadcastCalendarReservation.deleteMany).toHaveBeenCalledTimes(2);
+      for (const [index, entityType, targetChatId] of [
+        [0, ChatEntityType.CHAT, 'chat-1'],
+        [1, ChatEntityType.CHANNEL, 'channel-1'],
+      ] as const) {
+        expect(tx.managedBroadcastCalendarReservation.deleteMany).toHaveBeenNthCalledWith(
+          index + 1,
+          {
+            where: {
+              entityType,
+              targetChatId: { in: [targetChatId] },
+              scheduledAt: occurrence.scheduledAt,
+              broadcast: { is: { dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED } },
+            },
+          },
+        );
+        const releasedAt =
+          tx.managedBroadcastCalendarReservation.deleteMany.mock.invocationCallOrder[index];
+        expect(releasedAt).toBeGreaterThan(tx.$executeRaw.mock.invocationCallOrder[0]);
+        expect(releasedAt).toBeLessThan(
+          tx.managedBroadcastCalendarReservation.findMany.mock.invocationCallOrder[index],
+        );
+        expect(releasedAt).toBeLessThan(
+          tx.managedBroadcastCalendarReservation.createMany.mock.invocationCallOrder[index],
+        );
+      }
+      expect(tx.managedBroadcast.updateMany).not.toHaveBeenCalled();
+      expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { claimed: 0, existing: 0, publisherConflict: false },
+    { claimed: 1, existing: 1, publisherConflict: false },
+    { claimed: 1, existing: 0, publisherConflict: true },
+  ])('preserves publication execution fences when reclaiming slots: %j', async (scenario) => {
     const tx = {
       $executeRaw: jest.fn().mockResolvedValue(1),
-      managedBroadcast: {
-        count: jest.fn().mockResolvedValue(0),
-        create: managedBroadcastCreate,
-        updateMany: jest.fn(),
+      publicationOccurrence: {
+        updateMany: jest.fn().mockResolvedValue({ count: scenario.claimed }),
+        update: jest.fn().mockResolvedValue({}),
       },
-      managedBroadcastOccurrence: { create: jest.fn().mockResolvedValue({}) },
-      managedBroadcastDelivery: {
-        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      managedBroadcast: {
+        count: jest.fn().mockResolvedValue(scenario.existing),
+        create: jest.fn(),
         updateMany: jest.fn(),
       },
       managedBroadcastCalendarReservation: {
-        findMany: jest.fn().mockResolvedValue([]),
-        createMany: jest.fn().mockResolvedValue({ count: 1 }),
-        deleteMany: jest.fn(),
-      },
-      publicationOccurrence: {
-        update: jest.fn().mockResolvedValue({}),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findMany: jest.fn().mockResolvedValue([{ broadcastId: 'other-admin-publik-broadcast' }]),
+        createMany: jest.fn(),
       },
     };
     const { service } = createService({
       $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
     });
-    const occurrence = {
-      id: 'occurrence-1',
-      publicationId: 'publication-1',
-      scheduleId: 'schedule-1',
-      contentRevisionId: 'content-1',
-      scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
-      legacyBroadcastId: null,
-      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-      requiredBotId: 'publisher-bot',
-      schedule: { timezone: 'Europe/Moscow' },
-      contentRevision: {
-        text: 'Проверка',
-        textFormat: PublicationContentFormat.PLAIN,
-        buttons: [{ text: 'Открыть', url: 'https://max.ru/example', row: 0 }],
+    const execute = (service as any).createOccurrenceExecution(
+      {
+        id: 'occurrence-1',
+        scheduleRevision: 1,
+        contentRevisionId: 'content-1',
+        scheduledAt: new Date('2026-07-12T09:00:00.000Z'),
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: 'publisher-bot',
+        contentRevision: { buttons: [] },
+        publication: { actorUserId: 'user-1' },
       },
-      publication: { actorUserId: 'user-1' },
-    };
-
-    await (service as any).createOccurrenceExecution(
-      occurrence,
-      [
-        {
-          chatId: 'chat-1',
-          entityType: 'chat',
-          title: 'Чат',
-          avatarUrl: null,
-          link: null,
-        },
-        {
-          chatId: 'channel-1',
-          entityType: 'channel',
-          title: 'Канал',
-          avatarUrl: null,
-          link: null,
-        },
-      ],
-      { mode: 'now', timezone: 'Europe/Moscow' },
+      [{ chatId: 'chat-1', entityType: 'chat' }],
+      {
+        mode: 'once',
+        timezone: 'UTC',
+        at: '2026-07-12T09:00:00.000Z',
+        replaceConflicts: false,
+      },
     );
 
-    expect(managedBroadcastCreate).toHaveBeenCalledTimes(2);
-    expect(managedBroadcastCreate).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        data: expect.objectContaining({
+    if (scenario.publisherConflict) {
+      await expect(execute).rejects.toBeInstanceOf(ConflictException);
+      expect(tx.managedBroadcastCalendarReservation.deleteMany).toHaveBeenCalledWith({
+        where: {
           entityType: ChatEntityType.CHAT,
-          publicationOccurrenceId: 'occurrence-1',
-          publicationContentRevisionId: 'content-1',
-          targetChatIds: ['chat-1'],
-        }),
-      }),
-    );
-    expect(managedBroadcastCreate).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        data: expect.objectContaining({
-          entityType: ChatEntityType.CHANNEL,
-          publicationOccurrenceId: 'occurrence-1',
-          targetChatIds: ['channel-1'],
-        }),
-      }),
-    );
-    expect(tx.managedBroadcastDelivery.createMany).toHaveBeenCalledTimes(2);
-    expect(tx.managedBroadcastDelivery.createMany).toHaveBeenNthCalledWith(1, {
-      data: [
-        expect.objectContaining({
-          broadcastId: 'broadcast-chat',
-          targetChatId: 'chat-1',
-          publicationOccurrenceId: 'occurrence-1',
-        }),
-      ],
-    });
-    expect(tx.managedBroadcastDelivery.createMany).toHaveBeenNthCalledWith(2, {
-      data: [
-        expect.objectContaining({
-          broadcastId: 'broadcast-channel',
-          targetChatId: 'channel-1',
-          publicationOccurrenceId: 'occurrence-1',
-          occurrenceIndex: 1,
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          requiredBotId: 'publisher-bot',
-          dialogBotId: 'primary-bot',
-          publicationPolicyRevision: 1,
-        }),
-      ],
-    });
+          targetChatId: { in: ['chat-1'] },
+          scheduledAt: new Date('2026-07-12T09:00:00.000Z'),
+          broadcast: { is: { dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED } },
+        },
+      });
+    } else {
+      await expect(execute).resolves.toBeUndefined();
+      expect(tx.managedBroadcastCalendarReservation.deleteMany).not.toHaveBeenCalled();
+      expect(tx.managedBroadcastCalendarReservation.findMany).not.toHaveBeenCalled();
+    }
+    expect(tx.managedBroadcast.create).not.toHaveBeenCalled();
+    expect(tx.managedBroadcast.updateMany).not.toHaveBeenCalled();
+    expect(tx.managedBroadcastCalendarReservation.createMany).not.toHaveBeenCalled();
   });
 
   it('keeps an unready Publik occurrence scheduled with a bounded blocker', async () => {

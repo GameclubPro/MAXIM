@@ -75,6 +75,10 @@ import {
 import { publicationBackgroundAccess } from './publication-background-access';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
+  buildPublicationCalendarTargetPredicates,
+  releaseRetiredMajorCalendarSlots,
+} from './publication-calendar';
+import {
   buildUnsafePublicationExecutionDeliveryWhere,
   cancelUnstartedPublicationExecutionBroadcasts,
   throwPublicationExecutionRequiresManualReview,
@@ -440,7 +444,7 @@ export class PublicationService {
     const targetKeys = new Set(
       targets.map((target) => `${this.toPrismaEntityType(target.entityType)}:${target.chatId}`),
     );
-    const targetPredicates = this.buildPublicationCalendarTargetPredicates(targets);
+    const targetPredicates = buildPublicationCalendarTargetPredicates(targets);
     const [reservations, occurrences] = await Promise.all([
       this.prisma.managedBroadcastCalendarReservation.findMany({
         where: {
@@ -448,6 +452,7 @@ export class PublicationService {
           OR: targetPredicates,
           broadcast: {
             is: {
+              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
               status: {
                 in: [
                   ManagedBroadcastStatus.ACTIVE,
@@ -487,6 +492,7 @@ export class PublicationService {
           },
           publication: {
             is: {
+              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
               lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
               targets: { some: { OR: targetPredicates } },
             },
@@ -2253,6 +2259,12 @@ export class PublicationService {
       let firstBroadcastId: string | null = occurrence.legacyBroadcastId;
       for (const group of groups) {
         const targetChatIds = group.targets.map((target) => target.chatId);
+        await releaseRetiredMajorCalendarSlots(
+          tx,
+          group.entityType,
+          targetChatIds,
+          occurrence.scheduledAt,
+        );
         const conflicts = await tx.managedBroadcastCalendarReservation.findMany({
           where: {
             entityType: group.entityType,
@@ -3238,37 +3250,20 @@ export class PublicationService {
     `);
   }
 
-  private buildPublicationCalendarTargetPredicates(targets: ResolvedPublicationTarget[]) {
-    return [
-      {
-        entityType: ChatEntityType.CHAT,
-        targetChatId: {
-          in: targets
-            .filter((target) => target.entityType === 'chat')
-            .map((target) => target.chatId),
-        },
-      },
-      {
-        entityType: ChatEntityType.CHANNEL,
-        targetChatId: {
-          in: targets
-            .filter((target) => target.entityType === 'channel')
-            .map((target) => target.chatId),
-        },
-      },
-    ];
-  }
-
   private async findPublicationCalendarConflicts(
     client: any,
     targets: ResolvedPublicationTarget[],
     slots: Date[],
     excludePublicationId?: string,
   ): Promise<PublicationCalendarConflicts> {
-    const targetPredicates = this.buildPublicationCalendarTargetPredicates(targets);
+    const targetPredicates = buildPublicationCalendarTargetPredicates(targets);
     const [reservations, occurrenceCandidates] = await Promise.all([
       client.managedBroadcastCalendarReservation.findMany({
-        where: { scheduledAt: { in: slots }, OR: targetPredicates },
+        where: {
+          scheduledAt: { in: slots },
+          OR: targetPredicates,
+          broadcast: { is: { dispatchProfile: PublicationDispatchProfile.PUBLIK_V1 } },
+        },
         orderBy: { scheduledAt: 'asc' },
         select: {
           broadcastId: true,
@@ -3293,6 +3288,7 @@ export class PublicationService {
           },
           publication: {
             is: {
+              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
               lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
               targets: { some: { OR: targetPredicates } },
             },
