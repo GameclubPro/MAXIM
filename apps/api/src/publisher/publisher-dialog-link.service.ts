@@ -21,6 +21,7 @@ export class PublisherDialogLinkService {
     const secrets = publisherSigningKeys.getSigningKeys();
     this.helper = secrets[0]
       ? new AdminDialogLinkHelper({
+          dialogProfile: 'publisher',
           appBaseUrl: null,
           explicitBotContactId: null,
           ownBotUserId: this.publisherBotId,

@@ -36,6 +36,7 @@ import { PublisherReadinessService, type PublisherReadyRoute } from './publisher
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import { PublisherDialogLinkService } from './publisher-dialog-link.service';
 import { PublisherBindingRefreshService } from './publisher-binding-refresh.service';
+import { PublisherChannelCommentDeliveryService } from './publisher-channel-comment-delivery.service';
 import {
   ChatEntityType,
   ManagedEntityAccessRole,
@@ -86,6 +87,7 @@ export class PublisherChatCommentDeliveryService {
     private readonly dialogLinks: PublisherDialogLinkService,
     private readonly bindingRefresh: PublisherBindingRefreshService,
     @Optional() private readonly dispatchHealth?: PublisherDispatchHealthService,
+    @Optional() private readonly channelDelivery?: PublisherChannelCommentDeliveryService,
   ) {
     this.markerStore = new ReplacementAttachMarkerStore(prisma);
     this.publisherBotId = credentials.getBotId();
@@ -93,6 +95,11 @@ export class PublisherChatCommentDeliveryService {
 
   async process(job: PublisherChatCommentJob, attempt: PublisherJobAttempt): Promise<void> {
     this.assertEnvelope(job);
+    if (job.kind === 'attach_channel_keyboard') {
+      if (!this.channelDelivery) throw new Error('Publisher channel keyboard delivery unavailable');
+      await this.channelDelivery.process(job);
+      return;
+    }
     if (job.kind === 'edit_comment_keyboard') {
       await this.processKeyboardEdit(job);
       return;

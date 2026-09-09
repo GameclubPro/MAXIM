@@ -2,6 +2,7 @@ export type InternalChannelDialogButtonIdentity = {
   chatId: string;
   kind: 'comments' | 'suggest';
   threadId: string | null;
+  profile?: 'publisher';
 };
 
 const TRUSTED_DIRECT_CHANNEL_DIALOG_HOSTS = new Set([
@@ -15,6 +16,7 @@ const TRUSTED_DIRECT_CHANNEL_DIALOG_HOSTS = new Set([
 
 export function readInternalChannelDialogButtonIdentity(
   value: unknown,
+  publisherBotId?: string,
 ): InternalChannelDialogButtonIdentity | null {
   const button = asRecord(value);
   const type = readLowerString(button?.type) ?? (button?.url !== undefined ? 'link' : null);
@@ -44,21 +46,25 @@ export function readInternalChannelDialogButtonIdentity(
     return null;
   }
 
-  return (
+  const identity =
     readChannelDialogStartIdentity(url.searchParams.get('startapp')) ??
-    readChannelDialogStartIdentity(url.searchParams.get('start'))
-  );
+    readChannelDialogStartIdentity(url.searchParams.get('start'));
+  return identity && publisherBotId && url.pathname === `/${publisherBotId}`
+    ? { ...identity, profile: 'publisher' }
+    : identity;
 }
 
 export function internalChannelDialogButtonIdentityKey(
   identity: InternalChannelDialogButtonIdentity,
 ): string {
-  return JSON.stringify([identity.chatId, identity.kind]);
+  return JSON.stringify([identity.chatId, identity.kind, identity.profile ?? 'moderation']);
 }
 
 export function readInternalChannelDialogButtonIdentitiesFromMessage(
   value: unknown,
   expectedChatId?: string,
+  profile: 'moderation' | 'publisher' = 'moderation',
+  publisherBotId?: string,
 ): InternalChannelDialogButtonIdentity[] {
   const message = asRecord(value);
   const body = asRecord(message?.body);
@@ -82,8 +88,12 @@ export function readInternalChannelDialogButtonIdentitiesFromMessage(
           continue;
         }
         for (const button of buttonRow) {
-          const identity = readInternalChannelDialogButtonIdentity(button);
-          if (!identity || (expectedChatId && identity.chatId !== expectedChatId)) {
+          const identity = readInternalChannelDialogButtonIdentity(button, publisherBotId);
+          if (
+            !identity ||
+            (identity.profile ?? 'moderation') !== profile ||
+            (expectedChatId && identity.chatId !== expectedChatId)
+          ) {
             continue;
           }
           const key = JSON.stringify([identity.chatId, identity.kind, identity.threadId]);
@@ -170,7 +180,12 @@ function readChannelDialogStartIdentity(
     if (!threadId && !/^[a-f0-9]{64}$/iu.test(token)) {
       return null;
     }
-    return { chatId, kind, threadId };
+    return {
+      chatId,
+      kind,
+      threadId,
+      ...(payload.p === 'publisher' ? { profile: 'publisher' as const } : {}),
+    };
   } catch {
     return null;
   }

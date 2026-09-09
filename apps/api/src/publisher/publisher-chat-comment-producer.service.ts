@@ -18,6 +18,7 @@ import {
   WebhookPreparationDeferredError,
 } from '../common/webhook-preparation-deferred.error';
 import { buildPublisherBotDescriptor } from './publisher-bot-descriptor';
+import { isChannelAutoPostMessage } from '../moderation/channel-auto-post-runtime';
 import {
   PublisherChatCommentAdmissionError,
   PublisherChatCommentQueueService,
@@ -56,9 +57,13 @@ export class PublisherChatCommentProducerService {
   async observeWebhook(update: MaxUpdate): Promise<void> {
     if (
       update.botId?.trim() !== this.publisherBotId ||
-      update.type.trim().toLowerCase() !== 'message_created' ||
-      update.message?.entityType === 'channel'
+      update.type.trim().toLowerCase() !== 'message_created'
     ) {
+      return;
+    }
+
+    if (update.message?.entityType === 'channel') {
+      await this.observeChannelPost(update);
       return;
     }
 
@@ -216,6 +221,68 @@ export class PublisherChatCommentProducerService {
       );
       throw new WebhookPreparationDeferredError(
         'Publisher chat-comment durable enqueue is unavailable',
+        WEBHOOK_PREPARATION_DEFER_DEFAULT_MS,
+        error,
+      );
+    }
+  }
+
+  private async observeChannelPost(update: MaxUpdate): Promise<void> {
+    if (!isChannelAutoPostMessage(update)) return;
+    const chatId = update.message?.chatId?.trim();
+    const messageId = update.message?.messageId?.trim();
+    const createdAt = new Date(update.message?.createdAt ?? '');
+    const now = new Date();
+    if (
+      !chatId ||
+      !messageId ||
+      !Number.isFinite(createdAt.getTime()) ||
+      createdAt.getTime() < now.getTime() - 24 * 60 * 60_000 ||
+      createdAt.getTime() > now.getTime() + 60_000
+    )
+      return;
+
+    const entity = await this.prisma.chat.findFirst({
+      where: {
+        id: chatId,
+        entityType: ChatEntityType.CHANNEL,
+        publisherBinding: {
+          is: { publisherBotId: this.publisherBotId, status: ChatBotMembershipStatus.ACTIVE },
+        },
+      },
+      select: {
+        publicationPolicy: { select: { publikEnabled: true, revision: true, updatedAt: true } },
+        publisherSettings: {
+          select: {
+            channelCommentsEnabled: true,
+            channelSuggestionsEnabled: true,
+            revision: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+    const settings = entity?.publisherSettings;
+    if (
+      !settings ||
+      entity?.publicationPolicy?.publikEnabled === false ||
+      (!settings.channelCommentsEnabled && !settings.channelSuggestionsEnabled) ||
+      createdAt < settings.updatedAt ||
+      (entity?.publicationPolicy && createdAt < entity.publicationPolicy.updatedAt)
+    )
+      return;
+    try {
+      await this.queue.enqueueChannelAttach({
+        chatId,
+        messageId,
+        publisherSettingsRevision: settings.revision,
+        publicationPolicyRevision: entity?.publicationPolicy?.revision ?? 0,
+        createdAt,
+      });
+    } catch (error: unknown) {
+      if (error instanceof PublisherChatCommentAdmissionError) return;
+      throw new WebhookPreparationDeferredError(
+        'Publisher channel keyboard durable enqueue is unavailable',
         WEBHOOK_PREPARATION_DEFER_DEFAULT_MS,
         error,
       );

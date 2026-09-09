@@ -6,6 +6,7 @@ import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherChatCommentDeliveryService } from '../publisher/publisher-chat-comment-delivery.service';
+import { PublisherChannelCommentDeliveryService } from '../publisher/publisher-channel-comment-delivery.service';
 import { PublisherChatCommentProcessor } from '../publisher/publisher-chat-comment.processor';
 import { PublisherChatCommentRecoveryService } from '../publisher/publisher-chat-comment-recovery.service';
 import {
@@ -202,6 +203,7 @@ const moderationProviders = [
   ...(roleRunsPublisher(getAppRole())
     ? [
         PublisherChatCommentDeliveryService,
+        PublisherChannelCommentDeliveryService,
         PublisherChatCommentProcessor,
         PublisherChatCommentRecoveryService,
         PublisherAutoReplyDeliveryService,

@@ -425,6 +425,9 @@ type MaxEditableMessageOptions = Pick<
   preserveExistingInlineKeyboard?: boolean;
   replaceCallbackPayloadPrefixes?: readonly string[];
   beforeEditMutation?: () => Promise<void>;
+  prepareInlineKeyboard?: (
+    message: Record<string, unknown> | null,
+  ) => Promise<MaxMessageButton[][] | null>;
   expectedSourceText?: string;
   expectedSourceMarkup?: readonly MaxTextMarkup[];
   expectedSourceAttachmentTypes?: readonly string[];
@@ -1433,6 +1436,11 @@ export class MaxClientService implements OnModuleDestroy {
   ) {
     return this.runWithMessageKeyboardEditLock(messageId, async (assertOwnership) => {
       const message = await this.getMessageById(messageId, requestOptions);
+      if (options?.prepareInlineKeyboard) {
+        const buttons = await options.prepareInlineKeyboard(message);
+        if (buttons === null) return;
+        options = { ...options, buttons };
+      }
       this.assertExpectedEditableMessageText(message, options);
       const attachments = this.buildEditableMessageAttachments(message, options);
       const sourceBody = this.asRecord(message?.body);
@@ -5713,7 +5721,7 @@ export class MaxClientService implements OnModuleDestroy {
     const existingDialogButtonKeys = new Set(
       preservedRows.flatMap((row) =>
         row.flatMap((button) => {
-          const identity = readInternalChannelDialogButtonIdentity(button);
+          const identity = this.readChannelDialogButtonIdentity(button);
           return identity ? [internalChannelDialogButtonIdentityKey(identity)] : [];
         }),
       ),
@@ -5722,7 +5730,7 @@ export class MaxClientService implements OnModuleDestroy {
     const resolvedPrimaryRows = primaryRows
       .map((row) =>
         row.filter((button) => {
-          const identity = readInternalChannelDialogButtonIdentity(button);
+          const identity = this.readChannelDialogButtonIdentity(button);
           if (!identity) {
             return true;
           }
@@ -5798,7 +5806,7 @@ export class MaxClientService implements OnModuleDestroy {
         continue;
       }
       for (const button of row) {
-        const identity = readInternalChannelDialogButtonIdentity(button);
+        const identity = this.readChannelDialogButtonIdentity(button);
         if (identity) {
           const key = internalChannelDialogButtonIdentityKey(identity);
           if (!existingDialogButtons.has(key)) {
@@ -5812,7 +5820,7 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((row): row is unknown[] => Array.isArray(row))
       .map((row) =>
         row.flatMap((button) => {
-          const identity = readInternalChannelDialogButtonIdentity(button);
+          const identity = this.readChannelDialogButtonIdentity(button);
           if (!identity) {
             return [button];
           }
@@ -5847,7 +5855,7 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((row): row is unknown[] => Array.isArray(row))
       .map((row) =>
         row.filter((button) => {
-          const dialogIdentity = readInternalChannelDialogButtonIdentity(button);
+          const dialogIdentity = this.readChannelDialogButtonIdentity(button);
           if (
             dialogIdentity &&
             representedDialogButtons.has(internalChannelDialogButtonIdentityKey(dialogIdentity))
@@ -5873,6 +5881,13 @@ export class MaxClientService implements OnModuleDestroy {
         buttons: mergedButtons ?? resolvedPrimaryRows,
       },
     };
+  }
+
+  private readChannelDialogButtonIdentity(value: unknown) {
+    return readInternalChannelDialogButtonIdentity(
+      value,
+      this.botRegistry.getPublisherBotDescriptor?.().id,
+    );
   }
 
   private readInlineKeyboardButtonIdentity(value: unknown): string | null {

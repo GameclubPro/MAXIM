@@ -430,6 +430,82 @@ describe('MAX action idempotency key normalization', () => {
 });
 
 describe('MaxClientService inline keyboard guardrails', () => {
+  it('prepares Publisher buttons from the locked snapshot without merging their data with Major', async () => {
+    const buildButton = (publisher: boolean) => {
+      const token = `cdt-${Buffer.from(JSON.stringify({ v: 1, d: publisher ? 'publisher-thread' : 'major-thread', s: 'a'.repeat(64) })).toString('base64url')}`;
+      const payload = {
+        v: 1,
+        k: 'channel-dialog',
+        c: 'channel-1',
+        m: 'comments',
+        t: token,
+        ...(publisher ? { p: 'publisher' } : {}),
+      };
+      return {
+        type: 'link' as const,
+        text: publisher ? 'Publisher comments' : 'Major comments',
+        url: `https://max.ru/${publisher ? 'publik' : 'major'}?startapp=cd-${Buffer.from(JSON.stringify(payload)).toString('base64url')}`,
+      };
+    };
+    const major = buildButton(false);
+    const publisher = buildButton(true);
+    const media = { type: 'image', payload: { token: 'image-token' } };
+    const message = {
+      body: {
+        mid: 'locked-post',
+        text: 'Original',
+        attachments: [media, { type: 'inline_keyboard', payload: { buttons: [[major]] } }],
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ status: 200, data: { messages: [message] } }))
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    const prepareInlineKeyboard = jest.fn().mockResolvedValue([[publisher]]);
+    await service.editMessageInlineKeyboard('channel-1', 'locked-post', null, {
+      prepareInlineKeyboard,
+      mergeExistingInlineKeyboard: true,
+      appendNewInlineKeyboardRows: true,
+      requireAllAttachmentsPreserved: true,
+    });
+    expect(prepareInlineKeyboard).toHaveBeenCalledWith(message);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        data: {
+          attachments: [
+            media,
+            { type: 'inline_keyboard', payload: { buttons: [[major], [publisher]] } },
+          ],
+        },
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('skips the MAX mutation when locked keyboard preparation finds no missing buttons', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(
+        of({
+          status: 200,
+          data: { messages: [{ body: { mid: 'already-decorated', attachments: [] } }] },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const beforeEditMutation = jest.fn();
+    await service.editMessageInlineKeyboard('channel-1', 'already-decorated', null, {
+      prepareInlineKeyboard: async () => null,
+      beforeEditMutation,
+    });
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(beforeEditMutation).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
   it('brands a frozen member-mutation error without replacing it', () => {
     const frozenError = Object.freeze(
       Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),

@@ -23,7 +23,7 @@ export class PublisherChatCommentAdmissionError extends Error {
 
 type PublisherCommentJobMetadata = {
   idempotencyKey: string;
-  sourceTag: 'chat_auto_comment' | 'comment_button_count';
+  sourceTag: 'chat_auto_comment' | 'channel_auto_post' | 'comment_button_count';
   retryPolicyName: 'publisher-chat-comment';
   createdAt: string;
 };
@@ -70,7 +70,23 @@ export type PublisherCommentKeyboardEditJob = QueueJobEnvelope<
 
 export type PublisherChatCommentJob =
   | PublisherChatCommentAttachJob
+  | PublisherChannelCommentAttachJob
   | PublisherCommentKeyboardEditJob;
+
+export type PublisherChannelCommentAttachJob = QueueJobEnvelope<
+  {
+    version: 1;
+    kind: 'attach_channel_keyboard';
+    chatId: string;
+    messageId: string;
+    threadId: string;
+    requiredBotId: string;
+    dialogBotId: string;
+    publisherSettingsRevision: number;
+    publicationPolicyRevision: number;
+  },
+  PublisherCommentJobMetadata
+>;
 
 const ATTACH_JOB_ATTEMPTS = 12;
 const KEYBOARD_EDIT_JOB_ATTEMPTS = 8;
@@ -263,6 +279,53 @@ export class PublisherChatCommentQueueService {
         createdAt: createdAt.toISOString(),
       },
       this.jobOptions(`publisher-comment-keyboard-${identity}`, KEYBOARD_EDIT_JOB_ATTEMPTS, false),
+    );
+  }
+
+  async enqueueChannelAttach(params: {
+    chatId: string;
+    messageId: string;
+    publisherSettingsRevision: number;
+    publicationPolicyRevision: number;
+    createdAt: Date;
+  }): Promise<void> {
+    const chatId = this.requireString(params.chatId, 'chatId');
+    const messageId = this.requireString(params.messageId, 'messageId');
+    const publisherSettingsRevision = this.requireRevision(
+      params.publisherSettingsRevision,
+      'publisherSettingsRevision',
+    );
+    const publicationPolicyRevision = this.requireRevision(
+      params.publicationPolicyRevision,
+      'publicationPolicyRevision',
+    );
+    const identity = this.hash(`${this.publisherBotId}\0${chatId}\0${messageId}`);
+    const threadId = [
+      identity.slice(0, 8),
+      identity.slice(8, 12),
+      identity.slice(12, 16),
+      identity.slice(16, 20),
+      identity.slice(20),
+    ].join('-');
+    await this.assertPublisherAdmissionEnabled();
+    await this.queue.add(
+      'attach-channel-keyboard',
+      {
+        version: 1,
+        kind: 'attach_channel_keyboard',
+        chatId,
+        messageId,
+        threadId,
+        requiredBotId: this.publisherBotId,
+        dialogBotId: this.publisherBotId,
+        publisherSettingsRevision,
+        publicationPolicyRevision,
+        idempotencyKey: `publisher-channel-${identity}`,
+        sourceTag: 'channel_auto_post',
+        retryPolicyName: 'publisher-chat-comment',
+        createdAt: params.createdAt.toISOString(),
+      },
+      this.jobOptions(`publisher-channel-${identity}`, ATTACH_JOB_ATTEMPTS, true),
     );
   }
 

@@ -17,6 +17,34 @@ function buildStartParam(chatId: string, kind: 'comments' | 'suggest', threadId:
 }
 
 describe('internal channel dialog button identity', () => {
+  it('isolates Publisher identity while retaining Major standby-bot dedupe', () => {
+    const start = buildStartParam('channel-1', 'comments', 'shared-thread');
+    const major = readInternalChannelDialogButtonIdentity({
+      type: 'link',
+      url: `https://max.ru/major?startapp=${start}`,
+    });
+    const publisher = readInternalChannelDialogButtonIdentity(
+      { type: 'link', url: `https://max.ru/publik?startapp=${start}` },
+      'publik',
+    );
+    expect(publisher?.profile).toBe('publisher');
+    expect(internalChannelDialogButtonIdentityKey(major!)).not.toBe(
+      internalChannelDialogButtonIdentityKey(publisher!),
+    );
+    const payload = JSON.parse(Buffer.from(start.slice(3), 'base64url').toString('utf8'));
+    payload.p = 'publisher';
+    const marked = {
+      type: 'link',
+      url: `https://max.ru/publik?startapp=cd-${Buffer.from(JSON.stringify(payload)).toString('base64url')}`,
+    };
+    const message = {
+      body: { attachments: [{ type: 'inline_keyboard', payload: { buttons: [[marked]] } }] },
+    };
+    expect(readInternalChannelDialogButtonIdentitiesFromMessage(message)).toEqual([]);
+    expect(
+      readInternalChannelDialogButtonIdentitiesFromMessage(message, 'channel-1', 'publisher'),
+    ).toEqual([publisher]);
+  });
   it('recognizes channel comments across thread-specific MAX miniapp links', () => {
     const first = readInternalChannelDialogButtonIdentity({
       type: 'link',

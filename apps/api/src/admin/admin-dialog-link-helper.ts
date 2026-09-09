@@ -32,6 +32,7 @@ type ProfileMentionStartPayload = {
 };
 
 type AdminDialogLinkHelperOptions = {
+  dialogProfile?: 'publisher';
   appBaseUrl: string | null;
   explicitBotContactId: string | null;
   ownBotUserId: string | null;
@@ -403,6 +404,7 @@ export class AdminDialogLinkHelper {
     const payload = JSON.stringify({
       v: 1,
       k: entityType === 'channel' ? 'channel-dialog' : 'chat-dialog',
+      ...(this.options.dialogProfile ? { p: this.options.dialogProfile } : {}),
       c: chatId,
       m: type,
       t: token,
