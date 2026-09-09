@@ -1,6 +1,7 @@
 import { publicationPostPublishSchema } from '@maxim/contracts/publication';
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA } from '../admin/publication-delivery-verification-state';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { type Prisma, PublicationPostActionStatus as Status } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,6 +18,7 @@ import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.se
 const POLL_MS = 5_000;
 const LEASE_MS = 120_000;
 const BATCH_SIZE = 20;
+const SWEEP_BUDGET_MS = 10_000;
 const MAX_DELETE_ATTEMPTS = 10;
 const MAX_PIN_ATTEMPTS = 10;
 const PIN_UNCONFIRMED = 'Закрепление не подтверждено. Проверьте пост в MAX.';
@@ -90,8 +92,9 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         take: decision.action === 'slow' ? 1 : BATCH_SIZE,
         select: actionSelect,
       });
+      const sweepStartedAt = Date.now();
       for (const row of rows) {
-        if (this.closing) break;
+        if (this.closing || Date.now() - sweepStartedAt >= SWEEP_BUDGET_MS) break;
         try {
           await this.processDelivery(row);
         } catch {
@@ -250,6 +253,17 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       try {
         await guard();
         await persist({ deleteStatus: Status.RUNNING, deleteAttemptCount: attempt });
+        // FLAG: Author-scheduled deletion makes absence expected. Disarm pending verification
+        // before HTTP; its old CAS cannot demote this delivery. Preserve completed verification.
+        await this.prisma.managedBroadcastDelivery.updateMany({
+          where: {
+            id: row.id,
+            postActionsToken: token,
+            status: 'SENT',
+            remoteMessageVerifiedAt: null,
+          },
+          data: PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
+        });
         try {
           await this.max.deleteMessage(row.targetChatId, row.remoteMessageId, {
             ...options,

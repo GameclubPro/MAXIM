@@ -1,4 +1,5 @@
 import { PublisherPublicationPostActionsService } from './publisher-publication-post-actions.service';
+import { hasPublicationDeliveryAutomatedVerificationState } from '../admin/publication-delivery-verification-state';
 
 const NOW = new Date('2026-09-09T12:00:00.000Z');
 
@@ -11,6 +12,8 @@ function setup(overrides: Record<string, unknown> = {}) {
     dispatchProfile: 'PUBLIK_V1',
     status: 'SENT',
     remoteMessageId: 'message-1',
+    remoteMessageVerifiedAt: null,
+    remoteMessageVerificationNextAt: NOW,
     sentAt: NOW,
     postActionsNextAt: NOW,
     postActionsToken: null,
@@ -37,6 +40,8 @@ function setup(overrides: Record<string, unknown> = {}) {
       ),
       updateMany: jest.fn(async ({ where, data }: any) => {
         if (where.status !== undefined && where.status !== row.status) return { count: 0 };
+        if (where.remoteMessageVerifiedAt === null && row.remoteMessageVerifiedAt !== null)
+          return { count: 0 };
         if (where.postActionsToken !== undefined && where.postActionsToken !== row.postActionsToken)
           return { count: 0 };
         if (
@@ -141,6 +146,40 @@ describe('Publisher publication post actions', () => {
       postActionsNextAt: null,
       deletedAt: new Date(),
     });
+    expect(row.status).toBe('SENT');
+    expect(row.remoteMessageVerifiedAt).toBeNull();
+    expect(hasPublicationDeliveryAutomatedVerificationState(row)).toBe(false);
+  });
+
+  it('preserves already completed verification when deleting a post', async () => {
+    const { service, row } = setup({
+      pinStatus: 'DONE',
+      sentAt: new Date(NOW.getTime() - 3_600_000),
+      remoteMessageVerifiedAt: NOW,
+      remoteMessageVerificationSource: 'AUTOMATED_STABLE',
+    });
+    await service.processDue();
+    expect(row).toMatchObject({
+      deleteStatus: 'DONE',
+      remoteMessageVerifiedAt: NOW,
+      remoteMessageVerificationSource: 'AUTOMATED_STABLE',
+    });
+  });
+
+  it('does not delete if pending verification cannot be disarmed durably', async () => {
+    const { service, max, prisma, row } = setup({
+      pinStatus: 'DONE',
+      sentAt: new Date(NOW.getTime() - 3_600_000),
+    });
+    const update = prisma.managedBroadcastDelivery.updateMany.getMockImplementation()!;
+    prisma.managedBroadcastDelivery.updateMany.mockImplementation(async (args) => {
+      if (args.data.remoteMessageVerificationNextAt === null)
+        throw new Error('database unavailable');
+      return update(args);
+    });
+    await service.processDue();
+    expect(max.deleteMessage).not.toHaveBeenCalled();
+    expect(row.deleteStatus).toBe('PENDING');
   });
 
   it('skips late pin and deletes an expired post after restart', async () => {
@@ -175,6 +214,20 @@ describe('Publisher publication post actions', () => {
   it('claims once across concurrent sweeps', async () => {
     const { service, max } = setup();
     await Promise.all([service.processDue(), service.processDue()]);
+    expect(max.pinMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('yields the shared Publisher lane after a slow action', async () => {
+    const { service, max, prisma, row } = setup();
+    prisma.managedBroadcastDelivery.findMany.mockResolvedValueOnce([
+      { ...row },
+      { ...row, id: 'delivery-2' },
+    ]);
+    max.pinMessage.mockImplementationOnce(async (_chat, _message, _notify, options) => {
+      await options.beforeMutation();
+      jest.setSystemTime(new Date(NOW.getTime() + 10_000));
+    });
+    await service.processDue();
     expect(max.pinMessage).toHaveBeenCalledTimes(1);
   });
 

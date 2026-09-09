@@ -1,6 +1,7 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Global, Module } from '@nestjs/common';
 import { MaxModule } from '../max/max.module';
+import { SystemModule } from '../system/system.module';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherBindingRefreshProcessor } from './publisher-binding-refresh.processor';
@@ -107,6 +108,7 @@ const sharedPublisherProviders = [
 @Module({
   imports: [
     MaxModule,
+    SystemModule,
     BullModule.registerQueue(
       { name: PUBLISHER_BINDING_REFRESH_QUEUE },
       { name: PUBLISHER_CHAT_COMMENT_QUEUE },
