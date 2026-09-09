@@ -21,14 +21,12 @@ export function resolveDialogTabWrapTarget(
 
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
-  const focusAtPanel = activeElement === panel;
-  const focusOutside = !panel.contains(activeElement);
-
-  if (reverse && (focusAtPanel || activeElement === first || focusOutside)) {
-    return last ?? panel;
-  }
-  if (!reverse && (focusAtPanel || activeElement === last || focusOutside)) {
-    return first ?? panel;
+  if (
+    activeElement === panel ||
+    !panel.contains(activeElement) ||
+    activeElement === (reverse ? first : last)
+  ) {
+    return (reverse ? last : first) ?? panel;
   }
   return null;
 }

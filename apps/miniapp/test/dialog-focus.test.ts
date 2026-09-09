@@ -31,3 +31,15 @@ test('dialog focus trap leaves focus movement inside the dialog unchanged', () =
   assert.equal(resolveDialogTabWrapTarget(panel, middle, [first, middle, last], true), null);
   assert.equal(resolveDialogTabWrapTarget(panel, middle, [first, middle, last], false), null);
 });
+
+test('dialog focus wraps at each boundary and recovers focus from outside', () => {
+  const { panel, first, last } = createFocusFixture();
+  assert.equal(resolveDialogTabWrapTarget(panel, first, [first, last], true), last);
+  assert.equal(resolveDialogTabWrapTarget(panel, last, [first, last], false), first);
+  assert.equal(resolveDialogTabWrapTarget(panel, null, [first, last], true), last);
+  assert.equal(resolveDialogTabWrapTarget(panel, null, [first, last], false), first);
+  assert.equal(resolveDialogTabWrapTarget(panel, first, [], false), panel);
+  assert.equal(resolveDialogTabWrapTarget(panel, first, [], true), panel);
+  assert.equal(resolveDialogTabWrapTarget(panel, first, [first], true), first);
+  assert.equal(resolveDialogTabWrapTarget(panel, first, [first], false), first);
+});

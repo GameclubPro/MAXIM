@@ -62,6 +62,7 @@ export function usePublicationCloudDraft(options: {
       !controller ||
       !options.enabled ||
       state.status === 'conflict' ||
+      state.status === 'unavailable' ||
       state.status === 'error' ||
       !controller.dirty
     )

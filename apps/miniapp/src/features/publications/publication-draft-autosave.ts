@@ -12,7 +12,14 @@ import {
 import { isPublicationDraftEmpty, type PublicationDraft } from './publication-model';
 import { createPublicationRequestId } from './publication-request-identity';
 
-export type DraftSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'conflict';
+export type DraftSaveStatus =
+  | 'idle'
+  | 'pending'
+  | 'saving'
+  | 'saved'
+  | 'error'
+  | 'conflict'
+  | 'unavailable';
 export type DraftSaveState = { status: DraftSaveStatus; error: unknown };
 type PendingSave = {
   id: string | null;
@@ -93,7 +100,8 @@ export class PublicationDraftAutosave {
   }
   flush(): Promise<PublicationDraft> {
     if (this.operation) return this.operation;
-    if (this.state.status === 'conflict') return Promise.reject(this.state.error);
+    if (this.state.status === 'conflict' || this.state.status === 'unavailable')
+      return Promise.reject(this.state.error);
     this.operation = this.run().finally(() => {
       this.operation = null;
     });
@@ -154,7 +162,14 @@ export class PublicationDraftAutosave {
       return this.current;
     } catch (error) {
       if ([400, 403, 404, 422].includes(statusCode(error) ?? 0)) this.pending = null;
-      this.report(statusCode(error) === 409 ? 'conflict' : 'error', error);
+      this.report(
+        statusCode(error) === 409
+          ? 'conflict'
+          : statusCode(error) === 404
+            ? 'unavailable'
+            : 'error',
+        error,
+      );
       throw error;
     }
   }

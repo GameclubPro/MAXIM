@@ -198,6 +198,30 @@ test('another device wins by revision; save-copy preserves local text', async ()
   );
 });
 
+test('a remotely deleted draft stops retries and can be saved as a separate copy', async () => {
+  const fixture = setup();
+  const saved = await saveServerPublicationDraft(
+    fixture.api,
+    null,
+    serverDraftRequest(initial(), 'deleted-draft'),
+  );
+  const engine = new PublicationDraftAutosave(
+    { ...draftFromServer(saved), text: 'Несохранённая правка' },
+    fixture.dependencies,
+  );
+  await deleteServerPublicationDraft(fixture.api, saved.publication.id, {
+    requestId: 'remote-delete',
+    expectedRevision: 1,
+  });
+  await assert.rejects(engine.flush(), { status: 404 });
+  assert.equal(fixture.writes.length, 1);
+  await assert.rejects(engine.flush(), { status: 404 });
+  assert.equal(fixture.writes.length, 1);
+  const copy = await engine.saveCopy();
+  assert.notEqual(copy.cloudDraft?.id, saved.publication.id);
+  assert.equal(copy.text, 'Несохранённая правка');
+});
+
 test('local storage restores confirmed video references only with a valid cloud identity', () => {
   const draft = {
     ...initial(),
