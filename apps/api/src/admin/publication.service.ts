@@ -1,4 +1,10 @@
 import {
+  mapPublicationPostActions,
+  publicationPostActionsInitialData,
+  publicationPostActionsRetryData,
+  type PublicationPostActionRetryContent,
+} from './publication-post-actions';
+import {
   createPublicationRequestSchema,
   decodePublicationListCursor,
   encodePublicationListCursor,
@@ -19,7 +25,6 @@ import {
   type ListPublicationsResponse,
   type PublicationCalendarAvailabilityResponse,
   type PublicationAudienceInput,
-  type PublicationContentInput,
   type PublicationDetails,
   type PublicationScheduleInput,
   type PublicationSummary,
@@ -65,7 +70,10 @@ import {
   PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
   resolvePublicationOccurrenceRollupStatus,
 } from './publication-delivery-verification-state';
-import { PublicationContentService } from './publication-content.service';
+import {
+  normalizePublicationContent,
+  PublicationContentService,
+} from './publication-content.service';
 import { selectCurrentRevisionFailedPublicationPage } from './publication-failed-page-query';
 import { isImportedEmptyPublicationDraft } from './publication-imported-draft';
 import {
@@ -1078,7 +1086,10 @@ export class PublicationService {
               },
               status: ManagedBroadcastDeliveryStatus.PENDING,
             },
-            data: { contentRevisionId },
+            data: {
+              contentRevisionId,
+              ...publicationPostActionsInitialData(request.content.postPublish, new Date()),
+            },
           });
           await tx.managedBroadcast.updateMany({
             where: {
@@ -1288,6 +1299,7 @@ export class PublicationService {
         remoteMessageId: row.remoteMessageId,
         lastError: row.lastError,
         sentAt: row.sentAt?.toISOString() ?? null,
+        postActions: mapPublicationPostActions(row),
       })),
       nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
     });
@@ -1336,7 +1348,7 @@ export class PublicationService {
       where: { id: occurrenceId, publicationId },
       include: {
         schedule: { select: { id: true, mode: true } },
-        contentRevision: { select: { revision: true } },
+        contentRevision: { select: { revision: true, postPublish: true } },
         _count: { select: { deliveries: true, legacyBroadcasts: true } },
       },
     });
@@ -1373,13 +1385,7 @@ export class PublicationService {
     if (!retryContentRevisionId) {
       throw new ConflictException('Содержимое публикации больше недоступно.');
     }
-    let latestContent: {
-      id: string;
-      revision: number;
-      text: string;
-      textFormat: PublicationContentFormat;
-      buttons: unknown;
-    } | null = null;
+    let latestContent: PublicationPostActionRetryContent | null = null;
     if (contentMode === 'latest') {
       if (
         parsed.data.expectedPublicationVersion !== publication.version ||
@@ -1398,6 +1404,7 @@ export class PublicationService {
           text: true,
           textFormat: true,
           buttons: true,
+          postPublish: true,
         },
       });
       if (!latestContent || parsed.data.expectedContentRevision !== latestContent.revision) {
@@ -1571,6 +1578,9 @@ export class PublicationService {
             dispatchBlockerCode: null,
             dispatchBlockedAt: null,
             contentRevisionId: retryContentRevisionId,
+            ...publicationPostActionsRetryData(
+              latestContent?.postPublish ?? occurrence.contentRevision?.postPublish,
+            ),
           },
         });
         if (resetDeliveries.count === 0) {
@@ -2345,6 +2355,10 @@ export class PublicationService {
             publicationOccurrenceId: occurrence.id,
             contentRevisionId: occurrence.contentRevisionId,
             ...publisherRoute.deliveryDataByChatId.get(targetChatId)!,
+            ...publicationPostActionsInitialData(
+              occurrence.contentRevision.postPublish,
+              occurrence.scheduledAt,
+            ),
           })),
         });
         await tx.managedBroadcastCalendarReservation.createMany({
@@ -3003,7 +3017,7 @@ export class PublicationService {
     return {
       ...request,
       title: request.title.trim(),
-      content: this.normalizeContent(request.content),
+      content: normalizePublicationContent(request.content),
     };
   }
 
@@ -3011,19 +3025,7 @@ export class PublicationService {
     return {
       ...request,
       ...(request.title !== undefined ? { title: request.title.trim() } : {}),
-      ...(request.content ? { content: this.normalizeContent(request.content) } : {}),
-    };
-  }
-
-  private normalizeContent(content: PublicationContentInput): PublicationContentInput {
-    return {
-      ...content,
-      text: content.text,
-      buttons: content.buttons.map((button) => ({
-        text: button.text.trim(),
-        url: button.url.trim(),
-        row: button.row,
-      })),
+      ...(request.content ? { content: normalizePublicationContent(request.content) } : {}),
     };
   }
 

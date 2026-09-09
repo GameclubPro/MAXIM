@@ -1,0 +1,98 @@
+@layer pages {
+  .publication-post-publish {
+    min-width: 0;
+  }
+  .publication-post-publish__toggle {
+    position: relative;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) 40px;
+    align-items: center;
+    gap: 12px;
+    min-height: 52px;
+    color: var(--color-ink);
+    font-size: 0.875rem;
+    cursor: pointer;
+  }
+  .publication-post-publish__toggle > svg {
+    width: 20px;
+    height: 20px;
+    color: var(--color-ink-muted);
+  }
+  .publication-post-publish__toggle > input {
+    position: absolute;
+    right: 0;
+    width: 40px;
+    height: 32px;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .publication-post-publish__track {
+    width: 40px;
+    height: 24px;
+    border-radius: 12px;
+    background: var(--color-border);
+    pointer-events: none;
+    transition: background 150ms;
+  }
+  .publication-post-publish__track::after {
+    content: '';
+    display: block;
+    width: 18px;
+    height: 18px;
+    margin: 3px;
+    border-radius: 50%;
+    background: var(--color-on-accent);
+    transition: transform 150ms;
+  }
+  .publication-post-publish__toggle input:checked + .publication-post-publish__track {
+    background: var(--color-accent);
+  }
+  .publication-post-publish__toggle input:checked + .publication-post-publish__track::after {
+    transform: translateX(16px);
+  }
+  .publication-post-publish__toggle input:focus-visible + .publication-post-publish__track {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+  .publication-post-publish__toggle:has(input:disabled) {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .publication-post-publish__nested {
+    margin-left: 32px;
+  }
+  .publication-post-publish__duration {
+    display: grid;
+    gap: 10px;
+    padding: 0 0 12px 32px;
+    min-width: 0;
+  }
+  .publication-post-publish__duration select,
+  .publication-post-publish__duration input {
+    min-width: 0;
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 7px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 0.875rem;
+  }
+  .publication-post-publish__duration small {
+    color: var(--color-ink-muted);
+    font-size: 0.75rem;
+  }
+  .publication-post-publish__custom {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .publication-post-publish__track,
+    .publication-post-publish__track::after {
+      transition: none;
+    }
+  }
+}

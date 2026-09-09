@@ -6,6 +6,7 @@ export type PublisherBackgroundWorkLane =
   | 'auto_reply_recovery'
   | 'auto_reply_authoring_recovery'
   | 'publication_deadline'
+  | 'publication_post_actions'
   | 'suggestion_recovery'
   | 'post_import_recovery';
 

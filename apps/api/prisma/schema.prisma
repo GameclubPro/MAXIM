@@ -2592,6 +2592,7 @@ model PublicationContentRevision {
   text          String                   @default("")
   textFormat    PublicationContentFormat @default(PLAIN) @map("text_format")
   buttons       Json                     @default("[]")
+  postPublish   Json                     @default("{}") @map("post_publish")
   createdAt     DateTime                 @default(now()) @map("created_at")
 
   publication             Publication                @relation("PublicationContentRevisions", fields: [publicationId], references: [id], onDelete: Cascade)
@@ -2856,6 +2857,16 @@ model ManagedBroadcastDelivery {
   lastErrorCode                         String?                                @map("last_error_code")
   lastError                             String?                                @map("last_error")
   sentAt                                DateTime?                              @map("sent_at")
+  postActionsNextAt                     DateTime?                              @map("post_actions_next_at")
+  postActionsToken                      String?                                @map("post_actions_token")
+  pinStatus                             PublicationPostActionStatus            @default(NONE) @map("pin_status")
+  pinError                              String?                                @map("pin_error")
+  pinAttemptCount                       Int                                    @default(0) @map("pin_attempt_count")
+  deleteStatus                          PublicationPostActionStatus            @default(NONE) @map("delete_status")
+  deleteAt                              DateTime?                              @map("delete_at")
+  deletedAt                             DateTime?                              @map("deleted_at")
+  deleteError                           String?                                @map("delete_error")
+  deleteAttemptCount                    Int                                    @default(0) @map("delete_attempt_count")
   lockedAt                              DateTime?                              @map("locked_at")
   lockToken                             String?                                @map("lock_token")
   publicationOccurrenceId               String?                                @map("publication_occurrence_id")
@@ -2880,8 +2891,19 @@ model ManagedBroadcastDelivery {
   @@index([targetChatId, remoteMessageId], map: "managed_broadcast_deliveries_target_remote_message_idx")
   @@index([publicationOccurrenceId, createdAt(sort: Desc), id(sort: Desc)], map: "managed_broadcast_deliveries_pub_occurrence_created_id_idx")
   @@index([contentRevisionId], map: "managed_broadcast_deliveries_content_revision_idx")
+  @@index([dispatchProfile, status, postActionsNextAt, id], map: "managed_broadcast_deliveries_post_actions_due_idx")
   @@index([dispatchProfile, status, lockedAt], map: "managed_broadcast_deliveries_dispatch_status_locked_idx")
   @@map("managed_broadcast_deliveries")
+}
+
+enum PublicationPostActionStatus {
+  NONE
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+  AMBIGUOUS
+  SKIPPED
 }
 
 model ManagedBroadcastCalendarReservation {

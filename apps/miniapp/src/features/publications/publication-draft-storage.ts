@@ -3,6 +3,7 @@ import { channelPostSignatureSettingsSchema } from '@maxim/contracts/channel-pos
 import { MAX_PUBLICATION_IMAGES } from '@maxim/contracts/publication';
 import { publisherEntityReadinessSchema } from '@maxim/contracts/publisher';
 import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
+import { publicationPostPublishSchema } from '@maxim/contracts/publication';
 import {
   createEmptyPublicationDraft,
   getPublicationTargetTitle,
@@ -259,6 +260,10 @@ export function parsePublicationDraftEnvelope(value: unknown): PublicationDraft 
   const [storedOnceDate = '', storedOnceTime = ''] = storedOnceValue.split('T');
   return {
     title: readString(draft.title),
+    postPublish: publicationPostPublishSchema.safeParse(draft.postPublish ?? {}).data ?? {
+      pin: 'none',
+      deleteAfterMinutes: null,
+    },
     text: readString(draft.text),
     textFormat: draft.textFormat === 'plain' ? 'plain' : 'markdown',
     images: readImages(draft.images),

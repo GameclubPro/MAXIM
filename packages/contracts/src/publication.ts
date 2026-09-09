@@ -13,6 +13,38 @@ export const MAX_PUBLICATION_LIST_CURSOR_LENGTH = 1_024;
 export const MAX_PUBLICATION_CALENDAR_WINDOW_DAYS = 62;
 export const MAX_LEGACY_PUBLICATION_LIST_LIMIT = 30;
 export const MAX_PUBLICATION_TEXT_LENGTH = 4_000;
+export const MAX_PUBLICATION_DELETE_AFTER_MINUTES = 30 * 24 * 60;
+
+export const publicationPostPublishSchema = z.object({
+  pin: z.enum(['none', 'silent', 'notify']).default('none'),
+  deleteAfterMinutes: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_PUBLICATION_DELETE_AFTER_MINUTES)
+    .nullable()
+    .default(null),
+});
+export type PublicationPostPublish = z.infer<typeof publicationPostPublishSchema>;
+
+export const publicationPostActionStatusSchema = z.enum([
+  'NONE',
+  'PENDING',
+  'RUNNING',
+  'DONE',
+  'FAILED',
+  'AMBIGUOUS',
+  'SKIPPED',
+]);
+export const publicationPostActionsSchema = z.object({
+  pinStatus: publicationPostActionStatusSchema,
+  pinError: z.string().nullable(),
+  deleteStatus: publicationPostActionStatusSchema,
+  deleteAt: z.string().datetime().nullable(),
+  deletedAt: z.string().datetime().nullable(),
+  deleteError: z.string().nullable(),
+});
+export type PublicationPostActions = z.infer<typeof publicationPostActionsSchema>;
 
 export const publicationErrorCodeSchema = z.enum([
   'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
@@ -145,6 +177,7 @@ export type PublicationAsset = z.infer<typeof publicationAssetSchema>;
 
 export const publicationContentInputSchema = z
   .object({
+    postPublish: publicationPostPublishSchema.optional(),
     text: z.string().max(MAX_PUBLICATION_TEXT_LENGTH).default(''),
     textFormat: publicationTextFormatSchema.default('plain'),
     buttons: z.array(publicationButtonSchema).max(MAX_PUBLICATION_BUTTONS).default([]),
@@ -201,6 +234,7 @@ export const publicationContentInputSchema = z
 export type PublicationContentInput = z.infer<typeof publicationContentInputSchema>;
 
 export const publicationContentSchema = z.object({
+  postPublish: publicationPostPublishSchema.optional(),
   revision: z.number().int().min(1),
   text: z.string(),
   textFormat: publicationTextFormatSchema,
@@ -456,6 +490,7 @@ export const publicationOccurrenceSummarySchema = z.object({
 export type PublicationOccurrenceSummary = z.infer<typeof publicationOccurrenceSummarySchema>;
 
 export const publicationSummarySchema = z.object({
+  postPublish: publicationPostPublishSchema.optional(),
   id: z.string(),
   title: z.string(),
   lifecycle: publicationLifecycleSchema,
@@ -694,6 +729,7 @@ export const listLegacyPublicationsResponseSchema = z.object({
 export type ListLegacyPublicationsResponse = z.infer<typeof listLegacyPublicationsResponseSchema>;
 
 export const publicationDeliverySchema = z.object({
+  postActions: publicationPostActionsSchema.optional(),
   id: z.string(),
   occurrenceId: z.string(),
   target: publicationTargetSchema,

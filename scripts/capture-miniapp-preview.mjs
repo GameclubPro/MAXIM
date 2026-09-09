@@ -975,6 +975,33 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-post-actions',
+    beforeShot: async (page) => {
+      const section = page.locator('.publication-post-publish');
+      await section.waitFor({ state: 'visible' });
+      await section.getByRole('switch', { name: 'Закрепить пост', exact: true }).check();
+      const notify = section.getByRole('switch', { name: 'С уведомлением', exact: true });
+      if (!(await notify.isChecked())) throw new Error('New pins must notify by default.');
+      await notify.uncheck();
+      await section.getByRole('switch', { name: 'Закрепить пост', exact: true }).uncheck();
+      await section.getByRole('switch', { name: 'Закрепить пост', exact: true }).check();
+      if (await notify.isChecked()) throw new Error('Pin toggle lost the silent preference.');
+      await notify.check();
+      const autoDelete = section.getByRole('switch', { name: 'Удалить через', exact: true });
+      await autoDelete.check();
+      await section.getByLabel('Срок автоудаления', { exact: true }).selectOption('custom');
+      await section.getByLabel('Единица срока удаления', { exact: true }).selectOption('1');
+      const duration = section.getByRole('spinbutton', { name: 'Период до удаления', exact: true });
+      await duration.fill('90');
+      await duration.blur();
+      await autoDelete.uncheck();
+      await autoDelete.check();
+      if ((await duration.inputValue()) !== '90')
+        throw new Error('Auto-delete toggle lost its custom delay.');
+      await section.scrollIntoViewIfNeeded();
+    },
+  },
+  {
     name: 'publications-publisher-buttons-empty',
     beforeShot: async (page) => {
       const { sheet, trigger } = await openPublisherButtonsSheet(page);

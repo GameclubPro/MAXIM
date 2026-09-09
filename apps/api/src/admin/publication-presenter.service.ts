@@ -1,6 +1,7 @@
 import {
   MAX_PUBLICATION_TARGETS,
   publicationDetailsSchema,
+  publicationPostPublishSchema,
   publicationOccurrenceSummarySchema,
   publicationScheduleInputSchema,
   publicationScheduleSchema,
@@ -268,6 +269,7 @@ export class PublicationPresenterService {
             null,
           );
     return publicationSummarySchema.parse({
+      postPublish: publicationPostPublishSchema.parse(content?.postPublish ?? {}),
       id: row.id,
       title: row.title,
       lifecycle: row.lifecycle,
@@ -322,6 +324,7 @@ export class PublicationPresenterService {
     return publicationDetailsSchema.parse({
       ...summary,
       content: {
+        postPublish: publicationPostPublishSchema.parse(content.postPublish ?? {}),
         revision: content.revision,
         text: content.text,
         textFormat: content.textFormat === PublicationContentFormat.MARKDOWN ? 'markdown' : 'plain',

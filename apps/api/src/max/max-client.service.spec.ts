@@ -8142,6 +8142,55 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('pins with explicit notification and executes the durable fence before HTTP', async () => {
+    const beforeMutation = jest.fn().mockResolvedValue(undefined);
+    const httpService = {
+      request: jest.fn(() => {
+        expect(beforeMutation).toHaveBeenCalledTimes(1);
+        return of({ data: { success: true } });
+      }),
+    };
+    const service = createService(httpService);
+    await service.pinMessage('chat-1', 'mid-1', true, {
+      botId: '777000_bot',
+      trafficClass: 'background',
+      timeoutMs: 10_000,
+      beforeMutation,
+    });
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'put',
+        timeout: 10_000,
+        data: { message_id: 'mid-1', notify: true },
+        headers: expect.objectContaining({ Authorization: 'test-token' }),
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('does not send a pin after its pre-dispatch fence rejects', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    await expect(
+      service.pinMessage('chat-1', 'mid-1', true, {
+        beforeMutation: async () => {
+          throw new Error('lease lost');
+        },
+      }),
+    ).rejects.toThrow('lease lost');
+    expect(httpService.request).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it.each([{}, null, { success: false }])(
+    'does not accept an unconfirmed pin response %j',
+    async (data) => {
+      const service = createService({ request: jest.fn(() => of({ data })) });
+      await expect(service.pinMessage('chat-1', 'mid-1', true)).rejects.toThrow();
+      await service.onModuleDestroy();
+    },
+  );
+
   it('sends MAX message history boundaries as Unix milliseconds', async () => {
     const from = new Date('2026-03-06T00:00:00.123Z');
     const to = '2026-03-07T12:00:00.456Z';

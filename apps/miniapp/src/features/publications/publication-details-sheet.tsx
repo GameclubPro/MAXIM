@@ -22,6 +22,11 @@ import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus
 import { useNativeBackHandler } from '../../lib/native-back';
 import { formatPublicationDeliveryError } from './publication-delivery-error';
 import {
+  publicationPostActionLabels,
+  publicationPostActionsPollingInterval,
+  publicationPostPublishLabels,
+} from './publication-post-actions-presentation';
+import {
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
   getPublicationDetailsPollingInterval,
@@ -215,12 +220,20 @@ export function PublicationDetailsSheet({
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: open && ambiguousPhaseComplete,
-    refetchInterval: (query) =>
-      shouldPollPublicationDeliveryPages(shouldPollDeliveries, query.state.data?.pages)
-        ? detailsQuery.data?.dispatchIssue
+    refetchInterval: (query) => {
+      if (shouldPollPublicationDeliveryPages(shouldPollDeliveries, query.state.data?.pages)) {
+        return detailsQuery.data?.dispatchIssue
           ? PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS
-          : 5_000
-        : false,
+          : 5_000;
+      }
+      const intervals =
+        query.state.data?.pages.flatMap((page) =>
+          page.items
+            .map((item) => publicationPostActionsPollingInterval(item.postActions))
+            .filter((interval): interval is number => interval !== false),
+        ) ?? [];
+      return intervals.length > 0 ? Math.min(...intervals) : false;
+    },
   });
 
   useEffect(() => {
@@ -440,6 +453,15 @@ export function PublicationDetailsSheet({
                 </div>
               </section>
 
+              {publicationPostPublishLabels(details.content.postPublish).length > 0 ? (
+                <section className="publication-details-section">
+                  <strong>После публикации</strong>
+                  {publicationPostPublishLabels(details.content.postPublish).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))}
+                </section>
+              ) : null}
+
               <section className="publication-details-section">
                 <strong>Запуски</strong>
                 <div className="publication-occurrences">
@@ -546,6 +568,22 @@ export function PublicationDetailsSheet({
                             >
                               {DELIVERY_STATUS_LABELS[delivery.status]}
                             </small>
+                            {publicationPostActionLabels(
+                              delivery.postActions,
+                              details.schedule?.timezone,
+                            ).map((label) => (
+                              <small key={label}>{label}</small>
+                            ))}
+                            {delivery.postActions?.pinError ? (
+                              <small className="publication-deliveries__error">
+                                {delivery.postActions.pinError}
+                              </small>
+                            ) : null}
+                            {delivery.postActions?.deleteError ? (
+                              <small className="publication-deliveries__error">
+                                {delivery.postActions.deleteError}
+                              </small>
+                            ) : null}
                             {staleContentRevision ? (
                               <small className="publication-deliveries__revision">
                                 Версия {staleContentRevision}

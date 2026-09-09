@@ -1055,15 +1055,29 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  async pinMessage(chatId: string, messageId: string, notify = false): Promise<void> {
-    await this.executeMutation(chatId, async () => {
-      await this.request('put', `/chats/${chatId}/pin`, {
-        data: {
-          message_id: messageId,
-          notify,
-        },
-      });
-    });
+  async pinMessage(
+    chatId: string,
+    messageId: string,
+    notify = false,
+    options: MaxApiRequestOptions & { beforeMutation?: () => Promise<void> } = {},
+  ): Promise<void> {
+    await this.executeMutation(
+      chatId,
+      async () => {
+        await options.beforeMutation?.();
+        const response = await this.request<{ success?: boolean }>('put', `/chats/${chatId}/pin`, {
+          ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
+          data: {
+            message_id: messageId,
+            notify,
+          },
+        });
+        if (response?.success !== true) {
+          throw new Error('MAX pin response did not confirm success');
+        }
+      },
+      options,
+    );
   }
 
   async sendMessage(

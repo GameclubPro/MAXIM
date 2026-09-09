@@ -10,6 +10,8 @@ import type {
 import {
   MAX_PUBLICATION_EXPLICIT_SLOTS,
   MAX_PUBLICATION_TEXT_LENGTH,
+  publicationPostPublishSchema,
+  type PublicationPostPublish,
   type CreatePublicationRequest,
   type PublicationAsset,
   type PublicationContentInput,
@@ -208,6 +210,7 @@ export function getPublicationTargetTitle(
 }
 
 export type PublicationDraft = {
+  postPublish: PublicationPostPublish;
   title: string;
   text: string;
   textFormat: BroadcastTextFormat;
@@ -739,6 +742,7 @@ export function hasSamePublicationTargetMetadata(
 
 export function createEmptyPublicationDraft(targets: PublicationTarget[] = []): PublicationDraft {
   return {
+    postPublish: { pin: 'none', deleteAfterMinutes: null },
     title: '',
     text: '',
     textFormat: 'markdown',
@@ -785,6 +789,8 @@ export function createPublicationDuplicateDraft(draft: PublicationDraft): Public
 
 export function isPublicationDraftEmpty(draft: PublicationDraft): boolean {
   return !(
+    draft.postPublish.pin !== 'none' ||
+    draft.postPublish.deleteAfterMinutes !== null ||
     draft.title.trim() ||
     draft.text.trim() ||
     draft.images.length > 0 ||
@@ -814,6 +820,8 @@ export function hasPublicationDraftChanges(
     initialDraft.title === currentDraft.title &&
     initialDraft.text === currentDraft.text &&
     initialDraft.textFormat === currentDraft.textFormat &&
+    initialDraft.postPublish.pin === currentDraft.postPublish.pin &&
+    initialDraft.postPublish.deleteAfterMinutes === currentDraft.postPublish.deleteAfterMinutes &&
     initialDraft.buttonEnabled === currentDraft.buttonEnabled &&
     initialDraft.timingMode === currentDraft.timingMode &&
     initialDraft.scheduleKind === currentDraft.scheduleKind &&
@@ -922,6 +930,7 @@ export function rebasePublicationDraft(
 
   return {
     ...latest,
+    postPublish: changed(['postPublish']) ? local.postPublish : latest.postPublish,
     title: baseline.title !== local.title ? local.title : latest.title,
     text: textChanged ? local.text : latest.text,
     textFormat: textChanged ? local.textFormat : latest.textFormat,
@@ -1002,6 +1011,7 @@ export function buildPublicationContent(draft: PublicationDraft): PublicationCon
 
   return {
     text: draft.text.trim(),
+    postPublish: draft.postPublish,
     textFormat: draft.textFormat,
     buttons,
     media,
@@ -1120,7 +1130,10 @@ export function buildTestPublicationRequest(
   const sourceTarget = draft.targets[0];
   return {
     requestId,
-    content: buildPublicationContent(draft),
+    content: {
+      ...buildPublicationContent(draft),
+      postPublish: { pin: 'none', deleteAfterMinutes: null },
+    },
     sourceTarget: {
       chatId: sourceTarget?.id ?? '',
       entityType: sourceTarget?.entityType ?? 'chat',
@@ -1161,6 +1174,7 @@ export function createPublicationDraftFromDetails(
   return {
     ...fallback,
     title: details.title,
+    postPublish: publicationPostPublishSchema.parse(details.content.postPublish ?? {}),
     text: details.content.text,
     textFormat: details.content.textFormat,
     buttons: details.content.buttons.map(({ text, url }) => ({ text, url })),

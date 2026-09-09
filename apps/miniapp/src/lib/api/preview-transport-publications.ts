@@ -284,6 +284,7 @@ export function buildPreviewPublicationDetails(
     : null;
 
   const publication = publicationDetailsSchema.parse({
+    postPublish: request.content.postPublish,
     id: options.id,
     title: request.title,
     lifecycle,
@@ -304,6 +305,7 @@ export function buildPreviewPublicationDetails(
     updatedAt,
     content: {
       revision: options.version ?? 1,
+      postPublish: request.content.postPublish,
       text: request.content.text,
       textFormat: request.content.textFormat,
       buttons: request.content.buttons,
@@ -691,6 +693,7 @@ export function buildPreviewPublicationContentInput(
   publication: PublicationDetails,
 ): PublicationContentInput {
   return {
+    postPublish: publication.content.postPublish,
     text: publication.content.text,
     textFormat: publication.content.textFormat,
     buttons: publication.content.buttons,

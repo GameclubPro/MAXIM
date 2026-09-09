@@ -58,6 +58,7 @@ import {
 import { PublisherSuggestionAdminCallbackObserverService } from './publisher-suggestion-admin-callback-observer.service';
 import { PUBLISHER_START_QUEUE, PublisherStartQueueService } from './publisher-start.queue';
 import { PublisherStartProcessor } from './publisher-start.processor';
+import { PublisherPublicationPostActionsService } from './publisher-publication-post-actions.service';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -73,6 +74,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherAutoReplyAuthoringRecoveryService,
       PublisherAutoReplyContentCaptureService,
       PublisherStartProcessor,
+      PublisherPublicationPostActionsService,
     ]
   : [];
 

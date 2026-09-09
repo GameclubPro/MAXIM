@@ -1,4 +1,5 @@
 import {
+  publicationPostPublishSchema,
   type PublicationContentInput,
   type PublicationMediaInput,
   type TestPublicationRequest,
@@ -23,6 +24,20 @@ import { canonicalizeAdminMaxMediaFileName } from './admin-max-media-file-name';
 
 const PUBLICATION_VIDEO_MIME_TYPE_FALLBACK = 'application/octet-stream';
 
+export function normalizePublicationContent(
+  content: PublicationContentInput,
+): PublicationContentInput {
+  return {
+    ...content,
+    text: content.text,
+    buttons: content.buttons.map((button) => ({
+      text: button.text.trim(),
+      url: button.url.trim(),
+      row: button.row,
+    })),
+  };
+}
+
 type PersistedAssetInput = {
   sha256: string;
   mimeType: string;
@@ -43,6 +58,7 @@ type PreparedAssetInput =
   | ({ kind: 'prepared' } & Omit<PersistedAssetInput, 'existingAssetId'>);
 
 export type PreparedPublicationContentRevision = {
+  postPublish?: PublicationContentInput['postPublish'];
   text: string;
   textFormat: PublicationContentInput['textFormat'];
   buttons: PublicationContentInput['buttons'];
@@ -60,6 +76,7 @@ export class PublicationContentService {
     content: PublicationContentInput,
   ): Promise<PreparedPublicationContentRevision> {
     return {
+      postPublish: publicationPostPublishSchema.parse(content.postPublish ?? {}),
       text: content.text,
       textFormat: content.textFormat,
       buttons: content.buttons,
@@ -123,6 +140,7 @@ export class PublicationContentService {
             ? PublicationContentFormat.MARKDOWN
             : PublicationContentFormat.PLAIN,
         buttons: content.buttons as Prisma.InputJsonValue,
+        postPublish: publicationPostPublishSchema.parse(content.postPublish ?? {}),
       },
       select: { id: true },
     });

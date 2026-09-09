@@ -157,6 +157,8 @@ import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/publications-page.css';
 import '../features/publications/publication-draft-resume.css';
 import '../features/publications/publication-workbench.css';
+import { PublicationPostPublishFields } from '../features/publications/publication-post-publish-fields';
+import { publicationPostPublishLabels } from '../features/publications/publication-post-actions-presentation';
 
 const LazyPublicationDetailsSheet = lazy(() =>
   import('../features/publications/publication-details-sheet').then((module) => ({
@@ -1862,7 +1864,11 @@ export function PublicationsPage({
         eyebrow={getPublicationFeedStatusLabel(publication)}
         tone={getLifecycleTone(publication)}
         busy={pending}
-        meta={[formatPublicationTargets(publication), formatPublicationSchedule(publication)]}
+        meta={[
+          formatPublicationTargets(publication),
+          formatPublicationSchedule(publication),
+          ...publicationPostPublishLabels(publication.postPublish),
+        ]}
         primaryAction={{ label: 'Открыть детали', onClick: () => setDetailsTarget(publication) }}
         canEdit={isPublisherProfile && actionCapabilities.canEdit}
         canPause={actionCapabilities.canPause}
@@ -2657,6 +2663,12 @@ export function PublicationsPage({
           </Suspense>
 
           {renderTiming()}
+
+          <PublicationPostPublishFields
+            value={draft.postPublish}
+            disabled={isBusy}
+            onChange={(postPublish) => setDraft((current) => ({ ...current, postPublish }))}
+          />
 
           {fieldError &&
           !fieldError.includes('получател') &&
