@@ -52,6 +52,8 @@ import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationPublisherTargetRefreshService } from './publication-publisher-target-refresh.service';
 import { PublicationRunnerService } from './publication-runner.service';
 import { PublicationService } from './publication.service';
+import { PublicationPostActionCommandsService } from './publication-post-action-commands.service';
+import { PublicationPostActionsController } from './publication-post-actions.controller';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherPublicationDispatchRunnerService } from './publisher-publication-dispatch-runner.service';
@@ -129,6 +131,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminPollController,
     AdminManualModerationController,
     PublicationController,
+    PublicationPostActionsController,
     PublisherController,
     SafetyDeskController,
     SupportRequestsController,
@@ -169,6 +172,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublicationPresenterService,
     PublicationPublisherTargetRefreshService,
     PublicationService,
+    PublicationPostActionCommandsService,
     PublicationPublisherRoutingService,
     PublisherDialogContextService,
     PublicationRunnerService,

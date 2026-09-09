@@ -1,7 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
-import { useDialogFocusTrap } from '../../lib/dialog-focus';
+import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { NATIVE_BACK_MODAL_CONFIRM_PRIORITY, useNativeBackHandler } from '../../lib/native-back';
 import './action-confirm-sheet.css';
 
@@ -94,7 +94,7 @@ export function ActionConfirmSheet({
     const previousBodyOverflow = body.style.overflow;
     const previousDocumentOverflow = documentElement.style.overflow;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') {
+      if (event.key !== 'Escape' || !panelRef.current || !isTopmostModalDialog(panelRef.current)) {
         return;
       }
 

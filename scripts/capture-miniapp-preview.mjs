@@ -1031,6 +1031,23 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-delivery-actions',
+    beforeShot: async (page) => {
+      await page
+        .locator('[data-publication-id="publication-completed"] .publication-feed-card__surface')
+        .click();
+      await page.getByRole('button', { name: /Изменить время удаления:/u }).click();
+      let dialog = page.getByRole('dialog', { name: 'Изменить время удаления?' });
+      await dialog.getByLabel('Новый срок удаления').selectOption('60');
+      await dialog.getByRole('button', { name: 'Изменить время удаления', exact: true }).click();
+      await page.getByRole('button', { name: /Отменить автоудаление:/u }).click();
+      dialog = page.getByRole('dialog', { name: 'Отменить автоудаление?' });
+      await dialog.getByRole('button', { name: 'Отменить автоудаление', exact: true }).click();
+      await page.getByText('Автоудаление отменено', { exact: true }).first().waitFor();
+      await page.locator('.publication-deliveries').scrollIntoViewIfNeeded();
+    },
+  },
+  {
     name: 'publications-publisher-compose-recurrence',
     beforeShot: async (page) => {
       await page.locator('.publications-editor').waitFor({ state: 'visible' });

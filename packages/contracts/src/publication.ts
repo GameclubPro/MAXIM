@@ -36,7 +36,21 @@ export const publicationPostActionStatusSchema = z.enum([
   'AMBIGUOUS',
   'SKIPPED',
 ]);
+export const publicationPostActionCommandSchema = z.enum([
+  'cancel_delete',
+  'reschedule_delete',
+  'retry_delete',
+  'retry_pin',
+]);
+export type PublicationPostActionCommand = z.infer<typeof publicationPostActionCommandSchema>;
+export type { PublicationPostActionRequest } from './publication-post-action-request.js';
 export const publicationPostActionsSchema = z.object({
+  version: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
+  busy: z.boolean().optional(),
+  allowedActions: z.array(publicationPostActionCommandSchema).optional(),
   pinStatus: publicationPostActionStatusSchema,
   pinError: z.string().nullable(),
   deleteStatus: publicationPostActionStatusSchema,

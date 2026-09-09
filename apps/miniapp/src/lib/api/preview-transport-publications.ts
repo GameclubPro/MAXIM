@@ -15,6 +15,7 @@ import {
   publicationCalendarAvailabilityRequestSchema,
   publicationCalendarAvailabilityResponseSchema,
   publicationDetailsSchema,
+  type PublicationPostActions,
   publicationTargetsRefreshResponseSchema,
   resolvePublicationAmbiguousDeliveryRequestSchema,
   retryPublicationOccurrenceRequestSchema,
@@ -30,6 +31,7 @@ import {
   type PublicationScheduleInput,
   type PublicationTarget,
 } from '@maxim/contracts/publication';
+import { publicationPostActionRequestSchema } from '@maxim/contracts/publication-post-action-request';
 import {
   PREVIEW_CHANNEL_ID,
   PREVIEW_CHANNEL_TITLE,
@@ -44,6 +46,8 @@ import {
 } from './preview-transport-runtime';
 import { addDays, addHours, cloneJson, parseJsonBody } from './preview-transport-shared';
 import { stripSupportedMarkdownToPlainText } from '../max-markdown';
+
+const previewPostActionRequests = new WeakMap<PreviewState, Map<string, string>>();
 import { normalizeLegacyMultilineMarkdown } from '../max-markdown-multiline';
 
 function resolvePublicationContentPreview(content: PublicationContentInput): string {
@@ -596,6 +600,17 @@ export function createPreviewPublications(
       delivery.attemptCount = 1;
       delivery.remoteMessageId = 'preview-message-completed';
       delivery.sentAt = addDays(now, -8).toISOString();
+      delivery.postActions = {
+        version: '0'.repeat(64),
+        busy: false,
+        allowedActions: ['reschedule_delete'],
+        pinStatus: 'NONE',
+        pinError: null,
+        deleteStatus: 'NONE',
+        deleteAt: null,
+        deletedAt: null,
+        deleteError: null,
+      };
     }
   }
 
@@ -1114,6 +1129,76 @@ export function handlePublicationsRequest(
 
   if (segments.length === 2 && method === 'GET') {
     return cloneJson(syncPreviewPublication(state, publicationId));
+  }
+
+  if (
+    segments.length === 5 &&
+    segments[2] === 'deliveries' &&
+    segments[4] === 'post-actions' &&
+    method === 'POST'
+  ) {
+    const request = publicationPostActionRequestSchema.parse(parseJsonBody(init));
+    const delivery = state.publicationDeliveries.find(
+      (row) =>
+        row.id === decodeURIComponent(segments[3]!) &&
+        publication.occurrences.some((occurrence) => occurrence.id === row.occurrenceId),
+    );
+    const current = delivery?.postActions;
+    if (!delivery || !current?.version || delivery.status !== 'SENT')
+      throw new Error('Доставка не найдена.');
+    const key = `${publication.id}:${delivery.id}:${request.requestId}`;
+    const fingerprint = JSON.stringify(request);
+    const requests = previewPostActionRequests.get(state) ?? new Map<string, string>();
+    previewPostActionRequests.set(state, requests);
+    const prior = requests.get(key);
+    if (prior) {
+      if (prior !== fingerprint) throw new Error('Идентификатор запроса уже использован.');
+      return cloneJson(current);
+    }
+    if (
+      current.version !== request.expectedVersion ||
+      current.busy ||
+      !current.allowedActions?.includes(request.action)
+    )
+      throwPreviewPublicationError(
+        'PUBLICATION_REVISION_CONFLICT',
+        'Состояние поста изменилось. Обновите его.',
+      );
+    const next: PublicationPostActions = {
+      ...current,
+      version: (BigInt(`0x${current.version}`) + 1n).toString(16).padStart(64, '0'),
+    };
+    if (request.action === 'reschedule_delete') {
+      const delay = Date.parse(request.deleteAt) - Date.now();
+      if (delay < 30_000 || delay > 30 * 24 * 3_600_000)
+        throw new Error('Выберите время удаления от 30 секунд до 30 дней в будущем.');
+      Object.assign(next, {
+        deleteStatus: 'PENDING',
+        deleteAt: request.deleteAt,
+        deleteError: null,
+      });
+    } else if (request.action === 'cancel_delete')
+      Object.assign(next, { deleteStatus: 'SKIPPED', deleteAt: null, deleteError: null });
+    else if (request.action === 'retry_pin')
+      Object.assign(next, { pinStatus: 'DONE', pinError: null });
+    else
+      Object.assign(next, {
+        deleteStatus: 'DONE',
+        deletedAt: new Date().toISOString(),
+        deleteError: null,
+      });
+    next.allowedActions =
+      next.deleteStatus === 'DONE'
+        ? []
+        : [
+            'reschedule_delete',
+            ...(next.deleteStatus === 'PENDING' ? ['cancel_delete' as const] : []),
+            ...(next.deleteStatus === 'FAILED' ? ['retry_delete' as const] : []),
+            ...(next.pinStatus === 'FAILED' ? ['retry_pin' as const] : []),
+          ];
+    delivery.postActions = next;
+    requests.set(key, fingerprint);
+    return cloneJson(next);
   }
 
   if (

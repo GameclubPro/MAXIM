@@ -71,7 +71,7 @@ export function publicationPostActionLabels(
     DONE: 'Удалён',
     FAILED: 'Не удалось удалить',
     AMBIGUOUS: 'Удаление требует проверки',
-    SKIPPED: 'Удаление пропущено',
+    SKIPPED: 'Автоудаление отменено',
   };
   return [pinLabels[actions.pinStatus], deleteLabels[actions.deleteStatus]].filter(
     (value): value is string => Boolean(value),

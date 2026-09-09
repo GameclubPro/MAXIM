@@ -544,6 +544,13 @@ const baseScenarios = [
       },
     ],
     [
+      'publications-publisher-delivery-actions',
+      {
+        searchParams: { profile: 'publisher', view: 'history' },
+        features: ['publisher', 'publications'],
+      },
+    ],
+    [
       'publications-publisher-compose-recurrence',
       {
         searchParams: { profile: 'publisher', compose: '1' },

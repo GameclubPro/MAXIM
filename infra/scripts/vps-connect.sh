@@ -47,6 +47,7 @@ Commands:
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
   postgres-audit [queue|activity|duplicate|publication-schema|all]
+  recover-publication-post-actions-migration [--apply]
                               Run fixed, bounded, privacy-safe PostgreSQL diagnostics
   postgres-audit-provision [--apply]
                               Preview or provision the dedicated PostgreSQL audit role
@@ -313,6 +314,17 @@ postgres_audit() {
   esac
 
   remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$mode")"
+}
+
+recover_publication_post_actions_migration() {
+  if [[ $# -gt 1 || ( $# -eq 1 && "$1" != '--apply' ) ]]; then
+    echo 'Usage: recover-publication-post-actions-migration [--apply]' >&2
+    exit 2
+  fi
+  local target_sha
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-recover-publication-post-actions-migration.sh "$@")"
 }
 
 postgres_audit_provision() {
@@ -1145,6 +1157,9 @@ case "$command" in
     ;;
   postgres-audit-provision)
     postgres_audit_provision "$@"
+    ;;
+  recover-publication-post-actions-migration)
+    recover_publication_post_actions_migration "$@"
     ;;
   commercial-ocr-promote)
     commercial_ocr_promote "$@"

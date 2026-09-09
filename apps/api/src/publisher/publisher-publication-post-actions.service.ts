@@ -25,6 +25,7 @@ const PIN_UNCONFIRMED = 'Закрепление не подтверждено. �
 
 const actionSelect = {
   id: true,
+  updatedAt: true,
   targetChatId: true,
   botId: true,
   requiredBotId: true,
@@ -114,6 +115,10 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         dispatchProfile: 'PUBLIK_V1',
         status: 'SENT',
         postActionsNextAt: row.postActionsNextAt,
+        updatedAt: row.updatedAt,
+        pinStatus: row.pinStatus,
+        deleteStatus: row.deleteStatus,
+        deleteAt: row.deleteAt,
       },
       data: { postActionsToken: token, postActionsNextAt: leaseUntil },
     });
@@ -154,10 +159,12 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
     }
     const policy = parsed.data;
     const deleteAt =
-      row.deleteAt ??
-      (policy.deleteAfterMinutes === null
+      row.deleteStatus === Status.SKIPPED
         ? null
-        : new Date(row.sentAt.getTime() + policy.deleteAfterMinutes * 60_000));
+        : (row.deleteAt ??
+          (policy.deleteAfterMinutes === null
+            ? null
+            : new Date(row.sentAt.getTime() + policy.deleteAfterMinutes * 60_000)));
     let pinStatus = row.pinStatus;
     let deleteStatus = row.deleteStatus;
     const options = {

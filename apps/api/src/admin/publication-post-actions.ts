@@ -1,7 +1,9 @@
 import {
   publicationPostPublishSchema,
   type PublicationPostActions,
+  type PublicationPostActionCommand,
 } from '@maxim/contracts/publication';
+import { createHash } from 'node:crypto';
 import {
   type ManagedBroadcastDelivery,
   type PublicationContentRevision,
@@ -35,12 +37,67 @@ export function publicationPostActionsRetryData(value: unknown) {
   };
 }
 
-export function mapPublicationPostActions(row: ManagedBroadcastDelivery): PublicationPostActions {
+export function publicationPostActionsVersion(row: ManagedBroadcastDelivery): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        row.updatedAt,
+        row.postActionsToken,
+        row.postActionsNextAt,
+        row.pinStatus,
+        row.pinAttemptCount,
+        row.deleteStatus,
+        row.deleteAt,
+        row.deletedAt,
+        row.deleteAttemptCount,
+      ]),
+    )
+    .digest('hex');
+}
+
+export function allowedPublicationPostActions(
+  row: ManagedBroadcastDelivery,
+  policyValue: unknown,
+  nowMs = Date.now(),
+): PublicationPostActionCommand[] {
+  if (
+    row.status !== 'SENT' ||
+    !row.remoteMessageId ||
+    row.postActionsToken ||
+    row.pinStatus === 'RUNNING' ||
+    row.deleteStatus === 'RUNNING' ||
+    row.deleteStatus === 'DONE' ||
+    row.deletedAt
+  )
+    return [];
+  const actions: PublicationPostActionCommand[] = ['reschedule_delete'];
+  if (row.deleteStatus === 'PENDING') actions.push('cancel_delete');
+  if (row.deleteStatus === 'FAILED' && row.deleteAt) actions.push('retry_delete');
+  const policy = publicationPostPublishSchema.safeParse(policyValue ?? {});
+  if (
+    row.pinStatus === 'FAILED' &&
+    policy.success &&
+    policy.data.pin !== 'none' &&
+    !(row.deleteStatus === 'PENDING' && row.deleteAt && row.deleteAt.getTime() <= nowMs)
+  )
+    actions.push('retry_pin');
+  return actions;
+}
+
+export function mapPublicationPostActions(
+  row: ManagedBroadcastDelivery,
+  policy?: unknown,
+): PublicationPostActions {
   return {
+    version: publicationPostActionsVersion(row),
+    busy: Boolean(
+      row.postActionsToken || row.pinStatus === 'RUNNING' || row.deleteStatus === 'RUNNING',
+    ),
+    allowedActions: allowedPublicationPostActions(row, policy),
     pinStatus: row.pinStatus ?? 'NONE',
     pinError: row.pinError ?? null,
     deleteStatus: row.deleteStatus ?? 'NONE',
-    deleteAt: row.deleteAt?.toISOString() ?? null,
+    deleteAt: row.deleteStatus === 'SKIPPED' ? null : (row.deleteAt?.toISOString() ?? null),
     deletedAt: row.deletedAt?.toISOString() ?? null,
     deleteError: row.deleteError ?? null,
   };

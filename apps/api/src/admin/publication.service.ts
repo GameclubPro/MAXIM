@@ -1251,7 +1251,7 @@ export class PublicationService {
       ...(parsed.data.cursor ? { cursor: { id: parsed.data.cursor }, skip: 1 } : {}),
       include: {
         broadcast: { select: { entityType: true } },
-        contentRevision: { select: { id: true, revision: true } },
+        contentRevision: { select: { id: true, revision: true, postPublish: true } },
         publicationOccurrence: {
           select: {
             id: true,
@@ -1299,7 +1299,7 @@ export class PublicationService {
         remoteMessageId: row.remoteMessageId,
         lastError: row.lastError,
         sentAt: row.sentAt?.toISOString() ?? null,
-        postActions: mapPublicationPostActions(row),
+        postActions: mapPublicationPostActions(row, row.contentRevision?.postPublish),
       })),
       nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
     });

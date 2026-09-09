@@ -739,7 +739,7 @@ describe('Publication performance and pagination', () => {
         take: 3,
         include: {
           broadcast: { select: { entityType: true } },
-          contentRevision: { select: { id: true, revision: true } },
+          contentRevision: { select: { id: true, revision: true, postPublish: true } },
           publicationOccurrence: {
             select: {
               id: true,

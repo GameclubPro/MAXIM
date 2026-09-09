@@ -21,6 +21,7 @@ SELECT json_build_object(
   'migration', '20260909130000_add_publication_post_actions',
   'parents_present', to_regclass('public.publication_content_revisions') IS NOT NULL
     AND to_regclass('public.managed_broadcast_deliveries') IS NOT NULL,
+  'delivery_table_bytes', pg_table_size(to_regclass('public.managed_broadcast_deliveries')),
   'enum_labels', COALESCE((
     SELECT json_agg(e.enumlabel ORDER BY e.enumsortorder)
     FROM pg_enum e
@@ -43,11 +44,27 @@ SELECT json_build_object(
   'index', (
     SELECT json_build_object(
       'valid', i.indisvalid, 'ready', i.indisready,
+      'unique', i.indisunique,
+      'method', am.amname,
+      'attributes', i.indnatts,
+      'keys', i.indnkeyatts,
+      'predicate', pg_get_expr(i.indpred, i.indrelid),
+      'expressions', pg_get_expr(i.indexprs, i.indrelid),
+      'columns', (SELECT json_agg(a.attname ORDER BY k.position)
+        FROM unnest(i.indkey) WITH ORDINALITY k(attribute_number, position)
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attribute_number),
       'definition', pg_get_indexdef(i.indexrelid)
     )
     FROM pg_index i
+    JOIN pg_class ic ON ic.oid = i.indexrelid
+    JOIN pg_am am ON am.oid = ic.relam
     WHERE i.indexrelid = to_regclass('public.managed_broadcast_deliveries_post_actions_due_idx')
       AND i.indrelid = to_regclass('public.managed_broadcast_deliveries')
+  ),
+  'repair_artifacts', EXISTS (
+    SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+    WHERE i.indrelid = to_regclass('public.managed_broadcast_deliveries')
+      AND starts_with(c.relname, 'managed_broadcast_deliveries_post_actions_due_idx_cc')
   )
 );
 `;

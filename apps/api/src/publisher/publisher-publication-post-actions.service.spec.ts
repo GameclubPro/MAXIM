@@ -6,6 +6,7 @@ const NOW = new Date('2026-09-09T12:00:00.000Z');
 function setup(overrides: Record<string, unknown> = {}) {
   const row: any = {
     id: 'delivery-1',
+    updatedAt: NOW,
     targetChatId: 'chat-1',
     botId: 'publik',
     requiredBotId: 'publik',
@@ -39,6 +40,11 @@ function setup(overrides: Record<string, unknown> = {}) {
           : [],
       ),
       updateMany: jest.fn(async ({ where, data }: any) => {
+        if (where.pinStatus !== undefined && where.pinStatus !== row.pinStatus) return { count: 0 };
+        if (where.deleteStatus !== undefined && where.deleteStatus !== row.deleteStatus)
+          return { count: 0 };
+        if (where.deleteAt !== undefined && Number(where.deleteAt) !== Number(row.deleteAt))
+          return { count: 0 };
         if (where.status !== undefined && where.status !== row.status) return { count: 0 };
         if (where.remoteMessageVerifiedAt === null && row.remoteMessageVerifiedAt !== null)
           return { count: 0 };
@@ -215,6 +221,26 @@ describe('Publisher publication post actions', () => {
     const { service, max } = setup();
     await Promise.all([service.processDue(), service.processDue()]);
     expect(max.pinMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reclaim a stale snapshot after a timer is canceled', async () => {
+    const { service, prisma, max, row } = setup();
+    const snapshot = { ...row };
+    row.deleteStatus = 'SKIPPED';
+    row.deleteAt = null;
+    prisma.managedBroadcastDelivery.findMany.mockResolvedValueOnce([snapshot]);
+    await service.processDue();
+    expect(max.pinMessage).not.toHaveBeenCalled();
+    expect(max.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('can retry a pin without reenrolling canceled auto-deletion from the content revision', async () => {
+    const { service, row, max } = setup({ deleteStatus: 'SKIPPED', deleteAt: null });
+    await service.processDue();
+    expect(row.deleteStatus).toBe('SKIPPED');
+    expect(row.deleteAt).toBeNull();
+    expect(row.postActionsNextAt).toBeNull();
+    expect(max.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('yields the shared Publisher lane after a slow action', async () => {

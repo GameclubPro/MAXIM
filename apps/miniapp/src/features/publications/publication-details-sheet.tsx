@@ -21,6 +21,7 @@ import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { formatPublicationDeliveryError } from './publication-delivery-error';
+import { PublicationDeliveryActions } from './publication-delivery-actions';
 import {
   publicationPostActionLabels,
   publicationPostActionsPollingInterval,
@@ -593,6 +594,13 @@ export function PublicationDetailsSheet({
                                 {delivery.postActions.deleteError}
                               </small>
                             ) : null}
+                            <PublicationDeliveryActions
+                              api={api}
+                              publicationId={details.id}
+                              delivery={delivery}
+                              timezone={details.schedule?.timezone}
+                              disabled={busy}
+                            />
                             {staleContentRevision ? (
                               <small className="publication-deliveries__revision">
                                 Версия {staleContentRevision}

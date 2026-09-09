@@ -20,6 +20,8 @@ module.exports = {
       '<rootDir>/../../packages/contracts/src/manual-moderation.ts',
     '^@maxim/contracts/poll$': '<rootDir>/../../packages/contracts/src/poll.ts',
     '^@maxim/contracts/publication$': '<rootDir>/../../packages/contracts/src/publication.ts',
+    '^@maxim/contracts/publication-post-action-request$':
+      '<rootDir>/../../packages/contracts/src/publication-post-action-request.ts',
     '^@maxim/contracts/publisher$': '<rootDir>/../../packages/contracts/src/publisher.ts',
     '^@maxim/contracts/publisher-auto-replies$':
       '<rootDir>/../../packages/contracts/src/publisher-auto-replies.ts',
