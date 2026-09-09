@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createChannelDialogMessage } from '../src/lib/api/channel-dialog-client';
+import {
+  createChannelDialogMessage,
+  SUGGESTION_MEDIA_MUTATION_TIMEOUT_MS,
+} from '../src/lib/api/channel-dialog-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 const RESPONSE_MESSAGE = {
@@ -11,6 +14,29 @@ const RESPONSE_MESSAGE = {
   authorDisplayName: 'Автор',
   createdAt: '2026-09-01T12:00:00.000Z',
 };
+
+test('large suggestion uploads use the existing five-minute media transfer window', async () => {
+  for (const media of [
+    { video: { base64: 'dmlkZW8=', mimeType: 'video/mp4' as const, fileName: 'clip.mp4' } },
+    { images: [{ base64: 'aW1hZ2U=', mimeType: 'image/jpeg', fileName: 'photo.jpg' }] },
+  ]) {
+    let timeout: number | undefined;
+    const api: ApiTransport = {
+      request: async (_path, init) => {
+        timeout = init?.timeoutMs;
+        return { ok: true, message: RESPONSE_MESSAGE };
+      },
+      requestKeepalive: () => undefined,
+    };
+    await createChannelDialogMessage(api, 'channel-1', 'suggest', {
+      token: 'suggest-token-123456',
+      text: 'Caption',
+      ...media,
+    });
+    assert.equal(timeout, SUGGESTION_MEDIA_MUTATION_TIMEOUT_MS);
+    assert.equal(timeout, 300_000);
+  }
+});
 
 test('video uses a rollback-safe endpoint and never falls back to a text-only submission', async () => {
   const calls: string[] = [];

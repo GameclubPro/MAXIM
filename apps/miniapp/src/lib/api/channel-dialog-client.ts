@@ -31,6 +31,8 @@ import type {
 import type { ApiTransport } from './transport';
 import type { LastEntityType } from '../last-chat';
 
+export const SUGGESTION_MEDIA_MUTATION_TIMEOUT_MS = 5 * 60_000;
+
 function buildDialogApiPath(
   entityType: LastEntityType,
   chatId: string,
@@ -106,6 +108,10 @@ export async function createEntityDialogMessage(
   const response = await api.request(path, {
     method: 'POST',
     body: JSON.stringify(requestBody),
+    ...(dialogType === 'suggest' &&
+    (requestBody.video || requestBody.images.length || requestBody.attachments.length)
+      ? { timeoutMs: SUGGESTION_MEDIA_MUTATION_TIMEOUT_MS }
+      : {}),
   });
   return createChannelDialogMessageResponseSchema.parse(response);
 }
