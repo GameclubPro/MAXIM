@@ -2,6 +2,7 @@ import type { BroadcastLinkButton } from '@maxim/contracts';
 import { MAX_PUBLICATION_IMAGES } from '@maxim/contracts/publication';
 import type { PublisherPostImportOmission } from '@maxim/contracts/publisher';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
+import { Xmark } from 'iconoir-react';
 import { BroadcastContentComposer } from '../../components/broadcast-content-composer';
 import type { BroadcastSystemButtonPreview } from '../../lib/broadcast-system-buttons';
 import { PublicationImportButtonsNotice } from './publication-import-buttons-notice';
@@ -170,18 +171,39 @@ export function PublicationContentEditorSection({
         sourceFormat={draft.textFormat}
         maxLength={PUBLICATION_TEXT_MAX_LENGTH}
         images={draft.images}
+        retainedImageCount={retainedImageCount}
         retainedImages={draft.retainedAssets
           .filter((asset) => asset.type === 'image')
-          .map((asset) => ({
-            id: asset.id,
-            url: importedAssetPreviews.find((preview) => preview.assetId === asset.id)?.url,
-          }))}
-        onRemoveRetainedImage={(id) =>
-          setDraft((current) => ({
-            ...current,
-            retainedAssets: current.retainedAssets.filter((asset) => asset.id !== id),
-          }))
-        }
+          .map((asset, index) => {
+            const url = importedAssetPreviews.find((preview) => preview.assetId === asset.id)?.url;
+            return (
+              <figure key={asset.id} className="broadcast-message-card__media-frame">
+                {url ? (
+                  <img className="broadcast-message-card__image" src={url} alt="" />
+                ) : (
+                  <span
+                    className="broadcast-message-card__media-frame--loading"
+                    aria-label={`Сохранённое фото ${index + 1}`}
+                  />
+                )}
+                <button
+                  type="button"
+                  className="broadcast-message-card__media-remove"
+                  disabled={isBusy}
+                  aria-label={`Убрать сохранённое фото ${index + 1}`}
+                  title="Убрать фото"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      retainedAssets: current.retainedAssets.filter((item) => item.id !== asset.id),
+                    }))
+                  }
+                >
+                  <Xmark aria-hidden />
+                </button>
+              </figure>
+            );
+          })}
         maxImages={Math.max(1, maxLocalImageCount)}
         allowImages={imageInputAllowed}
         buttons={customButtons}

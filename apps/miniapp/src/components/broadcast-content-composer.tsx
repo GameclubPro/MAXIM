@@ -52,8 +52,8 @@ export type BroadcastContentComposerProps = {
   maxLength: number;
   image?: BroadcastContentComposerImage;
   images?: BroadcastImage[];
-  retainedImages?: readonly { id: string; url?: string }[];
-  onRemoveRetainedImage?: (id: string) => void;
+  retainedImages?: ReactNode;
+  retainedImageCount?: number;
   maxImages?: number;
   allowImages?: boolean;
   buttons?: BroadcastLinkButton[];
@@ -88,8 +88,8 @@ export function BroadcastContentComposer({
   maxLength,
   image,
   images,
-  retainedImages = [],
-  onRemoveRetainedImage,
+  retainedImages,
+  retainedImageCount = 0,
   maxImages,
   allowImages = true,
   buttons = [],
@@ -164,7 +164,7 @@ export function BroadcastContentComposer({
     [currentImages, maxImageCount],
   );
   const pendingImageSlots = Math.max(0, preparingImages.total - preparingImages.done);
-  const previewImageCount = imagePreviewItems.length + retainedImages.length;
+  const previewImageCount = imagePreviewItems.length + retainedImageCount;
   const normalizedText = text.trim();
   const previewButtons = buttons.filter((button) => button.text.trim());
   const previewSystemButtons = systemButtons.filter((button) => button.text.trim());
@@ -430,33 +430,10 @@ export function BroadcastContentComposer({
                   <div
                     className={cn(
                       'broadcast-message-card__media-grid',
-                      `is-count-${Math.min(maxImageCount + retainedImages.length, previewImageCount + pendingImageSlots)}`,
+                      `is-count-${Math.min(maxImageCount + retainedImageCount, previewImageCount + pendingImageSlots)}`,
                     )}
                   >
-                    {retainedImages.map((item, index) => (
-                      <figure key={item.id} className="broadcast-message-card__media-frame">
-                        {item.url ? (
-                          <img className="broadcast-message-card__image" src={item.url} alt="" />
-                        ) : (
-                          <span
-                            className="broadcast-message-card__media-frame--loading"
-                            aria-label={`Сохранённое фото ${index + 1}`}
-                          />
-                        )}
-                        {onRemoveRetainedImage ? (
-                          <button
-                            type="button"
-                            className="broadcast-message-card__media-remove"
-                            onClick={() => onRemoveRetainedImage(item.id)}
-                            disabled={isBusy}
-                            aria-label={`Убрать сохранённое фото ${index + 1}`}
-                            title="Убрать фото"
-                          >
-                            <IconoirXmark aria-hidden focusable="false" />
-                          </button>
-                        ) : null}
-                      </figure>
-                    ))}
+                    {retainedImages}
                     {imagePreviewItems.map((item) => (
                       <figure
                         key={`${item.fileName}-${item.index}`}
