@@ -7,6 +7,7 @@ import './action-confirm-sheet.css';
 
 type ActionConfirmSheetProps = {
   id: string;
+  className?: string;
   open: boolean;
   role?: 'dialog' | 'alertdialog';
   title: string;
@@ -32,6 +33,7 @@ type ActionConfirmSheetProps = {
 
 export function ActionConfirmSheet({
   id,
+  className,
   open,
   role = 'dialog',
   title,
@@ -167,7 +169,7 @@ export function ActionConfirmSheet({
   );
 
   return createPortal(
-    <div className="action-confirm-sheet" aria-hidden={!open}>
+    <div className={cn('action-confirm-sheet', className)} aria-hidden={!open}>
       <button
         type="button"
         className="action-confirm-sheet__backdrop"
@@ -223,6 +225,6 @@ export function ActionConfirmSheet({
         </div>
       </section>
     </div>,
-    document.body,
+    document.querySelector('.design-preview__device-screen') ?? document.body,
   );
 }

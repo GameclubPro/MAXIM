@@ -24,11 +24,9 @@ import {
   BroadcastPublishBar,
   type BroadcastPublishIssueAction,
 } from '../components/broadcast-publish-bar';
-import { BroadcastPublishReviewSheet } from '../components/broadcast-publish-review-sheet';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { StatusState } from '../components/ui/status-state';
-import { TimeField } from '../components/ui/time-field';
 import { useToast } from '../components/ui/toast';
 import { PublicationHubHeader } from '../features/publications/publication-hub-header';
 import {
@@ -46,14 +44,11 @@ import {
   PUBLICATION_ENTITY_FILTERS as ENTITY_FILTERS,
   PUBLICATION_STATUS_FILTERS as STATUS_FILTERS_BY_VIEW,
   PUBLICATION_VIEW_OPTIONS as VIEW_OPTIONS,
-  PUBLICATION_WEEKDAYS as WEEKDAYS,
   stripPublisherOnlyPublicationRouteParams,
 } from '../features/publications/publication-page-options';
 import { PublicationFeedCard } from '../features/publications/publication-feed-card';
 import { PublicationCreateSheet } from '../features/publications/publication-create-sheet';
 import { PublicationButtonsSheet } from '../features/publications/publication-buttons-sheet';
-import { PublicationRecurrenceIntervalField } from '../features/publications/publication-recurrence-interval-field';
-import { getNextPublicationRecurrenceTime } from '../features/publications/publication-time-presentation';
 import {
   buildCreatePublicationRequest,
   buildPublicationSaveFeedback,
@@ -122,7 +117,6 @@ import {
   usePublisherDraftTargetHydration,
 } from '../features/publications/use-publisher-draft-target-hydration';
 import { usePublisherTargetErrorFeedback } from '../features/publications/use-publisher-target-error-feedback';
-import { usePublisherPostImportAssetPreviews } from '../features/publications/use-publisher-post-import-asset-previews';
 import { usePublisherPostImportController } from '../features/publications/use-publisher-post-import-controller';
 import { isPublisherDraftRouteId } from '../features/publications/publisher-post-import-route';
 import {
@@ -159,20 +153,30 @@ import '../features/publications/publication-draft-resume.css';
 import '../features/publications/publication-workbench.css';
 import { PublicationPostPublishFields } from '../features/publications/publication-post-publish-fields';
 import { publicationPostPublishLabels } from '../features/publications/publication-post-actions-presentation';
+import { usePublicationCloudDraft } from '../features/publications/use-publication-cloud-draft';
+import { usePublicationAssetPreviews } from '../features/publications/use-publication-asset-previews';
+import { PublicationDraftStatus } from '../features/publications/publication-draft-status';
+import { draftFromServer } from '../features/publications/publication-cloud-draft-model';
+
+const LazyPublicationDraftsSheet = lazy(() =>
+  import('../features/publications/publication-drafts-sheet').then((module) => ({
+    default: module.PublicationDraftsSheet,
+  })),
+);
+const LazyPublicationReviewSheet = lazy(() =>
+  import('../features/publications/publication-review-sheet').then((module) => ({
+    default: module.PublicationReviewSheet,
+  })),
+);
 
 const LazyPublicationDetailsSheet = lazy(() =>
   import('../features/publications/publication-details-sheet').then((module) => ({
     default: module.PublicationDetailsSheet,
   })),
 );
-const LazyPublicationRecurrenceLimit = lazy(() =>
-  import('../features/publications/publication-recurrence-limit').then((module) => ({
-    default: module.PublicationRecurrenceLimit,
-  })),
-);
-const LazyPublicationZonedDateField = lazy(() =>
-  import('../features/publications/publication-zoned-fields').then((module) => ({
-    default: module.PublicationZonedDateField,
+const LazyPublicationRecurrenceFields = lazy(() =>
+  import('../features/publications/publication-recurrence-fields').then((module) => ({
+    default: module.PublicationRecurrenceFields,
   })),
 );
 const LazyPublicationOnceFields = lazy(() =>
@@ -366,6 +370,8 @@ export function PublicationsPage({
   const [pendingConflict, setPendingConflict] = useState(false);
   const [pendingEditorClose, setPendingEditorClose] = useState(false);
   const [pendingDraftClear, setPendingDraftClear] = useState(false);
+  const [draftsOpen, setDraftsOpen] = useState(false);
+  const [cloudReloadConfirm, setCloudReloadConfirm] = useState(false);
   const [revisionConflictPublicationId, setRevisionConflictPublicationId] = useState<string | null>(
     null,
   );
@@ -378,14 +384,31 @@ export function PublicationsPage({
   const contentSectionRef = useRef<HTMLElement | null>(null);
   const targetsSectionRef = useRef<HTMLElement | null>(null);
   const timingSectionRef = useRef<HTMLElement | null>(null);
+  const cloudDraft = usePublicationCloudDraft({
+    api,
+    userId,
+    draft,
+    setDraft,
+    persistLocal: persistenceEnabled,
+    sessionKey: isEditor && editorContext?.kind !== 'edit' ? editorContext : null,
+    enabled:
+      hydrated &&
+      !mediaPreparing &&
+      !videoPreparing &&
+      !imagesNeedReselection &&
+      !publicationDraftNeedsVideoReselection(draft),
+  });
+  const savedAssetPreviews = usePublicationAssetPreviews(
+    api,
+    draft.cloudDraft?.id ??
+      (editorContext?.kind === 'edit' || editorContext?.kind === 'import'
+        ? editorContext.publicationId
+        : null),
+    draft.retainedAssets,
+  );
 
   const targetSources = usePublicationTargetSources(api, isPublisherProfile);
   const scopedTargetRecheck = publicationTargetRecheck.usePublicationTargetRecheck(api);
-  const importedAssetPreviews = usePublisherPostImportAssetPreviews(
-    api,
-    editorContext?.kind === 'import' ? editorContext.sessionId : null,
-    draft.retainedAssets,
-  );
   const {
     targets,
     loading: sourcesLoading,
@@ -638,19 +661,23 @@ export function PublicationsPage({
   const legacyCurrentTotal = legacyListQuery.data?.pages[0]?.totalCount ?? null;
 
   const saveMutation = useMutation({
-    mutationFn: ({ replaceConflicts }: { replaceConflicts: boolean }) => {
-      const requestId = requestIds.resolveSaveRequestId(
-        draft,
-        editorContext ?? { kind: 'create' },
-        replaceConflicts,
-      );
-      if (editorContext?.kind === 'edit' || editorContext?.kind === 'import') {
+    mutationFn: async ({ replaceConflicts }: { replaceConflicts: boolean }) => {
+      const snapshot = await cloudDraft.flush();
+      const context = snapshot.cloudDraft
+        ? {
+            kind: 'draft' as const,
+            publicationId: snapshot.cloudDraft.id,
+            expectedRevision: snapshot.cloudDraft.revision,
+          }
+        : (editorContext ?? { kind: 'create' as const });
+      const requestId = requestIds.resolveSaveRequestId(snapshot, context, replaceConflicts);
+      if (context.kind === 'edit' || context.kind === 'import' || context.kind === 'draft') {
         return updatePublication(
           api,
-          editorContext.publicationId,
+          context.publicationId,
           buildUpdatePublicationRequest(
-            draft,
-            editorContext.expectedRevision,
+            snapshot,
+            context.expectedRevision,
             requestId,
             replaceConflicts,
           ),
@@ -658,7 +685,7 @@ export function PublicationsPage({
       }
       return createPublication(
         api,
-        buildCreatePublicationRequest(draft, requestId, { replaceConflicts }),
+        buildCreatePublicationRequest(snapshot, requestId, { replaceConflicts }),
       );
     },
     onSuccess: async (publication) => {
@@ -676,6 +703,8 @@ export function PublicationsPage({
       pushToast(feedback);
       maxNotify(feedback.notification);
       if (isIsolatedPublicationEditor(editorContext?.kind ?? null)) {
+        if (savedCreateDraftRef.current?.draft.cloudDraft?.id === publication.id)
+          savedCreateDraftRef.current = null;
         restoreCreateDraftAndClose();
       } else {
         await clearDraft();
@@ -687,7 +716,10 @@ export function PublicationsPage({
         setPendingConflict(true);
         return;
       }
+      if (draft.cloudDraft && isPublicationRevisionConflictError(error))
+        cloudDraft.markConflict(error);
       if (
+        !draft.cloudDraft &&
         (editorContext?.kind === 'edit' || editorContext?.kind === 'import') &&
         isPublicationRevisionConflictError(error)
       ) {
@@ -734,37 +766,60 @@ export function PublicationsPage({
       omissions,
     }: {
       publicationId: string;
-      mode: 'edit' | 'duplicate' | 'import';
+      mode: 'edit' | 'duplicate' | 'import' | 'draft' | 'draft-copy';
       sessionId?: string | null;
       omissions?: PublisherPostImportOmission[];
     }) =>
-      getPublication(api, publicationId).then((details) => {
+      (mode === 'draft' || mode === 'draft-copy' || mode === 'import'
+        ? import('../lib/api/publication-drafts-client')
+            .then((client) => client.getServerPublicationDraft(api, publicationId))
+            .then((response) => ({
+              details: response.publication,
+              serverDraft: draftFromServer(response),
+            }))
+        : getPublication(api, publicationId).then((details) => ({ details, serverDraft: null }))
+      ).then(({ details, serverDraft }) => {
         if (mode === 'import' && details.lifecycle !== 'DRAFT') {
           throw new Error('Этот черновик уже опубликован');
         }
-        return { details, mode, sessionId: sessionId ?? null, omissions: omissions ?? [] };
+        return {
+          details,
+          serverDraft,
+          mode,
+          sessionId: sessionId ?? null,
+          omissions: omissions ?? [],
+        };
       }),
-    onSuccess: ({ details, mode, sessionId, omissions }) => {
+    onSuccess: ({ details, serverDraft, mode, sessionId, omissions }) => {
       savedCreateDraftRef.current = { draft, missingImageCount };
-      const sourceDraft = createPublicationDraftFromDetails(details);
+      const sourceDraft = serverDraft ?? createPublicationDraftFromDetails(details);
       const isolatedDraft =
-        mode === 'duplicate' ? createPublicationDuplicateDraft(sourceDraft) : sourceDraft;
+        mode === 'duplicate' || mode === 'draft-copy'
+          ? {
+              ...createPublicationDuplicateDraft(sourceDraft),
+              cloudDraft: undefined,
+              cloudRequestId: undefined,
+            }
+          : sourceDraft;
       isolatedDraftBaselineRef.current = isolatedDraft;
       replaceDraft(isolatedDraft);
       setEditorContext(
         mode === 'edit'
           ? { kind: 'edit', publicationId: details.id, expectedRevision: details.version }
-          : mode === 'import'
-            ? {
-                kind: 'import',
-                publicationId: details.id,
-                expectedRevision: details.version,
-                sessionId,
-              }
-            : { kind: 'duplicate' },
+          : mode === 'draft'
+            ? { kind: 'draft', publicationId: details.id, expectedRevision: details.version }
+            : mode === 'import'
+              ? {
+                  kind: 'import',
+                  publicationId: details.id,
+                  expectedRevision: details.version,
+                  sessionId,
+                }
+              : { kind: 'duplicate' },
       );
       setImportOmissions(mode === 'import' ? omissions : []);
       setDetailsTarget(null);
+      setDraftsOpen(false);
       setPendingEditorClose(false);
       setFieldError('');
       setValidationStarted(false);
@@ -962,12 +1017,7 @@ export function PublicationsPage({
       currentTargets: targets,
       hydrationFailed: publisherDraftHydration.isError,
     });
-  const publisherHasReadyTarget =
-    !isPublisherProfile ||
-    (targetSources.publisherSummary?.ready ??
-      targets.filter((target) => target.readiness?.canPublish === true).length) > 0;
-  const publisherCanCreate =
-    isPublisherProfile && sourcesReady && !sourcesHaveError && publisherHasReadyTarget;
+  const publisherCanCreate = isPublisherProfile && hydrated;
   const operationBusy =
     saveMutation.isPending ||
     testMutation.isPending ||
@@ -1433,11 +1483,21 @@ export function PublicationsPage({
       return;
     }
     setEditorClosePending(true);
-    void flushDraft()
-      .then(() => {
+    void cloudDraft
+      .flush()
+      .then(async (snapshot) => {
+        if (editorContext?.kind !== 'edit') {
+          replaceDraft(snapshot, missingImageCount);
+          if (
+            savedCreateDraftRef.current?.draft.cloudDraft?.id === snapshot.cloudDraft?.id &&
+            snapshot.cloudDraft
+          )
+            savedCreateDraftRef.current = { draft: snapshot, missingImageCount };
+        }
+        await flushDraft();
         const baseline = isolatedDraftBaselineRef.current;
         if (
-          isIsolatedPublicationEditor(editorContext?.kind ?? null) &&
+          editorContext?.kind === 'edit' &&
           baseline &&
           hasPublicationDraftChanges(baseline, draft)
         ) {
@@ -1445,6 +1505,22 @@ export function PublicationsPage({
           return;
         }
         closeEditor(preserveDraft);
+      })
+      .catch(async (error) => {
+        await flushDraft();
+        if (persistenceEnabled) {
+          closeEditor(true);
+          pushToast({
+            tone: 'info',
+            title: 'Не сохранено на сервере',
+            description: 'Черновик не синхронизирован.',
+          });
+        } else {
+          pushToast({
+            tone: 'danger',
+            title: describeUserFacingError(error, 'Не удалось сохранить черновик'),
+          });
+        }
       })
       .finally(() => setEditorClosePending(false));
   }
@@ -1615,19 +1691,6 @@ export function PublicationsPage({
         scheduledSlots: scheduledAt ? [scheduledAt] : [],
       };
     });
-    setFieldError('');
-  }
-
-  function updateRecurrenceTime(index: number, value: string) {
-    setDraft((current) => ({
-      ...current,
-      recurrence: {
-        ...current.recurrence,
-        times: current.recurrence.times.map((time, timeIndex) =>
-          timeIndex === index ? value : time,
-        ),
-      },
-    }));
     setFieldError('');
   }
 
@@ -1979,6 +2042,7 @@ export function PublicationsPage({
           sourcesHaveError={sourcesHaveError}
           onCreate={requestCreateEditor}
           onRefresh={recheckPublisherTargets}
+          onDrafts={() => setDraftsOpen(true)}
         />
 
         {isPublisherProfile ? <PublisherPostImportStatus {...postImport.statusProps} /> : null}
@@ -2146,160 +2210,6 @@ export function PublicationsPage({
     );
   }
 
-  function renderRecurrence() {
-    return (
-      <div className="publication-recurrence">
-        <div className="publication-recurrence__frequency" role="group" aria-label="Частота">
-          {(['daily', 'weekly'] as const).map((frequency) => (
-            <button
-              key={frequency}
-              type="button"
-              aria-pressed={draft.recurrence.frequency === frequency}
-              className={cn(draft.recurrence.frequency === frequency && 'is-active')}
-              onClick={() =>
-                setDraft((current) => ({
-                  ...current,
-                  recurrence: { ...current.recurrence, frequency },
-                }))
-              }
-              disabled={isBusy}
-            >
-              {frequency === 'daily' ? 'Ежедневно' : 'По неделям'}
-            </button>
-          ))}
-        </div>
-
-        <PublicationRecurrenceIntervalField
-          frequency={draft.recurrence.frequency}
-          interval={draft.recurrence.interval}
-          disabled={isBusy}
-          onChange={(interval) =>
-            setDraft((current) => ({
-              ...current,
-              recurrence: { ...current.recurrence, interval },
-            }))
-          }
-        />
-
-        {draft.recurrence.frequency === 'weekly' ? (
-          <div className="publication-weekdays" aria-label="Дни недели">
-            {WEEKDAYS.map((weekday) => {
-              const selected = draft.recurrence.weekdays.includes(weekday.value);
-              return (
-                <button
-                  key={weekday.value}
-                  type="button"
-                  className={cn(selected && 'is-active')}
-                  aria-pressed={selected}
-                  onClick={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      recurrence: {
-                        ...current.recurrence,
-                        weekdays: selected
-                          ? current.recurrence.weekdays.filter((value) => value !== weekday.value)
-                          : [...current.recurrence.weekdays, weekday.value].sort(),
-                      },
-                    }))
-                  }
-                  disabled={isBusy}
-                >
-                  {weekday.label}
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
-
-        <div className="publication-recurrence__times">
-          {draft.recurrence.times.map((time, index) => (
-            <div key={index}>
-              <TimeField
-                label={`Время ${index + 1}`}
-                value={time}
-                minuteStep={30}
-                onChange={(value) => updateRecurrenceTime(index, value)}
-                disabled={isBusy}
-              />
-              {draft.recurrence.times.length > 1 ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      recurrence: {
-                        ...current.recurrence,
-                        times: current.recurrence.times.filter(
-                          (_, timeIndex) => timeIndex !== index,
-                        ),
-                      },
-                    }))
-                  }
-                  aria-label={`Удалить время ${index + 1}`}
-                  disabled={isBusy}
-                >
-                  <Xmark aria-hidden />
-                </button>
-              ) : null}
-            </div>
-          ))}
-          {draft.recurrence.times.length < 12 ? (
-            <button
-              type="button"
-              className="publication-recurrence__add-time"
-              onClick={() =>
-                setDraft((current) => ({
-                  ...current,
-                  recurrence: {
-                    ...current.recurrence,
-                    times: [
-                      ...current.recurrence.times,
-                      getNextPublicationRecurrenceTime(current.recurrence.times),
-                    ],
-                  },
-                }))
-              }
-              disabled={isBusy}
-            >
-              <Plus aria-hidden />
-              <span>Добавить время</span>
-            </button>
-          ) : null}
-        </div>
-
-        <Suspense fallback={<div className="publication-date-loading" aria-busy="true" />}>
-          <LazyPublicationZonedDateField
-            label="Начать с"
-            value={draft.recurrence.startsAt}
-            timezone={draft.scheduleTimezone}
-            onChange={(startsAt) => {
-              setDraft((current) => ({
-                ...current,
-                recurrence: { ...current.recurrence, startsAt },
-              }));
-              setFieldError('');
-            }}
-            disabled={isBusy}
-          />
-        </Suspense>
-
-        <Suspense fallback={<div className="publication-date-loading" aria-busy="true" />}>
-          <LazyPublicationRecurrenceLimit
-            recurrence={draft.recurrence}
-            timezone={draft.scheduleTimezone}
-            disabled={isBusy}
-            onChange={(patch) =>
-              setDraft((current) => ({
-                ...current,
-                recurrence: { ...current.recurrence, ...patch },
-              }))
-            }
-          />
-        </Suspense>
-      </div>
-    );
-  }
-
   function renderTiming() {
     const onceDate = draft.onceDate;
     const onceTime = draft.onceTime;
@@ -2396,7 +2306,14 @@ export function PublicationsPage({
               ))}
             </div>
             {draft.scheduleKind === 'recurrence' ? (
-              renderRecurrence()
+              <Suspense fallback={<div className="publication-date-loading" aria-busy="true" />}>
+                <LazyPublicationRecurrenceFields
+                  draft={draft}
+                  setDraft={setDraft}
+                  isBusy={isBusy}
+                  setFieldError={setFieldError}
+                />
+              </Suspense>
             ) : (
               <Suspense fallback={null}>
                 <LazyBroadcastSchedulePlanner
@@ -2498,6 +2415,15 @@ export function PublicationsPage({
     setPendingDraftClear(false);
     setFieldError('');
     setValidationStarted(false);
+    if (draft.cloudDraft) {
+      replaceDraft({
+        ...createEmptyPublicationDraft(),
+        cloudDraft: draft.cloudDraft,
+        cloudRequestId: draft.cloudRequestId,
+      });
+      setImportOmissions([]);
+      return;
+    }
     if (isIsolatedPublicationEditor(editorContext?.kind ?? null)) {
       if (editorContext?.kind === 'import') {
         setImportOmissions([]);
@@ -2510,7 +2436,7 @@ export function PublicationsPage({
 
   function renderEditor() {
     const editing = editorContext?.kind === 'edit';
-    const importing = editorContext?.kind === 'import';
+    const importing = editorContext?.kind === 'import' || editorContext?.kind === 'draft';
     const editScope: PublicationEditScope | null = editing
       ? draft.timingMode === 'now'
         ? 'retry'
@@ -2551,13 +2477,30 @@ export function PublicationsPage({
             onClick={() => setPendingDraftClear(true)}
             aria-label="Очистить черновик"
             title="Очистить"
-            disabled={isBusy || editing}
+            disabled={isBusy || editing || cloudDraft.status === 'saving'}
           >
             <Trash aria-hidden />
           </button>
         </header>
 
         <div className="publications-editor">
+          {!editing ? (
+            <PublicationDraftStatus
+              state={cloudDraft}
+              dirty={cloudDraft.dirty}
+              busy={isBusy || cloudDraft.status === 'saving'}
+              onRetry={() => void cloudDraft.flush().catch(() => undefined)}
+              onReload={() => setCloudReloadConfirm(true)}
+              onCopy={() =>
+                void cloudDraft.saveCopy()?.catch((error) =>
+                  pushToast({
+                    tone: 'danger',
+                    title: describeUserFacingError(error, 'Не удалось сохранить копию'),
+                  }),
+                )
+              }
+            />
+          ) : null}
           <section
             ref={targetsSectionRef}
             className="publication-editor-section publication-editor-section--targets"
@@ -2635,7 +2578,7 @@ export function PublicationsPage({
               setDraft={setDraft}
               importing={editorContext?.kind === 'import'}
               importOmissions={importOmissions}
-              importedAssetPreviews={importedAssetPreviews}
+              importedAssetPreviews={savedAssetPreviews}
               customButtons={visibleCustomButtons}
               systemButtons={systemButtons}
               previewTargets={draft.targets}
@@ -2728,46 +2671,37 @@ export function PublicationsPage({
           onClose={() => setButtonsOpen(false)}
         />
 
-        <BroadcastPublishReviewSheet
-          id="publication-review"
-          open={pendingReview}
-          text={draft.text}
-          sourceFormat={draft.textFormat}
-          hasMedia={hasMedia}
-          facts={[
-            `Кому · ${formatTargetSummary(draft.targets)}`,
-            ...publicationPostPublishLabels(draft.postPublish),
-            `Часовой пояс · ${draft.scheduleTimezone}`,
-            editScope === 'retry'
-              ? 'Отправка · после ручного повтора'
-              : `Когда · ${formatDraftTiming(draft)}`,
-            visibleCustomButtonCount > 0 ? `Доп. кнопки · ${visibleCustomButtonCount}` : null,
-            hasMedia
-              ? draft.mediaType === 'video' ||
-                draft.retainedAssets.some((asset) => asset.type === 'video')
-                ? 'Видео'
-                : 'Медиа'
-              : null,
-          ].filter((item): item is string => Boolean(item))}
-          confirmLabel={primaryLabel}
-          confirmBusyLabel="Сохраняем..."
-          isBusy={isBusy}
-          showExtraAction={!isPublisherProfile}
-          extraActionBusy={testMutation.isPending}
-          extraActionDisabled={
-            isBusy ||
-            !hasContent ||
-            videoNeedsReselection ||
-            draft.targets.length === 0 ||
-            hasButtonErrors
-          }
-          onExtraAction={handleTest}
-          onClose={() => !isBusy && setPendingReview(false)}
-          onConfirm={() => {
-            setPendingReview(false);
-            submitPublication(false);
-          }}
-        />
+        {pendingReview ? (
+          <Suspense fallback={null}>
+            <LazyPublicationReviewSheet
+              open={pendingReview}
+              draft={draft}
+              previews={savedAssetPreviews}
+              facts={[
+                `Кому · ${formatTargetSummary(draft.targets)}`,
+                ...publicationPostPublishLabels(draft.postPublish),
+                `Часовой пояс · ${draft.scheduleTimezone}`,
+                editScope === 'retry'
+                  ? 'Отправка · после ручного повтора'
+                  : `Когда · ${formatDraftTiming(draft)}`,
+                visibleCustomButtonCount > 0 ? `Доп. кнопки · ${visibleCustomButtonCount}` : null,
+                hasMedia
+                  ? draft.mediaType === 'video' ||
+                    draft.retainedAssets.some((asset) => asset.type === 'video')
+                    ? 'Видео'
+                    : 'Медиа'
+                  : null,
+              ].filter((item): item is string => Boolean(item))}
+              confirmLabel={primaryLabel}
+              busy={isBusy}
+              onClose={() => !isBusy && setPendingReview(false)}
+              onConfirm={() => {
+                setPendingReview(false);
+                submitPublication(false);
+              }}
+            />
+          </Suspense>
+        ) : null}
       </>
     );
   }
@@ -2794,6 +2728,51 @@ export function PublicationsPage({
         onClose={closeCreateSheet}
         onWrite={openCreateEditor}
         onForward={postImport.startImport}
+      />
+      {draftsOpen ? (
+        <Suspense fallback={null}>
+          <LazyPublicationDraftsSheet
+            api={api}
+            busy={openPublicationMutation.isPending}
+            onClose={() => setDraftsOpen(false)}
+            onOpen={(publicationId, copy) => {
+              rememberEditorReturnFocus();
+              openPublicationMutation.mutate({
+                publicationId,
+                mode: copy ? 'draft-copy' : 'draft',
+              });
+            }}
+            onDeleted={(id) => {
+              if (draft.cloudDraft?.id === id) void clearDraft();
+              void invalidatePublicationQueries();
+            }}
+          />
+        </Suspense>
+      ) : null}
+
+      <ActionConfirmSheet
+        id="publication-cloud-reload"
+        open={cloudReloadConfirm}
+        title="Загрузить серверную версию?"
+        summary="Несохранённые правки на этом устройстве будут заменены."
+        confirmLabel="Загрузить"
+        cancelLabel="Оставить"
+        tone="danger"
+        isBusy={editorClosePending}
+        onClose={() => setCloudReloadConfirm(false)}
+        onConfirm={() => {
+          setEditorClosePending(true);
+          void cloudDraft
+            .reload()
+            ?.then(() => setCloudReloadConfirm(false))
+            .catch((error) =>
+              pushToast({
+                tone: 'danger',
+                title: describeUserFacingError(error, 'Не удалось загрузить черновик'),
+              }),
+            )
+            .finally(() => setEditorClosePending(false));
+        }}
       />
 
       <ActionConfirmSheet

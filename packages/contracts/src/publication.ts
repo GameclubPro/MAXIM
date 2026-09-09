@@ -189,7 +189,7 @@ export const publicationAssetSchema = z.object({
 });
 export type PublicationAsset = z.infer<typeof publicationAssetSchema>;
 
-export const publicationContentInputSchema = z
+export const publicationDraftContentInputSchema = z
   .object({
     postPublish: publicationPostPublishSchema.optional(),
     text: z.string().max(MAX_PUBLICATION_TEXT_LENGTH).default(''),
@@ -237,6 +237,9 @@ export const publicationContentInputSchema = z
         });
       }
     }
+  });
+export const publicationContentInputSchema = publicationDraftContentInputSchema.superRefine(
+  (value, ctx) => {
     if (value.text.trim().length === 0 && value.media.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -244,7 +247,8 @@ export const publicationContentInputSchema = z
         message: 'Введите текст, добавьте фото или видео.',
       });
     }
-  });
+  },
+);
 export type PublicationContentInput = z.infer<typeof publicationContentInputSchema>;
 
 export const publicationContentSchema = z.object({

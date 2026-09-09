@@ -1,6 +1,6 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PublisherPostImportOmission } from '@maxim/contracts/publisher';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
   cancelPublisherPostImport,
@@ -12,10 +12,8 @@ import { maxImpact, maxNotify, openMaxBotLinkAndClose } from '../../lib/max-brid
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import { useToast } from '../../components/ui/toast';
 import { createPublicationRequestId } from './publication-request-identity';
-import { mergePublicationPages } from './publication-pagination';
 import { resolvePublisherPostImportDraftContext } from './publisher-post-import-model';
 import type { PublisherPostImportStatusProps } from './publisher-post-import-status';
-import { listPublications } from '../../lib/api/publication-client';
 import {
   isPublisherDraftRouteId,
   isPublisherPostImportRouteToken,
@@ -67,16 +65,6 @@ export function usePublisherPostImportController({
 
   const routeToken = searchParams.get('import');
   const validRouteToken = isPublisherPostImportRouteToken(routeToken) ? routeToken : null;
-  const serverDraftsQuery = useInfiniteQuery({
-    queryKey: SERVER_DRAFTS_QUERY_KEY,
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) =>
-      listPublications(api, { view: 'drafts', limit: 4, cursor: pageParam ?? undefined }),
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: enabled && !editorOpen,
-    staleTime: 0,
-    refetchOnMount: 'always',
-  });
   const activeImportQuery = useQuery({
     queryKey: ACTIVE_IMPORT_QUERY_KEY,
     queryFn: ({ signal }) => getActivePublisherPostImport(api, { signal }),
@@ -105,10 +93,6 @@ export function usePublisherPostImportController({
     routeToken !== null
       ? (routeImportQuery.data?.session ?? null)
       : (activeImportQuery.data?.session ?? null);
-  const drafts = useMemo(
-    () => mergePublicationPages(serverDraftsQuery.data?.pages),
-    [serverDraftsQuery.data?.pages],
-  );
 
   useEffect(() => {
     if (
@@ -168,7 +152,7 @@ export function usePublisherPostImportController({
       if (document.visibilityState !== 'visible') {
         return;
       }
-      void serverDraftsQuery.refetch();
+      void queryClient.invalidateQueries({ queryKey: SERVER_DRAFTS_QUERY_KEY });
       if (validRouteToken) {
         void routeImportQuery.refetch();
       } else {
@@ -182,7 +166,7 @@ export function usePublisherPostImportController({
     editorOpen,
     enabled,
     routeImportQuery.refetch,
-    serverDraftsQuery.refetch,
+    queryClient,
     validRouteToken,
   ]);
 
@@ -292,15 +276,13 @@ export function usePublisherPostImportController({
     removeRouteParams(searchParams, setSearchParams, STALE_IMPORT_ROUTE_KEYS);
     queryClient.setQueryData(ACTIVE_IMPORT_QUERY_KEY, { session: null });
     void queryClient.invalidateQueries({ queryKey: ACTIVE_IMPORT_QUERY_KEY });
-    void serverDraftsQuery.refetch();
+    void queryClient.invalidateQueries({ queryKey: SERVER_DRAFTS_QUERY_KEY });
   }
 
   const statusProps: PublisherPostImportStatusProps = {
     session: displayedSession,
-    drafts,
+    drafts: [],
     busy: createMutation.isPending || cancelMutation.isPending || openingDraft,
-    hasMoreDrafts: Boolean(serverDraftsQuery.hasNextPage),
-    loadingMoreDrafts: serverDraftsQuery.isFetchingNextPage,
     onOpenBot(botUrl) {
       if (!openMaxBotLinkAndClose(botUrl)) {
         pushToast({ tone: 'info', title: 'Не удалось открыть диалог Публика' });
@@ -310,7 +292,6 @@ export function usePublisherPostImportController({
       const context = resolvePublisherPostImportDraftContext(displayedSession, publicationId);
       onOpenDraftRef.current(publicationId, context.sessionId, context.omissions);
     },
-    onLoadMoreDrafts: () => void serverDraftsQuery.fetchNextPage(),
     onRetry: startImport,
     onCancel: () => cancelMutation.mutate(),
   };

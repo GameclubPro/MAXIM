@@ -33,7 +33,11 @@ export function PublicationRetainedMedia({
           >
             {previewUrl ? (
               <div className="publication-retained-media__previews" aria-hidden>
-                <img src={previewUrl} alt="" />
+                {asset.type === 'video' ? (
+                  <video src={previewUrl} muted playsInline preload="metadata" />
+                ) : (
+                  <img src={previewUrl} alt="" />
+                )}
               </div>
             ) : null}
             <span>{label}</span>

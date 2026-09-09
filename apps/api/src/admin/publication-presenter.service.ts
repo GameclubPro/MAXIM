@@ -26,6 +26,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { readStoredPublicationButtons } from './publication-buttons';
+import { PUBLICATION_ASSET_METADATA_SELECT } from './publication-media-limits';
 import {
   buildPublicationDispatchIssueIndex,
   emptyPublicationDispatchIssueIndex,
@@ -97,7 +98,10 @@ export class PublicationPresenterService {
     return {
       canonicalContentRevision: {
         include: {
-          assets: { orderBy: { position: 'asc' }, include: { asset: true } },
+          assets: {
+            orderBy: { position: 'asc' },
+            include: { asset: { select: PUBLICATION_ASSET_METADATA_SELECT } },
+          },
         },
       },
       targets: { orderBy: { position: 'asc' }, include: { chat: true } },
@@ -125,7 +129,10 @@ export class PublicationPresenterService {
       include: {
         canonicalContentRevision: {
           include: {
-            assets: { orderBy: { position: 'asc' }, include: { asset: true } },
+            assets: {
+              orderBy: { position: 'asc' },
+              include: { asset: { select: PUBLICATION_ASSET_METADATA_SELECT } },
+            },
           },
         },
         targets: { orderBy: { position: 'asc' }, include: { chat: true } },
@@ -289,7 +296,12 @@ export class PublicationPresenterService {
             link.asset.mimeType.toLowerCase().startsWith('video/'),
         ) ?? false,
       schedule:
-        row.schedule && !(row.lifecycle === 'DRAFT' && row.schedule.status === 'DRAFT')
+        row.schedule &&
+        !(
+          row.lifecycle === 'DRAFT' &&
+          row.schedule.status === 'DRAFT' &&
+          !publicationScheduleInputSchema.safeParse(row.schedule.rule).success
+        )
           ? this.mapSchedule(row.schedule, nextOccurrenceAt)
           : null,
       dispatchIssue:

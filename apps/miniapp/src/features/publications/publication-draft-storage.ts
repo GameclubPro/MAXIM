@@ -1,6 +1,6 @@
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import { channelPostSignatureSettingsSchema } from '@maxim/contracts/channel-post-signature';
-import { MAX_PUBLICATION_IMAGES } from '@maxim/contracts/publication';
+import { MAX_PUBLICATION_IMAGES, publicationAssetSchema } from '@maxim/contracts/publication';
 import { publisherEntityReadinessSchema } from '@maxim/contracts/publisher';
 import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
 import { publicationPostPublishSchema } from '@maxim/contracts/publication';
@@ -241,6 +241,18 @@ export function parsePublicationDraftEnvelope(value: unknown): PublicationDraft 
     return null;
   }
   const draft = value.draft;
+  const cloudDraft =
+    isObject(draft.cloudDraft) &&
+    typeof draft.cloudDraft.id === 'string' &&
+    /^[A-Za-z0-9_-]{1,256}$/u.test(draft.cloudDraft.id) &&
+    Number.isSafeInteger(draft.cloudDraft.revision) &&
+    (draft.cloudDraft.revision as number) > 0
+      ? { id: draft.cloudDraft.id, revision: draft.cloudDraft.revision as number }
+      : undefined;
+  const cloudRequestId =
+    typeof draft.cloudRequestId === 'string' && /^[A-Za-z0-9_-]{8,128}$/u.test(draft.cloudRequestId)
+      ? draft.cloudRequestId
+      : undefined;
   const hasExplicitTimingFields =
     Object.prototype.hasOwnProperty.call(draft, 'onceDate') ||
     Object.prototype.hasOwnProperty.call(draft, 'onceTime');
@@ -290,7 +302,15 @@ export function parsePublicationDraftEnvelope(value: unknown): PublicationDraft 
     mediaBase64: readString(draft.mediaBase64),
     mediaMimeType: readString(draft.mediaMimeType),
     mediaFileName: readString(draft.mediaFileName),
-    retainedAssets: [],
+    ...(cloudDraft ? { cloudDraft } : {}),
+    ...(cloudRequestId ? { cloudRequestId } : {}),
+    retainedAssets:
+      cloudDraft && Array.isArray(draft.retainedAssets)
+        ? draft.retainedAssets.slice(0, MAX_PUBLICATION_IMAGES).flatMap((asset) => {
+            const parsed = publicationAssetSchema.safeParse(asset);
+            return parsed.success ? [parsed.data] : [];
+          })
+        : [],
   };
 }
 

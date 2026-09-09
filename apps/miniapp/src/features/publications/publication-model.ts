@@ -38,11 +38,12 @@ import {
 } from '../../lib/broadcast-system-buttons';
 
 export type PublicationView = 'current' | 'schedules' | 'history';
-export type PublicationEditorKind = 'create' | 'edit' | 'duplicate' | 'import';
+export type PublicationEditorKind = 'create' | 'edit' | 'duplicate' | 'import' | 'draft';
 export type PublicationEditorContext =
   | { kind: 'create' }
   | { kind: 'edit'; publicationId: string; expectedRevision: number }
   | { kind: 'duplicate' }
+  | { kind: 'draft'; publicationId: string; expectedRevision: number }
   | {
       kind: 'import';
       publicationId: string;
@@ -210,6 +211,8 @@ export function getPublicationTargetTitle(
 }
 
 export type PublicationDraft = {
+  cloudDraft?: { id: string; revision: number };
+  cloudRequestId?: string;
   postPublish: PublicationPostPublish;
   title: string;
   text: string;
@@ -274,7 +277,7 @@ const PUBLICATION_VIDEO_MIME_ALIASES: Record<string, string> = {
 };
 
 export function isIsolatedPublicationEditor(kind: PublicationEditorKind | null): boolean {
-  return kind === 'edit' || kind === 'duplicate' || kind === 'import';
+  return kind === 'edit' || kind === 'duplicate' || kind === 'import' || kind === 'draft';
 }
 
 export function shouldPersistPublicationDraft(kind: PublicationEditorKind | null): boolean {
@@ -794,6 +797,7 @@ export function isPublicationDraftEmpty(draft: PublicationDraft): boolean {
     draft.title.trim() ||
     draft.text.trim() ||
     draft.images.length > 0 ||
+    draft.retainedAssets.length > 0 ||
     draft.buttons.some((button) => button.text.trim() || button.url.trim()) ||
     draft.mediaType === 'video'
   );

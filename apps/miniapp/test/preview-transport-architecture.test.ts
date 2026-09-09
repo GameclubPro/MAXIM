@@ -13,6 +13,7 @@ const domainLimits = new Map([
   ['preview-transport-events.ts', 1_500],
   ['preview-transport-giveaways.ts', 1_500],
   ['preview-transport-publications.ts', 1_500],
+  ['preview-transport-publication-drafts.ts', 300],
   ['preview-transport-publisher.ts', 1_500],
   ['preview-transport-runtime.ts', 1_500],
   ['preview-transport-settings.ts', 1_500],
@@ -50,6 +51,7 @@ test('preview transport keeps domain ownership and line-count boundaries', () =>
     ['preview-transport-vk.ts', 'handleVkPreviewRequest'],
     ['preview-transport-giveaways.ts', 'handleGiveawaysPreviewRequest'],
     ['preview-transport-publications.ts', 'handlePublicationsPreviewRequest'],
+    ['preview-transport-publication-drafts.ts', 'handlePublicationDraftsPreviewRequest'],
     ['preview-transport-publisher.ts', 'handlePublisherPreviewRequest'],
     ['preview-transport-autoposts.ts', 'handleAutopostsPreviewRequest'],
   ]);

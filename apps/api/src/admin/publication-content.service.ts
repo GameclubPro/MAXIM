@@ -4,7 +4,7 @@ import {
   type PublicationMediaInput,
   type TestPublicationRequest,
 } from '@maxim/contracts/publication';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { MaxClientService } from '../max/max-client.service';
 import { MaxMediaUploadValidationError } from '../max/max-media-upload-validation';
@@ -19,10 +19,22 @@ import {
 import {
   PUBLICATION_MAX_IMAGE_BYTES,
   PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
+  PUBLICATION_ASSET_METADATA_SELECT,
 } from './publication-media-limits';
 import { canonicalizeAdminMaxMediaFileName } from './admin-max-media-file-name';
 
 const PUBLICATION_VIDEO_MIME_TYPE_FALLBACK = 'application/octet-stream';
+const PUBLICATION_PREVIEW_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'video/x-matroska',
+]);
 
 export function normalizePublicationContent(
   content: PublicationContentInput,
@@ -72,6 +84,35 @@ export class PublicationContentService {
     private readonly maxClient: MaxClientService,
   ) {}
 
+  async getOwnedAsset(publicationId: string, assetId: string, actorUserId: string) {
+    if (!publicationId || publicationId.length > 256 || !assetId || assetId.length > 256)
+      throw new NotFoundException('Медиа недоступно.');
+    const asset = await this.prisma.publicationAsset.findFirst({
+      where: {
+        id: assetId,
+        actorUserId,
+        contentLinks: {
+          some: {
+            contentRevision: {
+              publication: { id: publicationId, actorUserId, dispatchProfile: 'PUBLIK_V1' },
+            },
+          },
+        },
+      },
+      select: { bytes: true, mimeType: true },
+    });
+    if (
+      !asset?.bytes?.byteLength ||
+      !PUBLICATION_PREVIEW_MIME_TYPES.has(asset.mimeType.toLowerCase()) ||
+      asset.bytes.byteLength > PUBLICATION_MAX_TOTAL_IMAGE_BYTES
+    )
+      throw new NotFoundException('Медиа недоступно.');
+    return {
+      bytes: Buffer.from(asset.bytes.buffer, asset.bytes.byteOffset, asset.bytes.byteLength),
+      mimeType: asset.mimeType.toLowerCase(),
+    };
+  }
+
   async prepareContentRevision(
     content: PublicationContentInput,
   ): Promise<PreparedPublicationContentRevision> {
@@ -105,16 +146,14 @@ export class PublicationContentService {
         where: {
           id: asset.assetId,
           actorUserId,
+          bytes: { not: null },
           contentLinks: {
             some: { contentRevision: { publication: { actorUserId } } },
           },
         },
-        select: { bytes: true, mimeType: true },
+        select: { mimeType: true },
       });
-      if (!persisted) {
-        throw new BadRequestException('Медиа публикации больше недоступно.');
-      }
-      if (!persisted.bytes || !persisted.mimeType.toLowerCase().startsWith('video/')) {
+      if (!persisted || !persisted.mimeType.toLowerCase().startsWith('video/')) {
         throw new BadRequestException(
           'Сохранённое видео загружено другим ботом. Выберите видеофайл снова.',
         );
@@ -370,6 +409,7 @@ export class PublicationContentService {
               some: { contentRevision: { publication: { actorUserId } } },
             },
           },
+          select: PUBLICATION_ASSET_METADATA_SELECT,
         });
         if (!asset) {
           throw new BadRequestException('Медиа публикации больше недоступно.');

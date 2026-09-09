@@ -157,6 +157,45 @@ describe('PublicationPresenterService', () => {
     expect(summary.contentPreview).not.toMatch(/\*\*|\[[^\]]*$/u);
   });
 
+  it('preserves complete legacy draft schedules and hides partial editor state from publishing DTOs', async () => {
+    const presenter = new PublicationPresenterService({} as never);
+    const row = {
+      id: 'draft',
+      title: '',
+      lifecycle: PublicationLifecycle.DRAFT,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      version: 1,
+      canonicalContentRevision: { text: '', textFormat: 'PLAIN', assets: [] },
+      targets: [],
+      audienceSelection: 'SELECTED',
+      audienceMode: 'SNAPSHOT',
+      occurrences: [],
+      deliveryStats: EMPTY_DELIVERY,
+      actionableDeliveryStats: EMPTY_DELIVERY,
+      createdAt: new Date('2026-09-10T00:00:00Z'),
+      updatedAt: new Date('2026-09-10T00:00:00Z'),
+    };
+    const complete = await presenter.mapPublicationSummary({
+      ...row,
+      schedule: {
+        status: 'DRAFT',
+        revision: 1,
+        lastError: null,
+        rule: { mode: 'once', timezone: 'Europe/Moscow', at: '2026-09-11T10:00:00Z' },
+      },
+    });
+    expect(complete.schedule).toMatchObject({ mode: 'once', at: '2026-09-11T10:00:00Z' });
+    const partial = await presenter.mapPublicationSummary({
+      ...row,
+      schedule: {
+        status: 'DRAFT',
+        revision: 1,
+        rule: { formatVersion: 1, timingMode: 'once', onceDate: '', onceTime: '' },
+      },
+    });
+    expect(partial.schedule).toBeNull();
+  });
+
   it('searches the active exact Publisher catalog by its displayed title or ID fallback', async () => {
     const queryRaw = jest
       .fn()

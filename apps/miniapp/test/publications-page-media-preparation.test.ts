@@ -50,7 +50,7 @@ test('publishing page owns media preparation and blocks review, test, publish, a
     pageSource,
     /function handleTest[\s\S]*?testMutation\.isPending \|\| mediaPreparing/u,
   );
-  assert.match(pageSource, /<BroadcastPublishReviewSheet[\s\S]*?isBusy=\{isBusy\}/u);
+  assert.match(pageSource, /<LazyPublicationReviewSheet[\s\S]*?busy=\{isBusy\}/u);
 });
 
 test('pending image work protects native and browser close before the first image is ready', () => {

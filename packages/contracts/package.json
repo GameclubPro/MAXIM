@@ -66,6 +66,10 @@
       "types": "./dist/publication-post-action-request.d.ts",
       "default": "./dist/publication-post-action-request.js"
     },
+    "./publication-draft": {
+      "types": "./dist/publication-draft.d.ts",
+      "default": "./dist/publication-draft.js"
+    },
     "./publisher": {
       "types": "./dist/publisher.d.ts",
       "default": "./dist/publisher.js"

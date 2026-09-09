@@ -135,7 +135,7 @@ export function PublicationContentEditorSection({
         onAdd={onOpenButtons}
       />
       <PublicationRetainedMedia
-        assets={draft.retainedAssets}
+        assets={draft.retainedAssets.filter((asset) => asset.type === 'video')}
         previews={importedAssetPreviews}
         disabled={isBusy}
         onRemove={(assetId) =>
@@ -170,6 +170,18 @@ export function PublicationContentEditorSection({
         sourceFormat={draft.textFormat}
         maxLength={PUBLICATION_TEXT_MAX_LENGTH}
         images={draft.images}
+        retainedImages={draft.retainedAssets
+          .filter((asset) => asset.type === 'image')
+          .map((asset) => ({
+            id: asset.id,
+            url: importedAssetPreviews.find((preview) => preview.assetId === asset.id)?.url,
+          }))}
+        onRemoveRetainedImage={(id) =>
+          setDraft((current) => ({
+            ...current,
+            retainedAssets: current.retainedAssets.filter((asset) => asset.id !== id),
+          }))
+        }
         maxImages={Math.max(1, maxLocalImageCount)}
         allowImages={imageInputAllowed}
         buttons={customButtons}

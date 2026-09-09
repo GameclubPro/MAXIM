@@ -583,6 +583,25 @@ export class PublisherPolicyService {
     }));
   }
 
+  async resolveDraftTargets(
+    user: AuthUser,
+    targets: readonly { chatId: string; entityType: ManagedEntityType }[],
+  ) {
+    if (targets.length === 0) return [];
+    const entities = await this.loadScopedEntities(
+      user,
+      targets.map((target) => target.chatId),
+      true,
+    );
+    const byKey = new Map(entities.map((entity) => [`${entity.entityType}:${entity.id}`, entity]));
+    return targets.map((target) => {
+      const entity = byKey.get(`${target.entityType}:${target.chatId}`);
+      if (!entity)
+        throw new BadRequestException('Получатель больше недоступен. Уберите его из черновика.');
+      return { chatId: entity.id, entityType: entity.entityType };
+    });
+  }
+
   async updatePolicy(
     entityType: ManagedEntityType,
     entityId: string,

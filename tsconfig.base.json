@@ -25,6 +25,7 @@
       "@maxim/contracts/manual-moderation": ["packages/contracts/src/manual-moderation.ts"],
       "@maxim/contracts/poll": ["packages/contracts/src/poll.ts"],
       "@maxim/contracts/publication": ["packages/contracts/src/publication.ts"],
+      "@maxim/contracts/publication-draft": ["packages/contracts/src/publication-draft.ts"],
       "@maxim/contracts/publication-post-action-request": [
         "packages/contracts/src/publication-post-action-request.ts"
       ],

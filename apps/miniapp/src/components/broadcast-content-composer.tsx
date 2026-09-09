@@ -52,6 +52,8 @@ export type BroadcastContentComposerProps = {
   maxLength: number;
   image?: BroadcastContentComposerImage;
   images?: BroadcastImage[];
+  retainedImages?: readonly { id: string; url?: string }[];
+  onRemoveRetainedImage?: (id: string) => void;
   maxImages?: number;
   allowImages?: boolean;
   buttons?: BroadcastLinkButton[];
@@ -86,6 +88,8 @@ export function BroadcastContentComposer({
   maxLength,
   image,
   images,
+  retainedImages = [],
+  onRemoveRetainedImage,
   maxImages,
   allowImages = true,
   buttons = [],
@@ -160,6 +164,7 @@ export function BroadcastContentComposer({
     [currentImages, maxImageCount],
   );
   const pendingImageSlots = Math.max(0, preparingImages.total - preparingImages.done);
+  const previewImageCount = imagePreviewItems.length + retainedImages.length;
   const normalizedText = text.trim();
   const previewButtons = buttons.filter((button) => button.text.trim());
   const previewSystemButtons = systemButtons.filter((button) => button.text.trim());
@@ -179,7 +184,7 @@ export function BroadcastContentComposer({
     openButtonsCount > 0
       ? `Кнопки: ${showButtonsLabel ? customButtonLabel : previewButtonLabel}`
       : buttonsStatusLabel;
-  const hasPreview = Boolean(normalizedText || imagePreviewItems.length > 0 || videoLabel);
+  const hasPreview = Boolean(normalizedText || previewImageCount > 0 || videoLabel);
   const remainingLength = maxLength - text.length;
   const isNearTextLimit =
     remainingLength >= 0 && remainingLength <= Math.min(120, maxLength * 0.08);
@@ -421,13 +426,37 @@ export function BroadcastContentComposer({
           >
             <div className="broadcast-message-card__phone">
               <div className="broadcast-message-card__bubble">
-                {imagePreviewItems.length > 0 || pendingImageSlots > 0 ? (
+                {previewImageCount > 0 || pendingImageSlots > 0 ? (
                   <div
                     className={cn(
                       'broadcast-message-card__media-grid',
-                      `is-count-${Math.min(maxImageCount, imagePreviewItems.length + pendingImageSlots)}`,
+                      `is-count-${Math.min(maxImageCount + retainedImages.length, previewImageCount + pendingImageSlots)}`,
                     )}
                   >
+                    {retainedImages.map((item, index) => (
+                      <figure key={item.id} className="broadcast-message-card__media-frame">
+                        {item.url ? (
+                          <img className="broadcast-message-card__image" src={item.url} alt="" />
+                        ) : (
+                          <span
+                            className="broadcast-message-card__media-frame--loading"
+                            aria-label={`Сохранённое фото ${index + 1}`}
+                          />
+                        )}
+                        {onRemoveRetainedImage ? (
+                          <button
+                            type="button"
+                            className="broadcast-message-card__media-remove"
+                            onClick={() => onRemoveRetainedImage(item.id)}
+                            disabled={isBusy}
+                            aria-label={`Убрать сохранённое фото ${index + 1}`}
+                            title="Убрать фото"
+                          >
+                            <IconoirXmark aria-hidden focusable="false" />
+                          </button>
+                        ) : null}
+                      </figure>
+                    ))}
                     {imagePreviewItems.map((item) => (
                       <figure
                         key={`${item.fileName}-${item.index}`}
@@ -643,13 +672,13 @@ export function BroadcastContentComposer({
             </div>
 
             <span className="broadcast-content-composer__asset-strip">
-              {isPreparingImage || imagePreviewItems.length > 0 || videoLabel ? (
+              {isPreparingImage || previewImageCount > 0 || videoLabel ? (
                 <span className="broadcast-content-composer__media-label" aria-live="polite">
                   {isPreparingImage
                     ? `${preparingImages.done}/${preparingImages.total}`
-                    : imagePreviewItems.length > 1
-                      ? `${imagePreviewItems.length} фото`
-                      : imagePreviewItems.length === 1
+                    : previewImageCount > 1
+                      ? `${previewImageCount} фото`
+                      : previewImageCount === 1
                         ? '1 фото'
                         : videoLabel}
                 </span>

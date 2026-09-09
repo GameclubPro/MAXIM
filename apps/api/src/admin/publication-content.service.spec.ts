@@ -1,7 +1,10 @@
 import { PublicationContentService } from './publication-content.service';
 import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
 import { validateMaxMediaUploadPayload } from '../max/max-media-upload-validation';
-import { PUBLICATION_MAX_TOTAL_IMAGE_BYTES } from './publication-media-limits';
+import {
+  PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
+  PUBLICATION_ASSET_METADATA_SELECT,
+} from './publication-media-limits';
 
 const TINY_JPEG = Buffer.from(
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z',
@@ -43,6 +46,47 @@ function createService(prisma: unknown = {}) {
 }
 
 describe('PublicationContentService', () => {
+  it('serves bytes only from an actor-owned Publisher publication link', async () => {
+    const prisma = {
+      publicationAsset: {
+        findFirst: jest.fn().mockResolvedValue({ bytes: TINY_JPEG, mimeType: 'image/jpeg' }),
+      },
+    };
+    const result = await createService(prisma).getOwnedAsset('publication', 'asset', 'owner');
+    expect(result.bytes.equals(TINY_JPEG)).toBe(true);
+    expect(prisma.publicationAsset.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'asset',
+        actorUserId: 'owner',
+        contentLinks: {
+          some: {
+            contentRevision: {
+              publication: {
+                id: 'publication',
+                actorUserId: 'owner',
+                dispatchProfile: 'PUBLIK_V1',
+              },
+            },
+          },
+        },
+      },
+      select: { bytes: true, mimeType: true },
+    });
+  });
+
+  it.each([
+    null,
+    { bytes: TINY_JPEG, mimeType: 'image/svg+xml' },
+    { bytes: TINY_JPEG, mimeType: 'text/html' },
+    { bytes: Buffer.alloc(0), mimeType: 'image/jpeg' },
+  ])('rejects missing or unsafe preview media', async (asset) => {
+    await expect(
+      createService({
+        publicationAsset: { findFirst: jest.fn().mockResolvedValue(asset) },
+      }).getOwnedAsset('publication', 'asset', 'owner'),
+    ).rejects.toThrow('Медиа недоступно');
+  });
+
   it('uses the injected MAX client validation boundary for inline media ingestion', async () => {
     const validateMediaUploadPayload = jest.fn(validateMaxMediaUploadPayload);
     const service = new PublicationContentService(
@@ -162,16 +206,16 @@ describe('PublicationContentService', () => {
       ],
     });
 
-    await expect(
-      service.assertPublisherCompatibleContent(prepared, 'actor-a'),
-    ).rejects.toThrow('Выберите видеофайл снова');
+    await expect(service.assertPublisherCompatibleContent(prepared, 'actor-a')).rejects.toThrow(
+      'Выберите видеофайл снова',
+    );
   });
 
   it('allows a saved video reference for Publik only when durable bytes are present', async () => {
     const findFirst = jest
       .fn()
-      .mockResolvedValueOnce({ bytes: null, mimeType: 'video/mp4' })
-      .mockResolvedValueOnce({ bytes: TINY_VALID_MP4, mimeType: 'video/mp4' });
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ mimeType: 'video/mp4' });
     const service = createService({ publicationAsset: { findFirst } });
     const prepared = await service.prepareContentRevision({
       text: '',
@@ -180,9 +224,9 @@ describe('PublicationContentService', () => {
       media: [{ type: 'video-ref', assetId: 'saved-video' }],
     });
 
-    await expect(
-      service.assertPublisherCompatibleContent(prepared, 'actor-a'),
-    ).rejects.toThrow('Выберите видеофайл снова');
+    await expect(service.assertPublisherCompatibleContent(prepared, 'actor-a')).rejects.toThrow(
+      'Выберите видеофайл снова',
+    );
     await expect(
       service.assertPublisherCompatibleContent(prepared, 'actor-a'),
     ).resolves.toBeUndefined();
@@ -190,11 +234,12 @@ describe('PublicationContentService', () => {
       where: {
         id: 'saved-video',
         actorUserId: 'actor-a',
+        bytes: { not: null },
         contentLinks: {
           some: { contentRevision: { publication: { actorUserId: 'actor-a' } } },
         },
       },
-      select: { bytes: true, mimeType: true },
+      select: { mimeType: true },
     });
   });
 
@@ -247,6 +292,7 @@ describe('PublicationContentService', () => {
     await service.persistPreparedContentRevision(tx, 'publication-a', 2, prepared, 'actor-a');
 
     expect(tx.publicationAsset.findFirst).toHaveBeenCalledWith({
+      select: PUBLICATION_ASSET_METADATA_SELECT,
       where: {
         id: 'asset-owned',
         actorUserId: 'actor-a',

@@ -121,10 +121,7 @@ test('publication editor and details preserve the server text format', () => {
   assert.match(detailsSource, /sourceFormat=\{details\.content\.textFormat\}/u);
   assert.match(publicationsSource, /previewFormat=\{publication\.contentPreviewFormat\}/u);
   assert.match(feedCardSource, /sourceFormat=\{previewFormat\}/u);
-  assert.match(
-    publicationsSource,
-    /<BroadcastPublishReviewSheet[\s\S]*?text=\{draft\.text\}[\s\S]*?sourceFormat=\{draft\.textFormat\}/u,
-  );
+  assert.match(publicationsSource, /<LazyPublicationReviewSheet[\s\S]*?draft=\{draft\}/u);
   assert.match(reviewSheetSource, /sourceFormat=\{sourceFormat\}/u);
   assert.doesNotMatch(publicationsSource, /<small>\{draft\.text\.trim\(\)/u);
   assert.match(

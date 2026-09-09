@@ -1002,6 +1002,81 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-cloud-drafts',
+    beforeShot: async (page) => {
+      const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
+      await editor.fill('Черновик для осеннего анонса');
+      await page.getByText('Сохранено в черновиках', { exact: true }).waitFor();
+      if (screenshotTarget === 'native')
+        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      else
+        await page
+          .locator('.publications-editor-header')
+          .getByRole('button', { name: 'Назад', exact: true })
+          .click();
+      await page.getByRole('button', { name: 'Черновики', exact: true }).click();
+      const sheet = page.getByRole('dialog', { name: 'Черновики', exact: true });
+      await sheet.getByText('Черновик для осеннего анонса', { exact: true }).waitFor();
+      await sheet
+        .locator('.publication-drafts-sheet__row')
+        .filter({ hasText: 'Черновик для осеннего анонса' })
+        .locator('.publication-drafts-sheet__open')
+        .click();
+      await editor.waitFor();
+      if (!(await editor.textContent())?.includes('Черновик для осеннего анонса'))
+        throw new Error('Cloud draft text was not restored.');
+      if (screenshotTarget === 'native')
+        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      else
+        await page
+          .locator('.publications-editor-header')
+          .getByRole('button', { name: 'Назад', exact: true })
+          .click();
+      await page.getByRole('button', { name: 'Черновики', exact: true }).click();
+      await sheet.getByText('Черновик для осеннего анонса', { exact: true }).waitFor();
+    },
+  },
+  {
+    name: 'publications-publisher-full-review',
+    beforeShot: async (page) => {
+      await page.locator('.publication-target-picker__summary').click();
+      await page
+        .locator('.publication-target-row')
+        .filter({ hasText: 'Новости Южного' })
+        .first()
+        .click();
+      await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
+      await page
+        .locator('.publication-content-composer input[type="file"][accept="image/*"]')
+        .first()
+        .setInputFiles({
+          name: 'afisha.png',
+          mimeType: 'image/png',
+          buffer: await readFile(path.join(ROOT_DIR, 'apps/miniapp/public/apple-touch-icon.png')),
+        });
+      await page
+        .locator('.publication-content-composer .max-rich-text-editor__surface')
+        .fill(
+          Array.from(
+            { length: 8 },
+            (_, index) => `Абзац ${index + 1}. Осенний анонс для подписчиков.`,
+          ).join('\n\n'),
+        );
+      await page.getByText('Сохранено в черновиках', { exact: true }).waitFor();
+      await page
+        .locator('.publications-publish-bar')
+        .getByRole('button', { name: 'Опубликовать', exact: true })
+        .click();
+      const sheet = page.getByRole('dialog', { name: 'Проверка публикации', exact: true });
+      await sheet.waitFor();
+      await sheet.locator('.publication-preview__media img').waitFor();
+      if (!(await sheet.locator('.publication-preview__text').textContent())?.includes('Абзац 8'))
+        throw new Error('Publication review truncated the post.');
+      if (!(await sheet.locator('img').evaluate((image) => image.naturalWidth > 0)))
+        throw new Error('Publication preview image did not load.');
+    },
+  },
+  {
     name: 'publications-publisher-buttons-empty',
     beforeShot: async (page) => {
       const { sheet, trigger } = await openPublisherButtonsSheet(page);
@@ -4219,16 +4294,18 @@ async function assertPrimaryControlsReachable(page, scenario) {
     const viewportHeight = hasPreviewBounds ? previewRect.height : window.innerHeight;
     const hasActiveOverlay = Boolean(
       document.querySelector(
-        '.broadcast-buttons-sheet__panel, .broadcast-planner-sheet__panel, .time-field-sheet, .giveaway-page__overlay-card',
+        '.broadcast-buttons-sheet__panel, .broadcast-planner-sheet__panel, .time-field-sheet, .giveaway-page__overlay-card, .publication-drafts-sheet__panel, .publication-review-sheet .action-confirm-sheet__panel',
       ),
     );
     const selectors = [
-      keyboardMode ? null : '.bottom-nav:not(.is-keyboard-open)',
+      keyboardMode || hasActiveOverlay ? null : '.bottom-nav:not(.is-keyboard-open)',
       '.channel-dialog-compose__surface',
       hasActiveOverlay ? null : '.settings-drilldown__footer',
       '.broadcast-buttons-sheet__panel',
       '.broadcast-planner-sheet__panel',
       '.time-field-sheet',
+      '.publication-drafts-sheet__panel',
+      '.publication-review-sheet .action-confirm-sheet__actions',
     ];
 
     return selectors.filter(Boolean).flatMap((selector) =>

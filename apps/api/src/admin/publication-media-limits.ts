@@ -1,2 +1,10 @@
 export const PUBLICATION_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const PUBLICATION_MAX_TOTAL_IMAGE_BYTES = 24_000_000;
+export const PUBLICATION_ASSET_METADATA_SELECT = {
+  id: true,
+  sha256: true,
+  mimeType: true,
+  fileName: true,
+  sizeBytes: true,
+  durablePayload: true,
+} as const;

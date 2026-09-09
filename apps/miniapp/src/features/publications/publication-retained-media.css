@@ -49,7 +49,8 @@
     grid-column: 1;
   }
 
-  .publication-retained-media__previews img {
+  .publication-retained-media__previews img,
+  .publication-retained-media__previews video {
     width: 100%;
     aspect-ratio: 1;
     display: block;

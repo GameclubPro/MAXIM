@@ -1,0 +1,158 @@
+@layer pages {
+  .publication-draft-status {
+    display: grid;
+    gap: 6px;
+    padding: 8px 0;
+    color: var(--publication-ui-ink-muted);
+    font-size: 0.8rem;
+  }
+  .publication-draft-status > span,
+  .publication-draft-status > div {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .publication-draft-status svg {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
+  }
+  .publication-draft-status.is-error {
+    color: var(--publication-danger-ink);
+  }
+  .publication-draft-status small {
+    overflow-wrap: anywhere;
+  }
+  .publication-draft-status button {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 8px;
+    color: var(--publication-ui-accent);
+    border: 1px solid var(--publication-ui-border);
+    border-radius: 6px;
+    background: var(--publication-ui-surface);
+    font: inherit;
+  }
+  .publication-drafts-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 130;
+    display: grid;
+    align-items: end;
+    color: var(--publication-ui-ink);
+  }
+  .design-preview__device-screen > .publication-drafts-sheet {
+    position: absolute;
+  }
+  .publication-drafts-sheet__backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: var(--publication-ui-scrim);
+  }
+  .publication-drafts-sheet__panel {
+    position: relative;
+    width: min(100%, 760px);
+    max-height: 85dvh;
+    justify-self: center;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--publication-ui-border);
+    border-radius: 8px 8px 0 0;
+    background: var(--publication-ui-page);
+  }
+  .publication-drafts-sheet__panel > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 16px;
+  }
+  .publication-drafts-sheet h2 {
+    margin: 0;
+    font-size: 1.1rem;
+  }
+  .publication-drafts-sheet__body {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    padding: 0 12px calc(16px + var(--app-safe-bottom, 0px));
+  }
+  .publication-drafts-sheet button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 10px;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    font: inherit;
+  }
+  .publication-drafts-sheet button:focus-visible,
+  .publication-draft-status button:focus-visible {
+    outline: 2px solid var(--publication-ui-accent);
+    outline-offset: -2px;
+  }
+  .publication-drafts-sheet button:disabled {
+    opacity: 0.5;
+  }
+  .publication-drafts-sheet svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+  }
+  .publication-drafts-sheet__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(2, 44px);
+    align-items: center;
+    gap: 2px;
+    border-top: 1px solid var(--publication-ui-border);
+  }
+  .publication-drafts-sheet .publication-drafts-sheet__open {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    text-align: left;
+  }
+  .publication-drafts-sheet__open strong {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+    font-size: 0.875rem;
+  }
+  .publication-drafts-sheet__open small {
+    font-size: 0.75rem;
+    color: var(--publication-ui-ink-muted);
+  }
+  .publications-header .publication-drafts-trigger {
+    margin-inline-start: auto;
+    flex: 0 0 44px;
+    min-height: 44px;
+    width: 44px;
+    padding: 10px;
+    border: 1px solid var(--publication-ui-border);
+    border-radius: 6px;
+    color: var(--publication-ui-ink);
+    background: var(--publication-ui-surface);
+  }
+  .publication-drafts-trigger svg {
+    width: 22px;
+    height: 22px;
+    display: block;
+  }
+  @container publication-hub (max-width: 340px) {
+    .publications-page:not(.is-editor) .publications-header > .publications-primary {
+      width: 44px;
+      flex: 0 0 44px;
+      padding: 10px;
+    }
+    .publications-page:not(.is-editor) .publications-header > .publications-primary span {
+      display: none;
+    }
+  }
+}

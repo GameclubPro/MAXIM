@@ -544,6 +544,20 @@ const baseScenarios = [
       },
     ],
     [
+      'publications-publisher-cloud-drafts',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'publications'],
+      },
+    ],
+    [
+      'publications-publisher-full-review',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'publications'],
+      },
+    ],
+    [
       'publications-publisher-delivery-actions',
       {
         searchParams: { profile: 'publisher', view: 'history' },

@@ -1,4 +1,4 @@
-import { CheckCircle, Plus, Post, Refresh, WarningCircle } from 'iconoir-react';
+import { CheckCircle, EditPencil, Plus, Post, Refresh, WarningCircle } from 'iconoir-react';
 import type { PublisherEntitiesSummary } from '@maxim/contracts/publisher';
 import { Link } from 'react-router';
 import { formatRussianCountLabel } from '../../lib/broadcast-audience';
@@ -16,6 +16,7 @@ export function PublicationHubHeader({
   sourcesHaveError,
   onCreate,
   onRefresh,
+  onDrafts,
 }: {
   publisherProfile: boolean;
   canCreate: boolean;
@@ -26,6 +27,7 @@ export function PublicationHubHeader({
   sourcesHaveError: boolean;
   onCreate: () => void;
   onRefresh: () => void;
+  onDrafts?: () => void;
 }) {
   const publisherTotal = publisherSummary?.total ?? targets.length;
   const publisherReady =
@@ -72,17 +74,30 @@ export function PublicationHubHeader({
           {publisherProfile ? <span>Посты</span> : null}
         </div>
         {publisherProfile ? (
-          <button
-            type="button"
-            className="publications-primary"
-            onClick={onCreate}
-            aria-label="Создать публикацию"
-            title={canCreate ? 'Создать публикацию' : 'Нет готовых получателей'}
-            disabled={!canCreate}
-          >
-            <Plus aria-hidden />
-            <span>Создать</span>
-          </button>
+          <>
+            {onDrafts ? (
+              <button
+                className="publication-drafts-trigger"
+                type="button"
+                onClick={onDrafts}
+                aria-label="Черновики"
+                title="Черновики"
+              >
+                <EditPencil aria-hidden />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="publications-primary"
+              onClick={onCreate}
+              aria-label="Создать публикацию"
+              title={canCreate ? 'Создать публикацию' : 'Нет готовых получателей'}
+              disabled={!canCreate}
+            >
+              <Plus aria-hidden />
+              <span>Создать</span>
+            </button>
+          </>
         ) : null}
       </header>
 

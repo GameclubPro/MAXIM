@@ -146,6 +146,13 @@ async function main() {
   if (!/^[a-f0-9]{40}$/u.test(sha) || process.env.MAXIM_EXPECTED_DEPLOY_SHA !== sha)
     throw new Error('Exact reviewed source SHA is required.');
   command('git', ['diff', '--quiet', 'HEAD', '--', 'infra', 'apps/api/prisma/migrations']);
+  for (const file of [
+    'publication-post-actions-migration-recovery.mjs',
+    'publication-post-actions-schema-audit.mjs',
+    'vps-recover-publication-post-actions-migration.sh',
+  ]) {
+    command('git', ['cat-file', '-e', `HEAD:infra/scripts/${file}`]);
+  }
   const compose = [
     'compose',
     '--env-file',

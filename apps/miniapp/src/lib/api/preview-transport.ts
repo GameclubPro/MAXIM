@@ -5,6 +5,7 @@ import { handleDialogPreviewRequest } from './preview-transport-dialog';
 import { handleEventsPreviewRequest } from './preview-transport-events';
 import { handleGiveawaysPreviewRequest } from './preview-transport-giveaways';
 import { handlePublicationsPreviewRequest } from './preview-transport-publications';
+import { handlePublicationDraftsPreviewRequest } from './preview-transport-publication-drafts';
 import { handlePublisherPreviewRequest } from './preview-transport-publisher';
 import {
   dispatchPreviewRequest,
@@ -21,6 +22,7 @@ export type { PreviewApiTransportOptions, PreviewClock } from './preview-transpo
 export const PREVIEW_REQUEST_HANDLERS: readonly PreviewRequestHandler[] = [
   handlePublisherPreviewRequest,
   handleSystemPreviewRequest,
+  handlePublicationDraftsPreviewRequest,
   handlePublicationsPreviewRequest,
   handleAutopostsPreviewRequest,
   handleGiveawaysPreviewRequest,
