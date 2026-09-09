@@ -6,7 +6,29 @@ import {
   getNextPublicationRecurrenceTime,
 } from '../src/features/publications/publication-time-presentation';
 import { createEmptyPublicationDraft } from '../src/features/publications/publication-model';
-import { formatDraftTiming } from '../src/features/publications/publication-page-formatters';
+import {
+  formatDraftTiming,
+  formatPublicationSchedule,
+} from '../src/features/publications/publication-page-formatters';
+import type { PublicationSummary } from '@maxim/contracts/publication';
+
+test('single calendar slot keeps the saved zone in the final review', () => {
+  const draft = createEmptyPublicationDraft();
+  draft.timingMode = 'schedule';
+  draft.scheduleKind = 'slots';
+  draft.scheduleTimezone = 'Asia/Vladivostok';
+  draft.scheduledSlots = ['2030-01-01T10:00:00.000Z'];
+  assert.match(formatDraftTiming(draft), /20:00/u);
+});
+
+test('immediate history shows an honestly labeled creation date instead of now', () => {
+  const publication = {
+    lifecycle: 'COMPLETED',
+    createdAt: '2030-01-01T10:00:00.000Z',
+    schedule: { mode: 'now', timezone: 'Asia/Vladivostok' },
+  } as PublicationSummary;
+  assert.match(formatPublicationSchedule(publication), /^Создано .*20:00/u);
+});
 
 test('publication date input round-trips in its saved zone instead of the device zone', () => {
   const local = formatPublicationScheduleField('2026-09-08T21:00:00Z', 'Asia/Vladivostok');

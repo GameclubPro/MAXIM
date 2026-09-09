@@ -3,7 +3,6 @@ import { formatRussianCountLabel } from '../../lib/broadcast-audience';
 import {
   formatLocalDateTimeInputValue,
   sortAndUniqueBroadcastSlots,
-  resolveBroadcastScheduleTimezone,
 } from '../../lib/broadcast-schedule';
 import type { PublicationFeedTone } from './publication-feed-card';
 import {
@@ -121,7 +120,7 @@ export function formatDraftTiming(draft: PublicationDraft): string {
     return 'Время не выбрано';
   }
   return slots.length === 1
-    ? formatDateTime(slots[0] ?? null, resolveBroadcastScheduleTimezone())
+    ? formatDateTime(slots[0] ?? null, draft.scheduleTimezone)
     : formatRussianCountLabel(slots.length, 'отправка', 'отправки', 'отправок');
 }
 
@@ -131,10 +130,12 @@ export function formatPublicationSchedule(publication: PublicationSummary): stri
     return 'Черновик';
   }
   if (schedule.mode === 'now') {
-    return 'Сейчас';
+    return publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED'
+      ? `Создано · ${formatDateTime(publication.createdAt, schedule.timezone)}`
+      : 'Сейчас';
   }
   if (schedule.mode === 'once') {
-    return `Следующая · ${formatDateTime(schedule.at, schedule.timezone)}`;
+    return `${schedule.nextOccurrenceAt ? 'Следующая' : 'По плану'} · ${formatDateTime(schedule.at, schedule.timezone)}`;
   }
   if (schedule.mode === 'slots') {
     if (schedule.nextOccurrenceAt) {

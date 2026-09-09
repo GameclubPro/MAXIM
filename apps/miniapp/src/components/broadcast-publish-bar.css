@@ -1,0 +1,52 @@
+@layer components {
+  .broadcast-publish-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .broadcast-publish-bar__copy {
+    display: grid;
+    flex: 1 1 160px;
+    min-width: 0;
+    gap: 3px;
+    overflow-wrap: anywhere;
+  }
+
+  .broadcast-publish-bar__copy small {
+    color: var(--color-ink-muted);
+    font-size: 0.75rem;
+  }
+
+  .broadcast-publish-bar__primary,
+  .broadcast-publish-bar__secondary,
+  .broadcast-publish-bar__test {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 48px;
+    padding: 10px 16px;
+    font: inherit;
+    font-weight: 700;
+  }
+
+  .broadcast-publish-bar__primary svg,
+  .broadcast-publish-bar__secondary svg,
+  .broadcast-publish-bar__test svg {
+    width: 18px;
+    height: 18px;
+    max-width: 18px;
+    max-height: 18px;
+    flex: 0 0 18px;
+  }
+
+  .broadcast-publish-bar__issues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}

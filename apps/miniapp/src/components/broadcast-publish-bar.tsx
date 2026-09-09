@@ -1,5 +1,6 @@
 import { cn } from '../lib/cn';
 import { BookmarkGlyph, SendGlyph, TestGlyph } from './ui/compact-icons';
+import './broadcast-publish-bar.css';
 
 export type BroadcastPublishIssueAction = {
   label: string;

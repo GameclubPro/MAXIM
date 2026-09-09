@@ -48,6 +48,22 @@
     max-width: 100%;
   }
 
+  .publications-page:not(.is-editor) {
+    container: publication-hub / inline-size;
+  }
+
+  @container publication-hub (min-width: 650px) {
+    .publications-feed {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .app-shell:has(.publications-page:not(.is-editor)) {
+      width: min(100%, 1024px);
+    }
+  }
+
   body.publications-editor-open .app-shell:has(.publications-page.is-editor) {
     --publication-editor-shell-height: var(--app-viewport-height, 100dvh);
     width: 100%;

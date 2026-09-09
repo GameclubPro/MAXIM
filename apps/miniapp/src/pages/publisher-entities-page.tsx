@@ -165,6 +165,7 @@ export function PublisherEntitiesPage({
   const hasCatalogControls =
     summary.total > 0 || query.trim().length > 0 || readinessFilter !== 'all';
   const showCatalogStatus =
+    filteredTotal > PUBLISHER_ENTITY_PAGE_SIZE ||
     searchSettling ||
     debouncedQuery.length > 0 ||
     readinessFilter !== 'all' ||

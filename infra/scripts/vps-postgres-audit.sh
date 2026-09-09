@@ -26,7 +26,7 @@ POSTGRES_AUDIT_OPTIONS='-c default_transaction_read_only=on -c statement_timeout
 usage() {
   cat <<'USAGE' >&2
 Usage:
-  ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|all]
+  ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|all]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -67,7 +67,7 @@ fi
 
 SIGNAL_WINDOW_MIN=''
 case "$AUDIT_MODE" in
-  queue|activity|duplicate|all)
+  queue|activity|duplicate|publication-schema|all)
     if [[ $# -gt 1 ]]; then
       usage
       exit 2
@@ -1069,6 +1069,9 @@ emit_sql() {
       ;;
     duplicate)
       emit_duplicate_audit
+      ;;
+    publication-schema)
+      node "$ROOT_DIR/infra/scripts/publication-post-actions-schema-audit.mjs"
       ;;
     all)
       emit_queue_audit

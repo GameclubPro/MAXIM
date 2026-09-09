@@ -2736,6 +2736,8 @@ export function PublicationsPage({
           hasMedia={hasMedia}
           facts={[
             `Кому · ${formatTargetSummary(draft.targets)}`,
+            ...publicationPostPublishLabels(draft.postPublish),
+            `Часовой пояс · ${draft.scheduleTimezone}`,
             editScope === 'retry'
               ? 'Отправка · после ручного повтора'
               : `Когда · ${formatDraftTiming(draft)}`,

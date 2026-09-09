@@ -1201,6 +1201,11 @@ test('vps postgres-audit accepts only public fixed modes and needs no bypass', (
   assert.equal(duplicate.status, 0, duplicate.stderr);
   assert.match(readFileSync(data.sshArgs, 'utf8'), /duplicate/u);
 
+  const publication = runConnect(data, ['postgres-audit', 'publication-schema']);
+  assert.equal(publication.status, 0, publication.stderr);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /publication-schema/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'publication-schema', 'other']).status, 2);
+
   for (const privateMode of ['monitor-signals', 'legacy-default-webhook-jobs']) {
     rmSync(data.sshArgs, { force: true });
     const denied = runConnect(data, ['postgres-audit', privateMode], {

@@ -1418,7 +1418,11 @@ const scenarioBehaviors = [
   {
     name: 'publications-edit-discard',
     beforeShot: async (page) => {
-      await page.locator('.publication-feed-card__surface').first().click();
+      await page
+        .locator(
+          '[data-publication-id="publication-delivery-review"] .publication-feed-card__surface',
+        )
+        .click();
       await page.locator('.publication-details-sheet__panel').waitFor({ state: 'visible' });
       await page.getByRole('button', { name: /Отметить неотправленной/u }).click();
       await page
@@ -1445,7 +1449,11 @@ const scenarioBehaviors = [
   {
     name: 'publications-retry-choice',
     beforeShot: async (page) => {
-      await page.locator('.publication-feed-card__surface').first().click();
+      await page
+        .locator(
+          '[data-publication-id="publication-delivery-review"] .publication-feed-card__surface',
+        )
+        .click();
       await page.locator('.publication-details-sheet__panel').waitFor({ state: 'visible' });
       await page.getByRole('button', { name: /Отметить неотправленной/u }).click();
       await page

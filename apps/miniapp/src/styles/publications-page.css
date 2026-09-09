@@ -1505,10 +1505,6 @@
       padding-left: 20px;
     }
 
-    .publications-feed {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .publications-filterbar {
       grid-template-columns: minmax(220px, 1fr) minmax(240px, auto) 150px;
     }

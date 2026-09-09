@@ -65,7 +65,7 @@ type PublicationDetailsSheetProps = {
   ) => void;
 };
 
-function formatDateTime(value: string): string {
+function formatDateTime(value: string, timezone = 'Europe/Moscow'): string {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
     ? new Intl.DateTimeFormat('ru-RU', {
@@ -73,6 +73,7 @@ function formatDateTime(value: string): string {
         month: 'short',
         hour: '2-digit',
         minute: '2-digit',
+        timeZone: timezone,
       }).format(date)
     : value;
 }
@@ -484,7 +485,9 @@ export function PublicationDetailsSheet({
                           )}
                         >
                           <span className="publication-deliveries__copy">
-                            <strong>{formatDateTime(occurrence.scheduledAt)}</strong>
+                            <strong>
+                              {formatDateTime(occurrence.scheduledAt, details.schedule?.timezone)}
+                            </strong>
                             {occurrence.delivery.total > 0 ? (
                               <small>
                                 Отправлено {occurrence.delivery.sent}/{occurrence.delivery.total}
@@ -558,7 +561,7 @@ export function PublicationDetailsSheet({
                             entityType={delivery.target.entityType}
                             avatarUrl={delivery.target.avatarUrl}
                           />
-                          <span>
+                          <span className="publication-deliveries__copy">
                             <strong>{delivery.target.title}</strong>
                             <small
                               className={cn(
@@ -568,6 +571,12 @@ export function PublicationDetailsSheet({
                             >
                               {DELIVERY_STATUS_LABELS[delivery.status]}
                             </small>
+                            {delivery.sentAt ? (
+                              <small>
+                                Отправлено{' '}
+                                {formatDateTime(delivery.sentAt, details.schedule?.timezone)}
+                              </small>
+                            ) : null}
                             {publicationPostActionLabels(
                               delivery.postActions,
                               details.schedule?.timezone,
