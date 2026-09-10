@@ -1872,14 +1872,17 @@ export class AdminService implements OnModuleDestroy {
           checkedAt: true,
         },
       });
-      const grantedRows = rows.filter((row) => !row.state || row.state === 'GRANTED');
+      // FLAG: Publisher denials cannot hide a separately authorized moderation connection.
+      const publisherBotId = this.maxBotRegistry?.getPublisherBotDescriptor?.().id;
+      const scopedRows = rows.filter((row) => !publisherBotId || row.botId !== publisherBotId);
+      const grantedRows = scopedRows.filter((row) => !row.state || row.state === 'GRANTED');
       const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(grantedRows, {
         userId,
         requestedItems: items.length,
         source: 'strict_access_edges',
       });
       const newestUserDeniedAtByChatId = new Map<string, number>();
-      for (const row of rows) {
+      for (const row of scopedRows) {
         if (row.state !== 'USER_DENIED') {
           continue;
         }
@@ -1923,7 +1926,7 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to filter managed entities by strict access edges',
       );
-      return [];
+      throw new ServiceUnavailableException('Managed entity access verification is unavailable');
     }
   }
 
@@ -2006,7 +2009,9 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to filter managed entities by active bot membership',
       );
-      return new Set();
+      throw new ServiceUnavailableException(
+        'Managed entity membership verification is unavailable',
+      );
     }
   }
 
@@ -3519,6 +3524,8 @@ export class AdminService implements OnModuleDestroy {
         where: {
           chatId,
           userId,
+          // FLAG: MAX moderation verdicts never mutate the independent Publisher access edge.
+          botId: { in: [...this.managedEntitiesRuntimeBotIds] },
         },
         data: {
           state: params.state,

@@ -1665,7 +1665,8 @@ export class MaxChatAdminRosterSyncService {
         userId: {
           in: userIds,
         },
-        ...(botId ? { botId } : {}),
+        // FLAG: An exhausted moderation roster is not evidence about the Publisher token.
+        botId: botId ? botId : { in: this.maxBotRegistry.getDiscoveryBots().map((bot) => bot.id) },
         checkedAt: { lte: checkedAt },
       },
       data: {

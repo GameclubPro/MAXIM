@@ -26,6 +26,7 @@ import {
   Injectable,
   HttpStatus,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -49,6 +50,7 @@ import {
   publisherRefreshEvidenceWhere,
 } from '../publisher/publisher-entity-connection.util';
 import { ManagedEntitiesService } from './managed-entities.service';
+import { ManagedEntityAccessRefreshService } from './managed-entity-access-refresh.service';
 import {
   BotCapabilityRequiredException,
   type BotCapabilityPermission,
@@ -94,9 +96,11 @@ export class PublisherPolicyService {
     private readonly readinessService: PublisherReadinessService,
     private readonly managedEntitiesService: ManagedEntitiesService,
     private readonly publisherBindingRefreshQueue: PublisherBindingRefreshQueueService,
+    @Optional() private readonly accessRefresh?: ManagedEntityAccessRefreshService,
   ) {}
 
   async listEntities(user: AuthUser, query?: unknown): Promise<PublisherEntitiesResponse> {
+    this.accessRefresh?.schedule(user.userId, 'publisher');
     const pagination = this.readPaginationMode(query);
     if (pagination === undefined) {
       return publisherEntitiesResponseSchema.parse({

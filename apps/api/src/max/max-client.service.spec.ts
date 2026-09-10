@@ -9750,6 +9750,48 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it.each([{}, { members: null }, { members: [{}] }, { members: [], marker: {} }])(
+    'rejects malformed admin rosters without caching an empty authorization result: %j',
+    async (data) => {
+      const request = jest
+        .fn()
+        .mockReturnValueOnce(of({ status: 200, data }))
+        .mockReturnValueOnce(
+          of({ status: 200, data: { members: [{ user: { user_id: 'user-1' }, is_admin: true }] } }),
+        );
+      const service = createService({ request });
+      await expect(service.getChatAdminIds('chat-1')).rejects.toThrow('Invalid MAX chat admin');
+      await expect(service.getChatAdminIds('chat-1')).resolves.toEqual(['user-1']);
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('rejects a repeated admin pagination marker instead of returning a partial roster', async () => {
+    const request = jest
+      .fn()
+      .mockReturnValue(
+        of({ status: 200, data: { members: [{ user_id: 'user-1', is_admin: true }], marker: 1 } }),
+      );
+    const service = createService({ request });
+    await expect(service.getChatAdminIds('chat-1')).rejects.toThrow(
+      'Incomplete MAX chat admin roster',
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+    await service.onModuleDestroy();
+  });
+
+  it.each([{}, { members: null }, { members: [{}] }])(
+    'rejects malformed targeted membership responses: %j',
+    async (data) => {
+      const request = jest.fn().mockReturnValue(of({ status: 200, data }));
+      const service = createService({ request });
+      await expect(service.getChatMemberAccess('chat-1', 'user-1')).rejects.toThrow(
+        'Invalid MAX chat members response',
+      );
+      await service.onModuleDestroy();
+    },
+  );
+
   it('preserves explicit bot markers for the narrow admin roster lookup', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

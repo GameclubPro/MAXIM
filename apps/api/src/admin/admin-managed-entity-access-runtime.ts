@@ -330,6 +330,8 @@ export class AdminManagedEntityAccessRuntime {
             where: {
               chatId,
               userId: { in: userIdVariants },
+              // FLAG: A moderation access probe cannot revoke Publisher-owned access.
+              botId: { in: [...this.context.managedEntitiesRuntimeBotIds] },
               checkedAt: { lte: eventAt },
             },
             data: {
@@ -358,6 +360,7 @@ export class AdminManagedEntityAccessRuntime {
                 chatId,
                 userId: { in: userIdVariants },
                 state: 'GRANTED',
+                botId: { in: [...this.context.managedEntitiesRuntimeBotIds] },
                 checkedAt: { gt: eventAt },
               },
               select: { userId: true },

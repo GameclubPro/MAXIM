@@ -794,20 +794,22 @@ export class PublisherBindingRefreshService {
       ) {
         return false;
       }
-      if (params.candidateVersion) {
-        const candidateEdge = await tx.managedEntityAccessEdge.findUnique({
-          where: {
-            chatId_userId_botId: {
-              chatId: params.chatId,
-              userId: params.userId,
-              botId: this.publisherBotId,
-            },
+      const candidateEdge = await tx.managedEntityAccessEdge.findUnique({
+        where: {
+          chatId_userId_botId: {
+            chatId: params.chatId,
+            userId: params.userId,
+            botId: this.publisherBotId,
           },
-          select: { sourceVersion: true },
-        });
-        if (candidateEdge?.sourceVersion !== params.candidateVersion) {
-          return false;
-        }
+        },
+        select: { sourceVersion: true, checkedAt: true },
+      });
+      // FLAG: A delayed MAX verdict cannot overwrite a newer user grant or membership reset.
+      if (
+        (candidateEdge?.checkedAt && candidateEdge.checkedAt > params.probeStartedAt) ||
+        (params.candidateVersion && candidateEdge?.sourceVersion !== params.candidateVersion)
+      ) {
+        return false;
       }
       await tx.managedEntityAccessEdge.upsert({
         where: {

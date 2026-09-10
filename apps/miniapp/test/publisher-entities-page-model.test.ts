@@ -11,6 +11,7 @@ import {
   fingerprintPublisherEntities,
   isPublisherEntityRefreshObserved,
   normalizePublisherEntityView,
+  observePublisherHomeAccessRefresh,
   pollPublisherEntityRefresh,
   resolvePublisherHomeView,
   retryPublisherEntitiesNextPage,
@@ -18,6 +19,38 @@ import {
   shouldOfferPublisherRecheck,
 } from '../src/pages/publisher-entities-page-model';
 import { createApiRequestError } from '../src/lib/api-request-error';
+
+test('home observes asynchronous access recovery with a fixed bounded polling window', async () => {
+  const delays: number[] = [];
+  let reads = 0;
+  await observePublisherHomeAccessRefresh({
+    signal: new AbortController().signal,
+    wait: async (delayMs) => {
+      delays.push(delayMs);
+    },
+    refresh: async () => {
+      reads += 1;
+      if (reads === 1) throw new Error('temporary outage');
+    },
+  });
+  assert.deepEqual(delays, [1_500, 3_000, 6_000, 12_000]);
+  assert.equal(reads, 4);
+});
+
+test('home recovery stops on unmount or when MAX hides the WebView', async () => {
+  const controller = new AbortController();
+  let reads = 0;
+  await observePublisherHomeAccessRefresh({
+    signal: controller.signal,
+    wait: async () => {
+      controller.abort();
+    },
+    refresh: async () => {
+      reads += 1;
+    },
+  });
+  assert.equal(reads, 0);
+});
 
 function publisherEntity(
   id: string,

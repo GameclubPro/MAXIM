@@ -22,6 +22,7 @@ import {
   buildPublisherEntityViewRoute,
   fingerprintPublisherEntities,
   normalizePublisherEntityView,
+  observePublisherHomeAccessRefresh,
   pollPublisherEntityRefresh,
   PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS,
   resolvePublisherHomeView,
@@ -197,6 +198,26 @@ export function PublisherEntitiesPage({
   }, []);
 
   useEffect(() => {
+    let observation: AbortController | null = null;
+    const observe = () => {
+      observation?.abort();
+      observation = null;
+      if (document.visibilityState !== 'visible') return;
+      observation = new AbortController();
+      void observePublisherHomeAccessRefresh({
+        signal: observation.signal,
+        refresh: () => queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT }),
+      });
+    };
+    observe();
+    document.addEventListener('visibilitychange', observe);
+    return () => {
+      observation?.abort();
+      document.removeEventListener('visibilitychange', observe);
+    };
+  }, [api, queryClient]);
+
+  useEffect(() => {
     const timeoutId = window.setTimeout(
       () => setDebouncedQuery(query.trim()),
       PUBLISHER_ENTITY_SEARCH_DEBOUNCE_MS,
@@ -233,7 +254,7 @@ export function PublisherEntitiesPage({
     }
 
     const timeoutId = window.setTimeout(
-      () => void queryClient.resetQueries({ queryKey: entitiesQueryKey, exact: true }),
+      () => void queryClient.invalidateQueries({ queryKey: entitiesQueryKey, exact: true }),
       Math.min(nextRetryAt - now + 250, 2_147_000_000),
     );
     return () => window.clearTimeout(timeoutId);
@@ -254,7 +275,7 @@ export function PublisherEntitiesPage({
         return;
       }
       if (refresh.queuedCount === 0) {
-        await queryClient.resetQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+        await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
         pushToast({
           tone: 'info',
           title: 'Подключения актуальны',
@@ -374,7 +395,7 @@ export function PublisherEntitiesPage({
         return;
       }
       if (result.status === 'updated') {
-        await queryClient.resetQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+        await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
         const presentation = getPublisherReadinessPresentation(result.entity.readiness);
         pushToast({
           tone: result.entity.readiness.canPublish ? 'success' : 'info',

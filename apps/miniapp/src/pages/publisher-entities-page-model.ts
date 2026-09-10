@@ -17,6 +17,23 @@ export const PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS = [
 ] as const;
 const PUBLISHER_ENTITY_REFRESH_MAX_CONSECUTIVE_READ_FAILURES = 2;
 
+export async function observePublisherHomeAccessRefresh(options: {
+  refresh: () => Promise<unknown>;
+  signal: AbortSignal;
+  wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+}): Promise<void> {
+  // Access renewal is asynchronous; keep observation bounded to this home visit.
+  for (const delayMs of [1_500, 3_000, 6_000, 12_000]) {
+    await (options.wait ?? waitForPublisherRefresh)(delayMs, options.signal);
+    if (options.signal.aborted) return;
+    try {
+      await options.refresh();
+    } catch {
+      // Query state owns read errors and retains the previous authorized response.
+    }
+  }
+}
+
 export type PublisherEntityRefreshPollResult =
   | { status: 'updated'; entity: PublisherEntity; attempts: number }
   | { status: 'timed_out'; entity: PublisherEntity; attempts: number }

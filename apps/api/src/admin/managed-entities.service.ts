@@ -48,6 +48,7 @@ import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { buildMiniappProfileProjection } from '../auth/miniapp-profile';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
+import { ManagedEntityAccessRefreshService } from './managed-entity-access-refresh.service';
 import { MaxClientService } from '../max/max-client.service';
 import {
   ChatBotAccessState,
@@ -170,6 +171,7 @@ export class ManagedEntitiesService {
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly maxBotRegistry?: MaxBotRegistryService,
     @Optional() private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
+    @Optional() private readonly accessRefresh?: ManagedEntityAccessRefreshService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -359,6 +361,7 @@ export class ManagedEntitiesService {
   }
 
   listChats(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
+    this.accessRefresh?.schedule(user.userId, 'moderation', 'chat');
     return listManagedEntitiesValue({
       user,
       entityType: 'chat',
@@ -380,6 +383,7 @@ export class ManagedEntitiesService {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
+    this.accessRefresh?.schedule(user.userId, 'moderation', 'chat');
     return listManagedEntitiesWithRefreshStateValue({
       user,
       entityType: 'chat',
@@ -402,6 +406,7 @@ export class ManagedEntitiesService {
   }
 
   listChannels(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
+    this.accessRefresh?.schedule(user.userId, 'moderation', 'channel');
     return listManagedEntitiesValue({
       user,
       entityType: 'channel',
@@ -423,6 +428,7 @@ export class ManagedEntitiesService {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
+    this.accessRefresh?.schedule(user.userId, 'moderation', 'channel');
     return listManagedEntitiesWithRefreshStateValue({
       user,
       entityType: 'channel',

@@ -41,6 +41,7 @@ import { ManagedAutopostService } from './managed-autopost.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
 import { ManagedEntitiesService } from './managed-entities.service';
+import { ManagedEntityAccessRefreshService } from './managed-entity-access-refresh.service';
 import { MANAGED_ENTITIES_LEGACY_PORT } from './managed-entities-legacy.port';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
@@ -170,6 +171,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     },
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
+    ManagedEntityAccessRefreshService,
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
     ManagedPollService,

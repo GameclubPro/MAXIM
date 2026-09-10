@@ -3175,11 +3175,7 @@ export class MaxClientService implements OnModuleDestroy {
           return null;
         }
 
-        const value = row.user_id ?? row.userId ?? row.id;
-        if (typeof value === 'number' || typeof value === 'string') {
-          return String(value);
-        }
-        return null;
+        return this.readMemberUserId(row);
       })
       .filter((value): value is string => value !== null);
 
@@ -3389,11 +3385,15 @@ export class MaxClientService implements OnModuleDestroy {
           ),
         options,
       );
-      const members = Array.isArray(data.members)
+      const members = Array.isArray(data?.members)
         ? data.members
-        : Array.isArray(data.users)
+        : Array.isArray(data?.users)
           ? data.users
-          : [];
+          : null;
+      // FLAG: A malformed lookup is unknown, never proof that a user lost membership.
+      if (!members || members.some((member) => !this.readMemberUserId(member))) {
+        throw new Error('Invalid MAX chat members response');
+      }
 
       for (const member of members) {
         const access = this.parseChatMemberAccess(member);
@@ -4071,39 +4071,38 @@ export class MaxClientService implements OnModuleDestroy {
           }),
         options,
       );
-      const pageMembers = Array.isArray(data.members) ? data.members : [];
+      // FLAG: Roster consumers revoke absent admins; only a complete valid roster is authoritative.
+      if (
+        !Array.isArray(data?.members) ||
+        data.members.some((member) => !this.readMemberUserId(member))
+      ) {
+        throw new Error('Invalid MAX chat admin members response');
+      }
+      const pageMembers = data.members;
       members.push(...pageMembers);
 
       const nextMarker = data.marker;
+      if (nextMarker === null || nextMarker === undefined) {
+        return members;
+      }
       if (
-        nextMarker === null ||
-        nextMarker === undefined ||
-        (typeof nextMarker !== 'string' && typeof nextMarker !== 'number')
+        (typeof nextMarker !== 'string' && typeof nextMarker !== 'number') ||
+        (typeof nextMarker === 'number' && !Number.isFinite(nextMarker)) ||
+        String(nextMarker).trim().length === 0
       ) {
-        break;
+        throw new Error('Invalid MAX chat admin pagination marker');
       }
 
       const markerKey = String(nextMarker);
       if (seenMarkers.has(markerKey)) {
-        break;
+        throw new Error('Incomplete MAX chat admin roster: repeated pagination marker');
       }
 
       seenMarkers.add(markerKey);
       marker = nextMarker;
     }
 
-    if (pagesFetched >= MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP && marker !== null) {
-      this.logger.warn(
-        {
-          chatId,
-          pagesFetched,
-          marker,
-        },
-        'Stopped MAX chat admin member discovery after reaching pagination safety cap',
-      );
-    }
-
-    return members;
+    throw new Error('Incomplete MAX chat admin roster: pagination safety cap exceeded');
   }
 
   private parseChatMemberProfile(value: unknown): MaxChatMemberProfile | null {

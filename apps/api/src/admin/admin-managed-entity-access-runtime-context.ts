@@ -15,6 +15,7 @@ export type AdminManagedEntityAccessRuntimeContext = {
   readonly prisma: PrismaService;
   readonly chatContextCache: ChatContextCacheService;
   readonly logger: Logger;
+  readonly managedEntitiesRuntimeBotIds: ReadonlySet<string>;
   forgetManagedEntitiesLastSuccessChat(userId: string, chatId: string): void;
   invalidateManagedEntitiesAllowlistCache(userId: string): void;
   markManagedEntityAccessEdgesDeniedForUser(
@@ -40,6 +41,9 @@ export function createAdminManagedEntityAccessRuntimeContext(
     },
     get logger(): Logger {
       return typedTarget.logger;
+    },
+    get managedEntitiesRuntimeBotIds(): ReadonlySet<string> {
+      return typedTarget.managedEntitiesRuntimeBotIds;
     },
     forgetManagedEntitiesLastSuccessChat(userId: string, chatId: string): void {
       typedTarget.forgetManagedEntitiesLastSuccessChat(userId, chatId);

@@ -933,6 +933,12 @@ describe('MaxChatAdminRosterSyncService', () => {
       },
     });
     expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ botId: { in: ['bot-1'] } }),
+        data: expect.objectContaining({ state: 'BOT_DENIED' }),
+      }),
+    );
     expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: '-100124',

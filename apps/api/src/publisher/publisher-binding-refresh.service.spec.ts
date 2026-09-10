@@ -153,6 +153,7 @@ describe('PublisherBindingRefreshService', () => {
       },
       managedEntityAccessEdge: {
         findUnique: jest.fn().mockImplementation(async () => ({
+          checkedAt: edgeState.checkedAt,
           deniedReason: edgeState.deniedReason,
           source:
             edgeState.source === 'publisher_actor_candidate_webhook' &&
@@ -1133,6 +1134,34 @@ describe('PublisherBindingRefreshService', () => {
       }),
     );
   });
+
+  it.each([true, false])(
+    'does not overwrite a newer access verdict with a delayed MAX admin=%s result',
+    async (isAdmin) => {
+      const { service, tx, edgeState, maxClient } = createHarness({
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      });
+      edgeState.sourceVersion = 'edge-v1';
+      edgeState.source = 'publisher_targeted_user_access';
+      edgeState.deniedReason = null;
+      maxClient.getChatMemberAccess.mockImplementationOnce(async () => {
+        edgeState.checkedAt = new Date(Date.now() + 1_000);
+        return { isBot: false, isAdmin, isOwner: false, permissions: [], permissionsKnown: true };
+      });
+      await expect(
+        service.refresh({
+          ...job,
+          candidateUserId: 'admin-1',
+          candidateVersion: 'edge-v1',
+          reason: 'stale_user_access',
+        }),
+      ).rejects.toThrow(PublisherCandidateRefreshSupersededError);
+      expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([403, 404])(
     'terminalizes a stale user-access HTTP %s without exhausting queue retries',
