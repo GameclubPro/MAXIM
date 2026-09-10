@@ -163,10 +163,10 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
         expect.arrayContaining([
           'audit_logs_channel_suggestion_publishing_review_created_idx',
           'audit_logs_channel_suggestion_pending_review_created_idx',
-          'audit_logs_action_created_at_idx',
+          'audit_logs_publisher_suggestion_status_created_idx',
         ]),
       );
-      expect(nodes.filter((node) => node['Node Type'] === 'Limit')).toHaveLength(4);
+      expect(nodes.filter((node) => node['Node Type'] === 'Limit')).toHaveLength(5);
     } finally {
       await rollbackQuietly(client);
       client.release();
@@ -207,7 +207,7 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
     }
   });
 
-  it('keeps terminal Publisher card-sync recovery on the bounded action index', async () => {
+  it('keeps terminal Publisher card-sync recovery on the status/cursor index', async () => {
     const query = buildPublisherSuggestionAdminTerminalSyncRecoveryQuery({
       lookbackFrom: new Date('2026-08-01T00:00:00.000Z'),
       botKey: 'publisher:publisher-bot',
@@ -230,7 +230,8 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
         ),
       );
 
-      expect(indexNames).toContain('audit_logs_action_created_at_idx');
+      expect(indexNames).toContain('audit_logs_publisher_suggestion_status_created_idx');
+      expect(indexNames).not.toContain('audit_logs_action_created_at_idx');
       expect(nodes.filter((node) => node['Node Type'] === 'Limit').length).toBeGreaterThanOrEqual(
         4,
       );
