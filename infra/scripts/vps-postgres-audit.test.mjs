@@ -268,8 +268,11 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(sql, /'sample_cap_per_status', 2000/u);
   assert.doesNotMatch(
     sql,
-    /raw_payload|normalized_payload|error_message|source_ip|chat_id|user_id|masked_excerpt/u,
+    /raw_payload|normalized_payload|source_ip|chat_id|user_id|masked_excerpt/u,
   );
+  assert.doesNotMatch(sql, /'error_message'|'next_enqueue_at'/u);
+  assert.match(sql, /WHERE webhook_events\.status = summary\.status[\s\S]*LIMIT 1/u);
+  assert.match(sql, /'oldest_preparation_state', oldest\.preparation_state/u);
   assert.match(schema, /@@index\(\[status, createdAt\]\)/u);
 
   const appName = /PGAPPNAME=(maxim-bounded-audit-[A-Za-z0-9-]+)/u.exec(args)?.[1];
@@ -343,6 +346,15 @@ test('activity query classification emits only fixed labels, including for sensi
     ['active', 'SELECT secret_payload FROM chat_message_history', 'chat_message_history'],
     ['active', 'SELECT secret_payload FROM unknown_table', 'other'],
     ['idle', 'SELECT secret_payload FROM webhook_events', 'inactive'],
+    ['active', 'SELECT secret_payload FROM chat_settings', 'chat_settings'],
+    ['active', 'SELECT secret_payload FROM chat_bot_memberships', 'chat_bot_memberships'],
+    ['active', 'SELECT secret_payload FROM managed_entity_access_edges', 'managed_entity_access'],
+    ['active', 'SELECT secret_payload FROM managed_bot_chat_catalog', 'managed_bot_catalog'],
+    ['active', 'SELECT secret_payload FROM night_mode_transition_reconcile_requests', 'night_mode'],
+    ['active', 'SELECT secret_payload FROM spammer_observations', 'spammer_intelligence'],
+    ['active', 'SELECT secret_payload FROM publication_occurrences', 'publisher'],
+    ['active', 'SELECT secret_payload FROM "chats"', 'chats'],
+    ['active', 'VACUUM secret_table', 'maintenance'],
   ];
   for (const [state, query] of cases) {
     await database.query(
@@ -361,6 +373,48 @@ test('activity query classification emits only fixed labels, including for sensi
   );
   assert.ok(report.rows.every((row) => row.sessions === 1));
   assert.doesNotMatch(JSON.stringify(report), /secret_payload|private-application|unknown_table/u);
+});
+
+test('queue oldest-state diagnostics remain bounded and never emit raw errors', async (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['queue']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  const start = sql.indexOf('WITH queue_statuses(status) AS');
+  const end = sql.indexOf(') oldest ON TRUE;', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const statement = sql.slice(start, end + ') oldest ON TRUE;'.length);
+  const database = new PGlite();
+  t.after(() => database.close());
+  await database.exec(`
+    CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
+    CREATE TABLE webhook_events (
+      status "WebhookStatus", created_at timestamptz, enqueue_attempts integer,
+      next_enqueue_at timestamptz, error_message text
+    );
+    CREATE INDEX webhook_events_status_created_at_idx ON webhook_events(status, created_at);
+    INSERT INTO webhook_events VALUES
+      ('RECEIVED', now() - interval '5 minutes', 0, now() + interval '1 minute',
+       'Webhook preparation deferred: canonical webhook preparation is still pending'),
+      ('RECEIVED', now(), 0, NULL, 'private-secret-error');
+  `);
+  const { rows } = await database.query(statement);
+  const report = JSON.parse(Object.values(rows[0])[0]);
+  const received = report.rows.find((row) => row.status === 'RECEIVED');
+  assert.equal(received.count_lower_bound, 2);
+  assert.equal(received.oldest_preparation_state, 'canonical_pending');
+  assert.equal(received.oldest_enqueue_attempts, 0);
+  assert.ok(received.oldest_retry_in_seconds > 0 && received.oldest_retry_in_seconds <= 60);
+  assert.equal(report.rows.find((row) => row.status === 'QUEUED').oldest_preparation_state, null);
+  assert.doesNotMatch(JSON.stringify(report), /private-secret-error|Webhook preparation deferred/u);
+  await database.exec('SET enable_seqscan = off');
+  const { rows: plans } = await database.query(
+    `EXPLAIN (FORMAT JSON) SELECT enqueue_attempts, next_enqueue_at, error_message
+     FROM webhook_events WHERE status = 'RECEIVED' ORDER BY created_at ASC LIMIT 1`,
+  );
+  assert.match(JSON.stringify(plans), /webhook_events_status_created_at_idx/u);
 });
 
 test('monitor signal audit bounds both indexed source samples before aggregation', (t) => {

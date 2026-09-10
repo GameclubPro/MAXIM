@@ -53,6 +53,9 @@ filtered role logs without reconciling webhooks or sending bot messages.
    selection, ordered chat heads, execution claims, and delete intents. Compare several short
    samples with the queue trend; one snapshot does not establish a bottleneck. Raw query text and
    parameters never leave the catalog, and idle sessions are labeled `inactive`.
+   The queue report also reads only the oldest row per status for its attempt count, remaining
+   retry delay, and fixed preparation category. `canonical_pending` or `membership_cache_pending`
+   with a growing age calls for preparation-path diagnosis, not extra moderation consumers.
 
 2. Inspect queue-owner logs:
 

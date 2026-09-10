@@ -381,6 +381,12 @@ SELECT json_build_object(
       'status', status::text,
       'count_lower_bound', least(sampled_count, $QUEUE_SAMPLE_CAP),
       'saturated', sampled_count > $QUEUE_SAMPLE_CAP,
+      'oldest_enqueue_attempts', oldest.enqueue_attempts,
+      'oldest_retry_in_seconds', CASE
+        WHEN oldest.next_enqueue_at IS NULL THEN NULL
+        ELSE greatest(0, ceil(extract(epoch FROM oldest.next_enqueue_at - clock_timestamp()))::bigint)
+      END,
+      'oldest_preparation_state', oldest.preparation_state,
       'oldest_age_seconds', CASE
         WHEN oldest_created_at IS NULL THEN 0
         ELSE greatest(
@@ -392,7 +398,28 @@ SELECT json_build_object(
     ORDER BY status::text
   )
 )::text
-FROM summary;
+FROM summary
+LEFT JOIN LATERAL (
+  SELECT
+    enqueue_attempts,
+    next_enqueue_at,
+    -- FLAG: Only fixed error categories leave this bounded oldest-row lookup.
+    CASE
+      WHEN error_message IS NULL THEN 'pristine'
+      WHEN error_message LIKE 'Webhook preparation deferred: canonical webhook preparation%'
+        THEN 'canonical_pending'
+      WHEN error_message LIKE 'Webhook preparation deferred: Committed membership denial cache%'
+        THEN 'membership_cache_pending'
+      WHEN error_message LIKE 'Webhook preparation deferred:%' THEN 'preparation_deferred'
+      WHEN error_message LIKE 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:%' THEN 'timeout_quarantined'
+      WHEN error_message LIKE 'Webhook preparation failed:%' THEN 'preparation_failed'
+      ELSE 'other'
+    END AS preparation_state
+  FROM webhook_events
+  WHERE webhook_events.status = summary.status
+  ORDER BY webhook_events.created_at ASC
+  LIMIT 1
+) oldest ON TRUE;
 \else
 \echo 'Required queue audit index is missing; refusing an unindexed production scan.'
 \quit 3
@@ -423,6 +450,15 @@ WITH classified_activity AS MATERIALIZED (
       WHEN query LIKE '%max_action_ledger%' THEN 'max_action_ledger'
       WHEN query LIKE '%moderation_events%' THEN 'moderation_events'
       WHEN query LIKE '%chat_message_history%' THEN 'chat_message_history'
+      WHEN query LIKE '%chat_settings%' THEN 'chat_settings'
+      WHEN query LIKE '%chat_bot_memberships%' THEN 'chat_bot_memberships'
+      WHEN query LIKE '%managed_entity_access%' THEN 'managed_entity_access'
+      WHEN query LIKE '%managed_bot_chat_catalog%' THEN 'managed_bot_catalog'
+      WHEN query LIKE '%night_mode_%' THEN 'night_mode'
+      WHEN query LIKE '%spammer_%' OR query LIKE '%global_spammers%' THEN 'spammer_intelligence'
+      WHEN query LIKE '%publication%' OR query LIKE '%publisher_%' THEN 'publisher'
+      WHEN query LIKE '%"chats"%' THEN 'chats'
+      WHEN query ~* '^\s*(vacuum|analyze|create index|reindex)' THEN 'maintenance'
       ELSE 'other'
     END AS query_family,
     backend_type,
