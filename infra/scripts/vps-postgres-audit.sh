@@ -345,7 +345,8 @@ SQL
 emit_queue_audit() {
   cat <<SQL
 SELECT CASE
-  WHEN to_regclass('public.webhook_events_status_created_at_idx') IS NOT NULL THEN 'true'
+  WHEN to_regclass('public.webhook_events_status_created_at_idx') IS NOT NULL
+    AND to_regclass('public.webhook_events_ordered_chat_head_idx') IS NOT NULL THEN 'true'
   ELSE 'false'
 END AS queue_audit_index_ready \gset
 \if :queue_audit_index_ready
@@ -387,6 +388,7 @@ SELECT json_build_object(
         ELSE greatest(0, ceil(extract(epoch FROM oldest.next_enqueue_at - clock_timestamp()))::bigint)
       END,
       'oldest_preparation_state', oldest.preparation_state,
+      'oldest_ordering_fence', predecessor.fence,
       'oldest_age_seconds', CASE
         WHEN oldest_created_at IS NULL THEN 0
         ELSE greatest(
@@ -401,8 +403,18 @@ SELECT json_build_object(
 FROM summary
 LEFT JOIN LATERAL (
   SELECT
+    id,
+    created_at,
     enqueue_attempts,
     next_enqueue_at,
+    CASE
+      WHEN LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+        NULLIF(BTRIM(normalized_payload->>'update_type'), '')))
+        = ANY(ARRAY['message_created', 'message_edited'])
+      THEN COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(normalized_payload->>'chatId'), ''))
+      ELSE NULL
+    END AS message_chat_id,
     -- FLAG: Only fixed error categories leave this bounded oldest-row lookup.
     CASE
       WHEN error_message IS NULL THEN 'pristine'
@@ -419,7 +431,35 @@ LEFT JOIN LATERAL (
   WHERE webhook_events.status = summary.status
   ORDER BY webhook_events.created_at ASC
   LIMIT 1
-) oldest ON TRUE;
+) oldest ON TRUE
+LEFT JOIN LATERAL (
+  SELECT CASE
+    WHEN status = 'FAILED'::"WebhookStatus"
+      AND LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
+      THEN 'timeout_quarantined'
+    WHEN status = 'FAILED'::"WebhookStatus" THEN 'retry_pending'
+    WHEN status = 'QUEUED'::"WebhookStatus" THEN 'queued_predecessor'
+    ELSE 'received_predecessor'
+  END AS fence
+  FROM webhook_events
+  -- FLAG: Match the ordered-chat-head partial index; this is one exact chat from one oldest row.
+  WHERE (
+    status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+    OR (status = 'FAILED'::"WebhookStatus" AND (
+      next_enqueue_at IS NOT NULL
+      OR LEFT(COALESCE(error_message, ''), 37) = 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:'
+    ))
+  )
+    AND LOWER(COALESCE(NULLIF(BTRIM(normalized_payload->>'type'), ''),
+      NULLIF(BTRIM(normalized_payload->>'update_type'), '')))
+      = ANY(ARRAY['message_created', 'message_edited'])
+    AND COALESCE(NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+      NULLIF(BTRIM(normalized_payload->>'chatId'), '')) = oldest.message_chat_id
+    AND summary.status = 'RECEIVED'::"WebhookStatus"
+    AND (created_at, id) < (oldest.created_at, oldest.id)
+  ORDER BY created_at ASC, id ASC
+  LIMIT 1
+) predecessor ON TRUE;
 \else
 \echo 'Required queue audit index is missing; refusing an unindexed production scan.'
 \quit 3

@@ -35,7 +35,7 @@ export function resolveEnabledNavigationTargetOptions(
     ),
     textClickabilityEnabled: readBoolean(
       config?.get('MODERATION_LINK_TEXT_CLICKABILITY_ENABLED'),
-      false,
+      true,
     ),
   };
 }

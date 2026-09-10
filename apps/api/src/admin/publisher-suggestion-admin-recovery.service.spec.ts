@@ -39,13 +39,15 @@ function createService(params: {
   const credentials = {
     getBotId: jest.fn(() => 'publisher-bot'),
   };
+  const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
   const service = new PublisherSuggestionAdminRecoveryService(
     prisma as never,
     queue as never,
     runtimeBoundary as never,
     credentials as never,
+    governor as never,
   );
-  return { service, prisma, queue, runtimeBoundary, credentials };
+  return { service, prisma, queue, runtimeBoundary, credentials, governor };
 }
 
 describe('Publisher suggestion admin recovery query', () => {
@@ -136,6 +138,26 @@ describe('PublisherSuggestionAdminRecoveryService', () => {
     expect(fixture.queue.enqueueDelivery).not.toHaveBeenCalled();
     expect(fixture.queue.enqueueSync).not.toHaveBeenCalled();
     expect(fixture.queue.recoverFailedSyncJobs).not.toHaveBeenCalled();
+  });
+
+  it('defers scans and queue recovery during runtime pressure and resumes afterward', async () => {
+    const fixture = createService({ dispatchEnabled: true });
+    fixture.governor.decide.mockResolvedValue({ action: 'pause' });
+    await expect(fixture.service.recover()).resolves.toBe(0);
+    expect(fixture.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(fixture.queue.recoverFailedSyncJobs).not.toHaveBeenCalled();
+
+    fixture.governor.decide.mockResolvedValue({ action: 'run' });
+    await expect(fixture.service.recover()).resolves.toBe(0);
+    expect(fixture.prisma.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not query when the runtime governor is unavailable', async () => {
+    const fixture = createService({ dispatchEnabled: true });
+    fixture.governor.decide.mockRejectedValue(new Error('state unavailable'));
+    await expect(fixture.service.recover()).rejects.toThrow('state unavailable');
+    expect(fixture.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(fixture.queue.enqueueDelivery).not.toHaveBeenCalled();
   });
 
   it('re-enqueues a pending Publisher suggestion without a ledger via the stable delivery identity', async () => {

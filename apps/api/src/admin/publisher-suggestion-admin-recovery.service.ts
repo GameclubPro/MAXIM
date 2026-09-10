@@ -1,6 +1,8 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { PublisherActionCredentialService } from '../publisher/publisher-action-credential.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import {
@@ -33,6 +35,7 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
     private readonly queue: PublisherSuggestionAdminQueueService,
     runtimeBoundary: PublisherRuntimeBoundaryService,
     credentials: PublisherActionCredentialService,
+    private readonly governor: BackgroundRuntimeGovernorService,
   ) {
     this.enabled =
       roleRunsPublisher(getAppRole()) &&
@@ -81,6 +84,11 @@ export class PublisherSuggestionAdminRecoveryService implements OnModuleInit, On
 
   async recover(now = new Date()): Promise<number> {
     if (!this.enabled) return 0;
+    const decision = await this.governor.decide({
+      component: 'publisher-suggestion-admin-recovery',
+      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+    });
+    if (decision.action === 'pause') return 0;
     const staleBefore = new Date(now.getTime() - CHANNEL_SUGGESTION_DELIVERY_RECOVERY_STALE_MS);
     const lookbackFrom = new Date(now.getTime() - PUBLISHER_SUGGESTION_PENDING_RETENTION_MS);
     const botKey = `publisher:${this.publisherBotId}`;

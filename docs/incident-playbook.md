@@ -56,6 +56,9 @@ filtered role logs without reconciling webhooks or sending bot messages.
    The queue report also reads only the oldest row per status for its attempt count, remaining
    retry delay, and fixed preparation category. `canonical_pending` or `membership_cache_pending`
    with a growing age calls for preparation-path diagnosis, not extra moderation consumers.
+   `oldest_ordering_fence=timeout_quarantined` means the oldest message is waiting behind an
+   unresolved earlier execution in that same chat. The probe uses the exact ordered-head index;
+   never remove the fence or replay the old event merely because its heartbeat deadline elapsed.
 
 2. Inspect queue-owner logs:
 

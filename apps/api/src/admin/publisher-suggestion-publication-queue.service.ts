@@ -10,6 +10,8 @@ import type { Queue } from 'bullmq';
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import {
   PublisherBackgroundWorkCoordinatorClosedError,
@@ -103,7 +105,18 @@ export function buildPublisherSuggestionRecoveryQuery(
         SELECT id, payload, created_at
         FROM audit_logs
         WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
-          AND payload->>'reviewStatus' IN ('publishing', 'pending')
+          AND payload->>'reviewStatus' = 'publishing'
+          AND payload->>'reviewDispatchProfile' = 'PUBLIK_V1'
+          ${cursorPredicate}
+        ORDER BY created_at ASC, id ASC
+        LIMIT 100
+      )
+      UNION ALL
+      (
+        SELECT id, payload, created_at
+        FROM audit_logs
+        WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+          AND payload->>'reviewStatus' = 'pending'
           AND payload->>'reviewDispatchProfile' = 'PUBLIK_V1'
           ${cursorPredicate}
         ORDER BY created_at ASC, id ASC
@@ -228,6 +241,7 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
     private readonly prisma: PrismaService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly backgroundWork: PublisherBackgroundWorkCoordinatorService,
+    private readonly governor: BackgroundRuntimeGovernorService,
     @Optional() private readonly runtimeBoundary?: PublisherRuntimeBoundaryService,
   ) {}
 
@@ -312,6 +326,11 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
 
   private async recoverExclusive(): Promise<void> {
     try {
+      const decision = await this.governor.decide({
+        component: 'publisher-suggestion-recovery',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+      });
+      if (decision.action === 'pause') return;
       await this.cleanupTerminalArtifacts();
       if (await this.dispatchHealth.isGloballyPaused()) {
         return;

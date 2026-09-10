@@ -148,8 +148,8 @@ describe('validateEnv boolean parsing', () => {
     ).toBe(false);
   });
 
-  it('keeps plain-text link clickability shadow-only unless explicitly enabled', () => {
-    expect(validateEnv(createValidEnv()).MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(false);
+  it('enforces plain-text link clickability with an explicit shadow-only rollback', () => {
+    expect(validateEnv(createValidEnv()).MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(true);
     expect(
       validateEnv(createValidEnv({ MODERATION_LINK_TEXT_CLICKABILITY_ENABLED: 'true' }))
         .MODERATION_LINK_TEXT_CLICKABILITY_ENABLED,
@@ -536,7 +536,7 @@ describe('validateEnv boolean parsing', () => {
     expect(defaults.MODERATION_LINK_STRUCTURED_TARGETS_ENABLED).toBe(true);
     expect(defaults.MODERATION_LINK_PROFILE_MENTIONS_ENABLED).toBe(false);
     expect(defaults.MODERATION_LINK_FORWARDED_TARGETS_ENABLED).toBe(true);
-    expect(defaults.MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(false);
+    expect(defaults.MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(true);
     expect(defaults.MODERATION_LINK_HISTORY_SCAN_ENABLED).toBe(false);
     expect(defaults.MODERATION_LINK_HISTORY_DELETE_ENABLED).toBe(false);
     expect(defaults.MODERATION_LINK_HISTORY_SCAN_PAGE_SIZE).toBe(50);

@@ -266,11 +266,11 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(sql, /WHERE webhook_events\.status = queue_statuses\.status/u);
   assert.match(sql, /ORDER BY webhook_events\.created_at ASC\n {4}LIMIT 2001/u);
   assert.match(sql, /'sample_cap_per_status', 2000/u);
+  assert.doesNotMatch(sql, /raw_payload|source_ip|user_id|masked_excerpt/u);
   assert.doesNotMatch(
     sql,
-    /raw_payload|normalized_payload|source_ip|chat_id|user_id|masked_excerpt/u,
+    /'error_message'|'next_enqueue_at'|'normalized_payload'|'message_chat_id'/u,
   );
-  assert.doesNotMatch(sql, /'error_message'|'next_enqueue_at'/u);
   assert.match(sql, /WHERE webhook_events\.status = summary\.status[\s\S]*LIMIT 1/u);
   assert.match(sql, /'oldest_preparation_state', oldest\.preparation_state/u);
   assert.match(schema, /@@index\(\[status, createdAt\]\)/u);
@@ -415,20 +415,21 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
   assert.equal(result.status, 0, result.stderr);
   const sql = readFileSync(data.sql, 'utf8');
   const start = sql.indexOf('WITH queue_statuses(status) AS');
-  const end = sql.indexOf(') oldest ON TRUE;', start);
+  const end = sql.indexOf(') predecessor ON TRUE;', start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
-  const statement = sql.slice(start, end + ') oldest ON TRUE;'.length);
+  const statement = sql.slice(start, end + ') predecessor ON TRUE;'.length);
   const database = new PGlite();
   t.after(() => database.close());
   await database.exec(`
     CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED', 'QUEUED', 'FAILED');
     CREATE TABLE webhook_events (
       status "WebhookStatus", created_at timestamptz, enqueue_attempts integer,
-      next_enqueue_at timestamptz, error_message text
+      next_enqueue_at timestamptz, error_message text,
+      id text DEFAULT 'fixture', normalized_payload jsonb DEFAULT '{}'
     );
     CREATE INDEX webhook_events_status_created_at_idx ON webhook_events(status, created_at);
-    INSERT INTO webhook_events VALUES
+    INSERT INTO webhook_events(status, created_at, enqueue_attempts, next_enqueue_at, error_message) VALUES
       ('RECEIVED', now() - interval '5 minutes', 0, now() + interval '1 minute',
        'Webhook preparation deferred: canonical webhook preparation is still pending'),
       ('RECEIVED', now(), 0, NULL, 'private-secret-error');
@@ -442,6 +443,24 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
   assert.ok(received.oldest_retry_in_seconds > 0 && received.oldest_retry_in_seconds <= 60);
   assert.equal(report.rows.find((row) => row.status === 'QUEUED').oldest_preparation_state, null);
   assert.doesNotMatch(JSON.stringify(report), /private-secret-error|Webhook preparation deferred/u);
+  await database.query(`UPDATE webhook_events SET normalized_payload = $1`, [
+    JSON.stringify({ type: 'message_created', message: { chatId: 'private-chat' } }),
+  ]);
+  await database.query(
+    `INSERT INTO webhook_events(status, created_at, error_message, normalized_payload)
+     VALUES ('FAILED', now() - interval '10 minutes', $1, $2)`,
+    [
+      'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:private-nonce',
+      JSON.stringify({ type: 'message_created', message: { chatId: 'private-chat' } }),
+    ],
+  );
+  const fencedResult = await database.query(statement);
+  const fencedReport = JSON.parse(Object.values(fencedResult.rows[0])[0]);
+  assert.equal(
+    fencedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_fence,
+    'timeout_quarantined',
+  );
+  assert.doesNotMatch(JSON.stringify(fencedReport), /private-chat|private-nonce/u);
   await database.exec('SET enable_seqscan = off');
   const { rows: plans } = await database.query(
     `EXPLAIN (FORMAT JSON) SELECT enqueue_attempts, next_enqueue_at, error_message

@@ -355,8 +355,11 @@ describe('ModerationService', () => {
       );
     });
 
-    it('does not delete a fuzzy bare-domain candidate by default', async () => {
-      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+    it('does not delete a bare-domain candidate during explicit clickability rollback', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        plainTextClickabilityEnabled: false,
+      });
 
       await harness.service.handleUpdate(
         createLiveNavigationEnvelopeUpdate('message_created', {
@@ -378,10 +381,9 @@ describe('ModerationService', () => {
       expect(harness.prisma.violation.create).not.toHaveBeenCalled();
     });
 
-    it('deletes a fuzzy bare-domain candidate after explicit clickability opt-in', async () => {
+    it('deletes a client-clickable bare domain by default', async () => {
       const harness = createLiveNavigationHarness({
         linkPolicy: 'BLOCKLIST_ONLY',
-        plainTextClickabilityEnabled: true,
       });
 
       await harness.service.handleUpdate(
@@ -398,6 +400,21 @@ describe('ModerationService', () => {
               enforceable: true,
             }),
           ],
+        }),
+      );
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+    });
+
+    it('deletes a forwarded Cyrillic bare domain without link markup by default', async () => {
+      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: { text: '', markup: [{ type: 'heading', from: 0, length: 8 }] },
+          link: { type: 'forward', message: { text: 'Наш сайт: иксфлоу.рф', markup: [] } },
         }),
       );
       expectImmediateDeleteMessage(

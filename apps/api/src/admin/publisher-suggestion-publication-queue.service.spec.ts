@@ -70,14 +70,16 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     const backgroundWork = {
       runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
     };
+    const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
     const service = new PublisherSuggestionPublicationQueueService(
       queue as never,
       prisma as never,
       dispatchHealth as never,
       backgroundWork as never,
+      governor as never,
       { dispatchEnabled } as never,
     );
-    return { backgroundWork, dispatchHealth, prisma, queue, service };
+    return { backgroundWork, dispatchHealth, governor, prisma, queue, service };
   }
 
   function createClaimRow(index: number) {
@@ -129,15 +131,39 @@ describe('PublisherSuggestionPublicationQueueService', () => {
       "WHERE action = 'CHANNEL_DIALOG_SUGGESTION' AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending' AND payload->>'reviewStatus' = 'pending'",
     );
     expect(scanSql).toContain(
-      "WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION' AND payload->>'reviewStatus' IN ('publishing', 'pending')",
+      "WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION' AND payload->>'reviewStatus' = 'publishing'",
     );
-    expect(scanSql.match(/FROM audit_logs/gu)).toHaveLength(3);
-    expect(scanSql.match(/LIMIT 100/gu)).toHaveLength(4);
-    expect(scanSql.match(/UNION ALL/gu)).toHaveLength(2);
+    expect(scanSql).toContain(
+      "WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION' AND payload->>'reviewStatus' = 'pending'",
+    );
+    expect(scanSql.match(/FROM audit_logs/gu)).toHaveLength(4);
+    expect(scanSql.match(/LIMIT 100/gu)).toHaveLength(5);
+    expect(scanSql.match(/UNION ALL/gu)).toHaveLength(3);
     expect(scanSql).not.toMatch(/\bOR\b/gu);
     expect(scanSql).not.toContain('action IN');
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(3);
     service.onModuleDestroy();
+  });
+
+  it('defers all recovery and cleanup database work while the runtime governor pauses', async () => {
+    const { governor, prisma, queue, service } = createHarness(true);
+    governor.decide.mockResolvedValue({ action: 'pause' });
+    await (service as any).recover();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+
+    governor.decide.mockResolvedValue({ action: 'run' });
+    await (service as any).recover();
+    expect(recoveryScanCalls(prisma.$queryRaw)).toHaveLength(1);
+  });
+
+  it('does not start database recovery when governor state is unavailable', async () => {
+    const { governor, prisma, service } = createHarness(true);
+    governor.decide.mockRejectedValue(new Error('state unavailable'));
+    await (service as any).recover();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('uses separately limited terminal branches and bounded retention deletes', () => {
@@ -201,8 +227,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     dispatchHealth.isGloballyPaused.mockRejectedValueOnce(new Error('redis unavailable'));
 
     service.onModuleInit();
-    await Promise.resolve();
-    await Promise.resolve();
+    await (service as any).recover();
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(3);
@@ -269,9 +294,11 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     expect(recoveryCalls).toHaveLength(3);
     const cursorQuery = recoveryCalls[2]![0];
     expect(sqlText(cursorQuery).match(/AND \(created_at, id\) > \(\?, \?::text\)/gu)).toHaveLength(
-      3,
+      4,
     );
     expect(cursorQuery.values).toEqual([
+      blockedClaims[199]!.createdAt,
+      blockedClaims[199]!.id,
       blockedClaims[199]!.createdAt,
       blockedClaims[199]!.id,
       blockedClaims[199]!.createdAt,

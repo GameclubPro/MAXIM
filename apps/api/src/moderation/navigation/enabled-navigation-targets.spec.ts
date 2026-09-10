@@ -8,19 +8,24 @@ import { isEnforceableLinkPolicyTarget } from './link-policy-target.util';
 import { adaptMaxMessageNavigationView } from './max-navigation-view.adapter';
 
 describe('enabled navigation targets', () => {
-  it('defaults structured and explicit HTTP targets to enforcement but fuzzy text to shadow-only', () => {
+  it('enforces structured and client-clickable text targets by default', () => {
     expect(resolveEnabledNavigationTargetOptions()).toEqual({
       structuredTargetsEnabled: true,
       profileMentionsEnabled: false,
       forwardedTargetsEnabled: true,
-      textClickabilityEnabled: false,
+      textClickabilityEnabled: true,
     });
   });
 
-  it('keeps a fuzzy bare-domain candidate visible but non-enforceable by default', () => {
+  it('keeps a bare-domain candidate shadow-only during explicit rollback', () => {
     const targets = extractEnabledNavigationTargets(
       adaptMaxMessageNavigationView({ body: { text: 'Открыть plain.example.com/path' } }),
-      resolveEnabledNavigationTargetOptions(),
+      resolveEnabledNavigationTargetOptions({
+        get: <T = unknown>(key: string) =>
+          (key === 'MODERATION_LINK_TEXT_CLICKABILITY_ENABLED' ? false : undefined) as
+            | T
+            | undefined,
+      }),
     );
 
     expect(targets).toEqual([
@@ -33,11 +38,8 @@ describe('enabled navigation targets', () => {
     expect(detectBlockedLink('', LinkPolicy.BLOCKLIST_ONLY, [], undefined, targets)).toBeNull();
   });
 
-  it('enforces fuzzy plain-text targets only after explicit opt-in', () => {
-    const options = resolveEnabledNavigationTargetOptions({
-      get: <T = unknown>(key: string) =>
-        (key === 'MODERATION_LINK_TEXT_CLICKABILITY_ENABLED' ? true : undefined) as T | undefined,
-    });
+  it('enforces client-clickable bare domains by default', () => {
+    const options = resolveEnabledNavigationTargetOptions();
     const targets = extractEnabledNavigationTargets(
       adaptMaxMessageNavigationView({ body: { text: 'Открыть plain.example.com/path' } }),
       options,
@@ -57,7 +59,7 @@ describe('enabled navigation targets', () => {
   it('enforces an explicit HTTP URL without enabling fuzzy text matching', () => {
     const targets = extractEnabledNavigationTargets(
       adaptMaxMessageNavigationView({ body: { text: 'Открыть https://plain.example/path' } }),
-      resolveEnabledNavigationTargetOptions(),
+      { ...resolveEnabledNavigationTargetOptions(), textClickabilityEnabled: false },
     );
 
     expect(targets[0]).toEqual(
@@ -66,6 +68,64 @@ describe('enabled navigation targets', () => {
         origins: [expect.objectContaining({ carrier: 'plain_text', enforcement: 'eligible' })],
       }),
     );
+  });
+
+  it('enforces a forwarded Cyrillic domain without link markup and respects its allowlist', () => {
+    const targets = extractEnabledNavigationTargets(
+      adaptMaxMessageNavigationView({
+        body: { text: '', markup: [{ type: 'heading', from: 0, length: 8 }] },
+        link: {
+          type: 'forward',
+          message: { text: 'Наш сайт: иксфлоу.рф', markup: [] },
+        },
+      }),
+      resolveEnabledNavigationTargetOptions(),
+    );
+
+    expect(targets).toEqual([
+      expect.objectContaining({
+        normalizedTarget: new URL('https://иксфлоу.рф').toString(),
+        enforceable: true,
+        origins: [
+          expect.objectContaining({ carrier: 'plain_text', provenance: 'visible_forward' }),
+        ],
+      }),
+    ]);
+    expect(detectBlockedLink('', LinkPolicy.BLOCKLIST_ONLY, [], undefined, targets)).not.toBeNull();
+    expect(detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, [], undefined, targets)).not.toBeNull();
+    expect(
+      detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, ['иксфлоу.рф'], undefined, targets),
+    ).toBeNull();
+    expect(detectBlockedLink('', LinkPolicy.ALERT_ONLY, [], undefined, targets)).toBeNull();
+  });
+
+  it.each(['mail test@example.com', 'Цена 18.00', 'ул.Ленина', 'report.pdf', 'release.notes'])(
+    'does not enforce non-link text by default: %s',
+    (text) => {
+      const targets = extractEnabledNavigationTargets(
+        adaptMaxMessageNavigationView({ body: { text } }),
+        resolveEnabledNavigationTargetOptions(),
+      );
+      expect(detectBlockedLink('', LinkPolicy.BLOCKLIST_ONLY, [], undefined, targets)).toBeNull();
+    },
+  );
+
+  it('does not enforce a bare domain inside code or a reply quotation', () => {
+    for (const message of [
+      {
+        body: {
+          text: 'example.com',
+          markup: [{ type: 'monospaced', from: 0, length: 11 }],
+        },
+      },
+      { body: { text: 'Ответ' }, link: { type: 'reply', message: { text: 'example.com' } } },
+    ]) {
+      const targets = extractEnabledNavigationTargets(
+        adaptMaxMessageNavigationView(message),
+        resolveEnabledNavigationTargetOptions(),
+      );
+      expect(detectBlockedLink('', LinkPolicy.BLOCKLIST_ONLY, [], undefined, targets)).toBeNull();
+    }
   });
 
   it('uses structured markup as the sole target for a URL-shaped link label', () => {
