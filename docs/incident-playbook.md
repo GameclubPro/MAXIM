@@ -49,6 +49,11 @@ filtered role logs without reconciling webhooks or sending bot messages.
    ./infra/scripts/vps-connect.sh postgres-audit activity
    ```
 
+   The activity report groups active work by fixed `query_family` labels, including enqueue
+   selection, ordered chat heads, execution claims, and delete intents. Compare several short
+   samples with the queue trend; one snapshot does not establish a bottleneck. Raw query text and
+   parameters never leave the catalog, and idle sessions are labeled `inactive`.
+
 2. Inspect queue-owner logs:
 
    ```bash

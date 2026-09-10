@@ -299,8 +299,68 @@ test('activity audit exposes only fixed workload categories and aggregate backen
   assert.match(sql, /'scheduled_backup'|'live_backup'|'bounded_audit'|'unspecified'|'other'/u);
   assert.match(sql, /grouped_activity AS MATERIALIZED/u);
   assert.match(sql, /LIMIT 64/u);
-  assert.doesNotMatch(sql, /\bclient_addr\b|\busename\b|\bquery\b/u);
+  assert.match(sql, /'query_family', query_family/u);
+  assert.doesNotMatch(sql, /\bclient_addr\b|\busename\b/u);
   assert.doesNotMatch(sql, /'application_name'|'query'/u);
+});
+
+test('activity query classification emits only fixed labels, including for sensitive query text', async (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['activity']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  const start = sql.indexOf('WITH classified_activity AS MATERIALIZED');
+  const end = sql.indexOf('FROM grouped_activity;', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const statement = sql.slice(start, end + 'FROM grouped_activity;'.length);
+  const database = new PGlite();
+  t.after(() => database.close());
+  await database.exec(`
+    CREATE TABLE fixture_activity (
+      application_name text, backend_type text, state text, wait_event_type text,
+      wait_event text, query_start timestamptz, xact_start timestamptz,
+      datname text DEFAULT current_database(), pid integer, query text
+    );
+  `);
+  const cases = [
+    [
+      'active',
+      '/* fair_enqueue_candidates */ SELECT secret_payload FROM webhook_events',
+      'webhook_enqueue_selection',
+    ],
+    [
+      'active',
+      'WITH requested_chats AS () SELECT secret_payload FROM webhook_events',
+      'webhook_ordered_heads',
+    ],
+    ['active', 'SELECT secret_payload FROM webhook_execution_claims', 'webhook_execution_claims'],
+    ['active', 'SELECT secret_payload FROM webhook_events', 'webhook_events'],
+    ['active', 'SELECT secret_payload FROM moderation_delete_intents', 'moderation_delete_intents'],
+    ['active', 'SELECT secret_payload FROM max_action_ledger', 'max_action_ledger'],
+    ['active', 'SELECT secret_payload FROM moderation_events', 'moderation_events'],
+    ['active', 'SELECT secret_payload FROM chat_message_history', 'chat_message_history'],
+    ['active', 'SELECT secret_payload FROM unknown_table', 'other'],
+    ['idle', 'SELECT secret_payload FROM webhook_events', 'inactive'],
+  ];
+  for (const [state, query] of cases) {
+    await database.query(
+      `INSERT INTO fixture_activity (application_name, backend_type, state, pid, query)
+       VALUES ('private-application', 'client backend', $1, -1, $2)`,
+      [state, query],
+    );
+  }
+  const { rows } = await database.query(
+    statement.replace('FROM pg_stat_activity', 'FROM fixture_activity'),
+  );
+  const report = JSON.parse(Object.values(rows[0])[0]);
+  assert.deepEqual(
+    report.rows.map((row) => row.query_family).sort(),
+    cases.map(([, , family]) => family).sort(),
+  );
+  assert.ok(report.rows.every((row) => row.sessions === 1));
+  assert.doesNotMatch(JSON.stringify(report), /secret_payload|private-application|unknown_table/u);
 });
 
 test('monitor signal audit bounds both indexed source samples before aggregation', (t) => {
