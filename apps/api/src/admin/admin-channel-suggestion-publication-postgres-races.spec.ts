@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 
-import { buildPublisherSuggestionRecoveryQuery } from './publisher-suggestion-publication-queue.service';
+import {
+  buildPublisherSuggestionLegacyMigrationQuery,
+  buildPublisherSuggestionRecoveryQuery,
+} from './publisher-suggestion-publication-queue.service';
 import {
   buildPublisherSuggestionAdminRecoveryQuery,
   buildPublisherSuggestionAdminTerminalSyncRecoveryQuery,
@@ -167,6 +170,34 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
         ]),
       );
       expect(nodes.filter((node) => node['Node Type'] === 'Limit')).toHaveLength(5);
+    } finally {
+      await rollbackQuietly(client);
+      client.release();
+    }
+  });
+
+  it('keeps legacy Publisher migration indexed in a generic prepared plan', async () => {
+    const query = buildPublisherSuggestionLegacyMigrationQuery(
+      { createdAt: new Date('2026-08-01T00:00:00.000Z'), id: 'cursor' },
+      new Date('2026-09-01T00:00:00.000Z'),
+    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN READ ONLY');
+      await client.query('SET LOCAL enable_seqscan = off');
+      await client.query('SET LOCAL enable_bitmapscan = off');
+      const plan = await client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON, COSTS FALSE, GENERIC_PLAN TRUE) ${query.text}`,
+      );
+      const nodes = collectExplainNodes(plan.rows[0]?.['QUERY PLAN']);
+      expect(
+        nodes.some(
+          (node) => node['Index Name'] === 'audit_logs_publisher_suggestion_status_created_idx',
+        ),
+      ).toBe(true);
+      expect(nodes.some((node) => node['Index Name'] === 'audit_logs_action_created_at_idx')).toBe(
+        false,
+      );
     } finally {
       await rollbackQuietly(client);
       client.release();

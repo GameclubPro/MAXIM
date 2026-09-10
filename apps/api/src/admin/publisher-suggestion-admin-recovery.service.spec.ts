@@ -79,6 +79,11 @@ describe('Publisher suggestion admin recovery query', () => {
     expect(sql).toContain("delivery.status = 'FAILED'");
     expect(sql).toContain("delivery.status = 'SENDING'");
     expect(sql.match(/private_start\.normalized_payload->>'type' IN \(/gu)).toHaveLength(2);
+    expect(
+      sql.match(
+        /NULLIF\(BTRIM\(private_start\.normalized_payload->'message'->>'chatId'\), ''\) IS NOT NULL/gu,
+      ),
+    ).toHaveLength(2);
     for (const activityType of ['bot_started', 'message_created']) {
       expect(sql.match(new RegExp(`'${activityType}'`, 'gu'))).toHaveLength(2);
     }

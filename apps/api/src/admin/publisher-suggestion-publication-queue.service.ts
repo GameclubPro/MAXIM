@@ -75,6 +75,7 @@ export function buildPublisherSuggestionRecoveryQuery(
   // FLAG: Keep these predicates literal and aligned with the production partial indexes.
   // Parameterizing the action/status OR shape turns this bounded recovery into a table scan.
   return Prisma.sql`
+    /* FLAG: publisher_suggestion_publication_recovery */
     SELECT id, payload, created_at AS "createdAt"
     FROM (
       (
@@ -128,10 +129,33 @@ export function buildPublisherSuggestionRecoveryQuery(
   `;
 }
 
+export function buildPublisherSuggestionLegacyMigrationQuery(
+  cursor: PublisherSuggestionRecoveryCursor | null,
+  staleBefore: Date,
+): Prisma.Sql {
+  // FLAG: A generic prepared plan must prove the same partial-index action predicate.
+  return Prisma.sql`
+    /* FLAG: publisher_suggestion_legacy_migration */
+    SELECT id, payload, created_at AS "createdAt"
+    FROM audit_logs
+    WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+      AND payload->>'type' = 'suggest'
+      AND payload->>'reviewStatus' = 'publishing'
+      AND payload->>'reviewPublicationProtocol' IS NULL
+      AND NULLIF(payload->>'reviewedByUserId', '') IS NOT NULL
+      AND NULLIF(payload->>'reviewedAt', '') IS NOT NULL
+      AND payload->>'reviewedAt' <= ${staleBefore.toISOString()}::text
+      ${buildPublisherSuggestionRecoveryCursorPredicate(cursor)}
+    ORDER BY created_at ASC, id ASC
+    LIMIT ${PUBLISHER_SUGGESTION_LEGACY_MIGRATION_BATCH_SIZE}
+  `;
+}
+
 // FLAG: Publisher terminal status is persisted only after Publication owns durable copies of all
 // suggestion images. Keep this predicate terminal-only so retryable claims retain their source.
 export function buildPublisherSuggestionTerminalImageCleanupQuery(): Prisma.Sql {
   return Prisma.sql`
+    /* FLAG: publisher_suggestion_terminal_cleanup */
     WITH cleanup_candidates AS (
       SELECT id
       FROM (
@@ -182,6 +206,7 @@ export function buildPublisherSuggestionTerminalImageCleanupQuery(): Prisma.Sql 
 
 export function buildPublisherSuggestionAdmissionCleanupQuery(cutoff: Date): Prisma.Sql {
   return Prisma.sql`
+    /* FLAG: publisher_suggestion_admission_cleanup */
     WITH cleanup_candidates AS (
       SELECT id
       FROM audit_logs
@@ -203,6 +228,7 @@ export function buildPublisherSuggestionAdmissionCleanupQuery(cutoff: Date): Pri
 // owns a review claim; publication recovery must resolve that claim before retention can apply.
 export function buildPublisherSuggestionPendingCleanupQuery(cutoff: Date): Prisma.Sql {
   return Prisma.sql`
+    /* FLAG: publisher_suggestion_pending_cleanup */
     WITH cleanup_candidates AS (
       SELECT id
       FROM audit_logs
@@ -434,27 +460,7 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
     for (let page = 0; page < PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES; page += 1) {
       const candidates = await this.prisma.$queryRaw<
         Array<{ id: string; payload: Prisma.JsonValue; createdAt: Date }>
-      >(Prisma.sql`
-        SELECT id, payload, created_at AS "createdAt"
-        FROM audit_logs
-        WHERE action = ${PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST}::text
-          AND payload->>'type' = 'suggest'
-          AND payload->>'reviewStatus' = 'publishing'
-          AND payload->>'reviewPublicationProtocol' IS NULL
-          AND NULLIF(payload->>'reviewedByUserId', '') IS NOT NULL
-          AND NULLIF(payload->>'reviewedAt', '') IS NOT NULL
-          AND payload->>'reviewedAt' <= ${staleBefore.toISOString()}::text
-          ${
-            cursor
-              ? Prisma.sql`AND (
-                created_at > ${cursor.createdAt}
-                OR (created_at = ${cursor.createdAt} AND id > ${cursor.id}::text)
-              )`
-              : Prisma.empty
-          }
-        ORDER BY created_at ASC, id ASC
-        LIMIT ${PUBLISHER_SUGGESTION_LEGACY_MIGRATION_BATCH_SIZE}
-      `);
+      >(buildPublisherSuggestionLegacyMigrationQuery(cursor, staleBefore));
       if (candidates.length === 0) {
         this.legacyMigrationCursor = null;
         break;

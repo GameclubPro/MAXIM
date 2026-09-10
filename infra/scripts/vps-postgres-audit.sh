@@ -528,6 +528,13 @@ WITH classified_activity AS MATERIALIZED (
     END AS query_family,
     CASE
       WHEN state IS DISTINCT FROM 'active' OR query NOT LIKE '%audit_logs%' THEN 'not_applicable'
+      WHEN query LIKE '%/* FLAG: publisher_suggestion_legacy_migration */%' THEN 'publisher_legacy_migration'
+      WHEN query LIKE '%/* FLAG: publisher_suggestion_publication_recovery */%' THEN 'publisher_publication_recovery'
+      WHEN query LIKE '%/* FLAG: publisher_suggestion_terminal_cleanup */%' THEN 'publisher_terminal_cleanup'
+      WHEN query LIKE '%/* FLAG: publisher_suggestion_admission_cleanup */%' THEN 'publisher_admission_cleanup'
+      WHEN query LIKE '%/* FLAG: publisher_suggestion_pending_cleanup */%' THEN 'publisher_pending_cleanup'
+      WHEN query LIKE '%/* FLAG: publisher_suggestion_terminal_sync */%' THEN 'publisher_terminal_sync'
+      WHEN query LIKE '%/* FLAG: publisher_suggestion_admin_recovery */%' THEN 'publisher_admin_recovery'
       WHEN query LIKE '%suggestion_recovery_candidates%' THEN 'suggestion_recovery'
       WHEN query LIKE '%admin_delivery_candidates%' THEN 'suggestion_admin_delivery'
       WHEN query LIKE '%previousPublishedMessageId%' THEN 'replacement_cleanup'

@@ -5,6 +5,7 @@ import {
 } from './admin-channel-suggestion-publication-protocol';
 import {
   buildPublisherSuggestionAdmissionCleanupQuery,
+  buildPublisherSuggestionLegacyMigrationQuery,
   buildPublisherSuggestionPendingCleanupQuery,
   buildPublisherSuggestionTerminalImageCleanupQuery,
   PublisherSuggestionPublicationQueueService,
@@ -200,6 +201,18 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     expect(admissionSql).toContain('FOR UPDATE SKIP LOCKED');
     expect(admissionSql).toContain('DELETE FROM audit_logs');
     expect(admissionQuery.values).toContain(cutoff);
+  });
+
+  it('keeps legacy migration on the literal Publisher status index with a tuple cursor', () => {
+    const cursor = { createdAt: new Date('2026-09-01T00:00:00.000Z'), id: 'legacy-cursor' };
+    const staleBefore = new Date('2026-09-02T00:00:00.000Z');
+    const query = buildPublisherSuggestionLegacyMigrationQuery(cursor, staleBefore);
+    const sql = sqlText(query);
+    expect(sql).toContain("WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'");
+    expect(sql).toContain("payload->>'reviewStatus' = 'publishing'");
+    expect(sql).toContain('AND (created_at, id) > (?, ?::text)');
+    expect(sql).not.toMatch(/\bOR\b/u);
+    expect(query.values).toEqual([staleBefore.toISOString(), cursor.createdAt, cursor.id, 25]);
   });
 
   it('keeps enabled recovery timers idle before DB or queue work while globally paused', async () => {

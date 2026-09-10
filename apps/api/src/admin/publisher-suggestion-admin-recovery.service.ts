@@ -214,6 +214,7 @@ export function buildPublisherSuggestionAdminTerminalSyncRecoveryQuery(params: {
     'cancelled',
   );
   return Prisma.sql`
+    /* FLAG: publisher_suggestion_terminal_sync */
     SELECT id, "reviewStatus", created_at AS "createdAt"
     FROM (
       (
@@ -324,6 +325,7 @@ export function buildPublisherSuggestionAdminRecoveryQuery(params: {
     ? Prisma.sql`AND (audit.created_at, audit.id) > (${params.cursor.createdAt}, ${params.cursor.id}::text)`
     : Prisma.empty;
   return Prisma.sql`
+    /* FLAG: publisher_suggestion_admin_recovery */
     SELECT id, MIN(created_at) AS "createdAt"
     FROM (
       (
@@ -419,6 +421,8 @@ export function buildPublisherSuggestionAdminRecoveryQuery(params: {
             WHERE private_start.bot_id = ${params.publisherBotId}
               AND private_start.created_at > delivery.updated_at
               AND private_start.normalized_payload->'message'->>'senderId' = delivery.admin_user_id
+              -- FLAG: Match the sender/created partial index; the numeric regex alone cannot prove it.
+              AND NULLIF(BTRIM(private_start.normalized_payload->'message'->>'chatId'), '') IS NOT NULL
               AND private_start.normalized_payload->'message'->>'chatId' ~ '^[1-9][0-9]*$'
               AND private_start.normalized_payload->>'type' IN (
                 'bot_started',
@@ -450,6 +454,7 @@ export function buildPublisherSuggestionAdminRecoveryQuery(params: {
             WHERE private_start.bot_id = ${params.publisherBotId}
               AND private_start.created_at > delivery.updated_at
               AND private_start.normalized_payload->'message'->>'senderId' = delivery.admin_user_id
+              AND NULLIF(BTRIM(private_start.normalized_payload->'message'->>'chatId'), '') IS NOT NULL
               AND private_start.normalized_payload->'message'->>'chatId' ~ '^[1-9][0-9]*$'
               AND private_start.normalized_payload->>'type' IN (
                 'bot_started',
