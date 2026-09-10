@@ -80,6 +80,7 @@ export {
   DUPLICATE_THRESHOLD_MAX,
   buildDuplicateFlowThresholds,
   duplicateDetectionPresetSchema,
+  duplicateCompareModeSchema,
   duplicatePhotoActionCeilingSchema,
   duplicatePhotoEffectivePolicySchema,
   duplicatePhotoMatchPresetSchema,

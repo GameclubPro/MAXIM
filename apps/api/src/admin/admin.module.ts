@@ -9,6 +9,7 @@ import { PUBLISHER_SUGGESTION_ADMIN_QUEUE } from '../publisher/publisher-suggest
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { ModerationDeleteIntentModule } from '../moderation/moderation-delete-intent.module';
+import { MessageDuplicateStateModule } from '../moderation/message-duplicate/message-duplicate-state.module';
 import { getAppRole, roleRunsAction, roleRunsPublisher } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { AdminManagedEntitiesRefreshProcessor } from './admin-managed-entities-refresh.processor';
@@ -122,6 +123,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SystemModule,
     NightModeTransitionModule,
     ModerationDeleteIntentModule,
+    MessageDuplicateStateModule,
     RedisCounterModule,
     PublisherModule,
   ],

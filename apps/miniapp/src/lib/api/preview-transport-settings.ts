@@ -151,6 +151,7 @@ export function buildChatSettingsScreen(
   return chatSettingsScreenResponseSchema.parse({
     settings: state.chatSettings,
     duplicatePhotoModerationMode: 'DELETE_ONLY',
+    duplicateMessageModerationMode: 'DELETE_ONLY',
     duplicatePhotoPolicyMatrix: {
       base: {
         moderationMode: 'DELETE_ONLY',

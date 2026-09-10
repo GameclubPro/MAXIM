@@ -68,6 +68,16 @@ import {
 import { resolveNightModeTransitionSnapshot } from './night-mode-transition-time.util';
 import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.service';
 import {
+  MessageDuplicateDeleteGuardService,
+  MessageDuplicateGuardRejectedError,
+} from './message-duplicate/message-duplicate-delete-guard.service';
+import {
+  MESSAGE_DUPLICATE_CLAIM_PREFIX,
+  MESSAGE_DUPLICATE_SOURCE,
+  parseMessageDuplicateBinding,
+} from './message-duplicate/message-duplicate-state';
+import { digestDuplicateContent } from './message-duplicate/message-duplicate-content';
+import {
   PROFANITY_DELETE_RULE_CODE,
   ProfanityDeleteGuardRejectedError,
   ProfanityDeleteGuardService,
@@ -209,6 +219,7 @@ type IntentRow = {
   nonCommercialOcrDeleteReason?: boolean;
   linkFamilyDeleteOnly?: boolean;
   photoDuplicateDeleteOnly?: boolean;
+  messageDuplicateOwned?: boolean;
   imageTextStopListDeleteReason?: boolean;
   imageTextStopListDeleteOnly?: boolean;
   nightModeCloseNoticeCleanupReason?: boolean;
@@ -462,6 +473,7 @@ class ModerationDeleteGuardedMessageAbsentError extends Error {
       | 'guarded_link_predispatch_exact_absence'
       | 'guarded_commercial_ocr_predispatch_exact_absence'
       | 'guarded_profanity_predispatch_exact_absence'
+      | 'guarded_message_duplicate_absence'
       | 'guarded_image_text_stop_list_predispatch_exact_absence',
   ) {
     super('MAX confirmed that the guarded message is absent');
@@ -546,6 +558,7 @@ export class ModerationDeleteIntentService {
     private readonly profanityDeleteGuard: ProfanityDeleteGuardService,
     @Optional()
     private readonly participantImmunity?: ParticipantModerationImmunityService,
+    @Optional() private readonly messageDuplicateDeleteGuard?: MessageDuplicateDeleteGuardService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -2612,6 +2625,22 @@ export class ModerationDeleteIntentService {
       }
       await options?.beforeDeleteMutation?.();
       if (finalDispatchLeaseToken) {
+        // FLAG: New message fingerprints cannot authorize a DELETE without their fresh binding guard.
+        if (intent.messageDuplicateOwned) {
+          if (!this.messageDuplicateDeleteGuard)
+            throw new Error('Message duplicate delete guard unavailable');
+          const result = await this.messageDuplicateDeleteGuard.assertIntentStillActionable({
+            intentId: intent.id,
+            chatId: intent.chatId,
+            messageId: intent.messageId,
+            subjectUserId: intent.subjectUserId,
+            botId,
+          });
+          if (result === 'absent')
+            throw new ModerationDeleteGuardedMessageAbsentError(
+              'guarded_message_duplicate_absence',
+            );
+        }
         // FLAG: Run the current-text guard once, at the final transport boundary. The common
         // pre-dispatch rejection path clears the dispatch marker before retrying or stopping.
         const profanityGuard = await this.profanityDeleteGuard.assertIntentStillActionable({
@@ -2688,7 +2717,10 @@ export class ModerationDeleteIntentService {
   }
 
   private isTerminalDeleteGuardRejection(error: unknown): boolean {
-    if (error instanceof ProfanityDeleteGuardRejectedError) {
+    if (
+      error instanceof ProfanityDeleteGuardRejectedError ||
+      error instanceof MessageDuplicateGuardRejectedError
+    ) {
       return true;
     }
     const code = this.firstString(this.asRecord(error)?.code);
@@ -5394,6 +5426,7 @@ export class ModerationDeleteIntentService {
       | 'guarded_link_predispatch_exact_absence'
       | 'guarded_commercial_ocr_predispatch_exact_absence'
       | 'guarded_profanity_predispatch_exact_absence'
+      | 'guarded_message_duplicate_absence'
       | 'guarded_image_text_stop_list_predispatch_exact_absence',
   ): Promise<IntentRow> {
     await this.prisma.$executeRaw(Prisma.sql`
@@ -6361,6 +6394,37 @@ export class ModerationDeleteIntentService {
     claim: ModerationMessageActionClaimData,
     intent: EnsureModerationDeleteIntentInput,
   ): void {
+    const metadata = this.asRecord(intent.event?.metadata);
+    if (
+      metadata?.duplicateSource === MESSAGE_DUPLICATE_SOURCE ||
+      intent.reasonKey.startsWith('MESSAGE_DUPLICATE:')
+    ) {
+      const binding = parseMessageDuplicateBinding(metadata);
+      const until = this.toNullableDate(intent.retryUntilAt);
+      if (
+        !binding ||
+        !until ||
+        claim.updateType !== 'message_action' ||
+        claim.ruleCode !== 'DUPLICATE_MESSAGE_ACTION' ||
+        intent.ruleCode !== 'DUPLICATE_DELETE' ||
+        metadata?.enforcementScope !== 'delete_only' ||
+        claim.chatId !== intent.chatId ||
+        claim.userId !== binding.senderId ||
+        claim.messageId !== binding.messageId ||
+        intent.messageId !== binding.messageId ||
+        intent.subjectUserId !== binding.senderId ||
+        intent.messageAuthorKind !== 'user' ||
+        intent.entityType !== 'CHAT' ||
+        claim.messageActionKey !==
+          buildMessageScopedModerationActionClaimKey(intent.chatId, intent.messageId) ||
+        claim.dedupeKey !==
+          `${MESSAGE_DUPLICATE_CLAIM_PREFIX}${digestDuplicateContent([intent.chatId, binding.senderId, binding.messageId])}` ||
+        until.getTime() > binding.eventTimestampMs + binding.windowSeconds * 1000
+      ) {
+        throw new Error('Message duplicate claim does not match its delete binding');
+      }
+      return;
+    }
     const imageTextBinding = parseImageTextStopListBinding(intent.event?.metadata);
     const retryUntilAt = this.toNullableDate(intent.retryUntilAt);
     if (imageTextBinding) {
@@ -6451,6 +6515,12 @@ export class ModerationDeleteIntentService {
     const intentIdColumn = Prisma.raw(`"${alias}"."id"`);
     return Prisma.sql`
       ${this.intentColumnsSql(alias)},
+      EXISTS (
+        SELECT 1 FROM "moderation_delete_intent_reasons" message_duplicate_reason
+        WHERE message_duplicate_reason."intent_id" = ${intentIdColumn}
+          AND (message_duplicate_reason."reason_key" LIKE 'MESSAGE_DUPLICATE:%'
+            OR message_duplicate_reason."metadata"->>'duplicateSource' = 'message_v1')
+      ) AS "messageDuplicateOwned",
       EXISTS (
         SELECT 1
         FROM "moderation_delete_intent_reasons" execution_reason

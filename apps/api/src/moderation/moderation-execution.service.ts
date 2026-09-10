@@ -6,6 +6,8 @@ import type {
 import type { PhotoDuplicateJob } from './photo-duplicate/photo-duplicate.queue';
 import { PhotoDuplicateModerationService } from './photo-duplicate/photo-duplicate-moderation.service';
 import type { PhotoDuplicateOrderingLease } from './photo-duplicate/photo-duplicate-ordering.store';
+import { MessageDuplicateMediaService } from './message-duplicate/message-duplicate-media.service';
+import type { MessageDuplicateJob } from './message-duplicate/message-duplicate.queue';
 
 export const MODERATION_EXECUTION_LEGACY = Symbol('MODERATION_EXECUTION_LEGACY');
 
@@ -23,10 +25,20 @@ export class ModerationExecutionService {
     private readonly legacyModerationService: ModerationExecutionLegacy,
     @Optional()
     private readonly photoDuplicateModerationService?: PhotoDuplicateModerationService,
+    @Optional() private readonly messageDuplicateMediaService?: MessageDuplicateMediaService,
   ) {}
 
   async processWebhookEvent(webhookEventId: string): Promise<void> {
     await this.legacyModerationService.processWebhookEvent(webhookEventId);
+  }
+
+  async processMessageDuplicateJob(
+    job: MessageDuplicateJob,
+    lease: PhotoDuplicateOrderingLease,
+  ): Promise<void> {
+    if (!this.messageDuplicateMediaService)
+      throw new Error('Message duplicate media execution unavailable');
+    await this.messageDuplicateMediaService.process(job, lease);
   }
 
   async processNightModeTransitionJob(

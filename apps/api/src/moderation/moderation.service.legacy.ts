@@ -160,6 +160,7 @@ import {
 } from './commercial-ocr/commercial-ocr-enqueue-candidate';
 import { consumeLegacyParticipantModerationImmunity } from './participant-moderation-immunity.service';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
+import { MessageDuplicateService } from './message-duplicate/message-duplicate.service';
 import type { PhotoDuplicateModerationActionRequest } from './photo-duplicate/photo-duplicate-moderation.actions';
 import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
 import {
@@ -762,6 +763,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly commercialOcrEnqueueService?: CommercialOcrEnqueueService,
     @Optional()
     private readonly profanityDeleteGuard?: ProfanityDeleteGuardService,
+    @Optional() private readonly messageDuplicateService?: MessageDuplicateService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -2203,6 +2205,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await enqueuePhotoDuplicate(
         !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
       );
+      const messageDuplicateBotId = this.messageDuplicateService
+        ? (update.botId ?? this.maxBotLinkService?.getDefaultBotId?.())
+        : null;
+      if (messageDuplicateBotId) {
+        await this.messageDuplicateService?.observe({
+          update,
+          webhookEventId,
+          eventTimestampMs: duplicateStateEventTimestampMs,
+          settings,
+          botId: messageDuplicateBotId,
+          track: !hasCompetingViolation,
+          actionEligible:
+            !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
+        });
+      }
       const commercialOcrActionEligible =
         !hasActionableCompetingViolation(violations) && !hasUnsuppressedDuplicateOutcome;
       if (

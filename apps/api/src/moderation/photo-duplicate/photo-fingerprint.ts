@@ -8,7 +8,8 @@ import {
   PhotoDecodePipelineGate,
 } from './photo-decode-resource';
 
-export const PHOTO_FINGERPRINT_ALGORITHM_VERSION = 'sharp-rgb512-pdq-v2';
+import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from './photo-fingerprint-version';
+export { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from './photo-fingerprint-version';
 export const PHOTO_PLATFORM_ID_ALGORITHM_VERSION = 'max-photo-id-album-v1';
 export const PHOTO_PD_DEFAULT_MIN_QUALITY = 50;
 export const PHOTO_PD_SAME_IMAGE_MAX_DISTANCE = 12;

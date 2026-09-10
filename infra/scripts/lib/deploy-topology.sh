@@ -174,6 +174,43 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
   fi
 }
 
+maxim_topology_require_message_duplicate_delete_guard() {
+  local commit_sha="$1"
+  local guard_source
+  local executor_source
+  local guard_path="apps/api/src/moderation/message-duplicate/message-duplicate-delete-guard.service.ts"
+  local executor_path="apps/api/src/moderation/moderation-delete-intent.service.ts"
+
+  # FLAG: Pending message-v1 intents must never reach an older unguarded DELETE executor.
+  if ! guard_source="$(git show "${commit_sha}:${guard_path}" 2>/dev/null)" ||
+    ! executor_source="$(git show "${commit_sha}:${executor_path}" 2>/dev/null)"; then
+    echo "Rollback target predates the message duplicate delete guard." >&2
+    return 1
+  fi
+  if ! printf '%s\0%s' "$guard_source" "$executor_source" | node -e '
+    const input = require("node:fs").readFileSync(0);
+    if (input.length > 4 * 1024 * 1024) process.exit(1);
+    const parts = input.toString("utf8").split("\0");
+    if (parts.length !== 2) process.exit(1);
+    const [guard, executor] = parts;
+    const start = executor.indexOf("private async runDeletePreDispatchGuards(");
+    const end = executor.indexOf("\n  private ", start + 1);
+    const boundary = executor.slice(start, end);
+    const valid = start >= 0 && end > start &&
+      guard.includes("class MessageDuplicateDeleteGuardService") &&
+      guard.includes("await this.history.stillMatches(") &&
+      guard.includes("message_duplicate_content_changed") &&
+      boundary.includes("intent.messageDuplicateOwned") &&
+      boundary.includes("Message duplicate delete guard unavailable") &&
+      boundary.includes("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(") &&
+      executor.includes("AS \"messageDuplicateOwned\"");
+    process.exit(valid ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks the message duplicate pre-dispatch guard capability." >&2
+    return 1
+  fi
+}
+
 maxim_topology_image_has_ocr_native_sandbox() {
   local image="$1"
   local capability

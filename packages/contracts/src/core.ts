@@ -670,6 +670,7 @@ export const chatSettingsSchema = z
       duplicatePhotoMatchPreset: dupe.duplicatePhotoMatchPresetSchema.default('SAME_IMAGE'),
       duplicatePhotoScope: dupe.duplicatePhotoScopeSchema.default('SAME_AUTHOR'),
       duplicateDetectionPreset: dupe.duplicateDetectionPresetSchema.default('STRICT'),
+      duplicateCompareMode: dupe.duplicateCompareModeSchema.default('MESSAGE'),
       duplicateIgnoreLinksEnabled: z.boolean().default(false),
       duplicateIgnorePhonesEnabled: z.boolean().default(false),
       duplicateNearMatchEnabled: z.boolean().default(false),
@@ -2663,6 +2664,7 @@ export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRul
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,
   duplicatePhotoModerationMode: dupe.duplicatePhotoModerationModeSchema.default('OBSERVE'),
+  duplicateMessageModerationMode: z.enum(['OFF', 'OBSERVE', 'DELETE_ONLY']).default('OFF'),
   duplicatePhotoPolicyMatrix: dupe.duplicatePhotoPolicyMatrixSchema.optional(),
   rules: chatRulesSchema,
   header: managedEntityHeaderSchema,

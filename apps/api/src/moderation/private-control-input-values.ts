@@ -251,6 +251,8 @@ export function formatPrivateControlSettingValue(value: unknown, type: SettingFi
 }
 
 export function formatPrivateControlEnumValue(value: string): string {
+  if (value === 'MESSAGE') return 'Сообщение целиком';
+  if (value === 'TEXT') return 'Текст и подпись';
   if (value === 'ALLOWLIST_ONLY') {
     return 'Разрешать только цели из списка разрешённых';
   }

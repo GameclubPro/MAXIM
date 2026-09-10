@@ -171,6 +171,12 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
   ],
   duplicates: [
     { key: 'antiDuplicateEnabled', label: 'Включить антидубли', type: 'boolean' },
+    {
+      key: 'duplicateCompareMode',
+      label: 'Сравнение сообщений (тестовый режим)',
+      type: 'enum',
+      enumValues: ['MESSAGE', 'TEXT'],
+    },
     { key: 'duplicatePhotoEnabled', label: 'Проверять повторные фото', type: 'boolean' },
     {
       key: 'duplicatePhotoMatchPreset',
@@ -454,6 +460,7 @@ export const SECTION_CARD_FIELDS: Record<
     advanced: [
       'duplicatePhotoMatchPreset',
       'duplicatePhotoScope',
+      'duplicateCompareMode',
       'duplicateWarnWindowSec',
       'duplicateWarnMaxCount',
       'duplicateBotMessageText',

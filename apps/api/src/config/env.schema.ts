@@ -380,6 +380,14 @@ const envSchema = z.object({
     .default(3_600_000),
   PROFANITY_V2_ROLLOUT_MODE: z.enum(['on', 'legacy']).default('on'),
   PHOTO_DUPLICATE_ROLLOUT_MODE: z.enum(PHOTO_DUPLICATE_ROLLOUT_MODES).default('shadow'),
+  MESSAGE_DUPLICATE_ENABLED: envBoolean(true),
+  MESSAGE_DUPLICATE_ALLOWED_HOSTS: z.string().default('i.oneme.ru,fd.oneme.ru,*.okcdn.ru'),
+  MESSAGE_DUPLICATE_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_048_576)
+    .max(25_165_824)
+    .default(8_388_608),
   PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: photoDuplicateExactChatIdsSchema.default(''),
   PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: photoDuplicateExactChatIdsSchema.default(''),
   PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS:

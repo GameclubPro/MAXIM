@@ -639,6 +639,7 @@ queues=(
   moderation-delete-intents
   global-spammer-denorm
   photo-duplicates
+  message-duplicates
   commercial-image-ocr
   admin-managed-entities-refresh
   max-chat-admin-roster-sync

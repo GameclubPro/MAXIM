@@ -64,6 +64,16 @@ import { NightModeTransitionEventService } from './night-mode-transition-event.s
 import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
 import { ModerationDeleteIntentModule } from './moderation-delete-intent.module';
 import { PHOTO_DUPLICATE_QUEUE } from './photo-duplicate/photo-duplicate.queue';
+import {
+  MESSAGE_DUPLICATE_QUEUE,
+  MessageDuplicateEnqueueService,
+  MessageDuplicateOrderingStore,
+} from './message-duplicate/message-duplicate.queue';
+import { MessageDuplicateStateModule } from './message-duplicate/message-duplicate-state.module';
+import { MessageDuplicateService } from './message-duplicate/message-duplicate.service';
+import { MessageDuplicateEnforcementService } from './message-duplicate/message-duplicate-enforcement.service';
+import { MessageDuplicateMediaService } from './message-duplicate/message-duplicate-media.service';
+import { MessageDuplicateProcessor } from './message-duplicate/message-duplicate.processor';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
 import { PhotoDuplicateProcessor } from './photo-duplicate/photo-duplicate.processor';
 import { PhotoDuplicateAnalysisService } from './photo-duplicate/photo-duplicate-analysis.service';
@@ -130,7 +140,10 @@ const moderationProviders = [
   PublisherChatCommentQueueService,
   PublisherAutoReplyQueueService,
   PhotoDuplicateEnqueueService,
-  ...(moderationRoleEnabled ? [PhotoDuplicateOrderingStore] : []),
+  MessageDuplicateEnqueueService,
+  MessageDuplicateEnforcementService,
+  MessageDuplicateService,
+  ...(moderationRoleEnabled ? [PhotoDuplicateOrderingStore, MessageDuplicateOrderingStore] : []),
   ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
     ? [CommercialOcrAdmissionStore, CommercialOcrMetricsService]
     : []),
@@ -186,6 +199,8 @@ const moderationProviders = [
               PhotoDuplicateAnalysisService,
               PhotoDuplicateModerationService,
               PhotoDuplicateProcessor,
+              MessageDuplicateMediaService,
+              MessageDuplicateProcessor,
             ]
           : []),
         ...(commercialOcrWorkerEnabled
@@ -218,6 +233,7 @@ const moderationProviders = [
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
     BullModule.registerQueue({ name: PHOTO_DUPLICATE_QUEUE }),
+    BullModule.registerQueue({ name: MESSAGE_DUPLICATE_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_CHAT_COMMENT_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_AUTO_REPLY_QUEUE }),
     ...(commercialOcrWorkerEnabled
@@ -232,6 +248,7 @@ const moderationProviders = [
     RuleEngineModule,
     KaravanStorefrontRelayModule,
     ModerationDeleteIntentModule,
+    MessageDuplicateStateModule,
   ],
   controllers: [PrivateControlController],
   providers: moderationProviders,

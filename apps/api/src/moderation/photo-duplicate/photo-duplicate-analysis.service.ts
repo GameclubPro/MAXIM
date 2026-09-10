@@ -50,48 +50,9 @@ export class PhotoDuplicateAnalysisService {
     allowedViolationMatchKinds: readonly PhotoHistoryMatchKind[];
     resolveActionEligibility: () => Promise<boolean>;
   }): Promise<PhotoDuplicateAnalysisResult> {
-    const cachedFingerprints = await this.readCachedFingerprints(params.album);
-    const missingDownloadUrl = params.album.images.some(
-      (image, index) => !cachedFingerprints[index] && !image.downloadUrl,
-    );
-    if (missingDownloadUrl) {
-      return { kind: 'incomplete', reason: 'missing_download_url' };
-    }
-
-    const albumBudget = this.fingerprintService.createAlbumDecodeBudget();
-    const completeFingerprints: PhotoFingerprint[] = [];
-    for (let index = 0; index < params.album.images.length; index += 1) {
-      const cached = cachedFingerprints[index];
-      if (cached) {
-        completeFingerprints.push(cached);
-        continue;
-      }
-
-      const image = params.album.images[index];
-      const downloaded = await this.downloader.download(image.downloadUrl!);
-      try {
-        completeFingerprints.push(
-          await this.fingerprintService.fingerprint(downloaded.bytes, {
-            albumBudget,
-            expectedFormat: downloaded.format,
-          }),
-        );
-      } catch (error: unknown) {
-        if (error instanceof PhotoFingerprintRejectedError) {
-          return { kind: 'incomplete', reason: error.reason };
-        }
-        throw error;
-      }
-    }
-
-    await this.cacheDownloadedFingerprints(
-      params.album,
-      cachedFingerprints,
-      completeFingerprints,
-      params.ttlSeconds,
-    );
-
-    const albumFingerprint = createPhotoAlbumFingerprint(completeFingerprints);
+    const prepared = await this.fingerprintAlbum(params.album, params.ttlSeconds);
+    if (prepared.kind === 'incomplete') return prepared;
+    const albumFingerprint = prepared.fingerprint;
     const authorizationConfigDigest = params.authorizationConfigDigest.trim().toLowerCase();
     const currentActionEligibility = await params.resolveActionEligibility();
     const actionEligible = params.actionEligible && currentActionEligibility;
@@ -114,7 +75,6 @@ export class PhotoDuplicateAnalysisService {
         allowedMatchKinds: params.allowedViolationMatchKinds,
       },
     });
-
     const matchKindAllowsAction =
       observation.kind === 'available' &&
       (observation.classification !== 'duplicate' ||
@@ -124,7 +84,6 @@ export class PhotoDuplicateAnalysisService {
       observation.kind === 'available' &&
       observation.authorization.authorized &&
       observation.authorization.configDigest === authorizationConfigDigest;
-
     return {
       kind: 'observed',
       albumHash: albumFingerprint.albumHash,
@@ -133,6 +92,61 @@ export class PhotoDuplicateAnalysisService {
         actionEligible && matchKindAllowsAction && observationAuthorizationAllowsAction,
       observation,
     };
+  }
+
+  async fingerprintAlbum(
+    album: LogicalPhotoAlbum,
+    ttlSeconds: number,
+    deadlineAtMs = Number.MAX_SAFE_INTEGER,
+  ) {
+    const params = { album, ttlSeconds };
+    const cachedFingerprints = await this.readCachedFingerprints(params.album);
+    const missingDownloadUrl = params.album.images.some(
+      (image, index) => !cachedFingerprints[index] && !image.downloadUrl,
+    );
+    if (missingDownloadUrl) {
+      return { kind: 'incomplete' as const, reason: 'missing_download_url' as const };
+    }
+
+    const albumBudget = this.fingerprintService.createAlbumDecodeBudget();
+    const completeFingerprints: PhotoFingerprint[] = [];
+    for (let index = 0; index < params.album.images.length; index += 1) {
+      if (Date.now() >= deadlineAtMs) throw new Error('Photo album verification deadline exceeded');
+      const cached = cachedFingerprints[index];
+      if (cached) {
+        completeFingerprints.push(cached);
+        continue;
+      }
+
+      const image = params.album.images[index];
+      const downloaded =
+        deadlineAtMs === Number.MAX_SAFE_INTEGER
+          ? await this.downloader.download(image.downloadUrl!)
+          : await this.downloader.download(image.downloadUrl!, { deadlineAtMs });
+      try {
+        completeFingerprints.push(
+          await this.fingerprintService.fingerprint(downloaded.bytes, {
+            albumBudget,
+            expectedFormat: downloaded.format,
+          }),
+        );
+      } catch (error: unknown) {
+        if (error instanceof PhotoFingerprintRejectedError) {
+          return { kind: 'incomplete' as const, reason: error.reason };
+        }
+        throw error;
+      }
+    }
+
+    await this.cacheDownloadedFingerprints(
+      params.album,
+      cachedFingerprints,
+      completeFingerprints,
+      params.ttlSeconds,
+    );
+
+    const albumFingerprint = createPhotoAlbumFingerprint(completeFingerprints);
+    return { kind: 'complete' as const, fingerprint: albumFingerprint };
   }
 
   async commitViolation(params: {

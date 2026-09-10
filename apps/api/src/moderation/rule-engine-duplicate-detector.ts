@@ -29,7 +29,7 @@ export type {
   DuplicateHit,
 } from './rule-engine.contract';
 
-type DuplicateFingerprint = {
+export type DuplicateFingerprint = {
   type: DuplicateFingerprintType;
   value: string;
 };
@@ -326,7 +326,7 @@ export class RuleEngineDuplicateDetector {
     return resolveDuplicateFlowConfig(settings);
   }
 
-  private buildFingerprints(
+  buildFingerprints(
     rawText: string,
     settings: ChatSettings,
     navigationTargets?: readonly NavigationTargetEvidence[],

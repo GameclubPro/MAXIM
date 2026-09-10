@@ -6929,6 +6929,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               duplicateAllowedCount={duplicateAllowedCount}
               duplicateBotButtonErrors={duplicateBotButtonErrors}
               duplicatePhotoModerationPolicy={duplicatePhotoModerationPolicy}
+              duplicateMessageModerationMode={
+                settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF'
+              }
               duplicateSharedWindowHours={duplicateSharedWindowHours}
               duplicateWindowInputValue={duplicateWindowInputValue}
               duplicatesCardStatus={duplicatesCardStatus}

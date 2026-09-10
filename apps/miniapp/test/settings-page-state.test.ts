@@ -26,6 +26,14 @@ function createSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   };
 }
 
+test('message comparison mode is saved and merged only within the duplicate section', () => {
+  const saved = createSettings({ duplicateCompareMode: 'MESSAGE' });
+  const draft = createSettings({ duplicateCompareMode: 'TEXT' });
+  assert.equal(hasSectionSettingChanges(draft, saved, 'duplicates'), true);
+  assert.equal(mergeSectionSettings(saved, draft, 'duplicates').duplicateCompareMode, 'TEXT');
+  assert.equal(mergeSectionSettings(saved, draft, 'links').duplicateCompareMode, 'MESSAGE');
+});
+
 test('settings polling preserves a locally edited draft', () => {
   const previousServerDraft = createSettings({ antiDuplicateEnabled: false });
   const currentDraft = createSettings({ antiDuplicateEnabled: true });

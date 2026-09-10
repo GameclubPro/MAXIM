@@ -35,6 +35,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import { PhotoDuplicateRuntimePolicyService } from '../moderation/photo-duplicate/photo-duplicate-runtime-policy.service';
+import { MessageDuplicatePolicyService } from '../moderation/message-duplicate/message-duplicate-policy.service';
 import {
   publishChatRules,
   readChatRules,
@@ -99,6 +100,7 @@ export class AdminSettingsService {
     private readonly channelPostSignatureService?: ChannelPostSignatureService,
     @Optional()
     private readonly accessObservability?: MiniappAccessObservabilityService,
+    @Optional() private readonly messageDuplicatePolicy?: MessageDuplicatePolicyService,
   ) {}
 
   async getSettings(
@@ -149,10 +151,19 @@ export class AdminSettingsService {
       settings.duplicatePhotoScope === 'SAME_AUTHOR'
         ? duplicatePhotoPolicyMatrix.base
         : duplicatePhotoPolicyMatrix.advanced;
+    const messagePolicy = await this.messageDuplicatePolicy?.resolve(chatId);
+    const duplicateMessageModerationMode =
+      !messagePolicy || messagePolicy.mode === 'off'
+        ? 'OFF'
+        : messagePolicy.mode === 'delete_only' &&
+            this.moderationDeleteIntents.getRolloutForRule(chatId, 'DUPLICATE_DELETE') === 'execute'
+          ? 'DELETE_ONLY'
+          : 'OBSERVE';
 
     return chatSettingsScreenResponseSchema.parse({
       settings,
       duplicatePhotoModerationMode: duplicatePhotoPolicy.moderationMode,
+      duplicateMessageModerationMode,
       duplicatePhotoPolicyMatrix,
       rules,
       header: headerBundle.header,

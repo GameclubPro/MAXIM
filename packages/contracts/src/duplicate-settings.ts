@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const duplicateDetectionPresetSchema = z.enum(['STANDARD', 'STRICT', 'CUSTOM']);
+export const duplicateCompareModeSchema = z.enum(['MESSAGE', 'TEXT']);
 export const duplicatePhotoMatchPresetSchema = z.enum(['SAME_IMAGE', 'MINOR_EDITS']);
 export const duplicatePhotoScopeSchema = z.enum(['SAME_AUTHOR', 'CHAT']);
 export const duplicatePhotoModerationModeSchema = z.enum(['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL']);

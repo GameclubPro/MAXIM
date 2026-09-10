@@ -75,6 +75,9 @@ local window_ms = tonumber(ARGV[3]) * 1000
 local full_ttl_ms = tonumber(ARGV[4]) * 1000
 local count_limit = tonumber(ARGV[#ARGV])
 local member_timestamp_ms = tonumber(ARGV[2])
+if #ARGV == #KEYS + 7 then
+  member_timestamp_ms = tonumber(ARGV[#ARGV - 1])
+end
 local cutoff_ms = member_timestamp_ms - window_ms
 local retention_cutoff_ms = now_ms - full_ttl_ms
 local logical_lower_bound = '(' .. tostring(cutoff_ms)
@@ -103,6 +106,7 @@ end
 local next_state = cjson.encode({
   v = 1,
   revision = tonumber(ARGV[2]),
+  scoreTimestampMs = member_timestamp_ms,
   memberships = stored_memberships
 })
 redis.call('SET', KEYS[1], next_state, 'PX', full_ttl_ms)
@@ -114,6 +118,41 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
   return 1
 end
 return 2
+`;
+
+const READ_REVISIONED_MEMBERSHIP_COUNT_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {0, 0} end
+local ok, state = pcall(cjson.decode, raw)
+if not ok or state.v ~= 1 then return {-1, 0} end
+if tonumber(state.revision) ~= tonumber(ARGV[1]) then return {0, 0} end
+if tonumber(state.scoreTimestampMs) ~= tonumber(ARGV[3]) then return {0, 0} end
+if type(state.memberships) ~= 'table' then return {-1, 0} end
+local member_of_set = false
+for _, entry in pairs(state.memberships) do
+  if type(entry) == 'table' and entry.key == KEYS[2] then member_of_set = true end
+end
+if not member_of_set then return {0, 0} end
+local score = redis.call('ZSCORE', KEYS[2], ARGV[2])
+if not score or tonumber(score) ~= tonumber(ARGV[3]) then return {0, 0} end
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local cutoff = math.max(now, tonumber(ARGV[3])) - tonumber(ARGV[4]) * 1000
+return {1, math.min(tonumber(ARGV[5]), redis.call('ZCOUNT', KEYS[2], '(' .. tostring(cutoff), ARGV[3]))}
+`;
+
+const COMPARE_REVISIONED_CONTROL_SCRIPT = `
+local revision = tonumber(redis.call('GET', KEYS[2]) or '0')
+if revision ~= tonumber(ARGV[1]) then return {0, revision} end
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local ttl = tonumber(ARGV[3]) - now
+if ttl <= 0 or ttl > 86400000 then return {-1, revision} end
+local ok, value = pcall(cjson.decode, ARGV[2])
+if not ok or value.version ~= 1 or value.revision ~= revision + 1 then return {-1, revision} end
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+redis.call('SET', KEYS[2], tostring(revision + 1))
+return {1, revision + 1}
 `;
 
 const INCREMENT_BY_WITH_TTL_SCRIPT = `
@@ -169,6 +208,7 @@ export type RevisionedSetMembershipResult =
 
 type StoredRevisionedSetMembershipState = {
   revision: number;
+  scoreTimestampMs?: number;
   memberships: Map<string, number>;
 };
 
@@ -253,6 +293,7 @@ export class RedisCounterService implements OnModuleDestroy {
     stateKey: string;
     member: string;
     revision: number;
+    scoreTimestampMs?: number;
     membershipKeys: readonly string[];
     windowSeconds: number;
     ttlSeconds: number;
@@ -262,6 +303,7 @@ export class RedisCounterService implements OnModuleDestroy {
     const stateKey = params.stateKey.trim();
     const member = params.member.trim();
     const revision = Math.trunc(params.revision);
+    const scoreTimestampMs = Math.trunc(params.scoreTimestampMs ?? revision);
     const windowSeconds = Math.trunc(params.windowSeconds);
     const ttlSeconds = Math.trunc(params.ttlSeconds);
     const countLimit = Math.trunc(params.countLimit ?? 21);
@@ -274,6 +316,8 @@ export class RedisCounterService implements OnModuleDestroy {
       new Set(membershipKeys).size !== membershipKeys.length ||
       !Number.isSafeInteger(revision) ||
       revision <= 0 ||
+      !Number.isSafeInteger(scoreTimestampMs) ||
+      scoreTimestampMs <= 0 ||
       !Number.isSafeInteger(windowSeconds) ||
       windowSeconds <= 0 ||
       !Number.isSafeInteger(ttlSeconds) ||
@@ -301,6 +345,9 @@ export class RedisCounterService implements OnModuleDestroy {
         return { kind: 'stale' };
       }
       if (current && revision === current.revision) {
+        if ((current.scoreTimestampMs ?? current.revision) !== scoreTimestampMs) {
+          return { kind: 'stale' };
+        }
         const currentMembershipKeys = Array.from(current.memberships.keys());
         if (!this.stringSetsEqual(currentMembershipKeys, membershipKeys)) {
           return { kind: 'stale' };
@@ -341,6 +388,7 @@ export class RedisCounterService implements OnModuleDestroy {
         String(deadlineAtMs),
         member,
         ...allMembershipKeys.map((key) => (desiredKeySet.has(key) ? '1' : '0')),
+        ...(params.scoreTimestampMs === undefined ? [] : [String(scoreTimestampMs)]),
         String(countLimit),
       )) as Array<number | string>;
       const appliedStatus = Number(appliedResult?.[0]);
@@ -387,6 +435,70 @@ export class RedisCounterService implements OnModuleDestroy {
     );
   }
 
+  async readRevisionedMembershipCount(params: {
+    stateKey: string;
+    membershipKey: string;
+    member: string;
+    revision: number;
+    scoreTimestampMs: number;
+    windowSeconds: number;
+  }): Promise<number | null> {
+    if (
+      ![params.revision, params.scoreTimestampMs, params.windowSeconds].every(
+        (value) => Number.isSafeInteger(value) && value > 0,
+      )
+    ) {
+      throw new Error('Invalid revisioned membership read');
+    }
+    const result = (await this.redis.eval(
+      READ_REVISIONED_MEMBERSHIP_COUNT_SCRIPT,
+      2,
+      params.stateKey,
+      params.membershipKey,
+      String(params.revision),
+      params.member,
+      String(params.scoreTimestampMs),
+      String(params.windowSeconds),
+      '21',
+    )) as Array<number | string>;
+    if (Number(result[0]) === 0) return null;
+    if (
+      Number(result[0]) !== 1 ||
+      !Number.isSafeInteger(Number(result[1])) ||
+      Number(result[1]) < 0
+    ) {
+      throw new Error('Invalid revisioned membership result');
+    }
+    return Number(result[1]);
+  }
+
+  async compareAndSetRevisionedControl(params: {
+    key: string;
+    expectedRevision: number;
+    value: string;
+    expiresAtMs: number;
+  }): Promise<{ applied: boolean; revision: number }> {
+    if (
+      !Number.isSafeInteger(params.expectedRevision) ||
+      params.expectedRevision < 0 ||
+      !Number.isSafeInteger(params.expiresAtMs)
+    )
+      throw new Error('Invalid control revision');
+    const result = (await this.redis.eval(
+      COMPARE_REVISIONED_CONTROL_SCRIPT,
+      2,
+      params.key,
+      `${params.key}:revision`,
+      String(params.expectedRevision),
+      params.value,
+      String(params.expiresAtMs),
+    )) as Array<number | string>;
+    if (![0, 1].includes(Number(result[0])) || !Number.isSafeInteger(Number(result[1]))) {
+      throw new Error('Invalid control update');
+    }
+    return { applied: Number(result[0]) === 1, revision: Number(result[1]) };
+  }
+
   async addToSetWithTtl(
     key: string,
     member: string,
@@ -409,6 +521,11 @@ export class RedisCounterService implements OnModuleDestroy {
 
   async getString(key: string): Promise<string | null> {
     return this.redis.get(key);
+  }
+
+  async setStringIfAbsentWithTtl(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) throw new Error('Invalid TTL');
+    return (await this.redis.set(key, value, 'EX', ttlSeconds, 'NX')) === 'OK';
   }
 
   async setStringWithTtl(key: string, value: string, ttlSeconds: number): Promise<void> {
@@ -554,6 +671,10 @@ export class RedisCounterService implements OnModuleDestroy {
     const memberships = record.memberships;
     if (
       record.v !== 1 ||
+      (record.scoreTimestampMs !== undefined &&
+        (typeof record.scoreTimestampMs !== 'number' ||
+          !Number.isSafeInteger(record.scoreTimestampMs) ||
+          record.scoreTimestampMs <= 0)) ||
       typeof revision !== 'number' ||
       !Number.isSafeInteger(revision) ||
       revision <= 0 ||
@@ -588,6 +709,9 @@ export class RedisCounterService implements OnModuleDestroy {
 
     return {
       revision,
+      ...(typeof record.scoreTimestampMs === 'number'
+        ? { scoreTimestampMs: record.scoreTimestampMs }
+        : {}),
       memberships: new Map(membershipEntries as Array<[string, number]>),
     };
   }

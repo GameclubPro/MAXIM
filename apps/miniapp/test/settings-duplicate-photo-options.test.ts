@@ -40,6 +40,10 @@ const photoControlsSource = readFileSync(
   new URL('../src/pages/settings/settings-duplicate-photo-controls.tsx', import.meta.url),
   'utf8',
 );
+const customControlsSource = readFileSync(
+  new URL('../src/pages/settings/settings-duplicate-custom-controls.tsx', import.meta.url),
+  'utf8',
+);
 const settingsPageSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
@@ -85,7 +89,15 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.match(photoControlsSource, /\{enabled \? \(\s*<p className="policy-mode-hint">/u);
   assert.match(duplicatesSectionSource, /title="Антидубль"/u);
-  assert.match(duplicatesSectionSource, /Текст сравнивается с сообщениями того же участника/u);
+  assert.match(duplicatesSectionSource, /Повторы ищутся у одного участника в этом чате/u);
+  assert.match(duplicatesSectionSource, /import\('\.\/settings-duplicate-message-controls'\)/u);
+  const messageControlsSource = readFileSync(
+    new URL('../src/pages/settings/settings-duplicate-message-controls.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(messageControlsSource, /mode === 'DELETE_ONLY'/u);
+  assert.match(messageControlsSource, /disabled=\{mode === 'OFF'\}/u);
+  assert.match(duplicatesSectionSource, /value=\{draft\.duplicateCompareMode\}/u);
   assert.match(duplicatesSectionSource, /<LazySettingsDuplicateActionPreview/u);
   assert.match(
     duplicatesSectionSource,
@@ -93,12 +105,12 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.doesNotMatch(duplicatesSectionSource, /DUPLICATE_DETECTION_HINTS/u);
   assert.equal(
-    duplicatesSectionSource.replace(/\s+/gu, ' ').match(/Остальной текст может отличаться\./gu)
+    customControlsSource.replace(/\s+/gu, ' ').match(/Остальной текст может отличаться\./gu)
       ?.length,
     2,
   );
   assert.match(
-    duplicatesSectionSource.replace(/\s+/gu, ' '),
+    customControlsSource.replace(/\s+/gu, ' '),
     /Сравнивает длинные сообщения с изменённой пунктуацией/u,
   );
   assert.match(duplicatesSectionSource, /aria-invalid=\{Boolean\(fieldErrors\.duplicateWarn/u);

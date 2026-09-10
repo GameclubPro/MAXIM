@@ -14,6 +14,8 @@ import { CommercialOcrDeleteGuardService } from './commercial-ocr/commercial-ocr
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr/commercial-ocr-runtime-policy.service';
 import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
 import { RuleEngineModule } from './rule-engine.module';
+import { MessageDuplicateStateModule } from './message-duplicate/message-duplicate-state.module';
+import { MessageDuplicateDeleteGuardService } from './message-duplicate/message-duplicate-delete-guard.service';
 
 const actionRoleProviders = roleRunsAction(getAppRole())
   ? [ModerationDeleteIntentProcessor, ModerationDeleteIntentReconcilerService]
@@ -24,6 +26,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     BullModule.registerQueue({ name: MODERATION_DELETE_INTENT_QUEUE }),
     MaxModule,
     RuleEngineModule,
+    MessageDuplicateStateModule,
   ],
   providers: [
     LinkHistoryDeleteGuardService,
@@ -32,6 +35,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     CommercialOcrDeleteGuardService,
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
+    MessageDuplicateDeleteGuardService,
     ModerationDeleteIntentService,
     ...actionRoleProviders,
   ],
@@ -41,6 +45,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     ProfanityDeleteGuardService,
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
+    MessageDuplicateDeleteGuardService,
   ],
 })
 export class ModerationDeleteIntentModule {}

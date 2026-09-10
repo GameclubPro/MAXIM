@@ -651,6 +651,45 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  it.each([false, true])(
+    'requires the new message guard at the final dispatch boundary (available=%s)',
+    async (available) => {
+      const intent = { ...baseIntent, messageDuplicateOwned: true };
+      const events: string[] = [];
+      const remoteDelete = jest.fn(async () => {
+        events.push('delete');
+      });
+      const { service } = createService(
+        {},
+        {
+          $queryRaw: jest
+            .fn()
+            .mockResolvedValueOnce([intent])
+            .mockResolvedValueOnce([{ ...intent, status: 'SUCCEEDED' }]),
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        },
+        { deleteMessage: remoteDelete },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      );
+      if (available)
+        Object.defineProperty(service, 'messageDuplicateDeleteGuard', {
+          value: {
+            assertIntentStillActionable: jest.fn(async () => {
+              events.push('guard');
+              return 'allowed';
+            }),
+          },
+        });
+      if (available) await service.executeLeasedIntent('intent-1', 'lease-1');
+      else
+        await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toThrow(
+          'Message duplicate delete guard unavailable',
+        );
+      expect(events).toEqual(available ? ['guard', 'delete'] : []);
+      expect(remoteDelete).toHaveBeenCalledTimes(available ? 1 : 0);
+    },
+  );
+
   afterEach(() => {
     jest.useRealTimers();
   });

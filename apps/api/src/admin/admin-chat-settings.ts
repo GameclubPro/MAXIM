@@ -798,6 +798,7 @@ export async function saveChatSettings(params: {
       duplicatePhotoMatchPreset: true,
       duplicatePhotoScope: true,
       duplicateDetectionPreset: true,
+      duplicateCompareMode: true,
       duplicateIgnoreLinksEnabled: true,
       duplicateIgnorePhonesEnabled: true,
       duplicateNearMatchEnabled: true,
@@ -826,6 +827,11 @@ export async function saveChatSettings(params: {
     duplicateDetectionPreset: hasOwnSetting(params.body, 'duplicateDetectionPreset')
       ? parsed.data.duplicateDetectionPreset
       : (currentSettings?.duplicateDetectionPreset ?? parsed.data.duplicateDetectionPreset),
+    duplicateCompareMode: hasOwnSetting(params.body, 'duplicateCompareMode')
+      ? parsed.data.duplicateCompareMode
+      : currentSettings?.duplicateCompareMode === 'TEXT'
+        ? ('TEXT' as const)
+        : ('MESSAGE' as const),
     duplicateIgnoreLinksEnabled: hasOwnSetting(params.body, 'duplicateIgnoreLinksEnabled')
       ? parsed.data.duplicateIgnoreLinksEnabled
       : (currentSettings?.duplicateIgnoreLinksEnabled ?? parsed.data.duplicateIgnoreLinksEnabled),
@@ -870,7 +876,11 @@ export async function saveChatSettings(params: {
   normalizedSettings =
     (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
   const capabilityRequirements = resolveChatSettingsBotCapabilityRequirements({
-    current: { ...DEFAULT_CHAT_SETTINGS, ...(currentSettings ?? {}) },
+    current: {
+      ...DEFAULT_CHAT_SETTINGS,
+      ...(currentSettings ?? {}),
+      duplicateCompareMode: currentSettings?.duplicateCompareMode === 'TEXT' ? 'TEXT' : 'MESSAGE',
+    },
     next: normalizedSettings,
     requestedSettings: params.body,
   });

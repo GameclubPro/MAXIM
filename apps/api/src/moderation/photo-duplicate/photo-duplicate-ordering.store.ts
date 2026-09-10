@@ -196,6 +196,7 @@ type OrderingKeys = ReturnType<typeof buildOrderingKeys>;
 
 @Injectable()
 export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
+  protected readonly namespace: string = ORDERING_NAMESPACE;
   private readonly logger = new Logger(PhotoDuplicateOrderingStore.name);
   private readonly redis: Redis;
 
@@ -213,7 +214,7 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
   ): Promise<PhotoDuplicateOrderingAnnouncement> {
     const normalized = validateIdentity(input);
     const normalizedActionEligible = normalizePhotoDuplicateActionEligibility(actionEligible);
-    const keys = buildOrderingKeys(normalized.chatId);
+    const keys = buildOrderingKeys(normalized.chatId, this.namespace);
     try {
       const response = (await this.runRedisOperation(
         this.redis.eval(
@@ -262,7 +263,7 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
       throw new PhotoDuplicateOrderingUnavailableError();
     }
 
-    const keys = buildOrderingKeys(normalized.chatId);
+    const keys = buildOrderingKeys(normalized.chatId, this.namespace);
     const token = randomUUID();
     const deadlineAtMs = Date.now() + REDIS_OPERATION_TIMEOUT_MS;
     const claim = await this.claimTurn(keys, normalized.jobId, token, deadlineAtMs);
@@ -318,7 +319,7 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
 
   async abandon(input: PhotoDuplicateOrderingIdentity): Promise<void> {
     const normalized = validateIdentity(input);
-    const keys = buildOrderingKeys(normalized.chatId);
+    const keys = buildOrderingKeys(normalized.chatId, this.namespace);
     try {
       await this.runRedisOperation(
         this.redis.eval(
@@ -534,9 +535,9 @@ function validateIdentifier(value: string, field: string): string {
   return normalized;
 }
 
-function buildOrderingKeys(chatId: string) {
+function buildOrderingKeys(chatId: string, namespace = ORDERING_NAMESPACE) {
   const chatHash = createHash('sha256').update(chatId).digest('hex').slice(0, 32);
-  const prefix = `${ORDERING_NAMESPACE}:${chatHash}`;
+  const prefix = `${namespace}:${chatHash}`;
   return {
     pending: `${prefix}:pending`,
     expiry: `${prefix}:expiry`,

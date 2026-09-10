@@ -68,6 +68,7 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     duplicateAllowedCount: number;
     duplicateBotButtonErrors: BroadcastLinkButtonFieldErrors[];
     duplicatePhotoModerationPolicy: DuplicatePhotoEffectivePolicy;
+    duplicateMessageModerationMode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY';
     duplicateSharedWindowHours: number;
     duplicateWindowInputValue: string | null;
     duplicatesCardStatus: string;
@@ -80,6 +81,12 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
 
 const LazySettingsDuplicatePhotoControls = lazy(
   () => import('./settings-duplicate-photo-controls'),
+);
+const LazySettingsDuplicateMessageControls = lazy(
+  () => import('./settings-duplicate-message-controls'),
+);
+const LazySettingsDuplicateCustomControls = lazy(
+  () => import('./settings-duplicate-custom-controls'),
 );
 const LazySettingsDuplicateActionPreview = lazy(
   () => import('./settings-duplicate-action-preview'),
@@ -99,6 +106,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
     duplicateAllowedCount,
     duplicateBotButtonErrors,
     duplicatePhotoModerationPolicy,
+    duplicateMessageModerationMode = 'OFF',
     duplicateSharedWindowHours,
     duplicateWindowInputValue,
     duplicatesCardStatus,
@@ -171,9 +179,9 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       onToggleHint={toggleHint}
                       label="Пояснение для антидубля"
                     >
-                      Текст сравнивается с сообщениями того же участника в этом чате. Первое
-                      сообщение не считается дублем. Короткие обычные ответы и подписи к вложениям
-                      не проверяются. Доступные действия для фото показаны отдельно.
+                      Повторы ищутся у одного участника в этом чате. Первое сообщение не является
+                      дублем. Расширенная проверка доступна при тестовом подключении и только
+                      удаляет сообщения. Доступные действия для фото показаны отдельно.
                     </SettingsHintAnchor>
                   </div>
                   <label className="settings-native-switch" aria-label="Включить антидубль">
@@ -194,6 +202,14 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
               {draft.antiDuplicateEnabled ? (
                 <>
                   <h3 className="duplicate-settings-group__title">Что проверять</h3>
+
+                  <Suspense fallback={null}>
+                    <LazySettingsDuplicateMessageControls
+                      mode={duplicateMessageModerationMode}
+                      value={draft.duplicateCompareMode}
+                      onChange={(value) => setFieldValue('duplicateCompareMode', value)}
+                    />
+                  </Suspense>
 
                   <div className="settings-policy">
                     <div className="settings-policy__label-row">
@@ -223,106 +239,14 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
               ) : null}
 
               {draft.antiDuplicateEnabled && draft.duplicateDetectionPreset === 'CUSTOM' ? (
-                <>
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Одинаковая ссылка</span>
-                        <SettingsHintAnchor
-                          hintKey="duplicateIgnoreLinks"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для одинаковой ссылки в дублях"
-                        >
-                          Сообщения с одной и той же ссылкой считаются повтором. Остальной текст
-                          может отличаться.
-                        </SettingsHintAnchor>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Считать одинаковую ссылку дублем"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.duplicateIgnoreLinksEnabled}
-                          onChange={(event) =>
-                            setFieldValue('duplicateIgnoreLinksEnabled', event.target.checked)
-                          }
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Одинаковый номер</span>
-                        <SettingsHintAnchor
-                          hintKey="duplicateIgnorePhones"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для одинакового номера в дублях"
-                        >
-                          Сообщения с одним и тем же номером телефона считаются повтором. Остальной
-                          текст может отличаться.
-                        </SettingsHintAnchor>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Считать одинаковый номер дублем"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.duplicateIgnorePhonesEnabled}
-                          onChange={(event) =>
-                            setFieldValue('duplicateIgnorePhonesEnabled', event.target.checked)
-                          }
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Близкие совпадения</span>
-                        <SettingsHintAnchor
-                          hintKey="duplicateNearMatch"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для близких совпадений дублей"
-                        >
-                          Сравнивает длинные сообщения с изменённой пунктуацией. Слова, их порядок и
-                          числа должны совпадать. Короткие ответы не сравниваются приблизительно.
-                        </SettingsHintAnchor>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить близкие совпадения дублей"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.duplicateNearMatchEnabled}
-                          onChange={(event) =>
-                            setFieldValue('duplicateNearMatchEnabled', event.target.checked)
-                          }
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                </>
+                <Suspense fallback={null}>
+                  <LazySettingsDuplicateCustomControls
+                    draft={draft}
+                    setFieldValue={setFieldValue}
+                    openHintKey={openHintKey}
+                    toggleHint={toggleHint}
+                  />
+                </Suspense>
               ) : null}
 
               {draft.antiDuplicateEnabled ? (

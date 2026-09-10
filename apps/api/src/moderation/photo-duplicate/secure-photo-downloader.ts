@@ -33,6 +33,7 @@ export type DownloadedPhoto = {
   bytes: Buffer;
   format: SupportedPhotoImageFormat;
 };
+export type DownloadedDuplicateMedia = { bytes: Buffer; contentType: string | null };
 
 export type SecurePhotoDownloadOptions = Readonly<{
   deadlineAtMs?: number;
@@ -91,7 +92,28 @@ export class SecurePhotoDownloader {
         : Math.min(configuredDeadlineAtMs, validateExternalDeadline(options.deadlineAtMs));
     const release = await this.acquireSlot(deadlineAtMs);
     try {
-      return await this.downloadWithin(rawUrl, 0, deadlineAtMs);
+      const result = await this.downloadWithin(rawUrl, 0, deadlineAtMs, false);
+      if (!result.format) throw new Error('Photo response has an unsupported image signature');
+      return { bytes: result.bytes, format: result.format };
+    } finally {
+      release();
+    }
+  }
+
+  async downloadBinary(
+    rawUrl: string,
+    options: SecurePhotoDownloadOptions = {},
+  ): Promise<DownloadedDuplicateMedia> {
+    const deadlineAtMs = Math.min(
+      Date.now() + this.timeoutMs,
+      options.deadlineAtMs === undefined
+        ? Number.MAX_SAFE_INTEGER
+        : validateExternalDeadline(options.deadlineAtMs),
+    );
+    const release = await this.acquireSlot(deadlineAtMs);
+    try {
+      const result = await this.downloadWithin(rawUrl, 0, deadlineAtMs, true);
+      return { bytes: result.bytes, contentType: result.contentType };
     } finally {
       release();
     }
@@ -110,6 +132,7 @@ export class SecurePhotoDownloader {
     resolved: ResolvedAddress,
     timeoutMs: number,
     signal?: AbortSignal,
+    binary = false,
   ): Promise<PhotoDownloadResponse> {
     return new Promise((resolve, reject) => {
       const request = requestHttps(
@@ -118,7 +141,9 @@ export class SecurePhotoDownloader {
           method: 'GET',
           agent: false,
           headers: {
-            accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/tiff',
+            accept: binary
+              ? 'application/octet-stream,video/*,audio/*'
+              : 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/tiff',
             'accept-encoding': 'identity',
             'user-agent': 'MAXIM-photo-duplicate/1',
           },
@@ -151,7 +176,12 @@ export class SecurePhotoDownloader {
     rawUrl: string,
     redirectCount: number,
     deadlineAtMs: number,
-  ): Promise<DownloadedPhoto> {
+    binary: boolean,
+  ): Promise<{
+    bytes: Buffer;
+    format: SupportedPhotoImageFormat | null;
+    contentType: string | null;
+  }> {
     const url = parseAndValidateUrl(rawUrl, this.allowedHosts);
     const addresses = await withDeadline(this.resolveHost(url.hostname), deadlineAtMs);
     if (
@@ -161,7 +191,12 @@ export class SecurePhotoDownloader {
       throw new Error('Photo host did not resolve exclusively to public addresses');
     }
 
-    const response = await this.requestWithValidatedAddressFallback(url, addresses, deadlineAtMs);
+    const response = await this.requestWithValidatedAddressFallback(
+      url,
+      addresses,
+      deadlineAtMs,
+      binary,
+    );
     let responseClosed = false;
     const closeResponse = () => {
       if (responseClosed) {
@@ -179,13 +214,24 @@ export class SecurePhotoDownloader {
         }
         const nextUrl = new URL(redirectLocation, url);
         closeResponse();
-        return this.downloadWithin(nextUrl.toString(), redirectCount + 1, deadlineAtMs);
+        return this.downloadWithin(nextUrl.toString(), redirectCount + 1, deadlineAtMs, binary);
       }
 
       if (response.statusCode !== 200) {
         throw new PhotoDownloadHttpError(response.statusCode);
       }
-      validateResponseContentType(response.headers['content-type']);
+      const contentTypeValue = response.headers['content-type'];
+      const contentType =
+        (Array.isArray(contentTypeValue) ? contentTypeValue[0] : contentTypeValue)
+          ?.split(';')[0]
+          ?.trim()
+          .toLowerCase() ?? null;
+      if (binary) {
+        // FLAG: An error page must never become proof that two unavailable media files match.
+        if (contentType && /^(text\/|application\/(?:json|xml|problem\+json))/u.test(contentType)) {
+          throw new Error('Binary attachment returned a document or error response');
+        }
+      } else validateResponseContentType(contentTypeValue);
       const contentLength = parseContentLength(response.headers['content-length']);
       if (contentLength !== null && contentLength > this.maxBytes) {
         throw new PhotoDownloadByteLimitExceededError();
@@ -198,13 +244,14 @@ export class SecurePhotoDownloader {
       }
 
       const bytes = Buffer.concat(body.chunks, body.byteLength);
-      const magicFormat = detectSupportedPhotoImageFormat(bytes);
-      if (!magicFormat) {
+      const magicFormat = binary ? null : detectSupportedPhotoImageFormat(bytes);
+      if (!binary && !magicFormat) {
         throw new Error('Photo response has an unsupported image signature');
       }
       return {
         bytes,
         format: magicFormat,
+        contentType,
       };
     } finally {
       closeResponse();
@@ -215,6 +262,7 @@ export class SecurePhotoDownloader {
     url: URL,
     addresses: readonly ResolvedAddress[],
     deadlineAtMs: number,
+    binary: boolean,
   ): Promise<PhotoDownloadResponse> {
     let lastError: unknown;
     for (let index = 0; index < addresses.length; index += 1) {
@@ -229,6 +277,7 @@ export class SecurePhotoDownloader {
             addresses[index],
             remainingMs(attemptDeadlineAtMs),
             abortController.signal,
+            binary,
           ),
           attemptDeadlineAtMs,
         );

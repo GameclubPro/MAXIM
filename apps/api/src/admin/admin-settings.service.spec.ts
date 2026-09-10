@@ -1278,6 +1278,7 @@ describe('AdminSettingsService chat rules', () => {
     const { prisma, service } = createService({
       currentSettings: createPersistedChatSettings({
         duplicateDetectionPreset: 'CUSTOM',
+        duplicateCompareMode: 'TEXT',
         duplicateIgnoreLinksEnabled: true,
         duplicateIgnorePhonesEnabled: true,
         duplicateNearMatchEnabled: true,
@@ -1291,6 +1292,7 @@ describe('AdminSettingsService chat rules', () => {
     expect(findChatSettingsWritePayload(prisma)).toEqual(
       expect.objectContaining({
         duplicateDetectionPreset: 'CUSTOM',
+        duplicateCompareMode: 'TEXT',
         duplicateIgnoreLinksEnabled: true,
         duplicateIgnorePhonesEnabled: true,
         duplicateNearMatchEnabled: true,

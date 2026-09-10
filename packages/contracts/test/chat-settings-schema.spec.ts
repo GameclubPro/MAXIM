@@ -17,6 +17,16 @@ import {
 } from '@maxim/contracts';
 import { MAX_PUBLICATION_TEXT_LENGTH } from '@maxim/contracts/publication';
 
+describe('message duplicate comparison settings', () => {
+  it('defaults to whole-message comparison and accepts explicit caption-only mode', () => {
+    expect(chatSettingsSchema.parse({}).duplicateCompareMode).toBe('MESSAGE');
+    expect(
+      updateSettingsRequestSchema.parse({ duplicateCompareMode: 'TEXT' }).duplicateCompareMode,
+    ).toBe('TEXT');
+    expect(chatSettingsSchema.safeParse({ duplicateCompareMode: 'ANYTHING' }).success).toBe(false);
+  });
+});
+
 describe('night mode settings update validation', () => {
   it.each(['nightModeBotMessageEnabled', 'nightModeOpenMessageEnabled'] as const)(
     'keeps an equal-time legacy row readable but rejects saving it with %s',
