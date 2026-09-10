@@ -3,6 +3,18 @@ import {
   type TerminalDuplicateSanctionEventModel,
 } from './moderation-message-action-claim';
 
+export function createDuplicateMemberMutationGuard(
+  lease: { assertOwned(): Promise<void> } | undefined,
+  beforeMutation: (() => Promise<void>) | undefined,
+): (() => Promise<void>) | undefined {
+  if (!beforeMutation) return lease ? () => lease.assertOwned() : undefined;
+  return async () => {
+    await lease?.assertOwned();
+    await beforeMutation();
+    await lease?.assertOwned();
+  };
+}
+
 export function createDuplicateDeleteAuthorizationGuard(params: {
   assertActiveLease?: () => void;
   authorizeDelete?: () => Promise<boolean>;

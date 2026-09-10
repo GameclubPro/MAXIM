@@ -5,6 +5,29 @@ import {
 } from './message-duplicate-policy.service';
 
 describe('message duplicate runtime policy', () => {
+  it('supports permanent global authority without enumerating chats, while excluding private dialogs', async () => {
+    const global = {
+      version: 2,
+      revision: 2,
+      mode: 'full',
+      scope: 'all_enabled_chats',
+      chatIds: [],
+      effectiveAt: new Date().toISOString(),
+      expiresAt: null,
+    };
+    const redis = { getString: jest.fn().mockResolvedValue(JSON.stringify(global)) };
+    const service = new MessageDuplicatePolicyService(redis as never, new ConfigService());
+    for (const id of ['-123', '-456'])
+      expect(await service.resolve(id, true)).toMatchObject({ mode: 'full', revision: 2 });
+    for (const id of ['123', '0', '', 'chat-1'])
+      expect(await service.resolve(id, true)).toMatchObject({ mode: 'off' });
+    expect(messageDuplicateControlSchema.safeParse({ ...global, chatIds: ['-123'] }).success).toBe(
+      false,
+    );
+    expect(messageDuplicateControlSchema.safeParse({ ...global, version: 1 }).success).toBe(false);
+    redis.getString.mockResolvedValue(JSON.stringify({ ...global, mode: 'off', revision: 3 }));
+    expect(await service.resolve('-123', true)).toMatchObject({ mode: 'off', revision: 3 });
+  });
   const control = () => ({
     version: 1,
     revision: 1,

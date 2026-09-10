@@ -6407,7 +6407,9 @@ export class ModerationDeleteIntentService {
         claim.updateType !== 'message_action' ||
         claim.ruleCode !== 'DUPLICATE_MESSAGE_ACTION' ||
         intent.ruleCode !== 'DUPLICATE_DELETE' ||
-        metadata?.enforcementScope !== 'delete_only' ||
+        (binding.version === 2
+          ? metadata?.enforcementScope !== 'full'
+          : metadata?.enforcementScope !== 'delete_only') ||
         claim.chatId !== intent.chatId ||
         claim.userId !== binding.senderId ||
         claim.messageId !== binding.messageId ||

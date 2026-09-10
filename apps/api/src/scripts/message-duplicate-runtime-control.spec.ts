@@ -4,6 +4,47 @@ import {
 } from './message-duplicate-runtime-control';
 
 describe('message duplicate control CLI', () => {
+  it('requires explicit global scope and permanent full rollout, keeping preview as the default', () => {
+    expect(
+      parseMessageDuplicateControlOptions([
+        'set',
+        '--expected-revision',
+        '1',
+        '--all-enabled-chats',
+        '--mode',
+        'full',
+        '--permanent',
+      ]),
+    ).toMatchObject({
+      apply: false,
+      control: { version: 2, scope: 'all_enabled_chats', mode: 'full', expiresAt: null },
+    });
+    expect(() =>
+      parseMessageDuplicateControlOptions([
+        'set',
+        '--expected-revision',
+        '1',
+        '--all-enabled-chats',
+        '--chat-id=-123',
+        '--mode',
+        'full',
+        '--permanent',
+      ]),
+    ).toThrow('one rollout scope');
+    expect(() =>
+      parseMessageDuplicateControlOptions([
+        'set',
+        '--expected-revision',
+        '1',
+        '--all-enabled-chats',
+        '--mode',
+        'full',
+        '--permanent',
+        '--ttl-hours',
+        '24',
+      ]),
+    ).toThrow('not both');
+  });
   const args = [
     'set',
     '--expected-revision',

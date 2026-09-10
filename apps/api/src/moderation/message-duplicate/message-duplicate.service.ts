@@ -7,6 +7,8 @@ import { extractDuplicateMessageContent } from './message-duplicate-content';
 import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
+import { messageDuplicateActionsEnabled } from './message-duplicate-policy.service';
+import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
 import { MessageDuplicateEnqueueService } from './message-duplicate.queue';
 import { messageDuplicateSettingsDigest } from './message-duplicate-state';
 
@@ -20,6 +22,10 @@ export class MessageDuplicateService {
     private readonly queue: MessageDuplicateEnqueueService,
   ) {}
 
+  async isAuthoritative(chatId: string): Promise<boolean> {
+    return (await this.policy.resolve(chatId)).mode === 'full';
+  }
+
   async observe(params: {
     update: MaxUpdate;
     webhookEventId?: string;
@@ -28,6 +34,7 @@ export class MessageDuplicateService {
     botId: string;
     actionEligible: boolean;
     track: boolean;
+    executeFullAction?: ExecuteDuplicateModerationAction;
   }): Promise<void> {
     const message = params.update.message;
     if (
@@ -42,6 +49,7 @@ export class MessageDuplicateService {
     if (
       !Number.isSafeInteger(eventTimestampMs) ||
       !eventTimestampMs ||
+      eventTimestampMs < policy.effectiveAtMs ||
       classifyDuplicateEventTime({
         eventTimestampMs,
         windowSec: resolveDuplicateFlowConfig(params.settings).windowSec,
@@ -87,7 +95,7 @@ export class MessageDuplicateService {
         sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
         controlRevision: policy.revision,
         settingsDigest: messageDuplicateSettingsDigest(params.settings),
-        actionEligible: params.actionEligible && policy.mode === 'delete_only',
+        actionEligible: params.actionEligible && messageDuplicateActionsEnabled(policy.mode),
       });
       return;
     }
@@ -96,7 +104,7 @@ export class MessageDuplicateService {
         { chatId: message.chatId, reason: content.reason },
         'Message duplicate content could not be verified',
       );
-    if (result && params.actionEligible && policy.mode === 'delete_only') {
+    if (result && params.actionEligible && messageDuplicateActionsEnabled(policy.mode)) {
       await this.enforcement.enqueue({
         ...result,
         chatId: message.chatId,
@@ -104,6 +112,8 @@ export class MessageDuplicateService {
         sourceCreatedAt: message.createdAt,
         text: content.text,
         settings: params.settings,
+        update: params.update,
+        executeFullAction: params.executeFullAction,
       });
     }
   }

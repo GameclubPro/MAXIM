@@ -2,6 +2,18 @@ import { MessageDuplicateService } from './message-duplicate.service';
 import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
 
 describe('message duplicate main-path admission', () => {
+  it('marks full rollout authoritative so the legacy filter cannot claim the same message first', async () => {
+    const policy = { resolve: jest.fn().mockResolvedValue({ mode: 'full' }) };
+    const service = new MessageDuplicateService(
+      policy as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    expect(await service.isAuthoritative('-123')).toBe(true);
+    policy.resolve.mockResolvedValue({ mode: 'delete_only' });
+    expect(await service.isAuthoritative('-123')).toBe(false);
+  });
   function setup() {
     const policy = { resolve: jest.fn().mockResolvedValue({ mode: 'delete_only', revision: 1 }) };
     const history = { observe: jest.fn().mockResolvedValue({ hit: {}, binding: {} }) };

@@ -5,7 +5,7 @@ import { raceWithTimeout } from '../../common/promise-timeout.util';
 import { RedisCounterService } from '../redis-counter.service';
 
 export const MESSAGE_DUPLICATE_CONTROL_KEY = 'message-duplicate:runtime-control:v1';
-export const messageDuplicateControlSchema = z
+const messageDuplicateControlV1Schema = z
   .object({
     version: z.literal(1),
     revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -21,6 +21,37 @@ export const messageDuplicateControlSchema = z
       Date.parse(value.expiresAt) > Date.parse(value.effectiveAt) &&
       Date.parse(value.expiresAt) - Date.parse(value.effectiveAt) <= 86400000,
   );
+
+const messageDuplicateControlV2Schema = z
+  .object({
+    version: z.literal(2),
+    revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    mode: z.enum(['off', 'shadow', 'delete_only', 'full']),
+    scope: z.enum(['chats', 'all_enabled_chats']),
+    chatIds: z.array(z.string().regex(/^-[1-9][0-9]{0,19}$/)).max(1000),
+    effectiveAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime().nullable(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      new Set(value.chatIds).size === value.chatIds.length &&
+      (value.scope !== 'all_enabled_chats' || value.chatIds.length === 0),
+  )
+  .refine(
+    (value) =>
+      value.expiresAt === null ||
+      (Date.parse(value.expiresAt) > Date.parse(value.effectiveAt) &&
+        Date.parse(value.expiresAt) - Date.parse(value.effectiveAt) <= 86400000),
+  );
+
+export const messageDuplicateControlSchema = z.union([
+  messageDuplicateControlV1Schema,
+  messageDuplicateControlV2Schema,
+]);
+export function messageDuplicateActionsEnabled(mode: MessageDuplicatePolicy['mode']): boolean {
+  return mode === 'delete_only' || mode === 'full';
+}
 
 export type MessageDuplicateControl = z.infer<typeof messageDuplicateControlSchema>;
 export type MessageDuplicatePolicy = {
@@ -49,8 +80,16 @@ export class MessageDuplicatePolicyService {
     if (this.config.get('MESSAGE_DUPLICATE_ENABLED') === false) return OFF;
     try {
       const control = await this.read(fresh);
-      const expiresAtMs = control ? Date.parse(control.expiresAt) : 0;
-      if (!control || expiresAtMs <= Date.now() || !control.chatIds.includes(chatId)) return OFF;
+      const expiresAtMs = control
+        ? control.expiresAt === null
+          ? Number.MAX_SAFE_INTEGER
+          : Date.parse(control.expiresAt)
+        : 0;
+      const inScope =
+        control?.version === 2 && control.scope === 'all_enabled_chats'
+          ? /^-[1-9][0-9]{0,19}$/.test(chatId)
+          : control?.chatIds.includes(chatId);
+      if (!control || expiresAtMs <= Date.now() || !inScope) return OFF;
       return {
         mode: control.mode,
         revision: control.revision,
@@ -82,11 +121,11 @@ export class MessageDuplicatePolicyService {
     expectedRevision: number,
   ): Promise<{ applied: boolean; revision: number }> {
     const control = messageDuplicateControlSchema.parse(input);
-    const expiresAtMs = Date.parse(control.expiresAt);
+    const expiresAtMs = control.expiresAt === null ? null : Date.parse(control.expiresAt);
     if (
       control.revision !== expectedRevision + 1 ||
-      expiresAtMs <= Date.now() ||
-      expiresAtMs - Date.now() > 24 * 60 * 60_000 ||
+      (expiresAtMs !== null &&
+        (expiresAtMs <= Date.now() || expiresAtMs - Date.now() > 24 * 60 * 60_000)) ||
       Date.parse(control.effectiveAt) > Date.now() + 5000 ||
       Date.parse(control.effectiveAt) < Date.now() - 60_000
     )

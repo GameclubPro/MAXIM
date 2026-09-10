@@ -9,7 +9,16 @@ export const MESSAGE_DUPLICATE_MEDIA_VERSION = `sha256-v1:${PHOTO_FINGERPRINT_AL
 export const MESSAGE_DUPLICATE_CLAIM_PREFIX = 'message-duplicate-action:v1:';
 export const messageDuplicateBindingSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
+    sanction: z
+      .object({
+        action: z.enum(['WARN', 'MUTE', 'BAN']),
+        repeatCount: z.number().int().min(1).max(20),
+        threshold: z.number().int().min(1).max(20),
+        settingsDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict()
+      .optional(),
     senderId: z.string().min(1).max(160),
     messageId: z.string().min(1).max(512),
     eventTimestampMs: z
@@ -30,7 +39,8 @@ export const messageDuplicateBindingSchema = z
     windowSeconds: z.number().int().positive().max(604800),
     requiredCount: z.number().int().min(2).max(21),
   })
-  .strict();
+  .strict()
+  .refine((value) => value.version === 2 || value.sanction === undefined);
 export type MessageDuplicateBinding = z.infer<typeof messageDuplicateBindingSchema>;
 
 export function parseMessageDuplicateBinding(value: unknown): MessageDuplicateBinding | null {
@@ -52,6 +62,14 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
     near: settings.duplicateNearMatchEnabled,
     window: flow.windowSec,
     allowed: flow.allowedCount,
+  });
+}
+
+export function messageDuplicateSanctionSettingsDigest(settings: ChatSettings): string {
+  return digestDuplicateContent({
+    settings: messageDuplicateSettingsDigest(settings),
+    reactions: resolveDuplicateFlowConfig(settings).reactions,
+    muteHours: settings.duplicateMuteDurationHours,
   });
 }
 

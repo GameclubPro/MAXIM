@@ -68,7 +68,7 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     duplicateAllowedCount: number;
     duplicateBotButtonErrors: BroadcastLinkButtonFieldErrors[];
     duplicatePhotoModerationPolicy: DuplicatePhotoEffectivePolicy;
-    duplicateMessageModerationMode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY';
+    duplicateMessageModerationMode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY' | 'FULL';
     duplicateSharedWindowHours: number;
     duplicateWindowInputValue: string | null;
     duplicatesCardStatus: string;
@@ -180,8 +180,8 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       label="Пояснение для антидубля"
                     >
                       Повторы ищутся у одного участника в этом чате. Первое сообщение не является
-                      дублем. Расширенная проверка доступна при тестовом подключении и только
-                      удаляет сообщения. Доступные действия для фото показаны отдельно.
+                      дублем. Проверяются также короткие сообщения, пересылки и подписи. Действия
+                      зависят от настроек ниже и текущего режима проверки.
                     </SettingsHintAnchor>
                   </div>
                   <label className="settings-native-switch" aria-label="Включить антидубль">

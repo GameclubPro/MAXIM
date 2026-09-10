@@ -1,13 +1,120 @@
 import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import { extractDuplicateMessageContent } from './message-duplicate-content';
-import { duplicateSettings } from './message-duplicate-test-fixtures';
+import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
+import { MessageDuplicateGuardRejectedError } from './message-duplicate-delete-guard.service';
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
 import type { ModerationMessageActionClaimData } from '../moderation-message-action-claim';
 
 describe('message duplicate delete-only action claims', () => {
+  it.each([
+    [1, null],
+    [2, 'WARN'],
+    [3, 'MUTE'],
+    [4, 'BAN'],
+  ] as const)(
+    'uses the configured full reaction ladder at repeat %s',
+    async (repeatCount, expected) => {
+      const settings = duplicateSettings({
+        duplicateBotMessageEnabled: true,
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateBanEnabled: true,
+        duplicateWarnMaxCount: 2,
+        duplicateMuteMaxCount: 3,
+        duplicateBanMaxCount: 4,
+        duplicateMuteDurationHours: 12,
+      });
+      const update = duplicateUpdate();
+      const history = new MessageDuplicateHistoryService({
+        replaceRevisionedSetMembershipsBeforeDeadline: jest
+          .fn()
+          .mockResolvedValue({ kind: 'applied', counts: [repeatCount + 1] }),
+      } as never);
+      const result = await history.observe({
+        chatId: '-123',
+        userId: '123',
+        messageId: 'm2',
+        eventTimestampMs: Date.parse(update.message!.createdAt),
+        controlRevision: 2,
+        settings,
+        content: extractDuplicateMessageContent(update.raw),
+      });
+      const intents = {
+        ensureIntentWithMessageActionClaim: jest.fn().mockResolvedValue({
+          claim: 'claimed',
+          intent: { intentId: 'intent', rollout: 'execute' },
+        }),
+      };
+      const policy = {
+        resolve: jest.fn().mockResolvedValue({
+          mode: 'full',
+          revision: 2,
+          effectiveAtMs: Date.now() - 10000,
+          expiresAtMs: Number.MAX_SAFE_INTEGER,
+        }),
+      };
+      const guard = { assertMessageStillActionable: jest.fn().mockResolvedValue('allowed') };
+      const executeFullAction = jest.fn();
+      const service = new MessageDuplicateEnforcementService(
+        intents as never,
+        policy as never,
+        {} as never,
+        guard as never,
+      );
+      await service.enqueue({
+        ...result!,
+        settings,
+        chatId: '-123',
+        botId: 'bot',
+        update,
+        sourceCreatedAt: update.message!.createdAt,
+        text: 'a',
+        executeFullAction,
+      });
+      const request = executeFullAction.mock.calls[0]![0];
+      expect(request.settings.duplicateMuteDurationHours).toBe(12);
+      expect(request.outcome.kind).toBe(expected ? 'decision' : 'hit');
+      expect(request.outcome.decision?.action ?? null).toBe(expected);
+      expect(request.deleteIntent).toBe(
+        intents.ensureIntentWithMessageActionClaim.mock.calls[0]![0].intent,
+      );
+      expect(request.deleteIntent.event.metadata.messageDuplicate.version).toBe(2);
+      expect(request.deleteIntent.event.metadata.enforcementScope).toBe('full');
+      if (expected) {
+        expect(request.deleteIntent.event.metadata.messageDuplicate.requiredCount).toBe(
+          repeatCount + 1,
+        );
+        await expect(request.authorizeSanction()).resolves.toBe(true);
+        expect(guard.assertMessageStillActionable).toHaveBeenLastCalledWith(
+          expect.objectContaining({ sanctionIntentId: 'intent' }),
+        );
+        guard.assertMessageStillActionable.mockRejectedValue(
+          new MessageDuplicateGuardRejectedError('revoked'),
+        );
+        await expect(request.authorizeSanction()).resolves.toBe(false);
+        await expect(request.beforeSanctionMutation()).rejects.toThrow('sanction_revoked');
+      }
+      intents.ensureIntentWithMessageActionClaim.mockResolvedValue({
+        claim: 'blocked',
+        intent: null,
+      });
+      executeFullAction.mockClear();
+      await service.enqueue({
+        ...result!,
+        settings,
+        chatId: '-123',
+        botId: 'bot',
+        update,
+        sourceCreatedAt: update.message!.createdAt,
+        text: 'a',
+        executeFullAction,
+      });
+      expect(executeFullAction).not.toHaveBeenCalled();
+    },
+  );
   it('uses the shared whole-message claim, validates the binding and keeps one action across edits', async () => {
     const settings = duplicateSettings({
       duplicateMuteEnabled: true,
@@ -47,20 +154,19 @@ describe('message duplicate delete-only action claims', () => {
       ),
     };
     const policy = {
-      resolve: jest
-        .fn()
-        .mockResolvedValue({
-          mode: 'delete_only',
-          revision: 1,
-          effectiveAtMs: Date.now() - 10000,
-          expiresAtMs: Date.now() + 3600000,
-        }),
+      resolve: jest.fn().mockResolvedValue({
+        mode: 'delete_only',
+        revision: 1,
+        effectiveAtMs: Date.now() - 10000,
+        expiresAtMs: Date.now() + 3600000,
+      }),
     };
     const photos = { resolveEffectivePolicy: jest.fn().mockResolvedValue({ enforce: false }) };
     const enforcement = new MessageDuplicateEnforcementService(
       intents as never,
       policy as never,
       photos as never,
+      {} as never,
     );
     const params = {
       ...result!,

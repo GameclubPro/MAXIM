@@ -96,6 +96,8 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
     'utf8',
   );
   assert.match(messageControlsSource, /mode === 'DELETE_ONLY'/u);
+  assert.match(messageControlsSource, /mode === 'FULL'/u);
+  assert.match(messageControlsSource, /Активно: действия по настройкам чата/u);
   assert.match(messageControlsSource, /disabled=\{mode === 'OFF'\}/u);
   assert.match(duplicatesSectionSource, /value=\{draft\.duplicateCompareMode\}/u);
   assert.match(duplicatesSectionSource, /<LazySettingsDuplicateActionPreview/u);

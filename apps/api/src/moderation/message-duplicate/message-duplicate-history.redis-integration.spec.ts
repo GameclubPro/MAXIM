@@ -4,7 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { RedisCounterService } from '../redis-counter.service';
 import { extractDuplicateMessageContent } from './message-duplicate-content';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
-import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
+import {
+  MessageDuplicatePolicyService,
+  MESSAGE_DUPLICATE_CONTROL_KEY,
+} from './message-duplicate-policy.service';
 import { duplicateSettings } from './message-duplicate-test-fixtures';
 
 const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
@@ -60,6 +63,37 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await history.stillMatches(chatId, hit!.binding)).toBe(false);
     expect(await observe('a', 0)).toBeNull();
     expect(await observe('c', 50)).toBeNull();
+  });
+
+  it('does not reuse observations from a prior rollout revision for new sanctions', async () => {
+    await observe('a', 0);
+    expect(await observe('b', 100, 'a', { controlRevision: 2 })).toBeNull();
+    expect((await observe('c', 200, 'a', { controlRevision: 2 }))?.hit.count).toBe(1);
+  });
+
+  it('persists an explicitly global full policy without expiry and supports a permanent stop', async () => {
+    keys.add(MESSAGE_DUPLICATE_CONTROL_KEY);
+    keys.add(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`);
+    const policy = new MessageDuplicatePolicyService(redis, new ConfigService());
+    const control = {
+      version: 2,
+      revision: 1,
+      mode: 'full',
+      scope: 'all_enabled_chats',
+      chatIds: [],
+      effectiveAt: new Date().toISOString(),
+      expiresAt: null,
+    };
+    expect(await policy.set(control, 0)).toEqual({ applied: true, revision: 1 });
+    expect(await inspector.ttl(MESSAGE_DUPLICATE_CONTROL_KEY)).toBe(-1);
+    expect(await policy.resolve('-987654321', true)).toMatchObject({ mode: 'full', revision: 1 });
+    expect(await policy.set({ ...control, mode: 'off', revision: 2 }, 1)).toEqual({
+      applied: true,
+      revision: 2,
+    });
+    expect(await inspector.ttl(MESSAGE_DUPLICATE_CONTROL_KEY)).toBe(-1);
+    expect(await policy.resolve('-987654321', true)).toMatchObject({ mode: 'off', revision: 2 });
+    expect(await policy.set(control, 0)).toEqual({ applied: false, revision: 2 });
   });
   it('materializes media after a pending phase and removes stale media after a text edit', async () => {
     const content = extractDuplicateMessageContent({

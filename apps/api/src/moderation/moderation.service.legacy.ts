@@ -129,6 +129,7 @@ import { buildManagedPublicationAutoDeleteFenceWhere } from './managed-publicati
 import {
   createDuplicateDeleteAuthorizationGuard,
   createDuplicateSanctionAuthorization,
+  createDuplicateMemberMutationGuard,
 } from './duplicate-execution-guards';
 import * as duplicateSafety from './duplicate-enforcement-safety';
 import {
@@ -161,6 +162,11 @@ import {
 import { consumeLegacyParticipantModerationImmunity } from './participant-moderation-immunity.service';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
 import { MessageDuplicateService } from './message-duplicate/message-duplicate.service';
+import {
+  buildDuplicateModerationParameters,
+  duplicateExplanationIdempotencyKey,
+  type DuplicateModerationActionRequest,
+} from './duplicate-moderation.actions';
 import type { PhotoDuplicateModerationActionRequest } from './photo-duplicate/photo-duplicate-moderation.actions';
 import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
 import {
@@ -548,6 +554,7 @@ type ApplySanctionActionParams = {
   persistModerationEvent: PersistModerationEvent;
   assertActiveLease?: () => void | Promise<void>;
   authorizeSanction?: () => Promise<boolean>;
+  beforeSanctionMutation?: () => Promise<void>;
   rethrowPreDispatchFailure?: boolean;
 };
 
@@ -1259,38 +1266,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   async executePhotoDuplicateAction(params: PhotoDuplicateModerationActionRequest): Promise<void> {
+    return this.executeDuplicateAction({
+      ...params,
+      backgroundExecution: true,
+      assertActiveLease: params.lease.assertOwned,
+    });
+  }
+
+  async executeDuplicateAction(params: DuplicateModerationActionRequest): Promise<void> {
     const message = params.update.message;
     if (!message) {
       return;
     }
-    const commonParams = {
-      chatId: params.chatId,
-      userId: params.userId,
-      messageId: params.messageId,
-      text: message.text ?? '',
-      createdAt: message.createdAt,
-      userLabel: this.formatUserLabel(message.senderName, params.userId),
-      botSpeechStyle: params.settings.botSpeechStyle,
-      botSpeechMedia: params.settings.botSpeechMedia,
-      duplicateBotMessageEnabled: params.settings.duplicateBotMessageEnabled,
-      duplicateBotMessageText: params.settings.duplicateBotMessageText,
-      duplicateBotButtons: params.settings.duplicateBotButtons,
-      duplicateBotButtonEnabled: params.settings.duplicateBotButtonEnabled,
-      duplicateBotButtonUrl: params.settings.duplicateBotButtonUrl,
-      duplicateBotButtonText: params.settings.duplicateBotButtonText,
-      duplicateAdminContactButtonEnabled: params.settings.duplicateAdminContactButtonEnabled,
-      duplicateAdminContactButtonUrl: params.settings.duplicateAdminContactButtonUrl,
-      rulesAttachViolationsEnabled: params.settings.rulesAttachViolationsEnabled,
-      rulesPublishedUrl: params.rulesPublishedUrl,
-      rulesPublishedMessageId: params.rulesPublishedMessageId,
-      deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-      suppressNonEssentialMessages: false,
-      backgroundExecution: true,
-      actionClaimed: params.actionClaimed,
-      assertActiveLease: params.lease.assertOwned,
-      authorizeDelete: params.authorizeDelete,
-    } as const;
+    const commonParams = buildDuplicateModerationParameters(
+      params,
+      this.formatUserLabel(message.senderName, params.userId),
+    );
 
     if (params.outcome.kind === 'decision') {
       await this.handleDuplicateDecision({
@@ -1299,6 +1290,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         muteDurationHours: params.settings.duplicateMuteDurationHours,
         trackAsGlobalSpammer: false,
         authorizeSanction: 'authorizeSanction' in params ? params.authorizeSanction : undefined,
+        beforeSanctionMutation: params.beforeSanctionMutation,
       });
       return;
     }
@@ -2052,6 +2044,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         update.raw,
         this.navigationTargetOptions,
       );
+      const fullMessageDuplicates =
+        settings.antiDuplicateEnabled &&
+        (await this.messageDuplicateService?.isAuthoritative(chatId)) === true;
       const detection = await this.ruleEngine.detect({
         chatId,
         userId: senderId,
@@ -2071,7 +2066,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasForwardedMessage: hasForwardedMessage(update),
         hasMediaBatch: mediaFlags.hasMediaBatch,
         skipAntiSpamBurstLimit,
-        skipDuplicateState: duplicateEventTimeSkipReason !== null,
+        skipDuplicateState: duplicateEventTimeSkipReason !== null || fullMessageDuplicates,
         skipStatefulMessageLimits: updateType === 'message_edited',
         commercialCampaignContext,
       });
@@ -2218,6 +2213,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           track: !hasCompetingViolation,
           actionEligible:
             !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
+          executeFullAction: (request) =>
+            this.executeDuplicateAction({ ...request, rulesPublishedUrl, rulesPublishedMessageId }),
         });
       }
       const commercialOcrActionEligible =
@@ -3359,6 +3356,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     trackAsGlobalSpammer?: boolean;
     authorizeDelete?: () => Promise<boolean>;
     authorizeSanction?: () => Promise<boolean>;
+    beforeSanctionMutation?: () => Promise<void>;
+    deleteIntent?: EnsureModerationDeleteIntentInput;
   }) {
     const {
       chatId,
@@ -3394,7 +3393,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       authorizeSanction,
     } = params;
     let messageDeleted = false;
-    const deleteIntent: EnsureModerationDeleteIntentInput = {
+    const deleteIntent: EnsureModerationDeleteIntentInput = params.deleteIntent ?? {
       chatId,
       messageId,
       reasonKey: 'DUPLICATE:decision-delete',
@@ -3557,6 +3556,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       assertActiveLease,
       trackAsGlobalSpammer,
       authorizeSanction: sanctionAuthorization.authorize,
+      beforeSanctionMutation: params.beforeSanctionMutation,
       rethrowPreDispatchFailure: true,
     });
     assertActiveLease?.();
@@ -3675,6 +3675,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     backgroundExecution?: boolean;
     assertActiveLease?: () => void;
     authorizeDelete?: () => Promise<boolean>;
+    deleteIntent?: EnsureModerationDeleteIntentInput;
   }) {
     const {
       chatId,
@@ -3707,7 +3708,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       authorizeDelete,
     } = params;
     let messageDeleted = false;
-    const deleteIntent: EnsureModerationDeleteIntentInput = {
+    const deleteIntent: EnsureModerationDeleteIntentInput = params.deleteIntent ?? {
       chatId,
       messageId,
       reasonKey: 'DUPLICATE:hit-delete',
@@ -3901,9 +3902,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     messageId: string,
   ): string | undefined {
-    return this.readString(metadata?.duplicateSource) === 'photo'
-      ? `photo-duplicate:${chatId}:${messageId}:explanation`
-      : undefined;
+    return duplicateExplanationIdempotencyKey(metadata, chatId, messageId);
   }
 
   private toSanctionAction(action: DuplicateAction): SanctionAction {
@@ -4718,6 +4717,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           if (this.isKnownRuntimeBotUserId(params.userId)) {
             outcome = await this.applySanctionActionUnderLock(params, activeLeaseGuard);
           } else if (params.action === SanctionAction.WARN) {
+            await params.beforeSanctionMutation?.();
             await persistModerationDecisionWithoutAppliedSanction(
               params.persistModerationEvent,
               params.action,
@@ -4822,6 +4822,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       let fenceSettled = false;
       try {
         await leaseGuard?.assertOwned();
+        await params.beforeSanctionMutation?.();
         eventPersistence = await persistSanctionEventForNotice({
           persistModerationEvent,
           metadata: {
@@ -4926,7 +4927,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         banResult = await this.banMemberImmediatelyWithResult(
           chatId,
           userId,
-          undefined,
+          params.beforeSanctionMutation
+            ? { beforeImmediateMemberMutation: params.beforeSanctionMutation }
+            : undefined,
           leaseGuard,
         );
       } catch (error: unknown) {
@@ -5273,7 +5276,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ...(options ?? {}),
           ...(botId ? { botId } : {}),
           immediate: true,
-          ...(leaseGuard ? { beforeImmediateMemberMutation: () => leaseGuard.assertOwned() } : {}),
+          ...(leaseGuard || options?.beforeImmediateMemberMutation
+            ? {
+                beforeImmediateMemberMutation: createDuplicateMemberMutationGuard(
+                  leaseGuard,
+                  options?.beforeImmediateMemberMutation,
+                ),
+              }
+            : {}),
         });
       },
     });

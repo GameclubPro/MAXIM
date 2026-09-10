@@ -76,6 +76,8 @@ export class MessageDuplicateHistoryService {
       hash: digestDuplicateContent({
         version: 1,
         mode,
+        controlRevision: input.controlRevision,
+        settingsDigest: messageDuplicateSettingsDigest(input.settings),
         type: part.type,
         textPresent: input.content.text.length > 0,
         value: part.value,

@@ -29,6 +29,8 @@ import {
   messageDuplicateSettingsDigest,
 } from './message-duplicate-state';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
+import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
+import { PhotoDuplicateRuntimePolicyService } from '../photo-duplicate/photo-duplicate-runtime-policy.service';
 
 const requireFromHere = createRequire(__filename);
 const pointerSchema = z
@@ -62,6 +64,7 @@ export class MessageDuplicateMediaService {
     private readonly bots: MaxBotLinkService,
     private readonly governor: BackgroundRuntimeGovernorService,
     config: ConfigService,
+    private readonly photoPolicy: PhotoDuplicateRuntimePolicyService,
   ) {
     const maxBytes = config.get<number>('MESSAGE_DUPLICATE_MAX_BYTES') ?? 8_388_608;
     this.binary = new SecurePhotoDownloader(
@@ -80,9 +83,18 @@ export class MessageDuplicateMediaService {
     ]);
   }
 
-  async process(job: MessageDuplicateJob, lease: PhotoDuplicateOrderingLease): Promise<void> {
+  async process(
+    job: MessageDuplicateJob,
+    lease: PhotoDuplicateOrderingLease,
+    executeFullAction?: ExecuteDuplicateModerationAction,
+  ): Promise<void> {
     const policy = await this.policy.resolve(job.chatId, true);
-    if (policy.mode === 'off' || policy.revision !== job.controlRevision) return;
+    if (
+      policy.mode === 'off' ||
+      policy.revision !== job.controlRevision ||
+      job.eventTimestampMs < policy.effectiveAtMs
+    )
+      return;
     lease.assertOwned();
     const source = await this.loadSource(job.webhookEventId);
     if (!source) return;
@@ -96,7 +108,15 @@ export class MessageDuplicateMediaService {
       return;
     const settings = await this.prisma.chatSettings.findUnique({
       where: { chatId: job.chatId },
-      include: { chat: { select: { entityType: true, admins: { select: { userId: true } } } } },
+      include: {
+        chat: {
+          select: {
+            entityType: true,
+            admins: { select: { userId: true } },
+            rules: { select: { publishedUrl: true, publishedMessageId: true } },
+          },
+        },
+      },
     });
     if (
       !settings?.antiDuplicateEnabled ||
@@ -116,7 +136,12 @@ export class MessageDuplicateMediaService {
       return;
     const content = extractDuplicateMessageContent(source.update.raw);
     if (!content.complete || content.media.length === 0) return;
-    const scope = digestDuplicateContent([job.chatId, message.senderId]);
+    const scope = digestDuplicateContent([
+      job.chatId,
+      message.senderId,
+      job.controlRevision,
+      job.settingsDigest,
+    ]);
     const candidateKeys = this.history
       .candidateKeys(content, settings)
       .map((key) => `message-duplicate:candidate:v1:${scope}:${key}`);
@@ -227,7 +252,16 @@ export class MessageDuplicateMediaService {
     }
     // Existing photo-only policy owns its subset, including its established sanction settings.
     const photoOwned =
-      settings.duplicatePhotoEnabled && content.media.every((media) => media.kind === 'photo');
+      source.update.type === 'message_created' &&
+      settings.duplicatePhotoEnabled &&
+      content.media.every((media) => media.kind === 'photo') &&
+      (
+        await this.photoPolicy.resolveEffectivePolicy({
+          chatId: job.chatId,
+          preset: settings.duplicatePhotoMatchPreset,
+          scope: settings.duplicatePhotoScope,
+        })
+      ).enforce;
     if (
       result &&
       !photoOwned &&
@@ -241,6 +275,15 @@ export class MessageDuplicateMediaService {
         sourceCreatedAt: message.createdAt,
         text: content.text,
         settings,
+        update: source.update,
+        executeFullAction: executeFullAction
+          ? (request) =>
+              executeFullAction({
+                ...request,
+                rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
+                rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
+              })
+          : undefined,
         assertLease: lease.assertOwned,
       });
     }

@@ -693,6 +693,18 @@ describe('AdminSettingsService chat rules', () => {
     ).toHaveBeenCalledWith(['channel-1']);
   });
 
+  it('exposes the effective FULL message duplicate mode without changing chat reactions', async () => {
+    const { service } = createService();
+    Object.defineProperty(service, 'messageDuplicatePolicy', {
+      value: { resolve: jest.fn().mockResolvedValue({ mode: 'full' }) },
+    });
+    Object.defineProperty(service, 'moderationDeleteIntents', {
+      value: { getRolloutForRule: () => 'execute' },
+    });
+    const result = await service.getChatSettingsScreen('chat-1', user as never);
+    expect(result.duplicateMessageModerationMode).toBe('FULL');
+  });
+
   it.each<{
     expected: string;
     config: Record<string, string>;

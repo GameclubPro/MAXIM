@@ -7,6 +7,7 @@ import {
 import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   messageDuplicateSettingsDigest,
+  messageDuplicateSanctionSettingsDigest,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
@@ -47,6 +48,7 @@ function setup() {
   const prisma = {
     chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
     moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
+    moderationDeleteIntent: { findUnique: jest.fn().mockResolvedValue(null) },
     moderationDeleteIntentReason: {
       findMany: jest.fn().mockResolvedValue([
         {
@@ -106,6 +108,97 @@ function setup() {
 }
 
 describe('message duplicate final delete guard', () => {
+  function full() {
+    const s = setup();
+    s.policy.resolve.mockResolvedValue({
+      mode: 'full',
+      revision: 1,
+      effectiveAtMs: Date.now() - 10000,
+      expiresAtMs: Number.MAX_SAFE_INTEGER,
+    });
+    s.settings.duplicateBanEnabled = true;
+    s.settings.duplicateBanMaxCount = 1;
+    s.binding.version = 2;
+    s.binding.sanction = {
+      action: 'BAN',
+      repeatCount: 1,
+      threshold: 1,
+      settingsDigest: messageDuplicateSanctionSettingsDigest(s.settings),
+    };
+    s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
+    return { ...s, request: { ...s.params, binding: s.binding, sanctionIntentId: 'intent' } };
+  }
+  it('allows configured full sanctions only after fresh source and policy checks', async () => {
+    const s = full();
+    await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
+    s.settings.duplicateBanEnabled = false;
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow(
+      'settings_changed',
+    );
+  });
+  it('rejects a sanction after a runtime downgrade, changed history, or participant immunity', async () => {
+    for (const change of ['policy', 'history', 'immunity']) {
+      const s = full();
+      if (change === 'policy')
+        s.policy.resolve.mockResolvedValue({
+          mode: 'delete_only',
+          revision: 1,
+          effectiveAtMs: Date.now() - 10000,
+        });
+      if (change === 'history') s.history.stillMatches.mockResolvedValue(false);
+      if (change === 'immunity') s.immunity.consumeForMessage.mockResolvedValue('granted');
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow();
+    }
+  });
+  it('requires our matching successful DELETE receipt when sanctioning an already removed duplicate', async () => {
+    const s = full();
+    s.max.getExactMessageRow.mockResolvedValue(null);
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow(
+      'unproven_absence',
+    );
+    const receipt = {
+      chatId: s.params.chatId,
+      messageId: s.params.messageId,
+      subjectUserId: s.binding.senderId,
+      remoteDeleteSucceededAt: new Date(),
+      reasons: [
+        {
+          createdAt: new Date(Date.now() - 500),
+          metadata: { duplicateSource: 'message_v1', messageDuplicate: { ...s.binding } },
+        },
+      ],
+    };
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(receipt);
+    await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
+    receipt.remoteDeleteSucceededAt = new Date(s.binding.eventTimestampMs - 1);
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow(
+      'unproven_absence',
+    );
+    receipt.remoteDeleteSucceededAt = new Date();
+    receipt.reasons[0]!.metadata.messageDuplicate.contentDigest = 'a'.repeat(64);
+    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toThrow(
+      'unproven_absence',
+    );
+  });
+
+  it('uses server receipt ordering instead of comparing the MAX clock with the database clock', async () => {
+    const s = full();
+    s.binding.eventTimestampMs = Date.now() + 1000;
+    s.max.getExactMessageRow.mockResolvedValue(null);
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
+      chatId: s.params.chatId,
+      messageId: s.params.messageId,
+      subjectUserId: s.binding.senderId,
+      remoteDeleteSucceededAt: new Date(),
+      reasons: [
+        {
+          createdAt: new Date(Date.now() - 500),
+          metadata: { duplicateSource: 'message_v1', messageDuplicate: { ...s.binding } },
+        },
+      ],
+    });
+    await expect(s.service.assertMessageStillActionable(s.request)).resolves.toBe('allowed');
+  });
   it('checks the current source, fresh policy twice, and read-only history before permitting delete', async () => {
     const s = setup();
     await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');

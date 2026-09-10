@@ -47,6 +47,7 @@ function setup() {
     bots as never,
     governor as never,
     new ConfigService(),
+    { resolveEffectivePolicy: jest.fn().mockResolvedValue({ enforce: false }) } as never,
   );
   const downloads = jest.fn(async (url: string) => ({
     bytes: Buffer.from(url.endsWith('b') ? 'different' : 'same'),

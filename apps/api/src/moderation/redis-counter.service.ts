@@ -143,14 +143,20 @@ return {1, math.min(tonumber(ARGV[5]), redis.call('ZCOUNT', KEYS[2], '(' .. tost
 
 const COMPARE_REVISIONED_CONTROL_SCRIPT = `
 local revision = tonumber(redis.call('GET', KEYS[2]) or '0')
+if not revision or revision < 0 or revision % 1 ~= 0 or revision >= 9007199254740991 then return {-1, 0} end
 if revision ~= tonumber(ARGV[1]) then return {0, revision} end
 local time = redis.call('TIME')
 local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
-local ttl = tonumber(ARGV[3]) - now
-if ttl <= 0 or ttl > 86400000 then return {-1, revision} end
 local ok, value = pcall(cjson.decode, ARGV[2])
-if not ok or value.version ~= 1 or value.revision ~= revision + 1 then return {-1, revision} end
-redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+if not ok or type(value) ~= 'table' or (value.version ~= 1 and value.version ~= 2) or value.revision ~= revision + 1 then return {-1, revision} end
+if ARGV[3] == 'permanent' then
+  if value.version ~= 2 or value.expiresAt ~= cjson.null then return {-1, revision} end
+  redis.call('SET', KEYS[1], ARGV[2])
+else
+  local ttl = tonumber(ARGV[3]) - now
+  if ttl <= 0 or ttl > 86400000 then return {-1, revision} end
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+end
 redis.call('SET', KEYS[2], tostring(revision + 1))
 return {1, revision + 1}
 `;
@@ -476,12 +482,12 @@ export class RedisCounterService implements OnModuleDestroy {
     key: string;
     expectedRevision: number;
     value: string;
-    expiresAtMs: number;
+    expiresAtMs: number | null;
   }): Promise<{ applied: boolean; revision: number }> {
     if (
       !Number.isSafeInteger(params.expectedRevision) ||
       params.expectedRevision < 0 ||
-      !Number.isSafeInteger(params.expiresAtMs)
+      (params.expiresAtMs !== null && !Number.isSafeInteger(params.expiresAtMs))
     )
       throw new Error('Invalid control revision');
     const result = (await this.redis.eval(
@@ -491,7 +497,7 @@ export class RedisCounterService implements OnModuleDestroy {
       `${params.key}:revision`,
       String(params.expectedRevision),
       params.value,
-      String(params.expiresAtMs),
+      params.expiresAtMs === null ? 'permanent' : String(params.expiresAtMs),
     )) as Array<number | string>;
     if (![0, 1].includes(Number(result[0])) || !Number.isSafeInteger(Number(result[1]))) {
       throw new Error('Invalid control update');

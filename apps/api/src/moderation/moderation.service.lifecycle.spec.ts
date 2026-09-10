@@ -631,6 +631,112 @@ describe('ModerationService', () => {
     lockSpy.mockRestore();
   });
 
+  it('checks the full duplicate guard immediately before WARN persistence', async () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const persistModerationEvent = jest.fn();
+    const beforeSanctionMutation = jest.fn().mockRejectedValue(new Error('full duplicate revoked'));
+    const lockSpy = jest
+      .spyOn(service as any, 'moderationSanctionStateLockService', 'get')
+      .mockReturnValue({
+        runExclusive: async (_key: unknown, operation: (guard: unknown) => Promise<boolean>) =>
+          operation({ assertOwned: async () => undefined }),
+      });
+    try {
+      await expect(
+        (service as any).applySanctionAction({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'm',
+          action: SanctionAction.WARN,
+          userLabel: 'User',
+          muteDurationHours: 1,
+          deleteBotMessagesEnabled: false,
+          deleteBotMessagesDelayMinutes: 0,
+          botSpeechStyle: null,
+          persistModerationEvent,
+          authorizeSanction: async () => true,
+          beforeSanctionMutation,
+        }),
+      ).rejects.toThrow('full duplicate revoked');
+      expect(beforeSanctionMutation).toHaveBeenCalledTimes(1);
+      expect(persistModerationEvent).not.toHaveBeenCalled();
+    } finally {
+      lockSpy.mockRestore();
+    }
+  });
+
+  it('does not persist MUTE after the full duplicate guard is revoked', async () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const persistModerationEvent = jest.fn();
+    await expect(
+      (service as any).applySanctionActionUnderLock(
+        {
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'm',
+          action: SanctionAction.MUTE,
+          userLabel: 'User',
+          muteDurationHours: 1,
+          deleteBotMessagesEnabled: false,
+          deleteBotMessagesDelayMinutes: 0,
+          botSpeechStyle: null,
+          persistModerationEvent,
+          beforeSanctionMutation: async () => {
+            throw new Error('full duplicate revoked');
+          },
+        },
+        { assertOwned: async () => undefined },
+      ),
+    ).rejects.toThrow('full duplicate revoked');
+    expect(persistModerationEvent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the full BAN callback in the final MAX member mutation, alongside the ownership lease', async () => {
+    const events: string[] = [];
+    const max = {
+      banMember: jest.fn(
+        async (
+          _chat: string,
+          _user: string,
+          options: { beforeImmediateMemberMutation: () => Promise<void> },
+        ) => {
+          await options.beforeImmediateMemberMutation();
+          events.push('ban');
+        },
+      ),
+    };
+    const service = new ModerationService({} as never, {} as never, {} as never, max as never);
+    const route = jest
+      .spyOn(service as any, 'executeModerationActionWithFallbackResult')
+      .mockImplementation(async (params: any) => {
+        await params.operation('bot');
+        return { ok: true, botId: 'bot' };
+      });
+    try {
+      await expect(
+        (service as any).banMemberImmediatelyWithResult(
+          'chat',
+          'user',
+          {
+            beforeImmediateMemberMutation: async () => {
+              events.push('guard');
+              throw new Error('revoked');
+            },
+          },
+          {
+            assertOwned: async () => {
+              events.push('lease');
+            },
+          },
+        ),
+      ).rejects.toThrow('revoked');
+      expect(events).toEqual(['lease', 'lease', 'guard']);
+      expect(events).not.toContain('ban');
+    } finally {
+      route.mockRestore();
+    }
+  });
+
   it('does not treat an unapplied duplicate decision with action NONE as a terminal sanction', async () => {
     const findFirst = jest.fn().mockResolvedValue(null);
 

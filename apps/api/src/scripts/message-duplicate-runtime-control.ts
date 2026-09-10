@@ -17,12 +17,14 @@ export function parseMessageDuplicateControlOptions(argv: string[], now = Date.n
       'chat-id': { type: 'string', multiple: true },
       mode: { type: 'string' },
       'ttl-hours': { type: 'string' },
+      'all-enabled-chats': { type: 'boolean' },
+      permanent: { type: 'boolean' },
     },
   });
   const command = positionals[0];
   if (positionals.length !== 1 || !['get', 'set', 'off'].includes(command ?? ''))
     throw new Error(
-      'Usage: get | set --expected-revision <0..n> --chat-id <-id> --mode <shadow|delete_only> --ttl-hours <1..24> [--apply] | off --expected-revision <n> [--apply]',
+      'Usage: get | set --expected-revision <0..n> (--chat-id=<-id> | --all-enabled-chats) --mode <shadow|delete_only|full> (--ttl-hours <1..24> | --permanent) [--apply] | off --expected-revision <n> [--apply]',
     );
   if (command === 'get') {
     if (Object.keys(values).length) throw new Error('get accepts no options');
@@ -33,26 +35,37 @@ export function parseMessageDuplicateControlOptions(argv: string[], now = Date.n
   const expectedRevision = Number(values['expected-revision']);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision >= Number.MAX_SAFE_INTEGER)
     throw new Error('Invalid revision');
-  if (command === 'off' && (values.mode || values['chat-id'] || values['ttl-hours']))
+  if (
+    command === 'off' &&
+    (values.mode ||
+      values['chat-id'] ||
+      values['ttl-hours'] ||
+      values['all-enabled-chats'] ||
+      values.permanent)
+  )
     throw new Error('off accepts only revision and apply');
   const ttl = command === 'off' ? 24 : Number(values['ttl-hours']);
+  const permanent = command === 'off' || values.permanent === true;
+  if (values.permanent && values['ttl-hours'])
+    throw new Error('Choose a finite or permanent lifetime, not both');
   const mode = command === 'off' ? 'off' : values.mode;
   if (
-    !Number.isInteger(ttl) ||
-    ttl < 1 ||
-    ttl > 24 ||
-    (command === 'set' && !['shadow', 'delete_only'].includes(mode ?? ''))
+    (!permanent && (!Number.isInteger(ttl) || ttl < 1 || ttl > 24)) ||
+    (command === 'set' && !['shadow', 'delete_only', 'full'].includes(mode ?? ''))
   )
     throw new Error('Invalid mode or lifetime');
-  if (command === 'set' && !values['chat-id']?.length)
+  if (values['all-enabled-chats'] && values['chat-id']?.length)
+    throw new Error('Choose one rollout scope');
+  if (command === 'set' && !values['chat-id']?.length && !values['all-enabled-chats'])
     throw new Error('Explicit chat cohort required');
   const control = messageDuplicateControlSchema.parse({
-    version: 1,
+    version: 2,
     revision: expectedRevision + 1,
     mode,
-    chatIds: command === 'off' ? [] : values['chat-id'],
+    scope: values['all-enabled-chats'] ? 'all_enabled_chats' : 'chats',
+    chatIds: command === 'off' || values['all-enabled-chats'] ? [] : values['chat-id'],
     effectiveAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + ttl * 3600000).toISOString(),
+    expiresAt: permanent ? null : new Date(now + ttl * 3600000).toISOString(),
   });
   return {
     command: command as 'set' | 'off',
@@ -71,7 +84,11 @@ export async function runMessageDuplicateControlCommand(
   const status = {
     revision: before.revision,
     mode: before.control?.mode ?? 'off',
-    chatCount: before.control?.chatIds.length ?? 0,
+    scope: before.control?.version === 2 ? before.control.scope : 'chats',
+    chatCount:
+      before.control?.version === 2 && before.control.scope === 'all_enabled_chats'
+        ? null
+        : (before.control?.chatIds.length ?? 0),
     expiresAt: before.control?.expiresAt ?? null,
   };
   if (options.command === 'get') return { command: 'get', status };
@@ -85,7 +102,11 @@ export async function runMessageDuplicateControlCommand(
       proposed: {
         revision: options.control.revision,
         mode: options.control.mode,
-        chatCount: options.control.chatIds.length,
+        scope: options.control.version === 2 ? options.control.scope : 'chats',
+        chatCount:
+          options.control.version === 2 && options.control.scope === 'all_enabled_chats'
+            ? null
+            : options.control.chatIds.length,
         expiresAt: options.control.expiresAt,
       },
     };

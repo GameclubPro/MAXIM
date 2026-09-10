@@ -6,7 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import { PhotoDuplicateRuntimePolicyService } from '../photo-duplicate/photo-duplicate-runtime-policy.service';
-import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
+import { resolveDuplicateFlowConfig, resolveDuplicateFlowOutcome } from '../duplicate-flow-policy';
 import {
   buildMessageDuplicateIdentity,
   extractDuplicateMessageContent,
@@ -16,6 +16,7 @@ import { MessageDuplicatePolicyService } from './message-duplicate-policy.servic
 import {
   MESSAGE_DUPLICATE_SOURCE,
   messageDuplicateSettingsDigest,
+  messageDuplicateSanctionSettingsDigest,
   parseMessageDuplicateBinding,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
@@ -87,6 +88,7 @@ export class MessageDuplicateDeleteGuardService {
     subjectUserId: string | null;
     botId: string;
     binding: MessageDuplicateBinding;
+    sanctionIntentId?: string;
   }): Promise<'allowed' | 'absent'> {
     const { binding } = params;
     if (
@@ -95,7 +97,7 @@ export class MessageDuplicateDeleteGuardService {
       this.bots.isKnownBotUserId(binding.senderId)
     )
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
-    await this.assertPolicy(params.chatId, binding);
+    await this.assertPolicy(params.chatId, binding, Boolean(params.sanctionIntentId));
     const settings = await this.loadSettings(params.chatId, binding);
     const options = {
       botId: params.botId,
@@ -111,28 +113,64 @@ export class MessageDuplicateDeleteGuardService {
     if (access.isAdmin || access.isOwner)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
     const raw = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
-    if (!raw) return 'absent';
-    const message = this.parser.parse({
-      type: 'message_created',
-      updateId: 'message-duplicate-guard',
-      message: raw,
-    }).message;
-    if (
-      !message ||
-      message.chatId !== params.chatId ||
-      message.messageId !== params.messageId ||
-      message.senderId !== binding.senderId ||
-      message.entityType === 'channel'
-    ) {
-      throw new MessageDuplicateGuardRejectedError('message_duplicate_identity_changed');
-    }
-    const content = extractDuplicateMessageContent(raw, false);
-    if (
-      (binding.compareMode === 'MESSAGE' && content.sourceDigest !== binding.sourceDigest) ||
-      buildMessageDuplicateIdentity(content, binding.compareMode, binding.mediaHashes) !==
-        binding.contentDigest
-    ) {
-      throw new MessageDuplicateGuardRejectedError('message_duplicate_content_changed');
+    if (!raw && !params.sanctionIntentId) return 'absent';
+    if (!raw) {
+      // FLAG: Absence alone cannot authorize a sanction. Require our exact successful DELETE
+      // receipt and its immutable binding; an unrelated deletion or an ambiguous send is insufficient.
+      const receipt = await this.prisma.moderationDeleteIntent.findUnique({
+        where: { id: params.sanctionIntentId },
+        select: {
+          chatId: true,
+          messageId: true,
+          subjectUserId: true,
+          remoteDeleteSucceededAt: true,
+          reasons: {
+            where: { reasonKey: `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}` },
+            select: { metadata: true, createdAt: true },
+            take: 1,
+          },
+        },
+      });
+      const recorded = parseMessageDuplicateBinding(receipt?.reasons[0]?.metadata);
+      if (
+        !receipt?.remoteDeleteSucceededAt ||
+        !receipt.reasons[0] ||
+        receipt.reasons[0].createdAt > receipt.remoteDeleteSucceededAt ||
+        receipt.chatId !== params.chatId ||
+        receipt.messageId !== params.messageId ||
+        receipt.subjectUserId !== binding.senderId ||
+        !recorded ||
+        recorded.contentDigest !== binding.contentDigest ||
+        recorded.eventTimestampMs !== binding.eventTimestampMs ||
+        recorded.controlRevision !== binding.controlRevision ||
+        recorded.settingsDigest !== binding.settingsDigest ||
+        JSON.stringify(recorded.sanction) !== JSON.stringify(binding.sanction)
+      ) {
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_unproven_absence');
+      }
+    } else {
+      const message = this.parser.parse({
+        type: 'message_created',
+        updateId: 'message-duplicate-guard',
+        message: raw,
+      }).message;
+      if (
+        !message ||
+        message.chatId !== params.chatId ||
+        message.messageId !== params.messageId ||
+        message.senderId !== binding.senderId ||
+        message.entityType === 'channel'
+      ) {
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_identity_changed');
+      }
+      const content = extractDuplicateMessageContent(raw, false);
+      if (
+        (binding.compareMode === 'MESSAGE' && content.sourceDigest !== binding.sourceDigest) ||
+        buildMessageDuplicateIdentity(content, binding.compareMode, binding.mediaHashes) !==
+          binding.contentDigest
+      ) {
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_content_changed');
+      }
     }
     if (!(await this.history.stillMatches(params.chatId, binding))) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
@@ -148,14 +186,20 @@ export class MessageDuplicateDeleteGuardService {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
     // FLAG: Re-read policy and settings after external/content checks, including queued intents.
     await this.loadSettings(params.chatId, binding);
-    await this.assertPolicy(params.chatId, binding);
+    await this.assertPolicy(params.chatId, binding, Boolean(params.sanctionIntentId));
     return 'allowed';
   }
 
-  private async assertPolicy(chatId: string, binding: MessageDuplicateBinding): Promise<void> {
+  private async assertPolicy(
+    chatId: string,
+    binding: MessageDuplicateBinding,
+    requireFull = false,
+  ): Promise<void> {
     const policy = await this.policy.resolve(chatId, true);
     if (
-      policy.mode !== 'delete_only' ||
+      (requireFull ? policy.mode !== 'full' : !['delete_only', 'full'].includes(policy.mode)) ||
+      (binding.version === 2 && policy.mode !== 'full') ||
+      (requireFull && (binding.version !== 2 || !binding.sanction)) ||
       policy.revision !== binding.controlRevision ||
       binding.eventTimestampMs < policy.effectiveAtMs ||
       Date.now() >= binding.eventTimestampMs + binding.windowSeconds * 1000 ||
@@ -163,7 +207,7 @@ export class MessageDuplicateDeleteGuardService {
     ) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_policy_changed');
     }
-    if (binding.hasPhotos) {
+    if (binding.hasPhotos && binding.version === 1) {
       const photo = await this.photoPolicy.resolveEffectivePolicy({
         chatId,
         preset: 'SAME_IMAGE',
@@ -188,9 +232,27 @@ export class MessageDuplicateDeleteGuardService {
       !settings?.antiDuplicateEnabled ||
       settings.chat.entityType !== 'CHAT' ||
       messageDuplicateSettingsDigest(settings) !== binding.settingsDigest ||
-      resolveDuplicateFlowConfig(settings).allowedCount + 2 !== binding.requiredCount
+      Math.max(
+        resolveDuplicateFlowConfig(settings).allowedCount + 2,
+        (binding.sanction?.threshold ?? 0) + 1,
+      ) !== binding.requiredCount
     ) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_settings_changed');
+    }
+    if (binding.sanction) {
+      const decision = resolveDuplicateFlowOutcome({
+        settings,
+        repeatCount: binding.sanction.repeatCount,
+        hash: binding.fingerprint,
+        fingerprintType: 'exact',
+      }).decision;
+      if (
+        messageDuplicateSanctionSettingsDigest(settings) !== binding.sanction.settingsDigest ||
+        decision?.action !== binding.sanction.action ||
+        decision.threshold !== binding.sanction.threshold
+      ) {
+        throw new MessageDuplicateGuardRejectedError('message_duplicate_sanction_settings_changed');
+      }
     }
     if (settings.chat.admins.some((admin) => admin.userId === binding.senderId)) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');

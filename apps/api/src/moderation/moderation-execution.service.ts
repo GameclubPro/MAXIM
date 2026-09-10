@@ -8,10 +8,12 @@ import { PhotoDuplicateModerationService } from './photo-duplicate/photo-duplica
 import type { PhotoDuplicateOrderingLease } from './photo-duplicate/photo-duplicate-ordering.store';
 import { MessageDuplicateMediaService } from './message-duplicate/message-duplicate-media.service';
 import type { MessageDuplicateJob } from './message-duplicate/message-duplicate.queue';
+import type { ExecuteDuplicateModerationAction } from './duplicate-moderation.actions';
 
 export const MODERATION_EXECUTION_LEGACY = Symbol('MODERATION_EXECUTION_LEGACY');
 
 export type ModerationExecutionLegacy = {
+  executeDuplicateAction?: ExecuteDuplicateModerationAction;
   processWebhookEvent(webhookEventId: string): Promise<void>;
   processNightModeTransitionJob(
     job: NightModeTransitionJob,
@@ -38,7 +40,11 @@ export class ModerationExecutionService {
   ): Promise<void> {
     if (!this.messageDuplicateMediaService)
       throw new Error('Message duplicate media execution unavailable');
-    await this.messageDuplicateMediaService.process(job, lease);
+    await this.messageDuplicateMediaService.process(job, lease, async (request) => {
+      if (!this.legacyModerationService.executeDuplicateAction)
+        throw new Error('Duplicate action execution unavailable');
+      await this.legacyModerationService.executeDuplicateAction(request);
+    });
   }
 
   async processNightModeTransitionJob(
