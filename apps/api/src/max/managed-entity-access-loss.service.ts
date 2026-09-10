@@ -55,6 +55,8 @@ export type ManagedEntityAccessLossOperation =
   | 'delete'
   | 'read'
   | 'lookup'
+  // FLAG: A missing/inaccessible message is not proof that its parent chat is inaccessible.
+  | 'message_lookup'
   | 'member_moderation';
 
 export type MaxTerminalChatActionErrorClassification = {

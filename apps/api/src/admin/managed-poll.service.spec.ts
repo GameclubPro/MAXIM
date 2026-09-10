@@ -1889,7 +1889,7 @@ describe('ManagedPollService callback rendering', () => {
         botId: 'bot-1',
         entityType: ChatEntityType.CHANNEL,
         source: 'managed_poll:lookup',
-        operation: 'lookup',
+        operation: 'message_lookup',
         error: lookupError,
         lifecycleEventAt: lookupAttemptStartedAt,
         lifecycleEventType: 'live_probe',

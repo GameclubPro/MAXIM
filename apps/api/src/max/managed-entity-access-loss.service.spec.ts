@@ -53,6 +53,47 @@ function createDeferredCleanupJob(
 }
 
 describe('classifyMaxTerminalChatActionError', () => {
+  it.each([403, 404])(
+    'does not revoke chat access for an ambiguous message lookup HTTP %s',
+    async (status) => {
+      const prisma = { chat: { findUnique: jest.fn() } };
+      const service = new ManagedEntityAccessLossService(prisma as never, {} as never, {} as never);
+      await expect(
+        service.recordIfManagedEntityAccessLost({
+          chatId: '-1001',
+          botId: 'bot-1',
+          source: 'managed_poll:lookup',
+          operation: 'message_lookup',
+          error: createMaxApiError(status, `Request failed with status code ${status}`),
+        }),
+      ).resolves.toMatchObject({ reason: null, recorded: null });
+      expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [403, 'chat.denied', 'bot_denied'],
+    [404, 'chat.not.found', 'chat_not_found'],
+  ] as const)(
+    'preserves explicit chat-level loss %s/%s during message lookup',
+    (status, code, reason) => {
+      expect(
+        resolveManagedEntityAccessLossReason(
+          'message_lookup',
+          classifyMaxTerminalChatActionError(
+            createMaxApiError(status, 'MAX rejected request', code),
+          )!,
+        ),
+      ).toBe(reason);
+      expect(
+        resolveManagedEntityAccessLossReason(
+          'lookup',
+          classifyMaxTerminalChatActionError(createMaxApiError(status, 'MAX rejected request'))!,
+        ),
+      ).toBe(reason);
+    },
+  );
+
   it('does not classify message.not.found as managed entity access loss', () => {
     expect(
       classifyMaxTerminalChatActionError(

@@ -27,6 +27,12 @@ No production user data was manually changed during diagnosis.
 6. Publisher user-access persistence fenced the bot binding and candidate version,
    but not a newer access-edge timestamp. A delayed user verdict could overwrite a
    newer grant or a membership reset while retaining the same candidate version.
+7. Post-release read-only monitoring exposed a direct production failure: missing
+   poll-message verification used the generic chat `lookup` operation. Bare HTTP 404
+   therefore removed bot memberships and marked chat-wide access edges denied. Three
+   observed operations affected 147 edges in total. Giveaway result verification had
+   the same classification mistake. Message presence uncertainty must not be promoted
+   to parent-chat absence.
 
 ## Implementation Plan And Status
 
@@ -47,6 +53,11 @@ No production user data was manually changed during diagnosis.
   the existing parent chat lock before persistence, preserving newer grants and denials.
 - Implemented: Publisher home observes recovery for a bounded 22.5-second window;
   leaving/hiding the WebView cancels it. Refresh preserves loaded query data.
+- Follow-up implemented after monitoring: add `message_lookup` classification for
+  poll/giveaway message verification. Bare 403/404 performs no chat-access mutation;
+  explicit chat-level errors still revoke access. User-scoped renewal also rechecks
+  the two historical ambiguous-message denial sources without requiring the membership
+  that the old classifier removed. MAX must confirm access before any grant.
 - Release gates: complete regression checks, exact-SHA CI, scoped API/miniapp
   deployment, and post-deploy health/static smokes.
 

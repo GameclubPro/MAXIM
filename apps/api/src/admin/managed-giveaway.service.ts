@@ -3659,7 +3659,7 @@ export class ManagedGiveawayService {
         giveaway: params.giveaway,
         botId: params.resultsBotId,
         source: 'managed_giveaway:results:verification',
-        operation: 'lookup',
+        operation: 'message_lookup',
         lifecycleEventAt: lookupAttemptStartedAt,
         error: lookupError,
       });
@@ -3750,7 +3750,7 @@ export class ManagedGiveawayService {
     giveaway: PersistedGiveawayWithRelations;
     botId: string | null;
     source: string;
-    operation: 'send' | 'edit' | 'delete' | 'lookup';
+    operation: 'send' | 'edit' | 'delete' | 'message_lookup';
     lifecycleEventAt: Date;
     error: unknown;
   }): Promise<void> {

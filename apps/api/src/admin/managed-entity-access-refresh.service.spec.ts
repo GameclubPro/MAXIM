@@ -82,9 +82,16 @@ describe('ManagedEntityAccessRefreshService', () => {
           userId: 'user-1',
           entityType: 'CHAT',
           botId: { in: ['major-1', 'major-2'] },
-          chat: {
-            botMemberships: { some: { botId: { in: ['major-1', 'major-2'] }, status: 'ACTIVE' } },
-          },
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              state: 'GRANTED',
+              chat: {
+                botMemberships: {
+                  some: { botId: { in: ['major-1', 'major-2'] }, status: 'ACTIVE' },
+                },
+              },
+            }),
+          ]),
         }),
       }),
     );
@@ -115,5 +122,26 @@ describe('ManagedEntityAccessRefreshService', () => {
     f.service.schedule('user-1', 'publisher');
     await f.flush();
     expect(f.prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('rechecks historical message-only denials even after their membership was removed', async () => {
+    const f = fixture();
+    f.prisma.managedEntityAccessEdge.findMany.mockResolvedValue([
+      { chatId: 'chat-1', botId: 'major-1', entityType: 'CHAT' },
+    ]);
+    f.service.schedule('user-1', 'moderation', 'chat');
+    await f.flush();
+    const query = f.prisma.managedEntityAccessEdge.findMany.mock.calls[0][0];
+    expect(query.where).not.toHaveProperty('chat');
+    expect(query.where.OR[1]).toEqual({
+      state: 'BOT_DENIED',
+      source: { in: ['managed_poll:lookup', 'managed_giveaway:results:verification'] },
+      lastMaxStatusCode: { in: [403, 404] },
+      lastMaxErrorCode: null,
+    });
+    expect(f.roster.scheduleChatAdminRosterSync).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'chat-1', botIds: ['major-1'] }),
+    );
+    expect(f.publisher.enqueue).not.toHaveBeenCalled();
   });
 });

@@ -2750,7 +2750,7 @@ export class ManagedPollService {
         botId,
         entityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
         source: `managed_poll:${operation}`,
-        operation,
+        operation: operation === 'lookup' ? 'message_lookup' : operation,
         error,
         lifecycleEventAt,
         lifecycleEventType: 'live_probe',

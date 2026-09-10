@@ -3040,7 +3040,7 @@ describe('ManagedGiveawayService', () => {
         botId: 'results-author-bot',
         entityType: ChatEntityType.CHANNEL,
         source: 'managed_giveaway:results:verification',
-        operation: 'lookup',
+        operation: 'message_lookup',
         error: lookupError,
         lifecycleEventAt: lookupAttemptStartedAt,
         lifecycleEventType: 'live_probe',

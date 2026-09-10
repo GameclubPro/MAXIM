@@ -82,6 +82,13 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
         {
           state: 'GRANTED',
           userRole: { in: ['ADMIN', 'OWNER'] },
+          ...(profile === 'moderation'
+            ? {
+                chat: {
+                  botMemberships: { some: { botId: { in: botIds }, status: 'ACTIVE' as const } },
+                },
+              }
+            : {}),
           OR: [
             { expiresAt: null },
             { expiresAt: { lte: new Date(now.getTime() + REFRESH_AHEAD_MS) } },
@@ -96,12 +103,18 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
                 source: { in: ['admin_roster_sync_clear', 'prune_persisted_chat_access'] },
               },
             ]
-          : []),
+          : [
+              {
+                state: ManagedEntityAccessState.BOT_DENIED,
+                source: { in: ['managed_poll:lookup', 'managed_giveaway:results:verification'] },
+                lastMaxStatusCode: { in: [403, 404] },
+                lastMaxErrorCode: null,
+              },
+            ]),
       ],
-      chat:
-        profile === 'publisher'
-          ? { publisherBinding: { is: publisherRefreshEvidenceWhere(publisherBotId) } }
-          : { botMemberships: { some: { botId: { in: botIds }, status: 'ACTIVE' } } },
+      ...(profile === 'publisher'
+        ? { chat: { publisherBinding: { is: publisherRefreshEvidenceWhere(publisherBotId) } } }
+        : {}),
     };
     const edges = await this.prisma.managedEntityAccessEdge.findMany({
       where,
