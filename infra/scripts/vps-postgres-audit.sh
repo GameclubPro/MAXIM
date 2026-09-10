@@ -435,6 +435,17 @@ WITH classified_activity AS MATERIALIZED (
       WHEN application_name LIKE 'maxim-postgres-backup-%' THEN 'scheduled_backup'
       WHEN application_name LIKE 'maxim-live-backup-%' THEN 'live_backup'
       WHEN application_name LIKE 'maxim-bounded-audit-%' THEN 'bounded_audit'
+      WHEN application_name = 'api-ingress' THEN 'ingress'
+      WHEN application_name = 'api-enqueue' THEN 'enqueue'
+      WHEN application_name = 'api-admin' THEN 'admin'
+      WHEN application_name = 'api-action' THEN 'action'
+      WHEN application_name = 'api-publisher' THEN 'publisher'
+      WHEN application_name = 'api-media-analysis' THEN 'media_analysis'
+      WHEN application_name IN (
+        'api-moderation', 'api-moderation-critical', 'api-moderation-join',
+        'api-moderation-realtime-b', 'api-moderation-realtime-c',
+        'api-moderation-realtime-d', 'api-moderation-background'
+      ) THEN 'moderation'
       WHEN application_name = '' THEN 'unspecified'
       ELSE 'other'
     END AS workload,
@@ -477,6 +488,10 @@ WITH classified_activity AS MATERIALIZED (
     END AS query_family,
     CASE
       WHEN state IS DISTINCT FROM 'active' OR query NOT LIKE '%audit_logs%' THEN 'not_applicable'
+      WHEN query LIKE '%suggestion_recovery_candidates%' THEN 'suggestion_recovery'
+      WHEN query LIKE '%admin_delivery_candidates%' THEN 'suggestion_admin_delivery'
+      WHEN query LIKE '%previousPublishedMessageId%' THEN 'replacement_cleanup'
+      WHEN query LIKE '%audit."payload"->>%' THEN 'audit_json_raw'
       WHEN query ~* '^\s*SELECT\s+COUNT\(' THEN 'audit_count'
       WHEN query LIKE 'SELECT "public"."audit_logs"."id", "public"."audit_logs"."chat_id", "public"."audit_logs"."payload", "public"."audit_logs"."created_at"%'
         THEN 'audit_recovery_page'

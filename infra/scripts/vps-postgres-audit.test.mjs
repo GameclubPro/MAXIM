@@ -303,6 +303,8 @@ test('activity audit exposes only fixed workload categories and aggregate backen
   assert.match(sql, /grouped_activity AS MATERIALIZED/u);
   assert.match(sql, /LIMIT 64/u);
   assert.match(sql, /'query_family', query_family/u);
+  assert.match(sql, /WHEN application_name = 'api-action' THEN 'action'/u);
+  assert.match(sql, /WHEN application_name = 'api-enqueue' THEN 'enqueue'/u);
   assert.doesNotMatch(sql, /\bclient_addr\b|\busename\b/u);
   assert.doesNotMatch(sql, /'application_name'|'query'/u);
 });
@@ -391,6 +393,19 @@ test('activity query classification emits only fixed labels, including for sensi
   );
   assert.ok(report.rows.every((row) => row.sessions === 1));
   assert.doesNotMatch(JSON.stringify(report), /secret_payload|private-application|unknown_table/u);
+  await database.query(
+    `UPDATE fixture_activity SET application_name = 'api-action', query = $1
+      WHERE query LIKE '%unknown_table%'`,
+    [`SELECT audit."payload"->>'private-field' FROM audit_logs audit`],
+  );
+  const actionResult = await database.query(
+    statement.replace('FROM pg_stat_activity', 'FROM fixture_activity'),
+  );
+  const actionReport = JSON.parse(Object.values(actionResult.rows[0])[0]);
+  const actionRow = actionReport.rows.find((row) => row.workload === 'action');
+  assert.equal(actionRow.query_family, 'audit_logs');
+  assert.equal(actionRow.query_shape, 'audit_json_raw');
+  assert.doesNotMatch(JSON.stringify(actionReport), /private-field|api-action/u);
 });
 
 test('queue oldest-state diagnostics remain bounded and never emit raw errors', async (t) => {
