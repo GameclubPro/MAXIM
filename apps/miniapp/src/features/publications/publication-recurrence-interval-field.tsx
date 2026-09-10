@@ -1,6 +1,7 @@
 import { PublicationNumberInput } from './publication-number-input';
 import {
   getPublicationRecurrenceIntervalNotice,
+  getPublicationRecurrenceIntervalUnit,
   type PublicationRecurrenceFrequency,
 } from './publication-model';
 import './publication-recurrence-interval-field.css';
@@ -23,7 +24,7 @@ export function PublicationRecurrenceIntervalField({
   return (
     <>
       <label className="publication-recurrence__interval">
-        <span>Интервал</span>
+        <span>Раз в</span>
         <PublicationNumberInput
           label="Интервал повтора"
           min={1}
@@ -32,12 +33,12 @@ export function PublicationRecurrenceIntervalField({
           onChange={onChange}
           disabled={disabled}
         />
-        <small>{frequency === 'daily' ? 'дней' : 'недель'}</small>
+        <small>{getPublicationRecurrenceIntervalUnit(frequency, interval)}</small>
       </label>
 
       {notice ? (
         <div
-          className="publications-inline-notice publication-recurrence__interval-notice is-warning"
+          className="publications-inline-notice publication-recurrence__interval-notice"
           role="status"
         >
           <span>

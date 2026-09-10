@@ -108,11 +108,9 @@ function formatOccurrenceRevision(
     return null;
   }
   if (isPublicationOccurrenceContentStale(occurrence, latestContentRevision)) {
-    return occurrence.contentRevision
-      ? `Версия ${occurrence.contentRevision} · актуальная ${latestContentRevision}`
-      : `Есть актуальная версия ${latestContentRevision}`;
+    return 'Есть новые правки';
   }
-  return `Версия ${occurrence.contentRevision ?? latestContentRevision}`;
+  return null;
 }
 
 function getStaleDeliveryContentRevision(
@@ -465,7 +463,7 @@ export function PublicationDetailsSheet({
               ) : null}
 
               <section className="publication-details-section">
-                <strong>Запуски</strong>
+                <strong>Отправки</strong>
                 <div className="publication-occurrences">
                   {details.occurrences.length > 0 ? (
                     details.occurrences.map((occurrence) => {
@@ -603,7 +601,7 @@ export function PublicationDetailsSheet({
                             />
                             {staleContentRevision ? (
                               <small className="publication-deliveries__revision">
-                                Версия {staleContentRevision}
+                                Прежний вариант поста
                               </small>
                             ) : null}
                             {deliveryError ? (

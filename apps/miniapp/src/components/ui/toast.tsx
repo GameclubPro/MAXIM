@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { cn } from '../../lib/cn';
 import type { ToastTone } from './ui-types';
+import { appendToast } from './toast-state';
 import './toast.css';
 
 type ToastInput = {
@@ -16,6 +17,7 @@ type ToastInput = {
   description?: string;
   tone?: ToastTone;
   durationMs?: number;
+  replaceKey?: string;
 };
 
 type ToastItem = {
@@ -23,6 +25,7 @@ type ToastItem = {
   title: string;
   description?: string;
   tone: ToastTone;
+  replaceKey?: string;
 };
 
 type ToastContextValue = {
@@ -40,11 +43,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const pushToast = useCallback(
-    ({ title, description, tone = 'info', durationMs = 3200 }: ToastInput) => {
+    ({ title, description, tone = 'info', durationMs = 3200, replaceKey }: ToastInput) => {
       const id = idRef.current + 1;
       idRef.current = id;
 
-      setToasts((current) => [...current, { id, title, description, tone }]);
+      setToasts((current) => appendToast(current, { id, title, description, tone, replaceKey }));
       window.setTimeout(() => removeToast(id), durationMs);
     },
     [removeToast],

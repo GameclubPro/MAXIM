@@ -84,7 +84,7 @@ export function PublicationPostPublishFields({
         </div>
       ) : null}
       <PostActionSwitch
-        label="Удалить через"
+        label="Удалить автоматически"
         icon={<Timer aria-hidden="true" />}
         checked={value.deleteAfterMinutes !== null}
         disabled={disabled}
@@ -144,7 +144,7 @@ export function PublicationPostPublishFields({
               </select>
             </div>
           ) : null}
-          <small>От момента отправки · до 30 дней</small>
+          <small>После отправки · до 30 дней</small>
         </div>
       ) : null}
     </section>

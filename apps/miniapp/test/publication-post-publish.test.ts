@@ -97,7 +97,7 @@ test('presents separate pin and delete outcomes without changing send status', (
     5_000,
   );
   assert.deepEqual(publicationPostPublishLabels(policy), [
-    'Закрепление с уведомлением',
+    'Закрепить с уведомлением',
     'Удаление через 90 мин',
   ]);
 });

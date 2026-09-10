@@ -81,10 +81,7 @@ test('publisher readiness exposes required permissions and quarantine recovery t
   );
   const quarantined = readiness('route_quarantined');
   quarantined.retryAt = '2026-08-27T12:30:00.000Z';
-  assert.match(
-    getPublisherReadinessPresentation(quarantined).detail,
-    /восстановится автоматически после/u,
-  );
+  assert.match(getPublisherReadinessPresentation(quarantined).detail, /Следующая проверка:/u);
 });
 
 test('an unavailable selected target can be removed from a stale draft', () => {
@@ -178,7 +175,10 @@ test('a direct publisher target already present on the first page skips the disa
 });
 
 test('direct publisher routes select only ready targets', () => {
-  assert.equal(canSelectInitialPublicationRouteTarget(true, target('ready', readiness(null))), true);
+  assert.equal(
+    canSelectInitialPublicationRouteTarget(true, target('ready', readiness(null))),
+    true,
+  );
   assert.equal(
     canSelectInitialPublicationRouteTarget(
       true,

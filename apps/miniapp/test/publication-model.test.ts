@@ -189,9 +189,8 @@ test('presents deferred publisher access without internal blocker copy', () => {
 
 test('explains that a 31-day recurrence is not a calendar month', () => {
   assert.deepEqual(getPublicationRecurrenceIntervalNotice('daily', 31), {
-    title: '31 день - не календарный месяц',
-    description:
-      'Публикация будет выходить каждые 31 день от даты начала, поэтому число месяца будет сдвигаться.',
+    title: 'Каждые 31 день',
+    description: 'Число месяца будет меняться.',
   });
 });
 
@@ -201,17 +200,16 @@ test('previews other large recurrence intervals without warning for routine inte
   assert.equal(getPublicationRecurrenceIntervalNotice('daily', 1.5), null);
 
   assert.deepEqual(getPublicationRecurrenceIntervalNotice('daily', 30), {
-    title: 'Большой интервал: 30 дней',
-    description:
-      'Даты считаются от даты начала с указанным шагом, без привязки к одному числу месяца.',
+    title: 'Каждые 30 дней',
+    description: 'Число месяца может меняться.',
   });
   assert.deepEqual(getPublicationRecurrenceIntervalNotice('weekly', 4), {
-    title: 'Большой интервал: 4 недели',
-    description: 'Даты считаются от даты начала с указанным шагом, а не по календарным месяцам.',
+    title: '28 дней между публикациями',
+    description: 'От даты начала расписания.',
   });
   assert.equal(
     getPublicationRecurrenceIntervalNotice('weekly', 21)?.title,
-    'Большой интервал: 21 неделя',
+    '147 дней между публикациями',
   );
 });
 

@@ -1,4 +1,4 @@
-import { CheckCircle, EditPencil, Plus, Post, Refresh, WarningCircle } from 'iconoir-react';
+import { Plus, Post, Refresh, WarningCircle } from 'iconoir-react';
 import type { PublisherEntitiesSummary } from '@maxim/contracts/publisher';
 import { Link } from 'react-router';
 import { formatRussianCountLabel } from '../../lib/broadcast-audience';
@@ -68,7 +68,6 @@ export function PublicationHubHeader({
       <header className="publications-header">
         <div>
           <h1>
-            {publisherProfile ? <Post aria-hidden /> : null}
             <span>{publisherProfile ? 'Публик' : 'Расписания'}</span>
           </h1>
           {publisherProfile ? <span>Посты</span> : null}
@@ -83,7 +82,7 @@ export function PublicationHubHeader({
                 aria-label="Черновики"
                 title="Черновики"
               >
-                <EditPencil aria-hidden />
+                <Post aria-hidden />
               </button>
             ) : null}
             <button
@@ -91,7 +90,7 @@ export function PublicationHubHeader({
               className="publications-primary"
               onClick={onCreate}
               aria-label="Создать публикацию"
-              title={canCreate ? 'Создать публикацию' : 'Нет готовых получателей'}
+              title={canCreate ? 'Создать публикацию' : 'Загрузка'}
               disabled={!canCreate}
             >
               <Plus aria-hidden />
@@ -101,14 +100,14 @@ export function PublicationHubHeader({
         ) : null}
       </header>
 
-      {publisherProfile ? (
+      {publisherProfile && publisherStatusTone !== 'ready' ? (
         <div
           className={cn('publication-publisher-status', `is-${publisherStatusTone}`)}
           aria-busy={sourcesLoading || sourcesFetching}
           role={sourcesHaveError ? 'alert' : 'status'}
         >
           <span className="publication-publisher-status__mark" aria-hidden>
-            {publisherStatusTone === 'ready' ? <CheckCircle /> : <WarningCircle />}
+            <WarningCircle />
           </span>
           {shouldOpenEntityCabinet ? (
             <Link

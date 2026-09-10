@@ -41,15 +41,15 @@ const BLOCKER_PRESENTATION: Record<
     tone: 'setup',
   },
   route_quarantined: {
-    detail: 'Маршрут временно остановлен после ошибки. Повторите проверку позднее.',
+    detail: 'Отправка временно приостановлена. Повторите проверку позже.',
     tone: 'temporary',
   },
   publisher_runtime_unavailable: {
-    detail: 'Сервис отправки не отвечает. Созданные расписания сохранятся.',
+    detail: 'Публик пока не отвечает. Расписания сохранены.',
     tone: 'temporary',
   },
   module_disabled: {
-    detail: 'Включите модуль в кабинете Публика.',
+    detail: 'Эта функция выключена.',
     tone: 'disabled',
   },
 };
@@ -89,7 +89,7 @@ export function getPublisherReadinessPresentation(
     return {
       label: getPublisherReadinessLabel(readiness),
       ...BLOCKER_PRESENTATION[readiness.blockerCode],
-      ...(retryAt ? { detail: `Отправка восстановится автоматически после ${retryAt}.` } : {}),
+      ...(retryAt ? { detail: `Следующая проверка: ${retryAt}.` } : {}),
     };
   }
 

@@ -343,36 +343,42 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
 
       <PublisherPolicyCard api={api} entityType={entity.entityType} entityId={entity.id} />
 
-      <div
-        className={cn('publisher-entity-modules-page__readiness', `is-${readiness.tone}`)}
-        aria-live={entityRecheckPhase ? 'polite' : undefined}
-      >
-        {entity.readiness.canPublish ? <CheckCircle aria-hidden /> : <WarningCircle aria-hidden />}
-        <span className="publisher-entity-modules-page__readiness-copy">
-          <strong>{readiness.label}</strong>
-          {!entity.readiness.canPublish ? <small>{readiness.detail}</small> : null}
-        </span>
-        {canRecheckEntity ? (
-          <button
-            type="button"
-            className={cn(
-              'publisher-entity-modules-page__recheck',
-              entityRecheckPhase && 'is-refreshing',
-            )}
-            disabled={busy}
-            onClick={() => void handleEntityRecheck()}
-          >
-            <Refresh aria-hidden />
-            <span>
-              {entityRecheckPhase === 'enqueueing'
-                ? 'Запускаю'
-                : entityRecheckPhase === 'polling'
-                  ? 'Проверяю'
-                  : 'Проверить'}
-            </span>
-          </button>
-        ) : null}
-      </div>
+      {!entity.readiness.canPublish || entityRecheckPhase ? (
+        <div
+          className={cn('publisher-entity-modules-page__readiness', `is-${readiness.tone}`)}
+          aria-live={entityRecheckPhase ? 'polite' : undefined}
+        >
+          {entity.readiness.canPublish ? (
+            <CheckCircle aria-hidden />
+          ) : (
+            <WarningCircle aria-hidden />
+          )}
+          <span className="publisher-entity-modules-page__readiness-copy">
+            <strong>{readiness.label}</strong>
+            {!entity.readiness.canPublish ? <small>{readiness.detail}</small> : null}
+          </span>
+          {canRecheckEntity ? (
+            <button
+              type="button"
+              className={cn(
+                'publisher-entity-modules-page__recheck',
+                entityRecheckPhase && 'is-refreshing',
+              )}
+              disabled={busy}
+              onClick={() => void handleEntityRecheck()}
+            >
+              <Refresh aria-hidden />
+              <span>
+                {entityRecheckPhase === 'enqueueing'
+                  ? 'Запускаю'
+                  : entityRecheckPhase === 'polling'
+                    ? 'Проверяю'
+                    : 'Проверить'}
+              </span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="publisher-entity-modules-page__modules">
         <article className="publisher-entity-module">

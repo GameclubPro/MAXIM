@@ -303,6 +303,15 @@ function getRussianCountUnit(count: number, one: string, few: string, many: stri
   return many;
 }
 
+export function getPublicationRecurrenceIntervalUnit(
+  frequency: PublicationRecurrenceFrequency,
+  interval: number,
+): string {
+  return frequency === 'daily'
+    ? getRussianCountUnit(interval, 'день', 'дня', 'дней')
+    : getRussianCountUnit(interval, 'неделю', 'недели', 'недель');
+}
+
 export function getPublicationRecurrenceIntervalNotice(
   frequency: PublicationRecurrenceFrequency,
   interval: number,
@@ -314,16 +323,14 @@ export function getPublicationRecurrenceIntervalNotice(
   if (frequency === 'daily') {
     if (interval === 31) {
       return {
-        title: '31 день - не календарный месяц',
-        description:
-          'Публикация будет выходить каждые 31 день от даты начала, поэтому число месяца будет сдвигаться.',
+        title: 'Каждые 31 день',
+        description: 'Число месяца будет меняться.',
       };
     }
     if (interval >= 28) {
       return {
-        title: `Большой интервал: ${interval} ${getRussianCountUnit(interval, 'день', 'дня', 'дней')}`,
-        description:
-          'Даты считаются от даты начала с указанным шагом, без привязки к одному числу месяца.',
+        title: `Каждые ${interval} ${getRussianCountUnit(interval, 'день', 'дня', 'дней')}`,
+        description: 'Число месяца может меняться.',
       };
     }
     return null;
@@ -331,8 +338,8 @@ export function getPublicationRecurrenceIntervalNotice(
 
   if (interval >= 4) {
     return {
-      title: `Большой интервал: ${interval} ${getRussianCountUnit(interval, 'неделя', 'недели', 'недель')}`,
-      description: 'Даты считаются от даты начала с указанным шагом, а не по календарным месяцам.',
+      title: `${interval * 7} ${getRussianCountUnit(interval * 7, 'день', 'дня', 'дней')} между публикациями`,
+      description: 'От даты начала расписания.',
     };
   }
 

@@ -1,4 +1,7 @@
 @layer pages {
+  .publications-header {
+    container: publik-header / inline-size;
+  }
   .publications-page.is-publisher {
     --accent: #0f5c42;
     --accent-soft: #e2f3eb;

@@ -125,8 +125,8 @@
   }
 
   .publication-retry-sheet__choices small {
-    color: var(--color-ink-subtle);
-    font-size: 0.68rem;
+    color: var(--color-ink-muted);
+    font-size: 0.75rem;
   }
 
   .publication-retry-sheet__choices > button:focus-visible,

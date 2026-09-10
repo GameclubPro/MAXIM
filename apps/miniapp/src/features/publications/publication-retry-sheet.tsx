@@ -8,8 +8,6 @@ import './publication-retry-sheet.css';
 
 type PublicationRetrySheetProps = {
   open: boolean;
-  originalRevision?: number;
-  latestRevision: number;
   busy?: boolean;
   onClose: () => void;
   onSelect: (mode: PublicationRetryContentMode) => void;
@@ -24,8 +22,6 @@ function resolvePublicationRetryPortalTarget(): Element | null {
 
 export function PublicationRetrySheet({
   open,
-  originalRevision,
-  latestRevision,
   busy = false,
   onClose,
   onSelect,
@@ -95,7 +91,7 @@ export function PublicationRetrySheet({
       >
         <div className="publication-retry-sheet__grabber" aria-hidden />
         <header className="publication-retry-sheet__header">
-          <strong id="publication-retry-title">Версия для повтора</strong>
+          <strong id="publication-retry-title">Повторить отправку</strong>
           <button type="button" onClick={onClose} disabled={busy} aria-label="Закрыть">
             <Xmark aria-hidden />
           </button>
@@ -109,10 +105,8 @@ export function PublicationRetrySheet({
           >
             <RefreshDouble aria-hidden />
             <span>
-              <strong>Исходная версия</strong>
-              <small>
-                {originalRevision ? `Версия ${originalRevision}` : 'Как в этом запуске'}
-              </small>
+              <strong>Прежний вариант</strong>
+              <small>Пост на момент отправки</small>
             </span>
           </button>
           <button
@@ -123,8 +117,8 @@ export function PublicationRetrySheet({
           >
             <RefreshDouble aria-hidden />
             <span>
-              <strong>Актуальная версия</strong>
-              <small>Версия {latestRevision}</small>
+              <strong>С последними правками</strong>
+              <small>Пост с сохранёнными изменениями</small>
             </span>
           </button>
         </div>

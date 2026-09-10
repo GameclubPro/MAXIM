@@ -11,7 +11,7 @@ export function publicationPostPublishLabels(policy?: PublicationPostPublish): s
   return [
     ...(policy.pin === 'none'
       ? []
-      : [policy.pin === 'notify' ? 'Закрепление с уведомлением' : 'Тихое закрепление']),
+      : [policy.pin === 'notify' ? 'Закрепить с уведомлением' : 'Закрепить без уведомления']),
     ...(policy.deleteAfterMinutes === null
       ? []
       : [`Удаление через ${formatPublicationDeleteDelay(policy.deleteAfterMinutes)}`]),

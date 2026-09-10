@@ -5,6 +5,7 @@ import type {
   VkParsingSettings,
 } from '@maxim/contracts/vk-parsing';
 import { TimeField } from '../ui/time-field';
+import { formatTimezoneLabel } from '../../lib/timezone-label';
 
 const TIMEZONES = [
   ['Europe/Kaliningrad', 'Калининград'],
@@ -18,7 +19,7 @@ const TIMEZONES = [
   ['Asia/Vladivostok', 'Владивосток'],
   ['Asia/Magadan', 'Магадан'],
   ['Asia/Kamchatka', 'Камчатка'],
-  ['UTC', 'UTC'],
+  ['UTC', 'Всемирное время'],
 ] as const;
 
 function TimeRange({
@@ -144,11 +145,13 @@ export function ScheduleTimePanel({
           onChange={(event) => void onUpdate({ schedulerTimezone: event.target.value })}
         >
           {!TIMEZONES.some(([zone]) => zone === settings.schedulerTimezone) ? (
-            <option value={settings.schedulerTimezone}>{settings.schedulerTimezone}</option>
+            <option value={settings.schedulerTimezone}>
+              {formatTimezoneLabel(settings.schedulerTimezone)}
+            </option>
           ) : null}
           {TIMEZONES.map(([zone, label]) => (
             <option key={zone} value={zone}>
-              {label} · {zone}
+              {label}
             </option>
           ))}
         </select>

@@ -496,26 +496,18 @@ export function PublisherEntitiesPage({
               </strong>
               <small>{entity.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
             </span>
-            <span className="publisher-entity-row__status">
+            <span
+              className="publisher-entity-row__status"
+              title={entity.readiness.canPublish ? undefined : presentation.detail}
+              aria-live={refreshPhase ? 'polite' : undefined}
+            >
               {entity.readiness.canPublish ? (
                 <CheckCircle aria-hidden />
               ) : (
                 <WarningCircle aria-hidden />
               )}
-              <span>{presentation.label}</span>
+              <span>{refreshPhase ? 'Проверяем подключение' : presentation.label}</span>
             </span>
-            {refreshPhase || !entity.readiness.canPublish ? (
-              <span
-                className="publisher-entity-row__detail"
-                aria-live={refreshing ? 'polite' : undefined}
-              >
-                {refreshPhase === 'enqueueing'
-                  ? 'Запускаю проверку'
-                  : refreshPhase === 'polling'
-                    ? 'Жду новый статус от MAX'
-                    : presentation.detail}
-              </span>
-            ) : null}
           </span>
           <NavArrowRight className="publisher-entity-row__arrow" aria-hidden />
         </Link>

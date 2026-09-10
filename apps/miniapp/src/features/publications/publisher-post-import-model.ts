@@ -44,9 +44,9 @@ function describeImportFailure(code: PublisherPostImportSession['failureCode']):
       return 'В посте слишком много фото';
     case 'image_too_large':
     case 'media_too_large':
-      return 'Медиа слишком большое';
+      return 'Фото или видео слишком большое';
     case 'media_download_failed':
-      return 'Не удалось загрузить медиа';
+      return 'Не удалось загрузить фото или видео';
     case 'processing_timeout':
       return 'Перенос занял слишком много времени';
     default:

@@ -386,7 +386,7 @@ function PublisherAutoReplyEditor({
         pushToast({
           tone: 'danger',
           title: 'Фраза уже используется',
-          description: 'Удалите повторяющуюся фразу или измените другое правило.',
+          description: 'Удалите повторяющуюся фразу или измените другой автоответ.',
         });
         return;
       }
@@ -402,8 +402,8 @@ function PublisherAutoReplyEditor({
         setConflict(true);
         pushToast({
           tone: 'danger',
-          title: 'Правило уже изменилось',
-          description: 'Закройте редактор и откройте свежую версию.',
+          title: 'Автоответ уже изменился',
+          description: 'Откройте его заново.',
         });
         return;
       }
@@ -578,13 +578,13 @@ function PublisherAutoReplyEditor({
       {conflict ? (
         <div className="publisher-auto-reply-editor__conflict" role="alert">
           <WarningCircle aria-hidden />
-          <span>Эта версия устарела. Закройте редактор и откройте правило снова.</span>
+          <span>Автоответ изменился. Откройте его заново.</span>
         </div>
       ) : null}
 
       <section className="publisher-auto-reply-editor__section is-triggers">
         <header>
-          <h2 id="publisher-auto-reply-phrase-title">Фразы-триггеры</h2>
+          <h2 id="publisher-auto-reply-phrase-title">Фразы</h2>
           <small aria-live="polite">{getAutoReplyPhraseCountLabel(draft.phrases.length)}</small>
         </header>
 
@@ -839,11 +839,11 @@ function PublisherAutoReplyEditor({
         </header>
         {rule ? (
           <div className="publisher-auto-reply-editor__toggle-row">
-            <strong>Правило включено</strong>
+            <strong>Автоответ включён</strong>
             <AutoReplySwitch
               checked={draft.enabled}
               disabled={saveMutation.isPending}
-              label={draft.enabled ? 'Выключить правило' : 'Включить правило'}
+              label={draft.enabled ? 'Выключить автоответ' : 'Включить автоответ'}
               onChange={(enabled) => updateDraft({ enabled })}
             />
           </div>
@@ -1026,13 +1026,13 @@ function AutoReplyRuleRow({
       <footer className="publisher-auto-reply-row__footer">
         <span>
           {[
-            getAutoReplyPhraseCountLabel(rule.phrases.length),
             getAutoReplyMatchModeLabel(rule),
-            rule.content.images.length > 0 ? `${rule.content.images.length} фото` : null,
             rule.content.buttons.length > 0
               ? formatBroadcastButtonsStatus(rule.content.buttons)
               : null,
-            `Пауза: ${getAutoReplyCooldownLabel(rule.cooldownSeconds)}`,
+            rule.cooldownSeconds > 0
+              ? `Пауза ${getAutoReplyCooldownLabel(rule.cooldownSeconds)}`
+              : null,
           ]
             .filter((item): item is string => item !== null)
             .join(' · ')}
@@ -1061,7 +1061,7 @@ function AutoReplyRuleRow({
       {conflict ? (
         <div className="publisher-auto-reply-row__conflict" role="alert">
           <WarningCircle aria-hidden />
-          <span>Правило изменилось. Загружена свежая версия.</span>
+          <span>Автоответ обновлён.</span>
         </div>
       ) : null}
     </article>
@@ -1190,7 +1190,7 @@ export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; u
                 ? 'Закройте мини-приложение и откройте его снова'
                 : conflictKind === 'phrase_conflict'
                   ? 'Одна из фраз уже используется'
-                  : describeUserFacingError(error, 'Не удалось изменить правило.'),
+                  : describeUserFacingError(error, 'Не удалось изменить автоответ.'),
           });
         }
       }

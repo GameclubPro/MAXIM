@@ -5,6 +5,7 @@ import type { VkParsingPost } from '@maxim/contracts';
 import { TimeField } from '../ui/time-field';
 import { ActionConfirmSheet } from '../ui/action-confirm-sheet';
 import { parseVkQueueDate, resolveVkQueueQuickSlot } from './queue-time';
+import { formatTimezoneLabel } from '../../lib/timezone-label';
 
 type QueueTimelineProps = {
   posts: VkParsingPost[];
@@ -173,7 +174,7 @@ export function QueueTimeline({
   if (!posts.length) return null;
   return (
     <section className="vk-queue-timeline" aria-label="Очередь публикаций">
-      <div className="vk-queue-timezone">{timezone}</div>
+      <div className="vk-queue-timezone">{formatTimezoneLabel(timezone)}</div>
       <div className="vk-queue-list">
         {posts.map((post) => (
           <QueueItem

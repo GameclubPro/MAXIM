@@ -43,7 +43,7 @@ function statusCode(error: unknown): number | undefined {
   return error && typeof error === 'object' && 'status' in error ? Number(error.status) : undefined;
 }
 function conflict(): Error {
-  return Object.assign(new Error('На сервере есть другая версия черновика.'), { status: 409 });
+  return Object.assign(new Error('Найден сохранённый вариант черновика.'), { status: 409 });
 }
 function equal(left: PublicationDraft | null, right: PublicationDraft): boolean {
   return Boolean(

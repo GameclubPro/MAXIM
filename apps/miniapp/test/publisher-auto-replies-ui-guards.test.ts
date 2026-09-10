@@ -85,14 +85,14 @@ test('new rules are enabled directly while edit and list keep their switches', (
   assert.match(pageSource, /createPublisherAutoReply[\s\S]*?enabled: true/u);
   assert.match(
     pageSource,
-    /\{rule \? \([\s\S]*?<strong>Правило включено<\/strong>[\s\S]*?<AutoReplySwitch/u,
+    /\{rule \? \([\s\S]*?<strong>Автоответ включён<\/strong>[\s\S]*?<AutoReplySwitch/u,
   );
   assert.match(pageSource, /<AutoReplyRuleRow[\s\S]*?onToggle=/u);
   assert.match(pageSource, /rule \? \(draft\.enabled \? 'включён' : 'выключен'\) : null/u);
 });
 
 test('v2 trigger authoring exposes phrase chips, independent match switches, and server preview', () => {
-  assert.match(pageSource, /<h2 id="publisher-auto-reply-phrase-title">Фразы-триггеры<\/h2>/u);
+  assert.match(pageSource, /<h2 id="publisher-auto-reply-phrase-title">Фразы<\/h2>/u);
   assert.match(pageSource, /draft\.phrases\.map/u);
   assert.match(pageSource, /aria-label=\{`Удалить фразу/u);
   assert.match(pageSource, /event\.key !== 'Enter'/u);

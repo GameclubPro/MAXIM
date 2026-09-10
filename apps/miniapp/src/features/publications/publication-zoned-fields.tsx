@@ -1,4 +1,5 @@
 import { TimeField } from '../../components/ui/time-field';
+import { DateField } from '../../components/ui/date-field';
 import { formatPublicationScheduleField } from './publication-time-presentation';
 import { parsePublicationScheduleField } from './publication-schedule-fields';
 
@@ -18,22 +19,15 @@ export function PublicationZonedDateField({
   onChange: (value: string | null) => void;
 }) {
   return (
-    <label className="publication-recurrence__date">
-      <span>{label}</span>
-      <input
-        type="date"
-        value={formatPublicationScheduleField(value, timezone).slice(0, 10)}
-        disabled={disabled}
-        onChange={(event) =>
-          onChange(
-            parsePublicationScheduleField(
-              `${event.target.value}T${endOfDay ? '23:59' : '00:00'}`,
-              timezone,
-            ),
-          )
-        }
-      />
-    </label>
+    <DateField
+      label={label}
+      className="publication-recurrence__date"
+      value={formatPublicationScheduleField(value, timezone).slice(0, 10)}
+      disabled={disabled}
+      onChange={(date) =>
+        onChange(parsePublicationScheduleField(`${date}T${endOfDay ? '23:59' : '00:00'}`, timezone))
+      }
+    />
   );
 }
 
@@ -52,21 +46,14 @@ export function PublicationOnceFields({
 }) {
   return (
     <div className="publication-once-fields">
-      <label>
-        <span>Дата</span>
-        <input
-          type="date"
-          value={date}
-          disabled={disabled}
-          onChange={(event) =>
-            onChange(
-              event.target.value,
-              time,
-              parsePublicationScheduleField(`${event.target.value}T${time}`, timezone),
-            )
-          }
-        />
-      </label>
+      <DateField
+        label="Дата"
+        value={date}
+        disabled={disabled}
+        onChange={(nextDate) =>
+          onChange(nextDate, time, parsePublicationScheduleField(`${nextDate}T${time}`, timezone))
+        }
+      />
       <TimeField
         label="Время"
         value={time}

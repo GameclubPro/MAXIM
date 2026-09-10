@@ -13,6 +13,7 @@ import type { ApiTransport } from '../../lib/api/transport';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import { createPublicationRequestId } from './publication-request-identity';
 import { formatPublicationScheduleField } from './publication-time-presentation';
+import { formatTimezoneLabel } from '../../lib/timezone-label';
 import { PublicationOnceFields } from './publication-zoned-fields';
 import './publication-delivery-actions.css';
 
@@ -56,6 +57,7 @@ export function PublicationDeliveryActions({
       setCommand(null);
       pushToast({
         tone: 'success',
+        replaceKey: `publication-post-action:${publicationId}:${delivery.id}`,
         title:
           request.action === 'cancel_delete'
             ? 'Автоудаление отменено'
@@ -157,7 +159,7 @@ export function PublicationDeliveryActions({
                       );
                   }}
                 />
-                <small>{timezone}</small>
+                <small>{formatTimezoneLabel(timezone)}</small>
                 {!dateValid ? <p role="alert">Укажите дату и время.</p> : null}
               </>
             ) : null}
@@ -170,9 +172,9 @@ export function PublicationDeliveryActions({
         }
         summary={
           command?.action === 'cancel_delete'
-            ? 'Автоудаление и его повторы будут отменены. Уже удалённый пост не восстановится.'
+            ? 'Запланированное удаление отменится. Уже удалённый пост не восстановится.'
             : command?.action === 'retry_pin'
-              ? 'Пост не будет отправлен повторно. При закреплении сохраняется выбранный режим уведомления.'
+              ? 'Пост не будет отправлен заново. Настройка уведомления сохранится.'
               : undefined
         }
         confirmLabel={command ? LABELS[command.action] : 'Подтвердить'}

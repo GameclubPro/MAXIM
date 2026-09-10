@@ -347,7 +347,7 @@ export function getAutoReplyAuthoringStateLabel(state: PublisherAutoReplyAuthori
     return 'Создание не завершено';
   }
   if (state === 'expired') {
-    return 'Сессия истекла';
+    return 'Время ожидания вышло';
   }
   return 'Создание отменено';
 }

@@ -24,6 +24,7 @@ import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { openPublikBot, PUBLIK_BOT_URL } from '../lib/publik-bot';
 import '../styles/moderation-workspace.css';
+import '../styles/publisher-workspace.css';
 
 type ScreenInfo = {
   title: string;

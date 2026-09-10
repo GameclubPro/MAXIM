@@ -287,7 +287,7 @@ async function openPublisherAutoReplyEditor(page) {
   await dialog.getByRole('button', { name: 'Создать здесь', exact: true }).click();
   const editor = page.locator('.publisher-auto-reply-editor');
   await editor.waitFor({ state: 'visible' });
-  const phraseInput = editor.getByRole('textbox', { name: /Фразы-триггеры/u });
+  const phraseInput = editor.getByRole('textbox', { name: 'Фразы', exact: true });
   await phraseInput.fill('Каталог');
   await phraseInput.press('Enter');
   await editor
@@ -987,7 +987,10 @@ const scenarioBehaviors = [
       await section.getByRole('switch', { name: 'Закрепить пост', exact: true }).check();
       if (await notify.isChecked()) throw new Error('Pin toggle lost the silent preference.');
       await notify.check();
-      const autoDelete = section.getByRole('switch', { name: 'Удалить через', exact: true });
+      const autoDelete = section.getByRole('switch', {
+        name: 'Удалить автоматически',
+        exact: true,
+      });
       await autoDelete.check();
       await section.getByLabel('Срок автоудаления', { exact: true }).selectOption('custom');
       await section.getByLabel('Единица срока удаления', { exact: true }).selectOption('1');
@@ -1006,7 +1009,7 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
       await editor.fill('Черновик для осеннего анонса');
-      await page.getByText('Сохранено в черновиках', { exact: true }).waitFor();
+      await page.getByText('Сохранено', { exact: true }).waitFor();
       if (screenshotTarget === 'native')
         await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
       else
@@ -1062,7 +1065,7 @@ const scenarioBehaviors = [
             (_, index) => `Абзац ${index + 1}. Осенний анонс для подписчиков.`,
           ).join('\n\n'),
         );
-      await page.getByText('Сохранено в черновиках', { exact: true }).waitFor();
+      await page.getByText('Сохранено', { exact: true }).waitFor();
       await page
         .locator('.publications-publish-bar')
         .getByRole('button', { name: 'Опубликовать', exact: true })
@@ -1524,15 +1527,15 @@ const scenarioBehaviors = [
       await page.getByRole('button', { name: 'Повторить запуск' }).waitFor({ state: 'visible' });
       await page.locator('.publication-details-sheet__header > button').click();
       await page.getByText('Есть недоставленные сообщения').waitFor({ state: 'visible' });
-      await page.locator('.publication-feed-card__menu-trigger').first().click();
+      await page.locator('[data-publication-id="publication-delivery-review"] .publication-feed-card__menu-trigger').click();
       await page.getByRole('button', { name: 'Изменить версию для повтора' }).click();
       await page.locator('.publications-editor').waitFor({ state: 'visible' });
       await page
         .locator('.broadcast-publish-bar__primary:not(:disabled)')
         .waitFor({ state: 'visible' });
-      await page.locator('.publication-target-picker__summary').click();
-      await page.locator('.publication-target-row[aria-pressed="true"]').first().click();
-      await page.getByRole('button', { name: 'Назад' }).click();
+      await page.locator('.publication-content-composer .max-rich-text-editor__surface').fill('Несохранённый текст публикации');
+      if (screenshotTarget === 'native') await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      else await page.locator('.publications-editor-header').getByRole('button', { name: 'Назад', exact: true }).click();
       await page
         .getByRole('dialog', { name: 'Закрыть без сохранения?' })
         .waitFor({ state: 'visible' });
@@ -1554,7 +1557,7 @@ const scenarioBehaviors = [
         .click();
       await page.getByRole('button', { name: 'Повторить запуск' }).waitFor({ state: 'visible' });
       await page.getByRole('button', { name: 'Повторить запуск' }).click();
-      await page.getByRole('dialog', { name: 'Версия для повтора' }).waitFor({ state: 'visible' });
+      await page.getByRole('dialog', { name: 'Повторить отправку' }).waitFor({ state: 'visible' });
     },
   },
   {

@@ -49,6 +49,7 @@ import {
 import { PublicationFeedCard } from '../features/publications/publication-feed-card';
 import { PublicationCreateSheet } from '../features/publications/publication-create-sheet';
 import { PublicationButtonsSheet } from '../features/publications/publication-buttons-sheet';
+import { formatTimezoneLabel } from '../lib/timezone-label';
 import {
   buildCreatePublicationRequest,
   buildPublicationSaveFeedback,
@@ -155,7 +156,10 @@ import { PublicationPostPublishFields } from '../features/publications/publicati
 import { publicationPostPublishLabels } from '../features/publications/publication-post-actions-presentation';
 import { usePublicationCloudDraft } from '../features/publications/use-publication-cloud-draft';
 import { usePublicationAssetPreviews } from '../features/publications/use-publication-asset-previews';
-import { PublicationDraftStatus } from '../features/publications/publication-draft-status';
+import {
+  PublicationDraftSaveIndicator,
+  PublicationDraftStatus,
+} from '../features/publications/publication-draft-status';
 import { draftFromServer } from '../features/publications/publication-cloud-draft-model';
 
 const LazyPublicationDraftsSheet = lazy(() =>
@@ -980,7 +984,7 @@ export function PublicationsPage({
         queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
         queryClient.invalidateQueries({ queryKey: ['publications', 'deliveries'] }),
       ]);
-      pushToast({ tone: 'success', title: 'Статус доставки сохранён' });
+      pushToast({ tone: 'success', title: 'Статус обновлён' });
     },
     onError: (error) =>
       pushToast({
@@ -1512,8 +1516,7 @@ export function PublicationsPage({
           closeEditor(true);
           pushToast({
             tone: 'info',
-            title: 'Не сохранено на сервере',
-            description: 'Черновик не синхронизирован.',
+            title: 'Не удалось сохранить изменения',
           });
         } else {
           pushToast({
@@ -2265,9 +2268,11 @@ export function PublicationsPage({
           <div className="publication-schedule-timezone">
             <Clock aria-hidden />
             <span>
-              {draft.timingMode === 'schedule' && draft.scheduleKind === 'slots'
-                ? resolveBroadcastScheduleTimezone()
-                : draft.scheduleTimezone}
+              {formatTimezoneLabel(
+                draft.timingMode === 'schedule' && draft.scheduleKind === 'slots'
+                  ? resolveBroadcastScheduleTimezone()
+                  : draft.scheduleTimezone,
+              )}
             </span>
           </div>
         ) : null}
@@ -2471,6 +2476,9 @@ export function PublicationsPage({
             <h1 ref={editorTitleRef} tabIndex={-1}>
               {editorTitle}
             </h1>
+            {!editing ? (
+              <PublicationDraftSaveIndicator state={cloudDraft} dirty={cloudDraft.dirty} />
+            ) : null}
           </span>
           <button
             type="button"
@@ -2487,7 +2495,6 @@ export function PublicationsPage({
           {!editing ? (
             <PublicationDraftStatus
               state={cloudDraft}
-              dirty={cloudDraft.dirty}
               busy={isBusy || cloudDraft.status === 'saving'}
               onRetry={() => void cloudDraft.flush().catch(() => undefined)}
               onReload={() => setCloudReloadConfirm(true)}
@@ -2680,17 +2687,10 @@ export function PublicationsPage({
               facts={[
                 `Кому · ${formatTargetSummary(draft.targets)}`,
                 ...publicationPostPublishLabels(draft.postPublish),
-                `Часовой пояс · ${draft.scheduleTimezone}`,
+                formatTimezoneLabel(draft.scheduleTimezone),
                 editScope === 'retry'
                   ? 'Отправка · после ручного повтора'
                   : `Когда · ${formatDraftTiming(draft)}`,
-                visibleCustomButtonCount > 0 ? `Доп. кнопки · ${visibleCustomButtonCount}` : null,
-                hasMedia
-                  ? draft.mediaType === 'video' ||
-                    draft.retainedAssets.some((asset) => asset.type === 'video')
-                    ? 'Видео'
-                    : 'Медиа'
-                  : null,
               ].filter((item): item is string => Boolean(item))}
               confirmLabel={primaryLabel}
               busy={isBusy}
@@ -2753,9 +2753,9 @@ export function PublicationsPage({
       <ActionConfirmSheet
         id="publication-cloud-reload"
         open={cloudReloadConfirm}
-        title="Загрузить серверную версию?"
+        title="Обновить черновик?"
         summary="Несохранённые правки на этом устройстве будут заменены."
-        confirmLabel="Загрузить"
+        confirmLabel="Обновить"
         cancelLabel="Оставить"
         tone="danger"
         isBusy={editorClosePending}
@@ -2919,8 +2919,6 @@ export function PublicationsPage({
 
       <PublicationRetrySheet
         open={retryChoiceTarget !== null}
-        originalRevision={retryChoiceTarget?.originalContentRevision}
-        latestRevision={retryChoiceTarget?.latestContentRevision ?? 1}
         busy={retryMutation.isPending}
         onClose={() => !retryMutation.isPending && setRetryChoiceTarget(null)}
         onSelect={(contentMode) => {
