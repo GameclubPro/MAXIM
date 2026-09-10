@@ -38,6 +38,7 @@ import {
 } from './night-mode-transition-generation.util';
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
 import { ProfanityDeleteGuardRejectedError } from './profanity/profanity-delete-guard.service';
+import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-duplicate-state';
 
 type ServiceInternals = {
   assertAccessAmbiguousLedgerEvidenceUnchanged(
@@ -651,6 +652,108 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  function boundMessageInput(): EnsureModerationDeleteIntentInput {
+    const timestamp = Date.now() - 1000;
+    return {
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      subjectUserId: 'user-1',
+      originBotId: 'bot-1',
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      ruleCode: 'DUPLICATE_DELETE',
+      reasonKey: `MESSAGE_DUPLICATE:v1:${timestamp}`,
+      retryUntilAt: new Date(Date.now() + 60000),
+      event: {
+        metadata: {
+          duplicateSource: 'message_v1',
+          enforcementScope: 'full',
+          messageDuplicate: {
+            version: 2,
+            senderId: 'user-1',
+            messageId: 'message-1',
+            eventTimestampMs: timestamp,
+            controlRevision: 2,
+            settingsDigest: 'a'.repeat(64),
+            sourceDigest: 'b'.repeat(64),
+            contentDigest: 'c'.repeat(64),
+            fingerprint: 'd'.repeat(64),
+            compareMode: 'MESSAGE',
+            mediaHashes: [],
+            mediaVersion: MESSAGE_DUPLICATE_MEDIA_VERSION,
+            hasPhotos: false,
+            photoControlRevision: null,
+            windowSeconds: 3600,
+            requiredCount: 2,
+          },
+        },
+      },
+    };
+  }
+
+  it('routes strictly bound message duplicates independently of the base canary without promoting legacy deletes', () => {
+    const { service } = createService({
+      MODERATION_DELETE_INTENT_MODE: 'canary',
+      MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+    });
+    const input = boundMessageInput();
+    expect(service.getRolloutForInput(input)).toBe('execute');
+    expect(service.getRolloutForInput({ ...input, reasonKey: 'DUPLICATE:legacy' })).toBe(
+      'observed',
+    );
+    expect(
+      service.getRolloutForInput({
+        ...input,
+        event: { metadata: { duplicateSource: 'message_v1' } },
+      }),
+    ).toBe('observed');
+    expect(service.getRolloutForRule('chat-1', 'DUPLICATE_DELETE')).toBe('observed');
+    expect(service.getRolloutForRule('chat-1', 'LINK_BLOCKED_DELETE')).toBe('observed');
+    expect(
+      (service as unknown as ServiceInternals).isExecutionEnabledForIntent({
+        chatId: 'chat-1',
+        messageDuplicateOwned: true,
+      }),
+    ).toBe(true);
+    const filter = (
+      service as unknown as { buildSweepRolloutFilter(): Prisma.Sql }
+    ).buildSweepRolloutFilter();
+    expect(filter.sql).toContain('message_duplicate_reason."intent_id" = intent."id"');
+    expect(filter.sql).toContain("'MESSAGE_DUPLICATE:%'");
+  });
+
+  it('persists and schedules a bound duplicate outside the base canary as executable', async () => {
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const transaction = jest.fn(async (callback: (tx: unknown) => unknown) =>
+      callback({
+        $queryRaw: jest.fn().mockResolvedValue([persisted]),
+        $executeRaw: jest.fn().mockResolvedValue(1),
+      }),
+    );
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'canary',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+      },
+      { $transaction: transaction },
+    );
+    await expect(service.ensureIntent(boundMessageInput())).resolves.toEqual({
+      intentId: 'intent-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.anything(),
+    );
+  });
   it.each([false, true])(
     'requires the new message guard at the final dispatch boundary (available=%s)',
     async (available) => {
@@ -660,7 +763,10 @@ describe('ModerationDeleteIntentService', () => {
         events.push('delete');
       });
       const { service } = createService(
-        {},
+        {
+          MODERATION_DELETE_INTENT_MODE: 'canary',
+          MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+        },
         {
           $queryRaw: jest
             .fn()

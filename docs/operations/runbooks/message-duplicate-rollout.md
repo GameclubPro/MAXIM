@@ -9,6 +9,11 @@ mute duration, allowed repeats and comparison windows are preserved. Missing, ex
 runtime authority cannot authorize new actions. Fleet-wide rollout is an explicit product
 operation, never a smoke test; live test mutations remain limited to the designated test entities.
 
+Strict message-duplicate bindings use their own guarded delete-intent execution path, independent
+of `MODERATION_DELETE_INTENT_MODE` and its legacy canary IDs. Admission, persisted recovery and
+final dispatch must agree on this distinction. Do not widen the base delete rollout to enable
+message duplicates: that would also promote unrelated historical moderation work.
+
 `duplicateCompareMode=MESSAGE` compares text, navigation/actions and independently verified
 media content. `TEXT` compares text/captions and navigation/actions without media. Known media
 without a retrievable original remain unverified in MESSAGE mode; filenames, sizes, previews,

@@ -51,6 +51,21 @@ export function parseMessageDuplicateBinding(value: unknown): MessageDuplicateBi
   return result.success ? result.data : null;
 }
 
+export function isBoundMessageDuplicateDelete(input: {
+  ruleCode?: string;
+  reasonKey: string;
+  event?: { metadata?: unknown };
+}): boolean {
+  const binding = parseMessageDuplicateBinding(input.event?.metadata);
+  const metadata = input.event?.metadata as Record<string, unknown> | undefined;
+  return (
+    input.ruleCode === 'DUPLICATE_DELETE' &&
+    input.reasonKey.startsWith('MESSAGE_DUPLICATE:') &&
+    binding !== null &&
+    metadata?.enforcementScope === (binding.version === 2 ? 'full' : 'delete_only')
+  );
+}
+
 export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const flow = resolveDuplicateFlowConfig(settings);
   return digestDuplicateContent({

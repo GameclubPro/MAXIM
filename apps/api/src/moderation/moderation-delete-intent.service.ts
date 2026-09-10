@@ -75,6 +75,7 @@ import {
   MESSAGE_DUPLICATE_CLAIM_PREFIX,
   MESSAGE_DUPLICATE_SOURCE,
   parseMessageDuplicateBinding,
+  isBoundMessageDuplicateDelete,
 } from './message-duplicate/message-duplicate-state';
 import { digestDuplicateContent } from './message-duplicate/message-duplicate-content';
 import {
@@ -654,6 +655,9 @@ export class ModerationDeleteIntentService {
   getRolloutForInput(
     input: Pick<EnsureModerationDeleteIntentInput, 'chatId' | 'reasonKey' | 'ruleCode' | 'event'>,
   ): ModerationDeleteIntentRollout {
+    // FLAG: Message duplicates have their own runtime authority and mandatory final guard.
+    // Do not promote unrelated legacy reasons through the base delete-intent canary.
+    if (isBoundMessageDuplicateDelete(input)) return 'execute';
     if (parseImageTextStopListBinding(input.event?.metadata)) {
       return this.getImageTextStopListRollout();
     }
@@ -1605,6 +1609,7 @@ export class ModerationDeleteIntentService {
     reopened.requiredSubscriptionDeleteReason = existing.requiredSubscriptionDeleteReason;
     reopened.commercialOcrDeleteReason = existing.commercialOcrDeleteReason;
     reopened.nonCommercialOcrDeleteReason = existing.nonCommercialOcrDeleteReason;
+    reopened.messageDuplicateOwned = existing.messageDuplicateOwned;
     await this.enqueueWakeup(reopened, DELETE_QUEUE_PRIORITY_INTERACTIVE);
     return { reopened: true, intent: this.toSnapshot(reopened) };
   }
@@ -4147,6 +4152,7 @@ export class ModerationDeleteIntentService {
       }
     }
 
+    if (isBoundMessageDuplicateDelete(input)) persisted.messageDuplicateOwned = true;
     const effectiveRollout =
       persisted.status !== 'OBSERVED' && this.isExecutionEnabledForIntent(persisted)
         ? 'execute'
@@ -5679,6 +5685,7 @@ export class ModerationDeleteIntentService {
       ${replacementCleanupFilter}
       ${requiredSubscriptionDeleteFilter}
       ${imageTextStopListFilter}
+      OR ${this.messageDuplicateOwnedSql(Prisma.sql`intent."id"`)}
       OR (
         EXISTS (
           SELECT 1
@@ -5782,6 +5789,7 @@ export class ModerationDeleteIntentService {
       | 'nonCommercialOcrDeleteReason'
       | 'imageTextStopListDeleteReason'
       | 'imageTextStopListDeleteOnly'
+      | 'messageDuplicateOwned'
     >,
   ): boolean {
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
@@ -5824,8 +5832,10 @@ export class ModerationDeleteIntentService {
       | 'botMessageAutoDeleteOnly'
       | 'requiredSubscriptionDeleteReason'
       | 'nonCommercialOcrDeleteReason'
+      | 'messageDuplicateOwned'
     >,
   ): boolean {
+    if (intent.messageDuplicateOwned === true) return true;
     if (
       (this.requiredSubscriptionDeleteEnabled &&
         intent.requiredSubscriptionDeleteReason === true) ||
@@ -5858,6 +5868,7 @@ export class ModerationDeleteIntentService {
       | 'commercialOcrGuardRequired'
       | 'commercialOcrDeleteReason'
       | 'nonCommercialOcrDeleteReason'
+      | 'messageDuplicateOwned'
     >,
   ): boolean {
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
@@ -6357,7 +6368,8 @@ export class ModerationDeleteIntentService {
     const originBotId = this.optionalString(input.originBotId);
     const routingPolicy = this.resolveRoutingPolicy(input, chatId);
     if (
-      this.getRolloutForRule(chatId, ruleCode) === 'execute' &&
+      (isBoundMessageDuplicateDelete(input) ||
+        this.getRolloutForRule(chatId, ruleCode) === 'execute') &&
       routingPolicy === 'origin_only' &&
       !originBotId
     ) {
@@ -6513,16 +6525,20 @@ export class ModerationDeleteIntentService {
     return this.intentColumnsSql(alias);
   }
 
+  private messageDuplicateOwnedSql(intentIdColumn: Prisma.Sql): Prisma.Sql {
+    return Prisma.sql`EXISTS (
+      SELECT 1 FROM "moderation_delete_intent_reasons" message_duplicate_reason
+      WHERE message_duplicate_reason."intent_id" = ${intentIdColumn}
+        AND (message_duplicate_reason."reason_key" LIKE 'MESSAGE_DUPLICATE:%'
+          OR message_duplicate_reason."metadata"->>'duplicateSource' = 'message_v1')
+    )`;
+  }
+
   private intentSelectSql(alias: string): Prisma.Sql {
     const intentIdColumn = Prisma.raw(`"${alias}"."id"`);
     return Prisma.sql`
       ${this.intentColumnsSql(alias)},
-      EXISTS (
-        SELECT 1 FROM "moderation_delete_intent_reasons" message_duplicate_reason
-        WHERE message_duplicate_reason."intent_id" = ${intentIdColumn}
-          AND (message_duplicate_reason."reason_key" LIKE 'MESSAGE_DUPLICATE:%'
-            OR message_duplicate_reason."metadata"->>'duplicateSource' = 'message_v1')
-      ) AS "messageDuplicateOwned",
+      ${this.messageDuplicateOwnedSql(intentIdColumn)} AS "messageDuplicateOwned",
       EXISTS (
         SELECT 1
         FROM "moderation_delete_intent_reasons" execution_reason

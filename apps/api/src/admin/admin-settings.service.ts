@@ -155,8 +155,7 @@ export class AdminSettingsService {
     const duplicateMessageModerationMode =
       !messagePolicy || messagePolicy.mode === 'off'
         ? 'OFF'
-        : (messagePolicy.mode === 'delete_only' || messagePolicy.mode === 'full') &&
-            this.moderationDeleteIntents.getRolloutForRule(chatId, 'DUPLICATE_DELETE') === 'execute'
+        : messagePolicy.mode === 'delete_only' || messagePolicy.mode === 'full'
           ? messagePolicy.mode === 'full'
             ? 'FULL'
             : 'DELETE_ONLY'

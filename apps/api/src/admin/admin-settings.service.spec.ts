@@ -699,7 +699,7 @@ describe('AdminSettingsService chat rules', () => {
       value: { resolve: jest.fn().mockResolvedValue({ mode: 'full' }) },
     });
     Object.defineProperty(service, 'moderationDeleteIntents', {
-      value: { getRolloutForRule: () => 'execute' },
+      value: { getRolloutForRule: () => 'observed' },
     });
     const result = await service.getChatSettingsScreen('chat-1', user as never);
     expect(result.duplicateMessageModerationMode).toBe('FULL');
