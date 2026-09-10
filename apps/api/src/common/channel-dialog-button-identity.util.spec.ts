@@ -1,5 +1,7 @@
 import {
   internalChannelDialogButtonIdentityKey,
+  channelDialogButtonPresentationKey,
+  channelSuggestionButtonKey,
   readInternalChannelDialogButtonIdentity,
   readInternalChannelDialogButtonIdentitiesFromMessage,
 } from './channel-dialog-button-identity.util';
@@ -17,6 +19,22 @@ function buildStartParam(chatId: string, kind: 'comments' | 'suggest', threadId:
 }
 
 describe('internal channel dialog button identity', () => {
+  it('shares only suggestion presentation identity across profiles, never comment identity', () => {
+    const major = { chatId: 'channel-1', kind: 'suggest' as const, threadId: 'major-thread' };
+    const publisher = { ...major, profile: 'publisher' as const, threadId: 'publisher-thread' };
+    expect(channelDialogButtonPresentationKey(major)).toBe(
+      channelDialogButtonPresentationKey(publisher),
+    );
+    expect(internalChannelDialogButtonIdentityKey(major)).not.toBe(
+      internalChannelDialogButtonIdentityKey(publisher),
+    );
+    expect(channelDialogButtonPresentationKey({ ...major, kind: 'comments' })).not.toBe(
+      channelDialogButtonPresentationKey({ ...publisher, kind: 'comments' }),
+    );
+    expect(
+      channelSuggestionButtonKey({ type: 'link', text: 'Suggest', url: 'https://example.com' }),
+    ).toBeNull();
+  });
   it('isolates Publisher identity while retaining Major standby-bot dedupe', () => {
     const start = buildStartParam('channel-1', 'comments', 'shared-thread');
     const major = readInternalChannelDialogButtonIdentity({

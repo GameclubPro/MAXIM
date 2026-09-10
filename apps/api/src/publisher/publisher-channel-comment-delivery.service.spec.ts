@@ -174,7 +174,7 @@ describe('Publisher channel keyboard webhook and delivery', () => {
     },
   );
 
-  it('does not use a Major thread or let its buttons suppress Publisher buttons', async () => {
+  it('does not use a Major thread or let its comments suppress Publisher comments', async () => {
     const h = fixture();
     const majorLinks = new AdminDialogLinkHelper({
       appBaseUrl: null,
@@ -206,6 +206,52 @@ describe('Publisher channel keyboard webhook and delivery', () => {
     expect(h.mutate.mock.calls[0]![0]).toHaveLength(2);
     expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload.threadId).toBe(h.job.threadId);
   });
+
+  it.each(['BOT', 'MINIAPP'] as const)(
+    'keeps an existing Major %s suggestion without donating its thread to Publisher',
+    async (mode) => {
+      const h = fixture();
+      const majorLinks = new AdminDialogLinkHelper({
+        appBaseUrl: null,
+        explicitBotContactId: null,
+        ownBotUserId: 'major-bot',
+        maxBotToken: 'major-key',
+        maxBotTokenValidationSecrets: ['major-key'],
+      });
+      h.message.body.attachments = [
+        {
+          type: 'inline_keyboard',
+          payload: {
+            buttons: [
+              [
+                majorLinks.buildChannelDialogButton(
+                  chatId,
+                  'suggest',
+                  '22222222-2222-4222-8222-222222222222',
+                  'Suggest',
+                  'major-bot',
+                  mode,
+                ),
+              ],
+            ],
+          },
+        },
+      ];
+      await h.service.process(h.job);
+      expect(h.mutate.mock.calls[0]![0]).toHaveLength(1);
+      expect(h.mutate.mock.calls[0]![0][0][0].text).toContain('Комментарии');
+      expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload).toMatchObject({
+        threadId: h.job.threadId,
+        publisherProfile: true,
+        includeCommentsButton: true,
+        includeSuggestButton: false,
+      });
+      h.entity.publisherSettings.channelCommentsEnabled = false;
+      h.mutate.mockClear();
+      await h.service.process(h.job);
+      expect(h.mutate).not.toHaveBeenCalled();
+    },
+  );
 
   it('recovers its audit after a successful edit without editing again or resetting the thread', async () => {
     const h = fixture();

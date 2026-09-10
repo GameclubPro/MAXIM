@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
+import { channelSuggestionButtonKey } from '../common/channel-dialog-button-identity.util';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -66,7 +67,17 @@ export function assertEditableAttachmentsPreserved(
     }
     for (const button of row) {
       const normalized = normalizeMaxInlineKeyboardButtons([[button]])?.[0]?.[0];
-      if (!normalized || !deliveredButtons.some((item) => isDeepStrictEqual(item, normalized))) {
+      // FLAG: Only recognized channel suggestion aliases may share one surviving entry.
+      // Custom actions and comments must still survive byte-for-byte after normalization.
+      const suggestionKey = normalized ? channelSuggestionButtonKey(normalized) : null;
+      if (
+        !normalized ||
+        !deliveredButtons.some(
+          (item) =>
+            isDeepStrictEqual(item, normalized) ||
+            (suggestionKey !== null && channelSuggestionButtonKey(item) === suggestionKey),
+        )
+      ) {
         throw new BadRequestException('A button would be lost; preserving the original post.');
       }
     }

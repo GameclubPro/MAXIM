@@ -60,10 +60,25 @@ export function internalChannelDialogButtonIdentityKey(
   return JSON.stringify([identity.chatId, identity.kind, identity.profile ?? 'moderation']);
 }
 
+export function channelDialogButtonPresentationKey(
+  identity: InternalChannelDialogButtonIdentity,
+): string {
+  // FLAG: One suggestion entry per channel is a presentation rule, not shared authorization.
+  // Comments retain their profile; never use this key to resolve tokens or donate thread IDs.
+  return identity.kind === 'suggest'
+    ? JSON.stringify([identity.chatId, 'suggest'])
+    : internalChannelDialogButtonIdentityKey(identity);
+}
+
+export function channelSuggestionButtonKey(value: unknown): string | null {
+  const identity = readInternalChannelDialogButtonIdentity(value);
+  return identity?.kind === 'suggest' ? channelDialogButtonPresentationKey(identity) : null;
+}
+
 export function readInternalChannelDialogButtonIdentitiesFromMessage(
   value: unknown,
   expectedChatId?: string,
-  profile: 'moderation' | 'publisher' = 'moderation',
+  profile: 'moderation' | 'publisher' | 'all' = 'moderation',
   publisherBotId?: string,
 ): InternalChannelDialogButtonIdentity[] {
   const message = asRecord(value);
@@ -91,12 +106,17 @@ export function readInternalChannelDialogButtonIdentitiesFromMessage(
           const identity = readInternalChannelDialogButtonIdentity(button, publisherBotId);
           if (
             !identity ||
-            (identity.profile ?? 'moderation') !== profile ||
+            (profile !== 'all' && (identity.profile ?? 'moderation') !== profile) ||
             (expectedChatId && identity.chatId !== expectedChatId)
           ) {
             continue;
           }
-          const key = JSON.stringify([identity.chatId, identity.kind, identity.threadId]);
+          const key = JSON.stringify([
+            identity.chatId,
+            identity.kind,
+            identity.threadId,
+            identity.profile ?? 'moderation',
+          ]);
           if (!seen.has(key)) {
             seen.add(key);
             identities.push(identity);

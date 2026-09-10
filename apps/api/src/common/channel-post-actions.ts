@@ -1,4 +1,5 @@
 import type { MaxMessageButton } from '../max/max-client.service';
+import { channelSuggestionButtonKey } from './channel-dialog-button-identity.util';
 
 export type ChannelPostActionPlan = {
   commentsButton?: MaxMessageButton | null;
@@ -44,12 +45,10 @@ function appendFullWidthButton(
 }
 
 function readLinkIdentity(button: MaxMessageButton): string | null {
+  const suggestionKey = channelSuggestionButtonKey(button);
+  if (suggestionKey) return `suggestion:${suggestionKey}`;
   const rawUrl =
-    button.type === 'link'
-      ? button.url
-      : button.type === 'open_app'
-        ? button.webApp
-        : null;
+    button.type === 'link' ? button.url : button.type === 'open_app' ? button.webApp : null;
   if (!rawUrl?.trim()) {
     return null;
   }

@@ -1,11 +1,54 @@
 import type { MaxMessageButton } from '../max/max-client.service';
 import { buildChannelPostActionRows } from '../common/channel-post-actions';
+import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 
 function link(text: string, url: string): MaxMessageButton {
   return { type: 'link', text, url };
 }
 
 describe('buildChannelPostActionRows', () => {
+  it('keeps one suggestion when an old button is also present in CTA or custom rows', () => {
+    const helper = new AdminDialogLinkHelper({
+      appBaseUrl: null,
+      explicitBotContactId: null,
+      ownBotUserId: 'major-bot',
+      maxBotToken: 'test',
+      maxBotTokenValidationSecrets: ['test'],
+    });
+    const old = helper.buildChannelDialogButton(
+      '-100',
+      'suggest',
+      '11111111-1111-4111-8111-111111111111',
+      'Suggest',
+      'major-bot',
+      'BOT',
+    );
+    const current = helper.buildChannelDialogButton(
+      '-100',
+      'suggest',
+      'new-thread',
+      'Suggest',
+      'major-bot',
+      'MINIAPP',
+    );
+    const other = helper.buildChannelDialogButton(
+      '-200',
+      'suggest',
+      'other-thread',
+      'Suggest',
+      'major-bot',
+      'MINIAPP',
+    );
+    const ad = link('Advertise', 'https://example.com/ads');
+    const sameLabelCustom = link('Suggest', 'https://example.com/custom');
+    expect(
+      buildChannelPostActionRows({
+        suggestButton: current,
+        ctaButton: old,
+        customButtonRows: [[ad, old, other, sameLabelCustom]],
+      }),
+    ).toEqual([[current], [ad], [other], [sameLabelCustom]]);
+  });
   it('keeps managed channel actions first in their product order', () => {
     expect(
       buildChannelPostActionRows({
@@ -33,7 +76,10 @@ describe('buildChannelPostActionRows', () => {
       buildChannelPostActionRows({
         ctaButton: link('Advertise', 'https://example.test/ads#contact'),
         customButtonRows: [
-          [link('Duplicate', 'https://example.test/ads'), link('Details', 'https://example.test/info')],
+          [
+            link('Duplicate', 'https://example.test/ads'),
+            link('Details', 'https://example.test/info'),
+          ],
         ],
       }),
     ).toEqual([

@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import {
-  internalChannelDialogButtonIdentityKey,
+  channelDialogButtonPresentationKey,
   readInternalChannelDialogButtonIdentity,
   readInternalChannelDialogButtonIdentitiesFromMessage,
   type InternalChannelDialogButtonIdentity,
@@ -5736,7 +5736,7 @@ export class MaxClientService implements OnModuleDestroy {
       preservedRows.flatMap((row) =>
         row.flatMap((button) => {
           const identity = this.readChannelDialogButtonIdentity(button);
-          return identity ? [internalChannelDialogButtonIdentityKey(identity)] : [];
+          return identity ? [channelDialogButtonPresentationKey(identity)] : [];
         }),
       ),
     );
@@ -5748,7 +5748,7 @@ export class MaxClientService implements OnModuleDestroy {
           if (!identity) {
             return true;
           }
-          const key = internalChannelDialogButtonIdentityKey(identity);
+          const key = channelDialogButtonPresentationKey(identity);
           if (existingDialogButtonKeys.has(key) || insertedDialogButtonKeys.has(key)) {
             return false;
           }
@@ -5822,7 +5822,7 @@ export class MaxClientService implements OnModuleDestroy {
       for (const button of row) {
         const identity = this.readChannelDialogButtonIdentity(button);
         if (identity) {
-          const key = internalChannelDialogButtonIdentityKey(identity);
+          const key = channelDialogButtonPresentationKey(identity);
           if (!existingDialogButtons.has(key)) {
             existingDialogButtons.set(key, { button, identity });
           }
@@ -5838,7 +5838,7 @@ export class MaxClientService implements OnModuleDestroy {
           if (!identity) {
             return [button];
           }
-          const key = internalChannelDialogButtonIdentityKey(identity);
+          const key = channelDialogButtonPresentationKey(identity);
           if (representedDialogButtons.has(key)) {
             return [];
           }
@@ -5851,7 +5851,9 @@ export class MaxClientService implements OnModuleDestroy {
           const existingTarget = this.readInlineKeyboardButtonIdentity(existing.button);
           const sameTarget =
             (primaryTarget !== null && primaryTarget === existingTarget) ||
-            (identity.threadId !== null && identity.threadId === existing.identity.threadId);
+            (identity.profile === existing.identity.profile &&
+              identity.threadId !== null &&
+              identity.threadId === existing.identity.threadId);
           return [sameTarget ? button : existing.button];
         }),
       )
@@ -5872,9 +5874,12 @@ export class MaxClientService implements OnModuleDestroy {
           const dialogIdentity = this.readChannelDialogButtonIdentity(button);
           if (
             dialogIdentity &&
-            representedDialogButtons.has(internalChannelDialogButtonIdentityKey(dialogIdentity))
+            representedDialogButtons.has(channelDialogButtonPresentationKey(dialogIdentity))
           ) {
             return false;
+          }
+          if (dialogIdentity?.kind === 'suggest') {
+            representedDialogButtons.add(channelDialogButtonPresentationKey(dialogIdentity));
           }
           const identity = this.readInlineKeyboardButtonIdentity(button);
           return identity === null || !primaryButtonIdentities.has(identity);

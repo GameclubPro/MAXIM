@@ -78,8 +78,8 @@ export class PublisherChannelCommentDeliveryService {
                 'Publisher keyboard source is not the exact channel post',
               );
             }
-            // FLAG: Resolve existing Publisher threads inside the shared message edit lock;
-            // Major links must neither suppress these buttons nor donate their thread identity.
+            // FLAG: Resolve Publisher threads inside the shared edit lock. A pre-existing
+            // Major suggestion entry stays visible but never donates a Publisher thread/token.
             const identities = readInternalChannelDialogButtonIdentitiesFromMessage(
               message,
               job.chatId,
@@ -90,6 +90,15 @@ export class PublisherChannelCommentDeliveryService {
               identities.find((item) => item.kind === 'comments')?.threadId ??
               identities[0]?.threadId ??
               job.threadId;
+            const existingSuggestion = readInternalChannelDialogButtonIdentitiesFromMessage(
+              message,
+              job.chatId,
+              'all',
+              job.requiredBotId,
+            ).find((item) => item.kind === 'suggest');
+            const includeSuggestButton =
+              settings.channelSuggestionsEnabled &&
+              (!existingSuggestion || existingSuggestion.profile === 'publisher');
             const count = settings.channelCommentsEnabled
               ? await countPublisherChatComments(this.prisma, job.chatId, threadId)
               : 0;
@@ -104,7 +113,7 @@ export class PublisherChannelCommentDeliveryService {
                   'MINIAPP',
                 )
               : null;
-            const suggest = settings.channelSuggestionsEnabled
+            const suggest = includeSuggestButton
               ? this.links.buildChannelDialogButton(
                   job.chatId,
                   'suggest',
@@ -125,7 +134,7 @@ export class PublisherChannelCommentDeliveryService {
               publisherProfile: true,
               source: 'publisher_channel_webhook',
               includeCommentsButton: settings.channelCommentsEnabled,
-              includeSuggestButton: settings.channelSuggestionsEnabled,
+              includeSuggestButton,
               suggestionEntryMode: 'MINIAPP',
               suggestButtonText: suggestText,
               buttonRows: buttonRows as Prisma.InputJsonValue,

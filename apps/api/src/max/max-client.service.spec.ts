@@ -42,6 +42,8 @@ import {
   MaxMediaUploadValidationError,
 } from './max-media-upload-validation';
 import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
+import { AdminDialogLinkHelper } from '../admin/admin-dialog-link-helper';
+import { readInternalChannelDialogButtonIdentity } from '../common/channel-dialog-button-identity.util';
 
 const TINY_JPEG_BASE64 =
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
@@ -430,6 +432,171 @@ describe('MAX action idempotency key normalization', () => {
 });
 
 describe('MaxClientService inline keyboard guardrails', () => {
+  it.each(['edit', 'copy', 'comment_refresh'] as const)(
+    'keeps one old suggestion entry with media and advertising during %s',
+    async (operation) => {
+      const links = (publisher: boolean) =>
+        new AdminDialogLinkHelper({
+          appBaseUrl: null,
+          explicitBotContactId: null,
+          ownBotUserId: publisher ? 'publik-bot' : 'major-bot',
+          maxBotToken: 'test',
+          maxBotTokenValidationSecrets: ['test'],
+          ...(publisher ? { dialogProfile: 'publisher' } : {}),
+        });
+      const major = links(false);
+      const publisher = links(true);
+      const old = major.buildChannelDialogButton(
+        'channel-1',
+        'suggest',
+        '11111111-1111-4111-8111-111111111111',
+        'Suggest',
+        'major-bot',
+        'BOT',
+      );
+      const duplicate = publisher.buildChannelDialogButton(
+        'channel-1',
+        'suggest',
+        'publisher-thread',
+        'Suggest',
+        'publik-bot',
+        'MINIAPP',
+      );
+      const comment = publisher.buildChannelDialogButton(
+        'channel-1',
+        'comments',
+        'publisher-thread',
+        'Comments',
+        'publik-bot',
+        'MINIAPP',
+      );
+      const ad = { type: 'link', text: 'Advertise', url: 'https://example.com/ads' };
+      const media = { type: 'image', payload: { token: 'image-token' } };
+      let message = {
+        body: {
+          mid: 'post-1',
+          text: 'Post',
+          attachments: [
+            media,
+            { type: 'inline_keyboard', payload: { buttons: [[old], [ad], [duplicate]] } },
+          ],
+        },
+      };
+      const mutations: Record<string, unknown>[] = [];
+      const http = {
+        request: jest
+          .fn()
+          .mockImplementation((request: { method: string; data: Record<string, unknown> }) => {
+            if (request.method === 'get') return of({ status: 200, data: { messages: [message] } });
+            mutations.push(request.data);
+            message = {
+              body: {
+                ...message.body,
+                attachments: request.data.attachments as typeof message.body.attachments,
+              },
+            };
+            return of({ status: 200, data: { success: true, message: { body: { mid: 'copy' } } } });
+          }),
+      };
+      const service = createService(http);
+      const options = {
+        buttons: operation === 'comment_refresh' ? [[comment]] : [[comment], [duplicate]],
+        mergeExistingInlineKeyboard: true,
+        appendNewInlineKeyboardRows: true,
+        requireAllAttachmentsPreserved: true,
+      };
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (operation !== 'copy')
+            await service.editMessageInlineKeyboard('channel-1', 'post-1', null, options);
+          else
+            await service.sendMessageCopyWithInlineKeyboard('channel-1', 'post-1', 'Post', options);
+        }
+        for (const mutation of mutations) {
+          const attachments = mutation.attachments as Array<{
+            type: string;
+            payload: { buttons?: unknown[][] };
+          }>;
+          expect(attachments).toContainEqual(media);
+          const buttons = attachments
+            .find((a) => a.type === 'inline_keyboard')!
+            .payload.buttons!.flat();
+          expect(buttons).toContainEqual(old);
+          expect(buttons).toContainEqual(ad);
+          expect(buttons).toContainEqual(comment);
+          expect(
+            buttons.filter(
+              (button) => readInternalChannelDialogButtonIdentity(button)?.kind === 'suggest',
+            ),
+          ).toHaveLength(1);
+        }
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it('does not append a Major suggestion when Publisher already attached one to a manual post', async () => {
+    const helper = (publisher: boolean) =>
+      new AdminDialogLinkHelper({
+        appBaseUrl: null,
+        explicitBotContactId: null,
+        ownBotUserId: publisher ? 'publik' : 'major',
+        maxBotToken: 'test',
+        maxBotTokenValidationSecrets: ['test'],
+        ...(publisher ? { dialogProfile: 'publisher' } : {}),
+      });
+    const publisher = helper(true).buildChannelDialogButton(
+      'channel-1',
+      'suggest',
+      'shared-thread',
+      'Suggest',
+      'publik',
+      'MINIAPP',
+    );
+    const major = helper(false).buildChannelDialogButton(
+      'channel-1',
+      'suggest',
+      'shared-thread',
+      'Suggest',
+      'major',
+      'MINIAPP',
+    );
+    const http = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'manual',
+                    text: 'Post',
+                    attachments: [{ type: 'inline_keyboard', payload: { buttons: [[publisher]] } }],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(http);
+    try {
+      await service.editMessageInlineKeyboard('channel-1', 'manual', null, {
+        buttons: [[major]],
+        mergeExistingInlineKeyboard: true,
+        requireAllAttachmentsPreserved: true,
+      });
+      expect(http.request.mock.calls[1]![0].data.attachments).toEqual([
+        { type: 'inline_keyboard', payload: { buttons: [[publisher]] } },
+      ]);
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
   it('prepares Publisher buttons from the locked snapshot without merging their data with Major', async () => {
     const buildButton = (publisher: boolean) => {
       const token = `cdt-${Buffer.from(JSON.stringify({ v: 1, d: publisher ? 'publisher-thread' : 'major-thread', s: 'a'.repeat(64) })).toString('base64url')}`;
