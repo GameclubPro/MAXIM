@@ -475,6 +475,18 @@ WITH classified_activity AS MATERIALIZED (
       WHEN query ~* '^\s*(vacuum|analyze|create index|reindex)' THEN 'maintenance'
       ELSE 'other'
     END AS query_family,
+    CASE
+      WHEN state IS DISTINCT FROM 'active' OR query NOT LIKE '%audit_logs%' THEN 'not_applicable'
+      WHEN query ~* '^\s*SELECT\s+COUNT\(' THEN 'audit_count'
+      WHEN query LIKE 'SELECT "public"."audit_logs"."id", "public"."audit_logs"."chat_id", "public"."audit_logs"."payload", "public"."audit_logs"."created_at"%'
+        THEN 'audit_recovery_page'
+      WHEN query LIKE 'SELECT "public"."audit_logs"."chat_id", "public"."audit_logs"."payload"%'
+        THEN 'audit_recovery_confirmation'
+      WHEN query LIKE 'SELECT "public"."audit_logs"."payload"%' THEN 'audit_payload_lookup'
+      WHEN query LIKE 'SELECT "public"."audit_logs"."id", "public"."audit_logs"."chat_id", "public"."audit_logs"."actor_user_id"%'
+        THEN 'audit_full_row'
+      ELSE 'audit_other'
+    END AS query_shape,
     backend_type,
     coalesce(state, 'unknown') AS state,
     coalesce(wait_event_type, 'none') AS wait_event_type,
@@ -496,6 +508,7 @@ WITH classified_activity AS MATERIALIZED (
   SELECT
     workload,
     query_family,
+    query_shape,
     backend_type,
     state,
     wait_event_type,
@@ -504,8 +517,8 @@ WITH classified_activity AS MATERIALIZED (
     max(active_query_age_seconds) AS oldest_active_query_seconds,
     max(transaction_age_seconds) AS oldest_transaction_seconds
   FROM classified_activity
-  GROUP BY workload, query_family, backend_type, state, wait_event_type, wait_event
-  ORDER BY sessions DESC, workload, query_family, backend_type, state, wait_event_type, wait_event
+  GROUP BY workload, query_family, query_shape, backend_type, state, wait_event_type, wait_event
+  ORDER BY sessions DESC, workload, query_family, query_shape, backend_type, state, wait_event_type, wait_event
   LIMIT 64
 )
 SELECT json_build_object(
@@ -516,6 +529,7 @@ SELECT json_build_object(
       json_build_object(
         'workload', workload,
         'query_family', query_family,
+        'query_shape', query_shape,
         'backend_type', backend_type,
         'state', state,
         'wait_event_type', wait_event_type,
@@ -524,7 +538,7 @@ SELECT json_build_object(
         'oldest_active_query_seconds', oldest_active_query_seconds,
         'oldest_transaction_seconds', oldest_transaction_seconds
       )
-      ORDER BY sessions DESC, workload, query_family, backend_type, state, wait_event_type, wait_event
+      ORDER BY sessions DESC, workload, query_family, query_shape, backend_type, state, wait_event_type, wait_event
     ),
     '[]'::json
   )
