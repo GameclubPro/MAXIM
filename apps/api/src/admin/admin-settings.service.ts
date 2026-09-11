@@ -288,24 +288,11 @@ export class AdminSettingsService {
         this.legacyAdminService.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
       ...(this.manualMessageCleanupService
         ? {
-            deletePreviousPublishedMessage: ({
-              chatId: targetChatId,
-              messageId,
-              botId,
-              directOptions,
-            }) =>
-              this.manualMessageCleanupService!.deleteBotAuthoredMessage({
-                chatId: targetChatId,
-                messageId,
-                originBotId: botId,
-                reasonKey: 'chat_rules_republish_previous_message_cleanup',
-                ruleCode: 'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
-                metadata: {
-                  source,
-                  actorUserId: user.userId,
-                  cleanupKind: 'chat_rules_republish',
-                },
-                directOptions,
+            deletePreviousPublishedMessage: (cleanup) =>
+              this.manualMessageCleanupService!.deleteChatRulesMessage({
+                ...cleanup,
+                source,
+                actorUserId: user.userId,
               }),
           }
         : {}),
@@ -414,19 +401,11 @@ export class AdminSettingsService {
       resolveBotId: () => this.legacyAdminService.resolveChatRulesActionBotId(chatId),
       ...(this.manualMessageCleanupService
         ? {
-            deletePublishedMessage: ({ chatId: targetChatId, messageId, botId, directOptions }) =>
-              this.manualMessageCleanupService!.deleteBotAuthoredMessage({
-                chatId: targetChatId,
-                messageId,
-                originBotId: botId,
-                reasonKey: 'chat_rules_reset_published_message_cleanup',
-                ruleCode: 'CHAT_RULES_RESET_PUBLISHED_MESSAGE_CLEANUP',
-                metadata: {
-                  source,
-                  actorUserId: user.userId,
-                  cleanupKind: 'chat_rules_reset',
-                },
-                directOptions,
+            deletePublishedMessage: (cleanup) =>
+              this.manualMessageCleanupService!.deleteChatRulesMessage({
+                ...cleanup,
+                source,
+                actorUserId: user.userId,
               }),
           }
         : {}),

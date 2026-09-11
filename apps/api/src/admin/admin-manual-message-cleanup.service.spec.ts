@@ -85,6 +85,38 @@ describe('AdminManualMessageCleanupService', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
+  it('distinguishes blocked rules cleanup from an actively pending deletion', async () => {
+    const maxClient = { deleteMessage: jest.fn() };
+    const deleteIntents = {
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({ intentId: 'intent-1' }),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'waiting_capability',
+        confirmed: false,
+        intentId: 'intent-1',
+        status: 'WAITING_CAPABILITY',
+      }),
+    };
+    const service = new AdminManualMessageCleanupService(
+      {} as never,
+      maxClient as never,
+      deleteIntents as never,
+    );
+
+    await expect(
+      service.deleteChatRulesMessage({
+        chatId: 'chat-1',
+        messageId: 'old-rules',
+        botId: 'original-bot',
+        cleanupKind: 'republish_previous',
+        source: 'miniapp',
+        actorUserId: 'admin-1',
+        directOptions: { immediate: true },
+      }),
+    ).resolves.toBe('waiting_capability');
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
   it('fails closed when exact replacement cleanup intent persistence fails', async () => {
     const persistenceError = new Error('intent persistence unavailable');
     const maxClient = { deleteMessage: jest.fn() };

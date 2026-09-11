@@ -18124,6 +18124,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (
       immediate !== true &&
+      userFacing !== true &&
       bypassNoticeBucket !== true &&
       !(await this.shouldSendBotNotice(chatId))
     ) {

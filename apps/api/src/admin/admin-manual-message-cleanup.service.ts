@@ -19,7 +19,7 @@ export type AdminManualMessageCleanupResult = {
   failedMessageIds: string[];
 };
 
-type ManualDeleteOutcome = 'confirmed' | 'accepted' | 'failed';
+type ManualDeleteOutcome = 'confirmed' | 'accepted' | 'waiting_capability' | 'failed';
 
 @Injectable()
 export class AdminManualMessageCleanupService {
@@ -311,9 +311,10 @@ export class AdminManualMessageCleanupService {
           case 'already_absent':
             return 'confirmed';
           case 'pending':
-          case 'waiting_capability':
           case 'ambiguous':
             return 'accepted';
+          case 'waiting_capability':
+            return persistBeforeAttempt ? 'waiting_capability' : 'accepted';
           case 'expired':
           case 'terminal':
             return 'failed';

@@ -209,6 +209,7 @@ function createService(
     photoDuplicateDeleteIntentRollout?: 'off' | 'observed' | 'execute';
     managedBroadcasts?: Array<Record<string, unknown>>;
     managedEntityHeader?: Record<string, unknown>;
+    manualMessageCleanupService?: { deleteChatRulesMessage: jest.Mock };
     persistedChannelSettings?: ReturnType<typeof createPersistedChannelSettings>;
     persistedSettings?: ReturnType<typeof createPersistedChatSettings>;
     persistedRules?: ReturnType<typeof createPersistedChatRules>;
@@ -475,7 +476,7 @@ function createService(
     photoDuplicateRuntimePolicy as never,
     moderationDeleteIntents as never,
     nightModeTransitionScheduler as never,
-    undefined,
+    options.manualMessageCleanupService as never,
     channelPostSignatureService as never,
     accessObservability as never,
   );
@@ -2682,6 +2683,42 @@ describe('AdminSettingsService chat rules', () => {
       'https://max.ru/chats/chat-1/message/2',
     );
   });
+
+  it.each(['publishRules', 'resetPublishedRules'] as const)(
+    '%s preserves the existing cleanup kind before starting its own operation',
+    async (operation) => {
+      const cleanupKind = operation === 'publishRules' ? 'reset_current' : 'republish_previous';
+      const rules = createPersistedChatRules({
+        publishedMessageId: 'rules-current',
+        publishedBotId: 'original-bot',
+        pendingCleanupMessageId: cleanupKind === 'reset_current' ? 'rules-current' : 'rules-older',
+        pendingCleanupBotId: 'original-bot',
+        pendingCleanupKind: cleanupKind,
+      });
+      const manualMessageCleanupService = {
+        deleteChatRulesMessage: jest.fn().mockResolvedValue('accepted'),
+      };
+      const { service, maxClient } = createService({
+        persistedRules: rules,
+        manualMessageCleanupService,
+      });
+
+      await expect(service[operation]('chat-1', user as never)).rejects.toThrow('ещё удаляется');
+
+      expect(manualMessageCleanupService.deleteChatRulesMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          messageId: rules.pendingCleanupMessageId,
+          botId: 'original-bot',
+          cleanupKind,
+          source: 'miniapp',
+          actorUserId: 'admin-1',
+        }),
+      );
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not promise photo enforcement in autofilled rules while rollout is observe-only', async () => {
     const { legacyAdminService, service } = createService({

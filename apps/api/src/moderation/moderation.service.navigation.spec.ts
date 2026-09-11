@@ -2014,76 +2014,83 @@ describe('ModerationService', () => {
     );
   });
 
-  it('issues WARN on second link in 24h when link warning stage is enabled', async () => {
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings({
-            linkBotMessageEnabled: false,
-            linkWarnEnabled: true,
+  it.each([true, false])(
+    'issues WARN on second link with notice bucket available=%s',
+    async (bucketAvailable) => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({
+              linkBotMessageEnabled: false,
+              linkWarnEnabled: true,
+            }),
+            domains: [],
           }),
-          domains: [],
+        },
+        violation: {
+          create: jest.fn(),
+          count: jest.fn().mockResolvedValue(2),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({
+          violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
         }),
-      },
-      violation: {
-        create: jest.fn(),
-        count: jest.fn().mockResolvedValue(2),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn().mockResolvedValue({
-        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
-      }),
-    };
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
+      };
+      const sanctionService = {
+        resolveAction: jest.fn(),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-    );
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        sanctionService as never,
+        maxClient as never,
+      );
+      const noticeBucket = jest
+        .spyOn(service as any, 'shouldSendBotNotice')
+        .mockResolvedValue(bucketAvailable);
 
-    await service.handleUpdate(createUpdate());
+      await service.handleUpdate(createUpdate());
 
-    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
-      'chat-1',
-      linkWarnNotice('Алексей'),
-    );
-    expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
-      data: expect.objectContaining({
-        ruleCode: 'LINK_BLOCKED',
-        action: SanctionAction.WARN,
-        metadata: expect.objectContaining({
-          linkViolationCount24h: 2,
-          linkEscalationWindowHours: 24,
+      expect(noticeBucket).not.toHaveBeenCalled();
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+        'chat-1',
+        linkWarnNotice('Алексей'),
+      );
+      expect(maxClient.kickMember).not.toHaveBeenCalled();
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+        data: expect.objectContaining({
+          ruleCode: 'LINK_BLOCKED',
+          action: SanctionAction.WARN,
+          metadata: expect.objectContaining({
+            linkViolationCount24h: 2,
+            linkEscalationWindowHours: 24,
+          }),
         }),
-      }),
-    });
-  });
+      });
+    },
+  );
 
   it('uses edited-message copy for link WARN after a quiet edit', async () => {
     const prisma = {

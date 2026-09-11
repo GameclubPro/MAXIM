@@ -43,7 +43,7 @@ type ChatRulesFormattedPublication = {
   textFormat?: MaxSendMessageOptions['textFormat'];
 };
 
-type ChatRulesDeleteOutcome = 'confirmed' | 'accepted' | 'failed';
+type ChatRulesDeleteOutcome = 'confirmed' | 'accepted' | 'waiting_capability' | 'failed';
 type ChatRulesCleanupKind = 'republish_previous' | 'reset_current';
 type DeletePublishedChatRulesMessage = (params: {
   chatId: string;
@@ -56,6 +56,8 @@ type DeletePublishedChatRulesMessage = (params: {
 const CHAT_RULES_LINK_TIMEOUT_MS = 2_500;
 const CHAT_RULES_SEND_TIMEOUT_MS = 12_000;
 const CHAT_RULES_UPLOAD_TIMEOUT_MS = 30_000;
+const CHAT_RULES_CLEANUP_ACCESS_ERROR =
+  'Исходный бот пока не может удалить прежний пост правил. Проверьте, что он состоит в группе и имеет права администратора на удаление сообщений.';
 
 function buildChatRulesReadOptions(botId?: string) {
   return {
@@ -163,6 +165,9 @@ async function reconcilePendingChatRulesCleanup(params: {
     outcome = 'confirmed';
   }
   if (outcome !== 'confirmed') {
+    if (outcome === 'waiting_capability') {
+      throw new BadRequestException(CHAT_RULES_CLEANUP_ACCESS_ERROR);
+    }
     throw new BadRequestException(
       outcome === 'accepted'
         ? 'Предыдущий пост правил ещё удаляется. Подождите немного и повторите.'
@@ -171,11 +176,11 @@ async function reconcilePendingChatRulesCleanup(params: {
   }
 
   // FLAG: Reconcile only the exact confirmed cleanup; never clear a newer publish/reset fence.
-  const cleared = await params.prisma.chatRules.updateMany({
+  await params.prisma.chatRules.updateMany({
     where: {
       chatId: rules.chatId,
-      updatedAt: rules.updatedAt,
       publishedMessageId: rules.publishedMessageId,
+      publishedBotId: rules.publishedBotId,
       publishOperationId: null,
       publishSendStartedAt: null,
       pendingCleanupMessageId: rules.pendingCleanupMessageId,
@@ -193,7 +198,20 @@ async function reconcilePendingChatRulesCleanup(params: {
     },
   });
   const latest = await params.prisma.chatRules.findUnique({ where: { chatId: rules.chatId } });
-  if (cleared.count !== 1 || !latest) {
+  // FLAG: The durable executor may have finalized this exact cleanup before our CAS.
+  // A draft save is safe to read afresh; a newer publication or cleanup must still stop us.
+  const expectedPublishedMessageId =
+    cleanupKind === 'reset_current' ? null : rules.publishedMessageId;
+  const expectedPublishedBotId = cleanupKind === 'reset_current' ? null : rules.publishedBotId;
+  if (
+    !latest ||
+    latest.publishOperationId ||
+    latest.publishSendStartedAt ||
+    latest.pendingCleanupMessageId ||
+    latest.pendingCleanupKind ||
+    latest.publishedMessageId !== expectedPublishedMessageId ||
+    latest.publishedBotId !== expectedPublishedBotId
+  ) {
     throw new BadRequestException(
       'Правила изменились во время удаления. Обновите экран и повторите.',
     );
@@ -1016,8 +1034,11 @@ export async function publishChatRules(params: {
         cleanupKind: 'republish_previous',
       });
       previousCleanupOutcome = outcome;
-      if (outcome === 'failed') {
-        previousCleanupError = 'Durable cleanup reached a terminal state';
+      if (outcome === 'failed' || outcome === 'waiting_capability') {
+        previousCleanupError =
+          outcome === 'waiting_capability'
+            ? 'Durable cleanup is waiting for the original bot capability'
+            : 'Durable cleanup reached a terminal state';
         params.logger.warn(
           {
             chatId: params.chatId,
@@ -1094,7 +1115,9 @@ export async function publishChatRules(params: {
           ),
           previousPublishedMessageId,
           previousPublishedBotId: previousCleanupBotId,
-          previousCleanupOutcome,
+          // FLAG: Recovery and older images recognize accepted; capability waits remain retryable.
+          previousCleanupOutcome:
+            previousCleanupOutcome === 'waiting_capability' ? 'accepted' : previousCleanupOutcome,
           ...(previousCleanupError ? { previousCleanupError } : {}),
           source: params.source,
         },
@@ -1253,6 +1276,9 @@ export async function resetPublishedChatRules(params: {
           maxApiMessage || 'Не удалось удалить опубликованный пост правил.',
         );
       }
+    }
+    if (cleanupOutcome === 'waiting_capability') {
+      throw new BadRequestException(CHAT_RULES_CLEANUP_ACCESS_ERROR);
     }
   }
 

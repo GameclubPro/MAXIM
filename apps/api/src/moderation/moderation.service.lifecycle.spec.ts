@@ -4506,11 +4506,18 @@ describe('ModerationService', () => {
     const maxClient = {
       sendMessage: jest.fn(),
     };
+    const redisCounter = {
+      incrementWithTtl: jest.fn().mockResolvedValue(1_000_000),
+    };
     const service = new ModerationService(
       {} as never,
       {} as never,
       {} as never,
       maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
     );
 
     await (service as any).sendBotMessageWithOptionalAutoDelete({
@@ -4533,6 +4540,7 @@ describe('ModerationService', () => {
       }),
     );
     expect(maxClient.sendMessage.mock.calls[0]?.[3]).not.toHaveProperty('immediate');
+    expect(redisCounter.incrementWithTtl).not.toHaveBeenCalled();
   });
 
   it('uploads bot speech media and attaches it to bot notices', async () => {
