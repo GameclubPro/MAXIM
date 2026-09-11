@@ -2,6 +2,58 @@
 
 Дата ревизии: 2026-07-24.
 
+Актуальный аудит трёх production-срезов 10-11 сентября и следующий план работ:
+[проверка реальных данных от 12 сентября 2026](commercial-filter-audit-2026-09-12.md).
+Он фиксирует ошибки ownership, дрейф обезличивания и критерии безопасности удаления;
+исторические метрики ниже не заменяют независимую оценку текущей версии.
+
+## September Implementation: Scoped Corrections
+
+The first implementation preserves chat settings, thresholds, the meaning of `WARN`,
+and the existing sanctions/delete-intent contracts. It adds:
+
+- shared phone spans and canonical numbers for detection, corpus redaction, and
+  campaign contact extraction, including `24/7` and slash-separated contacts;
+- protection for transport requests, completed personal service recommendations,
+  used household items and individual used vehicle parts;
+- bounded construction/PPU and professional crop-procurement recognition, without
+  treating a service-quality slogan as a private-sale statement;
+- `policyFpRisk` in audit/replay snapshots, with the legacy `fpRisk` fallback;
+- phone-placeholder parity for the affected short-service/high-risk cases and an
+  independent conservative residual-contact check for quality validation.
+
+Use `--quality-gate` on `moderation:validate-commercial-corpus` to require trusted
+manual positive/negative/gray counts using the configured corpus minimums. Automatic
+labels cannot satisfy these minimums; unresolved automatic sanitization drift and
+residual contact candidates fail this mode. Structural validation without the new
+flag remains compatible. This gate is not proof of independent sampling or population
+precision; labels, duplicate grouping, and temporal separation still need review.
+
+Pre-release comparison used the same sanitized inputs and settings for both versions:
+
+- July manual overlay: all 1,895 action decisions retained against source
+  `749907d0cd38956549ab25770f1f267ba9292fa2`; historical recommendations were not relabeled.
+- September 11, 12:00-14:00 UTC: 5,097 events replayed; nine `WARN -> NONE` transitions
+  covered four service testimonials, three personal juicer listings, and two transport
+  requests. Seventy-nine `NONE -> WARN` transitions concern phone-placeholder service
+  recognition, not 79 new production deletions. Four of those taxi events had original
+  `REVIEW_ONLY` snapshots; the other 75 already had original `WARN` snapshots.
+- September 11, 20:00-22:00 UTC: all 1,348 sanitized replay decisions retained.
+- September 11, 18:00-20:00 UTC: 2,963 events replayed; the personal vehicle-part
+  listing loses cleanup eligibility, and 13 explicit-offer instances gain it
+  (construction, road works, PPU, recurring vehicle buyout, crop procurement).
+  Three additional taxi-placeholder transitions include two original `WARN`
+  snapshots and one original `REVIEW_ONLY` snapshot.
+
+The benchmark action snapshot changes only for the already-positive construction
+brigade fixture: `REVIEW_ONLY -> WARN`. Its original text and label are retained;
+negative cases, subtype counts, and high-risk action counts remain unchanged.
+
+These are regression comparisons, not raw-input population quality claims. Original
+and sanitized snapshots must remain distinct; no MAX deletion receipt was verified.
+Unreviewed language-specific vocabulary and general URL-placeholder parity are not
+expanded in this release. Commercial OCR remains under its independent shadow gates.
+
 ## September Audit And Runtime Contract
 
 Implementation revision: 2026-09-08. The July measurements below are historical,

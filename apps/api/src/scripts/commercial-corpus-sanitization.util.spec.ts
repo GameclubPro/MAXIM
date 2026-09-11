@@ -1,9 +1,24 @@
 import {
   isCommercialCorpusTextSanitized,
   sanitizeCommercialCorpusText,
+  hasResidualCommercialContactCandidate,
 } from './commercial-corpus-sanitization.util';
 
 describe('commercial corpus sanitization', () => {
+  it('redacts schedule-adjacent and slash-separated contacts without merging them', () => {
+    const input = 'Работаем 24 на 7 89000001042 / 89000001043';
+    expect(hasResidualCommercialContactCandidate(input)).toBe(true);
+    const sanitized = sanitizeCommercialCorpusText(input);
+    expect(sanitized).toBe('Работаем 24 на 7 [phone] / [phone]');
+    expect(hasResidualCommercialContactCandidate(sanitized)).toBe(false);
+  });
+
+  it('flags a residual numeric candidate independently of detector identifier guards', () => {
+    const input = 'Код заказа 89000001042 12345';
+    expect(sanitizeCommercialCorpusText(input)).toBe(input);
+    expect(hasResidualCommercialContactCandidate(input)).toBe(true);
+  });
+
   it('preserves assertion boundaries for new replay corpora without retaining contacts', () => {
     const text = 'Новости: предложение обсуждается.\n\nОтдельно: услуги, телефон 8-900-000-10-42';
     const sanitized = sanitizeCommercialCorpusText(text, { preserveLayout: true });

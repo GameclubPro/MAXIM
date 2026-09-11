@@ -4,6 +4,7 @@ import { CommercialAdDetector } from './commercial-ad.detector';
 import {
   hasCommercialPhoneLikeText,
   normalizeCommercialPhoneConfusables,
+  parseCommercialPhones,
   replaceCommercialPhoneLikeText,
 } from './commercial-phone';
 
@@ -27,6 +28,32 @@ function detect(text: string) {
 }
 
 describe('commercial phone matching', () => {
+  it.each([' / ', '/', '\n', ' 📲 '])('returns separate source spans for %j', (separator) => {
+    const text = `Звоните: 89000001042${separator}89000001043${separator}89000001044`;
+    const contacts = parseCommercialPhones(text);
+    expect(contacts.map(({ normalizedNumber }) => normalizedNumber)).toEqual([
+      '79000001042',
+      '79000001043',
+      '79000001044',
+    ]);
+    expect(contacts.map(({ start, end }) => text.slice(start, end))).toEqual([
+      '89000001042',
+      '89000001043',
+      '89000001044',
+    ]);
+    expect(replaceCommercialPhoneLikeText(text)).toBe(
+      `Звоните: [phone]${separator}[phone]${separator}[phone]`,
+    );
+  });
+
+  it.each(['24 на 7', '24/7'])('separates the %s schedule from its phone', (schedule) => {
+    const text = `Работаем ${schedule} 89000001042`;
+    expect(parseCommercialPhones(text).map(({ normalizedNumber }) => normalizedNumber)).toEqual([
+      '79000001042',
+    ]);
+    expect(replaceCommercialPhoneLikeText(text)).toBe(`Работаем ${schedule} [phone]`);
+  });
+
   it.each([' 📲 ', '\n📲 ', '\n', ', ', '; '])(
     'keeps adjacent complete contacts separate with %j',
     (separator) => {

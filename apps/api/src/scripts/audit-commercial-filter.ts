@@ -169,6 +169,7 @@ export type CommercialSnapshot = {
   negativeSignals: string[];
   decisionVersion: string | null;
   fpRisk: number | null;
+  policyFpRisk?: number | null;
   evidenceTier: string | null;
   subtype: string | null;
   actionBand: string | null;
@@ -1007,6 +1008,7 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
       negativeSignals: [],
       decisionVersion: null,
       fpRisk: null,
+      policyFpRisk: null,
       evidenceTier: null,
       subtype: null,
       actionBand: null,
@@ -1042,6 +1044,8 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
     negativeSignals: readStringArray(metadata?.negativeSignals),
     decisionVersion: readOptionalString(metadata?.decisionVersion),
     fpRisk: readOptionalNumber(metadata?.fpRisk),
+    policyFpRisk:
+      readOptionalNumber(metadata?.policyFpRisk) ?? readOptionalNumber(metadata?.fpRisk),
     evidenceTier: readOptionalString(metadata?.evidenceTier),
     subtype: readOptionalString(metadata?.subtype),
     actionBand: readOptionalString(metadata?.actionBand),
@@ -1082,6 +1086,9 @@ function snapshotFromHistorical(
     negativeSignals: readStringArray(normalizedMetadata?.negativeSignals),
     decisionVersion: readOptionalString(normalizedMetadata?.decisionVersion),
     fpRisk: readOptionalNumber(normalizedMetadata?.fpRisk),
+    policyFpRisk:
+      readOptionalNumber(normalizedMetadata?.policyFpRisk) ??
+      readOptionalNumber(normalizedMetadata?.fpRisk),
     evidenceTier: readOptionalString(normalizedMetadata?.evidenceTier),
     subtype: readOptionalString(normalizedMetadata?.subtype),
     actionBand: readOptionalString(normalizedMetadata?.actionBand),
@@ -1154,11 +1161,11 @@ export function derivePolicyCategory(params: {
   }
   if (
     (current.actionBand === 'WARN' || current.actionBand === 'REVIEW_ONLY') &&
-    ((current.fpRisk ?? 0) >= 70 || current.reviewRecommended)
+    ((current.policyFpRisk ?? current.fpRisk ?? 0) >= 70 || current.reviewRecommended)
   ) {
     return 'gray_zone';
   }
-  if ((current.fpRisk ?? 0) >= 70) {
+  if ((current.policyFpRisk ?? current.fpRisk ?? 0) >= 70) {
     return 'false_positive_candidate';
   }
   if (

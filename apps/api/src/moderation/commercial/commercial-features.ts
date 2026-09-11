@@ -6,7 +6,10 @@ import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { buildCommercialFeatureVector } from './commercial-explain';
 import { collectCommercialHighRiskRecallHits } from './commercial-high-risk-recall';
 import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
-import { resolveCommercialLocalContext } from './commercial-local-context';
+import {
+  hasTransportDemandWithoutOffer,
+  resolveCommercialLocalContext,
+} from './commercial-local-context';
 import { hasCommercialPhoneLikeText, replaceCommercialPhoneLikeText } from './commercial-phone';
 import {
   collectFirstMarkers,
@@ -56,6 +59,7 @@ import {
   ADS_PRIVATE_GOODS_PATTERNS,
   ADS_PRIVATE_SINGLE_LISTING_PATTERNS,
   ADS_PROPERTY_PRIVATE_PATTERNS,
+  ADS_PPU_SERVICE_OFFER_PATTERN,
   ADS_PROPERTY_CONTEXT_PATTERNS,
   ADS_PROPERTY_COMMERCIAL_PATTERNS,
   ADS_PROPERTY_AGENT_PATTERNS,
@@ -239,6 +243,8 @@ export function hasCommercialSpamMarkers(text: string): boolean {
     return false;
   }
 
+  if (hasTransportDemandWithoutOffer(rawLoweredText)) return false;
+
   const matcher = createCommercialTextMatcher(normalizedText, rawLoweredText, {
     rawLoweredTextIsCommercialNormalized: true,
   });
@@ -278,7 +284,9 @@ export function hasCommercialSpamMarkers(text: string): boolean {
   );
 
   const hasPromoContext = ADS_PROMO_MARKERS.some((marker) => hasMarker(marker));
-  const hasBuyoutContext = ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker));
+  const hasBuyoutContext =
+    ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker)) ||
+    ADS_BUYOUT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
   const recruitmentPatterns = selectRecruitmentPatterns(rawLoweredText, normalizedText);
   const hasRecruitmentContext =
     ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
@@ -416,10 +424,14 @@ export function hasCommercialSpamMarkers(text: string): boolean {
     (hasServiceSpecialtyContext && hasDealSignal && !hasSearchRequestContext);
   const goodsRetailPatterns = ADS_GOODS_RETAIL_PATTERNS.filter(
     ({ label }) =>
-      label !== 'animal-breeder-retail' ||
-      (!privateSingleListingHits.includes('private-pet-sale') &&
-        !isAnimalRescueContext(rawLoweredText) &&
-        !isPrivatePetAccessoryListing(rawLoweredText)),
+      !(
+        label === 'auto-parts-retail' &&
+        privateSingleListingHits.includes('private-single-vehicle-part')
+      ) &&
+      (label !== 'animal-breeder-retail' ||
+        (!privateSingleListingHits.includes('private-pet-sale') &&
+          !isAnimalRescueContext(rawLoweredText) &&
+          !isPrivatePetAccessoryListing(rawLoweredText))),
   );
   const hasGoodsRetailContext =
     goodsRetailPatterns.some(({ pattern }) => matchesPattern(pattern)) ||
@@ -479,8 +491,21 @@ export function hasCommercialSpamMarkers(text: string): boolean {
   }
 
   if (
+    isThirdPartyServiceRecommendation(rawLoweredText) &&
+    !hasCurrentServiceBookingOffer &&
+    !hasServiceOfferContext &&
+    !hasGoodsRetailContext &&
+    !hasBuyoutContext &&
+    !hasRecruitmentContext &&
+    !hasInfoProductContext &&
+    !hasChannelPlacementContext
+  )
+    return false;
+
+  if (
     hasPrivateGoodsItemContext &&
     !hasBusinessContext &&
+    !hasBuyoutContext &&
     !hasChannelPlacementContext &&
     !hasServiceCommercialContext &&
     !hasStrongGoodsRetailContext &&
@@ -710,6 +735,12 @@ function isPrivateObjectConditionServiceNoise(label: string, rawLoweredText: str
     )
   ) {
     return false;
+  }
+
+  if (label === 'logistics-delivery' || label === 'moving-cargo-service') {
+    return /(?:^|[^\p{L}\p{N}_-])(?:при|после|из-за|в\s+связи\s+с)\s+переезд[а-яё]*(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
   }
 
   if (
@@ -1048,7 +1079,7 @@ export function collectCommercialSignals(params: {
       normalizedText,
     );
   const hasPaidRaffleOffer = highRiskCommercialHitLabels.includes('paid-raffle');
-  const hasPlaceholderHighRiskResponseChannel = /\[(?:phone|url)\]/iu.test(rawLoweredText);
+  const hasHighRiskResponseChannel = hasPhoneLikeText || /\[(?:phone|url)\]/iu.test(rawLoweredText);
   if (
     allHighRiskLabels.length > 0 &&
     (escalationRiskLabels.length === 0 || commercialLocalContext.hasIndependentEscalationOffer) &&
@@ -1056,7 +1087,7 @@ export function collectCommercialSignals(params: {
     (hasP2pAccessOffer ||
       hasLoanCommentOffer ||
       hasPaidRaffleOffer ||
-      hasPlaceholderHighRiskResponseChannel ||
+      hasHighRiskResponseChannel ||
       /(?:^|[^\p{L}\p{N}_-])(?:бонус|депозит|выигрыш[\p{L}\p{N}_-]*|зеркал[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|пишите|заявк[\p{L}\p{N}_-]*|связ[ьи]|контакт[\p{L}\p{N}_-]*|мессенджер[\p{L}\p{N}_-]*|whatsapp|ватсап|telegram|телеграм|max|мах|тел\.?|телефон|звон[\p{L}\p{N}_-]*|стартов[\p{L}\p{N}_-]*\s+баланс)(?=$|[^\p{L}\p{N}_-])/iu.test(
         normalizedText,
       ))
@@ -1065,10 +1096,10 @@ export function collectCommercialSignals(params: {
     hasTransactional = true;
     hasDealSignal = true;
   }
-  if (highRiskCommercialHitLabels.length > 0 && hasPlaceholderHighRiskResponseChannel) {
+  if (highRiskCommercialHitLabels.length > 0 && hasHighRiskResponseChannel) {
     addPositive('contact:high-risk-response-channel', weights.contactMarker);
     hasContact = true;
-    hasPhoneContact = /\[phone\]/iu.test(rawLoweredText);
+    hasPhoneContact = hasPhoneLikeText || /\[phone\]/iu.test(rawLoweredText);
     hasDealSignal = true;
   }
   if (
@@ -1161,7 +1192,9 @@ export function collectCommercialSignals(params: {
   }
   if (
     hasBuyoutContext &&
-    (ADS_BUYOUT_DEAL_PATTERN.test(normalizedText) || ADS_BUYOUT_DEAL_PATTERN.test(rawLoweredText))
+    (buyoutHits.includes('professional-crop-procurement') ||
+      ADS_BUYOUT_DEAL_PATTERN.test(normalizedText) ||
+      ADS_BUYOUT_DEAL_PATTERN.test(rawLoweredText))
   ) {
     addPositive('transaction:buyout-deal', weights.transactionalKeyword);
     hasTransactional = true;
@@ -1906,10 +1939,14 @@ export function collectCommercialSignals(params: {
     }
     if (
       marker === 'для себя' &&
-      hasGoodsRetailContext &&
-      /(?:^|[^\p{L}\p{N}_-])(?:выбер(?:и|ите)|откро(?:й|йте)|подбер(?:и|ите))(?:[\p{L}\p{N}\s.,:;()/%+-]{0,40})для\s+себя(?=$|[^\p{L}\p{N}_-])/iu.test(
-        normalizedText,
-      )
+      (((hasServiceOfferContext || hasServiceSpecialtyContext) &&
+        /(?:^|[^\p{L}\p{N}_-])(?:работа(?:ю|ем)|дела(?:ю|ем)|выполня(?:ю|ем))\s+(?:на\s+совесть\s*[,\p{Pd}-]?\s*)?как\s+для\s+себя(?=$|[^\p{L}\p{N}_-])/iu.test(
+          rawLoweredText,
+        )) ||
+        (hasGoodsRetailContext &&
+          /(?:^|[^\p{L}\p{N}_-])(?:выбер(?:и|ите)|откро(?:й|йте)|подбер(?:и|ите))(?:[\p{L}\p{N}\s.,:;()/%+-]{0,40})для\s+себя(?=$|[^\p{L}\p{N}_-])/iu.test(
+            normalizedText,
+          )))
     ) {
       continue;
     }
@@ -2065,7 +2102,10 @@ export function collectCommercialSignals(params: {
     if (hasPropertyAgentContext || hasCommercialPropertyContext) {
       continue;
     }
-    if (hasGoodsRetailContext && marker === 'самовывоз') {
+    if (
+      (hasGoodsRetailContext || buyoutHits.includes('professional-crop-procurement')) &&
+      marker === 'самовывоз'
+    ) {
       continue;
     }
     if (marker === 'обмен' && hasProfessionalCurrencyExchangeContext) {
@@ -2486,7 +2526,7 @@ export function isThirdPartyServiceRecommendation(rawLoweredText: string): boole
       rawLoweredText,
     );
   const hasCompletedPersonalExperience =
-    /(?:^|[^\p{L}\p{N}_-])(?:(?:делал[аи]?|сделал[аи]?|чистил[аи]?|ремонтировал[аи]?|устанавливал[аи]?|дов[её]з|возил[аи]?)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,28})(?:нам|нас|мне|у\s+нас|мой|мою|нашу)|(?:нам|нас|мне|у\s+нас)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,28})(?:делал[аи]?|сделал[аи]?|чистил[аи]?|ремонтировал[аи]?|устанавливал[аи]?|дов[её]з|возил[аи]?))(?=$|[^\p{L}\p{N}_-])/iu.test(
+    /(?:^|[^\p{L}\p{N}_-])(?:(?:делал[аи]?|сделал[аи]?|чистил[аи]?|ремонтировал[аи]?|восстановил[аи]?|починил[аи]?|устанавливал[аи]?|дов[её]з|возил[аи]?)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,28})(?:нам|нас|мне|у\s+нас|мой|мою|нашу)|(?:нам|нас|мне|у\s+нас)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,28})(?:делал[аи]?|сделал[аи]?|чистил[аи]?|ремонтировал[аи]?|восстановил[аи]?|починил[аи]?|устанавливал[аи]?|дов[её]з|возил[аи]?))(?=$|[^\p{L}\p{N}_-])/iu.test(
       rawLoweredText,
     );
   const hasContractorDocumentReference =
@@ -3582,8 +3622,14 @@ function isOfficialCredentialDuplicateContext(rawLoweredText: string): boolean {
 }
 
 function isExplicitPropertyRepairService(rawLoweredText: string): boolean {
-  return /(?:^|[^\p{L}\p{N}_-])(?:бригад[а-яё-]*|подрядчик[а-яё-]*|компани[яи]|мы)(?:[^.!?;\n]{0,120})(?:выполня(?:ю|ем|ет|ют)|дела(?:ю|ем|ет|ют)|предлага(?:ю|ем|ет|ют))(?:[^.!?;\n]{0,100})ремонт[а-яё-]*\s+квартир[а-яё-]*(?=[\s\S]{0,220}(?:цен[а-яё-]*|стоимост[а-яё-]*|звоните|пишите|\[phone\]|\d+[\d\s.,]{0,8}\s*(?:₽|руб)))/iu.test(
-    rawLoweredText,
+  return (
+    ADS_PPU_SERVICE_OFFER_PATTERN.test(rawLoweredText) ||
+    /(?:^|[.!;\n])\s*строительн[а-яё]*\s+бригад[а-яё]*(?=[\s\S]{0,600}(?:все\s+виды\s+работ|ремонт\s+под\s+ключ))(?=[\s\S]{0,800}(?:звоните|пишите|\[phone\]))/iu.test(
+      rawLoweredText,
+    ) ||
+    /(?:^|[^\p{L}\p{N}_-])(?:бригад[а-яё-]*|подрядчик[а-яё-]*|компани[яи]|мы)(?:[^.!?;\n]{0,120})(?:выполня(?:ю|ем|ет|ют)|дела(?:ю|ем|ет|ют)|предлага(?:ю|ем|ет|ют))(?:[^.!?;\n]{0,100})ремонт[а-яё-]*\s+квартир[а-яё-]*(?=[\s\S]{0,220}(?:цен[а-яё-]*|стоимост[а-яё-]*|звоните|пишите|\[phone\]|\d+[\d\s.,]{0,8}\s*(?:₽|руб)))/iu.test(
+      rawLoweredText,
+    )
   );
 }
 

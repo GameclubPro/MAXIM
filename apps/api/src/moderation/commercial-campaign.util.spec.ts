@@ -2,9 +2,21 @@ import {
   InMemoryCommercialCampaignTracker,
   buildCommercialCampaignFingerprint,
   hasCommercialCampaignEvidence,
+  extractCommercialCampaignPhones,
 } from './commercial-campaign.util';
 
 describe('commercial-campaign util', () => {
+  it('shares complete phone boundaries with the detector and preserves the two-phone limit', () => {
+    expect(
+      extractCommercialCampaignPhones('Телефон: 89000001042\n89000001043 / 89000001044'),
+    ).toEqual(['79000001042', '79000001043']);
+    expect(extractCommercialCampaignPhones('Работаем 24 на 7 89000001042')).toEqual([
+      '79000001042',
+    ]);
+    expect(extractCommercialCampaignPhones('ИНН 770 708 38 93')).toEqual([]);
+    expect(extractCommercialCampaignPhones('Код заказа 89000001042 12345')).toEqual([]);
+  });
+
   it('builds a stable text fingerprint while separating links and phones', () => {
     const first = buildCommercialCampaignFingerprint(
       'Каналы на трафике. 2500р 1/48. Пишите в MAX https://max.ru/join/AbCdEf +7 900 123 45 67',

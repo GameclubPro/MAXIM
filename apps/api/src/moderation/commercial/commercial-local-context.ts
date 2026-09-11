@@ -33,6 +33,17 @@ const MAX_LOCAL_WINDOW_ASSERTIONS = 6;
 const MAX_ATTRIBUTED_REPORT_WINDOW_LENGTH = 1_600;
 const MAX_STANDALONE_EDITORIAL_INTRO_LENGTH = 240;
 const MAX_STANDALONE_EDITORIAL_QUOTE_LENGTH = 1_200;
+const TRANSPORT_DEMAND_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:нуж(?:ен|на|но|ны)|ищу|требуется)(?:[^.!?;\n]{0,48})(?:такси|машин[ау]|грузоперевозк[а-яё]*|перевозчик[а-яё]*|\d+\s+мест[ао])(?=$|[^\p{L}\p{N}_-])/iu;
+
+export function hasTransportDemandWithoutOffer(text: string): boolean {
+  if (!TRANSPORT_DEMAND_PATTERN.test(text)) return false;
+  return !resolveCommercialLocalContext({
+    rawLoweredText: text,
+    escalationRiskLabels: [],
+    includeOrdinaryProtectedContext: true,
+  }).hasIndependentCommercialOffer;
+}
 
 const CONTRASTIVE_SELF_PROMO_BOUNDARY =
   /,\s*(?=(?:(?:(?:а|но)\s+)?у\s+нас|(?:а|но)\s+мы|зато\s+(?:у\s+нас|мы))(?=$|[^\p{L}\p{N}_-]))/giu;
@@ -743,6 +754,7 @@ function hasQualifiedEditorialRiskContext(
 
 function isOrdinaryProtectedAssertion(text: string): boolean {
   return (
+    TRANSPORT_DEMAND_PATTERN.test(text) ||
     CHANNEL_AD_DUE_DILIGENCE_PATTERN.test(text) ||
     QUESTION_OR_RECOMMENDATION_PATTERN.test(text) ||
     (isQuestionAssertion(text) && NAMED_SOURCE_SIDE_SERVICE_ASSERTION_PATTERN.test(text)) ||

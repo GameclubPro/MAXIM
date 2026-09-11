@@ -19,6 +19,7 @@ import {
 } from './commercial-evidence';
 import {
   hasQualifiedSourceSideServiceOffer,
+  hasTransportDemandWithoutOffer,
   MAX_LOCAL_CONTEXT_LENGTH,
   resolveCommercialLocalContext,
   splitCommercialAssertions,
@@ -540,6 +541,10 @@ export class CommercialAdDetector {
       commercialCampaignContext: analysisCampaignContext,
     });
     const hasBoundedRecallEvidence = evidence.hasBoundedRecallEvidence;
+
+    if (hasTransportDemandWithoutOffer(rawLoweredText) && !evidence.hasEscalationRiskEvidence) {
+      return null;
+    }
 
     if (
       isThirdPartyServiceQuestionSequence(rawLoweredText) &&

@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { isCommercialCorpusTextSanitized } from './commercial-corpus-sanitization.util';
+import {
+  hasResidualCommercialContactCandidate,
+  isCommercialCorpusTextSanitized,
+} from './commercial-corpus-sanitization.util';
 
 export type CommercialCorpusLabel = 'positive_candidate' | 'negative_candidate' | 'gray_candidate';
 
@@ -32,6 +35,7 @@ type CliOptions = CommercialCorpusGateOptions & {
 };
 
 export type CommercialCorpusGateOptions = {
+  qualityGate?: boolean;
   requireSanitizationParity?: boolean;
   minPositive: number;
   minNegative: number;
@@ -116,12 +120,13 @@ function readCliOptions(argv: readonly string[]): CliOptions {
   const inputPath = readStringOption(argv, '--input');
   if (!inputPath) {
     throw new Error(
-      'Usage: npm run moderation:validate-commercial-corpus -- --input <commercial-corpus.jsonl>',
+      'Usage: npm run moderation:validate-commercial-corpus -- --input <commercial-corpus.jsonl> [--quality-gate] [--require-sanitization-parity]',
     );
   }
 
   return {
     inputPath,
+    qualityGate: argv.includes('--quality-gate'),
     requireSanitizationParity: argv.includes('--require-sanitization-parity'),
     minPositive:
       readNumberOption(argv, '--min-positive') ?? DEFAULT_COMMERCIAL_CORPUS_GATES.minPositive,
@@ -548,6 +553,31 @@ export function validateCommercialCorpusRecords(
   const diagnostics = [...analysis.diagnostics];
   const { metrics } = analysis;
 
+  if (options.qualityGate) {
+    const trusted = records.filter(
+      (record) => record.labelSource === COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE,
+    );
+    for (const [label, minimum] of [
+      ['positive_candidate', Math.max(1, options.minPositive)],
+      ['negative_candidate', Math.max(1, options.minNegative)],
+      ['gray_candidate', options.minGray],
+    ] as const) {
+      const count = trusted.filter((record) => record.label === label).length;
+      if (count < minimum)
+        errors.push(`quality_gate_trusted_${label}=${count} below min=${minimum}`);
+    }
+    const residualCount = records.filter(
+      (record) =>
+        typeof record.text === 'string' && hasResidualCommercialContactCandidate(record.text),
+    ).length;
+    if (residualCount > 0) errors.push(`quality_gate_residual_contact_candidates=${residualCount}`);
+    if (metrics.autoLabelSanitizationDriftCount > 0)
+      errors.push(
+        `quality_gate_unreviewed_sanitization_drift=${metrics.autoLabelSanitizationDriftCount}`,
+      );
+    diagnostics.push('quality_gate=trusted_manual_only; automatic labels do not certify quality');
+  }
+
   if (options.requireSanitizationParity && metrics.autoLabelSanitizationDriftCount > 0) {
     errors.push(
       `auto_label_sanitization_drift=${metrics.autoLabelSanitizationDriftCount}; independent manual labels are required`,
@@ -564,24 +594,27 @@ export function validateCommercialCorpusRecords(
     errors.push(`gray_count=${metrics.grayCount} below min=${options.minGray}`);
   }
   if (
-    Number.isNaN(metrics.autoPositiveDetectionRecall) ||
-    metrics.autoPositiveDetectionRecall < options.minHardRecall
+    !options.qualityGate &&
+    (Number.isNaN(metrics.autoPositiveDetectionRecall) ||
+      metrics.autoPositiveDetectionRecall < options.minHardRecall)
   ) {
     errors.push(
       `auto_positive_detection_recall=${metrics.autoPositiveDetectionRecall || 0} below min=${options.minHardRecall}`,
     );
   }
   if (
-    Number.isNaN(metrics.autoPositiveEnforcementRecall) ||
-    metrics.autoPositiveEnforcementRecall < options.minEnforcementRecall
+    !options.qualityGate &&
+    (Number.isNaN(metrics.autoPositiveEnforcementRecall) ||
+      metrics.autoPositiveEnforcementRecall < options.minEnforcementRecall)
   ) {
     errors.push(
       `auto_positive_enforcement_recall=${metrics.autoPositiveEnforcementRecall || 0} below min=${options.minEnforcementRecall}`,
     );
   }
   if (
-    Number.isNaN(metrics.autoSubtypeAccuracy) ||
-    metrics.autoSubtypeAccuracy < options.minSubtypeAccuracy
+    !options.qualityGate &&
+    (Number.isNaN(metrics.autoSubtypeAccuracy) ||
+      metrics.autoSubtypeAccuracy < options.minSubtypeAccuracy)
   ) {
     errors.push(
       `auto_subtype_accuracy=${metrics.autoSubtypeAccuracy || 0} below min=${options.minSubtypeAccuracy}`,

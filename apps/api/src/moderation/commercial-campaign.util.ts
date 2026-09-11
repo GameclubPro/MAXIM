@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { extractUrlsFromText, stripUrlsFromText } from '../common/url-text.util';
+import { parseCommercialPhones } from './commercial/commercial-phone';
 
 const COMMERCIAL_CAMPAIGN_KEY_PREFIX = 'commercial-campaign:v1';
 const COMMERCIAL_CAMPAIGN_PHONE_PATTERN =
@@ -106,8 +107,8 @@ export function extractCommercialCampaignPhones(value: string): string[] {
   const seen = new Set<string>();
   const phones: string[] = [];
 
-  for (const match of value.matchAll(COMMERCIAL_CAMPAIGN_PHONE_PATTERN)) {
-    const normalized = normalizeCommercialCampaignPhone(match[0]);
+  for (const contact of parseCommercialPhones(value)) {
+    const normalized = normalizeCommercialCampaignPhone(contact.normalizedNumber);
     if (!normalized || seen.has(normalized)) {
       continue;
     }

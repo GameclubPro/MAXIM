@@ -91,6 +91,7 @@ export type CommercialReplaySnapshot = {
   negativeSignals: string[];
   decisionVersion: string | null;
   fpRisk: number | null;
+  policyFpRisk?: number | null;
   evidenceTier: string | null;
   subtype: string | null;
   actionBand: string | null;
@@ -361,6 +362,7 @@ const SNAPSHOT_FIELDS: readonly (keyof CommercialReplaySnapshot)[] = [
   'negativeSignals',
   'decisionVersion',
   'fpRisk',
+  'policyFpRisk',
   'evidenceTier',
   'subtype',
   'actionBand',
@@ -706,6 +708,7 @@ export function emptyCommercialReplaySnapshot(): CommercialReplaySnapshot {
     negativeSignals: [],
     decisionVersion: null,
     fpRisk: null,
+    policyFpRisk: null,
     evidenceTier: null,
     subtype: null,
     actionBand: null,
@@ -750,6 +753,7 @@ function snapshotFromStored(
     negativeSignals: readStringArray(record.negativeSignals),
     decisionVersion: readOptionalString(record.decisionVersion),
     fpRisk: readOptionalNumber(record.fpRisk),
+    policyFpRisk: readOptionalNumber(record.policyFpRisk) ?? readOptionalNumber(record.fpRisk),
     evidenceTier: readOptionalString(record.evidenceTier),
     subtype: readOptionalString(record.subtype),
     actionBand: readOptionalString(record.actionBand),
@@ -878,7 +882,7 @@ function strictSnapshotFromStored(
     throw strictSnapshotError(line, field, 'must be an object');
   }
   for (const key of SNAPSHOT_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+    if (key !== 'policyFpRisk' && !Object.prototype.hasOwnProperty.call(record, key)) {
       throw strictSnapshotError(line, `${field}.${key}`, 'is required');
     }
   }
@@ -922,6 +926,10 @@ function strictSnapshotFromStored(
     negativeSignals: readStrictStringArray(record, 'negativeSignals', line, field),
     decisionVersion: readStrictNullableString(record, 'decisionVersion', line, field),
     fpRisk: readStrictNullableNumber(record, 'fpRisk', line, field, 0, 100),
+    policyFpRisk: Object.prototype.hasOwnProperty.call(record, 'policyFpRisk')
+      ? (readStrictNullableNumber(record, 'policyFpRisk', line, field, 0, 100) ??
+        readStrictNullableNumber(record, 'fpRisk', line, field, 0, 100))
+      : readStrictNullableNumber(record, 'fpRisk', line, field, 0, 100),
     evidenceTier: readStrictNullableString(record, 'evidenceTier', line, field),
     subtype: readStrictNullableString(record, 'subtype', line, field),
     actionBand,
@@ -963,6 +971,8 @@ export function snapshotFromCommercialDetection(
     negativeSignals: readStringArray(detection.negativeSignals),
     decisionVersion: readOptionalString(detection.decisionVersion),
     fpRisk: readOptionalNumber(detection.fpRisk),
+    policyFpRisk:
+      readOptionalNumber(detection.policyFpRisk) ?? readOptionalNumber(detection.fpRisk),
     evidenceTier: readOptionalString(detection.evidenceTier),
     subtype: readOptionalString(detection.subtype),
     actionBand: readOptionalString(detection.actionBand),

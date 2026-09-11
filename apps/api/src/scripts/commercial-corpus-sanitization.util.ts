@@ -88,3 +88,11 @@ export function sanitizeCommercialCorpusText(
 export function isCommercialCorpusTextSanitized(value: string): boolean {
   return sanitizeCommercialCorpusText(value, { preserveLayout: true }) === value;
 }
+
+// FLAG: Independent conservative privacy check, not evidence for a moderation decision.
+export function hasResidualCommercialContactCandidate(value: string): boolean {
+  return (
+    /(?<!\d)(?:\+?[78])(?:(?:[\s().\u2010-\u2015/•|-]|\uFE0F|\u20E3)*\d){10}(?!\d)/u.test(value) ||
+    /(?:https?:\/\/|max:\/\/|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,})/iu.test(value)
+  );
+}

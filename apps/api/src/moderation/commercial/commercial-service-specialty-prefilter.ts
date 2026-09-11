@@ -1,6 +1,7 @@
 import type { CommercialLabeledPattern } from './commercial-patterns';
 
 export const SERVICE_SPECIALTY_REQUIRED_VOCABULARY: Readonly<Record<string, readonly string[]>> = {
+  'ppu-insulation-service': ['ппу', 'пенополиуретана'],
   'banquet-hall-catalog': ['банкетн'],
   'well-drilling-self-offer': ['скважин'],
   'cosmetic-procedure-catalog': ['коррекци', 'мезотерапи', 'липолитик', 'пирсинг'],

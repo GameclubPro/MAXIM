@@ -55,6 +55,41 @@ const SMALL_CORPUS_GATES = {
 };
 
 describe('commercial corpus trust-aware validation', () => {
+  it('requires independent positive and negative labels in quality-gate mode', () => {
+    const records = [
+      corpusRecord({ label: 'positive_candidate', expectedAction: 'WARN', action: 'WARN' }),
+      corpusRecord({ label: 'negative_candidate', expectedAction: 'ALLOW', action: null }),
+    ];
+    expect(validateCommercialCorpusRecords(records, SMALL_CORPUS_GATES).errors).toEqual([]);
+    expect(
+      validateCommercialCorpusRecords(records, { ...SMALL_CORPUS_GATES, qualityGate: true }).errors,
+    ).toEqual(
+      expect.arrayContaining([
+        'quality_gate_trusted_positive_candidate=0 below min=1',
+        'quality_gate_trusted_negative_candidate=0 below min=1',
+      ]),
+    );
+    for (const record of records)
+      record.labelSource = COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE;
+    expect(
+      validateCommercialCorpusRecords(records, { ...SMALL_CORPUS_GATES, qualityGate: true }).errors,
+    ).toEqual([]);
+  });
+
+  it('does not certify a private corpus with residual contact candidates', () => {
+    const record = corpusRecord({
+      label: 'negative_candidate',
+      expectedAction: 'ALLOW',
+      action: null,
+      labelSource: COMMERCIAL_CORPUS_TRUSTED_MANUAL_LABEL_SOURCE,
+    });
+    record.text = 'Код заказа 89000001042 12345';
+    expect(
+      validateCommercialCorpusRecords([record], { ...SMALL_CORPUS_GATES, qualityGate: true })
+        .errors,
+    ).toContain('quality_gate_residual_contact_candidates=1');
+  });
+
   it('rejects auto-label quality claims when sanitization changes the original decision', () => {
     const record = corpusRecord({
       label: 'negative_candidate',

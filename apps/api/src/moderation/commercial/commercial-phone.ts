@@ -56,6 +56,21 @@ const NON_PHONE_IDENTIFIER_CONTEXT_AFTER_PATTERN = new RegExp(
   String.raw`^${PHONE_ADJACENT_CONTEXT_SEPARATOR}{0,12}${NON_PHONE_IDENTIFIER_CONTEXT_TERM}(?![\p{L}\p{N}_])`,
   'iu',
 );
+const COMPLETE_RUSSIAN_PHONE_SOURCE = String.raw`\+?[78](?:${KEYCAP_MARK_PATTERN})?(?:${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN}){10}`;
+const CONTACT_PAIR_SEPARATOR_PATTERN = new RegExp(
+  String.raw`(?<![\d+])(${COMPLETE_RUSSIAN_PHONE_SOURCE})([ \t]*/[ \t]*)(?=${COMPLETE_RUSSIAN_PHONE_SOURCE}(?!\d))`,
+  'gu',
+);
+const SCHEDULE_CONTACT_SEPARATOR_PATTERN = new RegExp(
+  String.raw`((?:^|[^\p{L}\p{N}_])24\s*(?:на|/)\s*7)([ \t]+)(?=${COMPLETE_RUSSIAN_PHONE_SOURCE}(?!\d))`,
+  'giu',
+);
+
+export type CommercialPhoneContact = {
+  start: number;
+  end: number;
+  normalizedNumber: string;
+};
 
 export function normalizeCommercialPhoneConfusables(value: string): string {
   return value.replace(PHONE_LIKE_CONFUSABLE_SPAN_PATTERN, (phoneLikeSpan) =>
@@ -64,130 +79,85 @@ export function normalizeCommercialPhoneConfusables(value: string): string {
 }
 
 export function hasCommercialPhoneLikeText(value: string): boolean {
+  return collectCommercialPhones(value, true).length > 0;
+}
+
+export function parseCommercialPhones(value: string): CommercialPhoneContact[] {
+  return collectCommercialPhones(value, false);
+}
+
+function collectCommercialPhones(value: string, firstOnly: boolean): CommercialPhoneContact[] {
+  if (!/\d/u.test(value)) return [];
   const normalized = normalizeCommercialPhoneConfusables(value);
-  if (hasCandidate(normalized, INTERNATIONAL_PHONE_PATTERN, () => true)) {
-    return true;
-  }
-  if (
-    hasCandidate(
-      normalized,
-      CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN,
-      (match, offset) =>
-        hasObfuscatedPhoneSeparator(match) &&
-        hasAdjacentPhoneContext(normalized, offset, match.length),
+  // FLAG: Change only delimiter characters in the scan copy; spans retain original UTF-16 offsets.
+  const scanText = normalized
+    .replace(
+      CONTACT_PAIR_SEPARATOR_PATTERN,
+      (_match, phone: string, separator: string) => phone + separator.replace('/', ','),
     )
-  ) {
-    return true;
-  }
-  if (
-    hasCandidate(normalized, RUSSIAN_PHONE_CANDIDATE_PATTERN, (match, offset) => {
-      if (isEmbeddedInLongerNumericSequence(normalized, offset, match.length)) {
-        return false;
+    .replace(
+      SCHEDULE_CONTACT_SEPARATOR_PATTERN,
+      (_match, schedule: string, separator: string) => schedule + ',' + separator.slice(1),
+    );
+  const contacts: CommercialPhoneContact[] = [];
+  for (const pattern of [
+    INTERNATIONAL_PHONE_PATTERN,
+    CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN,
+    RUSSIAN_PHONE_CANDIDATE_PATTERN,
+    LOCAL_PHONE_CANDIDATE_PATTERN,
+    SHORT_LOCAL_PHONE_CANDIDATE_PATTERN,
+  ]) {
+    pattern.lastIndex = 0;
+    for (const match of scanText.matchAll(pattern)) {
+      const start = match.index;
+      const text = match[0];
+      const end = start + text.length;
+      if (contacts.some((contact) => start < contact.end && end > contact.start)) continue;
+      const hasContext = hasAdjacentPhoneContext(scanText, start, text.length);
+      let accepted: boolean;
+      if (pattern === INTERNATIONAL_PHONE_PATTERN) {
+        accepted = true;
+      } else if (pattern === CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN) {
+        accepted = hasObfuscatedPhoneSeparator(text) && hasContext;
+      } else if (pattern === SHORT_LOCAL_PHONE_CANDIDATE_PATTERN) {
+        accepted = hasContext;
+      } else {
+        const hasIdentifier = hasAdjacentIdentifierContext(scanText, start, text.length);
+        accepted =
+          !isEmbeddedInLongerNumericSequence(scanText, start, text.length) &&
+          (pattern === RUSSIAN_PHONE_CANDIDATE_PATTERN
+            ? !(hasIdentifier && !hasContext) &&
+              (hasObfuscatedPhoneSeparator(text) ||
+                looksLikeStructuredPhone(text) ||
+                hasContext ||
+                looksLikeBareRussianPhone(text))
+            : !hasIdentifier && (looksLikeStructuredPhone(text) || hasContext));
       }
-      const hasContext = hasAdjacentPhoneContext(normalized, offset, match.length);
-      const hasIdentifierContext = hasAdjacentIdentifierContext(normalized, offset, match.length);
-      if (hasIdentifierContext && !hasContext) {
-        return false;
-      }
-      return hasObfuscatedPhoneSeparator(match)
-        ? true
-        : looksLikeStructuredPhone(match) || hasContext || looksLikeBareRussianPhone(match);
-    })
-  ) {
-    return true;
+      if (!accepted) continue;
+      const digits = text.replace(/\D/gu, '');
+      contacts.push({
+        start,
+        end,
+        normalizedNumber:
+          digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits,
+      });
+      if (firstOnly) return contacts;
+    }
   }
-  if (
-    hasCandidate(
-      normalized,
-      LOCAL_PHONE_CANDIDATE_PATTERN,
-      (match, offset) =>
-        !isEmbeddedInLongerNumericSequence(normalized, offset, match.length) &&
-        !hasAdjacentIdentifierContext(normalized, offset, match.length) &&
-        (looksLikeStructuredPhone(match) ||
-          hasAdjacentPhoneContext(normalized, offset, match.length)),
-    )
-  ) {
-    return true;
-  }
-  return hasCandidate(normalized, SHORT_LOCAL_PHONE_CANDIDATE_PATTERN, (match, offset) =>
-    hasAdjacentPhoneContext(normalized, offset, match.length),
-  );
+  return contacts.sort((left, right) => left.start - right.start);
 }
 
 export function replaceCommercialPhoneLikeText(value: string, replacement = '[phone]'): string {
   const normalized = normalizeCommercialPhoneConfusables(value);
-  const withoutInternationalPhones = replaceCandidates(
-    normalized,
-    INTERNATIONAL_PHONE_PATTERN,
-    replacement,
-    () => true,
-  );
-  const withoutObfuscatedInternationalPhones = replaceCandidates(
-    withoutInternationalPhones,
-    CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN,
-    replacement,
-    (match, offset, input) =>
-      hasObfuscatedPhoneSeparator(match) && hasAdjacentPhoneContext(input, offset, match.length),
-  );
-  const withoutRussianPhones = replaceCandidates(
-    withoutObfuscatedInternationalPhones,
-    RUSSIAN_PHONE_CANDIDATE_PATTERN,
-    replacement,
-    (match, offset, input) => {
-      if (isEmbeddedInLongerNumericSequence(input, offset, match.length)) {
-        return false;
-      }
-      const hasContext = hasAdjacentPhoneContext(input, offset, match.length);
-      const hasIdentifierContext = hasAdjacentIdentifierContext(input, offset, match.length);
-      if (hasIdentifierContext && !hasContext) {
-        return false;
-      }
-      return hasObfuscatedPhoneSeparator(match)
-        ? true
-        : looksLikeStructuredPhone(match) || hasContext || looksLikeBareRussianPhone(match);
-    },
-  );
-  const withoutLocalPhones = replaceCandidates(
-    withoutRussianPhones,
-    LOCAL_PHONE_CANDIDATE_PATTERN,
-    replacement,
-    (match, offset, input) =>
-      !isEmbeddedInLongerNumericSequence(input, offset, match.length) &&
-      !hasAdjacentIdentifierContext(input, offset, match.length) &&
-      (looksLikeStructuredPhone(match) || hasAdjacentPhoneContext(input, offset, match.length)),
-  );
-  return replaceCandidates(
-    withoutLocalPhones,
-    SHORT_LOCAL_PHONE_CANDIDATE_PATTERN,
-    replacement,
-    (match, offset, input) => hasAdjacentPhoneContext(input, offset, match.length),
-  );
-}
-
-function hasCandidate(
-  value: string,
-  pattern: RegExp,
-  predicate: (match: string, offset: number) => boolean,
-): boolean {
-  pattern.lastIndex = 0;
-  for (const match of value.matchAll(pattern)) {
-    if (predicate(match[0], match.index ?? 0)) {
-      return true;
-    }
+  const contacts = parseCommercialPhones(normalized);
+  let end = 0;
+  const parts: string[] = [];
+  for (const contact of contacts) {
+    parts.push(normalized.slice(end, contact.start), replacement);
+    end = contact.end;
   }
-  return false;
-}
-
-function replaceCandidates(
-  value: string,
-  pattern: RegExp,
-  replacement: string,
-  predicate: (match: string, offset: number, input: string) => boolean,
-): string {
-  pattern.lastIndex = 0;
-  return value.replace(pattern, (match: string, offset: number, input: string) =>
-    predicate(match, offset, input) ? replacement : match,
-  );
+  parts.push(normalized.slice(end));
+  return parts.join('');
 }
 
 function hasAdjacentPhoneContext(source: string, start: number, matchLength: number): boolean {

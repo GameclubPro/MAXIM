@@ -568,6 +568,31 @@ describe('deriveSafeContextBucket', () => {
 });
 
 describe('derivePolicyCategory', () => {
+  it('uses policy risk instead of a lower base risk and retains the legacy fallback', () => {
+    const current = {
+      ...emptySnapshot,
+      hit: true,
+      actionBand: 'DELETE',
+      fpRisk: 0,
+      policyFpRisk: 90,
+    };
+    expect(derivePolicyCategory({ category: 'current_only', current })).toBe(
+      'false_positive_candidate',
+    );
+    expect(
+      derivePolicyCategory({
+        category: 'current_only',
+        current: { ...current, policyFpRisk: undefined, fpRisk: 90 },
+      }),
+    ).toBe('false_positive_candidate');
+    expect(
+      derivePolicyCategory({
+        category: 'current_only',
+        current: { ...current, actionBand: 'REVIEW_ONLY' },
+      }),
+    ).toBe('gray_zone');
+  });
+
   it('keeps high-fp review-only detections in the gray zone instead of negative corpus labels', () => {
     expect(
       derivePolicyCategory({
