@@ -124,6 +124,7 @@ export function buildPreviewPublicGiveaway(
   variant: PreviewGiveawayVariant,
 ): ManagedGiveawayPublic {
   const now = readPreviewClock(state.clock);
+  const completed = variant === 'completed' || variant === 'winner';
   const sourceChannel = state.channels.find((item) => item.id === PREVIEW_CHANNEL_ID);
   const extraChannel = state.channels.find((item) => item.id === 'preview-channel-2');
   const baitPrizes = Array.from({ length: 10 }, (_, index) => ({
@@ -135,6 +136,7 @@ export function buildPreviewPublicGiveaway(
 
   return managedGiveawayPublicSchema.parse({
     id: giveawayId,
+    serverTime: now.toISOString(),
     sourceChatId: PREVIEW_CHANNEL_ID,
     sourceTitle: sourceChannel?.title ?? PREVIEW_CHANNEL_TITLE,
     sourceLink: sourceChannel?.link ?? null,
@@ -142,14 +144,13 @@ export function buildPreviewPublicGiveaway(
     title: variant === 'completed' ? 'Итоги розыгрыша прикормок' : 'Прикормка',
     description:
       'Подпишитесь на канал, отметьте участие и дождитесь итогов. Победителей определим автоматически, а подтверждение приза пройдёт прямо внутри MAX.',
-    status: variant === 'completed' ? 'COMPLETED' : 'ACTIVE',
+    status: completed ? 'COMPLETED' : 'ACTIVE',
     imageEnabled: false,
     imageBase64: '',
     imageMimeType: '',
     imageFileName: '',
     startsAt: addHours(now, -20).toISOString(),
-    endsAt:
-      variant === 'completed' ? addHours(now, -2).toISOString() : addHours(now, 28).toISOString(),
+    endsAt: completed ? addHours(now, -2).toISOString() : addHours(now, 28).toISOString(),
     claimHours: 48,
     requiredChannelIds: extraChannel ? [extraChannel.id] : [],
     requiredChannels: extraChannel
@@ -164,32 +165,31 @@ export function buildPreviewPublicGiveaway(
     entriesCount: variant === 'completed' ? 912 : 684,
     winnersCount: 10,
     publishedAt: addHours(now, -19.5).toISOString(),
-    completedAt: variant === 'completed' ? addHours(now, -1.5).toISOString() : null,
+    completedAt: completed ? addHours(now, -1.5).toISOString() : null,
     publicationUrl: 'https://max.ru/giveaway/public-preview',
     resultsUrl: variant === 'completed' ? 'https://max.ru/giveaway/public-preview/results' : null,
     prizes: baitPrizes,
-    winners:
-      variant === 'completed'
-        ? baitPrizes.map((prize, index) => ({
-            prizePosition: prize.position,
-            prizeTitle: prize.title,
-            prizeDisplayTitle: prize.displayTitle,
-            displayName:
-              [
-                'Марина Орлова',
-                'Дмитрий Ковалёв',
-                'Анна Соколова',
-                'Илья Романов',
-                'Елена Миронова',
-                'Павел Андреев',
-                'Ольга Белова',
-                'Артём Волков',
-                'Наталья Ким',
-                'Сергей Морозов',
-              ][index] ?? 'Победитель',
-            status: index % 3 === 0 ? 'CLAIMED' : 'DELIVERED',
-          }))
-        : [],
+    winners: completed
+      ? baitPrizes.map((prize, index) => ({
+          prizePosition: prize.position,
+          prizeTitle: prize.title,
+          prizeDisplayTitle: prize.displayTitle,
+          displayName:
+            [
+              'Марина Орлова',
+              'Дмитрий Ковалёв',
+              'Анна Соколова',
+              'Илья Романов',
+              'Елена Миронова',
+              'Павел Андреев',
+              'Ольга Белова',
+              'Артём Волков',
+              'Наталья Ким',
+              'Сергей Морозов',
+            ][index] ?? 'Победитель',
+          status: index % 3 === 0 ? 'CLAIMED' : 'DELIVERED',
+        }))
+      : [],
   });
 }
 
@@ -761,7 +761,27 @@ export const handleGiveawaysPreviewRequest: PreviewRequestHandler = (context) =>
     }
     if (segments[2] === 'claim' && method === 'POST') {
       writePreviewGiveawayParticipantVariant('winner-claimed');
-      return null;
+      const now = readPreviewClock(state.clock);
+      return {
+        ok: true,
+        winner: {
+          id: 'preview-winner-1',
+          prizeId: 'public-prize-1',
+          prizePosition: 1,
+          prizeTitle: 'Прикормка 1',
+          prizeDisplayTitle: 'Прикормка',
+          entryId: 'preview-entry-winner',
+          userId: 'preview-user',
+          displayName: 'Участник',
+          status: 'CLAIMED',
+          selectedAt: addHours(now, -2).toISOString(),
+          claimDeadlineAt: addHours(now, 36).toISOString(),
+          claimedAt: now.toISOString(),
+          deliveredAt: null,
+          expiredAt: null,
+          rerolledAt: null,
+        },
+      };
     }
   }
 

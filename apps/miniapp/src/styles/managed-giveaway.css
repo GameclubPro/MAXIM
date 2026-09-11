@@ -6,6 +6,25 @@
     gap: 12px;
   }
 
+  .managed-giveaway__history-select {
+    display: grid;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .managed-giveaway__history-select select {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 8px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+    color: var(--text-primary);
+    font: inherit;
+  }
+
   .managed-giveaway {
     --managed-giveaway-line: rgba(74, 108, 141, 0.12);
     gap: 10px;

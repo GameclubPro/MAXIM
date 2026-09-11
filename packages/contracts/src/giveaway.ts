@@ -211,6 +211,7 @@ export type ManagedGiveawayPublicWinner = z.infer<typeof managedGiveawayPublicWi
 
 export const managedGiveawayPublicSchema = z.object({
   id: z.string(),
+  serverTime: z.string().datetime().optional(),
   sourceChatId: z.string(),
   sourceTitle: z.string(),
   sourceLink: z.string().nullable(),
@@ -240,6 +241,7 @@ export type ManagedGiveawayPublic = z.infer<typeof managedGiveawayPublicSchema>;
 
 export const managedGiveawayParticipantStateSchema = z.object({
   joined: z.boolean(),
+  checkedAt: z.string().datetime().nullable().optional(),
   entryId: z.string().nullable(),
   eligibilityState: giveawayEligibilityStateSchema.nullable(),
   eligibilityReason: z.string().nullable(),

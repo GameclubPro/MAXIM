@@ -41,7 +41,7 @@ function createConfigMock(options: { token?: string; previousToken?: string } = 
 }
 
 function createPrismaMock() {
-  return {
+  const prisma = {
     managedGiveaway: {
       create: jest.fn(),
       findFirst: jest.fn(),
@@ -85,6 +85,8 @@ function createPrismaMock() {
     },
     $transaction: jest.fn(),
   };
+  prisma.$transaction.mockImplementation(async (callback) => callback(prisma));
+  return prisma;
 }
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
@@ -248,7 +250,7 @@ function createGiveaway(overrides: Record<string, unknown> = {}) {
     imageMimeType: '',
     imageFileName: '',
     startsAt: null,
-    endsAt: new Date('2026-03-22T12:00:00.000Z'),
+    endsAt: new Date(Date.now() + 24 * 60 * 60_000),
     claimHours: 48,
     status: ManagedGiveawayStatus.ACTIVE,
     requiredChannelIds: ['extra-1'],
@@ -414,6 +416,274 @@ describe('ManagedGiveawayService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('serializes the empty-current-giveaway check with creation', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service as any, 'assertAdminEntityAccess').mockResolvedValue(undefined);
+    prisma.managedGiveaway.findFirst.mockResolvedValue(null);
+    const draft = createGiveaway({ status: 'DRAFT', prizes: [createPrize()] });
+    prisma.managedGiveaway.create.mockResolvedValue(draft);
+    await service.createManagedGiveaway(
+      'source-1',
+      user,
+      {
+        title: 'Новый розыгрыш',
+        endsAt: draft.endsAt.toISOString(),
+        prizes: [{ position: 1, title: 'Приз' }],
+      },
+      'channel',
+    );
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: 'Serializable',
+    });
+    expect(prisma.managedGiveaway.findFirst.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.managedGiveaway.create.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('reports a creation serialization conflict without silently duplicating the draft', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service as any, 'assertAdminEntityAccess').mockResolvedValue(undefined);
+    prisma.$transaction.mockRejectedValue({ code: 'P2034' });
+    await expect(
+      service.createManagedGiveaway(
+        'source-1',
+        user,
+        {
+          title: 'Новый розыгрыш',
+          endsAt: new Date(Date.now() + 60_000).toISOString(),
+          prizes: [{ position: 1, title: 'Приз' }],
+        },
+        'channel',
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.managedGiveaway.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an expired draft before attempting publication', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service as any, 'assertAdminEntityAccess').mockResolvedValue(undefined);
+    prisma.managedGiveaway.findFirst.mockResolvedValue(
+      createGiveaway({ status: 'DRAFT', endsAt: new Date(Date.now() - 1) }),
+    );
+    await expect(
+      service.publishManagedGiveaway('source-1', 'giveaway-1', user, 'channel'),
+    ).rejects.toThrow('Время завершения уже прошло');
+    expect(prisma.managedGiveaway.updateMany).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
+  it('rejects an entry when draw acquires the giveaway during membership lookup', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const giveaway = createGiveaway({ endsAt: new Date(Date.now() + 60_000) });
+    jest.spyOn(service as any, 'findPublicGiveawayById').mockResolvedValue(giveaway);
+    jest.spyOn(service as any, 'upsertParticipantChatAccess').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'evaluateGiveawayEligibility')
+      .mockResolvedValue({ state: 'VERIFIED', reason: null, missingChannelIds: [] });
+    prisma.managedGiveaway.updateMany.mockResolvedValue({ count: 0 });
+    await expect(service.enterGiveaway(giveaway.id, user)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(prisma.managedGiveawayEntry.upsert).not.toHaveBeenCalled();
+    expect((service as any).evaluateGiveawayEligibility).toHaveBeenCalledWith(
+      giveaway,
+      user.userId,
+      {
+        forceFreshMembership: true,
+        lookupPolicy: 'giveaway_interactive',
+        allowStaleMembershipOnError: false,
+      },
+    );
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'ACTIVE', endsAt: { gt: expect.any(Date) } }),
+      }),
+    );
+  });
+
+  it('checks the entry deadline again after obtaining the SQL admission lock', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-11T10:00:00Z'));
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const giveaway = createGiveaway({ endsAt: new Date('2026-09-11T10:00:01Z') });
+    jest.spyOn(service as any, 'findPublicGiveawayById').mockResolvedValue(giveaway);
+    jest.spyOn(service as any, 'upsertParticipantChatAccess').mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'evaluateGiveawayEligibility')
+      .mockResolvedValue({ state: 'VERIFIED', reason: null, missingChannelIds: [] });
+    prisma.managedGiveaway.updateMany.mockImplementation(async () => {
+      jest.setSystemTime(giveaway.endsAt);
+      return { count: 1 };
+    });
+    await expect(service.enterGiveaway(giveaway.id, user)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.managedGiveawayEntry.upsert).not.toHaveBeenCalled();
+  });
+
+  it('fences a claim with the deadline and status after the fresh MAX check', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-11T10:00:00Z'));
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const winner = createWinner({
+      claimDeadlineAt: new Date('2026-09-11T10:00:01Z'),
+      entry: createEntry({ userId: user.userId }),
+    });
+    jest
+      .spyOn(service as any, 'findPublicGiveawayById')
+      .mockResolvedValue(createGiveaway({ status: 'COMPLETED', winners: [winner] }));
+    jest.spyOn(service as any, 'evaluateGiveawayEligibility').mockImplementation(async () => {
+      jest.setSystemTime(new Date('2026-09-11T10:00:02Z'));
+      return { state: 'VERIFIED', reason: null, missingChannelIds: [] };
+    });
+    prisma.managedGiveawayWinner.update.mockRejectedValue({ code: 'P2025' });
+    await expect(service.claimGiveaway('giveaway-1', user)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(prisma.managedGiveawayWinner.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: winner.id,
+          status: 'SELECTED',
+          OR: [
+            { claimDeadlineAt: null },
+            { claimDeadlineAt: { gt: new Date('2026-09-11T10:00:02Z') } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('does not persist entries or winners after losing its draw lease', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const entry = createEntry({ eligibilityState: 'VERIFIED' });
+    const giveaway = createGiveaway({
+      status: 'DRAWING',
+      drawSeed: 'lease-seed',
+      lockedAt: new Date(),
+      entries: [entry],
+      prizes: [createPrize()],
+    });
+    jest.spyOn(service as any, 'findGiveawayById').mockResolvedValue(giveaway);
+    jest
+      .spyOn(service as any, 'claimGiveawayForDraw')
+      .mockResolvedValue({ status: 'claimed', giveaway, drawSeed: 'lease-seed' });
+    jest
+      .spyOn(service as any, 'evaluateGiveawayEligibilityForDraw')
+      .mockResolvedValue(
+        new Map([[entry.userId, { state: 'VERIFIED', reason: null, missingChannelIds: [] }]]),
+      );
+    prisma.managedGiveaway.updateMany.mockResolvedValue({ count: 0 });
+    await expect((service as any).drawGiveaway(giveaway.id, 'runner')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(prisma.managedGiveawayEntry.update).not.toHaveBeenCalled();
+    expect(prisma.managedGiveawayWinner.createMany).not.toHaveBeenCalled();
+    expect(prisma.managedGiveawayWinner.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: giveaway.id,
+        status: 'DRAWING',
+        lockedAt: giveaway.lockedAt,
+        drawSeed: 'lease-seed',
+      },
+      data: { status: 'DRAWING', lockedAt: null, sendLockKey: null },
+    });
+  });
+
+  it('starts the claim window after the membership scan, not when draw begins', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-11T10:00:00Z'));
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      {} as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const entry = createEntry({ eligibilityState: 'VERIFIED' });
+    const giveaway = createGiveaway({
+      status: 'DRAWING',
+      drawSeed: 'seed',
+      lockedAt: new Date(),
+      entries: [entry],
+      prizes: [createPrize()],
+      claimHours: 1,
+    });
+    jest.spyOn(service as any, 'findGiveawayById').mockResolvedValue(giveaway);
+    jest
+      .spyOn(service as any, 'claimGiveawayForDraw')
+      .mockResolvedValue({ status: 'claimed', giveaway, drawSeed: 'seed' });
+    jest
+      .spyOn(service as any, 'evaluateGiveawayEligibilityForDraw')
+      .mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-09-11T10:02:00Z'));
+        return new Map([
+          [entry.userId, { state: 'VERIFIED', reason: null, missingChannelIds: [] }],
+        ]);
+      });
+    prisma.managedGiveaway.findUniqueOrThrow.mockResolvedValue(giveaway);
+    jest.spyOn(service as any, 'editGiveawayPublicationIfNeeded').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'republishGiveawayResults').mockResolvedValue(false);
+    await (service as any).drawGiveaway(giveaway.id, 'runner');
+    expect(prisma.managedGiveawayWinner.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          selectedAt: new Date('2026-09-11T10:02:00Z'),
+          claimDeadlineAt: new Date('2026-09-11T11:02:00Z'),
+        }),
+      ],
+    });
   });
 
   it('deletes published giveaway messages with their persisted author bots before removing the giveaway', async () => {
@@ -2217,7 +2487,10 @@ describe('ManagedGiveawayService', () => {
       lockedAt: null,
       sendLockKey: null,
     });
-    prisma.managedGiveaway.findFirst.mockResolvedValueOnce(draft).mockResolvedValueOnce(null);
+    prisma.managedGiveaway.findFirst
+      .mockResolvedValueOnce(draft)
+      .mockResolvedValueOnce({ ...draft, lockedAt: null, sendLockKey: null })
+      .mockResolvedValueOnce(null);
     prisma.managedGiveaway.update.mockResolvedValue(published);
 
     await service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
@@ -2237,6 +2510,8 @@ describe('ManagedGiveawayService', () => {
         id: 'giveaway-1',
         status: ManagedGiveawayStatus.DRAFT,
         lockedAt: null,
+        updatedAt: expect.any(Date),
+        endsAt: { gt: expect.any(Date) },
       },
       data: {
         lockedAt: new Date('2026-03-21T13:00:00.000Z'),
@@ -2328,6 +2603,8 @@ describe('ManagedGiveawayService', () => {
         id: 'giveaway-1',
         status: ManagedGiveawayStatus.DRAFT,
         lockedAt: null,
+        updatedAt: expect.any(Date),
+        endsAt: { gt: expect.any(Date) },
       },
       data: {
         lockedAt: expect.any(Date),
@@ -4030,6 +4307,7 @@ describe('ManagedGiveawayService', () => {
       callback({
         managedGiveaway: {
           update: jest.fn().mockResolvedValue(undefined),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
           findUniqueOrThrow: jest.fn().mockResolvedValue(completed),
         },
         managedGiveawayEntry: {
@@ -4053,14 +4331,14 @@ describe('ManagedGiveawayService', () => {
 
     await (service as any).drawGiveaway('giveaway-1', 'runner');
 
-    expect(prismaEntryUpdate).toHaveBeenCalledWith({
+    expect(txManagedEntryUpdate).toHaveBeenCalledWith({
       where: { id: 'entry-removed' },
       data: expect.objectContaining({
         eligibilityState: GiveawayEligibilityState.REJECTED,
         missingChannelIds: ['source-1'],
       }),
     });
-    expect(prismaEntryUpdate).toHaveBeenCalledWith({
+    expect(txManagedEntryUpdate).toHaveBeenCalledWith({
       where: { id: 'entry-late' },
       data: expect.objectContaining({
         eligibilityState: GiveawayEligibilityState.VERIFIED,
@@ -4089,7 +4367,7 @@ describe('ManagedGiveawayService', () => {
     });
   });
 
-  it('preserves verified entries on transient draw recheck failures', async () => {
+  it('defers draw without changing entries or selecting winners on transient recheck failures', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:05:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -4173,6 +4451,7 @@ describe('ManagedGiveawayService', () => {
       callback({
         managedGiveaway: {
           update: jest.fn().mockResolvedValue(undefined),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
           findUniqueOrThrow: jest.fn().mockResolvedValue(completed),
         },
         managedGiveawayEntry: {
@@ -4193,32 +4472,21 @@ describe('ManagedGiveawayService', () => {
     );
     maxClient.sendMessageImmediateToUser.mockResolvedValue(undefined);
 
-    await (service as any).drawGiveaway('giveaway-1', 'runner');
-
-    expect(prismaEntryUpdate).toHaveBeenCalledWith({
-      where: { id: 'entry-verified' },
-      data: expect.objectContaining({
-        eligibilityState: GiveawayEligibilityState.VERIFIED,
-        eligibilityReason: null,
-        missingChannelIds: [],
-      }),
-    });
-    expect(txWinnerCreateMany).toHaveBeenCalledWith({
-      data: [
-        expect.objectContaining({
-          id: expect.any(String),
-          entryId: 'entry-verified',
-          prizeId: 'prize-1',
-        }),
-      ],
-    });
-    expect(txNotificationCreateMany).toHaveBeenCalledWith({
-      data: [
-        {
-          winnerId: txWinnerCreateMany.mock.calls[0][0].data[0].id,
-          nextAttemptAt: new Date('2026-03-21T13:05:00.000Z'),
-        },
-      ],
+    await expect((service as any).drawGiveaway('giveaway-1', 'runner')).rejects.toBeInstanceOf(
+      ManagedGiveawayMembershipLookupUnavailableError,
+    );
+    expect(prismaEntryUpdate).not.toHaveBeenCalled();
+    expect(txManagedEntryUpdate).not.toHaveBeenCalled();
+    expect(txWinnerCreateMany).not.toHaveBeenCalled();
+    expect(txNotificationCreateMany).not.toHaveBeenCalled();
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: 'giveaway-1',
+        status: ManagedGiveawayStatus.DRAWING,
+        lockedAt: drawStarted.lockedAt,
+        drawSeed: 'seed-2',
+      },
+      data: { status: ManagedGiveawayStatus.DRAWING, lockedAt: null, sendLockKey: null },
     });
     expect(outboxSpy).not.toHaveBeenCalled();
   });
@@ -4306,6 +4574,7 @@ describe('ManagedGiveawayService', () => {
       callback({
         managedGiveaway: {
           update: jest.fn().mockResolvedValue(undefined),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
           findUniqueOrThrow: jest.fn().mockResolvedValue(completed),
         },
         managedGiveawayEntry: {
@@ -4336,7 +4605,7 @@ describe('ManagedGiveawayService', () => {
       'giveaway_draw_background',
       {
         forceRefresh: true,
-        allowStaleOnError: true,
+        allowStaleOnError: false,
       },
     );
     expect(membershipLookup.getMemberships).toHaveBeenNthCalledWith(
@@ -4346,7 +4615,7 @@ describe('ManagedGiveawayService', () => {
       'giveaway_draw_background',
       {
         forceRefresh: true,
-        allowStaleOnError: true,
+        allowStaleOnError: false,
       },
     );
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
@@ -4724,17 +4993,7 @@ describe('ManagedGiveawayService', () => {
         'giveaway-1',
       );
       expect(chatContextCache.incrementManagedGiveawayRunnerFailureCount).not.toHaveBeenCalled();
-      expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledWith({
-        where: {
-          id: 'giveaway-1',
-          status: ManagedGiveawayStatus.DRAWING,
-        },
-        data: {
-          status: ManagedGiveawayStatus.ACTIVE,
-          lockedAt: null,
-          sendLockKey: null,
-        },
-      });
+      expect(prisma.managedGiveaway.updateMany).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -4822,7 +5081,7 @@ describe('ManagedGiveawayService', () => {
       expect(chatContextCache.clearManagedGiveawayRunnerRetryCounters).toHaveBeenCalledWith(
         'giveaway-1',
       );
-      expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledTimes(4);
+      expect(prisma.managedGiveaway.updateMany).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
