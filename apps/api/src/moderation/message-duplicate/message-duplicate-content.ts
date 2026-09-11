@@ -210,11 +210,17 @@ export function extractDuplicateMessageContent(
         continue;
       }
       const url =
-        readString(payload.url) ?? readString(attachment.url) ?? readString(payload.image_url);
+        readString(payload.url) ??
+        readString(attachment.url) ??
+        readString(payload.image_url) ??
+        readString(payload.imageUrl) ??
+        readString(attachment.image_url) ??
+        readString(attachment.imageUrl);
       const rawPhotoId =
         readString(payload.photo_id) ??
         readString(payload.photoId) ??
-        readString(attachment.photo_id);
+        readString(attachment.photo_id) ??
+        readString(attachment.photoId);
       const photoId = rawPhotoId?.trim() || null;
       const resourceId = (readString(payload.id) ?? readString(payload.file_id))?.trim() || null;
       const token = readString(payload.token)?.trim() || null;
@@ -274,7 +280,13 @@ export function extractDuplicateMessageContent(
       text,
       navigation: links,
       actions,
-      media: media.map((m) => [m.kind, m.identity]),
+      // FLAG: MAX may renew the download URL without editing this message's photo. Bind the
+      // source to its photo ID when present, but keep byte hashes mandatory for cross-message
+      // equality and the full URL-bound identity for downloaded-proof cache entries.
+      media: media.map((m) => [
+        m.kind,
+        m.kind === 'photo' && m.photoId ? digestDuplicateContent(['photo', m.photoId]) : m.identity,
+      ]),
     }),
   };
 }
@@ -308,6 +320,29 @@ export function buildMessageDuplicateIdentity(
     media:
       mode === 'MESSAGE' ? content.media.map((item, index) => [item.kind, mediaHashes[index]]) : [],
   });
+}
+
+export function canRefreshDuplicatePhotoSources(
+  original: DuplicateMessageContent,
+  current: DuplicateMessageContent,
+): boolean {
+  // FLAG: A stable photo ID permits refreshing only this exact message's download source.
+  // It is never equality evidence across messages; the refreshed bytes must still be hashed.
+  return (
+    original.complete &&
+    current.complete &&
+    digestDuplicateContent([original.text, original.navigation, original.actions]) ===
+      digestDuplicateContent([current.text, current.navigation, current.actions]) &&
+    original.media.length === current.media.length &&
+    original.media.every((media, index) => {
+      const fresh = current.media[index]!;
+      return (
+        media.kind === fresh.kind &&
+        (media.identity === fresh.identity ||
+          (media.kind === 'photo' && media.photoId !== null && media.photoId === fresh.photoId))
+      );
+    })
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

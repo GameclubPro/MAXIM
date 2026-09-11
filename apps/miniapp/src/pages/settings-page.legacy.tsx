@@ -211,6 +211,7 @@ import { SettingsCommercialFilterSection } from './settings/settings-commercial-
 import {
   formatDuplicatePhotoCoverageLabel,
   resolveDuplicatePhotoPolicyForDraft,
+  resolveDuplicatePhotoPresentationPolicy,
 } from './settings/settings-duplicate-photo-status';
 import { SettingsDuplicatesSection } from './settings/settings-duplicates-section';
 import { SettingsExtraSection } from './settings/settings-extra-section';
@@ -4444,7 +4445,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicateCoverageLabel = formatDuplicatePhotoCoverageLabel(
     duplicateDetectionLabel,
     Boolean(draft?.duplicatePhotoEnabled),
-    duplicatePhotoModerationPolicy,
+    resolveDuplicatePhotoPresentationPolicy(
+      duplicatePhotoModerationPolicy,
+      settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF',
+      draft?.duplicateCompareMode ?? 'MESSAGE',
+      Boolean(draft?.duplicatePhotoEnabled),
+    ),
     draft ?? undefined,
   );
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled

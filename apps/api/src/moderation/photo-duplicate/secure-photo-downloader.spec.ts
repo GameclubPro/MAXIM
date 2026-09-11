@@ -98,6 +98,19 @@ async function createPng(width = 20, height = 10): Promise<Buffer> {
     .toBuffer();
 }
 
+describe('permanent duplicate download source rejection', () => {
+  it.each(['', 'not-a-url', 'https://untrusted.example/image', 'http://i.oneme.ru/image'])(
+    'does not retry invalid image or binary source %s',
+    async (url) => {
+      const downloader = new TestDownloader({}, []);
+      await expect(downloader.download(url)).rejects.toBeInstanceOf(UnrecoverableError);
+      await expect(downloader.downloadBinary(url)).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(downloader.resolvedHostnames).toEqual([]);
+      expect(downloader.requested).toEqual([]);
+    },
+  );
+});
+
 describe('SecurePhotoDownloader', () => {
   const invalidResponseCases: Array<{
     name: string;

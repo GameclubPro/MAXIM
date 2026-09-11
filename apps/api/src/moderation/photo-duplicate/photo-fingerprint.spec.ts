@@ -63,6 +63,15 @@ async function patternedPhoto(): Promise<Buffer> {
 }
 
 describe('PhotoFingerprintService', () => {
+  it('proves exact pixels across PNG and lossless WebP but distinguishes different images', async () => {
+    const png = await patternedPhoto();
+    const webp = await sharp(png).webp({ lossless: true }).toBuffer();
+    const changed = await sharp(png).negate().png().toBuffer();
+    const service = new PhotoFingerprintService();
+    const originalHash = (await service.fingerprint(png)).canonicalHash;
+    expect((await service.fingerprint(webp)).canonicalHash).toBe(originalHash);
+    expect((await service.fingerprint(changed)).canonicalHash).not.toBe(originalHash);
+  });
   it('normalizes an encoded image and initializes PDQ from the local Node package', async () => {
     const input = Buffer.alloc(96 * 64 * 3);
     for (let y = 0; y < 64; y += 1) {

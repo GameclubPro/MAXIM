@@ -6,6 +6,7 @@ import {
   formatDuplicatePhotoCoverageLabel,
   formatDuplicatePhotoModerationHint,
   resolveDuplicatePhotoPolicyForDraft,
+  resolveDuplicatePhotoPresentationPolicy,
 } from '../src/pages/settings/settings-duplicate-photo-status';
 import { formatDuplicatePhotoMatchPresetHint } from '../src/pages/settings/settings-duplicate-photo-options';
 import { buildChatSettingsScreen } from '../src/lib/api/preview-transport-settings';
@@ -31,6 +32,64 @@ const muteAndBanSanctions = {
   duplicateMuteEnabled: true,
   duplicateBanEnabled: true,
 };
+
+test('full message comparison exposes active photos independently of the experimental photo toggle', () => {
+  for (const photoEnabled of [true, false]) {
+    const policy = resolveDuplicatePhotoPresentationPolicy(
+      { ...deleteOnlyPolicy, moderationMode: 'OBSERVE' },
+      'FULL',
+      'MESSAGE',
+      photoEnabled,
+    );
+    assert.equal(policy.comparison, 'MESSAGE');
+    assert.match(
+      formatDuplicatePhotoCoverageLabel('Одинаковый', photoEnabled, policy),
+      /вложения: включены/u,
+    );
+    assert.doesNotMatch(
+      formatDuplicatePhotoModerationHint(policy),
+      /не удал|наблюдени|не получают/u,
+    );
+    assert.match(
+      formatDuplicateActionSummary(
+        {
+          duplicatePhotoEnabled: photoEnabled,
+          duplicateBotMessageEnabled: false,
+          duplicateWarnEnabled: true,
+          duplicateMuteEnabled: true,
+          duplicateBanEnabled: true,
+          duplicateMuteDurationHours: 12,
+        },
+        0,
+        policy,
+      ),
+      /Сообщение с текстом и вложениями удаляется.*предупреждение.*ограничение на 12 ч.*блокировка/u,
+    );
+  }
+});
+
+test('photo presentation does not promote disabled, caption-only or independently enforcing policies', () => {
+  const observed = { ...deleteOnlyPolicy, moderationMode: 'OBSERVE' as const };
+  for (const mode of ['OFF', 'OBSERVE', 'DELETE_ONLY'] as const) {
+    assert.equal(
+      resolveDuplicatePhotoPresentationPolicy(observed, mode, 'MESSAGE', true),
+      observed,
+    );
+  }
+  assert.equal(resolveDuplicatePhotoPresentationPolicy(observed, 'FULL', 'TEXT', true), observed);
+  assert.equal(
+    resolveDuplicatePhotoPresentationPolicy(deleteOnlyPolicy, 'FULL', 'MESSAGE', true),
+    deleteOnlyPolicy,
+  );
+  assert.equal(
+    resolveDuplicatePhotoPresentationPolicy(mutePolicy, 'FULL', 'MESSAGE', true),
+    mutePolicy,
+  );
+  assert.equal(
+    resolveDuplicatePhotoPresentationPolicy(deleteOnlyPolicy, 'FULL', 'MESSAGE', false).comparison,
+    'MESSAGE',
+  );
+});
 
 const duplicatesSectionSource = readFileSync(
   new URL('../src/pages/settings/settings-duplicates-section.tsx', import.meta.url),

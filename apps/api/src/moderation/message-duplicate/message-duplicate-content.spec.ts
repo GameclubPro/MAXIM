@@ -1,6 +1,7 @@
 import {
   buildMessageDuplicateIdentity,
   extractDuplicateMessageContent,
+  canRefreshDuplicatePhotoSources,
 } from './message-duplicate-content';
 
 const content = (body: Record<string, unknown>, extra = {}) =>
@@ -13,6 +14,45 @@ const photo = (id: string) => ({
 });
 
 describe('message duplicate canonical contents', () => {
+  it.each(['image_url', 'imageUrl'] as const)(
+    'reads the existing MAX %s photo field variants',
+    (key) => {
+      for (const nested of [true, false]) {
+        const fields = { photoId: 'photo', [key]: 'https://i.oneme.ru/photo' };
+        const parsed = content({
+          attachments: [
+            { type: 'image', ...(nested ? { payload: fields } : { ...fields, payload: {} }) },
+          ],
+        });
+        expect(parsed.complete).toBe(true);
+        expect(parsed.media).toEqual([
+          expect.objectContaining({ photoId: 'photo', url: 'https://i.oneme.ru/photo' }),
+        ]);
+      }
+    },
+  );
+  it('never refreshes an anonymous photo from a different source URL', () => {
+    const original = content({
+      attachments: [{ type: 'image', payload: { url: 'https://i.oneme.ru/a' } }],
+    });
+    const fresh = content({
+      attachments: [{ type: 'image', payload: { url: 'https://i.oneme.ru/b' } }],
+    });
+    expect(canRefreshDuplicatePhotoSources(original, fresh)).toBe(false);
+    expect(original.sourceDigest).not.toBe(fresh.sourceDigest);
+  });
+  it('keeps a message-bound photo source stable across URL renewal, never across photo replacement', () => {
+    const original = content({ attachments: [photo('a')] });
+    const renewed = content({
+      attachments: [
+        { type: 'image', payload: { photo_id: 'a', url: 'https://i.oneme.ru/renewed' } },
+      ],
+    });
+    expect(renewed.sourceDigest).toBe(original.sourceDigest);
+    expect(renewed.media[0]!.identity).not.toBe(original.media[0]!.identity);
+    expect(content({ attachments: [photo('b')] }).sourceDigest).not.toBe(original.sourceDigest);
+    expect(buildMessageDuplicateIdentity(renewed, 'MESSAGE')).toBeNull();
+  });
   it.each(['a', '\u0434\u0430', '\u{1f44d}', '1', '!'])(
     'compares nonempty short text %s',
     (text) => {

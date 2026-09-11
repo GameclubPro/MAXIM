@@ -7,6 +7,7 @@ import {
 import { messageDuplicateSettingsDigest } from './message-duplicate-state';
 import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
+import { PhotoDownloadHttpError } from '../photo-duplicate/secure-photo-downloader';
 
 function setup() {
   const settings = { ...duplicateSettings(), chat: { entityType: 'CHAT', admins: [] } };
@@ -37,6 +38,7 @@ function setup() {
   const enforcement = { enqueue: jest.fn() };
   const bots = { isKnownBotUserId: jest.fn().mockReturnValue(false), getDefaultBotId: () => 'bot' };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'allow' }) };
+  const max = { getExactMessageRow: jest.fn() };
   const service = new MessageDuplicateMediaService(
     prisma as never,
     redis as never,
@@ -48,6 +50,7 @@ function setup() {
     governor as never,
     new ConfigService(),
     { resolveEffectivePolicy: jest.fn().mockResolvedValue({ enforce: false }) } as never,
+    max as never,
   );
   const downloads = jest.fn(async (url: string) => ({
     bytes: Buffer.from(url.endsWith('b') ? 'different' : 'same'),
@@ -113,10 +116,135 @@ function setup() {
     enforcement,
     policy,
     photos,
+    max,
   };
 }
 
 describe('bounded message duplicate media analysis', () => {
+  function photoSetup() {
+    const s = setup();
+    s.policy.resolve.mockResolvedValue({ mode: 'full', revision: 1 });
+    const photoJob = (id: string, timestamp: number, url: string | null = null) => {
+      const job = s.job(id, timestamp);
+      const update = duplicateUpdate(id, job.eventTimestampMs, '', [
+        { type: 'image', payload: { photo_id: id, ...(url ? { url } : {}) } },
+      ]);
+      s.rows.set(id, { status: 'PROCESSED', normalizedPayload: update, botId: 'bot' });
+      return job;
+    };
+    const complete = {
+      kind: 'complete',
+      fingerprint: { images: [{ canonicalHash: 'a'.repeat(64) }] },
+    };
+    s.photos.fingerprintAlbum.mockResolvedValue(complete);
+    return { ...s, photoJob, complete };
+  }
+
+  it('verifies exact photo copies with different IDs and forwards full action execution', async () => {
+    const s = photoSetup();
+    const execute = jest.fn();
+    await s.service.process(s.photoJob('a', 0, 'https://i.oneme.ru/a'), s.lease, execute);
+    expect(s.photos.fingerprintAlbum).not.toHaveBeenCalled();
+    s.history.observe.mockResolvedValue({ hit: {}, binding: {} });
+    await s.service.process(s.photoJob('b', 100, 'https://i.oneme.ru/b'), s.lease, execute);
+    expect(s.photos.fingerprintAlbum).toHaveBeenCalledTimes(2);
+    expect(s.history.observe).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ messageId: 'a', mediaHashes: ['a'.repeat(64)] }),
+    );
+    expect(s.history.observe).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ messageId: 'b', mediaHashes: ['a'.repeat(64)] }),
+    );
+    expect(s.enforcement.enqueue).toHaveBeenCalledTimes(1);
+    const request = s.enforcement.enqueue.mock.calls[0]![0];
+    expect(request.update.message.messageId).toBe('b');
+    await request.executeFullAction({});
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'expired'] as const)(
+    'refreshes a %s photo URL without treating its ID as equality proof',
+    async (reason) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('a', 0, 'https://i.oneme.ru/a'), s.lease);
+      const current = s.photoJob(
+        'b',
+        100,
+        reason === 'expired' ? 'https://i.oneme.ru/expired' : null,
+      );
+      s.photos.fingerprintAlbum.mockResolvedValueOnce(s.complete);
+      if (reason === 'missing')
+        s.photos.fingerprintAlbum.mockResolvedValueOnce({
+          kind: 'incomplete',
+          reason: 'missing_download_url',
+        });
+      else s.photos.fingerprintAlbum.mockRejectedValueOnce(new PhotoDownloadHttpError(403));
+      const fresh = duplicateUpdate('b', current.eventTimestampMs, '', [
+        { type: 'image', payload: { photo_id: 'b', url: 'https://i.oneme.ru/fresh' } },
+      ]);
+      s.max.getExactMessageRow.mockResolvedValue((fresh.raw as { message: unknown }).message);
+      await s.service.process(current, s.lease);
+      expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(1);
+      expect(s.max.getExactMessageRow).toHaveBeenCalledWith(
+        '-123',
+        'b',
+        expect.objectContaining({ botId: 'bot', trafficClass: 'background', bypassCache: true }),
+      );
+      expect(s.photos.fingerprintAlbum).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          images: [{ source: 'direct', photoId: 'b', downloadUrl: 'https://i.oneme.ru/fresh' }],
+        }),
+        expect.any(Number),
+        expect.any(Number),
+      );
+      expect(s.history.observe).toHaveBeenLastCalledWith(
+        expect.objectContaining({ messageId: 'b', mediaHashes: ['a'.repeat(64)] }),
+      );
+    },
+  );
+
+  it.each(['photo', 'caption', 'author', 'message'] as const)(
+    'rejects a changed %s during photo source refresh',
+    async (change) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('a', 0, 'https://i.oneme.ru/a'), s.lease);
+      const current = s.photoJob('b', 100);
+      s.photos.fingerprintAlbum
+        .mockResolvedValueOnce(s.complete)
+        .mockResolvedValueOnce({ kind: 'incomplete', reason: 'missing_download_url' });
+      const fresh = duplicateUpdate(
+        change === 'message' ? 'other' : 'b',
+        current.eventTimestampMs,
+        change === 'caption' ? 'edited' : '',
+        [
+          {
+            type: 'image',
+            payload: {
+              photo_id: change === 'photo' ? 'other' : 'b',
+              url: 'https://i.oneme.ru/fresh',
+            },
+          },
+        ],
+      );
+      const raw = (fresh.raw as { message: { sender: { user_id: number } } }).message;
+      if (change === 'author') raw.sender.user_id = 999;
+      s.max.getExactMessageRow.mockResolvedValue(raw);
+      await expect(s.service.process(current, s.lease)).rejects.toThrow('source changed');
+      expect(s.photos.fingerprintAlbum).toHaveBeenCalledTimes(2);
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retries a not-yet-processed baseline instead of losing its first occurrence', async () => {
+    const s = setup();
+    await s.service.process(s.job('a', 0), s.lease);
+    s.rows.set('a', { status: 'QUEUED' });
+    await expect(s.service.process(s.job('b', 100), s.lease)).rejects.toThrow();
+    expect(s.downloads).not.toHaveBeenCalled();
+    expect(s.history.observe).not.toHaveBeenCalled();
+  });
   it('does not download first occurrences and proves each candidate independently', async () => {
     const s = setup();
     await s.service.process(s.job('a', 0), s.lease);
@@ -156,10 +284,20 @@ describe('bounded message duplicate media analysis', () => {
   it('continues current evidence collection when the baseline download fails', async () => {
     const s = setup();
     await s.service.process(s.job('a', 0), s.lease);
-    s.downloads.mockRejectedValueOnce(new Error('expired baseline URL'));
+    s.downloads.mockRejectedValueOnce(new PhotoDownloadHttpError(410));
     await s.service.process(s.job('b', 100), s.lease);
     expect(s.history.observe).toHaveBeenCalledTimes(1);
     expect(s.history.observe).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'b' }));
+  });
+  it('retries transient baseline downloads before committing current history', async () => {
+    const s = setup();
+    await s.service.process(s.job('a', 0), s.lease);
+    const next = s.job('b', 100);
+    s.downloads.mockRejectedValueOnce(new Error('temporary download timeout'));
+    await expect(s.service.process(next, s.lease)).rejects.toThrow('temporary download timeout');
+    expect(s.history.observe).not.toHaveBeenCalled();
+    await s.service.process(next, s.lease);
+    expect(s.history.observe).toHaveBeenCalledTimes(2);
   });
   it('defers pressure without downloading, and requires the durable receipt to be processed', async () => {
     const s = setup();

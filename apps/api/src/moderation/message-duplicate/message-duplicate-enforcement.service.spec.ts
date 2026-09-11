@@ -9,14 +9,18 @@ import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-int
 import type { ModerationMessageActionClaimData } from '../moderation-message-action-claim';
 
 describe('message duplicate delete-only action claims', () => {
-  it.each([
-    [1, null],
-    [2, 'WARN'],
-    [3, 'MUTE'],
-    [4, 'BAN'],
-  ] as const)(
-    'uses the configured full reaction ladder at repeat %s',
-    async (repeatCount, expected) => {
+  it.each(
+    [
+      [1, null],
+      [2, 'WARN'],
+      [3, 'MUTE'],
+      [4, 'BAN'],
+    ].flatMap(([repeatCount, expected]) =>
+      ['text', 'photo'].map((kind) => ({ repeatCount: repeatCount as number, expected, kind })),
+    ),
+  )(
+    'uses the configured full reaction ladder at repeat $repeatCount for $kind',
+    async ({ repeatCount, expected, kind }) => {
       const settings = duplicateSettings({
         duplicateBotMessageEnabled: true,
         duplicateWarnEnabled: true,
@@ -27,7 +31,14 @@ describe('message duplicate delete-only action claims', () => {
         duplicateBanMaxCount: 4,
         duplicateMuteDurationHours: 12,
       });
-      const update = duplicateUpdate();
+      const update = duplicateUpdate(
+        'm2',
+        Date.now() - 1000,
+        kind === 'photo' ? '' : 'a',
+        kind === 'photo'
+          ? [{ type: 'image', payload: { photo_id: 'photo', url: 'https://i.oneme.ru/photo' } }]
+          : [],
+      );
       const history = new MessageDuplicateHistoryService({
         replaceRevisionedSetMembershipsBeforeDeadline: jest
           .fn()
@@ -41,6 +52,7 @@ describe('message duplicate delete-only action claims', () => {
         controlRevision: 2,
         settings,
         content: extractDuplicateMessageContent(update.raw),
+        mediaHashes: kind === 'photo' ? ['a'.repeat(64)] : [],
       });
       const intents = {
         ensureIntentWithMessageActionClaim: jest.fn().mockResolvedValue({
@@ -82,6 +94,7 @@ describe('message duplicate delete-only action claims', () => {
         intents.ensureIntentWithMessageActionClaim.mock.calls[0]![0].intent,
       );
       expect(request.deleteIntent.event.metadata.messageDuplicate.version).toBe(2);
+      expect(request.deleteIntent.event.metadata.messageDuplicate.hasPhotos).toBe(kind === 'photo');
       expect(request.deleteIntent.event.metadata.enforcementScope).toBe('full');
       if (expected) {
         expect(request.deleteIntent.event.metadata.messageDuplicate.requiredCount).toBe(

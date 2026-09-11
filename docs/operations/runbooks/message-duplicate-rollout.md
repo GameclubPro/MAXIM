@@ -27,6 +27,9 @@ photo runtime ceiling. Never infer equality from media IDs or bypass content ver
 
 ## Validation And Delivery
 
+The bounded exact-photo recovery and UI ownership plan is documented in
+[Exact Photo Duplicate Repair](exact-photo-duplicate-repair.md).
+
 Run the impact planner, API/contracts/Prisma/miniapp/admin checks and infra checks. Run the
 `message-duplicate` specs with `MAXIM_TEST_REDIS_URL` pointing only to disposable local Redis.
 Verify the settings screen on mobile, including OFF, OBSERVE, DELETE_ONLY and FULL status.

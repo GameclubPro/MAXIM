@@ -183,13 +183,18 @@ export class PhotoDuplicateAnalysisService {
   private async readCachedFingerprints(
     album: LogicalPhotoAlbum,
   ): Promise<Array<PhotoFingerprint | null>> {
-    const photoIds = album.images.map((image) => image.photoId);
-    if (photoIds.some((photoId) => !photoId)) {
+    const photoIds = album.images.flatMap((image) => (image.photoId ? [image.photoId] : []));
+    if (photoIds.length === 0) {
       return album.images.map(() => null);
     }
 
-    const lookup = await this.historyStore.getCachedPhotoFingerprints(photoIds as string[]);
-    return lookup.kind === 'available' ? lookup.fingerprints : album.images.map(() => null);
+    const lookup = await this.historyStore.getCachedPhotoFingerprints(photoIds);
+    let position = 0;
+    return album.images.map((image) =>
+      image.photoId && lookup.kind === 'available'
+        ? (lookup.fingerprints[position++] ?? null)
+        : null,
+    );
   }
 
   private async cacheDownloadedFingerprints(

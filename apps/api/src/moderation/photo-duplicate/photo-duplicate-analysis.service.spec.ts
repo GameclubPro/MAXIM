@@ -94,6 +94,24 @@ function createService(cache: Array<PhotoFingerprint | null>) {
 }
 
 describe('PhotoDuplicateAnalysisService', () => {
+  it('retains cached positions when another album member has no photo ID', async () => {
+    const cached = fingerprint('a');
+    const s = createService([cached]);
+    const result = await s.service.fingerprintAlbum(
+      album([
+        { source: 'direct', photoId: null, downloadUrl: 'https://i.oneme.ru/new' },
+        { source: 'direct', photoId: 'cached', downloadUrl: null },
+      ]),
+      3600,
+    );
+    expect(result).toMatchObject({
+      kind: 'complete',
+      fingerprint: { images: [s.generated, cached] },
+    });
+    expect(s.historyStore.getCachedPhotoFingerprints).toHaveBeenCalledWith(['cached']);
+    expect(s.downloader.download).toHaveBeenCalledTimes(1);
+    expect(s.downloader.download).toHaveBeenCalledWith('https://i.oneme.ru/new');
+  });
   it('uses the photo-id fingerprint cache without downloading bytes', async () => {
     const first = fingerprint('a');
     const second = fingerprint('b');

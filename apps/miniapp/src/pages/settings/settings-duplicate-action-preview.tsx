@@ -1,9 +1,8 @@
-import type {
-  ChatSettings,
-  DuplicateFlowStageSettings,
-  DuplicatePhotoEffectivePolicy,
-} from '@maxim/contracts/settings';
-import { formatDuplicateActionSummary } from './settings-duplicate-photo-status';
+import type { ChatSettings, DuplicateFlowStageSettings } from '@maxim/contracts/settings';
+import {
+  formatDuplicateActionSummary,
+  type DuplicatePhotoPresentationPolicy,
+} from './settings-duplicate-photo-status';
 import { SettingsHintAnchor } from './settings-hint-anchor';
 import type { SettingsSectionHintProps } from './settings-section-shared';
 
@@ -44,13 +43,16 @@ export default function SettingsDuplicateActionPreview({
   draft: ChatSettings;
   allowedCount: number;
   windowHours: number;
-  photoPolicy: DuplicatePhotoEffectivePolicy;
+  photoPolicy: DuplicatePhotoPresentationPolicy;
 }) {
   const rows = buildDuplicateTextActionPreview(draft, allowedCount);
   return (
     <section className="duplicate-action-preview" aria-label="Итог действий антидубля">
       <div className="duplicate-stage__top">
-        <h3 className="duplicate-stage__title">Действия для текста за {windowHours} ч</h3>
+        <h3 className="duplicate-stage__title">
+          Действия для {photoPolicy.comparison === 'MESSAGE' ? 'сообщений' : 'текста'} за{' '}
+          {windowHours} ч
+        </h3>
         <SettingsHintAnchor
           hintKey="duplicateActionSummary"
           openHintKey={openHintKey}

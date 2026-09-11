@@ -345,13 +345,13 @@ async function readResponseBody(
 
 function parseAndValidateUrl(rawUrl: string, allowedHosts: readonly string[]): URL {
   if (rawUrl.length === 0 || rawUrl.length > 2_048) {
-    throw new Error('Photo URL length is invalid');
+    throw new UnrecoverableError('Photo URL length is invalid');
   }
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new Error('Photo URL is invalid');
+    throw new UnrecoverableError('Photo URL is invalid');
   }
   if (
     url.protocol !== 'https:' ||
@@ -360,7 +360,7 @@ function parseAndValidateUrl(rawUrl: string, allowedHosts: readonly string[]): U
     (url.port && url.port !== '443') ||
     !hostMatchesAllowlist(url.hostname, allowedHosts)
   ) {
-    throw new Error('Photo URL is not permitted');
+    throw new UnrecoverableError('Photo URL is not permitted');
   }
   return url;
 }

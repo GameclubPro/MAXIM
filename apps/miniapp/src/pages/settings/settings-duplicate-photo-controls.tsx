@@ -1,4 +1,3 @@
-import type { DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 import { useState } from 'react';
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import { useHintPopoverAutoPosition } from '../../lib/hint-popover';
@@ -13,6 +12,7 @@ import {
 } from './settings-duplicate-photo-options';
 import {
   formatDuplicatePhotoModerationHint,
+  type DuplicatePhotoPresentationPolicy,
   type DuplicatePhotoSanctionSettings,
 } from './settings-duplicate-photo-status';
 
@@ -20,7 +20,7 @@ type SettingsDuplicatePhotoControlsProps = {
   actionSettings: DuplicatePhotoSanctionSettings;
   enabled: boolean;
   matchPreset: DuplicatePhotoMatchPreset;
-  moderationPolicy: DuplicatePhotoEffectivePolicy;
+  moderationPolicy: DuplicatePhotoPresentationPolicy;
   scope: DuplicatePhotoScope;
   onEnabledChange: (value: boolean) => void;
   onMatchPresetChange: (value: DuplicatePhotoMatchPreset) => void;
@@ -40,6 +40,29 @@ export default function SettingsDuplicatePhotoControls({
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const toggleHint = (key: HintKey) => setOpenHintKey((current) => (current === key ? null : key));
   useHintPopoverAutoPosition(openHintKey !== null, openHintKey, () => setOpenHintKey(null));
+
+  if (moderationPolicy.comparison === 'MESSAGE') {
+    return (
+      <div className="settings-native-toggle duplicate-photo-toggle">
+        <div className="settings-native-toggle__row">
+          <div className="settings-native-toggle__title-wrap">
+            <span className="settings-native-toggle__title">Изображения</span>
+            <SettingsHintAnchor
+              hintKey="duplicatePhoto"
+              openHintKey={openHintKey}
+              onToggleHint={toggleHint}
+              label="Проверка изображений в сообщении"
+            >
+              {formatDuplicatePhotoModerationHint(moderationPolicy, actionSettings)}
+            </SettingsHintAnchor>
+          </div>
+          <span className="field__hint" role="status">
+            Активно
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>

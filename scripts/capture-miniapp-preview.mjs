@@ -1527,15 +1527,26 @@ const scenarioBehaviors = [
       await page.getByRole('button', { name: 'Повторить запуск' }).waitFor({ state: 'visible' });
       await page.locator('.publication-details-sheet__header > button').click();
       await page.getByText('Есть недоставленные сообщения').waitFor({ state: 'visible' });
-      await page.locator('[data-publication-id="publication-delivery-review"] .publication-feed-card__menu-trigger').click();
+      await page
+        .locator(
+          '[data-publication-id="publication-delivery-review"] .publication-feed-card__menu-trigger',
+        )
+        .click();
       await page.getByRole('button', { name: 'Изменить версию для повтора' }).click();
       await page.locator('.publications-editor').waitFor({ state: 'visible' });
       await page
         .locator('.broadcast-publish-bar__primary:not(:disabled)')
         .waitFor({ state: 'visible' });
-      await page.locator('.publication-content-composer .max-rich-text-editor__surface').fill('Несохранённый текст публикации');
-      if (screenshotTarget === 'native') await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
-      else await page.locator('.publications-editor-header').getByRole('button', { name: 'Назад', exact: true }).click();
+      await page
+        .locator('.publication-content-composer .max-rich-text-editor__surface')
+        .fill('Несохранённый текст публикации');
+      if (screenshotTarget === 'native')
+        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      else
+        await page
+          .locator('.publications-editor-header')
+          .getByRole('button', { name: 'Назад', exact: true })
+          .click();
       await page
         .getByRole('dialog', { name: 'Закрыть без сохранения?' })
         .waitFor({ state: 'visible' });
@@ -1851,12 +1862,26 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       const panel = page.locator('.settings-drilldown__panel--duplicates');
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      await panel
+        .locator('.duplicate-photo-toggle')
+        .getByText('Активно', { exact: true })
+        .waitFor();
+      await panel.getByLabel('Сравнение сообщений', { exact: true }).selectOption('TEXT');
       await panel.getByLabel('Включить проверку повторных фото').check();
       await panel.getByRole('radiogroup', { name: 'Где искать повторное фото' }).waitFor({
         state: 'visible',
       });
       await panel.getByRole('radio', { name: 'С изменениями' }).click();
       await panel.getByRole('radio', { name: 'Во всём чате' }).click();
+      await panel.getByLabel('Включить проверку повторных фото').uncheck();
+      await panel.getByLabel('Сравнение сообщений', { exact: true }).selectOption('MESSAGE');
+      await panel
+        .locator('.duplicate-photo-toggle')
+        .getByText('Активно', { exact: true })
+        .waitFor();
+      if (await panel.getByText(/Фото не удаляются|Фото: только наблюдение/).count()) {
+        throw new Error('Whole-message photo coverage is masked by the experimental photo status');
+      }
       await page.waitForTimeout(250);
     },
   },

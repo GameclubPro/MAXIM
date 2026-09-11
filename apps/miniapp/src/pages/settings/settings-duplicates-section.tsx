@@ -1,5 +1,6 @@
 import type { ChatSettings, DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 import { lazy, Suspense } from 'react';
+import { resolveDuplicatePhotoPresentationPolicy } from './settings-duplicate-photo-status';
 import './settings-duplicate-preview.css';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
@@ -93,6 +94,12 @@ const LazySettingsDuplicateActionPreview = lazy(
 );
 
 export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps) {
+  const photoPresentationPolicy = resolveDuplicatePhotoPresentationPolicy(
+    props.duplicatePhotoModerationPolicy,
+    props.duplicateMessageModerationMode ?? 'OFF',
+    props.draft.duplicateCompareMode,
+    props.draft.duplicatePhotoEnabled,
+  );
   const {
     adjustDuplicateAllowedCount,
     api,
@@ -105,7 +112,6 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
     draft,
     duplicateAllowedCount,
     duplicateBotButtonErrors,
-    duplicatePhotoModerationPolicy,
     duplicateMessageModerationMode = 'OFF',
     duplicateSharedWindowHours,
     duplicateWindowInputValue,
@@ -255,7 +261,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                     actionSettings={draft}
                     enabled={draft.duplicatePhotoEnabled}
                     matchPreset={draft.duplicatePhotoMatchPreset}
-                    moderationPolicy={duplicatePhotoModerationPolicy}
+                    moderationPolicy={photoPresentationPolicy}
                     scope={draft.duplicatePhotoScope}
                     onEnabledChange={(value) => setFieldValue('duplicatePhotoEnabled', value)}
                     onMatchPresetChange={(value) =>
@@ -640,7 +646,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       draft={draft}
                       allowedCount={duplicateAllowedCount}
                       windowHours={duplicateSharedWindowHours}
-                      photoPolicy={duplicatePhotoModerationPolicy}
+                      photoPolicy={photoPresentationPolicy}
                       openHintKey={openHintKey}
                       toggleHint={toggleHint}
                     />

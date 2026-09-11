@@ -108,6 +108,38 @@ function setup() {
 }
 
 describe('message duplicate final delete guard', () => {
+  it('allows a renewed photo URL with verified content, but rejects a replacement photo', async () => {
+    const s = setup();
+    s.binding.version = 2;
+    s.binding.hasPhotos = true;
+    s.binding.mediaHashes = ['c'.repeat(64)];
+    s.policy.resolve.mockResolvedValue({
+      mode: 'full',
+      revision: 1,
+      effectiveAtMs: Date.now() - 10000,
+    });
+    const image = (id: string, url: string) =>
+      duplicateUpdate('m2', s.binding.eventTimestampMs, '', [
+        { type: 'image', payload: { photo_id: id, url } },
+      ]);
+    const original = image('photo', 'https://i.oneme.ru/old');
+    const content = extractDuplicateMessageContent(original.raw);
+    s.binding.sourceDigest = content.sourceDigest;
+    s.binding.contentDigest = buildMessageDuplicateIdentity(
+      content,
+      'MESSAGE',
+      s.binding.mediaHashes,
+    )!;
+    const renewed = image('photo', 'https://i.oneme.ru/new');
+    s.max.getExactMessageRow.mockResolvedValue((renewed.raw as { message: unknown }).message);
+    await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');
+    expect(s.photos.resolveEffectivePolicy).not.toHaveBeenCalled();
+    const replaced = image('different', 'https://i.oneme.ru/new');
+    s.max.getExactMessageRow.mockResolvedValue((replaced.raw as { message: unknown }).message);
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'content_changed',
+    );
+  });
   function full() {
     const s = setup();
     s.policy.resolve.mockResolvedValue({

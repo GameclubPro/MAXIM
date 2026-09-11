@@ -11,12 +11,38 @@ export type DuplicatePhotoSanctionSettings = Pick<
   'duplicateWarnEnabled' | 'duplicateMuteEnabled' | 'duplicateBanEnabled'
 >;
 
+export type DuplicatePhotoPresentationPolicy = DuplicatePhotoEffectivePolicy & {
+  comparison?: 'MESSAGE';
+};
+
+export function resolveDuplicatePhotoPresentationPolicy(
+  photoPolicy: DuplicatePhotoEffectivePolicy,
+  messageMode: DuplicatePhotoModerationMode,
+  compareMode: ChatSettings['duplicateCompareMode'],
+  photoEnabled: boolean,
+): DuplicatePhotoPresentationPolicy {
+  if (
+    messageMode === 'FULL' &&
+    compareMode === 'MESSAGE' &&
+    (!photoEnabled || ['OFF', 'OBSERVE'].includes(photoPolicy.moderationMode))
+  ) {
+    return {
+      moderationMode: 'FULL',
+      actionCeiling: 'BAN',
+      allowedMatchKinds: ['canonical_sha256'],
+      comparison: 'MESSAGE',
+    };
+  }
+  return photoPolicy;
+}
+
 export function formatDuplicatePhotoCoverageLabel(
   textLabel: string,
   photoEnabled: boolean,
-  policy: DuplicatePhotoEffectivePolicy,
+  policy: DuplicatePhotoPresentationPolicy,
   settings?: DuplicatePhotoSanctionSettings,
 ): string {
+  if (policy.comparison === 'MESSAGE') return `Текст: ${textLabel} • вложения: включены`;
   if (!photoEnabled) {
     return `Текст: ${textLabel}`;
   }
@@ -68,9 +94,12 @@ export function resolveDuplicatePhotoPolicyForDraft(
 }
 
 export function formatDuplicatePhotoModerationHint(
-  policy: DuplicatePhotoEffectivePolicy,
+  policy: DuplicatePhotoPresentationPolicy,
   settings?: DuplicatePhotoSanctionSettings,
 ): string {
+  if (policy.comparison === 'MESSAGE') {
+    return 'Фото сравниваются вместе с подписью и остальными вложениями у одного участника. Для повторного сообщения действуют выбранные ниже удаление и меры.';
+  }
   const perceptualActionsEnabled = policy.allowedMatchKinds.includes('pdq');
   const deletionScope = perceptualActionsEnabled
     ? 'Совпадения фото по выбранному режиму удаляются.'
@@ -110,7 +139,7 @@ type DuplicateActionSummarySettings = Pick<
 export function formatDuplicateActionSummary(
   settings: DuplicateActionSummarySettings,
   allowedCount: number,
-  photoPolicy: DuplicatePhotoEffectivePolicy,
+  photoPolicy: DuplicatePhotoPresentationPolicy,
 ): string {
   const firstRemovedDuplicate = Math.max(1, Math.round(allowedCount) + 1);
   let sanctionDuplicate = firstRemovedDuplicate + (settings.duplicateBotMessageEnabled ? 1 : 0);
@@ -129,7 +158,9 @@ export function formatDuplicateActionSummary(
     textSanctions.push(`блокировка с №${sanctionDuplicate}`);
   }
 
-  const textParts = [`Текст удаляется с дубля №${firstRemovedDuplicate}.`];
+  const subject =
+    photoPolicy.comparison === 'MESSAGE' ? 'Сообщение с текстом и вложениями' : 'Текст';
+  const textParts = [`${subject} удаляется с дубля №${firstRemovedDuplicate}.`];
   if (settings.duplicateBotMessageEnabled) {
     textParts.push('Бот объясняет первое удаление.');
   }
@@ -139,7 +170,7 @@ export function formatDuplicateActionSummary(
       : 'Предупреждения и ограничения выключены.',
   );
 
-  if (!settings.duplicatePhotoEnabled) {
+  if (photoPolicy.comparison === 'MESSAGE' || !settings.duplicatePhotoEnabled) {
     return textParts.join(' ');
   }
   if (photoPolicy.moderationMode === 'OFF') {

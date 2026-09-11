@@ -4,15 +4,21 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { MaxUpdate } from '@maxim/contracts';
 import { z } from 'zod';
+import { UnrecoverableError } from 'bullmq';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
+import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WebhookParser } from '../../webhook/webhook.parser';
 import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
 import { resolveTrustedDuplicateStateRevision } from '../duplicate-message-revision';
 import { classifyDuplicateEventTime } from '../duplicate-enforcement-safety';
 import { RedisCounterService } from '../redis-counter.service';
 import { PhotoDuplicateAnalysisService } from '../photo-duplicate/photo-duplicate-analysis.service';
-import { SecurePhotoDownloader } from '../photo-duplicate/secure-photo-downloader';
+import {
+  PhotoDownloadHttpError,
+  SecurePhotoDownloader,
+} from '../photo-duplicate/secure-photo-downloader';
 import type { PhotoDuplicateOrderingLease } from '../photo-duplicate/photo-duplicate-ordering.store';
 import { PhotoDuplicateSourceNotReadyError } from '../photo-duplicate/photo-duplicate.queue';
 import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-timeout-quarantine';
@@ -21,6 +27,7 @@ import { MessageDuplicateHistoryService } from './message-duplicate-history.serv
 import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
 import {
   digestDuplicateContent,
+  canRefreshDuplicatePhotoSources,
   extractDuplicateMessageContent,
   type DuplicateMessageContent,
 } from './message-duplicate-content';
@@ -65,6 +72,7 @@ export class MessageDuplicateMediaService {
     private readonly governor: BackgroundRuntimeGovernorService,
     config: ConfigService,
     private readonly photoPolicy: PhotoDuplicateRuntimePolicyService,
+    private readonly max: MaxClientService,
   ) {
     const maxBytes = config.get<number>('MESSAGE_DUPLICATE_MAX_BYTES') ?? 8_388_608;
     this.binary = new SecurePhotoDownloader(
@@ -206,26 +214,34 @@ export class MessageDuplicateMediaService {
                 candidateKeys.includes(`message-duplicate:candidate:v1:${scope}:${key}`),
               )
           ) {
-            const hashes = await this.hashMedia(
+            const verified = await this.hashMedia(
               baselineContent,
               baseline.update,
               flow.windowSec,
               deadlineAtMs,
+              baseline.botId,
             );
             lease.assertOwned();
             await this.history.observe({
-              content: baselineContent,
+              content: verified.content,
               chatId: job.chatId,
               userId: message.senderId,
               messageId: baselineMessage.messageId,
               eventTimestampMs: baseline.eventTimestampMs,
               controlRevision: policy.revision,
               settings,
-              mediaHashes: hashes,
+              mediaHashes: verified.hashes,
             });
           }
         }
-      } catch {
+      } catch (error) {
+        // FLAG: A transient baseline failure must retry the pair; acknowledging it would lose
+        // the first occurrence and let the first duplicate through without its configured action.
+        if (
+          !(error instanceof UnrecoverableError) &&
+          !(error instanceof PhotoDownloadHttpError && [403, 404, 410].includes(error.statusCode))
+        )
+          throw error;
         this.logger.debug(
           { chatId: job.chatId },
           'Message duplicate baseline media could not be verified',
@@ -233,18 +249,24 @@ export class MessageDuplicateMediaService {
       }
     }
     lease.assertOwned();
-    const hashes = await this.hashMedia(content, source.update, flow.windowSec, deadlineAtMs);
+    const verified = await this.hashMedia(
+      content,
+      source.update,
+      flow.windowSec,
+      deadlineAtMs,
+      source.botId,
+    );
     if (Date.now() >= deadlineAtMs) throw new Error('Message media verification deadline exceeded');
     lease.assertOwned();
     const result = await this.history.observe({
-      content,
+      content: verified.content,
       chatId: job.chatId,
       userId: message.senderId,
       messageId: job.messageId,
       eventTimestampMs: job.eventTimestampMs,
       controlRevision: policy.revision,
       settings,
-      mediaHashes: hashes,
+      mediaHashes: verified.hashes,
     });
     for (const key of candidateKeys) {
       lease.assertOwned();
@@ -352,30 +374,50 @@ export class MessageDuplicateMediaService {
     update: MaxUpdate,
     ttl: number,
     deadlineAtMs: number,
-  ): Promise<string[]> {
+    botId: string,
+  ): Promise<{ content: DuplicateMessageContent; hashes: string[] }> {
     const hashes = await this.readHashes(content, update);
     const photoIndexes = content.media
       .map((media, index) => (media.kind === 'photo' && !hashes[index] ? index : -1))
       .filter((index) => index >= 0);
     if (photoIndexes.some((index) => !hashes[index])) {
       const message = update.message!;
-      const result = await this.photos.fingerprintAlbum(
-        {
-          chatId: message.chatId,
-          messageId: message.messageId,
-          senderId: message.senderId,
-          createdAtMs: Date.parse(message.createdAt),
-          caption: content.text,
-          images: photoIndexes.map((index) => ({
-            source: 'direct' as const,
-            photoId: content.media[index]!.photoId,
-            downloadUrl: content.media[index]!.url,
-          })),
-        },
-        ttl,
-        deadlineAtMs,
-      );
-      if (result.kind !== 'complete') throw new Error('Photo message content remains unverified');
+      const fingerprint = () =>
+        this.photos.fingerprintAlbum(
+          {
+            chatId: message.chatId,
+            messageId: message.messageId,
+            senderId: message.senderId,
+            createdAtMs: Date.parse(message.createdAt),
+            caption: content.text,
+            images: photoIndexes.map((index) => ({
+              source: 'direct' as const,
+              photoId: content.media[index]!.photoId,
+              downloadUrl: content.media[index]!.url,
+            })),
+          },
+          ttl,
+          deadlineAtMs,
+        );
+      let result;
+      try {
+        result = await fingerprint();
+      } catch (error) {
+        if (
+          !(error instanceof PhotoDownloadHttpError) ||
+          ![403, 404, 410].includes(error.statusCode)
+        )
+          throw error;
+      }
+      if (!result || (result.kind === 'incomplete' && result.reason === 'missing_download_url')) {
+        content = await this.refreshPhotoSources(content, update, botId, deadlineAtMs);
+        result = await fingerprint();
+      }
+      if (result.kind !== 'complete') {
+        if (result.reason === 'decode_capacity_exceeded')
+          throw new MessageDuplicateMediaDeferredError('Photo decode capacity unavailable');
+        throw new UnrecoverableError(`Photo message content unverified: ${result.reason}`);
+      }
       photoIndexes.forEach((index, position) => {
         hashes[index] = result.fingerprint.images[position]!.canonicalHash;
       });
@@ -396,7 +438,44 @@ export class MessageDuplicateMediaService {
         ttl,
       );
     }
-    return hashes as string[];
+    return { content, hashes: hashes as string[] };
+  }
+
+  private async refreshPhotoSources(
+    content: DuplicateMessageContent,
+    update: MaxUpdate,
+    botId: string,
+    deadlineAtMs: number,
+  ): Promise<DuplicateMessageContent> {
+    const message = update.message!;
+    const timeoutMs = Math.min(5000, deadlineAtMs - Date.now());
+    if (timeoutMs <= 0) throw new Error('Message media verification deadline exceeded');
+    const raw = await this.max.getExactMessageRow(message.chatId, message.messageId, {
+      botId,
+      timeoutMs,
+      bypassCache: true,
+      trafficClass: 'background',
+      sourceTag: 'message_duplicate_media',
+    });
+    const current = raw
+      ? new WebhookParser().parse({
+          type: 'message_created',
+          updateId: 'photo-source-refresh',
+          message: raw,
+        }).message
+      : null;
+    const fresh = extractDuplicateMessageContent(raw, false);
+    if (
+      !current ||
+      current.chatId !== message.chatId ||
+      current.messageId !== message.messageId ||
+      current.senderId !== message.senderId ||
+      current.entityType === 'channel' ||
+      !canRefreshDuplicatePhotoSources(content, fresh)
+    ) {
+      throw new UnrecoverableError('Photo message source changed or unavailable');
+    }
+    return fresh;
   }
 
   protected async verifyBinary(bytes: Buffer, kind: string): Promise<void> {
