@@ -676,7 +676,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
           'MINIAPP',
         );
       const media = { type: 'image', payload: { token: 'image-token' } };
-      const reviews = { type: 'link' as const, text: 'Отзывы', url: 'https://example.test/reviews' };
+      const reviews = {
+        type: 'link' as const,
+        text: 'Отзывы',
+        url: 'https://example.test/reviews',
+      };
       const winner = build(publisherFirst, 'comments', 'Комментарии');
       const contact = build(publisherFirst, 'suggest', 'Задать вопрос или приобрести');
       let attachments: unknown[] = [media];
@@ -8873,6 +8877,50 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await service.onModuleDestroy();
   });
+
+  it.each([
+    ['raw message', 1_250.8, 1_250],
+    ['presence', 1_250.8, 1_250],
+    ['raw message', undefined, undefined],
+    ['presence', undefined, undefined],
+    ['raw message', Number.NaN, undefined],
+    ['presence', Number.POSITIVE_INFINITY, undefined],
+  ] as const)(
+    'passes the normalized timeout to both %s lookup HTTP routes (%s)',
+    async (lookup, timeoutMs, expectedTimeout) => {
+      const message = {
+        body: { mid: 'mid-timeout', text: 'test' },
+        recipient: { chat_id: 'chat-1' },
+      };
+      const httpService = {
+        request: jest
+          .fn()
+          .mockReturnValueOnce(of({ data: { messages: [] } }))
+          .mockReturnValueOnce(of({ data: { message } })),
+      };
+      const service = createService(httpService);
+      const options = { botId: '777000_bot', timeoutMs };
+
+      if (lookup === 'presence') {
+        await expect(
+          service.getExactMessagePresence('chat-1', 'mid-timeout', options),
+        ).resolves.toBe('present');
+      } else {
+        await expect(service.getExactMessageRow('chat-1', 'mid-timeout', options)).resolves.toBe(
+          message,
+        );
+      }
+
+      expect(httpService.request).toHaveBeenCalledTimes(2);
+      for (const [request] of httpService.request.mock.calls) {
+        expect(request.timeout).toBe(expectedTimeout);
+        if (expectedTimeout === undefined) {
+          expect(request).not.toHaveProperty('timeout');
+        }
+      }
+      await service.onModuleDestroy();
+    },
+  );
 
   it('keeps exact raw-message absence and chat mismatch fail-closed', async () => {
     const mismatchService = createService({

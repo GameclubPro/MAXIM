@@ -106,12 +106,12 @@ export class PublisherWebhookSubscriptionReconcilerService
       );
       const shouldRefreshHeaderSecret =
         this.appliedHeaderSecretFingerprint !== this.headerSecretFingerprint;
-      if (
+      const shouldUpsert =
         !current ||
         missing.length > 0 ||
         (this.replaceUpdateTypes && extra.length > 0) ||
-        shouldRefreshHeaderSecret
-      ) {
+        shouldRefreshHeaderSecret;
+      if (shouldUpsert) {
         await this.maxClient.ensureWebhookSubscription([...this.requiredUpdateTypes], {
           botId: this.publisherBotId,
           trafficClass: 'background',
@@ -121,11 +121,13 @@ export class PublisherWebhookSubscriptionReconcilerService
         });
       }
 
-      const established = await this.maxClient.listWebhookSubscriptions({
-        botId: this.publisherBotId,
-        trafficClass: 'background',
-        sourceTag: 'publisher_webhook_reconcile',
-      });
+      const established = shouldUpsert
+        ? await this.maxClient.listWebhookSubscriptions({
+            botId: this.publisherBotId,
+            trafficClass: 'background',
+            sourceTag: 'publisher_webhook_reconcile',
+          })
+        : existing;
       const establishedCurrent = established.find((subscription) =>
         this.maxClient.matchesConfiguredWebhookUrl(subscription.url, this.publisherBotId),
       );
@@ -137,6 +139,7 @@ export class PublisherWebhookSubscriptionReconcilerService
       }
 
       // FLAG: Establish the current target before removing an obsolete publisher-owned target.
+      let deletedSubscription = false;
       for (const subscription of established) {
         if (
           this.maxClient.matchesConfiguredWebhookUrl(subscription.url, this.publisherBotId) ||
@@ -149,13 +152,16 @@ export class PublisherWebhookSubscriptionReconcilerService
           trafficClass: 'background',
           sourceTag: 'publisher_webhook_reconcile',
         });
+        deletedSubscription = true;
       }
 
-      const confirmed = await this.maxClient.listWebhookSubscriptions({
-        botId: this.publisherBotId,
-        trafficClass: 'background',
-        sourceTag: 'publisher_webhook_reconcile',
-      });
+      const confirmed = deletedSubscription
+        ? await this.maxClient.listWebhookSubscriptions({
+            botId: this.publisherBotId,
+            trafficClass: 'background',
+            sourceTag: 'publisher_webhook_reconcile',
+          })
+        : established;
       const confirmedCurrent = confirmed.find((subscription) =>
         this.maxClient.matchesConfiguredWebhookUrl(subscription.url, this.publisherBotId),
       );
@@ -169,7 +175,14 @@ export class PublisherWebhookSubscriptionReconcilerService
       await this.dispatchHealth.recordAuthenticatedSuccess(reconcileStartedAt);
     } catch (error: unknown) {
       if (classifyPublisherFailure(error) === 'global_paused') {
-        await this.dispatchHealth.recordGlobalAuthorizationFailure(new Date());
+        await this.dispatchHealth
+          .recordGlobalAuthorizationFailure(new Date())
+          .catch((healthError: unknown) => {
+            this.logger.warn(
+              { reason, errorType: healthError instanceof Error ? healthError.name : 'unknown' },
+              'Failed to persist publisher webhook authorization failure',
+            );
+          });
       }
       this.logger.warn(
         {

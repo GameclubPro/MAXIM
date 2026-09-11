@@ -1848,6 +1848,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
     const uniqueMessageIds = Array.from(requestsByMessageId.keys());
     const resultsByRequest = new Map<string, MaxExactMessagePresenceOutcome>();
+    const timeoutMs = this.normalizeReadRequestOptions(options).timeoutMs;
 
     // MAX documents 50 as the default message-list response size. Keeping the same bound also
     // prevents comma-separated message IDs from producing oversized request URLs.
@@ -1866,6 +1867,7 @@ export class MaxClientService implements OnModuleDestroy {
           () =>
             this.request<Record<string, unknown>>('get', '/messages', {
               params: { message_ids: batchMessageIds.join(',') },
+              ...(timeoutMs ? { timeout: timeoutMs } : {}),
             }),
           options,
         );
@@ -1954,6 +1956,7 @@ export class MaxClientService implements OnModuleDestroy {
                   this.request<Record<string, unknown>>(
                     'get',
                     `/messages/${encodeURIComponent(request.messageId)}`,
+                    { ...(timeoutMs ? { timeout: timeoutMs } : {}) },
                   ),
                 options,
               );
@@ -3883,6 +3886,7 @@ export class MaxClientService implements OnModuleDestroy {
     if (!normalizedMessageId) {
       return null;
     }
+    const timeoutMs = this.normalizeReadRequestOptions(requestOptions).timeoutMs;
 
     const data = await this.executeGlobalRequest(
       () =>
@@ -3890,6 +3894,7 @@ export class MaxClientService implements OnModuleDestroy {
           params: {
             message_ids: normalizedMessageId,
           },
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
         }),
       requestOptions,
     );
@@ -3918,12 +3923,14 @@ export class MaxClientService implements OnModuleDestroy {
     if (!normalizedMessageId) {
       return null;
     }
+    const timeoutMs = this.normalizeReadRequestOptions(requestOptions).timeoutMs;
 
     const data = await this.executeGlobalRequest(
       () =>
         this.request<Record<string, unknown>>(
           'get',
           `/messages/${encodeURIComponent(normalizedMessageId)}`,
+          { ...(timeoutMs ? { timeout: timeoutMs } : {}) },
         ),
       requestOptions,
     );

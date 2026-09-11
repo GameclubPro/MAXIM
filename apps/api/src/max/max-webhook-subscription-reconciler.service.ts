@@ -189,15 +189,22 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       );
     } catch (error: unknown) {
       const previous =
-        (await this.webhookSubscriptionStatusService.getSnapshot()) ??
+        (await this.webhookSubscriptionStatusService.getSnapshot().catch(() => null)) ??
         this.createDisabledSnapshot('Webhook coverage ещё не была синхронизирована.');
       const lastError = error instanceof Error ? error.message : String(error);
-      await this.webhookSubscriptionStatusService.writeSnapshot({
-        ...previous,
-        status: previous.status === 'critical' ? 'critical' : 'warning',
-        lastError,
-        note: 'Последняя проверка webhook subscription завершилась с ошибкой.',
-      });
+      await this.webhookSubscriptionStatusService
+        .writeSnapshot({
+          ...previous,
+          status: previous.status === 'critical' ? 'critical' : 'warning',
+          lastError,
+          note: 'Последняя проверка webhook subscription завершилась с ошибкой.',
+        })
+        .catch((snapshotError: unknown) => {
+          this.logger.warn(
+            { reason, errorType: this.describeErrorType(snapshotError) },
+            'Failed to persist MAX webhook subscription failure snapshot',
+          );
+        });
       this.logger.warn(
         {
           reason,
@@ -345,7 +352,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         : null;
     const shouldRotateWebhookSecret =
       Boolean(current) &&
-      bot.webhookHeaderSecrets.length > 1 &&
+      (Boolean(syncState?.headerSecretFingerprint) || bot.webhookHeaderSecrets.length > 1) &&
       (!syncState?.headerSecretFingerprint ||
         syncState.headerSecretFingerprint !== headerSecretFingerprint);
     const staleIngress = this.isStaleIngress(botState.latestRecordedIncomingWebhookAt);

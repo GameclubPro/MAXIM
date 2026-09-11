@@ -111,47 +111,79 @@ describe('PublisherWebhookSubscriptionReconcilerService', () => {
     expect(maxClient.listWebhookSubscriptions.mock.invocationCallOrder[1]).toBeLessThan(
       maxClient.deleteWebhookSubscription.mock.invocationCallOrder[0]!,
     );
-  });
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledTimes(3);
 
-  it('does not inspect or mutate subscriptions before exact-token attestation', async () => {
-    const maxClient = {
-      getConfiguredWebhookSubscriptionTarget: jest.fn(),
-      listWebhookSubscriptions: jest.fn(),
-      ensureWebhookSubscription: jest.fn(),
-      deleteWebhookSubscription: jest.fn(),
-    };
-    const credentials = {
-      getBotId: jest.fn(() => 'publik_bot'),
-      getRequiredActionToken: jest.fn(() => 'not-a-real-token'),
-    };
-    const webhookCredentials = {
-      getConfiguredCredential: jest.fn(() => ({
-        botId: 'publik_bot',
-        secretPath: 'current-secret',
-        headerSecrets: ['not-a-real-secret'],
-      })),
-    };
-    const identityAttestation = {
-      assertAttested: jest.fn().mockRejectedValue(new Error('not attested')),
-    };
-    const dispatchHealth = {
-      recordAuthenticatedSuccess: jest.fn(),
-      recordGlobalAuthorizationFailure: jest.fn(),
-    };
-    const config = { get: jest.fn((_key: string, fallback: unknown) => fallback) };
-    const service = new PublisherWebhookSubscriptionReconcilerService(
-      maxClient as never,
-      credentials as never,
-      webhookCredentials as never,
-      identityAttestation as never,
-      dispatchHealth as never,
-      config as never,
+    maxClient.listWebhookSubscriptions.mockResolvedValue([current, unrelated]);
+    await service.reconcile('scheduled');
+
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledTimes(4);
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(dispatchHealth.recordAuthenticatedSuccess).toHaveBeenCalledTimes(2);
+
+    maxClient.listWebhookSubscriptions
+      .mockResolvedValueOnce([current, old, unrelated])
+      .mockResolvedValueOnce([current, unrelated]);
+    await service.reconcile('scheduled');
+
+    expect(maxClient.listWebhookSubscriptions).toHaveBeenCalledTimes(6);
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(2);
+    expect(maxClient.deleteWebhookSubscription.mock.invocationCallOrder[1]).toBeLessThan(
+      maxClient.listWebhookSubscriptions.mock.invocationCallOrder[5]!,
     );
-
-    await service.reconcile('startup');
-
-    expect(maxClient.getConfiguredWebhookSubscriptionTarget).not.toHaveBeenCalled();
-    expect(maxClient.listWebhookSubscriptions).not.toHaveBeenCalled();
-    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+    expect(dispatchHealth.recordAuthenticatedSuccess).toHaveBeenCalledTimes(3);
   });
+
+  it.each([new Error('not attested'), { response: { status: 401 } }])(
+    'does not inspect or mutate subscriptions before attestation even when failure reporting fails (%j)',
+    async (attestationError) => {
+      const maxClient = {
+        getConfiguredWebhookSubscriptionTarget: jest.fn(),
+        listWebhookSubscriptions: jest.fn(),
+        ensureWebhookSubscription: jest.fn(),
+        deleteWebhookSubscription: jest.fn(),
+      };
+      const credentials = {
+        getBotId: jest.fn(() => 'publik_bot'),
+        getRequiredActionToken: jest.fn(() => 'not-a-real-token'),
+      };
+      const webhookCredentials = {
+        getConfiguredCredential: jest.fn(() => ({
+          botId: 'publik_bot',
+          secretPath: 'current-secret',
+          headerSecrets: ['not-a-real-secret'],
+        })),
+      };
+      const identityAttestation = {
+        assertAttested: jest.fn().mockRejectedValue(attestationError),
+      };
+      const dispatchHealth = {
+        recordAuthenticatedSuccess: jest.fn(),
+        recordGlobalAuthorizationFailure: jest
+          .fn()
+          .mockRejectedValue(new Error('Redis unavailable')),
+      };
+      const config = { get: jest.fn((_key: string, fallback: unknown) => fallback) };
+      const service = new PublisherWebhookSubscriptionReconcilerService(
+        maxClient as never,
+        credentials as never,
+        webhookCredentials as never,
+        identityAttestation as never,
+        dispatchHealth as never,
+        config as never,
+      );
+
+      await expect(service.reconcile('startup')).resolves.toBeUndefined();
+      await expect(service.reconcile('scheduled')).resolves.toBeUndefined();
+
+      expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(2);
+      expect(dispatchHealth.recordGlobalAuthorizationFailure).toHaveBeenCalledTimes(
+        attestationError instanceof Error ? 0 : 2,
+      );
+      expect(maxClient.getConfiguredWebhookSubscriptionTarget).not.toHaveBeenCalled();
+      expect(maxClient.listWebhookSubscriptions).not.toHaveBeenCalled();
+      expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+    },
+  );
 });
