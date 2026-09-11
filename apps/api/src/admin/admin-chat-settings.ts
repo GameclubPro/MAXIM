@@ -809,6 +809,10 @@ export async function saveChatSettings(params: {
       nightModeForceCloseUntil: true,
       karavanStorefrontEnabled: true,
       karavanStorefrontAdminsOnly: true,
+      karavanStorefrontMessageText: true,
+      karavanStorefrontOpenButtonText: true,
+      karavanStorefrontCatalogButtonText: true,
+      karavanStorefrontCreateButtonText: true,
       forwardedMessagesEnabled: true,
       updatedAt: true,
     },
@@ -851,6 +855,27 @@ export async function saveChatSettings(params: {
     karavanStorefrontAdminsOnly: hasOwnSetting(params.body, 'karavanStorefrontAdminsOnly')
       ? parsed.data.karavanStorefrontAdminsOnly
       : (currentSettings?.karavanStorefrontAdminsOnly ?? parsed.data.karavanStorefrontAdminsOnly),
+    karavanStorefrontMessageText: hasOwnSetting(params.body, 'karavanStorefrontMessageText')
+      ? parsed.data.karavanStorefrontMessageText
+      : (currentSettings?.karavanStorefrontMessageText ?? parsed.data.karavanStorefrontMessageText),
+    karavanStorefrontOpenButtonText: hasOwnSetting(params.body, 'karavanStorefrontOpenButtonText')
+      ? parsed.data.karavanStorefrontOpenButtonText
+      : (currentSettings?.karavanStorefrontOpenButtonText ??
+        parsed.data.karavanStorefrontOpenButtonText),
+    karavanStorefrontCatalogButtonText: hasOwnSetting(
+      params.body,
+      'karavanStorefrontCatalogButtonText',
+    )
+      ? parsed.data.karavanStorefrontCatalogButtonText
+      : (currentSettings?.karavanStorefrontCatalogButtonText ??
+        parsed.data.karavanStorefrontCatalogButtonText),
+    karavanStorefrontCreateButtonText: hasOwnSetting(
+      params.body,
+      'karavanStorefrontCreateButtonText',
+    )
+      ? parsed.data.karavanStorefrontCreateButtonText
+      : (currentSettings?.karavanStorefrontCreateButtonText ??
+        parsed.data.karavanStorefrontCreateButtonText),
     forwardedMessagesEnabled: hasOwnSetting(params.body, 'forwardedMessagesEnabled')
       ? parsed.data.forwardedMessagesEnabled
       : (currentSettings?.forwardedMessagesEnabled ?? parsed.data.forwardedMessagesEnabled),

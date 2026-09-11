@@ -7936,6 +7936,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               onDiscardChanges={() => discardSectionChanges('storefront')}
               onToggleSection={() => toggleSection('storefront')}
               onFieldChange={(enabled) => setFieldValue('karavanStorefrontEnabled', enabled)}
+              onTextChange={setFieldValue}
               onAdminsOnlyChange={(enabled) =>
                 setFieldValue('karavanStorefrontAdminsOnly', enabled)
               }

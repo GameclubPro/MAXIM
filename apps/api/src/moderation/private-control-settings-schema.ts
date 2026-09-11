@@ -339,6 +339,10 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       label: 'Только администраторы и разрешённые пользователи',
       type: 'boolean',
     },
+    { key: 'karavanStorefrontMessageText', label: 'Текст сообщения', type: 'text' },
+    { key: 'karavanStorefrontOpenButtonText', label: 'Кнопка продавца', type: 'text' },
+    { key: 'karavanStorefrontCatalogButtonText', label: 'Кнопка каталога', type: 'text' },
+    { key: 'karavanStorefrontCreateButtonText', label: 'Кнопка создания витрины', type: 'text' },
   ],
   extra: [
     { key: 'deleteSpammersEnabled', label: 'Удалять спамеров', type: 'boolean' },
@@ -525,7 +529,12 @@ export const SECTION_CARD_FIELDS: Record<
   },
   storefront: {
     basic: ['karavanStorefrontEnabled', 'karavanStorefrontAdminsOnly'],
-    advanced: [],
+    advanced: [
+      'karavanStorefrontMessageText',
+      'karavanStorefrontOpenButtonText',
+      'karavanStorefrontCatalogButtonText',
+      'karavanStorefrontCreateButtonText',
+    ],
   },
   extra: {
     basic: [

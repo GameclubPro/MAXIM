@@ -502,6 +502,7 @@ import {
   KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION,
   isKaravanStorefrontRelayCompanionText,
   KaravanStorefrontRelayService,
+  type RelayContext,
 } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
 import {
   WebhookCanonicalExecutionService,
@@ -1750,6 +1751,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             senderName,
             text,
             karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+            storefrontTexts: settings,
             karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
             storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
           })
@@ -1795,6 +1797,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               senderName,
               text,
               karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+              storefrontTexts: settings,
               karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
               storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
             })
@@ -2141,6 +2144,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             senderName,
             text,
             karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+            storefrontTexts: settings,
             karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
             storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
           })
@@ -2190,6 +2194,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           senderName,
           text,
           karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+          storefrontTexts: settings,
           karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
           storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
         }))
@@ -2347,6 +2352,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             senderName,
             text,
             karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+            storefrontTexts: settings,
             karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
             storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
           })
@@ -3915,36 +3921,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return SanctionAction.BAN;
   }
 
-  private async tryHandleKaravanStorefrontRelay(params: {
-    update: MaxUpdate;
-    updateType: string | null;
-    chatId: string;
-    messageId?: string | null;
-    senderId: string;
-    senderName?: string | null;
-    text?: string | null;
-    karavanStorefrontEnabled: boolean;
-    karavanStorefrontAdminsOnly?: boolean;
-    storefrontOwnerUserId?: string | null;
-  }): Promise<boolean> {
+  private async tryHandleKaravanStorefrontRelay(
+    params: RelayContext & { update: MaxUpdate },
+  ): Promise<boolean> {
     if (!params.messageId || !this.karavanStorefrontRelayService) {
       return false;
     }
 
+    const { update, karavanStorefrontAdminsOnly, storefrontOwnerUserId, ...context } = params;
     const result = await this.karavanStorefrontRelayService.handleMessageCreated({
-      updateType: params.updateType,
-      karavanStorefrontEnabled: params.karavanStorefrontEnabled,
-      chatId: params.chatId,
-      messageId: params.messageId,
-      senderId: params.senderId,
-      senderName: params.senderName,
-      text: params.text,
-      raw: params.update.raw,
-      botId: params.update.botId ?? null,
-      ...(params.karavanStorefrontAdminsOnly ? { karavanStorefrontAdminsOnly: true } : {}),
-      ...(params.storefrontOwnerUserId
-        ? { storefrontOwnerUserId: params.storefrontOwnerUserId }
-        : {}),
+      ...context,
+      raw: update.raw,
+      botId: update.botId ?? null,
+      ...(karavanStorefrontAdminsOnly ? { karavanStorefrontAdminsOnly: true } : {}),
+      ...(storefrontOwnerUserId ? { storefrontOwnerUserId } : {}),
     });
 
     return result === 'handled' || result === 'duplicate';
@@ -7681,7 +7671,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     if (protectedEventSkipReason) return protectedEventSkipReason;
 
-    if (isKaravanStorefrontRelayCompanionText(params.text)) {
+    if (
+      isKaravanStorefrontRelayCompanionText(params.text) ||
+      this.karavanStorefrontRelayService?.isCompanionMessageCandidate?.(params.text, params.raw)
+    ) {
       if (
         this.karavanStorefrontRelayService &&
         (await this.karavanStorefrontRelayService.recognizeCompanionMessage({

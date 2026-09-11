@@ -26,10 +26,14 @@ describe('admin settings section apply', () => {
     expect(SETTINGS_SECTION_KEYS.stopWords).toContain('messageLimitsImageTextScanEnabled');
   });
 
-  it('keeps the storefront section scoped to its toggles', () => {
+  it('keeps the storefront section scoped to its toggles and texts', () => {
     expect(SETTINGS_SECTION_KEYS.storefront).toEqual([
       'karavanStorefrontEnabled',
       'karavanStorefrontAdminsOnly',
+      'karavanStorefrontMessageText',
+      'karavanStorefrontOpenButtonText',
+      'karavanStorefrontCatalogButtonText',
+      'karavanStorefrontCreateButtonText',
     ]);
   });
 

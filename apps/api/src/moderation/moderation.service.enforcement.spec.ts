@@ -4318,6 +4318,12 @@ describe('ModerationService', () => {
     expect(karavanStorefrontRelayService.handleMessageCreated).toHaveBeenCalledWith({
       updateType: 'message_created',
       karavanStorefrontEnabled: false,
+      storefrontTexts: expect.objectContaining({
+        karavanStorefrontMessageText: '',
+        karavanStorefrontOpenButtonText: '',
+        karavanStorefrontCatalogButtonText: '',
+        karavanStorefrontCreateButtonText: '',
+      }),
       chatId: 'chat-1',
       messageId: 'msg-1',
       senderId: 'user-1',

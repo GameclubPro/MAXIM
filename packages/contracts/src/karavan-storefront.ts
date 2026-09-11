@@ -1,5 +1,26 @@
 import { z } from 'zod';
 import { booleanQueryFlagSchema } from './dashboard-common.js';
+export * from './karavan-storefront-texts.js';
+
+export const KARAVAN_STOREFRONT_TEXT_DEFAULTS = {
+  karavanStorefrontMessageText: 'Витрина продавца',
+  karavanStorefrontOpenButtonText: 'Открыть витрину',
+  karavanStorefrontCatalogButtonText: 'Смотреть витрины',
+  karavanStorefrontCreateButtonText: 'Открыть витрину',
+} as const;
+export type KaravanStorefrontTextField = keyof typeof KARAVAN_STOREFRONT_TEXT_DEFAULTS;
+export type KaravanStorefrontTexts = Record<KaravanStorefrontTextField, string>;
+
+export function resolveKaravanStorefrontTexts(
+  settings: Partial<KaravanStorefrontTexts> = {},
+): KaravanStorefrontTexts {
+  return Object.fromEntries(
+    Object.entries(KARAVAN_STOREFRONT_TEXT_DEFAULTS).map(([key, fallback]) => [
+      key,
+      settings[key as KaravanStorefrontTextField]?.trim() || fallback,
+    ]),
+  ) as KaravanStorefrontTexts;
+}
 
 /** The durations offered by the private bot when granting storefront access. */
 export const karavanStorefrontDurationSchema = z.enum(['1d', '7d', '30d', '90d', 'forever']);

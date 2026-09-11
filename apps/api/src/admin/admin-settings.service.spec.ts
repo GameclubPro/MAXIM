@@ -1417,6 +1417,42 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
+  it('preserves storefront copy for stale clients and persists an explicit reset', async () => {
+    const texts = {
+      karavanStorefrontMessageText: 'Товары продавца',
+      karavanStorefrontOpenButtonText: 'В магазин',
+      karavanStorefrontCatalogButtonText: 'Все магазины',
+      karavanStorefrontCreateButtonText: 'Создать магазин',
+    };
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings(texts),
+    });
+    const preserved = await service.updateSettings('chat-1', user as never, {
+      antiSpamEnabled: false,
+    });
+    expect(preserved).toEqual(expect.objectContaining(texts));
+    expect(findChatSettingsWritePayload(prisma)).toEqual(expect.objectContaining(texts));
+    prisma.chatSettings.updateMany.mockClear();
+    const changed = await service.updateSettings('chat-1', user as never, {
+      karavanStorefrontMessageText: '',
+      karavanStorefrontOpenButtonText: '  За покупками  ',
+    });
+    expect(changed).toEqual(
+      expect.objectContaining({
+        ...texts,
+        karavanStorefrontMessageText: '',
+        karavanStorefrontOpenButtonText: 'За покупками',
+      }),
+    );
+    expect(findChatSettingsWritePayload(prisma)).toEqual(
+      expect.objectContaining({
+        ...texts,
+        karavanStorefrontMessageText: '',
+        karavanStorefrontOpenButtonText: 'За покупками',
+      }),
+    );
+  });
+
   it('normalizes required subscription settings to indefinite auto-enabled state', async () => {
     const { legacyAdminService, prisma, service } = createService();
 

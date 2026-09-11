@@ -825,7 +825,14 @@ export const SETTINGS_SECTION_KEYS = {
     'adminSilenceCommandName',
     'adminOpenChatCommandName',
   ],
-  storefront: ['karavanStorefrontEnabled', 'karavanStorefrontAdminsOnly'],
+  storefront: [
+    'karavanStorefrontEnabled',
+    'karavanStorefrontAdminsOnly',
+    'karavanStorefrontMessageText',
+    'karavanStorefrontOpenButtonText',
+    'karavanStorefrontCatalogButtonText',
+    'karavanStorefrontCreateButtonText',
+  ],
   extra: [
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',

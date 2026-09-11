@@ -2,7 +2,12 @@ import { PlusCircle, Trash } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
-import type { KaravanStorefrontAllowlistEntry } from '@maxim/contracts/karavan-storefront';
+import type {
+  KaravanStorefrontAllowlistEntry,
+  KaravanStorefrontTextField,
+  KaravanStorefrontTexts,
+} from '@maxim/contracts/karavan-storefront';
+import { SettingsStorefrontTextEditor } from './settings-storefront-text-editor';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
@@ -20,7 +25,8 @@ import { describeUserFacingError } from '../../lib/user-facing-error';
 import '../../styles/settings-storefront.css';
 
 type SettingsStorefrontSectionProps = {
-  draft: Pick<ChatSettings, 'karavanStorefrontEnabled' | 'karavanStorefrontAdminsOnly'>;
+  draft: Pick<ChatSettings, 'karavanStorefrontEnabled' | 'karavanStorefrontAdminsOnly'> &
+    KaravanStorefrontTexts;
   api: ApiTransport;
   chatId?: string | null;
   expanded: boolean;
@@ -33,6 +39,7 @@ type SettingsStorefrontSectionProps = {
   onToggleSection: () => void;
   onFieldChange: (value: boolean) => void;
   onAdminsOnlyChange: (value: boolean) => void;
+  onTextChange: (field: KaravanStorefrontTextField, value: string) => void;
 };
 
 function formatAllowlistExpiry(expiresAt: string | null): string {
@@ -70,6 +77,7 @@ export function SettingsStorefrontSection({
   onToggleSection,
   onFieldChange,
   onAdminsOnlyChange,
+  onTextChange,
 }: SettingsStorefrontSectionProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -204,6 +212,7 @@ export function SettingsStorefrontSection({
 
                 {draft.karavanStorefrontEnabled ? (
                   <>
+                    <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
                     <div className="settings-native-toggle settings-native-toggle--nested">
                       <div className="settings-native-toggle__row">
                         <div className="settings-native-toggle__title-wrap">

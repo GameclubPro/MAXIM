@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  KARAVAN_STOREFRONT_TEXT_DEFAULTS,
+  KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH,
+  KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH,
+  resolveKaravanStorefrontTexts,
+  type KaravanStorefrontTextField,
   karavanStorefrontAllowlistQuerySchema,
   karavanStorefrontAllowlistResponseSchema,
   karavanStorefrontAllowlistRevokeResponseSchema,
@@ -10,6 +15,42 @@ import {
 import { chatSettingsSchema } from '@maxim/contracts';
 
 describe('Karavan storefront contracts', () => {
+  it('inherits default copy only from empty fields and preserves explicit custom copy', () => {
+    const defaults = chatSettingsSchema.parse({});
+    for (const key of Object.keys(KARAVAN_STOREFRONT_TEXT_DEFAULTS)) {
+      expect(defaults[key as KaravanStorefrontTextField]).toBe('');
+    }
+    expect(resolveKaravanStorefrontTexts(defaults)).toEqual(KARAVAN_STOREFRONT_TEXT_DEFAULTS);
+    const custom = chatSettingsSchema.parse({
+      karavanStorefrontMessageText: '  Товары продавца\nВыберите витрину  ',
+      karavanStorefrontOpenButtonText: '  Каталог продавца  ',
+      karavanStorefrontCatalogButtonText: '   ',
+      karavanStorefrontCreateButtonText: 'Открыть витрину',
+    });
+    expect(custom.karavanStorefrontMessageText).toBe('Товары продавца\nВыберите витрину');
+    expect(custom.karavanStorefrontCatalogButtonText).toBe('');
+    expect(custom.karavanStorefrontCreateButtonText).toBe('Открыть витрину');
+    expect(resolveKaravanStorefrontTexts(custom)).toEqual({
+      ...KARAVAN_STOREFRONT_TEXT_DEFAULTS,
+      karavanStorefrontMessageText: 'Товары продавца\nВыберите витрину',
+      karavanStorefrontOpenButtonText: 'Каталог продавца',
+    });
+  });
+
+  it('validates every text limit and rejects multiline button labels', () => {
+    for (const field of Object.keys(KARAVAN_STOREFRONT_TEXT_DEFAULTS)) {
+      const max =
+        field === 'karavanStorefrontMessageText'
+          ? KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH
+          : KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH;
+      expect(chatSettingsSchema.safeParse({ [field]: 'a'.repeat(max) }).success).toBe(true);
+      expect(chatSettingsSchema.safeParse({ [field]: 'a'.repeat(max + 1) }).success).toBe(false);
+      if (field !== 'karavanStorefrontMessageText') {
+        expect(chatSettingsSchema.safeParse({ [field]: 'one\ntwo' }).success).toBe(false);
+      }
+    }
+  });
+
   it('defaults the admin-only setting to false', () => {
     expect(chatSettingsSchema.parse({})).toEqual(
       expect.objectContaining({

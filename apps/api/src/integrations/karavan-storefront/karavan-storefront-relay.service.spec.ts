@@ -109,6 +109,116 @@ const baseContext = {
 };
 
 describe('KaravanStorefrontRelayService', () => {
+  it.each([true, false])(
+    'sends configured plain copy and preserves button destinations (store=%s)',
+    async (hasStore) => {
+      const fixture = createService(
+        hasStore ? {} : { fetchResponse: { exists: false, store: null } },
+      );
+      const storefrontTexts = {
+        karavanStorefrontMessageText: '<Товары> *продавца*\nВыберите магазин',
+        karavanStorefrontOpenButtonText: 'К продавцу',
+        karavanStorefrontCatalogButtonText: 'Все магазины',
+        karavanStorefrontCreateButtonText: 'Создать магазин',
+      };
+      try {
+        await expect(
+          fixture.service.handleMessageCreated({
+            ...baseContext,
+            text: '$',
+            raw: { message: { body: { text: '$' } } },
+            storefrontTexts,
+          }),
+        ).resolves.toBe('handled');
+        expect(fixture.maxClient.sendMessage).toHaveBeenCalledWith(
+          'chat-1',
+          storefrontTexts.karavanStorefrontMessageText,
+          {
+            messageLink: { type: 'reply', mid: 'mid-source-1' },
+            buttons: hasStore
+              ? [
+                  [
+                    {
+                      type: 'link',
+                      text: 'К продавцу',
+                      url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
+                    },
+                  ],
+                ]
+              : [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Все магазины',
+                      url: 'https://max.ru/se13381675_1_bot?startapp=',
+                    },
+                  ],
+                  [
+                    {
+                      type: 'link',
+                      text: 'Создать магазин',
+                      url: 'https://max.ru/se13381675_bot?startapp=storefront',
+                    },
+                  ],
+                ],
+          },
+          expect.anything(),
+        );
+        expect(fixture.prisma.auditLog.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              payload: expect.objectContaining({
+                messageText: storefrontTexts.karavanStorefrontMessageText,
+              }),
+            }),
+          }),
+        );
+      } finally {
+        fixture.restore();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'requires send-time custom copy before promoting a reply audit (matches=%s)',
+    async (matches) => {
+      const fixture = createService();
+      fixture.prisma.auditLog.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        id: 'audit-custom',
+        payload: { sourceMessageId: 'source-custom', messageText: 'Сохранённый текст продавца' },
+      });
+      try {
+        await expect(
+          fixture.service.recognizeCompanionMessage({
+            chatId: 'chat-1',
+            messageId: 'companion-custom',
+            text: matches ? 'Сохранённый текст продавца' : 'Другой ответ бота',
+            raw: { message: { link: { type: 'reply', message: { mid: 'source-custom' } } } },
+          }),
+        ).resolves.toBe(matches);
+        expect(fixture.prisma.auditLog.update).toHaveBeenCalledTimes(matches ? 1 : 0);
+      } finally {
+        fixture.restore();
+      }
+    },
+  );
+
+  it('does not query the audit log for unrelated non-reply bot copy', async () => {
+    const fixture = createService();
+    try {
+      await expect(
+        fixture.service.recognizeCompanionMessage({
+          chatId: 'chat-1',
+          messageId: 'other',
+          text: 'Другой текст',
+        }),
+      ).resolves.toBe(false);
+      expect(fixture.prisma.auditLog.findFirst).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
   it('denies relay before a lock or storefront lookup when admin-only authorization fails', async () => {
     const authorization = { canPublish: jest.fn().mockResolvedValue(false) };
     const fixture = createService({ authorization });

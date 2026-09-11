@@ -30,6 +30,10 @@ describe('private control settings schema', () => {
     expect(SECTION_FIELDS.storefront).toEqual([
       expect.objectContaining({ key: 'karavanStorefrontEnabled', type: 'boolean' }),
       expect.objectContaining({ key: 'karavanStorefrontAdminsOnly', type: 'boolean' }),
+      expect.objectContaining({ key: 'karavanStorefrontMessageText', type: 'text' }),
+      expect.objectContaining({ key: 'karavanStorefrontOpenButtonText', type: 'text' }),
+      expect.objectContaining({ key: 'karavanStorefrontCatalogButtonText', type: 'text' }),
+      expect.objectContaining({ key: 'karavanStorefrontCreateButtonText', type: 'text' }),
     ]);
 
     for (const section of SECTION_ORDER) {

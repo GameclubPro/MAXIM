@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
 import { channelPostSignatureSettingsSchema } from './channel-post-signature.js';
+import { karavanStorefrontTextSettingsShape } from './karavan-storefront-texts.js';
 export * from './bot-speech.js';
 export * from './broadcast-common.js';
 export * from './channel-stats.js';
@@ -732,6 +733,7 @@ export const chatSettingsSchema = z
       commentsChatBroadcastsEnabled: z.boolean().default(false),
       karavanStorefrontEnabled: z.boolean().default(true),
       karavanStorefrontAdminsOnly: z.boolean().default(false),
+      ...karavanStorefrontTextSettingsShape,
       deleteBotMessagesEnabled: z.boolean().default(false),
       deleteBotMessagesDelayMinutes: deleteBotMessagesDelayMinutesSchema,
       removeBotsFromGroupEnabled: z.boolean().default(false),

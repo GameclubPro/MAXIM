@@ -363,10 +363,14 @@ test('commands section keeps admin command names scoped', () => {
   assert.equal(merged.linkPolicy, 'ALLOWLIST_ONLY');
 });
 
-test('storefront section keeps only the Karavan toggles scoped', () => {
+test('storefront section saves its toggles and copy without changing other sections', () => {
   assert.deepEqual(SECTION_SETTING_KEYS.storefront, [
     'karavanStorefrontEnabled',
     'karavanStorefrontAdminsOnly',
+    'karavanStorefrontMessageText',
+    'karavanStorefrontOpenButtonText',
+    'karavanStorefrontCatalogButtonText',
+    'karavanStorefrontCreateButtonText',
   ]);
 
   const current = createSettings({
@@ -377,12 +381,20 @@ test('storefront section keeps only the Karavan toggles scoped', () => {
   const saved = createSettings({
     karavanStorefrontEnabled: true,
     karavanStorefrontAdminsOnly: true,
+    karavanStorefrontMessageText: 'Товары продавца',
+    karavanStorefrontOpenButtonText: 'К продавцу',
+    karavanStorefrontCatalogButtonText: 'Все витрины',
+    karavanStorefrontCreateButtonText: 'Создать витрину',
     deleteBotMessagesEnabled: false,
   });
   const merged = mergeSectionSettings(current, saved, 'storefront');
 
   assert.equal(merged.karavanStorefrontEnabled, true);
   assert.equal(merged.karavanStorefrontAdminsOnly, true);
+  assert.equal(merged.karavanStorefrontMessageText, 'Товары продавца');
+  assert.equal(merged.karavanStorefrontOpenButtonText, 'К продавцу');
+  assert.equal(merged.karavanStorefrontCatalogButtonText, 'Все витрины');
+  assert.equal(merged.karavanStorefrontCreateButtonText, 'Создать витрину');
   assert.equal(merged.deleteBotMessagesEnabled, true);
 });
 

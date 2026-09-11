@@ -1,6 +1,11 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
+import {
+  KARAVAN_STOREFRONT_TEXT_DEFAULTS,
+  resolveKaravanStorefrontTexts,
+  type KaravanStorefrontTexts,
+} from '@maxim/contracts/karavan-storefront';
 import { Prisma } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -17,6 +22,7 @@ export type RelayContext = {
   karavanStorefrontEnabled: boolean;
   /** When true, only chat admins or active allowlist entries may publish. */
   karavanStorefrontAdminsOnly?: boolean;
+  storefrontTexts?: Partial<KaravanStorefrontTexts>;
   updateType: string | null;
   chatId: string;
   messageId: string | null | undefined;
@@ -62,9 +68,12 @@ const RELAY_LOCK_PREFIX = 'karavan-storefront-relay:v1';
 export const KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION = 'KARAVAN_STOREFRONT_RELAY';
 const KARAVAN_STOREFRONT_RELAY_ENQUEUE_FAILED_AUDIT_ACTION =
   'KARAVAN_STOREFRONT_RELAY_ENQUEUE_FAILED';
-export const KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT = 'Витрина продавца';
-export const KARAVAN_STOREFRONT_CATALOG_BUTTON_TEXT = 'Смотреть витрины';
-export const KARAVAN_STOREFRONT_CREATE_BUTTON_TEXT = 'Открыть витрину';
+export const KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT =
+  KARAVAN_STOREFRONT_TEXT_DEFAULTS.karavanStorefrontMessageText;
+export const KARAVAN_STOREFRONT_CATALOG_BUTTON_TEXT =
+  KARAVAN_STOREFRONT_TEXT_DEFAULTS.karavanStorefrontCatalogButtonText;
+export const KARAVAN_STOREFRONT_CREATE_BUTTON_TEXT =
+  KARAVAN_STOREFRONT_TEXT_DEFAULTS.karavanStorefrontCreateButtonText;
 export const KARAVAN_STOREFRONT_CATALOG_URL = 'https://max.ru/se13381675_1_bot?startapp=';
 export const KARAVAN_STOREFRONT_CREATE_URL = 'https://max.ru/se13381675_bot?startapp=storefront';
 
@@ -187,6 +196,7 @@ export class KaravanStorefrontRelayService {
 
       const idempotencyKey = this.buildRelayIdempotencyKey(context.chatId, context.messageId!);
       const variant: StorefrontRelayVariant = store ? 'storefront' : 'directory';
+      const texts = resolveKaravanStorefrontTexts(context.storefrontTexts);
       pendingAudit = await this.createPendingAuditLog({
         context,
         store,
@@ -195,10 +205,10 @@ export class KaravanStorefrontRelayService {
       });
       await this.maxClient.sendMessage(
         context.chatId,
-        KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT,
+        texts.karavanStorefrontMessageText,
         store
-          ? this.buildStorefrontMessageOptions(context.messageId!, store.url)
-          : this.buildDirectoryMessageOptions(context.messageId!),
+          ? this.buildStorefrontMessageOptions(context.messageId!, store.url, texts)
+          : this.buildDirectoryMessageOptions(context.messageId!, texts),
         this.buildDispatchOptions({ context, store, idempotencyKey, variant }),
       );
       keepClaim = true;
@@ -246,13 +256,19 @@ export class KaravanStorefrontRelayService {
     }
   }
 
+  isCompanionMessageCandidate(text: string, raw?: unknown): boolean {
+    return (
+      isKaravanStorefrontRelayCompanionText(text) || Boolean(this.extractReplySourceMessageId(raw))
+    );
+  }
+
   async recognizeCompanionMessage(params: {
     chatId: string;
     messageId: string;
     text: string;
     raw?: unknown;
   }): Promise<boolean> {
-    if (!isKaravanStorefrontRelayCompanionText(params.text)) {
+    if (!this.isCompanionMessageCandidate(params.text, params.raw)) {
       return false;
     }
 
@@ -293,6 +309,11 @@ export class KaravanStorefrontRelayService {
     }
 
     const payload = this.asRecord(queuedAudit.payload) ?? {};
+    // FLAG: A reply alone does not prove ownership. Match the immutable send-time text,
+    // including legacy default copy, before protecting or promoting a companion.
+    if (params.text !== (payload.messageText ?? KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT)) {
+      return false;
+    }
     await this.prisma.auditLog
       .update({
         where: { id: queuedAudit.id },
@@ -526,7 +547,11 @@ export class KaravanStorefrontRelayService {
     return response.exists ? response.store : null;
   }
 
-  private buildStorefrontMessageOptions(messageId: string, url: string): MaxSendMessageOptions {
+  private buildStorefrontMessageOptions(
+    messageId: string,
+    url: string,
+    texts: KaravanStorefrontTexts,
+  ): MaxSendMessageOptions {
     return {
       messageLink: {
         type: 'reply',
@@ -536,7 +561,7 @@ export class KaravanStorefrontRelayService {
         [
           {
             type: 'link',
-            text: 'Открыть витрину',
+            text: texts.karavanStorefrontOpenButtonText,
             url,
           },
         ],
@@ -544,7 +569,10 @@ export class KaravanStorefrontRelayService {
     };
   }
 
-  private buildDirectoryMessageOptions(messageId: string): MaxSendMessageOptions {
+  private buildDirectoryMessageOptions(
+    messageId: string,
+    texts: KaravanStorefrontTexts,
+  ): MaxSendMessageOptions {
     return {
       messageLink: {
         type: 'reply',
@@ -556,14 +584,14 @@ export class KaravanStorefrontRelayService {
         [
           {
             type: 'link',
-            text: KARAVAN_STOREFRONT_CATALOG_BUTTON_TEXT,
+            text: texts.karavanStorefrontCatalogButtonText,
             url: this.catalogUrl,
           },
         ],
         [
           {
             type: 'link',
-            text: KARAVAN_STOREFRONT_CREATE_BUTTON_TEXT,
+            text: texts.karavanStorefrontCreateButtonText,
             url: this.createUrl,
           },
         ],
@@ -641,6 +669,8 @@ export class KaravanStorefrontRelayService {
     variant: StorefrontRelayVariant;
   }): Promise<{ id: string; payload: Prisma.InputJsonObject }> {
     const payload: Prisma.InputJsonObject = {
+      messageText: resolveKaravanStorefrontTexts(params.context.storefrontTexts)
+        .karavanStorefrontMessageText,
       sourceMessageId: params.context.messageId ?? null,
       companionMessageId: null,
       publishedUrl: null,
