@@ -159,39 +159,48 @@ export class MessageDuplicateMediaService {
       eventTimestampMs: job.eventTimestampMs,
     };
     let previous: z.infer<typeof pointerSchema> | null = null;
+    let retryingCurrent = false;
     for (const key of candidateKeys) {
       const raw = await this.redis.getString(key);
-      if (raw && raw.length < 2048) {
-        const parsed = pointerSchema.safeParse(safeJson(raw));
-        if (
-          parsed.success &&
-          (parsed.data.eventTimestampMs < job.eventTimestampMs ||
-            (parsed.data.eventTimestampMs === job.eventTimestampMs &&
-              parsed.data.messageId !== job.messageId)) &&
-          job.eventTimestampMs - parsed.data.eventTimestampMs < flow.windowSec * 1000
-        )
-          previous ??= parsed.data;
-        if (!parsed.success) {
+      const parsed = raw && raw.length < 2048 ? pointerSchema.safeParse(safeJson(raw)) : null;
+      if (parsed?.success) {
+        const ageMs = job.eventTimestampMs - parsed.data.eventTimestampMs;
+        // FLAG: A late older job must not overwrite a newer candidate or create retroactive actions.
+        if (ageMs < 0) return;
+        if (ageMs < flow.windowSec * 1000) {
+          if (ageMs === 0 && parsed.data.messageId === job.messageId) retryingCurrent = true;
+          else previous ??= parsed.data;
           lease.assertOwned();
-          await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
+          continue;
         }
       }
       lease.assertOwned();
+      if (raw !== null) {
+        await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
+      }
     }
     const currentCached = await this.readHashes(content, source.update);
-    if (!previous && currentCached.some((hash) => hash === null)) {
+    const missingCurrentProof = currentCached.some((hash) => hash === null);
+    // FLAG: A candidate pointing at this job may be an unfinished action, not a first occurrence.
+    // Rebuild evicted proofs on retry; durable intent/ordering claims still fence repeated actions.
+    if (!previous && !retryingCurrent && missingCurrentProof) {
       for (const key of candidateKeys) {
         lease.assertOwned();
         await this.redis.setStringIfAbsentWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
       }
       return;
     }
-    const decision = await this.governor.decide({
-      component: 'message-duplicate-media',
-      sourceTag: 'message-duplicate',
-    });
-    if (decision.action === 'pause')
-      throw new MessageDuplicateMediaDeferredError('Message duplicate media deferred by pressure');
+    if (previous || missingCurrentProof) {
+      const decision = await this.governor.decide({
+        component: 'message-duplicate-media',
+        sourceTag: 'message-duplicate',
+        allowRecoveryWindowRun: true,
+      });
+      if (decision.action === 'pause')
+        throw new MessageDuplicateMediaDeferredError(
+          'Message duplicate media deferred by pressure',
+        );
+    }
     const deadlineAtMs = Date.now() + 30_000;
     if (previous) {
       try {
@@ -255,6 +264,7 @@ export class MessageDuplicateMediaService {
       flow.windowSec,
       deadlineAtMs,
       source.botId,
+      currentCached,
     );
     if (Date.now() >= deadlineAtMs) throw new Error('Message media verification deadline exceeded');
     lease.assertOwned();
@@ -375,8 +385,10 @@ export class MessageDuplicateMediaService {
     ttl: number,
     deadlineAtMs: number,
     botId: string,
+    cachedHashes?: readonly (string | null)[],
   ): Promise<{ content: DuplicateMessageContent; hashes: string[] }> {
-    const hashes = await this.readHashes(content, update);
+    const originalMedia = content.media;
+    const hashes = cachedHashes ? [...cachedHashes] : await this.readHashes(content, update);
     const photoIndexes = content.media
       .map((media, index) => (media.kind === 'photo' && !hashes[index] ? index : -1))
       .filter((index) => index >= 0);
@@ -432,11 +444,19 @@ export class MessageDuplicateMediaService {
         await this.verifyBinary(downloaded.bytes, media.kind);
         hashes[index] = createHash('sha256').update(downloaded.bytes).digest('hex');
       }
-      await this.redis.setStringWithTtl(
+      // FLAG: Source refresh validates the same photo within this exact message/revision. Keep
+      // its proof reachable from the durable webhook's original URL as well as the refreshed URL.
+      const cacheKeys = new Set([
+        this.cacheKey(originalMedia[index]!.identity, update),
         this.cacheKey(media.identity, update),
-        JSON.stringify({ version: MESSAGE_DUPLICATE_MEDIA_VERSION, hash: hashes[index] }),
-        ttl,
-      );
+      ]);
+      for (const key of cacheKeys) {
+        await this.redis.setStringWithTtl(
+          key,
+          JSON.stringify({ version: MESSAGE_DUPLICATE_MEDIA_VERSION, hash: hashes[index] }),
+          ttl,
+        );
+      }
     }
     return { content, hashes: hashes as string[] };
   }

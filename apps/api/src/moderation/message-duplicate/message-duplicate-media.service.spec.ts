@@ -164,6 +164,85 @@ describe('bounded message duplicate media analysis', () => {
     expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
   });
 
+  it('retries enforcement after refreshing a missing URL even when the candidate points to itself', async () => {
+    const s = photoSetup();
+    await s.service.process(s.photoJob('a', 0, 'https://i.oneme.ru/a'), s.lease);
+    const next = s.photoJob('b', 100);
+    s.photos.fingerprintAlbum.mockResolvedValueOnce(s.complete).mockResolvedValueOnce({
+      kind: 'incomplete',
+      reason: 'missing_download_url',
+    });
+    const fresh = duplicateUpdate('b', next.eventTimestampMs, '', [
+      { type: 'image', payload: { photo_id: 'b', url: 'https://i.oneme.ru/fresh' } },
+    ]);
+    s.max.getExactMessageRow.mockResolvedValue((fresh.raw as { message: unknown }).message);
+    s.history.observe.mockResolvedValue({ hit: {}, binding: {} });
+    s.enforcement.enqueue.mockRejectedValueOnce(new Error('temporary intent store failure'));
+    await expect(s.service.process(next, s.lease)).rejects.toThrow('intent store failure');
+    s.photos.fingerprintAlbum.mockClear();
+    await s.service.process(next, s.lease);
+    expect(s.enforcement.enqueue).toHaveBeenCalledTimes(2);
+    expect(s.photos.fingerprintAlbum).not.toHaveBeenCalled();
+  });
+
+  it('re-verifies a retry after its own media hash cache is evicted', async () => {
+    const s = setup();
+    await s.service.process(s.job('a', 0), s.lease);
+    const next = s.job('b', 100);
+    s.history.observe.mockResolvedValue({ hit: {}, binding: {} });
+    s.enforcement.enqueue.mockRejectedValueOnce(new Error('temporary intent store failure'));
+    await expect(s.service.process(next, s.lease)).rejects.toThrow('intent store failure');
+    for (const key of s.cache.keys()) {
+      if (key.startsWith('message-duplicate:media-hash:')) s.cache.delete(key);
+    }
+    await s.service.process(next, s.lease);
+    expect(s.enforcement.enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not overwrite a newer candidate when an older job arrives late', async () => {
+    const s = setup();
+    const first = s.job('newer', 1000);
+    await s.service.process(first, s.lease);
+    const pointerKey = [...s.cache.keys()].find((key) =>
+      key.startsWith('message-duplicate:candidate:'),
+    )!;
+    const pointer = s.cache.get(pointerKey);
+    await s.service.process(s.job('older', 0), s.lease);
+    expect(s.cache.get(pointerKey)).toBe(pointer);
+    expect(s.downloads).not.toHaveBeenCalled();
+    expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+  });
+
+  it.each(['oversized', 'expired'] as const)(
+    'repairs a %s candidate pointer before the next matching pair',
+    async (kind) => {
+      const s = setup();
+      const first = s.job('a', 0);
+      await s.service.process(first, s.lease);
+      const key = [...s.cache.keys()].find((value) =>
+        value.startsWith('message-duplicate:candidate:'),
+      )!;
+      s.cache.set(
+        key,
+        kind === 'oversized'
+          ? 'x'.repeat(2048)
+          : JSON.stringify({
+              webhookEventId: 'expired',
+              messageId: 'expired',
+              eventTimestampMs: first.eventTimestampMs - 604800000,
+            }),
+      );
+      await s.service.process(s.job('b', 100), s.lease);
+      expect(s.downloads).not.toHaveBeenCalled();
+      await s.service.process(s.job('c', 200), s.lease);
+      expect(s.downloads).toHaveBeenCalledTimes(2);
+      expect(s.history.observe).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ messageId: 'b' }),
+      );
+    },
+  );
+
   it.each(['missing', 'expired'] as const)(
     'refreshes a %s photo URL without treating its ID as equality proof',
     async (reason) => {
@@ -307,6 +386,11 @@ describe('bounded message duplicate media analysis', () => {
       MessageDuplicateMediaDeferredError,
     );
     expect(s.downloads).not.toHaveBeenCalled();
+    expect(s.governor.decide).toHaveBeenCalledWith({
+      component: 'message-duplicate-media',
+      sourceTag: 'message-duplicate',
+      allowRecoveryWindowRun: true,
+    });
     const job = s.job('c', 200);
     s.rows.set('c', { status: 'QUEUED' });
     await expect(s.service.process(job, s.lease)).rejects.toThrow();

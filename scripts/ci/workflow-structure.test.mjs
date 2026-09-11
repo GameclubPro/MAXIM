@@ -24,3 +24,13 @@ test('keeps the functional API lane separate from the median commercial benchmar
   assert.match(benchmark, /COMMERCIAL_BENCHMARK_PROFILE: github-hosted/u);
   assert.match(benchmark, /npm run test:api:commercial-benchmark:ci/u);
 });
+
+test('requires the message duplicate Redis flow in the blocking API lane', () => {
+  const api = jobBody('api', 'postgres-races');
+  assert.match(api, /redis:\s*image: redis:7-alpine/u);
+  assert.match(api, /127\.0\.0\.1:6379:6379/u);
+  assert.match(api, /--health-cmd "redis-cli ping"/u);
+  assert.match(api, /MAXIM_TEST_REDIS_URL: redis:\/\/127\.0\.0\.1:6379/u);
+  assert.match(api, /run: npm test --workspace @maxim\/api -- message-duplicate/u);
+  assert.doesNotMatch(api, /continue-on-error|if:/u);
+});
