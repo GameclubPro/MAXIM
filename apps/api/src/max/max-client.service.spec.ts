@@ -597,62 +597,145 @@ describe('MaxClientService inline keyboard guardrails', () => {
       await service.onModuleDestroy();
     }
   });
-  it('prepares Publisher buttons from the locked snapshot without merging their data with Major', async () => {
-    const buildButton = (publisher: boolean) => {
-      const token = `cdt-${Buffer.from(JSON.stringify({ v: 1, d: publisher ? 'publisher-thread' : 'major-thread', s: 'a'.repeat(64) })).toString('base64url')}`;
-      const payload = {
-        v: 1,
-        k: 'channel-dialog',
-        c: 'channel-1',
-        m: 'comments',
-        t: token,
-        ...(publisher ? { p: 'publisher' } : {}),
+  it.each([true, false])(
+    'keeps the first comments entry when Publisher arrives first: %s',
+    async (publisherFirst) => {
+      const buildButton = (publisher: boolean) => {
+        const token = `cdt-${Buffer.from(JSON.stringify({ v: 1, d: publisher ? 'publisher-thread' : 'major-thread', s: 'a'.repeat(64) })).toString('base64url')}`;
+        const payload = {
+          v: 1,
+          k: 'channel-dialog',
+          c: 'channel-1',
+          m: 'comments',
+          t: token,
+          ...(publisher ? { p: 'publisher' } : {}),
+        };
+        return {
+          type: 'link' as const,
+          text: publisher ? 'Publisher comments' : 'Major comments',
+          url: `https://max.ru/${publisher ? 'publik' : 'major'}?startapp=cd-${Buffer.from(JSON.stringify(payload)).toString('base64url')}`,
+        };
       };
-      return {
-        type: 'link' as const,
-        text: publisher ? 'Publisher comments' : 'Major comments',
-        url: `https://max.ru/${publisher ? 'publik' : 'major'}?startapp=cd-${Buffer.from(JSON.stringify(payload)).toString('base64url')}`,
-      };
-    };
-    const major = buildButton(false);
-    const publisher = buildButton(true);
-    const media = { type: 'image', payload: { token: 'image-token' } };
-    const message = {
-      body: {
-        mid: 'locked-post',
-        text: 'Original',
-        attachments: [media, { type: 'inline_keyboard', payload: { buttons: [[major]] } }],
-      },
-    };
-    const httpService = {
-      request: jest
-        .fn()
-        .mockReturnValueOnce(of({ status: 200, data: { messages: [message] } }))
-        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
-    };
-    const service = createService(httpService);
-    const prepareInlineKeyboard = jest.fn().mockResolvedValue([[publisher]]);
-    await service.editMessageInlineKeyboard('channel-1', 'locked-post', null, {
-      prepareInlineKeyboard,
-      mergeExistingInlineKeyboard: true,
-      appendNewInlineKeyboardRows: true,
-      requireAllAttachmentsPreserved: true,
-    });
-    expect(prepareInlineKeyboard).toHaveBeenCalledWith(message);
-    expect(httpService.request).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        method: 'put',
-        data: {
-          attachments: [
-            media,
-            { type: 'inline_keyboard', payload: { buttons: [[major], [publisher]] } },
-          ],
+      const major = buildButton(false);
+      const publisher = buildButton(true);
+      const existing = publisherFirst ? publisher : major;
+      const incoming = publisherFirst ? major : publisher;
+      const media = { type: 'image', payload: { token: 'image-token' } };
+      const message = {
+        body: {
+          mid: 'locked-post',
+          text: 'Original',
+          attachments: [media, { type: 'inline_keyboard', payload: { buttons: [[existing]] } }],
         },
-      }),
-    );
-    await service.onModuleDestroy();
-  });
+      };
+      const httpService = {
+        request: jest
+          .fn()
+          .mockReturnValueOnce(of({ status: 200, data: { messages: [message] } }))
+          .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+      };
+      const service = createService(httpService);
+      const prepareInlineKeyboard = jest.fn().mockResolvedValue([[incoming]]);
+      await service.editMessageInlineKeyboard('channel-1', 'locked-post', null, {
+        prepareInlineKeyboard,
+        mergeExistingInlineKeyboard: true,
+        appendNewInlineKeyboardRows: true,
+        requireAllAttachmentsPreserved: true,
+      });
+      expect(prepareInlineKeyboard).toHaveBeenCalledWith(message);
+      expect(httpService.request).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          method: 'put',
+          data: {
+            attachments: [media, { type: 'inline_keyboard', payload: { buttons: [[existing]] } }],
+          },
+        }),
+      );
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each([true, false])(
+    'keeps three actions through mirrored edits and counter refreshes (Publisher first: %s)',
+    async (publisherFirst) => {
+      const build = (publisher: boolean, kind: 'comments' | 'suggest', text: string) =>
+        new AdminDialogLinkHelper({
+          appBaseUrl: null,
+          explicitBotContactId: null,
+          ownBotUserId: publisher ? 'publik' : 'major',
+          maxBotToken: 'test',
+          maxBotTokenValidationSecrets: ['test'],
+          ...(publisher ? { dialogProfile: 'publisher' } : {}),
+        }).buildChannelDialogButton(
+          'channel-1',
+          kind,
+          publisher ? 'publisher-thread' : 'major-thread',
+          text,
+          publisher ? 'publik' : 'major',
+          'MINIAPP',
+        );
+      const media = { type: 'image', payload: { token: 'image-token' } };
+      const reviews = { type: 'link' as const, text: 'Отзывы', url: 'https://example.test/reviews' };
+      const winner = build(publisherFirst, 'comments', 'Комментарии');
+      const contact = build(publisherFirst, 'suggest', 'Задать вопрос или приобрести');
+      let attachments: unknown[] = [media];
+      const request = jest.fn((config: { method: string; data?: { attachments: unknown[] } }) => {
+        if (config.method === 'get')
+          return of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: { mid: 'three-actions', text: 'Original', attachments },
+                },
+              ],
+            },
+          });
+        attachments = config.data!.attachments;
+        return of({ status: 200, data: { success: true } });
+      });
+      const service = createService({ request });
+      const options = { mergeExistingInlineKeyboard: true, requireAllAttachmentsPreserved: true };
+      try {
+        await service.editMessageInlineKeyboard('channel-1', 'three-actions', null, {
+          ...options,
+          buttons: [[winner], [contact], [reviews]],
+        });
+        for (let repeat = 0; repeat < 2; repeat++) {
+          await service.editMessageInlineKeyboard('channel-1', 'three-actions', null, {
+            ...options,
+            buttons: [
+              [build(!publisherFirst, 'comments', 'Комментарии')],
+              [build(!publisherFirst, 'suggest', 'Предложить пост')],
+              [reviews],
+            ],
+          });
+        }
+        const updatedWinner = { ...winner, text: 'Комментарии (5)' };
+        await service.editMessageInlineKeyboard('channel-1', 'three-actions', null, {
+          buttons: [[updatedWinner]],
+          mergeExistingInlineKeyboard: true,
+        });
+        await service.editMessageInlineKeyboard('channel-1', 'three-actions', null, {
+          buttons: [[build(!publisherFirst, 'comments', 'Комментарии (2)')]],
+          mergeExistingInlineKeyboard: true,
+        });
+        expect(attachments).toEqual([
+          media,
+          {
+            type: 'inline_keyboard',
+            payload: { buttons: [[updatedWinner], [contact], [reviews]] },
+          },
+        ]);
+        for (const [config] of request.mock.calls) {
+          if (config.method === 'put') expect(config.data).not.toHaveProperty('text');
+        }
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
 
   it('skips the MAX mutation when locked keyboard preparation finds no missing buttons', async () => {
     const httpService = {

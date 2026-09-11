@@ -95,4 +95,47 @@ describe('buildChannelPostActionRows', () => {
       [callback],
     ]);
   });
+
+  it('deduplicates recognized comments across bot profiles but not labels or channels', () => {
+    const helper = (publisher: boolean) =>
+      new AdminDialogLinkHelper({
+        appBaseUrl: null,
+        explicitBotContactId: null,
+        ownBotUserId: publisher ? 'publik' : 'major',
+        maxBotToken: 'test',
+        maxBotTokenValidationSecrets: ['test'],
+        ...(publisher ? { dialogProfile: 'publisher' } : {}),
+      });
+    const major = helper(false).buildChannelDialogButton(
+      '-100',
+      'comments',
+      'major-thread',
+      'Comments',
+      'major',
+      'MINIAPP',
+    );
+    const publisher = helper(true).buildChannelDialogButton(
+      '-100',
+      'comments',
+      'publisher-thread',
+      'Comments',
+      'publik',
+      'MINIAPP',
+    );
+    const other = helper(true).buildChannelDialogButton(
+      '-200',
+      'comments',
+      'other-thread',
+      'Comments',
+      'publik',
+      'MINIAPP',
+    );
+    const custom = link('Comments', 'https://example.test/comments');
+    expect(
+      buildChannelPostActionRows({
+        commentsButton: major,
+        customButtonRows: [[publisher, other, custom]],
+      }),
+    ).toEqual([[major], [other], [custom]]);
+  });
 });

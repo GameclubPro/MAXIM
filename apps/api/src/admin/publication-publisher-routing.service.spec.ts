@@ -194,6 +194,54 @@ describe('PublicationPublisherRoutingService', () => {
 });
 
 describe('PublisherDialogContextService', () => {
+  it('keeps the configured channel CTA before per-publication links', async () => {
+    const cta = {
+      type: 'link',
+      text: 'Задать вопрос или приобрести',
+      url: 'https://example.test/contact',
+    };
+    const postSignature = { buildPostButton: jest.fn().mockResolvedValue(cta) };
+    const service = new PublisherDialogContextService(
+      {
+        publisherEntitySettings: {
+          upsert: jest.fn().mockResolvedValue({
+            channelCommentsEnabled: true,
+            channelSuggestionsEnabled: false,
+          }),
+        },
+      } as never,
+      {
+        buildChannelDialogButton: (
+          _chat: string,
+          _kind: string,
+          _thread: string,
+          text: string,
+        ) => ({
+          type: 'link',
+          text,
+          url: 'https://max.ru/publik?start=comments',
+        }),
+      } as never,
+      postSignature as never,
+    );
+    const context = await service.prepare({
+      chatId: 'channel-1',
+      entityType: 'channel',
+      dialogBotId: 'publisher-bot',
+      customButtons: [{ text: 'Отзывы', url: 'https://example.test/reviews' }],
+    });
+    expect(context.buttons.map(([button]) => button!.text)).toEqual([
+      '💬 Комментарии · 0',
+      'Задать вопрос или приобрести',
+      'Отзывы',
+    ]);
+    expect(postSignature.buildPostButton).toHaveBeenCalledWith('channel-1', {
+      entityType: 'channel',
+      trafficClass: 'background',
+      sourceTag: 'managed_broadcast',
+    });
+  });
+
   it.each([
     [true, true, ['comments', 'suggest']],
     [true, false, ['comments']],

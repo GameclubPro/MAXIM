@@ -51,6 +51,42 @@ describe('strict editable message preservation', () => {
     expect(() => readStrictEditableAttachments(null)).toThrow();
     expect(() => readStrictEditableAttachments({ body: { attachments: {} } })).toThrow();
   });
+  it('allows comment aliases only when an unchanged source discussion survives', () => {
+    const helper = new AdminDialogLinkHelper({
+      appBaseUrl: null,
+      explicitBotContactId: null,
+      ownBotUserId: 'major',
+      maxBotToken: 'test',
+      maxBotTokenValidationSecrets: ['test'],
+    });
+    const button = (chat: string, thread: string) =>
+      helper.buildChannelDialogButton(chat, 'comments', thread, 'Comments', 'major', 'MINIAPP');
+    const old = button('-100', 'old');
+    const duplicate = button('-100', 'duplicate');
+    const keyboard = (buttons: unknown[]) => ({
+      type: 'inline_keyboard',
+      payload: { buttons: buttons.map((item) => [item]) },
+    });
+    expect(() =>
+      assertEditableAttachmentsPreserved([keyboard([old])], [keyboard([old])], [[duplicate]]),
+    ).not.toThrow();
+    expect(() =>
+      assertEditableAttachmentsPreserved([keyboard([old, duplicate])], [keyboard([old])], []),
+    ).not.toThrow();
+    expect(() =>
+      assertEditableAttachmentsPreserved([keyboard([old])], [keyboard([duplicate])], [[duplicate]]),
+    ).toThrow('would be lost');
+    expect(() =>
+      assertEditableAttachmentsPreserved(
+        [keyboard([old])],
+        [keyboard([old])],
+        [[button('-200', 'other')]],
+      ),
+    ).toThrow('would be lost');
+    expect(() => assertEditableAttachmentsPreserved([], [keyboard([old])], [[duplicate]])).toThrow(
+      'would be lost',
+    );
+  });
   it('does not guess between different direct and forwarded media collections', () => {
     expect(() =>
       readStrictEditableAttachments({

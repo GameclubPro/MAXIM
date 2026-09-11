@@ -63,11 +63,9 @@ export function internalChannelDialogButtonIdentityKey(
 export function channelDialogButtonPresentationKey(
   identity: InternalChannelDialogButtonIdentity,
 ): string {
-  // FLAG: One suggestion entry per channel is a presentation rule, not shared authorization.
-  // Comments retain their profile; never use this key to resolve tokens or donate thread IDs.
-  return identity.kind === 'suggest'
-    ? JSON.stringify([identity.chatId, 'suggest'])
-    : internalChannelDialogButtonIdentityKey(identity);
+  // FLAG: One entry per channel/action is presentation only, not shared authorization.
+  // Keep the surviving button's profile/token; never use this key to donate thread IDs.
+  return JSON.stringify([identity.chatId, identity.kind]);
 }
 
 export function channelSuggestionButtonKey(value: unknown): string | null {

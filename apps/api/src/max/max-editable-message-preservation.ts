@@ -2,7 +2,11 @@ import { BadRequestException } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
-import { channelSuggestionButtonKey } from '../common/channel-dialog-button-identity.util';
+import {
+  channelDialogButtonPresentationKey,
+  channelSuggestionButtonKey,
+  readInternalChannelDialogButtonIdentity,
+} from '../common/channel-dialog-button-identity.util';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -44,6 +48,7 @@ export function assertEditableAttachmentsPreserved(
     return Array.isArray(rows) ? rows.flat() : [];
   });
   const requiredButtons: unknown[] = [...requestedButtons];
+  const survivingSourceComments = new Set<string>();
   for (const attachment of source) {
     const row = asRecord(attachment);
     if (row?.type === 'inline_keyboard') {
@@ -54,6 +59,16 @@ export function assertEditableAttachmentsPreserved(
         );
       }
       requiredButtons.push(...rows);
+      for (const button of rows.flat()) {
+        const normalized = normalizeMaxInlineKeyboardButtons([[button]])?.[0]?.[0];
+        const identity = readInternalChannelDialogButtonIdentity(normalized);
+        if (
+          identity?.kind === 'comments' &&
+          deliveredButtons.some((item) => isDeepStrictEqual(item, normalized))
+        ) {
+          survivingSourceComments.add(channelDialogButtonPresentationKey(identity));
+        }
+      }
     } else if (
       !row ||
       !result.some((item) => item.type === row.type && isDeepStrictEqual(item.payload, row.payload))
@@ -67,14 +82,19 @@ export function assertEditableAttachmentsPreserved(
     }
     for (const button of row) {
       const normalized = normalizeMaxInlineKeyboardButtons([[button]])?.[0]?.[0];
-      // FLAG: Only recognized channel suggestion aliases may share one surviving entry.
-      // Custom actions and comments must still survive byte-for-byte after normalization.
+      // FLAG: Comment aliases may collapse only onto an unchanged source button. Never
+      // replace an existing discussion with a new profile/token, or drop custom actions.
       const suggestionKey = normalized ? channelSuggestionButtonKey(normalized) : null;
+      const identity = readInternalChannelDialogButtonIdentity(normalized);
+      const retainedComments =
+        identity?.kind === 'comments' &&
+        survivingSourceComments.has(channelDialogButtonPresentationKey(identity));
       if (
         !normalized ||
         !deliveredButtons.some(
           (item) =>
             isDeepStrictEqual(item, normalized) ||
+            retainedComments ||
             (suggestionKey !== null && channelSuggestionButtonKey(item) === suggestionKey),
         )
       ) {

@@ -80,6 +80,7 @@ function fixture() {
     assertDispatchAllowed: jest.fn(),
     recordSendFailure: jest.fn().mockResolvedValue(undefined),
   };
+  const postSignature = { buildPostButton: jest.fn().mockResolvedValue(null) };
   const service = new PublisherChannelCommentDeliveryService(
     prisma as never,
     maxClient as never,
@@ -88,6 +89,7 @@ function fixture() {
     { getBotId: () => 'publik-bot' } as never,
     links,
     health as never,
+    postSignature as never,
   );
   const queue = { enqueueChannelAttach: jest.fn() };
   const producer = new PublisherChatCommentProducerService(
@@ -118,6 +120,7 @@ function fixture() {
     readiness,
     runtime,
     health,
+    postSignature,
     service,
     queue,
     producer,
@@ -174,7 +177,7 @@ describe('Publisher channel keyboard webhook and delivery', () => {
     },
   );
 
-  it('does not use a Major thread or let its comments suppress Publisher comments', async () => {
+  it('keeps Major comments without donating their thread or count reference to Publisher', async () => {
     const h = fixture();
     const majorLinks = new AdminDialogLinkHelper({
       appBaseUrl: null,
@@ -204,6 +207,12 @@ describe('Publisher channel keyboard webhook and delivery', () => {
     ];
     await h.service.process(h.job);
     expect(h.mutate.mock.calls[0]![0]).toHaveLength(2);
+    expect(h.mutate.mock.calls[0]![0][0][0].text).toBe('Major');
+    expect(h.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload).toMatchObject({
+      includeCommentsButton: false,
+      commentsButton: null,
+    });
     expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload.threadId).toBe(h.job.threadId);
   });
 
@@ -238,7 +247,7 @@ describe('Publisher channel keyboard webhook and delivery', () => {
         },
       ];
       await h.service.process(h.job);
-      expect(h.mutate.mock.calls[0]![0]).toHaveLength(1);
+      expect(h.mutate.mock.calls[0]![0]).toHaveLength(2);
       expect(h.mutate.mock.calls[0]![0][0][0].text).toContain('Комментарии');
       expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload).toMatchObject({
         threadId: h.job.threadId,
@@ -252,6 +261,86 @@ describe('Publisher channel keyboard webhook and delivery', () => {
       expect(h.mutate).not.toHaveBeenCalled();
     },
   );
+
+  it('adds the configured third button to a direct post with existing comments and contact', async () => {
+    const h = fixture();
+    const helper = new AdminDialogLinkHelper({
+      appBaseUrl: null,
+      explicitBotContactId: null,
+      ownBotUserId: 'major-bot',
+      maxBotToken: 'major-key',
+      maxBotTokenValidationSecrets: ['major-key'],
+    });
+    const comments = helper.buildChannelDialogButton(
+      chatId,
+      'comments',
+      'major-thread',
+      'Комментарии',
+      'major-bot',
+      'MINIAPP',
+    );
+    const contact = helper.buildChannelDialogButton(
+      chatId,
+      'suggest',
+      'major-thread',
+      'Задать вопрос или приобрести',
+      'major-bot',
+      'MINIAPP',
+    );
+    const reviews = { type: 'link', text: 'Отзывы', url: 'https://example.test/reviews' };
+    h.postSignature.buildPostButton.mockResolvedValue(reviews);
+    h.message.body.attachments = [
+      { type: 'inline_keyboard', payload: { buttons: [[comments], [contact]] } },
+    ];
+    await h.service.process(h.job);
+    expect(h.mutate).toHaveBeenCalledWith([[comments], [contact], [reviews]]);
+    expect(h.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(h.postSignature.buildPostButton).toHaveBeenCalledWith(
+      chatId,
+      expect.objectContaining({
+        botId: 'publik-bot',
+        entityType: 'channel',
+        sourceTag: 'channel_auto_post',
+      }),
+    );
+    h.message.body.attachments = [
+      { type: 'inline_keyboard', payload: { buttons: [[comments], [contact], [reviews]] } },
+    ];
+    h.mutate.mockClear();
+    await h.service.process(h.job);
+    expect(h.mutate).not.toHaveBeenCalled();
+  });
+
+  it('includes the configured CTA in the Publisher comment-count reference', async () => {
+    const h = fixture();
+    const cta = { type: 'link', text: 'Отзывы', url: 'https://example.test/reviews' };
+    h.postSignature.buildPostButton.mockResolvedValue(cta);
+    await h.service.process(h.job);
+    const rows = h.mutate.mock.calls[0]![0];
+    expect(rows).toHaveLength(3);
+    expect(rows[2]).toEqual([cta]);
+    expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload.buttonRows).toEqual(rows);
+  });
+
+  it('does not add a disabled CTA or infer a reviews URL from the message', async () => {
+    const h = fixture();
+    await h.service.process(h.job);
+    expect(h.mutate.mock.calls[0]![0]).toHaveLength(2);
+  });
+
+  it('does not edit when the CTA changes after preparing the keyboard', async () => {
+    const h = fixture();
+    h.postSignature.buildPostButton
+      .mockResolvedValueOnce({
+        type: 'link',
+        text: 'Отзывы',
+        url: 'https://example.test/reviews',
+      })
+      .mockResolvedValueOnce(null);
+    await expect(h.service.process(h.job)).rejects.toThrow('button changed');
+    expect(h.mutate).not.toHaveBeenCalled();
+    expect(h.prisma.auditLog.upsert).not.toHaveBeenCalled();
+  });
 
   it('recovers its audit after a successful edit without editing again or resetting the thread', async () => {
     const h = fixture();

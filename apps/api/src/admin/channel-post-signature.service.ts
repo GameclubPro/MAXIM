@@ -182,6 +182,7 @@ export class ChannelPostSignatureService {
       entityType?: 'chat' | 'channel';
       trafficClass?: MaxApiTrafficClass;
       sourceTag?: string;
+      botId?: string;
     } = {},
   ): Promise<MaxMessageButton | null> {
     if (options.entityType === 'chat') {
@@ -198,6 +199,7 @@ export class ChannelPostSignatureService {
         chatId,
         options.trafficClass ?? 'background',
         options.sourceTag,
+        options.botId,
       ));
     return {
       type: 'link',
@@ -232,6 +234,7 @@ export class ChannelPostSignatureService {
     chatId: string,
     trafficClass: MaxApiTrafficClass,
     sourceTag: string = MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+    requiredBotId?: string,
   ): Promise<string> {
     try {
       const audienceSnapshot = await this.prisma.channelAudienceSnapshot.findFirst({
@@ -267,7 +270,7 @@ export class ChannelPostSignatureService {
     }
 
     try {
-      const botId = await this.maxBotLinkService.resolveBotIdForSend({ chatId });
+      const botId = requiredBotId ?? (await this.maxBotLinkService.resolveBotIdForSend({ chatId }));
       if (!botId) {
         throw new Error('No bot can resolve the MAX channel link');
       }

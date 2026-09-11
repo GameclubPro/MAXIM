@@ -5877,7 +5877,7 @@ export class MaxClientService implements OnModuleDestroy {
           ) {
             return false;
           }
-          if (dialogIdentity?.kind === 'suggest') {
+          if (dialogIdentity) {
             representedDialogButtons.add(channelDialogButtonPresentationKey(dialogIdentity));
           }
           const identity = this.readInlineKeyboardButtonIdentity(button);

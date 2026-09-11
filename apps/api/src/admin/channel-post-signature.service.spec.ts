@@ -159,14 +159,36 @@ describe('ChannelPostSignatureService', () => {
       textFormat: 'markdown',
       signatureApplied: false,
     });
-    await expect(
-      service.buildPostButton('channel-1', { entityType: 'channel' }),
-    ).resolves.toEqual({
+    await expect(service.buildPostButton('channel-1', { entityType: 'channel' })).resolves.toEqual({
       type: 'link',
       text: '📞 Заказать рекламу',
       url: 'https://ads.example/contact',
     });
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('resolves a Publisher CTA fallback with the exact Publisher bot, without Major routing', async () => {
+    const { maxClient, maxBotLinkService, prisma, service } = createFixture();
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSignatureEnabled: true,
+      postSignaturePresentation: 'BUTTON',
+      postSignatureText: 'Читать канал',
+      postSignatureUrl: '',
+    });
+    prisma.channelAudienceSnapshot.findFirst.mockResolvedValue(null as never);
+    await expect(
+      service.buildPostButton('channel-1', {
+        entityType: 'channel',
+        botId: 'publisher-bot',
+        sourceTag: 'channel_auto_post',
+      }),
+    ).resolves.toMatchObject({ url: 'https://max.ru/channel/live' });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      botId: 'publisher-bot',
+      trafficClass: 'background',
+      sourceTag: 'channel_auto_post',
+    });
   });
 
   it('does not append the same trailing channel signature twice', async () => {

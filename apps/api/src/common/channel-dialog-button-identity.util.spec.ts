@@ -19,7 +19,7 @@ function buildStartParam(chatId: string, kind: 'comments' | 'suggest', threadId:
 }
 
 describe('internal channel dialog button identity', () => {
-  it('shares only suggestion presentation identity across profiles, never comment identity', () => {
+  it('shares presentation across profiles but keeps authorization identity isolated', () => {
     const major = { chatId: 'channel-1', kind: 'suggest' as const, threadId: 'major-thread' };
     const publisher = { ...major, profile: 'publisher' as const, threadId: 'publisher-thread' };
     expect(channelDialogButtonPresentationKey(major)).toBe(
@@ -28,7 +28,7 @@ describe('internal channel dialog button identity', () => {
     expect(internalChannelDialogButtonIdentityKey(major)).not.toBe(
       internalChannelDialogButtonIdentityKey(publisher),
     );
-    expect(channelDialogButtonPresentationKey({ ...major, kind: 'comments' })).not.toBe(
+    expect(channelDialogButtonPresentationKey({ ...major, kind: 'comments' })).toBe(
       channelDialogButtonPresentationKey({ ...publisher, kind: 'comments' }),
     );
     expect(
