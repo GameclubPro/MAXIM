@@ -27,14 +27,35 @@ policy. A future module switch must not stand in for advertisement consent.
   make a write request. It is included in the standard CI visual smoke.
   Screenshots stay in ignored artifacts.
 - Local iPhone SE/light and Android/dark layout, contrast and accessibility
-  checks passed. Final scoped verification and deployment remain pending.
+  checks passed and both images were inspected. The scoped submission checks
+  passed: 1271 mini app tests, 492 repository-tooling checks, CSS ownership,
+  typechecking, production budgets and the 13-scenario standard visual smoke.
+- Local development-server smokes reported canceled module fetches on ports
+  3000 and 4183. The same strict smoke passed against the freshly built local
+  production preview; no network failures or layout checks were ignored.
+  The CI Mini App job also passed its normal development-server smoke.
+- The first direct asset comparison used fewer public Vite build variables
+  than Docker and therefore had different hashes. Rebuilding with Docker's
+  exact public arguments produced a matching HTML entry and 57 byte-identical
+  entry/settings dependency files. This did not require runtime changes.
 
 ## Delivery
 
 - [x] Implemented locally as an unavailable announcement.
-- [ ] Scoped validation and reviewed commit.
-- [ ] Released in `miniapp-major-static` only.
-- [ ] Verified against the public loaded frontend.
+- [x] Scoped validation and reviewed commit.
+- [x] Released in `miniapp-major-static` only.
+- [x] Verified against the public loaded frontend.
+
+Runtime source: `b9c0d2ad963c8a64d64c9456380d77d3d4608f02`.
+Release: `release-20260912T222228Z-b9c0d2ad963c`.
+Exact-SHA Required CI and Analyze JavaScript and TypeScript checks passed
+before the guarded static-only deployment. API, PostgreSQL, Redis and sibling
+services were not recreated. Public light/dark browser checks used isolated
+preview data and confirmed the disabled button, visible badge, search and
+absence of write requests. These are not real MAX device or delivery tests.
+
+A newer documentation-only HEAD does not advance the runtime SHA or require
+another deployment.
 
 Pre-existing edits to `apps/api/AGENTS.md` are outside this task and retained.
 Actual MAX devices and activation/publication are not claimed as tested.
