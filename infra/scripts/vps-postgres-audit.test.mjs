@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
+import { buildRulesCleanupAuditSql } from './rules-cleanup-audit.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const audit = resolve(root, 'infra/scripts/vps-postgres-audit.sh');
@@ -216,6 +217,38 @@ function extractProvisionVerificationSql() {
   assert.notEqual(end, -1);
   return source.slice(start, end + endMarker.length);
 }
+
+test('rules cleanup audit accepts only an exact chat ID and never operator SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['rules-cleanup', '-123', '--explain']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) SELECT/u);
+  assert.match(sql, /WHERE rules\.chat_id = '-123'/u);
+  assert.doesNotMatch(sql, /EXPLAIN ANALYZE|rules\.text|image_base64/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'rules-cleanup', '-123']).status, 0);
+  for (const value of [
+    '',
+    '123',
+    '-0',
+    '-1\n',
+    '-01',
+    "-1' OR true --",
+    '/tmp/query.sql',
+    '-123;DELETE',
+    '-123456789012345678901',
+  ]) {
+    assert.throws(() => buildRulesCleanupAuditSql(value));
+    assert.notEqual(runAudit(data, ['rules-cleanup', value]).status, 0);
+    assert.notEqual(runConnect(data, ['postgres-audit', 'rules-cleanup', value]).status, 0);
+  }
+  assert.notEqual(runAudit(data, ['rules-cleanup', '-123', '--apply']).status, 0);
+  assert.notEqual(
+    runConnect(data, ['postgres-audit', 'rules-cleanup', '-123', 'SELECT 1']).status,
+    0,
+  );
+});
 
 test('queue audit uses the dedicated role and a hard read-only resource envelope', (t) => {
   const data = fixture();
@@ -574,7 +607,7 @@ test('duplicate audit uses fixed windows and bounds every source before aggregat
   assert.match(sql, /'complete'/u);
 
   assert.doesNotMatch(
-    sql,
+    extractDuplicateReportSql(sql),
     /raw_payload|normalized_payload|error_message|source_ip|chat_id|user_id|message_id|masked_excerpt|candidate_failures|last_error/u,
   );
 });
@@ -638,6 +671,19 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     );
     CREATE INDEX moderation_events_created_at_idx ON moderation_events(created_at);
     CREATE TABLE webhook_events (id TEXT PRIMARY KEY);
+    CREATE TABLE chat_rules (
+      chat_id TEXT PRIMARY KEY,
+      published_message_id TEXT,
+      published_bot_id TEXT,
+      publish_operation_id TEXT,
+      publish_send_started_at TIMESTAMP,
+      pending_cleanup_message_id TEXT,
+      pending_cleanup_bot_id TEXT,
+      pending_cleanup_intent_id TEXT,
+      pending_cleanup_kind TEXT,
+      updated_at TIMESTAMP,
+      text TEXT
+    );
     CREATE TABLE moderation_delete_intents (
       id TEXT PRIMARY KEY,
       status "ModerationDeleteIntentStatus" NOT NULL,
@@ -796,6 +842,30 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
 
   const verificationSql = extractProvisionVerificationSql();
   await database.exec(verificationSql);
+
+  await database.exec('GRANT SELECT (text) ON TABLE chat_rules TO PUBLIC;');
+  await assert.rejects(database.exec(verificationSql), /rules metadata privileges are not exact/u);
+  await database.exec('REVOKE SELECT (text) ON TABLE chat_rules FROM PUBLIC;');
+  await database.exec(`
+    INSERT INTO chat_rules (chat_id, pending_cleanup_message_id, pending_cleanup_bot_id,
+      pending_cleanup_intent_id, pending_cleanup_kind, updated_at, text)
+    VALUES ('-123', 'previous-message', 'previous-bot', 'intent-duplicate', 'republish_previous',
+      CURRENT_TIMESTAMP, 'private rules content');
+  `);
+  await database.exec('SET SESSION AUTHORIZATION maxim_audit;');
+  const rulesReport = (await database.query(buildRulesCleanupAuditSql('-123'))).rows[0]
+    .json_build_object;
+  assert.equal(rulesReport.pending_cleanup_bot_id, 'previous-bot');
+  assert.equal(rulesReport.linked_intent_status, 'SUCCEEDED');
+  assert.equal((await database.query(buildRulesCleanupAuditSql('-456'))).rows.length, 0);
+  await assert.rejects(database.query('SELECT text FROM chat_rules'), /permission denied/u);
+  await database.exec('SET enable_seqscan = off;');
+  const rulesPlan = JSON.stringify(
+    (await database.query(buildRulesCleanupAuditSql('-123', true))).rows,
+  );
+  assert.match(rulesPlan, /chat_rules_pkey/u);
+  assert.match(rulesPlan, /moderation_delete_intents_pkey/u);
+  await database.exec('SET SESSION AUTHORIZATION postgres;');
 
   await database.exec('GRANT SELECT (chat_id) ON TABLE chat_settings TO PUBLIC;');
   await assert.rejects(

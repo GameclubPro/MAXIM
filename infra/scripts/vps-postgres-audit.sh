@@ -27,6 +27,7 @@ usage() {
   cat <<'USAGE' >&2
 Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|all]
+  ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -66,7 +67,18 @@ if ! flock -n "$AUDIT_LOCK_FD"; then
 fi
 
 SIGNAL_WINDOW_MIN=''
+RULES_CLEANUP_CHAT_ID=''
+RULES_CLEANUP_EXPLAIN=''
 case "$AUDIT_MODE" in
+  rules-cleanup)
+    if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
+          ( $# -eq 3 && "$3" != '--explain' ) ]]; then
+      usage
+      exit 2
+    fi
+    RULES_CLEANUP_CHAT_ID="$2"
+    RULES_CLEANUP_EXPLAIN="${3:-}"
+    ;;
   queue|activity|duplicate|publication-schema|all)
     if [[ $# -gt 1 ]]; then
       usage
@@ -147,6 +159,22 @@ SELECT CASE
     AND has_table_privilege('maxim_audit', 'public.webhook_events', 'SELECT')
     AND has_table_privilege('maxim_audit', 'public.moderation_events', 'SELECT')
     AND NOT has_table_privilege('maxim_audit', 'public.chat_settings', 'SELECT')
+    AND NOT has_table_privilege('maxim_audit', 'public.chat_rules', 'SELECT')
+    AND (
+      SELECT count(*) FROM information_schema.role_column_grants
+      WHERE grantee = 'maxim_audit' AND table_schema = 'public' AND table_name = 'chat_rules'
+    ) IN (0, 10)
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_attribute attribute
+      WHERE attribute.attrelid = 'public.chat_rules'::regclass
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+        AND attribute.attname NOT IN (
+          'chat_id', 'published_message_id', 'published_bot_id', 'publish_operation_id',
+          'publish_send_started_at', 'pending_cleanup_message_id', 'pending_cleanup_bot_id',
+          'pending_cleanup_intent_id', 'pending_cleanup_kind', 'updated_at'
+        )
+    )
     AND NOT has_table_privilege('maxim_audit', 'public.moderation_delete_intents', 'SELECT')
     AND NOT has_table_privilege(
       'maxim_audit',
@@ -290,6 +318,7 @@ SELECT CASE
               AND relation.relname IN (
                 'webhook_events',
                 'moderation_events',
+                'chat_rules',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -1214,6 +1243,13 @@ emit_sql() {
       ;;
     publication-schema)
       node "$ROOT_DIR/infra/scripts/publication-post-actions-schema-audit.mjs"
+      ;;
+    rules-cleanup)
+      local args=("$RULES_CLEANUP_CHAT_ID")
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/rules-cleanup-audit.mjs" "${args[@]}"
       ;;
     all)
       emit_queue_audit

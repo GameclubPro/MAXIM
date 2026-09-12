@@ -21,6 +21,7 @@ local Docker-socket access under the production pg_hba rules, with:
   - connection limit 1 and no password
   - table SELECT only on webhook_events/moderation_events
   - exact Antiduplicate column SELECT grants and pg_read_all_stats membership
+  - ten rules-publication metadata columns; no rules text, media, links, or settings
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
 
@@ -110,6 +111,7 @@ BEGIN
     FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name IN (
+        'chat_rules',
         'chat_settings',
         'moderation_delete_intents',
         'moderation_delete_intent_reasons'
@@ -142,6 +144,11 @@ GRANT SELECT (
   status,
   updated_at
 ) ON TABLE public.moderation_delete_intents TO maxim_audit;
+GRANT SELECT (
+  chat_id, published_message_id, published_bot_id, publish_operation_id,
+  publish_send_started_at, pending_cleanup_message_id, pending_cleanup_bot_id,
+  pending_cleanup_intent_id, pending_cleanup_kind, updated_at
+) ON TABLE public.chat_rules TO maxim_audit;
 GRANT SELECT (
   intent_id,
   reason_key,
@@ -190,6 +197,27 @@ BEGIN
       AND granted_role.rolname <> 'pg_read_all_stats'
   ) THEN
     RAISE EXCEPTION 'maxim_audit has unexpected role memberships after provisioning';
+  END IF;
+
+  IF has_table_privilege('maxim_audit', 'public.chat_rules', 'SELECT')
+    OR 10 <> (
+      SELECT count(*) FROM information_schema.role_column_grants
+      WHERE grantee = 'maxim_audit' AND table_schema = 'public' AND table_name = 'chat_rules'
+        AND privilege_type = 'SELECT'
+    )
+    OR EXISTS (
+      SELECT 1 FROM pg_attribute attribute
+      WHERE attribute.attrelid = 'public.chat_rules'::regclass
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+        AND attribute.attname NOT IN (
+          'chat_id', 'published_message_id', 'published_bot_id', 'publish_operation_id',
+          'publish_send_started_at', 'pending_cleanup_message_id', 'pending_cleanup_bot_id',
+          'pending_cleanup_intent_id', 'pending_cleanup_kind', 'updated_at'
+        )
+    )
+  THEN
+    RAISE EXCEPTION 'maxim_audit rules metadata privileges are not exact';
   END IF;
 
   IF EXISTS (
@@ -314,6 +342,7 @@ BEGIN
             AND relation.relname IN (
               'webhook_events',
               'moderation_events',
+              'chat_rules',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'
