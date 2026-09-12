@@ -39,6 +39,7 @@ import {
   isMaxApiTimeoutError,
 } from './admin-legacy-utils';
 import type { AdminParticipantsRuntimeContext } from './admin-participants-runtime-context';
+import { scanParticipantActivityPage } from './participant-activity-page';
 import {
   ADMIN_ACTION_HEALTH_LANE,
   ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
@@ -726,17 +727,38 @@ export class AdminParticipantsRuntime {
       rosterProbeStartedAt = startedAt;
     };
     const membersPagePromise = (
-      search || query.roleFilter !== 'all'
-        ? this.searchChatParticipantsMembersPage(
+      query.activityFilter && query.activityFilter !== 'all'
+        ? scanParticipantActivityPage({
             chatId,
+            userId,
             query,
-            search,
-            resolvedBotId,
-            captureRosterProbeStartedAt,
-          )
-        : this.loadChatParticipantsMembersPage(chatId, limit, query.cursor ?? null, resolvedBotId, {
-            onAttemptStarted: captureRosterProbeStartedAt,
+            maxPages: CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE,
+            matches: (member) =>
+              this.chatParticipantMatchesSearch(member, search) &&
+              matchesChatParticipantRoleFilter(member, query.roleFilter),
+            load: (marker) =>
+              this.loadChatParticipantsMembersPage(chatId, 100, marker, resolvedBotId, {
+                search: true,
+                onAttemptStarted: captureRosterProbeStartedAt,
+              }),
           })
+        : search || query.roleFilter !== 'all'
+          ? this.searchChatParticipantsMembersPage(
+              chatId,
+              query,
+              search,
+              resolvedBotId,
+              captureRosterProbeStartedAt,
+            )
+          : this.loadChatParticipantsMembersPage(
+              chatId,
+              limit,
+              query.cursor ?? null,
+              resolvedBotId,
+              {
+                onAttemptStarted: captureRosterProbeStartedAt,
+              },
+            )
     ).catch(async (error: unknown) => {
       if (!this.isTerminalChatParticipantsRosterAccessError(error)) {
         if (!this.isTransientChatParticipantsRosterError(error)) {
@@ -883,6 +905,8 @@ export class AdminParticipantsRuntime {
           immunity: immunityByUserId.get(member.userId.trim()) ?? null,
           role: this.mapChatMemberRole(member.role),
           isBot: member.isBot,
+          lastMaxActivityAt: member.lastMaxActivityAt ?? null,
+          activityCheckedAt: member.activityCheckedAt ?? null,
         } satisfies ChatParticipantItem;
       }),
       totalCount:

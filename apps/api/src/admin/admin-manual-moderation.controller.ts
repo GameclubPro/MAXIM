@@ -27,6 +27,15 @@ import { ManualModerationService } from './manual-moderation.service';
 export class AdminManualModerationController {
   constructor(private readonly moderationService: ManualModerationService) {}
 
+  @Get('chats/:chatId/sanctions')
+  getChatSanctions(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.moderationService.getChatSanctions(chatId, user, query);
+  }
+
   @Get('channels/:chatId/stats')
   getChannelStats(
     @Param('chatId') chatId: string,

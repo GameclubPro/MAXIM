@@ -7,6 +7,17 @@ export type ChatParticipantRole = z.infer<typeof chatParticipantRoleSchema>;
 export const chatParticipantRoleFilterSchema = z.enum(['all', 'admins', 'members', 'bots']);
 export type ChatParticipantRoleFilter = z.infer<typeof chatParticipantRoleFilterSchema>;
 
+export const chatParticipantActivityFilterSchema = z.enum([
+  'all',
+  '7d',
+  '14d',
+  '30d',
+  '60d',
+  '90d',
+  'unknown',
+]);
+export type ChatParticipantActivityFilter = z.infer<typeof chatParticipantActivityFilterSchema>;
+
 export const chatParticipantImmunityModeSchema = z.enum(['limited', 'always']);
 export type ChatParticipantImmunityMode = z.infer<typeof chatParticipantImmunityModeSchema>;
 
@@ -68,6 +79,8 @@ export const chatParticipantItemSchema = z.object({
   immunity: chatParticipantImmunitySchema.nullable().default(null),
   role: chatParticipantRoleSchema,
   isBot: z.boolean().default(false),
+  lastMaxActivityAt: z.string().datetime().nullable().optional(),
+  activityCheckedAt: z.string().datetime().nullable().optional(),
 });
 export type ChatParticipantItem = z.infer<typeof chatParticipantItemSchema>;
 
@@ -82,6 +95,7 @@ export type ChatParticipantsPage = z.infer<typeof chatParticipantsPageSchema>;
 export const chatParticipantsQuerySchema = z.object({
   range: logsDashboardRangeSchema.default('7d'),
   roleFilter: chatParticipantRoleFilterSchema.default('all'),
+  activityFilter: chatParticipantActivityFilterSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(100),
   cursor: z.string().trim().min(1).optional(),
   search: z.string().trim().max(100).optional(),

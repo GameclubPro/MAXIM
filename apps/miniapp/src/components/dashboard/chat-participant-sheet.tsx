@@ -2,6 +2,7 @@ import type { ChatParticipantItem } from '@maxim/contracts';
 import { InfoCircle, Prohibition, Search, ShieldCheck, SoundOff, UserCircle } from 'iconoir-react';
 import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent } from 'react';
 import { useNativeBackHandler } from '../../lib/native-back';
+import { describeParticipantActivity } from '../../lib/participant-activity';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 import './chat-participant-sheet.css';
@@ -51,6 +52,7 @@ type ChatParticipantSheetProps = {
   onClearImmunity: () => void;
   onProfileActivate: () => void;
   onSpammerDiagnostics: () => void;
+  onSanctionsActivate?: () => void;
   onMute: (durationHours: number) => void;
   onBan: () => void;
 };
@@ -290,6 +292,7 @@ export function ChatParticipantSheet({
   onClearImmunity,
   onProfileActivate,
   onSpammerDiagnostics,
+  onSanctionsActivate,
   onMute,
   onBan,
 }: ChatParticipantSheetProps) {
@@ -440,6 +443,9 @@ export function ChatParticipantSheet({
           </div>
         </div>
 
+        {!item.isBot ? (
+          <p className="participant-sheet__activity">{describeParticipantActivity(item).detail}</p>
+        ) : null}
         <div className="participant-sheet__stats">
           <article className="participant-sheet__stat">
             <small>Нарушения</small>
@@ -458,6 +464,17 @@ export function ChatParticipantSheet({
       <section className="participant-sheet__section">
         <div className="participant-sheet__dock">
           <div className="participant-sheet__action-grid">
+            {onSanctionsActivate ? (
+              <button
+                type="button"
+                className="participant-sheet__action participant-sheet__action--neutral"
+                onClick={onSanctionsActivate}
+                disabled={isBusy}
+              >
+                <ShieldCheck aria-hidden />
+                <span>Ограничения</span>
+              </button>
+            ) : null}
             <button
               type="button"
               className="participant-sheet__action participant-sheet__action--neutral"

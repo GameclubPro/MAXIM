@@ -19883,6 +19883,8 @@ describe('AdminService.getChatParticipantsPage', () => {
             avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
             profileUrl: 'https://max.ru/alexandra',
             profileHandoffUrl: expect.stringContaining('https://max.ru/bot-2?start='),
+            lastMaxActivityAt: null,
+            activityCheckedAt: null,
             violationCount: 3,
             immunity: {
               mode: 'limited',
@@ -19901,6 +19903,8 @@ describe('AdminService.getChatParticipantsPage', () => {
             avatarUrl: null,
             profileUrl: 'https://max.ru/oleg',
             profileHandoffUrl: expect.stringContaining('https://max.ru/bot-2?start='),
+            lastMaxActivityAt: null,
+            activityCheckedAt: null,
             violationCount: 0,
             immunity: {
               mode: 'always',
@@ -19919,6 +19923,8 @@ describe('AdminService.getChatParticipantsPage', () => {
             avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
             profileUrl: 'https://max.ru/maxim-helper',
             profileHandoffUrl: expect.stringContaining('https://max.ru/bot-2?start='),
+            lastMaxActivityAt: null,
+            activityCheckedAt: null,
             violationCount: 0,
             immunity: null,
             role: 'admin',

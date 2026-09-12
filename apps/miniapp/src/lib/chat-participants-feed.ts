@@ -9,7 +9,14 @@ export function normalizeParticipantsSearch(search: string): string {
 }
 
 export function buildParticipantsFeedKey(chatId: string, query: ChatParticipantsQuery): string {
-  return JSON.stringify([chatId, query.range, query.roleFilter, query.limit, query.search ?? '']);
+  return JSON.stringify([
+    chatId,
+    query.range,
+    query.roleFilter,
+    query.limit,
+    query.search ?? '',
+    query.activityFilter ?? 'all',
+  ]);
 }
 
 export function mergeParticipants(

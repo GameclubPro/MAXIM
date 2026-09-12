@@ -6,6 +6,7 @@ import { UnrecoverableError, type Job, type Queue } from 'bullmq';
 import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { readMaxMemberActivity } from './max-member-activity.util';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import {
@@ -205,6 +206,8 @@ export type MaxChatRosterMember = {
   role: MaxChatMemberRole;
   isBot: boolean;
   unavailableReason: MaxChatRosterUnavailableReason | null;
+  lastMaxActivityAt?: string | null;
+  activityCheckedAt?: string | null;
 };
 
 export type MaxChatMembersPage = {
@@ -3593,7 +3596,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     return {
       items: members
-        .map((member) => {
+        .map((member): MaxChatRosterMember | null => {
           const profile = this.parseChatMemberProfile(member);
           if (!profile?.userId) {
             return null;
@@ -3608,6 +3611,8 @@ export class MaxClientService implements OnModuleDestroy {
             role: this.parseChatMemberRole(member),
             isBot: this.parseChatMemberBot(member, profile),
             unavailableReason: this.parseChatMemberUnavailableReason(member),
+            lastMaxActivityAt: readMaxMemberActivity(member),
+            activityCheckedAt: new Date().toISOString(),
           };
         })
         .filter((member): member is MaxChatRosterMember => member !== null),

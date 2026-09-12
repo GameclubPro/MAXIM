@@ -8,6 +8,35 @@ const authUser = {
   chatTitle: null,
 };
 
+describe('ManualModerationService sanctions boundary', () => {
+  it('checks chat authorization before reading a sanction list', async () => {
+    const admin = { assertChatAdmin: jest.fn().mockRejectedValue(new Error('Denied')) };
+    const sanctions = { getPage: jest.fn() };
+    const service = new ManualModerationService(
+      admin as never,
+      {} as never,
+      undefined,
+      sanctions as never,
+    );
+    await expect(service.getChatSanctions('chat', authUser, {})).rejects.toThrow('Denied');
+    expect(sanctions.getPage).not.toHaveBeenCalled();
+  });
+  it('passes a validated release identity into the existing locked execution path', async () => {
+    const admin = { applyManualModerationAction: jest.fn().mockResolvedValue({ ok: true }) };
+    const service = new ManualModerationService(admin as never, {} as never);
+    const body = { action: 'UNBAN', expectedSanctionEventId: 'old-sanction' };
+    await service.applyManualModerationAction('chat', 'user', authUser, body);
+    expect(admin.applyManualModerationAction).toHaveBeenCalledWith(
+      'chat',
+      'user',
+      authUser,
+      body,
+      undefined,
+      { expectedSanctionEventId: 'old-sanction' },
+    );
+  });
+});
+
 async function flushPromises(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }

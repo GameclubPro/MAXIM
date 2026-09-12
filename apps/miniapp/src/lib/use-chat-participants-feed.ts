@@ -18,6 +18,7 @@ type UseChatParticipantsFeedOptions = {
   ) => Promise<ChatParticipantsPage>;
   range?: ChatParticipantsQuery['range'];
   roleFilter?: ChatParticipantsQuery['roleFilter'];
+  activityFilter?: ChatParticipantsQuery['activityFilter'];
   limit?: number;
   search?: string;
 };
@@ -59,6 +60,7 @@ export function useChatParticipantsFeed({
   loadPage,
   range = '7d',
   roleFilter = 'all',
+  activityFilter = 'all',
   limit = 100,
   search = '',
 }: UseChatParticipantsFeedOptions) {
@@ -67,11 +69,12 @@ export function useChatParticipantsFeed({
   const query: ChatParticipantsQuery = {
     range,
     roleFilter,
+    activityFilter,
     limit: requestLimit,
     search: normalizedSearch || undefined,
   };
   const key = buildParticipantsFeedKey(chatId, query);
-  const seed = !normalizedSearch ? initialPage : null;
+  const seed = !normalizedSearch && activityFilter === 'all' ? initialPage : null;
   const [state, setState] = useState(() => createFeed(key, seed));
   const activeControllerRef = useRef<AbortController | null>(null);
   const visitedCursorsRef = useRef(new Set<string>());

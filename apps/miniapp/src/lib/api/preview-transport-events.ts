@@ -48,6 +48,7 @@ import {
   resolvePreviewUser,
 } from './preview-transport-events-fixtures';
 import type { PreviewState } from './preview-transport-state';
+import { buildPreviewSanctionsPage, createPreviewOlderSanctions } from './preview-chat-sanctions';
 import {
   PREVIEW_NOT_HANDLED,
   readPreviewClock,
@@ -284,12 +285,14 @@ export function buildParticipantsPage(
     cursor,
     search,
     roleFilter = 'all',
+    activityFilter = 'all',
   }: {
     range?: LogsDashboardRange;
     limit?: number;
     cursor?: string | null;
     search?: string | null;
     roleFilter?: ChatParticipantsQuery['roleFilter'];
+    activityFilter?: ChatParticipantsQuery['activityFilter'];
   },
   totalCount: number,
   violations: LogsDashboardResponse['violations'],
@@ -301,7 +304,16 @@ export function buildParticipantsPage(
   const filteredItems = items.filter(
     (item) =>
       (!normalizedSearch || participantMatchesSearch(item, normalizedSearch)) &&
-      participantMatchesRoleFilter(item, roleFilter),
+      participantMatchesRoleFilter(item, roleFilter) &&
+      (activityFilter === 'all' ||
+        ((!item.isBot || roleFilter === 'bots') &&
+          (activityFilter === 'unknown'
+            ? !item.lastMaxActivityAt
+            : Boolean(
+                item.lastMaxActivityAt &&
+                now.getTime() - Date.parse(item.lastMaxActivityAt) >=
+                  Number(activityFilter.slice(0, -1)) * 86_400_000,
+              )))),
   );
   const violationCountByUserId = new Map<string, number>();
 
@@ -499,12 +511,20 @@ export function createParticipantsItems(
       immunity,
       role: isBot ? 'admin' : role,
       isBot,
+      lastMaxActivityAt:
+        index % 7 === 6
+          ? null
+          : addDays(
+              readPreviewClock(clock),
+              -([0, 3, 8, 16, 38, 72, 100][index % 7] ?? 0),
+            ).toISOString(),
+      activityCheckedAt: readPreviewClock(clock).toISOString(),
     };
   });
 }
 
 export function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
-  const base = [
+  const base: LogsDashboardResponse['violations'] = [
     {
       id: 'violation-1',
       action: 'MUTE' as const,
@@ -636,6 +656,8 @@ export function createChatViolations(now: Date): LogsDashboardResponse['violatio
       metadata: null,
     },
   ];
+
+  base.push(...createPreviewOlderSanctions(now));
 
   return base.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
 }
@@ -1169,6 +1191,11 @@ function handleChatEventsPreviewRequest(
   method: string,
   init: RequestInit,
 ): unknown | typeof PREVIEW_NOT_HANDLED {
+  if (tail[0] === 'sanctions' && method === 'GET') {
+    return cloneJson(
+      buildPreviewSanctionsPage(state.chatViolations, url, readPreviewClock(state.clock)),
+    );
+  }
   if (tail[0] === 'logs-dashboard' && method === 'GET') {
     const range = (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d';
     return cloneJson(
@@ -1285,6 +1312,9 @@ function handleChatEventsPreviewRequest(
           limit: Number.parseInt(url.searchParams.get('limit') ?? '100', 10),
           cursor: url.searchParams.get('cursor'),
           search: url.searchParams.get('search'),
+          activityFilter:
+            (url.searchParams.get('activityFilter') as ChatParticipantsQuery['activityFilter']) ??
+            'all',
           roleFilter:
             (url.searchParams.get('roleFilter') as ChatParticipantsQuery['roleFilter'] | null) ??
             'all',
@@ -1393,6 +1423,7 @@ function handleChannelEventsPreviewRequest(
 }
 
 const CHAT_EVENT_ROOTS = new Set([
+  'sanctions',
   'logs-dashboard',
   'moderation-dashboard',
   'activity-dashboard',

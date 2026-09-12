@@ -10246,6 +10246,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 username: 'aleksey',
                 role: 'owner',
                 full_avatar_url: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+                last_activity_time: Date.parse('2026-01-01T12:00:00.000Z'),
               },
               {
                 user: {
@@ -10291,6 +10292,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
           role: 'owner',
           isBot: false,
           unavailableReason: null,
+          lastMaxActivityAt: '2026-01-01T12:00:00.000Z',
+          activityCheckedAt: expect.any(String),
         },
         {
           userId: 'moderation_bot',
@@ -10301,6 +10304,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
           role: 'admin',
           isBot: true,
           unavailableReason: null,
+          lastMaxActivityAt: null,
+          activityCheckedAt: expect.any(String),
         },
       ],
       nextMarker: 'page-2',

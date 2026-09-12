@@ -2,6 +2,7 @@ import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
+import { SanctionHistoryRetention } from '../moderation/sanction-history-retention';
 import {
   WebhookCanonicalExecutionService,
   WebhookTimeoutSettlementCasLostError,
@@ -414,6 +415,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly webhookRetentionDays: number;
   private readonly webhookFailedRetentionHours: number;
   private readonly moderationRetentionDays: number;
+  private readonly sanctionHistoryRetention = new SanctionHistoryRetention();
   private readonly userDisplayNameRetentionDays: number;
   private readonly retentionBatchDelayMs = RETENTION_CLEANUP_BATCH_DELAY_MS;
 
@@ -1983,6 +1985,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         nowMs - this.userDisplayNameRetentionDays * 24 * 60 * 60 * 1_000,
       );
       const phases: RetentionCleanupPhase[] = [];
+      let moderationRowsRemaining = RETENTION_CLEANUP_BATCH_SIZE * DEFAULT_RETENTION_MAX_BATCHES;
       if (this.webhookCompletedRetentionEnabled) {
         phases.push({
           name: 'webhookProcessedOrDuplicate',
@@ -2000,7 +2003,21 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           {
             name: 'moderationEvents',
             maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
-            deleteBatch: () => this.deleteModerationEventBatch(moderationCutoff),
+            deleteBatch: async () => {
+              const removed = await this.deleteModerationEventBatch(moderationCutoff);
+              moderationRowsRemaining = Math.max(0, moderationRowsRemaining - removed);
+              return removed;
+            },
+          },
+          {
+            name: 'sanctionHistory',
+            maxBatches: 1,
+            deleteBatch: () =>
+              this.sanctionHistoryRetention.cleanup(
+                this.prisma,
+                new Date(nowMs),
+                moderationRowsRemaining,
+              ),
           },
           {
             name: 'violations',
@@ -2166,11 +2183,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async deleteModerationEventBatch(cutoff: Date): Promise<number> {
+    // FLAG: Sanctions, releases, and execution fences outlive ordinary violation retention.
     return this.prisma.$executeRaw(Prisma.sql`
       WITH expired AS (
         SELECT "id"
         FROM "moderation_events"
         WHERE "created_at" < ${cutoff}
+          AND NOT ("action" IN ('MUTE', 'BAN') OR "rule_code" IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN', 'SANCTION_STATE_FENCE'))
         ORDER BY "created_at" ASC, "id" ASC
         LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
         FOR UPDATE SKIP LOCKED

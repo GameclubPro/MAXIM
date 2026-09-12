@@ -215,6 +215,9 @@ async function assertModerationScopeBusy(page, choice) {
 }
 
 async function waitForModerationEventsReady(page) {
+  const historyMode = page.getByRole('radio', { name: 'Журнал', exact: true });
+  await historyMode.waitFor({ state: 'visible' });
+  await historyMode.click();
   await page
     .locator('.events-dashboard__body--moderation:not(.events-dashboard__body--loading)')
     .waitFor({ state: 'visible' });
@@ -1604,6 +1607,44 @@ const scenarioBehaviors = [
       await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
       await sections.getByRole('button', { name: 'Модерация', exact: true }).click();
       await waitForModerationEventsReady(page);
+    },
+  },
+  {
+    name: 'events-sanctions',
+    beforeShot: async (page) => {
+      await page
+        .locator('.sanctions-workspace__row')
+        .filter({ hasText: 'Александр Кузнецов' })
+        .waitFor();
+      await page
+        .locator('.sanctions-workspace__row')
+        .filter({ hasText: 'Екатерина Михайлова' })
+        .waitFor();
+    },
+  },
+  {
+    name: 'events-sanction-details',
+    beforeShot: async (page) => {
+      await page.locator('.sanctions-workspace__row').filter({ hasText: 'Сергей Маркет' }).click();
+      await page.locator('.sanction-details__status progress').waitFor();
+    },
+  },
+  {
+    name: 'events-sanction-release',
+    beforeShot: async (page) => {
+      await page
+        .locator('.sanctions-workspace__row')
+        .filter({ hasText: 'Екатерина Михайлова' })
+        .click();
+      await page.getByRole('button', { name: 'Разрешить писать', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Разрешить писать?' }).waitFor();
+    },
+  },
+  {
+    name: 'events-participants-inactive',
+    beforeShot: async (page) => {
+      await page.getByLabel('Активность в MAX', { exact: true }).selectOption('30d');
+      await page.locator('.participants-roster__activity--long').first().waitFor();
     },
   },
   {

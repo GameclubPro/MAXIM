@@ -36,6 +36,7 @@ import { ChannelDialogService } from './channel-dialog.service';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { CHANNEL_DIALOG_LEGACY_PORT } from './channel-dialog-legacy.port';
 import { ManualModerationService } from './manual-moderation.service';
+import { ChatSanctionsService } from './chat-sanctions.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedAutopostService } from './managed-autopost.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
@@ -162,6 +163,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ChannelPostSignatureService,
     ChannelStatsCollectorService,
     ManualModerationService,
+    ChatSanctionsService,
     GlobalSpammerIntelligenceService,
     ManagedAutopostService,
     {

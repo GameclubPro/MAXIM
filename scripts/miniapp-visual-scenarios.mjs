@@ -683,6 +683,10 @@ const baseScenarios = [
     readySelector: '.publik-handoff',
   }),
   ...defineRouteScenarios('chat-events', [
+    'events-sanctions',
+    'events-sanction-details',
+    'events-sanction-release',
+    ['events-participants-inactive', { searchParams: { section: 'participants' } }],
     'events-moderation',
     'events-moderation-scrolled',
     'events-moderation-expanded',

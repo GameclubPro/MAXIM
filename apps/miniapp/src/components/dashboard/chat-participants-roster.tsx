@@ -1,4 +1,8 @@
-import type { ChatParticipantItem, ChatParticipantRoleFilter } from '@maxim/contracts';
+import type {
+  ChatParticipantItem,
+  ChatParticipantRoleFilter,
+  ChatParticipantActivityFilter,
+} from '@maxim/contracts';
 import {
   MoreHoriz,
   UserXmark,
@@ -11,6 +15,10 @@ import {
 } from 'iconoir-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { describeParticipantViolations } from '../../lib/chat-participants-feed';
+import {
+  PARTICIPANT_ACTIVITY_OPTIONS,
+  describeParticipantActivity,
+} from '../../lib/participant-activity';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
@@ -32,6 +40,8 @@ type ChatParticipantsRosterProps = {
   search: string;
   rangeLabel: string;
   roleFilter: ChatParticipantRoleFilter;
+  activityFilter?: ChatParticipantActivityFilter;
+  onActivityFilterChange?: (value: ChatParticipantActivityFilter) => void;
   hasMore: boolean;
   isReloading: boolean;
   isLoadingMore: boolean;
@@ -206,6 +216,8 @@ export function ChatParticipantsRoster({
   search,
   rangeLabel,
   roleFilter,
+  activityFilter = 'all',
+  onActivityFilterChange,
   onSearchChange,
   onRoleFilterChange,
   onLoadMore,
@@ -228,7 +240,7 @@ export function ChatParticipantsRoster({
   const isScanning =
     !visibleError && items.length === 0 && (isBusy || (hasMore && autoLoadCount < 3));
   const isEmpty = !visibleError && !isBusy && !hasMore && items.length === 0;
-  const hasFilters = isSearching || roleFilter !== 'all';
+  const hasFilters = isSearching || roleFilter !== 'all' || activityFilter !== 'all';
 
   const closeMenu = useCallback((restoreFocus = false) => {
     if (menuRef.current) menuRef.current.open = false;
@@ -267,11 +279,11 @@ export function ChatParticipantsRoster({
 
   useEffect(() => {
     setAutoLoadCount(0);
-  }, [search, roleFilter, items.length]);
+  }, [search, roleFilter, activityFilter, items.length]);
 
   useEffect(() => {
     if (!isLoadingMore) autoLoadLockRef.current = false;
-  }, [isLoadingMore, isReloading, search, roleFilter]);
+  }, [isLoadingMore, isReloading, search, roleFilter, activityFilter]);
 
   useEffect(() => {
     if (
@@ -310,6 +322,7 @@ export function ChatParticipantsRoster({
   const resetFilters = () => {
     onSearchChange('');
     onRoleFilterChange('all');
+    onActivityFilterChange?.('all');
   };
   const resultLabel = isSearchPending
     ? 'Ищем участников...'
@@ -319,7 +332,7 @@ export function ChatParticipantsRoster({
         ? hasFilters
           ? 'Поиск продолжается...'
           : 'Загружаем участников...'
-        : `${isSearching ? 'Найдено' : 'В списке'}: ${items.length}${hasMore ? '+' : ''}`;
+        : `${hasFilters ? 'Найдено' : 'В списке'}: ${items.length}${hasMore ? '+' : ''}`;
 
   return (
     <section className="participants-roster" aria-label="Список участников">
@@ -401,6 +414,24 @@ export function ChatParticipantsRoster({
       </div>
 
       <div className="participants-roster__scope">
+        {onActivityFilterChange ? (
+          <label className="participants-roster__activity-filter">
+            <span>Активность в MAX</span>
+            <select
+              aria-label="Активность в MAX"
+              value={activityFilter}
+              onChange={(event) =>
+                onActivityFilterChange(event.target.value as ChatParticipantActivityFilter)
+              }
+            >
+              {PARTICIPANT_ACTIVITY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div
           className="participants-roster__role-filters"
           role="group"
@@ -505,6 +536,7 @@ export function ChatParticipantsRoster({
             const immunity = resolveImmunity(item);
             const immunityValue = formatImmunityValue(immunity);
             const immunityDescription = describeImmunity(immunity);
+            const activity = describeParticipantActivity(item);
             const itemBody = (
               <>
                 <div
@@ -521,6 +553,15 @@ export function ChatParticipantsRoster({
                     <strong>{displayName}</strong>
                     <span>{username ? `@${username}` : `ID ${item.userId}`}</span>
                   </div>
+                  {!item.isBot ? (
+                    <span
+                      className={`participants-roster__activity participants-roster__activity--${activity.tone}`}
+                      title={activity.detail}
+                      aria-label={activity.detail}
+                    >
+                      {activity.label}
+                    </span>
+                  ) : null}
                   {roleLabel || item.isBot || immunity ? (
                     <div className="participants-roster__meta">
                       {roleLabel ? (

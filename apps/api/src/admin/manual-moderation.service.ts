@@ -5,6 +5,7 @@ import {
   globalSpammerReviewRequestSchema,
   globalSpammerReviewResultSchema,
   globalSpammerUserDiagnosticsSchema,
+  manualModerationActionRequestSchema,
   type GlobalSpammerCandidateStatus,
   type GlobalSpammerReviewQueue,
   type GlobalSpammerUserDiagnostics,
@@ -15,6 +16,7 @@ import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-i
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { AdminService } from './admin.service';
 import { type ResolvedUserProfile } from './admin.service.support';
+import { ChatSanctionsService } from './chat-sanctions.service';
 
 type GlobalSpammerProfileMode = 'full' | 'local';
 type GlobalSpammerDiagnosticsMode = 'shell' | 'full';
@@ -28,7 +30,34 @@ export class ManualModerationService {
     private readonly legacyAdminService: AdminService,
     private readonly globalSpammerIntelligence: GlobalSpammerIntelligenceService,
     @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
+    @Optional() private readonly chatSanctions?: ChatSanctionsService,
   ) {}
+
+  async getChatSanctions(chatId: string, user: AuthUser, query: unknown) {
+    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, 'chat');
+    if (!this.chatSanctions) throw new Error('Chat sanctions service is unavailable');
+    const page = await this.chatSanctions.getPage(chatId, user.userId, query);
+    const profiles = await this.resolveGlobalSpammerProfiles(
+      chatId,
+      page.items.map((item) => item.userId),
+      { allowRemoteLookup: false },
+    );
+    return {
+      ...page,
+      items: page.items.map((item) => {
+        const profile = profiles.get(item.userId);
+        return {
+          ...item,
+          userDisplayName:
+            item.userDisplayName === 'Участник'
+              ? profile?.displayName || item.userDisplayName
+              : item.userDisplayName,
+          avatarUrl: this.sanitizeContractUrl(profile?.avatarUrl),
+          profileHandoffUrl: this.sanitizeContractUrl(profile?.profileHandoffUrl),
+        };
+      }),
+    };
+  }
 
   getChannelStats(
     ...args: Parameters<AdminService['getChannelStats']>
@@ -522,6 +551,10 @@ export class ManualModerationService {
   applyManualModerationAction(
     ...args: Parameters<AdminService['applyManualModerationAction']>
   ): ReturnType<AdminService['applyManualModerationAction']> {
+    const parsed = manualModerationActionRequestSchema.safeParse(args[3]);
+    if (parsed.success && parsed.data.expectedSanctionEventId) {
+      args[5] = { ...args[5], expectedSanctionEventId: parsed.data.expectedSanctionEventId };
+    }
     return this.legacyAdminService.applyManualModerationAction(...args);
   }
 

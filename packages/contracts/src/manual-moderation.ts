@@ -12,9 +12,18 @@ export const manualModerationActionRequestSchema = z
     scope: manualModerationScopeSchema.optional(),
     muteDurationHours: z.number().int().min(1).max(336).optional(),
     mutePermanent: z.boolean().optional(),
+    expectedSanctionEventId: z.string().trim().min(1).max(200).optional(),
   })
   .superRefine((value, ctx) => {
     const mutePermanent = value.mutePermanent === true;
+
+    if (value.expectedSanctionEventId && value.action !== 'UNMUTE' && value.action !== 'UNBAN') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expectedSanctionEventId'],
+        message: 'Проверка выбранного ограничения доступна только при снятии.',
+      });
+    }
 
     if (value.action === 'MUTE' && !mutePermanent && value.muteDurationHours === undefined) {
       ctx.addIssue({

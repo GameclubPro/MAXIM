@@ -203,11 +203,15 @@ function normalizeChatParticipantsQuery(
 ): ChatParticipantsQuery {
   const range = query.range ?? '7d';
   const roleFilter = query.roleFilter ?? 'all';
+  const activityFilter = query.activityFilter ?? 'all';
   if (!logsDashboardRanges.has(range)) {
     throw new Error('Invalid participants range');
   }
   if (!participantRoleFilters.has(roleFilter)) {
     throw new Error('Invalid participant role filter');
+  }
+  if (!['all', '7d', '14d', '30d', '60d', '90d', 'unknown'].includes(activityFilter)) {
+    throw new Error('Invalid participant activity filter');
   }
 
   const cursor = query.cursor?.trim();
@@ -215,6 +219,7 @@ function normalizeChatParticipantsQuery(
   return {
     range,
     roleFilter,
+    ...(activityFilter !== 'all' ? { activityFilter } : {}),
     limit: normalizeLimit(query.limit, 100),
     ...(cursor ? { cursor } : {}),
     ...(search ? { search } : {}),
@@ -357,6 +362,9 @@ export async function getChatParticipantsPage(
   }
   if (validatedQuery.search) {
     params.set('search', validatedQuery.search);
+  }
+  if (validatedQuery.activityFilter && validatedQuery.activityFilter !== 'all') {
+    params.set('activityFilter', validatedQuery.activityFilter);
   }
 
   const response = await api.request(`/chats/${chatId}/members?${params.toString()}`, request);

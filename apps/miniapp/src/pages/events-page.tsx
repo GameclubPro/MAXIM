@@ -7,6 +7,7 @@ import type {
   ManualModerationScope,
   ChatParticipantItem,
   ChatParticipantRoleFilter,
+  ChatParticipantActivityFilter,
   ChatParticipantsPage,
   GlobalSpammerReviewAction,
   GlobalSpammerReviewCandidate,
@@ -33,6 +34,7 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { ChatParticipantSheet as ChatParticipantSheetComponent } from '../components/dashboard/chat-participant-sheet';
+import type { ChatSanctionsWorkspace as ChatSanctionsWorkspaceComponent } from '../components/dashboard/chat-sanctions-workspace';
 import type { ChatParticipantsRoster as ChatParticipantsRosterComponent } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
@@ -113,6 +115,9 @@ const ChatParticipantsRoster = recoverableLazyNamedComponent<
 const ChatParticipantSheet = recoverableLazyNamedComponent<
   ComponentProps<typeof ChatParticipantSheetComponent>
 >(() => import('../components/dashboard/chat-participant-sheet'), 'ChatParticipantSheet');
+const ChatSanctionsWorkspace = recoverableLazyNamedComponent<
+  ComponentProps<typeof ChatSanctionsWorkspaceComponent>
+>(() => import('../components/dashboard/chat-sanctions-workspace'), 'ChatSanctionsWorkspace');
 
 type ViolationItem = LogsDashboardViolation;
 type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
@@ -1720,6 +1725,9 @@ function ViolationModerationControls({
     setPendingScopeChoice(scope ?? null);
     applyMutation.mutate({
       action,
+      ...(action === 'UNBAN' || action === 'UNMUTE'
+        ? { expectedSanctionEventId: violation.id }
+        : {}),
       ...(scope ? { scope } : {}),
       ...(action === 'MUTE' ? { muteDurationHours: normalizedHours ?? muteDurationHours } : {}),
     });
@@ -2043,6 +2051,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<EventsSection>(
     () => parseChatStatisticsRouteQuery(location.search).section,
   );
+  const moderationView =
+    new URLSearchParams(location.search).get('moderationView') === 'history'
+      ? 'history'
+      : 'sanctions';
+  const isSanctionsView = section === 'moderation' && moderationView === 'sanctions';
+  const sanctionsUserId = new URLSearchParams(location.search).get('sanctionUser');
+  const changeModerationView = (view: 'history' | 'sanctions', userId?: string) => {
+    const params = new URLSearchParams(location.search);
+    params.set('moderationView', view);
+    params.set('section', 'moderation');
+    if (userId) params.set('sanctionUser', userId);
+    else params.delete('sanctionUser');
+    navigate(
+      { pathname: location.pathname, search: `?${params}`, hash: location.hash },
+      { state: location.state },
+    );
+  };
   const routeQuery = useMemo(
     () => parseChatStatisticsRouteQuery(location.search),
     [location.search],
@@ -2064,6 +2089,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [participantsSearch, setParticipantsSearch] = useState('');
   const [participantsRoleFilter, setParticipantsRoleFilter] =
     useState<ChatParticipantRoleFilter>('all');
+  const [participantsActivityFilter, setParticipantsActivityFilter] =
+    useState<ChatParticipantActivityFilter>('all');
   const [lastKnownParticipantsTotal, setLastKnownParticipantsTotal] = useState<{
     chatId: string | null;
     total: number;
@@ -2122,7 +2149,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       !chatId ||
       section !== 'participants' ||
       debouncedParticipantsSearch ||
-      participantsRoleFilter !== 'all'
+      participantsRoleFilter !== 'all' ||
+      participantsActivityFilter !== 'all'
     ) {
       return null;
     }
@@ -2132,14 +2160,21 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       buildChatParticipantsSnapshotParts(chatId, range, '', participantsRoleFilter),
     );
     return isChatParticipantsPage(snapshot) ? snapshot : null;
-  }, [chatId, debouncedParticipantsSearch, participantsRoleFilter, range, section]);
+  }, [
+    chatId,
+    debouncedParticipantsSearch,
+    participantsRoleFilter,
+    participantsActivityFilter,
+    range,
+    section,
+  ]);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
   const includeActivityPreview = section === 'activity';
   const includeModerationPreview = section === 'moderation';
   const initialDashboardSnapshot = useMemo(() => {
-    if (!chatId || section === 'participants') {
+    if (!chatId || section === 'participants' || isSanctionsView) {
       return null;
     }
 
@@ -2203,7 +2238,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         ),
       );
     },
-    enabled: Boolean(chatId) && section !== 'participants',
+    enabled: Boolean(chatId) && section !== 'participants' && !isSanctionsView,
     staleTime: 30_000,
     initialData: initialDashboardSnapshot ?? undefined,
     initialDataUpdatedAt: initialDashboardSnapshot ? 0 : undefined,
@@ -2213,7 +2248,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const participantsIdentityQuery = useQuery({
     queryKey: ['chat-statistics-identity', chatId],
     queryFn: ({ signal }) => getChatStatisticsIdentity(api, chatId ?? '', { signal }),
-    enabled: Boolean(chatId) && section === 'participants',
+    enabled: Boolean(chatId) && (section === 'participants' || isSanctionsView),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
@@ -2251,7 +2286,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return () => {
       cancelled = true;
     };
-  }, [chatId, includeActivityPreview, includeModerationPreview, queryClient, range, section]);
+  }, [
+    chatId,
+    includeActivityPreview,
+    includeModerationPreview,
+    queryClient,
+    range,
+    section,
+    isSanctionsView,
+  ]);
 
   useEffect(() => {
     if (!chatId || !isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)) {
@@ -2274,6 +2317,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     if (
       !chatId ||
       section === 'participants' ||
+      isSanctionsView ||
       !isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
     ) {
       return undefined;
@@ -2312,7 +2356,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
     const timeoutId = window.setTimeout(prefetch, IDLE_PREFETCH_DELAY_MS);
     return () => window.clearTimeout(timeoutId);
-  }, [api, chatId, dashboardQuery.data, queryClient, range, section]);
+  }, [api, chatId, dashboardQuery.data, queryClient, range, section, isSanctionsView]);
 
   const dashboard =
     chatId && isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
@@ -2418,6 +2462,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     enabled:
       Boolean(chatId) &&
       section === 'moderation' &&
+      !isSanctionsView &&
       (!includeModerationPreview || Boolean(dashboard) || hasBlockingDashboardError),
     range,
     filter: eventsFilter,
@@ -2432,7 +2477,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     queryKey: spammerReviewQueueKey,
     queryFn: ({ signal }) =>
       getGlobalSpammerReviewQueue(api, chatId ?? '', SPAMMER_REVIEW_QUEUE_QUERY, { signal }),
-    enabled: Boolean(chatId) && (section === 'moderation' || spammerReviewOpen),
+    enabled:
+      Boolean(chatId) && ((section === 'moderation' && !isSanctionsView) || spammerReviewOpen),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
     placeholderData: (previousData) => previousData,
@@ -2537,6 +2583,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     enabled: Boolean(chatId) && section === 'participants',
     range,
     roleFilter: participantsRoleFilter,
+    activityFilter: participantsActivityFilter,
     search: debouncedParticipantsSearch,
     initialPage: initialParticipantsPageSnapshot,
     refetchInitialPage: Boolean(initialParticipantsPageSnapshot),
@@ -2552,7 +2599,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       !chatId ||
       section !== 'participants' ||
       debouncedParticipantsSearch ||
-      participantsRoleFilter !== 'all'
+      participantsRoleFilter !== 'all' ||
+      participantsActivityFilter !== 'all'
     ) {
       return;
     }
@@ -2570,6 +2618,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     debouncedParticipantsSearch,
     participantsFeed.firstPage,
     participantsRoleFilter,
+    participantsActivityFilter,
     range,
     section,
   ]);
@@ -2663,6 +2712,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     mutationFn: ({ userId, payload }: { userId: string; payload: ManualModerationActionRequest }) =>
       applyManualModerationAction(api, chatId ?? '', userId, payload),
     onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['chat-sanctions', chatId] });
       setPendingScopeAction((current) => (current?.source === 'participant' ? null : current));
       setSelectedParticipantId(null);
       pushToast({
@@ -2710,6 +2760,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     mutationFn: ({ userId, scope }: { userId: string; scope: ManualModerationScopeChoice }) =>
       applyManualModerationAction(api, chatId ?? '', userId, { action: 'BAN', scope }),
     onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['chat-sanctions', chatId] });
       setPendingScopeAction((current) =>
         current?.source === 'spammer-diagnostics' ? null : current,
       );
@@ -3217,165 +3268,212 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </div>
       </div>
 
-      <section className={`events-stage events-stage--${section}`}>
-        <div className="events-stage__panel stagger-in">
-          <section
-            className={`events-dashboard events-dashboard--${section}`}
-            aria-label={
-              section === 'activity'
-                ? 'Сводка по событиям'
-                : section === 'participants'
-                  ? 'Сводка по участникам'
-                  : 'Сводка по модерации'
-            }
-          >
-            {section === 'participants' ? (
-              <div className="events-dashboard__body events-dashboard__body--participants">
-                <article
-                  className={`events-dashboard__hero events-dashboard__hero--${participantsHeroMetric.tone}`}
-                >
-                  <small>{participantsHeroMetric.label}</small>
-                  <strong className="events-dashboard__hero-value">
-                    {participantsTotalPresentation.status === 'loading' ? (
-                      <span
-                        className="events-dashboard__hero-spinner"
-                        role="status"
-                        aria-label="Загружаем количество участников"
-                      />
-                    ) : (
-                      <span
-                        className="events-dashboard__hero-number"
-                        aria-label={
-                          participantsTotalPresentation.status === 'unavailable'
-                            ? 'Количество участников недоступно'
-                            : undefined
-                        }
-                      >
-                        {participantsHeroMetric.value}
-                      </span>
-                    )}
-                  </strong>
-                </article>
-              </div>
-            ) : null}
-            <div className="events-dashboard__head">
-              <SegmentedControl
-                value={range}
-                options={periodOptions}
-                onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
-                className="events-dashboard__range"
-                ariaLabel={
-                  section === 'participants' ? 'Период подсчёта нарушений' : 'Период статистики'
-                }
-              />
-            </div>
+      {section === 'moderation' ? (
+        <SegmentedControl
+          value={moderationView}
+          options={[
+            { value: 'sanctions', label: 'Ограничения' },
+            { value: 'history', label: 'Журнал' },
+          ]}
+          onChange={(value) => changeModerationView(value as 'sanctions' | 'history')}
+          ariaLabel="Режим модерации"
+          className="events-moderation-view"
+        />
+      ) : null}
 
-            {section !== 'participants' && isDashboardPending ? (
-              <EventsDashboardSkeleton section={section} />
-            ) : section !== 'participants' && hasBlockingDashboardError ? (
-              <GlassCard className="events-inline-state">
-                <StatusState
-                  tone="danger"
-                  title="Не удалось загрузить статистику"
-                  description={normalizeLoadErrorMessage(dashboardQuery.error)}
-                  action={
-                    <button
-                      type="button"
-                      className="button button--danger"
-                      onClick={() => void dashboardQuery.refetch()}
-                    >
-                      Повторить
-                    </button>
+      {isSanctionsView ? (
+        <Suspense fallback={<Spinner size="lg" label="Загружаем ограничения" />}>
+          <ChatSanctionsWorkspace
+            key={`${chatId}:${sanctionsUserId ?? ''}`}
+            api={api}
+            chatId={chatId}
+            chatTitle={chatTitle}
+            initialUserId={sanctionsUserId}
+            describeReason={(item) =>
+              resolveModerationFeedReason({
+                ruleCode: item.ruleCode,
+                metadata: { reason: item.reason },
+              })
+            }
+            onRelease={async (item) => {
+              if (!item.releaseAction)
+                throw new Error('Состояние ограничения изменилось. Обновите список.');
+              return describeManualModerationFeedback(
+                await applyManualModerationAction(api, chatId, item.userId, {
+                  action: item.releaseAction,
+                  expectedSanctionEventId: item.id,
+                }),
+              );
+            }}
+            onProfileActivate={activateProfile}
+            onChanged={() => {
+              void participantsFeed.retry();
+              void participantsIdentityQuery.refetch();
+              void queryClient.invalidateQueries({ queryKey: ['logs-dashboard'] });
+            }}
+          />
+        </Suspense>
+      ) : (
+        <section className={`events-stage events-stage--${section}`}>
+          <div className="events-stage__panel stagger-in">
+            <section
+              className={`events-dashboard events-dashboard--${section}`}
+              aria-label={
+                section === 'activity'
+                  ? 'Сводка по событиям'
+                  : section === 'participants'
+                    ? 'Сводка по участникам'
+                    : 'Сводка по модерации'
+              }
+            >
+              {section === 'participants' ? (
+                <div className="events-dashboard__body events-dashboard__body--participants">
+                  <article
+                    className={`events-dashboard__hero events-dashboard__hero--${participantsHeroMetric.tone}`}
+                  >
+                    <small>{participantsHeroMetric.label}</small>
+                    <strong className="events-dashboard__hero-value">
+                      {participantsTotalPresentation.status === 'loading' ? (
+                        <span
+                          className="events-dashboard__hero-spinner"
+                          role="status"
+                          aria-label="Загружаем количество участников"
+                        />
+                      ) : (
+                        <span
+                          className="events-dashboard__hero-number"
+                          aria-label={
+                            participantsTotalPresentation.status === 'unavailable'
+                              ? 'Количество участников недоступно'
+                              : undefined
+                          }
+                        >
+                          {participantsHeroMetric.value}
+                        </span>
+                      )}
+                    </strong>
+                  </article>
+                </div>
+              ) : null}
+              <div className="events-dashboard__head">
+                <SegmentedControl
+                  value={range}
+                  options={periodOptions}
+                  onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
+                  className="events-dashboard__range"
+                  ariaLabel={
+                    section === 'participants' ? 'Период подсчёта нарушений' : 'Период статистики'
                   }
                 />
-              </GlassCard>
-            ) : section === 'participants' ? null : section === 'activity' ? (
-              <div className="events-dashboard__activity">
-                <article
-                  className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
-                >
-                  <small>Баланс</small>
-                  <strong>{formatSignedCount(membershipSummary.netUsers)}</strong>
-                  <span>{activityBalanceLabel}</span>
-                </article>
+              </div>
 
-                <div className="events-dashboard__activity-ledger">
-                  <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
-                    <small>Вошли</small>
-                    <strong>{membershipSummary.joinedUsers}</strong>
-                    <span>
-                      {movementShares.hasMovement ? `${joinedShare}% движения` : 'Нет событий'}
-                    </span>
-                  </article>
-
-                  <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
-                    <small>Вышли</small>
-                    <strong>{membershipSummary.leftUsers}</strong>
-                    <span>
-                      {movementShares.hasMovement ? `${leftShare}% движения` : 'Нет событий'}
-                    </span>
-                  </article>
-
-                  <div
-                    className={`events-dashboard__flow-bar ${
-                      movementShares.hasMovement ? '' : 'is-empty'
-                    }`.trim()}
-                    aria-hidden="true"
+              {section !== 'participants' && isDashboardPending ? (
+                <EventsDashboardSkeleton section={section} />
+              ) : section !== 'participants' && hasBlockingDashboardError ? (
+                <GlassCard className="events-inline-state">
+                  <StatusState
+                    tone="danger"
+                    title="Не удалось загрузить статистику"
+                    description={normalizeLoadErrorMessage(dashboardQuery.error)}
+                    action={
+                      <button
+                        type="button"
+                        className="button button--danger"
+                        onClick={() => void dashboardQuery.refetch()}
+                      >
+                        Повторить
+                      </button>
+                    }
+                  />
+                </GlassCard>
+              ) : section === 'participants' ? null : section === 'activity' ? (
+                <div className="events-dashboard__activity">
+                  <article
+                    className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
                   >
-                    <span style={{ width: `${joinedShare}%` }} />
-                  </div>
+                    <small>Баланс</small>
+                    <strong>{formatSignedCount(membershipSummary.netUsers)}</strong>
+                    <span>{activityBalanceLabel}</span>
+                  </article>
 
-                  <div className="events-dashboard__flow-meta">
-                    <small>
-                      {movementShares.hasMovement ? `Вошли ${joinedShare}%` : 'Движения нет'}
-                    </small>
-                    {movementShares.hasMovement ? <small>Вышли {leftShare}%</small> : null}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="events-dashboard__body events-dashboard__body--moderation">
-                <article
-                  className={`events-dashboard__hero events-dashboard__hero--${moderationHeroMetric.tone}`}
-                >
-                  <small>{moderationHeroMetric.label}</small>
-                  <strong>{moderationHeroMetric.value}</strong>
-                  {moderationHeroMetric.note ? <span>{moderationHeroMetric.note}</span> : null}
-                </article>
-
-                <div className="events-dashboard__stack">
-                  {moderationSecondaryMetrics.map((item) => (
-                    <article
-                      key={item.label}
-                      className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
-                    >
-                      <small>{item.label}</small>
-                      <strong>{item.value}</strong>
-                      {item.note ? <span>{item.note}</span> : null}
+                  <div className="events-dashboard__activity-ledger">
+                    <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
+                      <small>Вошли</small>
+                      <strong>{membershipSummary.joinedUsers}</strong>
+                      <span>
+                        {movementShares.hasMovement ? `${joinedShare}% движения` : 'Нет событий'}
+                      </span>
                     </article>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
 
-          {section === 'moderation' && dashboard ? (
-            <label className="events-filter-menu">
-              <span>Тип события</span>
-              <select
-                value={eventsFilter}
-                onChange={(event) => handleEventsFilterChange(event.target.value as EventsFilter)}
-              >
-                {filterOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label} · {option.count}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-        </div>
-      </section>
+                    <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
+                      <small>Вышли</small>
+                      <strong>{membershipSummary.leftUsers}</strong>
+                      <span>
+                        {movementShares.hasMovement ? `${leftShare}% движения` : 'Нет событий'}
+                      </span>
+                    </article>
+
+                    <div
+                      className={`events-dashboard__flow-bar ${
+                        movementShares.hasMovement ? '' : 'is-empty'
+                      }`.trim()}
+                      aria-hidden="true"
+                    >
+                      <span style={{ width: `${joinedShare}%` }} />
+                    </div>
+
+                    <div className="events-dashboard__flow-meta">
+                      <small>
+                        {movementShares.hasMovement ? `Вошли ${joinedShare}%` : 'Движения нет'}
+                      </small>
+                      {movementShares.hasMovement ? <small>Вышли {leftShare}%</small> : null}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="events-dashboard__body events-dashboard__body--moderation">
+                  <article
+                    className={`events-dashboard__hero events-dashboard__hero--${moderationHeroMetric.tone}`}
+                  >
+                    <small>{moderationHeroMetric.label}</small>
+                    <strong>{moderationHeroMetric.value}</strong>
+                    {moderationHeroMetric.note ? <span>{moderationHeroMetric.note}</span> : null}
+                  </article>
+
+                  <div className="events-dashboard__stack">
+                    {moderationSecondaryMetrics.map((item) => (
+                      <article
+                        key={item.label}
+                        className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
+                      >
+                        <small>{item.label}</small>
+                        <strong>{item.value}</strong>
+                        {item.note ? <span>{item.note}</span> : null}
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {section === 'moderation' && dashboard ? (
+              <label className="events-filter-menu">
+                <span>Тип события</span>
+                <select
+                  value={eventsFilter}
+                  onChange={(event) => handleEventsFilterChange(event.target.value as EventsFilter)}
+                >
+                  {filterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label} · {option.count}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+          </div>
+        </section>
+      )}
 
       {section === 'activity' ? (
         <MembershipActivityFeed
@@ -3406,6 +3504,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             rangeLabel={formatStatisticsRangeLabel(range)}
             roleFilter={participantsRoleFilter}
             onRoleFilterChange={setParticipantsRoleFilter}
+            activityFilter={participantsActivityFilter}
+            onActivityFilterChange={setParticipantsActivityFilter}
             hasMore={participantsFeed.hasMore}
             isReloading={participantsFeed.isReloading}
             isLoadingMore={participantsFeed.isLoadingMore}
@@ -3430,7 +3530,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </Suspense>
       ) : null}
 
-      {section === 'moderation' ? (
+      {section === 'moderation' && !isSanctionsView ? (
         <>
           <GlobalSpammerReviewPanel
             candidates={spammerReviewQueueQuery.data?.items ?? []}
@@ -3623,6 +3723,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                               })
                             }
                             onApplied={() => {
+                              void queryClient.invalidateQueries({
+                                queryKey: ['chat-sanctions', chatId],
+                              });
                               void dashboardQuery.refetch();
                               void moderationFeed.retry();
                             }}
@@ -3826,6 +3929,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 profileUrl: selectedParticipant.profileUrl,
                 profileHandoffUrl: selectedParticipant.profileHandoffUrl,
               });
+            }}
+            onSanctionsActivate={() => {
+              if (!selectedParticipant) return;
+              const userId = selectedParticipant.userId;
+              setSelectedParticipantId(null);
+              changeModerationView('sanctions', userId);
             }}
             onMute={(durationHours) => {
               if (!selectedParticipant) {
