@@ -1984,6 +1984,39 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-admin-contact',
+    beforeShot: async (page) => {
+      if (!(await page.locator('.settings-drilldown__panel--links').isVisible())) {
+        await openSettingsSection(page, 'Ссылки', '.settings-drilldown__panel--links');
+      }
+      await page.getByLabel('Включить объяснение для модерации ссылок').check();
+      const toggle = page.getByLabel('Добавить связь с админом в сообщения о ссылках');
+      if (await toggle.isChecked()) await toggle.uncheck();
+      await toggle.click();
+      const picker = page.getByRole('dialog', { name: 'Администраторы чата' });
+      await picker.waitFor({ state: 'visible' });
+      await picker.locator('.admin-contact-picker__option').first().waitFor({ state: 'visible' });
+      const selectedName = await picker
+        .locator('.admin-contact-picker__copy > span')
+        .first()
+        .innerText();
+      await picker.locator('.admin-contact-picker__option').first().click();
+      if (!(await toggle.isChecked()))
+        throw new Error('Admin contact selection did not enable contact');
+      await page
+        .getByRole('button', { name: `Выбрать администратора: ${selectedName}`, exact: true })
+        .click();
+      await picker.locator('[aria-pressed="true"]').waitFor({ state: 'visible' });
+      await picker.getByRole('searchbox').fill('нет-такого-администратора');
+      await picker
+        .getByText('Администраторы не найдены.', { exact: true })
+        .waitFor({ state: 'visible' });
+      await picker.getByRole('searchbox').fill('');
+      await picker.locator('[aria-pressed="true"]').waitFor({ state: 'visible' });
+      await picker.getByRole('searchbox').blur();
+    },
+  },
+  {
     name: 'chat-settings-links-timer',
     beforeShot: async (page) => {
       await page.waitForTimeout(500);

@@ -1,3 +1,5 @@
+import type { ChatParticipantItem } from '@maxim/contracts/chat-participants';
+
 export type AdminContactProfileUrlSource = {
   username?: string | null;
   displayName?: string | null;
@@ -71,4 +73,39 @@ export function resolveAdminContactProfileUrl(source: AdminContactProfileUrlSour
     normalizeAdminContactProfileUrl(source.profileUrl) ??
     normalizeAdminContactProfileHandoffUrl(source)
   );
+}
+
+export function buildAdminContactOptions(participants: readonly ChatParticipantItem[]) {
+  const seen = new Set<string>();
+  return participants.flatMap((participant) => {
+    if (
+      participant.isBot ||
+      (participant.role !== 'owner' && participant.role !== 'admin') ||
+      seen.has(participant.userId)
+    ) {
+      return [];
+    }
+    seen.add(participant.userId);
+    return [
+      {
+        ...participant,
+        contactUrl: resolveAdminContactProfileUrl({
+          ...participant,
+          displayName: participant.userDisplayName,
+        }),
+      },
+    ];
+  });
+}
+
+export function getAdminContactLabel(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const label = parsed.searchParams.get('profile_label')?.trim();
+    if (label) return label;
+    if (parsed.searchParams.get('start')) return 'Администратор выбран';
+    return `${parsed.hostname}${decodeURIComponent(parsed.pathname).replace(/\/$/u, '')}`;
+  } catch {
+    return 'Администратор выбран';
+  }
 }

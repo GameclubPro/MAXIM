@@ -2,11 +2,7 @@ import { lazy, Suspense, type ComponentProps } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SkeletonCard } from '../../components/ui/skeleton';
 
-const LazyAdminContactToggle = lazy(() =>
-  import('../../components/admin-contact-toggle').then((module) => ({
-    default: module.AdminContactToggle,
-  })),
-);
+const LazyAdminContactToggle = lazy(() => import('../../components/admin-contact-toggle'));
 const LazyBroadcastPublishBar = lazy(() => import('../../components/broadcast-publish-bar'));
 const LazySettingsLoadErrorState = lazy(() =>
   import('../../components/settings-load-error-state').then((module) => ({

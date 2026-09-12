@@ -744,6 +744,7 @@ const baseScenarios = [
     ['chat-settings-links-timer', { searchParams: { focus: 'links' } }],
     ['chat-settings-links-button-picker', { searchParams: { focus: 'links' } }],
     ['chat-settings-links-button-sheet', { searchParams: { focus: 'links' } }],
+    ['chat-settings-admin-contact', { searchParams: { focus: 'links' } }],
     ['chat-settings-giveaway', { searchParams: { focus: 'giveaway' } }],
     ['chat-settings-polls', { searchParams: { focus: 'polls' } }],
     ['chat-settings-poll-editor', { searchParams: { focus: 'polls' } }],

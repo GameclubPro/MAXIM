@@ -157,6 +157,7 @@
       .settings-overview-search,
       .participants-roster__search,
       .chats-command__field,
+      .admin-contact-picker__search,
       .required-subscription__source-search
     ) {
     border: 1px solid var(--major-border-strong);
@@ -170,6 +171,7 @@
       .settings-overview-search,
       .participants-roster__search,
       .chats-command__field,
+      .admin-contact-picker__search,
       .required-subscription__source-search
     )
     input,
@@ -178,6 +180,7 @@
       .settings-overview-search,
       .participants-roster__search,
       .chats-command__field,
+      .admin-contact-picker__search,
       .required-subscription__source-search
     )
     input:focus-visible {
@@ -229,6 +232,33 @@
   body[data-miniapp-profile='moderation'] .compact-page-header {
     --compact-page-header-height: 52px;
     --compact-page-header-radius: 0px;
+  }
+
+  body[data-miniapp-profile='moderation'] .admin-contact-selection {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 0;
+    border: 0;
+    background: transparent;
+    color: var(--major-accent);
+    font: inherit;
+    font-size: 0.84rem;
+    text-align: left;
+  }
+
+  body[data-miniapp-profile='moderation'] .admin-contact-selection span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .admin-contact-selection svg {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
   }
 
   body[data-miniapp-profile='moderation'] .compact-page-header__bar {

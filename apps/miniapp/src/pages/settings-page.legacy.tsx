@@ -186,7 +186,6 @@ import {
   splitMessageLimitsBlockedDomainsInput,
   splitMessageLimitsBlockedWordsInput,
 } from '../lib/message-limits-blocked-words';
-import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
 import { maxNotify, openMaxBotLink } from '../lib/max-bridge';
 import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { shouldRetryTransientApiError } from '../lib/api-retry';
@@ -893,11 +892,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const adminContactProfileUrl = useMemo(
-    () => resolveAdminContactProfileUrl(meQuery.data ?? {}),
-    [meQuery.data],
-  );
-
   const shouldLoadRequiredSubscriptionChannels =
     Boolean(chatId) &&
     (expandedSections.requiredSubscription || focusSection === 'requiredSubscription');
@@ -2144,22 +2138,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearButtonGroupErrors(group);
   }
 
-  function updateAdminContactButtonGroup(group: AdminContactButtonGroup, enabled: boolean) {
-    if (enabled && !adminContactProfileUrl) {
-      pushToast({
-        tone: 'info',
-        title: 'Ссылка на админа пока недоступна',
-        description: 'Бот сможет добавить ссылку после события, где виден ваш профиль.',
-      });
-      return;
-    }
-
+  function updateAdminContactButtonGroup(
+    group: AdminContactButtonGroup,
+    enabled: boolean,
+    url: string,
+  ) {
     setDraft((current) =>
       current
         ? ({
             ...current,
             [group.enabledKey]: enabled,
-            [group.urlKey]: enabled ? adminContactProfileUrl : '',
+            [group.urlKey]: enabled ? url : '',
           } as ChatSettings)
         : current,
     );
@@ -2171,15 +2160,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     group: AdminContactButtonGroup,
     ariaLabel = 'Добавить связь с админом в сообщение бота',
   ) {
-    if (!draft || (!adminContactProfileUrl && !draft[group.enabledKey])) {
+    if (!draft || !chatId) {
       return null;
     }
 
     return (
       <AdminContactToggle
+        key={`${chatId}:${group.urlKey}`}
+        api={api}
+        chatId={chatId}
         title={ADMIN_CONTACT_BUTTON_TEXT}
         checked={Boolean(draft[group.enabledKey])}
-        onChange={(enabled) => updateAdminContactButtonGroup(group, enabled)}
+        url={draft[group.urlKey]}
+        onChange={(enabled, url) => updateAdminContactButtonGroup(group, enabled, url)}
         ariaLabel={ariaLabel}
         nested
       />
@@ -3323,22 +3316,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function handleRulesAdminContactButtonChange(enabled: boolean) {
-    if (enabled && !adminContactProfileUrl) {
-      pushToast({
-        tone: 'info',
-        title: 'Ссылка на админа пока недоступна',
-        description: 'Бот сможет добавить ссылку после события, где виден ваш профиль.',
-      });
-      return;
-    }
-
+  function handleRulesAdminContactButtonChange(enabled: boolean, url: string) {
     setRulesDraft((current) =>
       current
         ? {
             ...current,
             adminContactButtonEnabled: enabled,
-            adminContactButtonUrl: enabled ? (adminContactProfileUrl ?? '') : '',
+            adminContactButtonUrl: enabled ? url : '',
           }
         : current,
     );
@@ -6258,11 +6242,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </div>
                                   </div>
 
-                                  {adminContactProfileUrl ||
-                                  rulesDraft.adminContactButtonEnabled ? (
+                                  {chatId ? (
                                     <AdminContactToggle
+                                      key={`${chatId}:rules`}
+                                      api={api}
+                                      chatId={chatId}
                                       title={ADMIN_CONTACT_BUTTON_TEXT}
                                       checked={Boolean(rulesDraft.adminContactButtonEnabled)}
+                                      url={rulesDraft.adminContactButtonUrl}
                                       onChange={handleRulesAdminContactButtonChange}
                                       ariaLabel="Добавить связь с админом в пост правил"
                                       meta={rulesAdminContactButtonSummary}

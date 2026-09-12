@@ -1,0 +1,175 @@
+@layer components {
+  .admin-contact-picker {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-sheet);
+    display: grid;
+    align-items: end;
+    color: var(--color-ink);
+  }
+
+  .design-preview__device-screen > .admin-contact-picker {
+    position: absolute;
+  }
+  html[data-max-client='native'] .design-preview__device-screen > .admin-contact-picker {
+    position: fixed;
+  }
+
+  .admin-contact-picker__backdrop {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: var(--color-scrim);
+  }
+
+  .admin-contact-picker__panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-self: center;
+    width: min(100%, 680px);
+    max-height: 88%;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+    background: var(--color-surface);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .admin-contact-picker__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    gap: 8px;
+    min-height: 56px;
+    padding: 6px 12px;
+  }
+
+  .admin-contact-picker__header strong {
+    font-size: 0.95rem;
+    overflow-wrap: anywhere;
+  }
+  .admin-contact-picker__header button {
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    color: var(--color-ink-muted);
+    background: transparent;
+  }
+  .admin-contact-picker svg {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+  }
+  .admin-contact-picker__search {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 8px;
+    margin: 0 12px 8px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    color: var(--color-ink-muted);
+    background: var(--color-surface-muted);
+  }
+  .admin-contact-picker__search input {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    border: 0;
+    background: transparent;
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 16px;
+  }
+  .admin-contact-picker__list {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    min-height: 0;
+    padding: 0 12px calc(12px + var(--app-safe-bottom, 0px));
+  }
+  .admin-contact-picker__list p {
+    padding: 12px 0;
+    font-size: 0.88rem;
+  }
+  .admin-contact-picker__option {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) 20px;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 64px;
+    padding: 10px 4px;
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-ink);
+    background: transparent;
+    font: inherit;
+    font-size: 0.9rem;
+    text-align: left;
+  }
+  .admin-contact-picker__option[aria-pressed='true'] {
+    color: var(--color-accent);
+  }
+  .admin-contact-picker__copy {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+    overflow-wrap: anywhere;
+  }
+  .admin-contact-picker__copy small {
+    color: var(--color-ink-muted);
+    font-size: 0.78rem;
+  }
+  .admin-contact-picker__avatar {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    overflow: hidden;
+    border-radius: 50%;
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+  }
+  .admin-contact-picker__avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .admin-contact-picker__more,
+  .admin-contact-picker__status button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 44px;
+    margin-top: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 0.88rem;
+  }
+  .admin-contact-picker button:disabled {
+    opacity: 0.58;
+  }
+  .admin-contact-picker button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+  }
+}
