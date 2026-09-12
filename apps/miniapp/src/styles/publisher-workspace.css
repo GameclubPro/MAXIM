@@ -12,13 +12,20 @@
     --color-border-strong: #becdc4;
     --color-accent: #116b4c;
     --color-accent-soft: #e5f3ec;
+    --color-warning: var(--publication-warning-ink);
+    --warning: var(--color-warning);
     --accent: var(--color-accent);
     --accent-soft: var(--color-accent-soft);
     --surface-page: var(--color-page);
     --surface-card: var(--color-surface);
+    --surface-card-muted: var(--color-surface-tint);
+    --surface-overlay: var(--color-surface-raised);
     --text-primary: var(--color-ink);
     --text-secondary: var(--color-ink-muted);
+    --text-muted: var(--color-ink-subtle);
     --border-subtle: var(--color-border);
+    --border-strong: var(--color-border-strong);
+    --color-on-accent: var(--publication-ui-on-accent);
     --publication-ui-page: var(--color-page);
     --publication-ui-surface: var(--color-surface);
     --publication-ui-surface-raised: var(--color-surface-raised);
@@ -65,6 +72,15 @@
   body[data-miniapp-profile='publisher'] .app-shell,
   body[data-miniapp-profile='publisher'] .shell-content {
     background: var(--color-page);
+  }
+
+  body[data-miniapp-profile='publisher'] :is(input, textarea)::placeholder {
+    color: var(--color-ink-subtle);
+    opacity: 1;
+  }
+
+  body[data-miniapp-profile='publisher'] .vk-parsing-surface {
+    --vk-warning: var(--publication-warning-ink);
   }
 
   body[data-miniapp-profile='publisher'] .bottom-nav {
@@ -225,6 +241,19 @@
   body[data-miniapp-profile='publisher'] .publisher-entity-row__status {
     font-weight: 550;
     line-height: 1.35;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-module-switch__thumb {
+    background: var(--color-ink-subtle);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='publisher']
+    .publisher-module-switch
+    input:checked
+    + .publisher-module-switch__track
+    .publisher-module-switch__thumb {
+    background: var(--publication-ui-on-accent);
   }
 
   body[data-miniapp-profile='publisher']

@@ -114,6 +114,32 @@ test('photo duplicate controls have a dedicated visual scenario', () => {
   assert.ok(scenario?.features.includes('duplicates'));
 });
 
+test('limit controls are audited while enabled, including the bottom of the sheet', () => {
+  for (const name of ['chat-settings-limits-active', 'chat-settings-limits-active-bottom']) {
+    const scenario = MINIAPP_VISUAL_SCENARIOS.find((candidate) => candidate.name === name);
+    assert.equal(scenario?.routeId, 'chat-settings');
+    assert.ok(MINIAPP_VISUAL_PRESETS.moderation.scenarioNames.includes(name));
+  }
+  const source = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const contrastCheck = source.slice(
+    source.indexOf('async function assertCriticalContrast('),
+    source.indexOf('async function assertCriticalAccessibility('),
+  );
+  for (const selector of [
+    '.publisher-entities-page',
+    '.publisher-entity-modules-page',
+    '.publisher-auto-replies-page',
+    '.publisher-auto-reply-editor',
+    '.publication-target-picker__editor',
+    '.publication-buttons-sheet',
+  ]) {
+    assert.ok(contrastCheck.includes(selector), selector);
+  }
+});
+
 test('moderation explanations and pending actions have dedicated interaction scenarios', () => {
   const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
   assert.equal(scenarios.get('chat-settings-help')?.routeId, 'chat-settings');

@@ -1868,9 +1868,7 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
       const panel = page.locator('.settings-drilldown__panel--duplicates');
-      await panel
-        .getByLabel('Включить проверку повторных фото', { exact: true })
-        .waitFor({ state: 'visible' });
+      await panel.locator('.duplicate-photo-toggle').waitFor({ state: 'visible' });
       await assertHintDismissal(
         page,
         panel,
@@ -1952,6 +1950,34 @@ const scenarioBehaviors = [
     name: 'chat-settings-limits',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Ограничения', '.settings-drilldown__panel--limits');
+    },
+  },
+  {
+    name: 'chat-settings-limits-active',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Ограничения', '.settings-drilldown__panel--limits');
+      const panel = page.locator('.settings-drilldown__panel--limits');
+      for (const name of [
+        'Включить лимит сообщений',
+        'Включить ограничение длины сообщения',
+        'Ограничить отправку фото по времени',
+        'Ограничить отправку стикеров по времени',
+      ]) {
+        await panel.getByRole('checkbox', { name, exact: true }).check();
+      }
+      const slider = panel.getByRole('slider', { name: 'Лимит длины сообщения', exact: true });
+      await slider.focus();
+      await page.keyboard.press('Home');
+      await page.keyboard.press('ArrowRight');
+      const expected =
+        Number(await slider.getAttribute('min')) + Number(await slider.getAttribute('step'));
+      if (Number(await slider.inputValue()) !== expected) {
+        throw new Error('The message length slider did not respond to keyboard input.');
+      }
+      await panel.locator('.settings-drilldown__body').evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      await page.waitForTimeout(250);
     },
   },
   {
@@ -3825,6 +3851,12 @@ async function assertCriticalContrast(page, scenario) {
 
   const issues = await page.evaluate(() => {
     const scopeSelectors = [
+      '.publisher-entities-page',
+      '.publisher-entity-modules-page',
+      '.publisher-auto-replies-page',
+      '.publisher-auto-reply-editor',
+      '.publication-target-picker__editor',
+      '.publication-buttons-sheet',
       '.publications-page',
       '.publication-details-sheet',
       '.publication-action-menu',

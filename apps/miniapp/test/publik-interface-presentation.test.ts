@@ -67,6 +67,26 @@ test('Publisher workspace styling cannot leak to Major after route navigation', 
   assert.doesNotMatch(stylesheet, /linear-gradient|backdrop-filter:\s*blur|font-size:[^;]*vw/u);
 });
 
+test('Publisher warnings, placeholders and inactive switches follow the theme', () => {
+  const stylesheet = readFileSync(
+    new URL('../src/styles/publisher-workspace.css', import.meta.url),
+    'utf8',
+  );
+  const entities = readFileSync(
+    new URL('../src/pages/publisher-entities-page.css', import.meta.url),
+    'utf8',
+  );
+  assert.match(entities, /--publisher-attention: var\(--color-warning\)/u);
+  assert.match(stylesheet, /--color-warning: var\(--publication-warning-ink\)/u);
+  assert.match(stylesheet, /--vk-warning: var\(--publication-warning-ink\)/u);
+  assert.match(stylesheet, /--text-muted: var\(--color-ink-subtle\)/u);
+  assert.match(stylesheet, /::placeholder \{\s*color: var\(--color-ink-subtle\);\s*opacity: 1;/u);
+  assert.match(
+    stylesheet,
+    /\.publisher-module-switch__thumb \{\s*background: var\(--color-ink-subtle\);/u,
+  );
+});
+
 test('editor dates use the shared readable date control', () => {
   const source = readFileSync(
     new URL('../src/features/publications/publication-zoned-fields.tsx', import.meta.url),

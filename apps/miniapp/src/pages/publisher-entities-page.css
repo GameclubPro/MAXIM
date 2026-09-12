@@ -1,7 +1,7 @@
 @layer pages {
   .publisher-entities-page {
-    --publisher-ready: #16825f;
-    --publisher-attention: #a46212;
+    --publisher-ready: var(--color-success);
+    --publisher-attention: var(--color-warning);
     --publisher-accent-border: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
     --publisher-error-border: color-mix(in srgb, var(--color-danger) 28%, var(--color-border));
     --publisher-error-surface: color-mix(in srgb, var(--color-danger) 7%, var(--color-surface));

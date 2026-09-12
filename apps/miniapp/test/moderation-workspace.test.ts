@@ -66,6 +66,44 @@ test('both themes define the same essential semantic colors', () => {
   }
 });
 
+test('expanded limit labels and values use the current workspace palette', () => {
+  const ruleFor = (suffix: string) => {
+    let result: Record<string, string> = {};
+    root.walkRules((rule) => {
+      if (rule.selector !== `body[data-miniapp-profile='moderation'] ${suffix}`) return;
+      result = Object.fromEntries(
+        rule.nodes.filter((node) => node.type === 'decl').map((node) => [node.prop, node.value]),
+      );
+    });
+    return result;
+  };
+  const label = ruleFor('.settings-native-toggle__title--sub');
+  assert.equal(label.background, 'transparent');
+  assert.equal(label.color, 'var(--major-muted)');
+  assert.equal(label['text-transform'], 'none');
+  const thumb = ruleFor('.settings-native-switch .toggle-switch__thumb');
+  assert.equal(thumb.background, 'var(--major-muted)');
+  const slider = ruleFor('.settings-length-limit__slider');
+  assert.equal(slider['min-height'], '44px');
+  assert.equal(slider['accent-color'], 'var(--major-accent)');
+  assert.equal(
+    ruleFor('.settings-drilldown .field--error .field__hint').color,
+    'var(--major-danger)',
+  );
+  let valueChecked = false;
+  root.walkRules((rule) => {
+    if (!rule.selector.includes('.settings-length-limit__value')) return;
+    const properties = Object.fromEntries(
+      rule.nodes.filter((node) => node.type === 'decl').map((node) => [node.prop, node.value]),
+    );
+    assert.equal(properties.background, 'var(--major-subtle)');
+    assert.equal(properties.color, 'var(--major-ink)');
+    assert.equal(properties['font-variant-numeric'], 'tabular-nums');
+    valueChecked = true;
+  });
+  assert.ok(valueChecked);
+});
+
 test('channel period selection precedes the metrics it filters', () => {
   const source = readFileSync(
     new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
