@@ -4897,7 +4897,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'От подписчика Пользователь\n\nГотовый пост для канала',
+      'От подписчика [Пользователь](max://user/user-1)\n\nГотовый пост для канала',
       expect.objectContaining({
         textFormat: 'markdown',
         buttons: [
@@ -5659,7 +5659,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       );
 
       const publishedText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
-      expect(publishedText).toBe('От подписчика Канонический автор\n\nТекст предложки');
+      expect(publishedText).toBe(
+        `От подписчика [Канонический автор](max://user/${actorUserId})\n\nТекст предложки`,
+      );
       expect(publishedText).not.toContain('payload-spoofed-user');
       const finalizeSql = extractSqlText(prisma.$executeRaw.mock.calls.at(-1)?.[0]);
       expect(finalizeSql).toContain(actorUserId);
@@ -5873,10 +5875,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect(getChatMemberProfiles).toHaveBeenCalledTimes(1);
       const publishedText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
       expect(publishedText).toBe(
-        `От подписчика ${testCase.expectedDisplayName}\n\nТекст предложки`,
+        `От подписчика [${testCase.expectedDisplayName}](max://user/${actorUserId})\n\nТекст предложки`,
       );
-      expect(publishedText).not.toContain('max://user/');
-      expect(publishedText).not.toContain('](');
     });
 
     it.each([
@@ -6277,7 +6277,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      `От подписчика Пользователь\n\n${expectedHtml}`,
+      `От подписчика <a href="max://user/user-1">Пользователь</a>\n\n${expectedHtml}`,
       expect.objectContaining({
         textFormat: 'html',
       }),
@@ -6419,7 +6419,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'От подписчика Фотограф\n\nФото с подписью',
+      'От подписчика [Фотограф](max://user/user-9)\n\nФото с подписью',
       expect.objectContaining({
         textFormat: 'markdown',
         imagePayload: { token: 'uploaded-photo-1' },
@@ -6587,7 +6587,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'От подписчика Фотограф\n\nФото с места события',
+      'От подписчика [Фотограф](max://user/user-9)\n\nФото с места события',
       expect.objectContaining({
         textFormat: 'markdown',
         attachments: [
@@ -6760,7 +6760,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(2);
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
       'channel-1',
-      'От подписчика Видеограф\n\nВидео с подписью',
+      'От подписчика [Видеограф](max://user/user-9)\n\nВидео с подписью',
       expect.objectContaining({
         textFormat: 'markdown',
         attachments: [{ type: 'video', payload: { token: 'video-upload-1' } }],

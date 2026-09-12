@@ -24,6 +24,9 @@ describe('admin contact markdown links', () => {
 
     expect(startPayload).toBeTruthy();
     expect(resolveAdminContactMarkdownUrl(handoffUrl, [botToken])).toBe(handoffUrl);
+    expect(
+      buildAdminContactMarkdownLink({ enabled: true, url: handoffUrl, botTokens: [botToken] }),
+    ).toBe(`[Связь с админом](${handoffUrl})`);
   });
 
   it('uses a direct user mention when a compact profile handoff has a display label', () => {

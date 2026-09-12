@@ -1,4 +1,5 @@
 import type { Logger } from '@nestjs/common';
+import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
 import { readTrimmedString } from './admin-legacy-utils';
 import { buildUserProfileUrl, normalizeMaxProfileUrl } from './admin-profile-links';
@@ -29,7 +30,10 @@ export async function resolveChannelSuggestionAuthorAttribution(
   params: ResolveChannelSuggestionAuthorAttributionParams,
 ): Promise<ChannelSuggestionAuthorAttribution> {
   const userId = readTrimmedString(params.user.userId) ?? '';
-  const storedDisplayName = resolveChannelSuggestionActorDisplayName(params.user);
+  const storedDisplayName = normalizeMaxUserDisplayName(
+    resolveChannelSuggestionActorDisplayName(params.user),
+    userId,
+  );
   const storedUsername = readTrimmedString(params.user.username);
   const storedProfileUrl =
     normalizeMaxProfileUrl(readTrimmedString(params.user.profileUrl)) ?? null;
@@ -50,7 +54,7 @@ export async function resolveChannelSuggestionAuthorAttribution(
       });
       const profile = profiles.get(userId);
       remoteProfileResolved = Boolean(profile);
-      remoteDisplayName = readTrimmedString(profile?.displayName);
+      remoteDisplayName = normalizeMaxUserDisplayName(profile?.displayName, userId);
       remoteUsername = readTrimmedString(profile?.username);
       remoteProfileUrl = normalizeMaxProfileUrl(readTrimmedString(profile?.profileUrl)) ?? null;
     } catch (error: unknown) {
@@ -68,10 +72,10 @@ export async function resolveChannelSuggestionAuthorAttribution(
   let localDisplayName: string | null = null;
   if (userId && !remoteDisplayName) {
     try {
-      localDisplayName =
-        readTrimmedString(
-          (await params.loadLocalDisplayNames(params.chatId, [userId])).get(userId),
-        ) ?? null;
+      localDisplayName = normalizeMaxUserDisplayName(
+        (await params.loadLocalDisplayNames(params.chatId, [userId])).get(userId),
+        userId,
+      );
     } catch (error: unknown) {
       params.logger.debug(
         {
@@ -85,10 +89,12 @@ export async function resolveChannelSuggestionAuthorAttribution(
   }
 
   const username = remoteProfileResolved ? remoteUsername : (remoteUsername ?? storedUsername);
+  // FLAG: A failed member lookup must not strip a known MAX name from the author mention.
+  const displayName = remoteDisplayName ?? localDisplayName ?? storedDisplayName;
   return {
     userId,
-    displayName: remoteDisplayName ?? localDisplayName ?? storedDisplayName,
-    mentionDisplayName: remoteDisplayName,
+    displayName,
+    mentionDisplayName: displayName,
     username,
     profileUrl: remoteProfileResolved
       ? (remoteProfileUrl ?? buildUserProfileUrl(remoteUsername))

@@ -97,7 +97,10 @@ import {
   MAX_MESSAGE_TEXT_LENGTH,
   prepareFormattedTextForMaxDelivery,
 } from '../common/max-markdown.util';
-import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
+import {
+  normalizeMaxUserDisplayName,
+  resolveMaxUserDisplayName,
+} from '../common/max-user-display-name.util';
 import {
   BOT_PRIVATE_MENU_APP_LINE,
   buildBotStartQuickActionText,
@@ -8278,38 +8281,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private readDisplayNameFromEntity(node: Record<string, unknown>): string | null {
-    const directCandidates = [
-      node.display_name,
-      node.displayName,
-      node.full_name,
-      node.fullName,
-      node.name,
-      node.nickname,
-    ];
-
-    for (const candidate of directCandidates) {
-      if (typeof candidate === 'string' && candidate.trim().length > 0) {
-        return candidate.trim();
-      }
-    }
-
-    const firstName = this.readString(
-      node.first_name ?? node.firstName ?? node.given_name ?? node.givenName,
-    );
-    const lastName = this.readString(
-      node.last_name ?? node.lastName ?? node.family_name ?? node.familyName,
-    );
-    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-    if (fullName.length > 0) {
-      return fullName;
-    }
-
-    const username = this.readString(node.username);
-    if (username) {
-      return username;
-    }
-
-    return null;
+    return resolveMaxUserDisplayName(node) ?? this.readString(node.username);
   }
 
   private buildGreetingMessage(

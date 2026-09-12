@@ -4145,6 +4145,25 @@ describe('ModerationService', () => {
     ]);
   });
 
+  it.each([
+    { name: 'Анна', first_name: 'Анна', last_name: 'Каренина' },
+    { nickname: 'Аня', firstName: 'Анна', lastName: 'Каренина' },
+    { first_name: '', firstName: 'Анна', last_name: '', lastName: 'Каренина' },
+  ])('keeps the full greeting mention with legacy or empty name aliases: %j', (nameFields) => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const update = createServiceUserJoinedUpdateWithSplitName();
+    (update.raw as any).message.body.new_members = [
+      { user_id: 'user-split-name-1', type: 'user', ...nameFields },
+    ];
+
+    expect((service as any).extractHumanServiceMembers(update)).toEqual([
+      {
+        userId: 'user-split-name-1',
+        userLabel: userMention('Анна Каренина', 'user-split-name-1'),
+      },
+    ]);
+  });
+
   it('adds the rules button to greeting message when enabled', async () => {
     const prisma = {
       chat: {
