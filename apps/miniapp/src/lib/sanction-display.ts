@@ -28,6 +28,19 @@ export const SANCTION_STATUS_LABELS: Record<ChatSanctionItem['status'], string> 
   review: 'Требует проверки',
 };
 
+export function sanctionStatusAt(
+  item: Pick<ChatSanctionItem, 'action' | 'status' | 'permanent' | 'expiresAt'>,
+  nowMs: number,
+): ChatSanctionItem['status'] {
+  return item.action === 'MUTE' &&
+    item.status === 'active' &&
+    !item.permanent &&
+    item.expiresAt &&
+    Date.parse(item.expiresAt) <= nowMs
+    ? 'expired'
+    : item.status;
+}
+
 export function formatSanctionRemaining(
   item: Pick<ChatSanctionItem, 'status' | 'permanent' | 'expiresAt'>,
   nowMs: number,

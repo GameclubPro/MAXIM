@@ -377,6 +377,14 @@ export function ChatParticipantSheet({
   const immunityValue = formatImmunityValue(immunity);
   const immunityDescription = describeImmunity(immunity);
   const immunityMeta = formatImmunityMeta(immunity);
+  const activity = describeParticipantActivity(item);
+  const activityValue =
+    activity.tone !== 'unknown' && item.lastMaxActivityAt
+      ? new Date(item.lastMaxActivityAt).toLocaleString('ru-RU', {
+          dateStyle: 'short',
+          timeStyle: 'short',
+        })
+      : activity.label;
   const isMuteComposerOpen = activeComposer === 'mute';
   const isImmunityComposerOpen = activeComposer === 'immunity';
   const isAlwaysMode = immunityMode === 'always';
@@ -444,7 +452,10 @@ export function ChatParticipantSheet({
         </div>
 
         {!item.isBot ? (
-          <p className="participant-sheet__activity">{describeParticipantActivity(item).detail}</p>
+          <div className="participant-sheet__activity" title={activity.detail}>
+            <span>Активность в MAX</span>
+            <span>{activityValue}</span>
+          </div>
         ) : null}
         <div className="participant-sheet__stats">
           <article className="participant-sheet__stat">

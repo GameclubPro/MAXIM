@@ -12,6 +12,7 @@ import {
   NavArrowRight,
   ShieldCheck,
   WarningCircle,
+  Clock,
 } from 'iconoir-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { describeParticipantViolations } from '../../lib/chat-participants-feed';
@@ -359,6 +360,9 @@ export function ChatParticipantsRoster({
             autoCapitalize="none"
             spellCheck={false}
             enterKeyHint="search"
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur();
+            }}
           />
           <div className="participants-roster__search-end">
             {search ? (
@@ -414,40 +418,41 @@ export function ChatParticipantsRoster({
       </div>
 
       <div className="participants-roster__scope">
-        {onActivityFilterChange ? (
-          <label className="participants-roster__activity-filter">
-            <span>Активность в MAX</span>
+        <div className="participants-roster__filters">
+          <label className="participants-roster__role-filter">
+            <span>Роль участника</span>
             <select
-              aria-label="Активность в MAX"
-              value={activityFilter}
+              aria-label="Роль участника"
+              value={roleFilter}
               onChange={(event) =>
-                onActivityFilterChange(event.target.value as ChatParticipantActivityFilter)
+                onRoleFilterChange(event.target.value as ChatParticipantRoleFilter)
               }
             >
-              {PARTICIPANT_ACTIVITY_OPTIONS.map((option) => (
+              {roleOptions.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {option.value === 'all' ? 'Все роли' : option.label}
                 </option>
               ))}
             </select>
           </label>
-        ) : null}
-        <div
-          className="participants-roster__role-filters"
-          role="group"
-          aria-label="Фильтр участников по роли"
-        >
-          {roleOptions.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={roleFilter === option.value ? 'is-active' : ''}
-              aria-pressed={roleFilter === option.value}
-              onClick={() => onRoleFilterChange(option.value)}
-            >
-              {option.label}
-            </button>
-          ))}
+          {onActivityFilterChange ? (
+            <label className="participants-roster__activity-filter">
+              <span>Активность в MAX</span>
+              <select
+                aria-label="Активность в MAX"
+                value={activityFilter}
+                onChange={(event) =>
+                  onActivityFilterChange(event.target.value as ChatParticipantActivityFilter)
+                }
+              >
+                {PARTICIPANT_ACTIVITY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
         <div className="participants-roster__scope-heading">
           <h2>{resolveRosterHeading(roleFilter)}</h2>
@@ -553,44 +558,43 @@ export function ChatParticipantsRoster({
                     <strong>{displayName}</strong>
                     <span>{username ? `@${username}` : `ID ${item.userId}`}</span>
                   </div>
-                  {!item.isBot ? (
-                    <span
-                      className={`participants-roster__activity participants-roster__activity--${activity.tone}`}
-                      title={activity.detail}
-                      aria-label={activity.detail}
-                    >
-                      {activity.label}
-                    </span>
-                  ) : null}
-                  {roleLabel || item.isBot || immunity ? (
-                    <div className="participants-roster__meta">
-                      {roleLabel ? (
-                        <span
-                          className={`participants-roster__pill participants-roster__pill--${resolveRoleTone(item)}`}
-                        >
-                          {roleLabel}
+                  <div className="participants-roster__meta">
+                    {!item.isBot ? (
+                      <span
+                        className={`participants-roster__activity participants-roster__activity--${activity.tone}`}
+                        title={activity.detail}
+                        aria-label={activity.detail}
+                      >
+                        <Clock width={13} height={13} aria-hidden />
+                        {activity.label}
+                      </span>
+                    ) : null}
+                    {roleLabel ? (
+                      <span
+                        className={`participants-roster__pill participants-roster__pill--${resolveRoleTone(item)}`}
+                      >
+                        {roleLabel}
+                      </span>
+                    ) : null}
+                    {item.isBot ? (
+                      <span className="participants-roster__pill participants-roster__pill--bot">
+                        Бот
+                      </span>
+                    ) : null}
+                    {immunity && immunityValue ? (
+                      <span
+                        className={`participants-roster__immunity ${isAlwaysImmunity(immunity) ? 'participants-roster__immunity--always' : ''}`}
+                        role="img"
+                        aria-label={immunityDescription ?? undefined}
+                        title={immunityDescription ?? undefined}
+                      >
+                        <ShieldCheck width={14} height={14} aria-hidden />
+                        <span aria-hidden="true">
+                          {isAlwaysImmunity(immunity) ? 'Всегда' : immunityValue}
                         </span>
-                      ) : null}
-                      {item.isBot ? (
-                        <span className="participants-roster__pill participants-roster__pill--bot">
-                          Бот
-                        </span>
-                      ) : null}
-                      {immunity && immunityValue ? (
-                        <span
-                          className={`participants-roster__immunity ${isAlwaysImmunity(immunity) ? 'participants-roster__immunity--always' : ''}`}
-                          role="img"
-                          aria-label={immunityDescription ?? undefined}
-                          title={immunityDescription ?? undefined}
-                        >
-                          <ShieldCheck width={14} height={14} aria-hidden />
-                          <span aria-hidden="true">
-                            {isAlwaysImmunity(immunity) ? 'Всегда' : immunityValue}
-                          </span>
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="participants-roster__aside">
                   <span

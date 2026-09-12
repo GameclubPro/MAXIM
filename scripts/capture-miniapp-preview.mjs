@@ -1595,6 +1595,13 @@ const scenarioBehaviors = [
   {
     name: 'events-moderation',
     beforeShot: async (page) => {
+      await page.getByRole('radio', { name: 'Ограничения', exact: true }).click();
+      await page.locator('.sanctions-workspace__row').first().click();
+      await page.locator('.sanction-details .button--accent').click({ trial: true });
+      await page
+        .locator('.sanction-details')
+        .getByRole('button', { name: 'Закрыть панель', exact: true })
+        .click();
       await waitForModerationEventsReady(page);
       const sections = page.getByRole('group', { name: 'Раздел статистики' });
       await sections.getByRole('button', { name: 'Участники', exact: true }).click();
@@ -1605,6 +1612,9 @@ const scenarioBehaviors = [
       await page.getByText('Участники не найдены', { exact: true }).waitFor();
       await page.getByRole('button', { name: 'Сбросить фильтры' }).click();
       await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+      await sections.getByRole('button', { name: 'События', exact: true }).click();
+      await page.locator('.membership-feed__item').first().waitFor();
+      await assertCompactTextContained(page, { name: 'events-moderation/activity' });
       await sections.getByRole('button', { name: 'Модерация', exact: true }).click();
       await waitForModerationEventsReady(page);
     },
@@ -1627,6 +1637,7 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.locator('.sanctions-workspace__row').filter({ hasText: 'Сергей Маркет' }).click();
       await page.locator('.sanction-details__status progress').waitFor();
+      await page.locator('.sanction-details .button--accent').click({ trial: true });
     },
   },
   {
@@ -1638,6 +1649,10 @@ const scenarioBehaviors = [
         .click();
       await page.getByRole('button', { name: 'Разрешить писать', exact: true }).click();
       await page.getByRole('dialog', { name: 'Разрешить писать?' }).waitFor();
+      await page
+        .getByRole('dialog', { name: 'Разрешить писать?' })
+        .getByRole('button', { name: 'Снять ограничение', exact: true })
+        .click({ trial: true });
     },
   },
   {
@@ -1716,10 +1731,7 @@ const scenarioBehaviors = [
   {
     name: 'events-participants-bots',
     beforeShot: async (page) => {
-      await page
-        .getByRole('group', { name: 'Фильтр участников по роли' })
-        .getByRole('button', { name: 'Боты', exact: true })
-        .click();
+      await page.getByLabel('Роль участника', { exact: true }).selectOption('bots');
       await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
       const rows = page.locator('.participants-roster__item');
       if (
@@ -3339,6 +3351,12 @@ async function assertCompactTextContained(page, scenario) {
       }
     }
     if (document.body.dataset.miniappProfile === 'moderation') {
+      for (const card of document.querySelectorAll('.events-screen .membership-feed__card')) {
+        const avatar = card.querySelector('.membership-feed__avatar')?.getBoundingClientRect();
+        const name = card.querySelector('.membership-feed__name-link')?.getBoundingClientRect();
+        if (avatar?.width && name?.width && name.left < avatar.right + 3)
+          return 'event avatar overlaps its participant name';
+      }
       for (const label of document.querySelectorAll('.channel-stats-graph__axis-text')) {
         const canvas = label.closest('.channel-stats-graph__canvas');
         if (!canvas || getComputedStyle(canvas).overflowX === 'visible') continue;

@@ -137,26 +137,34 @@
     display: grid;
     gap: 8px;
   }
-  .participants-roster__role-filters {
+  .participants-roster__filters {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 2px;
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr);
+    gap: 8px;
   }
-  .participants-roster__role-filters button {
+  .participants-roster__filters label {
+    min-width: 0;
+  }
+  .participants-roster__filters label > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .participants-roster__filters select {
     min-width: 0;
     min-height: 44px;
-    padding: 6px 4px;
-    border: 0;
-    border-radius: 6px;
-    background: var(--surface-card-muted);
-    color: var(--text-secondary);
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+    color: var(--text-primary);
     font: inherit;
-    font-size: 0.76rem;
+    font-size: 13px;
     cursor: pointer;
-  }
-  .participants-roster__role-filters button.is-active {
-    background: var(--accent-soft);
-    color: var(--accent);
   }
   .participants-roster__scope-heading {
     display: grid;
@@ -373,12 +381,7 @@
     font-weight: 650;
   }
   .participants-roster__activity--long::before {
-    content: '';
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    margin-right: 6px;
-    background: currentColor;
+    content: none;
   }
   .participants-roster__load-more {
     min-height: 44px;

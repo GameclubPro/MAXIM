@@ -10,6 +10,7 @@ import {
   NavArrowRight,
   UserCircle,
   ShieldCheck,
+  Clock,
 } from 'iconoir-react';
 import type { ApiTransport } from '../../lib/api/transport';
 import { getChatSanctions } from '../../lib/api/chat-sanctions-client';
@@ -20,11 +21,13 @@ import {
   SANCTION_STATUS_LABELS,
   createSanctionClock,
   readSanctionClock,
+  sanctionStatusAt,
 } from '../../lib/sanction-display';
 import { ActionConfirmSheet } from '../ui/action-confirm-sheet';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
+import { Skeleton } from '../ui/skeleton';
 import { useToast } from '../ui/toast';
 import './chat-sanctions-workspace.css';
 
@@ -37,6 +40,14 @@ type Props = {
   onChanged: () => void;
   onRelease: (item: ChatSanctionItem) => Promise<string>;
   describeReason: (item: ChatSanctionItem) => string;
+  isOpeningProfile?: boolean;
+};
+
+const viewTitles: Record<ChatSanctionsQuery['status'], string> = {
+  active: 'Действующие',
+  archive: 'Архив',
+  review: 'На проверке',
+  all: 'Все ограничения',
 };
 
 function formatDate(value: string): string {
@@ -52,6 +63,7 @@ export function ChatSanctionsWorkspace({
   onChanged,
   onRelease,
   describeReason,
+  isOpeningProfile = false,
 }: Props) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -180,26 +192,74 @@ export function ChatSanctionsWorkspace({
     },
   });
   const busy = feed.isFetching || pendingSearch;
+  const hasFilters = Boolean(search || userId || action !== 'all' || status !== 'active');
+  const resetFilters = () => {
+    setSearch('');
+    setUserId('');
+    setAction('all');
+    setStatus('active');
+  };
   const selectedProgress = selected ? sanctionTimeProgress(selected, nowMs) : null;
+  const selectedStatus = selected ? sanctionStatusAt(selected, nowMs) : null;
   const releaseAvailable = Boolean(
     selected?.releaseAction &&
     selected.status === 'active' &&
     (selected.permanent || (selected.expiresAt && Date.parse(selected.expiresAt) > nowMs)),
   );
   const closeDetails = () => {
-    if (!release.isPending && !confirmOpen) setSelected(null);
+    if (!release.isPending && !confirmOpen && !isOpeningProfile) setSelected(null);
   };
+  const detailActions = selected ? (
+    <div className="sanction-details__actions">
+      <div className="sanction-details__secondary-actions">
+        <button
+          type="button"
+          className="button button--ghost"
+          disabled={release.isPending || isOpeningProfile}
+          onClick={() => onProfileActivate(selected.userId, selected.userDisplayName)}
+        >
+          {isOpeningProfile ? (
+            <Spinner size="sm" label={null} />
+          ) : (
+            <UserCircle width={20} height={20} aria-hidden />
+          )}
+          {isOpeningProfile ? 'Открываем...' : 'Профиль'}
+        </button>
+        <button
+          type="button"
+          className="button button--ghost"
+          aria-label="История участника"
+          disabled={release.isPending || isOpeningProfile}
+          onClick={() => {
+            setUserId(selected.userId);
+            setSearch('');
+            setStatus('all');
+            setSelected(null);
+          }}
+        >
+          <Clock width={20} height={20} aria-hidden />
+          История
+        </button>
+      </div>
+      {releaseAvailable ? (
+        <button
+          type="button"
+          className="button button--accent"
+          disabled={release.isPending || isOpeningProfile}
+          onClick={() => {
+            release.reset();
+            setConfirmOpen(true);
+          }}
+        >
+          <ShieldCheck width={20} height={20} aria-hidden />
+          {selected.action === 'BAN' ? 'Снять блокировку' : 'Разрешить писать'}
+        </button>
+      ) : null}
+    </div>
+  ) : undefined;
 
   return (
     <section className="sanctions-workspace" aria-label="Ограничения участников">
-      <div className="sanctions-workspace__heading">
-        <h2>Ограничения</h2>
-        <span role="status">
-          {feed.isPending
-            ? 'Загрузка...'
-            : `В списке: ${items.length}${feed.hasNextPage ? '+' : ''}`}
-        </span>
-      </div>
       <div className="sanctions-workspace__toolbar">
         <label className="sanctions-workspace__search">
           <Search width={19} height={19} aria-hidden />
@@ -208,6 +268,10 @@ export function ChatSanctionsWorkspace({
             type="search"
             placeholder="Имя или ID"
             maxLength={100}
+            enterKeyHint="search"
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur();
+            }}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
@@ -273,6 +337,32 @@ export function ChatSanctionsWorkspace({
           </button>
         </div>
       ) : null}
+      <div className="sanctions-workspace__heading">
+        <div>
+          <h2>{search.trim() ? 'Результаты' : userId ? 'История' : viewTitles[status]}</h2>
+          <span
+            className="sanctions-workspace__count"
+            role="status"
+            aria-label={
+              feed.isPending || pendingSearch
+                ? 'Загружаем ограничения'
+                : `В списке: ${items.length}${feed.hasNextPage ? '+' : ''}`
+            }
+          >
+            {feed.isPending || pendingSearch
+              ? '...'
+              : `${items.length}${feed.hasNextPage ? '+' : ''}`}
+          </span>
+        </div>
+        {lastPage && !busy ? (
+          <time dateTime={lastPage.serverTime} title="Последнее обновление">
+            {new Date(lastPage.serverTime).toLocaleTimeString('ru-RU', {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </time>
+        ) : null}
+      </div>
       {feed.error ? (
         <div className="sanctions-workspace__notice" role="alert">
           <p>{describeUserFacingError(feed.error, 'Не удалось загрузить ограничения.')}</p>
@@ -288,16 +378,45 @@ export function ChatSanctionsWorkspace({
         </div>
       ) : null}
       {feed.isPending || pendingSearch ? (
-        <div className="sanctions-workspace__empty">
-          <Spinner size="lg" label="Загружаем ограничения" />
+        <div
+          className="sanctions-workspace__loading"
+          role="status"
+          aria-label="Загружаем ограничения"
+        >
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="sanctions-workspace__skeleton">
+              <Skeleton className="sanctions-workspace__skeleton-avatar" />
+              <div>
+                <Skeleton />
+                <Skeleton />
+                <Skeleton />
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
       {!feed.isPending && !pendingSearch && !feed.error && items.length === 0 ? (
         <div className="sanctions-workspace__empty">
-          <ShieldCheck width={32} height={32} aria-hidden />
+          <span className="sanctions-workspace__empty-icon">
+            {hasFilters ? (
+              <Search width={28} height={28} aria-hidden />
+            ) : (
+              <ShieldCheck width={28} height={28} aria-hidden />
+            )}
+          </span>
           <strong>
-            {feed.hasNextPage ? 'Поиск по истории продолжается' : 'Ограничений не найдено'}
+            {feed.hasNextPage
+              ? 'Поиск по истории продолжается'
+              : hasFilters
+                ? 'Ограничений не найдено'
+                : 'Действующих ограничений нет'}
           </strong>
+          {hasFilters && !feed.hasNextPage ? (
+            <button type="button" className="button button--ghost" onClick={resetFilters}>
+              <Xmark width={18} height={18} aria-hidden />
+              Сбросить фильтры
+            </button>
+          ) : null}
         </div>
       ) : null}
       {!pendingSearch ? (
@@ -307,6 +426,7 @@ export function ChatSanctionsWorkspace({
               type="button"
               key={item.id}
               className="sanctions-workspace__row"
+              data-status={sanctionStatusAt(item, nowMs)}
               disabled={feed.isRefetching}
               onClick={() => {
                 release.reset();
@@ -322,7 +442,7 @@ export function ChatSanctionsWorkspace({
                 <strong>{item.userDisplayName}</strong>
                 <span>{describeReason(item)}</span>
                 <small>
-                  {item.operator === 'ADMIN' ? 'Администратор' : 'Автоматически'} ·{' '}
+                  {item.operator === 'ADMIN' ? 'Админ' : 'Бот'} ·{' '}
                   {new Date(item.createdAt).toLocaleDateString('ru-RU')}
                 </small>
               </span>
@@ -340,6 +460,14 @@ export function ChatSanctionsWorkspace({
                 <strong className="sanctions-workspace__timer">
                   {formatSanctionRemaining(item, nowMs)}
                 </strong>
+                {item.status === 'active' && !item.permanent && item.expiresAt ? (
+                  <progress
+                    className="sanctions-workspace__progress"
+                    max={1}
+                    value={sanctionTimeProgress(item, nowMs) ?? 0}
+                    aria-hidden
+                  />
+                ) : null}
               </span>
               <NavArrowRight
                 className="sanctions-workspace__arrow"
@@ -373,13 +501,31 @@ export function ChatSanctionsWorkspace({
         summary={chatTitle}
         onClose={closeDetails}
         className="sanction-details"
+        footer={detailActions}
+        keepFooterVisibleWhenKeyboardOpen
       >
         {selected ? (
           <>
             <div
               className={`sanction-details__status sanction-details__status--${selected.action === 'BAN' ? 'ban' : 'mute'}`}
             >
-              <span>{selected.action === 'BAN' ? 'Блокировка' : 'Запрет писать'}</span>
+              <div className="sanction-details__identity">
+                <PersonAvatar
+                  avatarUrl={selected.avatarUrl}
+                  fallback={selected.userDisplayName.slice(0, 1)}
+                  className="sanction-details__avatar"
+                />
+                <div>
+                  <span>{selected.action === 'BAN' ? 'Блокировка' : 'Запрет писать'}</span>
+                  <small>
+                    {selectedStatus === 'active'
+                      ? selected.permanent
+                        ? 'Срок'
+                        : 'Осталось'
+                      : 'Состояние'}
+                  </small>
+                </div>
+              </div>
               <strong>{formatSanctionRemaining(selected, nowMs)}</strong>
               {selectedProgress !== null ? (
                 <progress
@@ -389,11 +535,12 @@ export function ChatSanctionsWorkspace({
                 />
               ) : null}
             </div>
+            <h3 className="sanction-details__label">Причина</h3>
             <p className="sanction-details__reason">{describeReason(selected)}</p>
             <dl className="sanction-details__facts">
               <div>
                 <dt>Состояние</dt>
-                <dd>{SANCTION_STATUS_LABELS[selected.status]}</dd>
+                <dd>{SANCTION_STATUS_LABELS[selectedStatus ?? selected.status]}</dd>
               </div>
               <div>
                 <dt>Назначено</dt>
@@ -423,44 +570,6 @@ export function ChatSanctionsWorkspace({
                 <dd>ID {selected.userId}</dd>
               </div>
             </dl>
-            <div className="sanction-details__actions">
-              <button
-                type="button"
-                className="button button--ghost"
-                disabled={release.isPending}
-                onClick={() => onProfileActivate(selected.userId, selected.userDisplayName)}
-              >
-                <UserCircle width={20} height={20} aria-hidden />
-                Профиль
-              </button>
-              <button
-                type="button"
-                className="button button--ghost"
-                disabled={release.isPending}
-                onClick={() => {
-                  setUserId(selected.userId);
-                  setSearch('');
-                  setStatus('all');
-                  setSelected(null);
-                }}
-              >
-                <Search width={20} height={20} aria-hidden />
-                История участника
-              </button>
-              {releaseAvailable ? (
-                <button
-                  type="button"
-                  className="button button--accent"
-                  onClick={() => {
-                    release.reset();
-                    setConfirmOpen(true);
-                  }}
-                >
-                  <ShieldCheck width={20} height={20} aria-hidden />
-                  {selected.action === 'BAN' ? 'Снять блокировку' : 'Разрешить писать'}
-                </button>
-              ) : null}
-            </div>
           </>
         ) : null}
       </SettingsDrilldownPanel>

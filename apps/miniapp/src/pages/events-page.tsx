@@ -3161,17 +3161,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     participantsTotal,
     participantsFeed.isReloading,
   );
-  const participantsHeroMetric = {
-    label: 'Сейчас в чате',
-    value: participantsTotalPresentation.value,
-    tone: 'accent' as const,
-  };
-  const moderationHeroMetric = {
-    label: 'Действия',
-    value: String(violationsSummary.total),
-    note: '',
-    tone: 'accent' as const,
-  };
   const moderationSecondaryMetrics = [
     {
       label: 'Участников',
@@ -3306,6 +3295,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               );
             }}
             onProfileActivate={activateProfile}
+            isOpeningProfile={profileHandoffMutation.isPending}
             onChanged={() => {
               void participantsFeed.retry();
               void participantsIdentityQuery.refetch();
@@ -3328,10 +3318,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             >
               {section === 'participants' ? (
                 <div className="events-dashboard__body events-dashboard__body--participants">
-                  <article
-                    className={`events-dashboard__hero events-dashboard__hero--${participantsHeroMetric.tone}`}
-                  >
-                    <small>{participantsHeroMetric.label}</small>
+                  <article className="events-dashboard__hero events-dashboard__hero--accent">
+                    <small>Сейчас в чате</small>
                     <strong className="events-dashboard__hero-value">
                       {participantsTotalPresentation.status === 'loading' ? (
                         <span
@@ -3348,7 +3336,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                               : undefined
                           }
                         >
-                          {participantsHeroMetric.value}
+                          {participantsTotalPresentation.value}
                         </span>
                       )}
                     </strong>
@@ -3356,6 +3344,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 </div>
               ) : null}
               <div className="events-dashboard__head">
+                {section === 'participants' ? (
+                  <span className="events-dashboard__period-label">Нарушения</span>
+                ) : null}
                 <SegmentedControl
                   value={range}
                   options={periodOptions}
@@ -3432,12 +3423,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 </div>
               ) : (
                 <div className="events-dashboard__body events-dashboard__body--moderation">
-                  <article
-                    className={`events-dashboard__hero events-dashboard__hero--${moderationHeroMetric.tone}`}
-                  >
-                    <small>{moderationHeroMetric.label}</small>
-                    <strong>{moderationHeroMetric.value}</strong>
-                    {moderationHeroMetric.note ? <span>{moderationHeroMetric.note}</span> : null}
+                  <article className="events-dashboard__hero events-dashboard__hero--accent">
+                    <small>Действия</small>
+                    <strong>{violationsSummary.total}</strong>
                   </article>
 
                   <div className="events-dashboard__stack">

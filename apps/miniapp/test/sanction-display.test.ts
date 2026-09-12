@@ -5,10 +5,23 @@ import {
   sanctionTimeProgress,
   createSanctionClock,
   readSanctionClock,
+  sanctionStatusAt,
 } from '../src/lib/sanction-display';
 import { describeParticipantActivity } from '../src/lib/participant-activity';
 
 const now = Date.parse('2026-09-12T12:00:00Z');
+test('the detail status expires a local mute without claiming a native unban', () => {
+  const item = {
+    action: 'MUTE' as const,
+    status: 'active' as const,
+    permanent: false,
+    expiresAt: new Date(now).toISOString(),
+  };
+  assert.equal(sanctionStatusAt(item, now), 'expired');
+  assert.equal(sanctionStatusAt({ ...item, action: 'BAN' }, now), 'active');
+  assert.equal(sanctionStatusAt({ ...item, permanent: true }, now), 'active');
+  assert.equal(sanctionStatusAt({ ...item, status: 'review' }, now), 'review');
+});
 test('sanction clock tolerates wrong device dates and then uses monotonic elapsed time', () => {
   const wrongWall = now + 20 * 86400_000;
   const clock = createSanctionClock(new Date(now).toISOString(), wrongWall, wrongWall, 100);
