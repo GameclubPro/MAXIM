@@ -971,6 +971,7 @@ export async function publishChatRules(params: {
           ...(buttonRows ? { buttons: buttonRows } : {}),
         }
       : undefined;
+  let editMutationAuthorized = false;
   try {
     if (editExisting) {
       await params.maxClient.replaceOwnMessage!(
@@ -992,6 +993,7 @@ export async function publishChatRules(params: {
               'Публикация правил изменилась. Обновите экран и повторите.',
             );
           }
+          editMutationAuthorized = true;
         },
       );
       published = { messageId: previousPublishedMessageId!, url: rules.publishedUrl };
@@ -1006,7 +1008,8 @@ export async function publishChatRules(params: {
       });
     }
   } catch (error: unknown) {
-    const ambiguous = isAmbiguousMaxSendError(error);
+    // FLAG: A failed read-only edit preflight cannot leave an ambiguous mutation fence.
+    const ambiguous = isAmbiguousMaxSendError(error) && (!editExisting || editMutationAuthorized);
     if (!ambiguous) {
       await params.prisma.chatRules
         .updateMany({
@@ -1040,7 +1043,11 @@ export async function publishChatRules(params: {
       },
       'Chat rules publication failed before confirmation',
     );
-    throw new BadRequestException(describeChatRulesPublishError(error));
+    throw new BadRequestException(
+      editExisting && !editMutationAuthorized && isAmbiguousMaxSendError(error)
+        ? 'MAX не ответил при проверке опубликованных правил. Изменения не отправлялись. Повторите попытку.'
+        : describeChatRulesPublishError(error),
+    );
   }
 
   const publishedAt = new Date();

@@ -158,6 +158,41 @@ describe('admin chat rules MAX errors', () => {
     });
   });
 
+  it.each([false, true])(
+    'fences an edit timeout only after mutation authorization=%s',
+    async (authorized) => {
+      const editor = jest.fn();
+      const { prisma, publish, maxClient } = createPublishFixture(editor);
+      const rules = {
+        ...createRules(),
+        pendingCleanupMessageId: 'rules-older',
+        pendingCleanupKind: 'republish_previous',
+      };
+      prisma.chatRules.upsert.mockResolvedValue(rules);
+      editor.mockImplementation(
+        async (_chatId, _messageId, _text, _options, _request, beforeMutation) => {
+          if (authorized) {
+            prisma.chatRules.findUnique.mockResolvedValue({
+              ...rules,
+              publishOperationId:
+                prisma.chatRules.updateMany.mock.calls[0][0].data.publishOperationId,
+            });
+            await beforeMutation();
+          }
+          throw Object.assign(new Error('MAX timeout'), { code: 'ETIMEDOUT' });
+        },
+      );
+      await expect(publish()).rejects.toThrow();
+      expect(prisma.chatRules.updateMany).toHaveBeenCalledTimes(authorized ? 1 : 2);
+      if (!authorized)
+        expect(prisma.chatRules.updateMany.mock.calls[1][0].data).toMatchObject({
+          publishOperationId: null,
+          publishSendStartedAt: null,
+        });
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not update after the current publication changes during preparation', async () => {
     const editor = jest.fn();
     const { prisma, publish, maxClient } = createPublishFixture(editor);
