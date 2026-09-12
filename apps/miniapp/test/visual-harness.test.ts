@@ -138,6 +138,8 @@ test('limit controls are audited while enabled, including the bottom of the shee
   ]) {
     assert.ok(contrastCheck.includes(selector), selector);
   }
+  assert.match(contrastCheck, /CSS\.supports\('color', value\)/u);
+  assert.match(contrastCheck, /colorContext\.getImageData\(0, 0, 1, 1\)/u);
 });
 
 test('moderation explanations and pending actions have dedicated interaction scenarios', () => {

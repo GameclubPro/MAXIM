@@ -3883,12 +3883,25 @@ async function assertCriticalContrast(page, scenario) {
       'body[data-miniapp-profile="moderation"] .channel-insights',
     ];
 
+    const colorCanvas = document.createElement('canvas');
+    colorCanvas.width = 1;
+    colorCanvas.height = 1;
+    const colorContext = colorCanvas.getContext('2d', { willReadFrequently: true });
+    const colorCache = new Map();
     const parseColor = (value) => {
       const match = value
         .trim()
         .match(/^rgba?\(\s*([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/iu);
       if (!match) {
-        return null;
+        if (!colorContext || !CSS.supports('color', value)) return null;
+        if (colorCache.has(value)) return colorCache.get(value);
+        colorContext.clearRect(0, 0, 1, 1);
+        colorContext.fillStyle = value;
+        colorContext.fillRect(0, 0, 1, 1);
+        const [red, green, blue, alpha] = colorContext.getImageData(0, 0, 1, 1).data;
+        const color = { red, green, blue, alpha: alpha / 255 };
+        colorCache.set(value, color);
+        return color;
       }
       return {
         red: Number(match[1]),
@@ -3928,7 +3941,7 @@ async function assertCriticalContrast(page, scenario) {
       if (!value || value === 'none') {
         return null;
       }
-      const match = value.match(/rgba?\([^)]*\)/iu);
+      const match = value.match(/(?:rgba?|color|oklch|oklab|lch|lab)\([^)]*\)/iu);
       return match ? parseColor(match[0]) : null;
     };
     const effectiveBackground = (element) => {
