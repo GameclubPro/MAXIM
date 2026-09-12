@@ -466,6 +466,36 @@
     border-radius: 8px;
     box-shadow: none;
   }
+  body[data-miniapp-profile='moderation'] .settings-advertising-soon__entry {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    opacity: 1;
+    cursor: not-allowed;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .settings-advertising-soon__entry:hover {
+    border-color: var(--major-border);
+    transform: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .settings-advertising-soon__entry:hover
+    .settings-section__icon-badge {
+    transform: none;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .settings-advertising-soon__badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 24px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--major-warning-soft);
+    color: var(--major-warning);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
   body[data-miniapp-profile='moderation'] .settings-home-group-head__title {
     color: var(--major-muted);
     font-size: 0.74rem;

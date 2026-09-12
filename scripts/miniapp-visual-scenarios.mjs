@@ -710,6 +710,7 @@ const baseScenarios = [
   ]),
   ...defineRouteScenarios('chat-settings', [
     'chat-settings',
+    'chat-settings-advertising-soon',
     [
       'chat-settings-publisher-policy-setup',
       { searchParams: { publisherPolicyState: 'setup' }, features: ['publisher'] },

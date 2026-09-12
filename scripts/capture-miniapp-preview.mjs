@@ -146,6 +146,47 @@ async function openSettingsSection(page, name, panelSelector) {
   await page.waitForTimeout(350);
 }
 
+async function assertAdvertisingSoonModule(page) {
+  const entry = page.getByRole('button', { name: 'Рекламная площадка', exact: true });
+  await entry.waitFor({ state: 'visible' });
+  await page.getByRole('searchbox', { name: 'Найти настройку', exact: true }).fill('Связка');
+  await page.waitForFunction(
+    () => document.querySelectorAll('.settings-home-entry:not([hidden])').length === 1,
+  );
+  if (!(await entry.isVisible())) throw new Error('Settings search must find the upcoming module.');
+  await page.getByRole('button', { name: 'Очистить поиск', exact: true }).click();
+  await entry.scrollIntoViewIfNeeded();
+  if (!(await entry.isDisabled()))
+    throw new Error('The advertising announcement must be unavailable.');
+  const badge = entry.locator('.settings-advertising-soon__badge');
+  if (!(await badge.isVisible()) || (await badge.textContent())?.trim() !== 'Скоро') {
+    throw new Error('The coming-soon badge must stay visible.');
+  }
+  const initialUrl = page.url();
+  const writes = [];
+  const recordWrite = (request) => {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) writes.push(request.method());
+  };
+  page.on('request', recordWrite);
+  try {
+    await entry.evaluate((button) => button.click());
+    const box = await entry.boundingBox();
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    if (
+      page.url() !== initialUrl ||
+      writes.length ||
+      (await page.locator('.settings-drilldown__panel:visible').count())
+    ) {
+      throw new Error('The coming-soon module cannot navigate, open a sheet or mutate settings.');
+    }
+  } finally {
+    page.off('request', recordWrite);
+  }
+}
+
 async function assertHintDismissal(page, panel, trigger) {
   const hintId = await trigger.getAttribute('aria-controls');
   if (!hintId) throw new Error('The explanation button does not identify its text.');
@@ -2016,6 +2057,19 @@ const scenarioBehaviors = [
       await page.getByRole('checkbox', { name: 'Включить кнопку витрины Караван' }).waitFor({
         state: 'visible',
       });
+    },
+  },
+  {
+    name: 'chat-settings-advertising-soon',
+    beforeShot: assertAdvertisingSoonModule,
+  },
+  {
+    name: 'chat-settings',
+    beforeShot: async (page) => {
+      await assertAdvertisingSoonModule(page);
+      await page
+        .locator('[data-managed-entity-workspace="chat-settings"]')
+        .evaluate((element) => element.scrollIntoView({ block: 'start', behavior: 'instant' }));
     },
   },
   {
