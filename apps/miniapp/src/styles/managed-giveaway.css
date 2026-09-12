@@ -91,9 +91,10 @@
   .managed-giveaway__hero-copy h2 {
     margin: 0;
     color: var(--text-primary);
-    font-size: clamp(1.1rem, 4.4vw, 1.42rem);
+    font-size: 1.25rem;
     line-height: 1.04;
     letter-spacing: 0;
+    scroll-margin-top: 12px;
   }
 
   .managed-giveaway__hero-copy p {
@@ -1334,16 +1335,15 @@
   }
 
   .managed-giveaway__action-dock {
-    position: sticky;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+    /* Keep navigation in flow: a bottom-sticky dock can cover editable fields. */
+    position: static;
     display: grid;
     gap: 8px;
-    padding: 10px;
-    border: 1px solid var(--color-border-strong, var(--color-border));
-    border-radius: 8px;
-    background: var(--color-surface-raised, var(--color-surface));
-    box-shadow: 0 -4px 12px color-mix(in srgb, var(--color-ink) 8%, transparent);
-    z-index: 4;
+    padding: 12px 0 0;
+    border: 0;
+    border-top: 1px solid var(--color-border);
+    border-radius: 0;
+    background: transparent;
   }
 
   .managed-giveaway__action-dock--compact {
@@ -1354,7 +1354,7 @@
   .managed-giveaway--step-conditions .managed-giveaway__action-dock--compact,
   .managed-giveaway--step-prizes .managed-giveaway__action-dock--compact {
     gap: 8px;
-    padding: 10px 12px;
+    padding: 12px 0 0;
   }
 
   .managed-giveaway__action-dock-copy {
@@ -1394,6 +1394,12 @@
     min-height: 46px;
     min-width: 0;
     border-radius: 8px;
+  }
+
+  .managed-giveaway__action-dock-actions .button svg {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
   }
 
   .managed-giveaway__action-dock-actions .button--ghost {
@@ -2151,8 +2157,7 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
-    .managed-giveaway__primary-actions--dashboard,
-    .managed-giveaway__dashboard-stat-grid {
+    .managed-giveaway__primary-actions--dashboard {
       grid-template-columns: minmax(0, 1fr);
     }
 
@@ -2276,8 +2281,8 @@
       padding-inline: 8px;
       font-size: 0.8rem;
       line-height: 1.08;
-      white-space: nowrap;
-      overflow-wrap: normal;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
   }
 
@@ -2418,15 +2423,15 @@
     grid-row: 1 / span 2;
   }
 
-  /* Settings embeds the same workflow; keep its component hierarchy instead of restoring card-on-card chrome. */
+  /* Settings owns the frame; giveaway sections remain unframed inside it. */
   .settings-drilldown
     :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
     .managed-giveaway__surface {
     gap: 12px;
-    padding: 12px;
-    border: 1px solid var(--color-border);
-    border-radius: 12px;
-    background: var(--color-surface-raised, var(--color-surface));
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     box-shadow: none;
   }
 
@@ -2530,9 +2535,6 @@
     .managed-giveaway__dashboard-winner,
   .settings-drilldown
     :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
-    .managed-giveaway__same-prize-card,
-  .settings-drilldown
-    :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
     .managed-giveaway__same-prize-preview,
   .settings-drilldown
     :is(.settings-drilldown__panel--giveaway, .settings-drilldown__panel--channel-giveaway)
@@ -2544,6 +2546,13 @@
     border-radius: 8px;
     background: var(--color-surface-muted);
     box-shadow: none;
+  }
+
+  .settings-drilldown__panel--giveaway .managed-giveaway__same-prize-card {
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
   }
 
   .settings-drilldown

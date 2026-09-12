@@ -4,6 +4,7 @@ import {
   Check,
   CheckCircle,
   Clock,
+  WarningTriangle,
   User,
   NavArrowRight,
   RefreshDouble,
@@ -64,6 +65,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
   const [nowMs, setNowMs] = useState(Date.now);
   const [actionError, setActionError] = useState<string | null>(null);
   const [returnPending, setReturnPending] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const actionInFlight = useRef(false);
   const awaitingReturn = useRef(false);
   const mounted = useRef(true);
@@ -98,8 +100,10 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
   const phase = giveaway ? resolveGiveawayDisplayPhase(giveaway, nowMs) : null;
   const entryOpen = giveaway ? isGiveawayEntryOpen(giveaway, nowMs) : false;
   const refreshQueries = () => {
-    void queryClient.invalidateQueries({ queryKey: publicKey });
-    void queryClient.invalidateQueries({ queryKey: participantKey });
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: publicKey }),
+      queryClient.invalidateQueries({ queryKey: participantKey }),
+    ]);
   };
   const refresh = useEffectEvent(refreshQueries);
   useEffect(() => {
@@ -194,8 +198,9 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
     { enabled: true, priority: 500 },
   );
   const checking = enterMutation.isPending;
-  const busy = checking || claimMutation.isPending;
-  const unavailable = Boolean(participantQuery.error || actionError);
+  const busy = checking || claimMutation.isPending || refreshing;
+  const readError = participantQuery.error ?? giveawayQuery.error;
+  const unavailable = Boolean(readError || actionError);
   const conditions = giveaway
     ? buildGiveawayConditions(giveaway, unavailable ? null : participant, checking)
     : [];
@@ -208,6 +213,8 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
     (participant?.winnerStatus === 'SELECTED' &&
       Boolean(participant.claimDeadlineAt) &&
       Date.parse(participant.claimDeadlineAt!) <= nowMs);
+  const loading = giveawayQuery.isPending || (giveaway && participantQuery.isPending);
+  const fatalError = !giveawayId || (!giveaway && giveawayQuery.isError);
   const title = !giveaway
     ? 'Розыгрыш'
     : checking
@@ -244,16 +251,16 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
       : phase === 'ACTIVE'
         ? giveaway?.endsAt
         : null;
-  const loading = giveawayQuery.isPending || (giveaway && participantQuery.isPending);
-  const fatalError = !giveawayId || (!giveaway && giveawayQuery.isError);
   const actionLabel = fatalError
     ? 'Повторить'
     : loading
       ? 'Загружаем статус'
       : busy
-        ? checking
-          ? 'Проверяем условия'
-          : 'Подтверждаем'
+        ? refreshing
+          ? 'Обновляем статус'
+          : checking
+            ? 'Проверяем условия'
+            : 'Подтверждаем'
         : unavailable
           ? 'Повторить проверку'
           : claimable
@@ -268,21 +275,42 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
                 ? 'Обновить итоги'
                 : 'Обновить статус';
   const showConditions = giveaway && phase !== 'COMPLETED' && phase !== 'CANCELED';
+  const statusTone =
+    fatalError || unavailable
+      ? 'error'
+      : phase === 'CANCELED' || expired
+        ? 'muted'
+        : participant?.isWinner
+          ? 'winner'
+          : verified
+            ? 'success'
+            : 'default';
   const StateIcon =
-    participant?.isWinner && !expired
-      ? Trophy
-      : verified
-        ? CheckCircle
-        : phase === 'DRAWING' || phase === 'SCHEDULED'
-          ? Clock
-          : ShieldCheck;
+    fatalError || unavailable
+      ? WarningTriangle
+      : phase === 'CANCELED' || expired
+        ? Xmark
+        : participant?.isWinner && !expired
+          ? Trophy
+          : verified
+            ? CheckCircle
+            : phase === 'DRAWING' || phase === 'SCHEDULED'
+              ? Clock
+              : ShieldCheck;
   const publicWinners = giveaway?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
+  const postUrl =
+    phase === 'COMPLETED'
+      ? (giveaway?.resultsUrl ?? giveaway?.publicationUrl)
+      : giveaway?.publicationUrl;
   return (
-    <main className="giveaway-page" data-phase={phase}>
+    <main className="giveaway-page" data-phase={phase} data-tone={statusTone}>
       <div className="giveaway-page__content">
         <header className="giveaway-page__header">
           <img src={`${import.meta.env.BASE_URL}favicon.png`} alt="Майор" width="28" height="28" />
-          <span>{giveaway?.sourceTitle ?? 'Розыгрыш'}</span>
+          <div className="giveaway-page__source">
+            <span>Розыгрыш в MAX</span>
+            <strong>{giveaway?.sourceTitle ?? 'Майор'}</strong>
+          </div>
           <button
             className="giveaway-page__icon-button"
             type="button"
@@ -298,19 +326,28 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
           aria-busy={Boolean(loading || busy)}
         >
           <div
-            className={`giveaway-page__verification ${checking || phase === 'DRAWING' ? 'is-checking' : ''} ${!unavailable && (verified || (participant?.isWinner && !expired)) ? 'is-verified' : ''}`}
+            className={`giveaway-page__verification ${loading || checking || phase === 'DRAWING' ? 'is-checking' : ''} ${statusTone === 'success' || statusTone === 'winner' ? 'is-verified' : ''}`}
             aria-hidden="true"
           >
             <StateIcon />
           </div>
-          <p className="giveaway-page__eyebrow">Розыгрыш</p>
+          <p className="giveaway-page__eyebrow">
+            {phase === 'COMPLETED'
+              ? 'Результат розыгрыша'
+              : phase === 'DRAWING'
+                ? 'Приём завершён'
+                : 'Ваш статус'}
+          </p>
           <h1 id="giveaway-overlay-title" aria-live="polite">
             {fatalError ? 'Не удалось открыть розыгрыш' : loading ? 'Загружаем розыгрыш' : title}
           </h1>
+          {!loading && !unavailable && !participant?.joined && entryOpen ? (
+            <p>Ваша заявка ещё не зарегистрирована.</p>
+          ) : null}
           {verified && entryOpen ? (
             <p>Подписки подтверждены. Перед итогами проверим их снова.</p>
           ) : null}
-          {phase === 'COMPLETED' && !participant?.isWinner ? (
+          {!loading && !unavailable && phase === 'COMPLETED' && !participant?.isWinner ? (
             <p>
               {participant?.joined
                 ? 'В этот раз ваша заявка не выиграла.'
@@ -318,12 +355,13 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             </p>
           ) : null}
           {phase === 'DRAWING' ? <p>Приём заявок закрыт. Ожидаем результаты.</p> : null}
-          {participant?.eligibilityState === 'PENDING' && entryOpen ? (
+          {!unavailable && participant?.eligibilityState === 'PENDING' && entryOpen ? (
             <p>MAX пока не подтвердил подписки. Заявка сохранена, допуск ещё не подтверждён.</p>
           ) : null}
           {participant?.isWinner && !expired && participant.prizePosition ? (
             <p>{participant.prizePosition} место</p>
           ) : null}
+          {phase === 'CANCELED' ? <p>Приём заявок остановлен. Победители не выбираются.</p> : null}
         </section>
         {giveaway ? (
           <section className="giveaway-page__metrics" aria-label="Сроки и заявки">
@@ -431,7 +469,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             ) : null}
           </section>
         ) : null}
-        {participant?.entryId && verified ? (
+        {participant?.entryId && verified && (entryOpen || phase === 'DRAWING') ? (
           <div className="giveaway-page__ticket">
             <CheckCircle aria-hidden="true" />
             <span>
@@ -445,13 +483,17 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             {publicWinners.length ? (
               <ol>
                 {publicWinners.map((winner) => (
-                  <li key={winner.prizePosition}>
-                    <span>{winner.prizePosition}</span>
+                  <li key={winner.prizePosition} data-status={winner.status}>
+                    <span className="giveaway-page__winner-rank">{winner.prizePosition}</span>
                     <div>
                       <strong>{winner.displayName || 'Участник'}</strong>
                       <small>{winnerLabels[winner.status]}</small>
                     </div>
-                    <Trophy aria-hidden="true" />
+                    {winner.status === 'EXPIRED' ? (
+                      <Clock aria-hidden="true" />
+                    ) : (
+                      <Trophy aria-hidden="true" />
+                    )}
                   </li>
                 ))}
               </ol>
@@ -462,23 +504,28 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
         ) : null}
       </div>
       <footer className="giveaway-page__participation-actions">
-        {actionError || participantQuery.error || fatalError ? (
+        {actionError || readError || fatalError ? (
           <p className="giveaway-page__error" role="alert">
             {actionError ??
-              describeUserFacingError(
-                participantQuery.error ?? giveawayQuery.error,
-                'Не удалось загрузить данные. Повторите попытку.',
-              )}
+              describeUserFacingError(readError, 'Не удалось загрузить данные. Повторите попытку.')}
           </p>
         ) : null}
         <button
           type="button"
           className="giveaway-page__primary"
           disabled={Boolean(loading || busy || !giveawayId)}
-          onClick={() => {
-            if (fatalError || (!entryOpen && !claimable) || participantQuery.isError) {
+          onClick={async () => {
+            if (busy || actionInFlight.current) return;
+            if (fatalError || (!entryOpen && !claimable) || readError) {
+              actionInFlight.current = true;
               setActionError(null);
-              refreshQueries();
+              setRefreshing(true);
+              try {
+                await refreshQueries();
+              } finally {
+                actionInFlight.current = false;
+                if (mounted.current) setRefreshing(false);
+              }
             } else void runAction(claimable ? 'claim' : 'enter');
           }}
         >
@@ -491,13 +538,15 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
           )}
           <span>{actionLabel}</span>
         </button>
-        {giveaway?.publicationUrl ? (
+        {postUrl ? (
           <button
             type="button"
             className="giveaway-page__post-link"
-            onClick={() => openMaxBotLink(giveaway.publicationUrl!)}
+            onClick={() => openMaxBotLink(postUrl)}
           >
-            К посту розыгрыша
+            {phase === 'COMPLETED' && giveaway?.resultsUrl
+              ? 'К опубликованным итогам'
+              : 'К посту розыгрыша'}
             <NavArrowRight aria-hidden="true" />
           </button>
         ) : null}

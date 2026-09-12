@@ -64,6 +64,20 @@ const fixture = {
   claims: 0,
   mode: 'verified',
   opened: false,
+  openedUrl: '',
+  longConditions() {
+    data.sourceTitle = 'Канал организатора с очень длинным названием для проверки переноса строк';
+    data.requiredChannels = Array.from({ length: 20 }, (_, index) => ({
+      id: `extra-${index}`,
+      title: `Дополнительный канал ${index + 1} с очень длинным названием`,
+      link: `https://max.ru/extra-${index}`,
+    }));
+    data.requiredChannelIds = data.requiredChannels.map((channel) => channel.id);
+    void client.invalidateQueries();
+  },
+  refresh() {
+    void client.invalidateQueries();
+  },
   setScenario(scenario: string) {
     data.status =
       scenario === 'scheduled'
@@ -86,6 +100,16 @@ const fixture = {
           Date.now() + (scenario === 'expired' ? -1_000 : 3_600_000),
         ).toISOString(),
       };
+      data.resultsUrl = 'https://max.ru/results';
+      data.winners = [
+        {
+          prizePosition: 1,
+          prizeTitle: 'Скрытый приз',
+          prizeDisplayTitle: 'Скрытый приз',
+          displayName: 'Победитель с длинным именем',
+          status: scenario === 'expired' ? 'EXPIRED' : 'SELECTED',
+        },
+      ];
     }
     void client.invalidateQueries();
   },
@@ -93,8 +117,9 @@ const fixture = {
 Object.assign(window, {
   giveawayTest: fixture,
   WebApp: {
-    openMaxLink: () => {
+    openMaxLink: (url: string) => {
       fixture.opened = true;
+      fixture.openedUrl = url;
     },
   },
 });
@@ -144,7 +169,11 @@ const api = {
         },
       };
     }
-    if (path.endsWith('/me')) return { ...participant };
+    if (path.endsWith('/me')) {
+      if (fixture.mode === 'read-error') throw new Error('Статус временно недоступен');
+      return { ...participant };
+    }
+    if (fixture.mode === 'public-error') throw new Error('Розыгрыш временно недоступен');
     return { ...data, serverTime: new Date().toISOString() };
   },
 } as ApiTransport;

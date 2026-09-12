@@ -24,7 +24,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash } from 'iconoir-react';
+import { NavArrowLeft, NavArrowRight, Trash } from 'iconoir-react';
 import { getChannels } from '../lib/api/root-client';
 import {
   cancelManagedGiveaway,
@@ -735,6 +735,7 @@ function ManagedGiveawayCardImpl(
   const firstPrizeInputRef = useRef<HTMLInputElement | null>(null);
   const channelModalPanelRef = useRef<HTMLElement | null>(null);
   const channelModalReturnFocusRef = useRef<HTMLElement | null>(null);
+  const editorHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
   const listQueryKey = useMemo(
     () => queryKeys.managedGiveaways(entityType, entityId),
@@ -2057,6 +2058,12 @@ function ManagedGiveawayCardImpl(
   };
 
   const isEditingOpen = editorMode !== 'closed';
+  useEffect(() => {
+    if (!isEditingOpen) return;
+    const heading = editorHeadingRef.current;
+    heading?.focus({ preventScroll: true });
+    heading?.scrollIntoView({ block: 'start', behavior: 'instant' });
+  }, [editorStep, isEditingOpen]);
   useImperativeHandle(
     ref,
     () => ({
@@ -2585,7 +2592,9 @@ function ManagedGiveawayCardImpl(
               Шаг {activeEditorStepIndex + 1} из {editorSteps.length}
             </span>
             <div className="managed-giveaway__hero-title-row">
-              <h2>{activeEditorStep.title}</h2>
+              <h2 ref={editorHeadingRef} tabIndex={-1}>
+                {activeEditorStep.title}
+              </h2>
               <button
                 type="button"
                 className="button button--ghost managed-giveaway__hero-button managed-giveaway__hero-button--danger"
@@ -3261,6 +3270,7 @@ function ManagedGiveawayCardImpl(
                 onClick={goToPreviousStep}
                 disabled={isBusy}
               >
+                <NavArrowLeft aria-hidden />
                 Назад
               </button>
             ) : null}
@@ -3281,6 +3291,9 @@ function ManagedGiveawayCardImpl(
                   ? finalPrimaryBusyLabel
                   : 'Переходим…'
                 : nextStepLabel}
+              {activeEditorStepIndex < editorSteps.length - 1 ? (
+                <NavArrowRight aria-hidden />
+              ) : null}
             </button>
           </div>
         </div>
