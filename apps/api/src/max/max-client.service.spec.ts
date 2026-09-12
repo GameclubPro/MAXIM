@@ -779,6 +779,151 @@ describe('MaxClientService inline keyboard guardrails', () => {
     jest.useRealTimers();
   });
 
+  it('replaces own published rules only after exact author and operation guards', async () => {
+    const request = jest.fn().mockReturnValue(of({ status: 200, data: { success: true } }));
+    const service = createService({ request });
+    jest.spyOn(service, 'getCurrentChatMemberAccess').mockResolvedValue({
+      userId: '777000',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+    const exact = jest.spyOn(service, 'getExactMessageRow').mockResolvedValue({
+      body: { mid: 'rules-current' },
+      sender: { user_id: 777000, is_bot: true },
+      recipient: { chat_id: 'chat-1' },
+    });
+    const beforeMutation = jest.fn();
+    try {
+      await service.replaceOwnMessage(
+        'chat-1',
+        'rules-current',
+        'New rules',
+        { textFormat: 'html', imagePayload: { token: 'new-image' } },
+        { botId: '777000_bot', sourceTag: MAX_API_SOURCE_TAGS.CHAT_RULES },
+        beforeMutation,
+      );
+      expect(exact).toHaveBeenCalledWith(
+        'chat-1',
+        'rules-current',
+        expect.objectContaining({ botId: '777000_bot', bypassCache: true }),
+      );
+      expect(beforeMutation).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'put',
+          url: 'https://platform-api2.max.ru/messages',
+          params: { message_id: 'rules-current' },
+          data: {
+            text: 'New rules',
+            format: 'html',
+            attachments: [{ type: 'image', payload: { token: 'new-image' } }],
+            notify: false,
+          },
+        }),
+      );
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it.each([
+    { sender: { user_id: 123, is_bot: true } },
+    { sender: { user_id: 777000, is_bot: false } },
+    null,
+  ])('never replaces foreign or unverifiable rules content: %o', async (message) => {
+    const request = jest.fn();
+    const service = createService({ request });
+    jest.spyOn(service, 'getCurrentChatMemberAccess').mockResolvedValue({
+      userId: '777000',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+    jest.spyOn(service, 'getExactMessageRow').mockResolvedValue(message);
+    try {
+      await expect(
+        service.replaceOwnMessage(
+          'chat-1',
+          'rules-current',
+          'New rules',
+          undefined,
+          { botId: '777000_bot' },
+          async () => {},
+        ),
+      ).rejects.toThrow('автора');
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it.each(['access', 'target', 'operation'])(
+    'does not dispatch a rules edit when the %s guard rejects it',
+    async (failure) => {
+      const request = jest.fn();
+      const service = createService({ request });
+      jest.spyOn(service, 'getCurrentChatMemberAccess').mockResolvedValue({
+        userId: '777000',
+        isAdmin: failure !== 'access',
+        isOwner: false,
+        permissions: ['write'],
+      });
+      const exact = jest.spyOn(service, 'getExactMessageRow').mockResolvedValue({
+        sender: { user_id: 777000, is_bot: true },
+      });
+      if (failure === 'target') exact.mockRejectedValue(new Error('Exact message target mismatch'));
+      try {
+        await expect(
+          service.replaceOwnMessage(
+            'chat-1',
+            'rules-current',
+            'New rules',
+            undefined,
+            { botId: '777000_bot' },
+            async () => {
+              throw new Error('Operation ownership changed');
+            },
+          ),
+        ).rejects.toThrow();
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it('requires a documented successful edit response and supports removing old attachments', async () => {
+    const request = jest.fn().mockReturnValue(of({ status: 200, data: { success: false } }));
+    const service = createService({ request });
+    jest.spyOn(service, 'getCurrentChatMemberAccess').mockResolvedValue({
+      userId: '777000',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+    jest
+      .spyOn(service, 'getExactMessageRow')
+      .mockResolvedValue({ sender: { user_id: 777000, is_bot: true } });
+    try {
+      await expect(
+        service.replaceOwnMessage(
+          'chat-1',
+          'rules-current',
+          'New rules',
+          undefined,
+          { botId: '777000_bot' },
+          async () => {},
+        ),
+      ).rejects.toThrow('success=false');
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { text: 'New rules', attachments: [], notify: false } }),
+      );
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
   function createService(
     httpService: { request?: jest.Mock } = {},
     configOverrides: Partial<Record<string, boolean | string>> = {},

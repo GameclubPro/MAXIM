@@ -158,6 +158,18 @@ async function reconcilePendingChatRulesCleanup(params: {
     });
   } catch (error: unknown) {
     if (!isMaxMessageMissingError(error)) {
+      const details = readMaxApiErrorDetails(error);
+      params.logger.warn(
+        {
+          chatId: rules.chatId,
+          messageId: rules.pendingCleanupMessageId,
+          botId,
+          cleanupKind,
+          statusCode: details.status,
+          errorCode: details.code || null,
+        },
+        'Pending chat rules cleanup failed',
+      );
       throw new BadRequestException(
         'Не удалось завершить удаление прежнего поста правил. Проверьте права исходного бота и повторите.',
       );
@@ -803,7 +815,8 @@ export async function publishChatRules(params: {
   maxClient: Pick<
     MaxClientService,
     'deleteMessage' | 'resolveMessageLink' | 'sendMessageImmediateWithResolvedLink' | 'uploadImage'
-  >;
+  > &
+    Partial<Pick<MaxClientService, 'replaceOwnMessage'>>;
   logger: Pick<Logger, 'warn'>;
   chatId: string;
   actorUserId: string;
@@ -820,13 +833,35 @@ export async function publishChatRules(params: {
   ) => Promise<ChatRulesFormattedPublication>;
   sendPrivateConfirmation: (publishedUrl: string | null) => Promise<void>;
   deletePreviousPublishedMessage?: DeletePublishedChatRulesMessage;
+  expectedUpdatedAt?: Date;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<PublishChatRulesResult> {
-  const rules = await reconcilePendingChatRulesCleanup({
-    ...params,
-    deleteMessage: params.deletePreviousPublishedMessage,
-    rules: await ensureChatRules({ prisma: params.prisma, chatId: params.chatId }),
-  });
+  const storedRules = await ensureChatRules({ prisma: params.prisma, chatId: params.chatId });
+  if (
+    params.expectedUpdatedAt &&
+    storedRules.updatedAt.getTime() !== params.expectedUpdatedAt.getTime()
+  ) {
+    throw new BadRequestException('Правила изменились после проверки. Повторите проверку.');
+  }
+  // FLAG: Updating the exact current post must not depend on deleting a different old post.
+  // Keep that cleanup owned; do not send a third post or treat inaccessible history as deleted.
+  const editExisting = Boolean(
+    params.maxClient.replaceOwnMessage &&
+    storedRules.pendingCleanupKind === 'republish_previous' &&
+    storedRules.pendingCleanupMessageId &&
+    storedRules.publishedMessageId &&
+    storedRules.pendingCleanupMessageId !== storedRules.publishedMessageId &&
+    normalizeOptionalBotId(storedRules.publishedBotId) &&
+    !storedRules.publishOperationId &&
+    !storedRules.publishSendStartedAt,
+  );
+  const rules = editExisting
+    ? storedRules
+    : await reconcilePendingChatRulesCleanup({
+        ...params,
+        deleteMessage: params.deletePreviousPublishedMessage,
+        rules: storedRules,
+      });
   const previousPublishedMessageId = rules.publishedMessageId?.trim() || null;
   const previousPublishedBotId = normalizeOptionalBotId(rules.publishedBotId);
   const autofilledText =
@@ -835,7 +870,9 @@ export async function publishChatRules(params: {
   if (!messageText) {
     throw new BadRequestException('Сначала заполните текст правил.');
   }
-  const resolvedBotId = normalizeOptionalBotId(await params.resolveBotId());
+  const resolvedBotId = editExisting
+    ? previousPublishedBotId
+    : normalizeOptionalBotId(await params.resolveBotId());
 
   let imagePayload: Record<string, unknown> | undefined;
   if (rules.imageBase64.trim()) {
@@ -892,7 +929,15 @@ export async function publishChatRules(params: {
       updatedAt: rules.updatedAt,
       publishOperationId: null,
       publishSendStartedAt: null,
-      pendingCleanupMessageId: null,
+      pendingCleanupMessageId: editExisting ? rules.pendingCleanupMessageId : null,
+      ...(editExisting
+        ? {
+            publishedMessageId: previousPublishedMessageId,
+            publishedBotId: previousPublishedBotId,
+            pendingCleanupBotId: rules.pendingCleanupBotId,
+            pendingCleanupKind: rules.pendingCleanupKind,
+          }
+        : {}),
     },
     data: {
       publishOperationId,
@@ -927,14 +972,39 @@ export async function publishChatRules(params: {
         }
       : undefined;
   try {
-    published = await publishChatRulesMessageWithRetry({
-      maxClient: params.maxClient,
-      chatId: params.chatId,
-      text: formattedMessage.text,
-      options: messageOptions,
-      botId: resolvedBotId,
-      sleep: params.sleep,
-    });
+    if (editExisting) {
+      await params.maxClient.replaceOwnMessage!(
+        params.chatId,
+        previousPublishedMessageId!,
+        formattedMessage.text,
+        messageOptions,
+        { ...buildChatRulesSendOptions(resolvedBotId), botId: resolvedBotId! },
+        async () => {
+          const current = await params.prisma.chatRules.findUnique({
+            where: { chatId: params.chatId },
+          });
+          if (
+            current?.publishOperationId !== publishOperationId ||
+            current.publishedMessageId !== previousPublishedMessageId ||
+            current.publishedBotId !== previousPublishedBotId
+          ) {
+            throw new BadRequestException(
+              'Публикация правил изменилась. Обновите экран и повторите.',
+            );
+          }
+        },
+      );
+      published = { messageId: previousPublishedMessageId!, url: rules.publishedUrl };
+    } else {
+      published = await publishChatRulesMessageWithRetry({
+        maxClient: params.maxClient,
+        chatId: params.chatId,
+        text: formattedMessage.text,
+        options: messageOptions,
+        botId: resolvedBotId,
+        sleep: params.sleep,
+      });
+    }
   } catch (error: unknown) {
     const ambiguous = isAmbiguousMaxSendError(error);
     if (!ambiguous) {
@@ -992,12 +1062,16 @@ export async function publishChatRules(params: {
         publishOperationId: null,
         publishOperationBotId: null,
         publishSendStartedAt: null,
-        pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
-        pendingCleanupBotId: needsPreviousCleanup
-          ? (previousPublishedBotId ?? resolvedBotId ?? null)
-          : null,
-        pendingCleanupIntentId: null,
-        pendingCleanupKind: needsPreviousCleanup ? 'republish_previous' : null,
+        ...(!editExisting
+          ? {
+              pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
+              pendingCleanupBotId: needsPreviousCleanup
+                ? (previousPublishedBotId ?? resolvedBotId ?? null)
+                : null,
+              pendingCleanupIntentId: null,
+              pendingCleanupKind: needsPreviousCleanup ? 'republish_previous' : null,
+            }
+          : {}),
       },
     });
     if (finalized.count !== 1) {
@@ -1113,7 +1187,9 @@ export async function publishChatRules(params: {
           replacedPreviousPost: Boolean(
             previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
           ),
-          previousPublishedMessageId,
+          previousPublishedMessageId: editExisting ? null : previousPublishedMessageId,
+          updatedExistingPost: editExisting,
+          ...(editExisting ? { preservedCleanupMessageId: rules.pendingCleanupMessageId } : {}),
           previousPublishedBotId: previousCleanupBotId,
           // FLAG: Recovery and older images recognize accepted; capability waits remain retryable.
           previousCleanupOutcome:
@@ -1144,12 +1220,16 @@ export async function publishChatRules(params: {
     publishOperationId: null,
     publishOperationBotId: null,
     publishSendStartedAt: null,
-    pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
-    pendingCleanupBotId: needsPreviousCleanup
-      ? (previousPublishedBotId ?? resolvedBotId ?? null)
-      : null,
-    pendingCleanupIntentId: null,
-    pendingCleanupKind: needsPreviousCleanup ? 'republish_previous' : null,
+    ...(!editExisting
+      ? {
+          pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
+          pendingCleanupBotId: needsPreviousCleanup
+            ? (previousPublishedBotId ?? resolvedBotId ?? null)
+            : null,
+          pendingCleanupIntentId: null,
+          pendingCleanupKind: needsPreviousCleanup ? 'republish_previous' : null,
+        }
+      : {}),
   };
   let hydratedRules = committedRules;
   try {

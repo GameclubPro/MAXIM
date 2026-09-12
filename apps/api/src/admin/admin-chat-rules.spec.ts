@@ -38,7 +38,7 @@ function createRules() {
   };
 }
 
-function createPublishFixture() {
+function createPublishFixture(editor?: jest.Mock) {
   const order: string[] = [];
   const prisma = {
     chatRules: {
@@ -59,6 +59,7 @@ function createPublishFixture() {
     },
   };
   const maxClient = {
+    ...(editor ? { replaceOwnMessage: editor } : {}),
     sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async () => {
       order.push('send');
       return {
@@ -93,6 +94,112 @@ function createPublishFixture() {
 }
 
 describe('admin chat rules MAX errors', () => {
+  it('updates the exact current post while an inaccessible older cleanup stays owned', async () => {
+    const editor = jest.fn();
+    const { prisma, maxClient, deletePreviousPublishedMessage, publish } =
+      createPublishFixture(editor);
+    const rules = {
+      ...createRules(),
+      text: 'Updated rules',
+      imageBase64: 'aW1hZ2U=',
+      imageMimeType: 'image/png',
+      pendingCleanupMessageId: 'rules-older',
+      pendingCleanupBotId: 'removed-bot',
+      pendingCleanupIntentId: 'old-intent',
+      pendingCleanupKind: 'republish_previous',
+    };
+    prisma.chatRules.upsert.mockResolvedValue(rules);
+    maxClient.uploadImage.mockResolvedValue({ token: 'new-image' });
+    editor.mockImplementation(
+      async (_chatId, _messageId, _text, _options, _request, beforeMutation) => {
+        prisma.chatRules.findUnique.mockResolvedValue({
+          ...rules,
+          publishOperationId: prisma.chatRules.updateMany.mock.calls[0][0].data.publishOperationId,
+          pendingCleanupMessageId: null,
+          pendingCleanupKind: null,
+        });
+        await beforeMutation();
+      },
+    );
+
+    await expect(publish()).resolves.toMatchObject({ messageId: 'rules-old' });
+
+    expect(editor).toHaveBeenCalledWith(
+      'chat-1',
+      'rules-old',
+      'Updated rules',
+      expect.objectContaining({ imagePayload: { token: 'new-image' } }),
+      expect.objectContaining({ botId: 'bot-old' }),
+      expect.any(Function),
+    );
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.any(String),
+      'image/png',
+      expect.objectContaining({ botId: 'bot-old' }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(deletePreviousPublishedMessage).not.toHaveBeenCalled();
+    expect(prisma.chatRules.updateMany.mock.calls[1][0].data).not.toHaveProperty(
+      'pendingCleanupMessageId',
+    );
+    expect(prisma.chatRules.updateMany.mock.calls[1][0].data).not.toHaveProperty(
+      'pendingCleanupIntentId',
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: expect.objectContaining({
+          updatedExistingPost: true,
+          previousPublishedMessageId: null,
+          previousCleanupOutcome: 'not_needed',
+          preservedCleanupMessageId: 'rules-older',
+        }),
+      }),
+    });
+  });
+
+  it('does not update after the current publication changes during preparation', async () => {
+    const editor = jest.fn();
+    const { prisma, publish, maxClient } = createPublishFixture(editor);
+    const rules = {
+      ...createRules(),
+      pendingCleanupMessageId: 'rules-older',
+      pendingCleanupKind: 'republish_previous',
+    };
+    prisma.chatRules.upsert.mockResolvedValue(rules);
+    editor.mockImplementation(
+      async (_chatId, _messageId, _text, _options, _request, beforeMutation) => {
+        prisma.chatRules.findUnique.mockResolvedValue({
+          ...rules,
+          publishOperationId: 'different-operation',
+        });
+        await beforeMutation();
+      },
+    );
+    await expect(publish()).rejects.toThrow();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { publishOperationId: 'unresolved-send' },
+    { publishSendStartedAt: new Date() },
+    { pendingCleanupKind: 'reset_current' },
+    { pendingCleanupMessageId: 'rules-old' },
+  ])('does not use in-place update to bypass a different rules fence: %o', async (override) => {
+    const editor = jest.fn();
+    const { prisma, publish, maxClient } = createPublishFixture(editor);
+    prisma.chatRules.upsert.mockResolvedValue({
+      ...createRules(),
+      pendingCleanupMessageId: 'rules-older',
+      pendingCleanupKind: 'republish_previous',
+      ...override,
+    });
+    await expect(publish()).rejects.toThrow();
+    expect(editor).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
   it('repairs malformed stored rule URLs without dropping the rules', async () => {
     const rules = {
       ...createRules(),

@@ -1441,6 +1441,58 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
+  async replaceOwnMessage(
+    chatId: string,
+    messageId: string,
+    text: string,
+    options: MaxSendMessageOptions | undefined,
+    requestOptions: MaxApiRequestOptions & { botId: string },
+    beforeMutation: () => Promise<void>,
+  ): Promise<void> {
+    const bot = this.resolveExecutableBot(requestOptions.botId, { explicit: true });
+    const exactOptions = { ...requestOptions, botId: bot.id, bypassCache: true };
+    await this.runWithMessageKeyboardEditLock(messageId, async (assertOwnership) => {
+      const access = await this.getCurrentChatMemberAccess(chatId, exactOptions);
+      if (!access.isAdmin && !access.isOwner) {
+        throw new BadRequestException('Бот больше не является администратором группы.');
+      }
+      const message = await this.getExactMessageRow(chatId, messageId, exactOptions);
+      const sender = this.asRecord(message?.sender);
+      const senderId = this.readMemberUserId(sender);
+      // FLAG: A stored bot ID is not authorship proof; never replace another author's post.
+      if (!access.userId || senderId !== access.userId || sender?.is_bot !== true) {
+        throw new BadRequestException('Не удалось подтвердить автора опубликованных правил.');
+      }
+      const attachments = this.buildMessageAttachments(options);
+      await this.executeMessageMutation(
+        'edit',
+        chatId,
+        async () => {
+          await assertOwnership();
+          await this.runPreDispatchMutationGuard(
+            beforeMutation,
+            MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+          );
+          await assertOwnership();
+          const response = await this.request<{ success?: boolean }>('put', '/messages', {
+            params: { message_id: messageId },
+            data: {
+              text,
+              ...(options?.textFormat ? { format: options.textFormat } : {}),
+              attachments,
+              notify: false,
+            },
+            ...(requestOptions.timeoutMs ? { timeout: requestOptions.timeoutMs } : {}),
+          });
+          if (response?.success !== true) {
+            throw new BadRequestException('MAX не подтвердил обновление правил.');
+          }
+        },
+        exactOptions,
+      );
+    });
+  }
+
   async editMessageInlineKeyboard(
     chatId: string,
     messageId: string,

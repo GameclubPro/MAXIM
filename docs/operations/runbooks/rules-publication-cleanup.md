@@ -24,3 +24,21 @@ Compare `pending_cleanup_bot_id` with the exact remote message author and confir
 identity. Never assume that the bot currently reading the chat authored an old post, and never
 clear a cleanup fence on a generic 403/404. Publication retry remains unsafe while a send fence
 is ambiguous. This report does not modify rules, permissions, intents, or remote messages.
+
+## Updating a Blocked Publication
+
+When an older republish cleanup is pending but the current rules post has a stored author bot,
+the regular publish operation updates that exact post in place. Fresh bot membership and the exact
+remote message author must agree, and MAX must return `success: true`. Text, image, and buttons
+are replaced from the saved draft; the link stays stable. No new post is sent and the older cleanup
+is neither cleared nor falsely marked successful. Pending reset and ambiguous send fences still block.
+
+For an operator-reviewed recovery, the API image includes
+`apps/api/dist/apps/api/src/scripts/repair-pending-rules-update.js`. Run only inside `api-admin`
+with exact `--chat-id`, `--message-id`, `--pending-message-id`, and `--bot-id` arguments.
+It defaults to metadata-only preview. A separately reviewed `--apply` additionally requires
+`--expected-updated-at` equal to the preview timestamp and healthy non-degraded local readiness.
+Use `--chat-id=-123...` argument syntax so a negative value cannot be parsed as another option.
+This intentionally narrow command refuses enabled admin-contact formatting and empty auto-text
+drafts; use the authenticated miniapp for those. Apply reuses the normal publication function,
+records the operator actor, and structurally forbids all new sends and deletes.
