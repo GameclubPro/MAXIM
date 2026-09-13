@@ -324,8 +324,12 @@ try {
       await applyNativeVisualMode(page, profile);
       await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
       await page.getByRole('dialog', { name: 'Оформление', exact: true }).waitFor();
+      await page.waitForFunction(
+        () => document.activeElement === document.querySelector('.comment-theme-sheet__close'),
+      );
       await page.getByRole('radio', { name: 'Авангард', exact: true }).focus();
       await page.keyboard.press('ArrowLeft');
+      await page.locator('[data-comment-preview="obsidian"][aria-checked="true"]').waitFor();
       assert.equal(
         await page
           .getByRole('radio', { name: 'Обсидиан', exact: true })
@@ -333,7 +337,12 @@ try {
         'true',
       );
       await page.keyboard.press('Escape');
-      assert.equal(await page.getByRole('dialog', { name: 'Оформление', exact: true }).count(), 0);
+      await page
+        .getByRole('dialog', { name: 'Оформление', exact: true })
+        .waitFor({ state: 'hidden' });
+      await page.waitForFunction(
+        () => document.activeElement === document.querySelector('.channel-dialog-theme-toggle'),
+      );
       assert.equal(
         await page
           .locator('.channel-dialog-theme-toggle')
