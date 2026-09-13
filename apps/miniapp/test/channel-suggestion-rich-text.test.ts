@@ -66,10 +66,12 @@ test('suggestion submit confirmations report sending without claiming delivery',
   assert.doesNotMatch(suggestionPageSource, /Предложение доставлено/u);
   assert.match(
     legacyDialogPageSource,
-    /dialogType === 'suggest' \? 'Предложение отправлено' : 'Комментарий отправлен'/u,
+    /if \(dialogType === 'suggest'\) \{\s*pushToast\(\{ tone: 'success', title: 'Предложение отправлено' \}\);/u,
   );
-  assert.doesNotMatch(
-    legacyDialogPageSource,
-    /dialogType === 'suggest' \? 'Предложение доставлено'/u,
-  );
+  assert.doesNotMatch(legacyDialogPageSource, /Предложение доставлено/u);
+});
+
+test('comment success feedback does not cover the conversation with repeated toasts', () => {
+  assert.match(legacyDialogPageSource, /maxNotify\('success'\)/u);
+  assert.doesNotMatch(legacyDialogPageSource, /title: 'Комментарий (?:отправлен|обновлён)'/u);
 });

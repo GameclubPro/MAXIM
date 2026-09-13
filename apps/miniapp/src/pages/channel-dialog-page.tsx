@@ -25,6 +25,7 @@ import {
   Code as IconoirCode,
   Italic as IconoirItalic,
   Link as IconoirLink,
+  NavArrowDown as IconoirArrowDown,
   Palette as IconoirPalette,
   Strikethrough as IconoirStrikethrough,
   Type as IconoirType,
@@ -46,7 +47,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
-  type UIEvent as ReactUIEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useParams, useSearchParams } from 'react-router';
@@ -99,6 +99,7 @@ import type { LastEntityType } from '../lib/last-chat';
 import {
   downloadMaxFile,
   maxImpact,
+  maxNotify,
   maxSelectionChanged,
   openMaxBotLink,
   openMaxBotLinkAndClose,
@@ -106,6 +107,8 @@ import {
 import { useDialogFocusTrap } from '../lib/dialog-focus';
 import { useNativeBackHandler } from '../lib/native-back';
 import { useCommentTheme } from '../lib/use-comment-theme';
+import { useCommentScroll } from '../lib/use-comment-scroll';
+import { formatCommentDay, isSameCommentDay } from '../lib/comment-timeline';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
 import { describeUserFacingError } from '../lib/user-facing-error';
@@ -165,8 +168,6 @@ const COMMENT_COMPOSE_EMOJI_GROUPS = [
 ] as const;
 type CommentComposeEmojiGroupId = (typeof COMMENT_COMPOSE_EMOJI_GROUPS)[number]['id'];
 const COMMENT_DRAFT_MAX_LENGTH = 2_000;
-const COMMENTS_NEAR_BOTTOM_THRESHOLD = 72;
-const COMMENTS_STICK_TO_BOTTOM_THRESHOLD = 160;
 const SOURCE_HIGHLIGHT_DURATION_MS = 1_500;
 const ATTACHMENT_SELECTION_DEDUPE_MS = 2_500;
 const SWIPE_REPLY_ACTIVATION_DISTANCE = 14;
@@ -609,33 +610,6 @@ function buildAdminAuthorStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
   };
 }
 
-function getViewportDistanceToBottom(viewport: HTMLElement): number {
-  return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-}
-
-function resolveNextUnreadMessageId(
-  messages: ChannelDialogMessage[],
-  previousLastMessageId: string | null,
-  currentLastMessageId: string | null,
-): string | null {
-  if (!messages.length) {
-    return null;
-  }
-
-  if (!previousLastMessageId) {
-    return currentLastMessageId ?? messages[messages.length - 1]?.id ?? null;
-  }
-
-  const previousMessageIndex = messages.findIndex(
-    (message) => message.id === previousLastMessageId,
-  );
-  if (previousMessageIndex < 0) {
-    return currentLastMessageId ?? messages[messages.length - 1]?.id ?? null;
-  }
-
-  return messages[previousMessageIndex + 1]?.id ?? currentLastMessageId ?? null;
-}
-
 function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number): boolean {
   const current = messages[index];
   const previous = messages[index - 1];
@@ -643,7 +617,10 @@ function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number):
     return false;
   }
 
-  if (current.authorUserId !== previous.authorUserId) {
+  if (
+    current.authorUserId !== previous.authorUserId ||
+    !isSameCommentDay(current.createdAt, previous.createdAt)
+  ) {
     return false;
   }
 
@@ -1380,8 +1357,6 @@ export function ChannelDialogPage({
     useState<ChannelDialogNotificationScope>('thread');
   const [activeComposeEmojiGroupId, setActiveComposeEmojiGroupId] =
     useState<CommentComposeEmojiGroupId>('frequent');
-  const [isNearBottom, setIsNearBottom] = useState(true);
-  const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [terminalDialogErrorState, setTerminalDialogErrorState] =
     useState<TerminalDialogErrorState | null>(null);
@@ -1397,7 +1372,6 @@ export function ChannelDialogPage({
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
-  const scrollViewportRef = useRef<HTMLElement | null>(null);
   const suggestComposerRef = useRef<HTMLElement | null>(null);
   const suggestBarRef = useRef<HTMLDivElement | null>(null);
   const suggestionKeyboardBaselineRef = useRef<SuggestionKeyboardViewportBaseline | null>(null);
@@ -1406,7 +1380,6 @@ export function ChannelDialogPage({
   const imageViewerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const commentsNotificationTopNudgeRef = useRef(0);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
-  const lastMessageIdRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -1427,7 +1400,7 @@ export function ChannelDialogPage({
   });
   const messageNodeRefs = useRef(new Map<string, HTMLElement>());
   const messageLayoutContextRef = useRef<string | null>(null);
-  const messageRectsRef = useRef(new Map<string, DOMRect>());
+  const messageRectsRef = useRef(new Map<string, { left: number; top: number }>());
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const ignoreNextBubbleClickRef = useRef(false);
   const queryClient = useQueryClient();
@@ -1528,6 +1501,19 @@ export function ChannelDialogPage({
   }, [imageViewer]);
 
   const messages = dialogQuery.data?.messages ?? [];
+  const {
+    viewportRef: scrollViewportRef,
+    listRef: commentListRef,
+    isNearBottom,
+    firstUnreadMessageId,
+    setFirstUnreadMessageId,
+    handleScroll: handleBodyScroll,
+    scrollToLatest,
+  } = useCommentScroll(
+    `${entityType}:${chatId}:${dialogType}:${token}`,
+    messages,
+    dialogType === 'comments' && dialogQuery.isSuccess,
+  );
   const introText = dialogQuery.data?.introText?.trim() ?? '';
   const notificationSettings = dialogQuery.data?.notificationSettings ?? {
     mode: 'off' as const,
@@ -1564,14 +1550,15 @@ export function ChannelDialogPage({
     () => messages.find((message) => message.id === replyToMessageId) ?? null,
     [messages, replyToMessageId],
   );
-  const draftLength = draft.trim().length;
+  const draftLength = draft.length;
   const draftAttachmentCount = draftAttachments.length;
   const editingAttachmentCount = editingMessage?.attachments.length ?? 0;
   const isPreparingAttachment = preparingAttachmentState !== null;
   const showComposeMeta = isPreparingAttachment || draftLength > 0 || editingAttachmentCount > 0;
   const canSubmitMessage =
+    dialogQuery.isSuccess &&
     !isPreparingAttachment &&
-    (draftLength > 0 ||
+    (draft.trim().length > 0 ||
       (canUploadCommentAttachments && draftAttachmentCount > 0) ||
       editingAttachmentCount > 0);
   const activeMessageIsOwn = activeMessage ? currentUserId === activeMessage.authorUserId : false;
@@ -1583,7 +1570,7 @@ export function ChannelDialogPage({
     [firstUnreadMessageId, messages],
   );
   const unreadCount = unreadStartIndex >= 0 ? messages.length - unreadStartIndex : 0;
-  const showJumpToLatest = unreadCount > 0 && !isNearBottom;
+  const showJumpToLatest = messages.length > 0 && !isNearBottom;
   const draftAttachmentSummary = useMemo(
     () =>
       resolveCommentAttachmentSummary(
@@ -1769,6 +1756,7 @@ export function ChannelDialogPage({
   };
 
   const handleComposeEmojiInsert = (emoji: string) => {
+    if (sendMutation.isPending || updateMutation.isPending) return;
     const field = composeFieldRef.current;
 
     setDraft((current) => {
@@ -1917,7 +1905,7 @@ export function ChannelDialogPage({
 
   useNativeBackHandler(
     () => {
-      cancelEditing({ restoreDraft: true });
+      if (!updateMutation.isPending) cancelEditing({ restoreDraft: true });
       return true;
     },
     { enabled: Boolean(editingMessage), priority: 610 },
@@ -1940,7 +1928,6 @@ export function ChannelDialogPage({
     setEditRestoreState(null);
     setReplyToMessageId(null);
     setIsReactionPickerExpanded(false);
-    setIsNearBottom(true);
     setFirstUnreadMessageId(null);
     setTerminalDialogErrorState(null);
     setReactionPopoverLayout(null);
@@ -1948,7 +1935,6 @@ export function ChannelDialogPage({
     setDraft('');
     setDraftAttachments([]);
     setPreparingAttachmentState(null);
-    lastMessageIdRef.current = null;
     messageNodeRefs.current.clear();
     messageLayoutContextRef.current = null;
     messageRectsRef.current.clear();
@@ -1968,6 +1954,28 @@ export function ChannelDialogPage({
     const nextHeight = Math.max(minHeight, Math.min(field.scrollHeight, maxHeight));
     field.style.height = `${nextHeight}px`;
   }, [draft, editingMessage, replyTarget, draftAttachments.length, dialogType]);
+
+  useLayoutEffect(() => {
+    const field = composeFieldRef.current;
+    if (!field || dialogType !== 'comments') return;
+    const keepEndCaretVisible = () => {
+      if (
+        document.activeElement === field &&
+        field.selectionStart === field.selectionEnd &&
+        field.selectionEnd === field.value.length
+      ) {
+        field.scrollTop = field.scrollHeight;
+      }
+    };
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(keepEndCaretVisible);
+    observer?.observe(field);
+    window.addEventListener('resize', keepEndCaretVisible);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', keepEndCaretVisible);
+    };
+  }, [dialogType, dialogQuery.isSuccess]);
 
   useEffect(
     () => () => {
@@ -1995,10 +2003,14 @@ export function ChannelDialogPage({
     }
 
     const currentLayoutContext = `${location.pathname}${location.search}`;
-    const nextRects = new Map<string, DOMRect>();
+    const nextRects = new Map<string, { left: number; top: number }>();
     for (const [messageId, node] of messageNodeRefs.current.entries()) {
       if (node.isConnected) {
-        nextRects.set(messageId, node.getBoundingClientRect());
+        const rect = node.getBoundingClientRect();
+        nextRects.set(messageId, {
+          left: rect.left,
+          top: rect.top + (scrollViewportRef.current?.scrollTop ?? 0),
+        });
       }
     }
 
@@ -2052,57 +2064,12 @@ export function ChannelDialogPage({
   }, [location.pathname, location.search, messages]);
 
   useEffect(() => {
-    const viewport = scrollViewportRef.current;
-    const lastMessageId = messages[messages.length - 1]?.id ?? null;
-    if (!viewport || !lastMessageId) {
-      lastMessageIdRef.current = lastMessageId;
-      setIsNearBottom(true);
-      return;
-    }
-
-    const previousMessageId = lastMessageIdRef.current;
-    const distanceToBottom = getViewportDistanceToBottom(viewport);
-    const nearBottom = distanceToBottom < COMMENTS_NEAR_BOTTOM_THRESHOLD;
-    const isInitialMessageSet = previousMessageId === null;
-    const shouldStickToBottom =
-      !isInitialMessageSet && distanceToBottom < COMMENTS_STICK_TO_BOTTOM_THRESHOLD;
-    setIsNearBottom(nearBottom);
-
-    if (!isInitialMessageSet && previousMessageId !== lastMessageId) {
-      if (shouldStickToBottom) {
-        setFirstUnreadMessageId(null);
-        requestAnimationFrame(() => {
-          viewport.scrollTo({
-            top: viewport.scrollHeight,
-            behavior: previousMessageId ? 'smooth' : 'auto',
-          });
-        });
-      } else {
-        const nextUnreadMessageId = resolveNextUnreadMessageId(
-          messages,
-          previousMessageId,
-          lastMessageId,
-        );
-        if (nextUnreadMessageId) {
-          setFirstUnreadMessageId((current) => current ?? nextUnreadMessageId);
-        }
-      }
-    }
-
-    lastMessageIdRef.current = lastMessageId;
-  }, [messages]);
-
-  useEffect(() => {
     if (replyToMessageId && !messages.some((message) => message.id === replyToMessageId)) {
       setReplyToMessageId(null);
     }
 
     if (editingMessageId && !messages.some((message) => message.id === editingMessageId)) {
-      setEditingMessageId(null);
-      setEditRestoreState(null);
-      setDraft('');
-      setDraftAttachments([]);
-      resetAttachmentPickers();
+      cancelEditing({ restoreDraft: true });
     }
 
     if (activeMessageId && !messages.some((message) => message.id === activeMessageId)) {
@@ -2387,22 +2354,11 @@ export function ChannelDialogPage({
 
       const viewportRect = viewport.getBoundingClientRect();
       const activeBubbleRect = activeBubble.getBoundingClientRect();
-      const composeSurface = document.querySelector<HTMLElement>(
-        '.channel-dialog-compose__surface',
-      );
-      const header = document.querySelector<HTMLElement>('.channel-dialog-comments-header');
-      const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
-      const headerHeight = header?.getBoundingClientRect().height ?? 0;
       const popoverHeight = reactionPopoverRef.current?.getBoundingClientRect().height ?? 0;
       const desiredTopInset =
-        14 +
-        (reactionPopoverLayout?.placement === 'above'
-          ? headerHeight + popoverHeight + 10
-          : headerHeight);
+        14 + (reactionPopoverLayout?.placement === 'above' ? popoverHeight + 10 : 0);
       const desiredBottomInset =
-        composeHeight +
-        20 +
-        (reactionPopoverLayout?.placement === 'below' ? popoverHeight + 10 : 0);
+        20 + (reactionPopoverLayout?.placement === 'below' ? popoverHeight + 10 : 0);
 
       const topOffset = activeBubbleRect.top - viewportRect.top;
       const bottomOffset = viewportRect.bottom - activeBubbleRect.bottom;
@@ -2761,6 +2717,7 @@ export function ChannelDialogPage({
   };
 
   const handleDraftAttachmentRemove = (index: number) => {
+    if (sendMutation.isPending || updateMutation.isPending) return;
     setDraftAttachments((current) =>
       current.filter((_, attachmentIndex) => attachmentIndex !== index),
     );
@@ -2812,10 +2769,11 @@ export function ChannelDialogPage({
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
         updateDialogMessage(current, result.message),
       );
-      pushToast({
-        tone: 'success',
-        title: dialogType === 'suggest' ? 'Предложение отправлено' : 'Комментарий отправлен',
-      });
+      if (dialogType === 'suggest') {
+        pushToast({ tone: 'success', title: 'Предложение отправлено' });
+      } else {
+        maxNotify('success');
+      }
       setDraft('');
       setReplyToMessageId(null);
       setDraftAttachments([]);
@@ -2823,16 +2781,7 @@ export function ChannelDialogPage({
       resetAttachmentPickers();
       dismissMessageActions();
       requestAnimationFrame(() => {
-        const viewport = scrollViewportRef.current;
-        if (!viewport) {
-          return;
-        }
-        setFirstUnreadMessageId(null);
-        setIsNearBottom(true);
-        viewport.scrollTo({
-          top: viewport.scrollHeight,
-          behavior: 'smooth',
-        });
+        scrollToLatest('smooth');
       });
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
@@ -2866,11 +2815,8 @@ export function ChannelDialogPage({
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
         updateDialogMessage(current, result.message),
       );
-      pushToast({
-        tone: 'success',
-        title: 'Комментарий обновлён',
-      });
-      cancelEditing();
+      maxNotify('success');
+      cancelEditing({ restoreDraft: true });
       dismissMessageActions();
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
@@ -2902,7 +2848,7 @@ export function ChannelDialogPage({
         title: 'Комментарий удалён',
       });
       if (editingMessageId === variables.messageId) {
-        cancelEditing();
+        cancelEditing({ restoreDraft: true });
       }
       dismissMessageActions();
       void queryClient.invalidateQueries({
@@ -3044,7 +2990,10 @@ export function ChannelDialogPage({
 
   const isComposePending = sendMutation.isPending || updateMutation.isPending;
   const isCommentActionPending =
-    reactionMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
+    sendMutation.isPending ||
+    reactionMutation.isPending ||
+    updateMutation.isPending ||
+    deleteMutation.isPending;
   const isNotificationPending = notificationMutation.isPending;
 
   const applySuggestTextModifier = (tool: MaxMarkdownTool) => {
@@ -3398,12 +3347,8 @@ export function ChannelDialogPage({
 
     const viewportRect = viewport.getBoundingClientRect();
     const targetRect = targetMessage.getBoundingClientRect();
-    const composeSurface = screenRef.current?.querySelector<HTMLElement>(
-      '.channel-dialog-compose__surface',
-    );
-    const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
     const topInset = 18;
-    const bottomInset = composeHeight + 22;
+    const bottomInset = 18;
     const availableHeight = Math.max(140, viewport.clientHeight - topInset - bottomInset);
     const desiredTop =
       viewport.scrollTop +
@@ -3427,15 +3372,6 @@ export function ChannelDialogPage({
     return true;
   };
 
-  const handleBodyScroll = (event: ReactUIEvent<HTMLElement>) => {
-    const viewport = event.currentTarget;
-    const nearBottom = getViewportDistanceToBottom(viewport) < COMMENTS_NEAR_BOTTOM_THRESHOLD;
-    setIsNearBottom(nearBottom);
-    if (nearBottom && firstUnreadMessageId) {
-      setFirstUnreadMessageId(null);
-    }
-  };
-
   const handleJumpToLatest = () => {
     const viewport = scrollViewportRef.current;
     if (!viewport) {
@@ -3444,12 +3380,7 @@ export function ChannelDialogPage({
 
     maxImpact('light');
     dismissMessageActions();
-    setFirstUnreadMessageId(null);
-    setIsNearBottom(true);
-    viewport.scrollTo({
-      top: viewport.scrollHeight,
-      behavior: 'smooth',
-    });
+    scrollToLatest('smooth');
   };
 
   const handleJumpToSource = (messageId: string) => (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -3471,7 +3402,7 @@ export function ChannelDialogPage({
 
   const onSubmit = () => {
     const text = draft.trim();
-    if (isComposePending || !chatId || !token) {
+    if (isComposePending || !canSubmitMessage || !chatId || !token) {
       return;
     }
 
@@ -4190,7 +4121,7 @@ export function ChannelDialogPage({
                   ) : null}
                 </div>
               ) : (
-                <div className="channel-dialog-message-list">
+                <div ref={commentListRef} className="channel-dialog-message-list">
                   {messages.length ? (
                     messages.map((message, index) => {
                       const isOwnMessage = currentUserId === message.authorUserId;
@@ -4207,6 +4138,15 @@ export function ChannelDialogPage({
 
                       return (
                         <Fragment key={message.id}>
+                          {(!messages[index - 1] ||
+                            !isSameCommentDay(messages[index - 1]!.createdAt, message.createdAt)) &&
+                          formatCommentDay(message.createdAt) ? (
+                            <div className="channel-dialog-day">
+                              <time dateTime={message.createdAt}>
+                                {formatCommentDay(message.createdAt)}
+                              </time>
+                            </div>
+                          ) : null}
                           {unreadStartIndex === index ? (
                             <div
                               className="channel-dialog-new-comments"
@@ -4336,6 +4276,15 @@ export function ChannelDialogPage({
                                     onOpenImageAlbum={openCommentImageAlbum}
                                   />
                                   {renderPlainTextParagraphs(message.text)}
+                                  {groupedWithPrevious ? (
+                                    <time
+                                      className="channel-dialog-message__grouped-time"
+                                      dateTime={message.createdAt}
+                                    >
+                                      {formatMessageTime(message.createdAt)}
+                                      {message.editedAt ? ' · ред.' : ''}
+                                    </time>
+                                  ) : null}
                                 </div>
 
                                 {message.reactionGroups.length > 0 ? (
@@ -4386,96 +4335,109 @@ export function ChannelDialogPage({
                 type="button"
                 className="channel-dialog-jump-latest"
                 onClick={handleJumpToLatest}
-                aria-label={`Перейти к ${unreadCount} новым комментариям`}
+                aria-label={
+                  unreadCount > 0
+                    ? `Перейти к ${unreadCount} новым комментариям`
+                    : 'К последнему комментарию'
+                }
+                title="К последнему комментарию"
               >
                 <span className="channel-dialog-jump-latest__icon" aria-hidden>
-                  <SendArrowIcon />
+                  <IconoirArrowDown aria-hidden focusable="false" />
                 </span>
-                <span>К новым</span>
-                <b>{unreadCount}</b>
+                {unreadCount > 0 ? <b>{unreadCount}</b> : null}
               </button>
             ) : null}
 
             <div className="channel-dialog-compose__surface">
-              {editingMessage ? (
-                <div className={cn('channel-dialog-compose__reply', 'is-editing')}>
-                  <button
-                    type="button"
-                    className={cn('channel-dialog-compose__reply-copy', 'is-link')}
-                    onClick={() => scrollToMessage(editingMessage.id)}
-                  >
-                    <span>Редактирование комментария</span>
-                    <p>
-                      {summarizeReplyText(
-                        editingMessage.text || editingAttachmentSummary || 'Комментарий',
-                        84,
-                      )}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    className="channel-dialog-compose__reply-dismiss"
-                    onClick={() => cancelEditing({ restoreDraft: true })}
-                    aria-label="Отменить редактирование"
-                  >
-                    <CloseIcon />
-                  </button>
-                </div>
-              ) : replyTarget ? (
-                <div className="channel-dialog-compose__reply">
-                  <button
-                    type="button"
-                    className={cn('channel-dialog-compose__reply-copy', 'is-link')}
-                    onClick={handleComposeReplySourceJump}
-                  >
-                    <span>Ответ {replyTarget.authorDisplayName || 'участнику'}</span>
-                    <p>{summarizeReplyText(replyTarget.text, 84)}</p>
-                  </button>
-                  <button
-                    type="button"
-                    className="channel-dialog-compose__reply-dismiss"
-                    onClick={() => setReplyToMessageId(null)}
-                    aria-label="Отменить ответ"
-                  >
-                    <CloseIcon />
-                  </button>
-                </div>
-              ) : null}
-
-              {editingMessage?.attachments.length ? (
-                <>
-                  <CommentComposeImageStrip attachments={editingImageAttachments} />
-                  <CommentComposeFileList attachments={editingFileAttachments} />
-                </>
-              ) : !editingMessage && canUploadCommentAttachments && draftAttachments.length > 0 ? (
-                <>
-                  <CommentComposeImageStrip
-                    attachments={draftImageAttachments}
-                    removable
-                    onRemove={(filteredIndex) => {
-                      const attachment = draftImageAttachments[filteredIndex];
-                      const originalIndex = attachment ? draftAttachments.indexOf(attachment) : -1;
-                      if (originalIndex >= 0) {
-                        handleDraftAttachmentRemove(originalIndex);
-                      }
-                    }}
-                  />
-                  {dialogType === 'comments' ? (
-                    <CommentComposeFileList
-                      attachments={draftFileAttachments}
-                      removable
-                      onRemove={(filteredIndex) => {
-                        const attachment = draftFileAttachments[filteredIndex];
-                        const originalIndex = attachment
-                          ? draftAttachments.indexOf(attachment)
-                          : -1;
-                        if (originalIndex >= 0) {
-                          handleDraftAttachmentRemove(originalIndex);
-                        }
-                      }}
-                    />
+              {editingMessage || replyTarget || draftAttachments.length > 0 ? (
+                <div className="channel-dialog-compose__context">
+                  {editingMessage ? (
+                    <div className={cn('channel-dialog-compose__reply', 'is-editing')}>
+                      <button
+                        type="button"
+                        className={cn('channel-dialog-compose__reply-copy', 'is-link')}
+                        onClick={() => scrollToMessage(editingMessage.id)}
+                      >
+                        <span>Редактирование комментария</span>
+                        <p>
+                          {summarizeReplyText(
+                            editingMessage.text || editingAttachmentSummary || 'Комментарий',
+                            84,
+                          )}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        className="channel-dialog-compose__reply-dismiss"
+                        onClick={() => cancelEditing({ restoreDraft: true })}
+                        disabled={isComposePending}
+                        aria-label="Отменить редактирование"
+                      >
+                        <CloseIcon />
+                      </button>
+                    </div>
+                  ) : replyTarget ? (
+                    <div className="channel-dialog-compose__reply">
+                      <button
+                        type="button"
+                        className={cn('channel-dialog-compose__reply-copy', 'is-link')}
+                        onClick={handleComposeReplySourceJump}
+                      >
+                        <span>Ответ {replyTarget.authorDisplayName || 'участнику'}</span>
+                        <p>{summarizeReplyText(replyTarget.text, 84)}</p>
+                      </button>
+                      <button
+                        type="button"
+                        className="channel-dialog-compose__reply-dismiss"
+                        onClick={() => setReplyToMessageId(null)}
+                        aria-label="Отменить ответ"
+                      >
+                        <CloseIcon />
+                      </button>
+                    </div>
                   ) : null}
-                </>
+
+                  {editingMessage?.attachments.length ? (
+                    <>
+                      <CommentComposeImageStrip attachments={editingImageAttachments} />
+                      <CommentComposeFileList attachments={editingFileAttachments} />
+                    </>
+                  ) : !editingMessage &&
+                    canUploadCommentAttachments &&
+                    draftAttachments.length > 0 ? (
+                    <>
+                      <CommentComposeImageStrip
+                        attachments={draftImageAttachments}
+                        removable={!isComposePending}
+                        onRemove={(filteredIndex) => {
+                          const attachment = draftImageAttachments[filteredIndex];
+                          const originalIndex = attachment
+                            ? draftAttachments.indexOf(attachment)
+                            : -1;
+                          if (originalIndex >= 0) {
+                            handleDraftAttachmentRemove(originalIndex);
+                          }
+                        }}
+                      />
+                      {dialogType === 'comments' ? (
+                        <CommentComposeFileList
+                          attachments={draftFileAttachments}
+                          removable={!isComposePending}
+                          onRemove={(filteredIndex) => {
+                            const attachment = draftFileAttachments[filteredIndex];
+                            const originalIndex = attachment
+                              ? draftAttachments.indexOf(attachment)
+                              : -1;
+                            if (originalIndex >= 0) {
+                              handleDraftAttachmentRemove(originalIndex);
+                            }
+                          }}
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
               ) : null}
 
               <div className="channel-dialog-compose__toolbar">
@@ -4567,6 +4529,7 @@ export function ChannelDialogPage({
                               className="channel-dialog-compose__attach-input"
                               aria-label="Прикрепить файл"
                               type="file"
+                              multiple
                               disabled={isComposePending || isPreparingAttachment}
                               onChange={handleDraftFilesChange}
                               onInput={handleDraftFilesInput}
@@ -4649,6 +4612,7 @@ export function ChannelDialogPage({
                               ref={fileInputRef}
                               className="channel-dialog-compose__picker-input"
                               type="file"
+                              multiple
                               disabled={isComposePending || isPreparingAttachment}
                               onChange={handleDraftFilesChange}
                               onInput={handleDraftFilesInput}
@@ -4757,6 +4721,8 @@ export function ChannelDialogPage({
                     ref={composeFieldRef}
                     rows={1}
                     value={draft}
+                    readOnly={isComposePending}
+                    aria-busy={isComposePending}
                     onChange={(event) => setDraft(event.target.value)}
                     onFocus={() => setIsComposeEmojiOpen(false)}
                     aria-label={

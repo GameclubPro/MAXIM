@@ -24,10 +24,6 @@
     --comments-native-edge-top: 0px;
     --comments-native-edge-bottom: max(0px, var(--safe-bottom, 0px));
     --comments-native-header-height: 44px;
-    --comments-native-content-top: calc(
-      var(--comments-native-header-height) + 8px +
-        var(--comments-dialog-notification-top-nudge, 0px)
-    );
     --comments-native-top-bleed: var(--comments-dialog-top-bleed, 4px);
     --comments-native-notification-top: calc(
       1px + var(--comments-dialog-notification-top-nudge, 0px)
@@ -53,6 +49,7 @@
     --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 58px), 24rem);
     /* FLAG: The immersive shell owns the top bleed. Adding it here makes the dialog taller twice. */
     min-height: 100%;
+    grid-template-rows: auto minmax(0, 1fr);
     padding: var(--comments-native-edge-top) var(--comments-native-edge-inline)
       var(--comments-native-edge-bottom);
     background: var(--comments-native-bg);
@@ -87,11 +84,12 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-comments-header {
-    position: absolute;
+    position: relative;
     z-index: 5;
     top: 0;
     left: 0;
     right: 0;
+    margin-inline: calc(-1 * var(--comments-native-edge-inline));
     min-height: var(--comments-native-header-height);
     padding: 0 48px 0 0;
     grid-template-columns: minmax(0, 1fr);
@@ -175,7 +173,10 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-body {
+    display: block;
     padding: 0;
+    scroll-padding-block: 12px;
+    touch-action: pan-y;
     overscroll-behavior: contain;
     scrollbar-gutter: auto;
   }
@@ -183,7 +184,8 @@
   .channel-dialog-screen--comments .channel-dialog-message-list {
     gap: 7px;
     min-height: 0;
-    padding: var(--comments-native-content-top) 0 0;
+    /* FLAG: Keep the end gap inside the natural-height list so overflow cannot swallow it. */
+    padding: 12px 0 16px;
   }
 
   .channel-dialog-screen--comments .channel-dialog-empty {
@@ -789,10 +791,6 @@
   @media (max-width: 420px) {
     .channel-dialog-screen--comments {
       --comments-native-x: 7px;
-      --comments-native-content-top: calc(
-        var(--comments-native-header-height) + 6px +
-          var(--comments-dialog-notification-top-nudge, 0px)
-      );
       --comments-compose-surface-padding: 6px;
       --comments-compose-surface-radius: 23px;
       --comments-compose-toolbar-height: 32px;

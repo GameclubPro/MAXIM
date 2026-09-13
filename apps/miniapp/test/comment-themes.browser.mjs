@@ -138,7 +138,7 @@ async function assertThemeContrast(page) {
         })
         .reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index], 0);
     const selectors =
-      '.channel-dialog-comments-header h1, .channel-dialog-message__bubble p, .channel-dialog-message__bubble a, .channel-dialog-message__meta strong, .channel-dialog-message__meta time, .channel-dialog-compose__meta span, .channel-dialog-compose__field textarea, .comment-theme-sheet__label, .comment-theme-sheet__done, .comment-theme-sheet__head h2, .channel-dialog-notification-sheet :is(button, strong, span)';
+      '.channel-dialog-comments-header h1, .channel-dialog-message__bubble p, .channel-dialog-message__bubble a, .channel-dialog-message__meta strong, .channel-dialog-message__meta time, .channel-dialog-message__grouped-time, .channel-dialog-day time, .channel-dialog-compose__meta span, .channel-dialog-compose__field textarea, .comment-theme-sheet__label, .comment-theme-sheet__done, .comment-theme-sheet__head h2, .channel-dialog-notification-sheet :is(button, strong, span)';
     const failures = [];
     for (const element of document.querySelectorAll(selectors)) {
       if (!element.textContent.trim() && element.tagName !== 'TEXTAREA') continue;
@@ -284,6 +284,7 @@ try {
       });
       await page.locator('.channel-dialog-compose__attachment').waitFor();
       await assertLayout(page);
+      await assertThemeContrast(page);
       await page.locator('.channel-dialog-compose__attachment-dismiss').click();
       if (profile.platform === 'android') {
         assert.equal(await photoInput.getAttribute('tabindex'), '0');

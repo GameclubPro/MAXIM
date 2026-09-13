@@ -349,6 +349,61 @@
     padding: 10px 12px;
   }
 
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose {
+    border-top: 1px solid var(--comment-line);
+    background: var(--comment-surface);
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__surface {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding-inline: 0;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-compose__context {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    max-height: clamp(48px, calc(var(--app-viewport-height, 100dvh) - 300px), 192px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-day {
+    display: flex;
+    justify-content: center;
+    margin-block: 4px 8px;
+    pointer-events: none;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-day time {
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: var(--comment-surface);
+    color: var(--comment-muted);
+    font-size: 0.75rem;
+    line-height: 1.3;
+    font-weight: 600;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__grouped-time {
+    align-self: flex-end;
+    color: var(--comment-muted);
+    font-size: 0.7rem;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .is-own
+    .channel-dialog-message__grouped-time {
+    color: var(--comment-own-muted);
+  }
+
   :root
     .channel-dialog-screen--comments[data-comment-theme]
     .channel-dialog-message.is-own
@@ -484,6 +539,19 @@
     -webkit-backdrop-filter: none;
   }
 
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-jump-latest {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-jump-latest__icon svg {
+    display: block;
+    width: 22px;
+    height: 22px;
+    transform: none;
+  }
+
   :root
     .channel-dialog-screen--comments[data-comment-theme]
     :is(
@@ -499,9 +567,6 @@
     box-shadow: none;
   }
 
-  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__surface {
-    box-shadow: 0 -2px 12px var(--comment-shadow);
-  }
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__emoji-panel {
     display: flex;
     flex-direction: column;
@@ -532,7 +597,7 @@
   :root
     .channel-dialog-screen--comments[data-comment-theme]
     :is(.channel-dialog-skeletons, .channel-dialog-error) {
-    padding-top: var(--comments-native-content-top);
+    padding-top: 12px;
   }
   :root
     .channel-dialog-screen--comments[data-comment-theme]
@@ -571,7 +636,7 @@
     color: var(--comment-ink);
     box-shadow: none;
     font-size: 1rem;
-    max-height: 132px;
+    max-height: clamp(46px, calc(var(--app-viewport-height, 100dvh) - 400px), 132px);
   }
   :root
     .channel-dialog-screen--comments[data-comment-theme]
@@ -614,6 +679,13 @@
     justify-content: flex-end;
     font-size: 0.68rem;
     font-variant-numeric: tabular-nums;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__attachment-copy
+    span {
+    color: var(--comment-ink);
   }
 
   :root
