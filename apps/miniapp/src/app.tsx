@@ -547,11 +547,15 @@ function AppRoutes({
           ) : null}
           <Route
             path="/channel/:chatId/dialog/comments"
-            element={<LazyChannelDialogPage api={apiClient} profile={me.profile} />}
+            element={
+              <LazyChannelDialogPage api={apiClient} profile={me.profile} userId={me.userId} />
+            }
           />
           <Route
             path="/chat/:chatId/dialog/comments"
-            element={<LazyChannelDialogPage api={apiClient} profile={me.profile} />}
+            element={
+              <LazyChannelDialogPage api={apiClient} profile={me.profile} userId={me.userId} />
+            }
           />
           <Route
             path="/channel/:chatId/dialog/suggest"

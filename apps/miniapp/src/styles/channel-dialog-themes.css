@@ -502,6 +502,33 @@
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__surface {
     box-shadow: 0 -2px 12px var(--comment-shadow);
   }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__emoji-panel {
+    display: flex;
+    flex-direction: column;
+    left: 0;
+    right: auto;
+    width: min(100%, 420px);
+    max-height: 280px;
+    overflow: hidden;
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(.channel-dialog-compose__emoji-head, .channel-dialog-compose__emoji-tabs) {
+    flex-shrink: 0;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__emoji-grid {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__emoji-close {
+    width: 44px;
+    height: 44px;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__emoji {
+    min-height: 44px;
+    font-size: 1.25rem;
+  }
   :root
     .channel-dialog-screen--comments[data-comment-theme]
     :is(.channel-dialog-skeletons, .channel-dialog-error) {

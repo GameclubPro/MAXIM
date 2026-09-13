@@ -103,6 +103,17 @@ test('channel comments route follows the authenticated Major or Publik profile',
   );
 });
 
+test('both comments routes use the authenticated principal instead of a one-time bridge snapshot', () => {
+  for (const entity of ['chat', 'channel']) {
+    assert.match(
+      appSource,
+      new RegExp(`path="/${entity}/:chatId/dialog/comments"[\\s\\S]*?userId=\\{me\\.userId\\}`),
+    );
+  }
+  assert.match(dialogPageSource, /userId: currentUserId/u);
+  assert.doesNotMatch(dialogPageSource, /getInitDataUserId/u);
+});
+
 test('the app shares one stateful launch resolver between boot and router sync', () => {
   assert.match(
     appSource,

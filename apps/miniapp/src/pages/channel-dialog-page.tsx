@@ -95,7 +95,6 @@ import {
   type PreparedCommentDialogAttachment,
 } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
-import { getInitDataUserId } from '../lib/init-data';
 import type { LastEntityType } from '../lib/last-chat';
 import {
   downloadMaxFile,
@@ -1347,9 +1346,11 @@ function resolveDialogEntityType(pathname: string): LastEntityType {
 export function ChannelDialogPage({
   api,
   profile,
+  userId: currentUserId,
 }: {
   api: ApiTransport;
   profile: MiniappProfile;
+  userId: string;
 }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
@@ -1436,7 +1437,6 @@ export function ChannelDialogPage({
   );
   const useNativeTapFileInputs = fileInputActivationMode === 'native-tap';
 
-  const currentUserId = useMemo(() => getInitDataUserId(), []);
   const dialogQueryKey = queryKeys.entityDialog(entityType, chatId, dialogType, token);
   const terminalDialogError =
     terminalDialogErrorState?.entityType === entityType &&
@@ -1797,7 +1797,6 @@ export function ChannelDialogPage({
         }
 
         const nextSelection = selectionStart + emoji.length;
-        nextField.focus();
         nextField.setSelectionRange(nextSelection, nextSelection);
       });
 
@@ -1870,6 +1869,43 @@ export function ChannelDialogPage({
     }
     setIsNotificationSettingsOpen(false);
   }, [canManageCommentNotifications]);
+
+  useLayoutEffect(() => {
+    if (!isComposeEmojiOpen || dialogType !== 'comments') return;
+    const screen = screenRef.current;
+    const panel = screen?.querySelector<HTMLElement>('.channel-dialog-compose__emoji-panel');
+    const surface = panel?.parentElement;
+    const header = screen?.querySelector<HTMLElement>('.channel-dialog-comments-header');
+    if (!panel || !surface || !header) return;
+    const update = () => {
+      const headerBottom = header.getBoundingClientRect().bottom;
+      const bounds = surface.getBoundingClientRect();
+      const above = bounds.top - headerBottom - 10;
+      const viewport = window.visualViewport;
+      const visibleBottom = Math.min(
+        bounds.bottom,
+        viewport ? viewport.offsetTop + viewport.height : window.innerHeight,
+      );
+      const useAbove = above >= 180 && bounds.top < visibleBottom;
+      panel.style.bottom = useAbove
+        ? 'calc(100% + 7px)'
+        : `${Math.max(0, bounds.bottom - visibleBottom)}px`;
+      panel.style.maxHeight = `${Math.max(0, Math.min(280, useAbove ? above : visibleBottom - headerBottom - 10))}px`;
+    };
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    observer?.observe(surface);
+    observer?.observe(header);
+    window.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('scroll', update);
+    update();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('scroll', update);
+    };
+  }, [dialogType, isComposeEmojiOpen]);
 
   useEffect(() => {
     if (canUploadCommentAttachments) {
@@ -4459,8 +4495,13 @@ export function ChannelDialogPage({
                     )}
                     onClick={() => {
                       maxImpact('light');
-                      setIsComposeEmojiOpen((current) => !current);
-                      requestAnimationFrame(() => composeFieldRef.current?.focus());
+                      if (isComposeEmojiOpen) {
+                        setIsComposeEmojiOpen(false);
+                        requestAnimationFrame(() => composeFieldRef.current?.focus());
+                      } else {
+                        composeFieldRef.current?.blur();
+                        setIsComposeEmojiOpen(true);
+                      }
                     }}
                     aria-label="Эмодзи"
                     title="Эмодзи"
@@ -4645,7 +4686,15 @@ export function ChannelDialogPage({
                 <div
                   id="channel-dialog-compose-emoji-panel"
                   className="channel-dialog-compose__emoji-panel"
+                  role="group"
                   aria-label="Эмодзи"
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Escape') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setIsComposeEmojiOpen(false);
+                    requestAnimationFrame(() => composeFieldRef.current?.focus());
+                  }}
                 >
                   <div className="channel-dialog-compose__emoji-head">
                     <span className="channel-dialog-compose__emoji-handle" aria-hidden />
@@ -4682,7 +4731,11 @@ export function ChannelDialogPage({
                       </button>
                     ))}
                   </div>
-                  <div className="channel-dialog-compose__emoji-grid" role="list">
+                  <div
+                    className="channel-dialog-compose__emoji-grid"
+                    role="group"
+                    aria-label="Выбор эмодзи"
+                  >
                     {activeComposeEmojiGroup.emojis.map((emoji, emojiIndex) => (
                       <button
                         key={`${emoji}-${emojiIndex}`}
@@ -4705,6 +4758,7 @@ export function ChannelDialogPage({
                     rows={1}
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
+                    onFocus={() => setIsComposeEmojiOpen(false)}
                     aria-label={
                       editingMessage
                         ? 'Текст редактируемого комментария'

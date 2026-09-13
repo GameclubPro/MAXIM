@@ -91,6 +91,7 @@ async function assertLayout(page) {
       '.channel-dialog-comments-header__context',
       '.channel-dialog-compose__surface',
       '.comment-theme-sheet__panel',
+      '.channel-dialog-compose__emoji-panel',
     ]) {
       const element = document.querySelector(selector);
       if (!element) continue;
@@ -102,6 +103,8 @@ async function assertLayout(page) {
         rect.bottom > innerHeight + 1
       )
         failures.push(`outside viewport: ${selector}`);
+      if (selector === '.channel-dialog-compose__emoji-panel' && rect.top < header.bottom - 1)
+        failures.push('emoji picker overlaps the header');
     }
     return failures;
   });
@@ -193,7 +196,6 @@ try {
       );
       await installMaxBridgeShimInitScript(context, profile, {
         colorScheme: mode,
-        userId: 'preview-admin',
       });
       await installNativeVisualModeInitScript(context);
       const page = await context.newPage();
@@ -348,6 +350,29 @@ try {
         false,
       );
       const viewport = page.viewportSize();
+      if (profile.platform === 'ios') {
+        await page.locator('.channel-dialog-compose__field textarea').fill('Проверка клавиатуры');
+        await page.evaluate(() => {
+          Object.defineProperty(window.visualViewport, 'height', {
+            configurable: true,
+            value: 320,
+          });
+          window.visualViewport.dispatchEvent(new Event('resize'));
+        });
+        await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+        await page.locator('.channel-dialog-compose__emoji-panel').waitFor();
+        await page.waitForFunction(
+          () =>
+            document.querySelector('.channel-dialog-compose__emoji-panel').getBoundingClientRect()
+              .bottom <=
+            window.visualViewport.height + window.visualViewport.offsetTop + 1,
+        );
+        await page.getByRole('button', { name: 'Закрыть эмодзи', exact: true }).click();
+        await page.evaluate(() => {
+          delete window.visualViewport.height;
+          window.visualViewport.dispatchEvent(new Event('resize'));
+        });
+      }
       await page.setViewportSize({
         width: viewport.width,
         height: Math.max(320, viewport.height - 280),
@@ -358,6 +383,44 @@ try {
       await page.waitForTimeout(150);
       await assertLayout(page);
       await page.screenshot({ path: path.join(output, `${profile.name}-${mode}-keyboard.png`) });
+      await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+      const emojiPanel = page.locator('.channel-dialog-compose__emoji-panel');
+      await emojiPanel.waitFor();
+      await assertLayout(page);
+      assert.equal(
+        await page
+          .locator('.channel-dialog-compose__field textarea')
+          .evaluate((element) => element === document.activeElement),
+        false,
+      );
+      await emojiPanel.locator('.channel-dialog-compose__emoji-tab').nth(1).click();
+      const emoji = await emojiPanel
+        .locator('.channel-dialog-compose__emoji')
+        .first()
+        .textContent();
+      await emojiPanel.locator('.channel-dialog-compose__emoji').first().click();
+      assert.ok(
+        (await page.locator('.channel-dialog-compose__field textarea').inputValue()).endsWith(
+          emoji.trim(),
+        ),
+      );
+      await emojiPanel.waitFor();
+      await assertLayout(page);
+      await page.screenshot({
+        path: path.join(output, `${profile.name}-${mode}-emoji-keyboard.png`),
+      });
+      await page.getByRole('button', { name: 'Закрыть эмодзи', exact: true }).click();
+      await page.locator('.channel-dialog-compose__field textarea').fill('x'.repeat(2000));
+      await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+      await emojiPanel.locator('.channel-dialog-compose__emoji').first().click();
+      assert.equal(
+        (await page.locator('.channel-dialog-compose__field textarea').inputValue()).length,
+        2000,
+      );
+      await page.keyboard.press('Escape');
+      await page
+        .locator('.channel-dialog-compose__field textarea')
+        .fill('Комментарий с открытой клавиатурой');
       await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
       const smallDialog = page.getByRole('dialog', { name: 'Оформление', exact: true });
       await smallDialog.waitFor();

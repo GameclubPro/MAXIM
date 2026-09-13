@@ -30,7 +30,7 @@ type ProfiledRoutedPageProps = RoutedPageProps & {
   profile: MiniappProfile;
 };
 
-type SuggestionRoutedPageProps = ProfiledRoutedPageProps & {
+type DialogRoutedPageProps = ProfiledRoutedPageProps & {
   userId: string;
 };
 
@@ -80,11 +80,11 @@ export const LazyChannelStatsPage = lazyPage<RoutedPageProps>(
   preloadChannelStatsPage,
   'ChannelStatsPage',
 );
-export const LazyChannelDialogPage = lazyPage<ProfiledRoutedPageProps>(
+export const LazyChannelDialogPage = lazyPage<DialogRoutedPageProps>(
   preloadChannelDialogPage,
   'ChannelDialogPage',
 );
-export const LazyChannelSuggestDialogPage = lazyPage<SuggestionRoutedPageProps>(
+export const LazyChannelSuggestDialogPage = lazyPage<DialogRoutedPageProps>(
   preloadChannelSuggestDialogPage,
   'ChannelSuggestDialogPage',
 );
