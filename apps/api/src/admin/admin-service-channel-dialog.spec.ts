@@ -3341,6 +3341,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({ buttons: [] }),
       { botId: 'publisher-bot' },
     );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2]).toContain(
+      'Отправитель: [Подписчик](max://user/subscriber-1)',
+    );
   });
 
   it('renders Publisher publication creation and fences a card finalized during sync', async () => {
@@ -3410,6 +3413,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const editedText = maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2] as string;
     expect(editedText).toContain('Предложка передана в публикацию');
     expect(editedText).toContain('Решение принял: Администратор');
+    expect(editedText).toContain('Отправитель: [Подписчик](max://user/subscriber-1)');
     expect(editedText).not.toContain('Предложка опубликована');
     const markerQuery = prisma.$executeRaw.mock.calls[0]?.[0] as {
       strings?: readonly string[];

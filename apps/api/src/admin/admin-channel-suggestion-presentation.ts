@@ -1,5 +1,6 @@
 import type { BroadcastTextFormat } from '@maxim/contracts';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
   escapeHtml,
   escapeHtmlAttribute,
@@ -8,7 +9,7 @@ import {
 } from '../common/max-text-markup.util';
 import type { MaxSendMessageOptions } from '../max/max-client.service';
 import { readTrimmedString } from './admin-legacy-utils';
-import { normalizeMaxProfileUrl } from './admin-profile-links';
+import { buildUserProfileUrl, normalizeMaxProfileUrl } from './admin-profile-links';
 import type {
   ChannelSuggestionAuthorAttribution,
   ChannelSuggestionTextMarkup,
@@ -66,11 +67,14 @@ function renderChannelSuggestionAuthorLink(
   author: ChannelSuggestionAuthorAttribution,
   format: 'html' | 'markdown',
 ): string {
-  const displayName = readTrimmedString(author.displayName);
-  const mentionDisplayName = readTrimmedString(author.mentionDisplayName);
-  const username = readTrimmedString(author.username)?.replace(/^@+/u, '').trim() ?? '';
   const userId = readTrimmedString(author.userId);
-  const profileUrl = normalizeMaxProfileUrl(readTrimmedString(author.profileUrl)) ?? null;
+  const displayName = normalizeMaxUserDisplayName(author.displayName, userId);
+  // FLAG: Stored Publisher cards may have a signed full name but no mention-specific field.
+  const mentionDisplayName =
+    normalizeMaxUserDisplayName(author.mentionDisplayName, userId) ?? displayName;
+  const username = readTrimmedString(author.username)?.replace(/^@+/u, '').trim() ?? '';
+  const profileUrl =
+    normalizeMaxProfileUrl(readTrimmedString(author.profileUrl)) ?? buildUserProfileUrl(username);
   const mentionUrl =
     mentionDisplayName && userId ? `max://user/${encodeURIComponent(userId)}` : null;
   const target = profileUrl ?? mentionUrl;

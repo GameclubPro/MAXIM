@@ -31,6 +31,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
+import { resolveChannelSuggestionActorDisplayName } from './admin-channel-suggestion-author';
+import { normalizeMaxProfileUrl } from './admin-profile-links';
 import {
   buildChannelSuggestionMediaMetadata,
   prepareChannelSuggestionMediaRows,
@@ -680,9 +682,9 @@ export class PublisherDialogProfileRuntime {
             text: params.text,
             ...(params.textFormat === 'markdown' ? { textFormat: 'markdown' } : {}),
             actorUserId: params.user.userId,
-            authorDisplayName:
-              params.user.displayName?.trim() || params.user.username?.trim() || null,
+            authorDisplayName: resolveChannelSuggestionActorDisplayName(params.user),
             authorUsername: params.user.username?.trim() || null,
+            authorProfileUrl: normalizeMaxProfileUrl(params.user.profileUrl?.trim() || null),
             authorAvatarUrl: params.user.avatarUrl?.trim() || null,
             source: 'publisher_miniapp_dialog',
             publisherProfile: true,

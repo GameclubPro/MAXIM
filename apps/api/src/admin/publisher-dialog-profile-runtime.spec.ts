@@ -371,6 +371,47 @@ describe('Publisher channel comment profile ownership', () => {
 });
 
 describe('Publisher channel suggestions with photos', () => {
+  it.each([
+    {
+      displayName: ' Анна Каренина ',
+      profileUrl: 'https://max.ru/u/anna-profile',
+      expectedName: 'Анна Каренина',
+      expectedUrl: 'https://max.ru/u/anna-profile',
+    },
+    {
+      displayName: null,
+      profileUrl: 'https://example.com/not-max',
+      expectedName: null,
+      expectedUrl: null,
+    },
+  ])(
+    'preserves the signed author identity without treating a username as a full name: $displayName',
+    async (identity) => {
+      const h = createSuggestionHarness();
+      await h.runtime.createChannelSuggestion({
+        chatId: CHANNEL_ID,
+        user: { ...user, displayName: identity.displayName, profileUrl: identity.profileUrl },
+        dialogType: 'suggest',
+        body: { token: TOKEN, text: 'Текст предложки' },
+        mapAuditLog: h.mapAuditLog,
+      });
+
+      expect(h.prisma.auditLog.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION',
+            payload: expect.objectContaining({
+              actorUserId: user.userId,
+              authorDisplayName: identity.expectedName,
+              authorUsername: user.username,
+              authorProfileUrl: identity.expectedUrl,
+            }),
+          }),
+        }),
+      );
+    },
+  );
+
   it('stores and replays a video-only Publisher suggestion without crossing the Major action', async () => {
     const h = createSuggestionHarness();
     const video = {
