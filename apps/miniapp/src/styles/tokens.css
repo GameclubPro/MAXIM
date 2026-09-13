@@ -127,6 +127,7 @@
   --app-visual-viewport-top: 0px;
   --app-visual-viewport-left: 0px;
   --app-visual-viewport-bottom: 0px;
+  --app-layout-viewport-bottom: 0px;
   --app-keyboard-overlap: 0px;
   --app-shell-max-width: 540px;
   --app-page-gutter: clamp(12px, 3.8vw, 18px);
@@ -530,7 +531,10 @@ html[data-max-theme='dark'] {
 html[data-max-client='native'] {
   --app-bottom-nav-edge-inset: max(
     0px,
-    calc(var(--app-safe-bottom) - var(--app-visual-viewport-bottom))
+    calc(
+      var(--app-safe-bottom) -
+        max(var(--app-visual-viewport-bottom), var(--app-layout-viewport-bottom))
+    )
   );
   --app-bottom-nav-content-inset: var(--app-bottom-nav-edge-inset);
 }

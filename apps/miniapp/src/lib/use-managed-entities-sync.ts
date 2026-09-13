@@ -409,6 +409,31 @@ function mergeManagedEntityPresentation(
   return changed ? merged : next;
 }
 
+export function preserveManagedEntitiesOrder(
+  previous: readonly ChatSummary[] | null,
+  next: ChatSummary[],
+  retainMissing = false,
+): ChatSummary[] {
+  if (!previous?.length || previous === next) {
+    return next;
+  }
+
+  // Server discovery/activity order must not move rows the user has already seen.
+  const remaining = new Map(next.map((item) => [item.id, item]));
+  const ordered: ChatSummary[] = [];
+  for (const item of previous) {
+    const updated = remaining.get(item.id);
+    if (updated) {
+      ordered.push(updated);
+      remaining.delete(item.id);
+    } else if (retainMissing) {
+      ordered.push(item);
+    }
+  }
+  ordered.push(...remaining.values());
+  return ordered.every((item, index) => item === next[index]) ? next : ordered;
+}
+
 export function mergeManagedEntitiesInitialItems(options: {
   previous: ChatSummary[] | null;
   next: ChatSummary[];
@@ -443,44 +468,6 @@ function mergeManagedEntityPresentationItem(
     ...next,
     avatarUrl: previous.avatarUrl,
   };
-}
-
-function mergeManagedEntitiesIncrementally(
-  previous: ChatSummary[] | null,
-  next: ChatSummary[],
-): ChatSummary[] {
-  if (!previous || previous.length === 0 || next.length === 0) {
-    return next.length > 0 ? next : (previous ?? next);
-  }
-
-  const nextById = new Map(next.map((item) => [item.id, item]));
-  let changed = false;
-
-  const merged = previous.map((item) => {
-    const updated = nextById.get(item.id);
-    if (!updated) {
-      return item;
-    }
-
-    nextById.delete(item.id);
-    if (updated !== item) {
-      changed = true;
-    }
-    return updated;
-  });
-
-  if (nextById.size === 0) {
-    return changed ? merged : previous;
-  }
-
-  changed = true;
-  for (const item of next) {
-    if (nextById.has(item.id)) {
-      merged.push(item);
-    }
-  }
-
-  return merged;
 }
 
 export function mergeManagedEntitiesRefreshItems(options: {
@@ -521,7 +508,7 @@ export function mergeManagedEntitiesRefreshItems(options: {
     return nextWithPresentation;
   }
 
-  return mergeManagedEntitiesIncrementally(options.previous, nextWithPresentation);
+  return preserveManagedEntitiesOrder(options.previous, nextWithPresentation, true);
 }
 
 export function applyManagedEntitiesResponseDiff(options: {
@@ -680,6 +667,8 @@ export function useManagedEntitiesSync({
   keepVisibleOnSameSnapshotVersion?: boolean;
   treatUserVisibleCompleteAsSettled?: boolean;
 }): ManagedEntitiesSyncResult {
+  // Settings also write the home cache; its ordering policy must be shared by every caller.
+  const preserveVisibleOrder = localCacheScope === 'home';
   const queryClient = useQueryClient();
   const [ephemeralCacheScope] = useState(() => `s:${Math.random().toString(36).slice(2, 10)}`);
   const localCacheUserScope = readManagedEntitiesLocalCacheUserScope();
@@ -952,13 +941,16 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          const initialData = sanitizeManagedEntities(
+          let initialData = sanitizeManagedEntities(
             mergeManagedEntitiesInitialItems({
               previous: latestDataRef.current,
               next: initial,
               preservePreviousOnEmpty: freshReloadUsesFreshEndpoint,
             }),
           );
+          if (preserveVisibleOrder) {
+            initialData = preserveManagedEntitiesOrder(latestDataRef.current, initialData);
+          }
           latestDataRef.current = initialData;
 
           if (
@@ -1063,7 +1055,7 @@ export function useManagedEntitiesSync({
           }
 
           const resolvedSnapshot = sanitizeManagedEntitiesSnapshot(next.snapshot);
-          const nextData = sanitizeManagedEntities(
+          let nextData = sanitizeManagedEntities(
             diffItems ??
               mergeManagedEntitiesRefreshItems({
                 previous: latestDataRef.current,
@@ -1078,6 +1070,9 @@ export function useManagedEntitiesSync({
                 nextSnapshotVersion: resolvedSnapshot?.version ?? null,
               }),
           );
+          if (preserveVisibleOrder) {
+            nextData = preserveManagedEntitiesOrder(latestDataRef.current, nextData);
+          }
           latestDataRef.current = nextData;
           latestSnapshotRef.current = resolvedSnapshot;
           const userVisibleSettled =
@@ -1145,6 +1140,7 @@ export function useManagedEntitiesSync({
     skipInitialSyncIfCached,
     syncOnFirstLoad,
     keepVisibleOnSameSnapshotVersion,
+    preserveVisibleOrder,
     treatUserVisibleCompleteAsSettled,
     visibilityResumeNonce,
     effectiveStateCacheScope,

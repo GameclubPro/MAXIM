@@ -258,6 +258,44 @@ test('syncMaxNativeEnvironment can promote a late bridge from browser to native'
   );
 });
 
+test('native bottom inset measures the fixed viewport, updates on resize and cleans up', () => {
+  setMockWindow({ platform: 'ios', initData: 'query_id=abc&hash=def' }, []);
+  const style = createMockStyle();
+  let fixedBottom = 810;
+  let removed = false;
+  let resize: (() => void) | undefined;
+  const probe = {
+    style: { cssText: '' },
+    setAttribute: () => undefined,
+    getBoundingClientRect: () => ({ bottom: fixedBottom }),
+    remove: () => {
+      removed = true;
+    },
+  };
+  Object.assign(globalThis, {
+    document: {
+      documentElement: { dataset: {}, style },
+      body: { appendChild: (element: unknown) => assert.equal(element, probe) },
+      createElement: () => probe,
+    },
+  });
+  globalThis.window.innerWidth = 390;
+  globalThis.window.innerHeight = 844;
+  globalThis.window.addEventListener = (_type, listener) => {
+    resize = listener as () => void;
+  };
+  globalThis.window.removeEventListener = () => undefined;
+  const cleanup = syncMaxNativeEnvironment();
+
+  assert.equal(style.values.get('--app-visual-viewport-bottom'), '0px');
+  assert.equal(style.values.get('--app-layout-viewport-bottom'), '34px');
+  fixedBottom = 844;
+  resize?.();
+  assert.equal(style.values.get('--app-layout-viewport-bottom'), '0px');
+  cleanup();
+  assert.equal(removed, true);
+});
+
 test('syncMaxNativeEnvironment keeps browser chrome aligned with the MAX theme', () => {
   const assignedUrls: string[] = [];
   setMockWindow(

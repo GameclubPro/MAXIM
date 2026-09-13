@@ -183,6 +183,29 @@ test('reads the selected favorite type for one entity', () => {
   assert.deepEqual(getHomeEntityFavoriteTypes(favorites, 'chat', 'chat-1'), ['important']);
 });
 
+test('favorite reconciliation preserves local positions across tab refreshes for both entity types', () => {
+  const current = createEmptyHomeEntityFavorites();
+  current.chat.important = ['2', '1'];
+  current.channel.important = ['2', '1'];
+  const entities = [
+    { id: '1', title: 'One', favoriteTypes: ['important'] as const },
+    { id: '2', title: 'Two', favoriteTypes: ['important'] as const },
+    { id: '3', title: 'Three', favoriteTypes: ['important'] as const },
+  ].map((entity) => ({ ...entity, favoriteTypes: [...entity.favoriteTypes] }));
+  const next = reconcileHomeEntityFavoritesFromEntities(current, {
+    chats: entities,
+    channels: [...entities].reverse(),
+  });
+
+  assert.deepEqual(next.chat.important, ['2', '1', '3']);
+  assert.deepEqual(next.channel.important, ['2', '1', '3']);
+  assert.deepEqual(
+    reconcileHomeEntityFavoritesFromEntities(next, { chats: [...entities].reverse() }),
+    next,
+  );
+  assert.deepEqual(current.chat.important, ['2', '1']);
+});
+
 test('sanitizes custom favorite category labels', () => {
   const longLabel = 'Очень длинное название категории избранного';
   const labels = sanitizeHomeEntityFavoriteLabels({

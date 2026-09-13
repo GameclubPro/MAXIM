@@ -6,6 +6,7 @@ import {
   isManagedEntitiesUserVisibleComplete,
   mergeManagedEntitiesInitialItems,
   mergeManagedEntitiesRefreshItems,
+  preserveManagedEntitiesOrder,
   readManagedEntitiesLocalCacheUserScope,
   readManagedEntitiesLocalCacheUserScopeFromInitData,
   resolveManagedEntitiesSettledPhase,
@@ -269,6 +270,77 @@ test('keeps already visible chats during partial refresh and appends newly disco
     }).map((item) => item.id),
     ['1', '2', '3'],
   );
+});
+
+test('home retains initial positions across server reordering while updating and removing rows', () => {
+  const previous = [createItem('1', 'One'), createItem('2', 'Two'), createItem('3', 'Three')];
+  const updated = createItem('2', 'Renamed', { avatarUrl: 'https://example.com/new.png' });
+  const added = createItem('4', 'Four');
+  const next = [added, updated, previous[0]!];
+  const result = preserveManagedEntitiesOrder(previous, next);
+
+  assert.deepEqual(result, [previous[0], updated, added]);
+  assert.equal(result[1], updated);
+  assert.deepEqual(
+    next.map((item) => item.id),
+    ['4', '2', '1'],
+  );
+  assert.deepEqual(
+    previous.map((item) => item.id),
+    ['1', '2', '3'],
+  );
+});
+
+test('home preserves positions after final refresh and canonical snapshot patches', () => {
+  for (const entityType of ['chat', 'channel'] as const) {
+    const initial = [
+      createItem('1', 'One', { entityType }),
+      createItem('2', 'Two', { entityType }),
+    ];
+    const partial = mergeManagedEntitiesRefreshItems({
+      previous: initial,
+      next: [createItem('3', 'Three', { entityType })],
+      refreshState: createRefreshState(),
+    });
+    const completed = mergeManagedEntitiesRefreshItems({
+      previous: partial,
+      next: [...partial].reverse(),
+      refreshState: createRefreshState({ complete: true }),
+    });
+    const home = preserveManagedEntitiesOrder(partial, completed);
+    assert.deepEqual(
+      home.map((item) => item.id),
+      ['1', '2', '3'],
+    );
+
+    const patch = applyManagedEntitiesResponseDiff({
+      previous: home,
+      previousSnapshotVersion: 'v1',
+      diff: {
+        mode: 'patch',
+        baseVersion: 'v1',
+        nextVersion: 'v2',
+        added: [],
+        updated: [createItem('2', 'Updated', { entityType })],
+        removedIds: ['1'],
+        orderedIds: ['3', '2'],
+      },
+    });
+    assert.ok(patch);
+    assert.deepEqual(
+      preserveManagedEntitiesOrder(home, patch).map((item) => item.id),
+      ['2', '3'],
+    );
+  }
+});
+
+test('home order keeps cold-start and unchanged arrays and accepts authoritative empty lists', () => {
+  const items = [createItem('1', 'One'), createItem('2', 'Two')];
+  assert.equal(preserveManagedEntitiesOrder(null, items), items);
+  assert.equal(preserveManagedEntitiesOrder([], items), items);
+  assert.equal(preserveManagedEntitiesOrder(items, items), items);
+  assert.equal(preserveManagedEntitiesOrder([...items], items), items);
+  assert.deepEqual(preserveManagedEntitiesOrder(items, []), []);
 });
 
 test('updates overlapping chats during partial refresh without dropping the rest of the list', () => {

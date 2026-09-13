@@ -189,9 +189,7 @@ function buildHomeEntityFavoritesStorageKey(scope: string | null | undefined): s
   )}`;
 }
 
-export function buildHomeEntityFavoriteLabelsStorageKey(
-  scope: string | null | undefined,
-): string {
+export function buildHomeEntityFavoriteLabelsStorageKey(scope: string | null | undefined): string {
   return `maxim:home-entity-favorite-labels:v${HOME_ENTITY_FAVORITE_LABELS_VERSION}:${normalizeFavoritesScope(
     scope,
   )}`;
@@ -370,13 +368,14 @@ export function reconcileHomeEntityFavoritesFromEntities(
         .filter((id): id is string => id !== null),
     );
     for (const favoriteType of HOME_ENTITY_FAVORITE_TYPES) {
-      const localForUnloadedEntities = next[entityType][favoriteType].filter(
-        (id) => !loadedIds.has(id),
-      );
-      next[entityType][favoriteType] = [
-        ...serverFavorites[entityType][favoriteType],
-        ...localForUnloadedEntities,
-      ];
+      const serverIds = new Set(serverFavorites[entityType][favoriteType]);
+      const retainedIds = next[entityType][favoriteType].filter((id) => {
+        if (serverIds.delete(id)) {
+          return true;
+        }
+        return !loadedIds.has(id);
+      });
+      next[entityType][favoriteType] = [...retainedIds, ...serverIds];
     }
   };
 
@@ -507,26 +506,14 @@ export function orderHomeEntitiesByFavorites<T extends HomeEntityListItem>(
     }
   }
 
-  const seenFavoriteIds = new Set<string>();
+  const pinnedIds = new Set(favoriteIds);
   const favoriteEntities: T[] = [];
   for (const id of favoriteIds) {
-    const normalizedId = normalizeFavoriteId(id);
-    if (!normalizedId || seenFavoriteIds.has(normalizedId)) {
-      continue;
+    const entity = entityById.get(id);
+    if (entity) {
+      favoriteEntities.push(entity);
     }
-
-    const entity = entityById.get(normalizedId);
-    if (!entity) {
-      continue;
-    }
-
-    seenFavoriteIds.add(normalizedId);
-    favoriteEntities.push(entity);
   }
 
-  if (favoriteEntities.length === 0) {
-    return [...entities];
-  }
-
-  return [...favoriteEntities, ...entities.filter((entity) => !seenFavoriteIds.has(entity.id))];
+  return [...favoriteEntities, ...entities.filter((entity) => !pinnedIds.has(entity.id))];
 }

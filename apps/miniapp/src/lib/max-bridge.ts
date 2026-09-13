@@ -324,7 +324,10 @@ function resolvePreferredTheme(bridge: ReturnType<typeof resolveBridge>): MaxThe
   return 'light';
 }
 
-function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } = {}) {
+function applyRootEnvironment(
+  options: { previewDevice?: PreviewDevice | null } = {},
+  viewportProbe?: HTMLElement | null,
+) {
   const root = document.documentElement;
   const bridge = resolveBridge();
   const {
@@ -391,6 +394,18 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
   root.style.setProperty('--app-visual-viewport-top', `${viewportTop}px`);
   root.style.setProperty('--app-visual-viewport-left', `${viewportLeft}px`);
   root.style.setProperty('--app-visual-viewport-bottom', `${viewportBottom}px`);
+  // A native WebView can inset fixed positioning without shrinking visualViewport.
+  const layoutViewportBottom = viewportProbe
+    ? clampPx(
+        Math.round(window.innerHeight - viewportProbe.getBoundingClientRect().bottom),
+        0,
+        VISUAL_VIEWPORT_BOTTOM_INSET_MAX_PX,
+      )
+    : 0;
+  root.style.setProperty(
+    '--app-layout-viewport-bottom',
+    `${keyboardOverlap >= KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX ? 0 : layoutViewportBottom}px`,
+  );
   root.style.setProperty('--app-keyboard-overlap', `${keyboardOverlap}px`);
 
   if (keyboardOverlap >= KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX) {
@@ -407,8 +422,15 @@ export function syncMaxNativeEnvironment(
     return () => undefined;
   }
 
+  const viewportProbe = document.body ? document.createElement('div') : null;
+  if (viewportProbe) {
+    viewportProbe.setAttribute('aria-hidden', 'true');
+    viewportProbe.style.cssText =
+      'position:fixed;bottom:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none';
+    document.body.appendChild(viewportProbe);
+  }
   const apply = () => {
-    applyRootEnvironment(options);
+    applyRootEnvironment(options, viewportProbe);
   };
   const colorSchemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)');
 
@@ -424,6 +446,7 @@ export function syncMaxNativeEnvironment(
     window.visualViewport?.removeEventListener('resize', apply);
     window.visualViewport?.removeEventListener('scroll', apply);
     colorSchemeMedia?.removeEventListener?.('change', apply);
+    viewportProbe?.remove();
   };
 }
 
