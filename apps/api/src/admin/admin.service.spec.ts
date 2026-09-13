@@ -90,6 +90,31 @@ function expectChatSettingsWrite(
   expect(updated ?? created).toEqual(expect.objectContaining(expected));
 }
 
+describe('AdminService rules publication confirmations', () => {
+  it('describes an existing-post edit accurately in the private confirmation', async () => {
+    const maxClient = { sendMessage: jest.fn().mockResolvedValue(undefined) };
+    const service = new AdminService(
+      createPrismaMock() as never,
+      maxClient as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service as any, 'resolvePrivateDeliveryBotId').mockReturnValue('personal-bot');
+    jest.spyOn(service as any, 'resolvePrivateDialogChatId').mockResolvedValue('123');
+    await service.sendPublishedChatRulesPrivateConfirmation(
+      { userId: 'admin-1' } as never,
+      'https://max.ru/c/-123/rules',
+      'updated',
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '123',
+      '✅ Правила обновлены в прежнем сообщении. Новое сообщение в группу не отправлялось.\nhttps://max.ru/c/-123/rules',
+      undefined,
+      expect.objectContaining({ botId: 'personal-bot' }),
+    );
+  });
+});
+
 describe('AdminService dialog admin fallback reads', () => {
   it('routes dialog admin id lookups through background action health lane', async () => {
     const prisma = createPrismaMock();
@@ -30818,6 +30843,7 @@ describe('AdminService chat rules', () => {
     expect(published).toEqual({
       chatId: 'chat-1',
       messageId: 'mid-rules-2',
+      operation: 'created',
       url: 'https://max.ru/chats/chat-1/message/456',
       publishedAt: expect.any(String),
     });
@@ -30984,6 +31010,7 @@ describe('AdminService chat rules', () => {
     expect(published).toEqual({
       chatId: 'chat-1',
       messageId: 'mid-rules-3',
+      operation: 'created',
       url: null,
       publishedAt: expect.any(String),
     });

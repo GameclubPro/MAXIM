@@ -4,6 +4,23 @@ import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-en
 import type { VkParsingFeed } from '@maxim/contracts/vk-parsing';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
+import { publishRules } from '../src/lib/api/chat-settings-client';
+
+test('rules command roundtrip distinguishes a new post from editing the same post', async () => {
+  const api = createPreviewApiTransport();
+  const created = await publishRules(api, 'preview-chat', { mode: 'new_message' });
+  const updated = await publishRules(api, 'preview-chat', { mode: 'update' });
+  const next = await publishRules(api, 'preview-chat', { mode: 'new_message' });
+  assert.equal(created.operation, 'created');
+  assert.equal(updated.operation, 'updated');
+  assert.equal(updated.messageId, created.messageId);
+  assert.equal(updated.url, created.url);
+  assert.equal(next.operation, 'created');
+  assert.notEqual(next.messageId, created.messageId);
+  assert.notEqual(next.url, created.url);
+  await api.request('/chats/preview-chat/rules/publish', { method: 'DELETE' });
+  await assert.rejects(publishRules(api, 'preview-chat', { mode: 'update' }));
+});
 
 test('Major preview settings keep publishing data empty', async () => {
   const api = createPreviewApiTransport();

@@ -8,6 +8,7 @@ import {
   type BroadcastLinkButton,
   type ChatRules,
   type PublishChatRulesResult,
+  type PublishChatRulesRequest,
   type UpdateChatRulesRequest,
   updateChatRulesRequestSchema,
 } from '@maxim/contracts';
@@ -821,6 +822,7 @@ export async function publishChatRules(params: {
   chatId: string;
   actorUserId: string;
   source: AdminActionSource;
+  mode?: PublishChatRulesRequest['mode'];
   resolveBotId: () => Promise<string | undefined> | string | undefined;
   buildAutofilledText: () => Promise<string>;
   buildFormattedText: (
@@ -831,7 +833,10 @@ export async function publishChatRules(params: {
       adminContactButtonUrl: string;
     },
   ) => Promise<ChatRulesFormattedPublication>;
-  sendPrivateConfirmation: (publishedUrl: string | null) => Promise<void>;
+  sendPrivateConfirmation: (
+    publishedUrl: string | null,
+    operation: 'created' | 'updated',
+  ) => Promise<void>;
   deletePreviousPublishedMessage?: DeletePublishedChatRulesMessage;
   expectedUpdatedAt?: Date;
   sleep?: (ms: number) => Promise<void>;
@@ -843,19 +848,42 @@ export async function publishChatRules(params: {
   ) {
     throw new BadRequestException('Правила изменились после проверки. Повторите проверку.');
   }
-  // FLAG: Updating the exact current post must not depend on deleting a different old post.
-  // Keep that cleanup owned; do not send a third post or treat inaccessible history as deleted.
-  const editExisting = Boolean(
-    params.maxClient.replaceOwnMessage &&
+  const pendingRepublish = Boolean(
     storedRules.pendingCleanupKind === 'republish_previous' &&
     storedRules.pendingCleanupMessageId &&
     storedRules.publishedMessageId &&
-    storedRules.pendingCleanupMessageId !== storedRules.publishedMessageId &&
-    normalizeOptionalBotId(storedRules.publishedBotId) &&
-    !storedRules.publishOperationId &&
-    !storedRules.publishSendStartedAt,
+    storedRules.pendingCleanupMessageId !== storedRules.publishedMessageId,
   );
-  const rules = editExisting
+  const idlePublication = !storedRules.publishOperationId && !storedRules.publishSendStartedAt;
+  const noPendingCleanup =
+    !storedRules.pendingCleanupMessageId &&
+    !storedRules.pendingCleanupKind &&
+    !storedRules.pendingCleanupBotId &&
+    !storedRules.pendingCleanupIntentId;
+  // FLAG: Only an explicit new-message request may append a post while old cleanup stays owned.
+  // Never clear that cleanup, delete a previous/pinned post, or bypass a reset/ambiguous send.
+  const publishNew =
+    params.mode === 'new_message' && idlePublication && (noPendingCleanup || pendingRepublish);
+  if (params.mode === 'new_message' && !publishNew) {
+    throw new BadRequestException(
+      'Предыдущая операция с правилами ещё не завершена. Проверьте её результат перед новой публикацией.',
+    );
+  }
+  const editExisting = Boolean(
+    params.mode !== 'new_message' &&
+    params.maxClient.replaceOwnMessage &&
+    (params.mode === 'update' ? noPendingCleanup || pendingRepublish : pendingRepublish) &&
+    storedRules.publishedMessageId &&
+    normalizeOptionalBotId(storedRules.publishedBotId) &&
+    idlePublication,
+  );
+  if (params.mode === 'update' && !editExisting) {
+    throw new BadRequestException(
+      'Нет доступного поста правил для обновления или предыдущая операция ещё не завершена.',
+    );
+  }
+  const preserveCleanup = editExisting || publishNew;
+  const rules = preserveCleanup
     ? storedRules
     : await reconcilePendingChatRulesCleanup({
         ...params,
@@ -929,8 +957,8 @@ export async function publishChatRules(params: {
       updatedAt: rules.updatedAt,
       publishOperationId: null,
       publishSendStartedAt: null,
-      pendingCleanupMessageId: editExisting ? rules.pendingCleanupMessageId : null,
-      ...(editExisting
+      pendingCleanupMessageId: preserveCleanup ? rules.pendingCleanupMessageId : null,
+      ...(preserveCleanup
         ? {
             publishedMessageId: previousPublishedMessageId,
             publishedBotId: previousPublishedBotId,
@@ -1006,6 +1034,12 @@ export async function publishChatRules(params: {
         botId: resolvedBotId,
         sleep: params.sleep,
       });
+      if (
+        (published.chatId && published.chatId !== params.chatId) ||
+        (publishNew && published.messageId === previousPublishedMessageId)
+      ) {
+        throw new Error('Ambiguous MAX rules publication returned an unexpected message target');
+      }
     }
   } catch (error: unknown) {
     // FLAG: A failed read-only edit preflight cannot leave an ambiguous mutation fence.
@@ -1052,7 +1086,7 @@ export async function publishChatRules(params: {
 
   const publishedAt = new Date();
   const needsPreviousCleanup = Boolean(
-    previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
+    !publishNew && previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
   );
   try {
     const finalized = await params.prisma.chatRules.updateMany({
@@ -1069,7 +1103,7 @@ export async function publishChatRules(params: {
         publishOperationId: null,
         publishOperationBotId: null,
         publishSendStartedAt: null,
-        ...(!editExisting
+        ...(!preserveCleanup
           ? {
               pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
               pendingCleanupBotId: needsPreviousCleanup
@@ -1102,7 +1136,7 @@ export async function publishChatRules(params: {
   let previousCleanupOutcome: ChatRulesDeleteOutcome | 'not_needed' = 'not_needed';
   let previousCleanupError: string | null = null;
   let previousCleanupBotId: string | null = null;
-  if (previousPublishedMessageId && previousPublishedMessageId !== published.messageId) {
+  if (needsPreviousCleanup && previousPublishedMessageId) {
     const deleteBotId = previousPublishedBotId ?? resolvedBotId;
     previousCleanupBotId = deleteBotId ?? null;
     try {
@@ -1191,12 +1225,11 @@ export async function publishChatRules(params: {
           textFormat: rules.autoTextEnabled
             ? 'plain'
             : normalizeChatRulesTextFormat(rules.textFormat),
-          replacedPreviousPost: Boolean(
-            previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
-          ),
-          previousPublishedMessageId: editExisting ? null : previousPublishedMessageId,
+          replacedPreviousPost: needsPreviousCleanup,
+          previousPublishedMessageId: preserveCleanup ? null : previousPublishedMessageId,
           updatedExistingPost: editExisting,
-          ...(editExisting ? { preservedCleanupMessageId: rules.pendingCleanupMessageId } : {}),
+          ...(params.mode ? { publicationMode: params.mode } : {}),
+          ...(preserveCleanup ? { preservedCleanupMessageId: rules.pendingCleanupMessageId } : {}),
           previousPublishedBotId: previousCleanupBotId,
           // FLAG: Recovery and older images recognize accepted; capability waits remain retryable.
           previousCleanupOutcome:
@@ -1227,7 +1260,7 @@ export async function publishChatRules(params: {
     publishOperationId: null,
     publishOperationBotId: null,
     publishSendStartedAt: null,
-    ...(!editExisting
+    ...(!preserveCleanup
       ? {
           pendingCleanupMessageId: needsPreviousCleanup ? previousPublishedMessageId : null,
           pendingCleanupBotId: needsPreviousCleanup
@@ -1274,7 +1307,10 @@ export async function publishChatRules(params: {
 
   if (params.source === 'miniapp') {
     try {
-      await params.sendPrivateConfirmation(hydratedRules.publishedUrl);
+      await params.sendPrivateConfirmation(
+        hydratedRules.publishedUrl,
+        editExisting ? 'updated' : 'created',
+      );
     } catch (error: unknown) {
       params.logger.warn(
         {
@@ -1288,6 +1324,7 @@ export async function publishChatRules(params: {
   }
 
   return publishChatRulesResultSchema.parse({
+    operation: editExisting ? 'updated' : 'created',
     chatId: params.chatId,
     messageId: published.messageId,
     url: hydratedRules.publishedUrl,

@@ -37,6 +37,7 @@ import '../styles/settings-home-compact.css';
 import '../styles/settings-home-route-polish.css';
 import '../styles/broadcast-studio-base.css';
 import '../styles/settings-rules-studio.css';
+import './settings/settings-rules-publication.css';
 import '../styles/settings-link-allowlist.css';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-duration-editor.css';
@@ -245,6 +246,8 @@ import {
 } from './settings-page.constants';
 import {
   buildRulesTextFromSettingsScreen,
+  getRulesPublicationFeedback,
+  type RulesPublicationMode,
   mergeSavedRulesIntoSettingsScreen,
   runRulesSaveAttempt,
   serializeRulesDraftPayload,
@@ -413,6 +416,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const previousSettingsServerSnapshotRef = useRef('');
   const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
+  const [rulesPublicationMode, setRulesPublicationMode] =
+    useState<RulesPublicationMode>('new_message');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [rulesTextError, setRulesTextError] = useState('');
   const [rulesImageError, setRulesImageError] = useState('');
@@ -663,6 +668,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setApplyTargetPreviewError(null);
     setApplyTargetPreviewLoading(false);
     setRulesDraft(null);
+    setRulesPublicationMode('new_message');
     setRulesTextError('');
     setRulesImageError('');
     setRulesButtonErrors([]);
@@ -1342,9 +1348,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return true;
   }
 
-  const rulesPublishedMessageId =
-    rulesDraft?.publishedMessageId ?? rulesQuery.data?.publishedMessageId ?? null;
-  const rulesPublishedUrl = rulesDraft?.publishedUrl ?? rulesQuery.data?.publishedUrl ?? null;
+  const rulesPublication = rulesDraft ?? rulesQuery.data;
+  const rulesPublishedMessageId = rulesPublication?.publishedMessageId ?? null;
+  const rulesPublishedUrl = rulesPublication?.publishedUrl ?? null;
   const hasPublishedRules = Boolean(rulesPublishedMessageId || rulesPublishedUrl);
   const saveSectionMutation = useMutation({
     mutationFn: ({
@@ -1563,7 +1569,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : undefined;
 
   const publishRulesMutation = useMutation({
-    mutationFn: () => publishRules(api, chatId ?? ''),
+    mutationFn: (mode: RulesPublicationMode) => publishRules(api, chatId ?? '', { mode }),
     onSuccess: (result) => {
       const updated = chatRulesSchema.parse({
         ...(rulesDraft ?? rulesQuery.data ?? {}),
@@ -1575,7 +1581,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
         tone: 'success',
-        title: 'Правила опубликованы',
+        ...getRulesPublicationFeedback(result, rulesPublishedMessageId),
       });
       maxNotify('success');
     },
@@ -2441,9 +2447,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       const nextDraft = buildRulesDraftFromCurrentSettings(value);
       setRulesTextError('');
       if (serializeRulesDraftPayload(nextDraft) !== serializeRulesDraftPayload(value)) {
-        setRulesDraft((current) =>
-          current ? { ...current, text: nextDraft.text, autoTextEnabled: true } : current,
-        );
+        const applyAutofill = (current: ChatRules | null) =>
+          current
+            ? {
+                ...current,
+                text: nextDraft.text,
+                textFormat: nextDraft.textFormat,
+                autoTextEnabled: true,
+              }
+            : current;
+        // FLAG: Fast save receipts must compare against this prepared draft, not the previous render.
+        rulesDraftRef.current = applyAutofill(rulesDraftRef.current ?? value);
+        setRulesDraft(applyAutofill);
       }
       return nextDraft;
     } catch (error) {
@@ -3043,7 +3058,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         }
       }
 
-      publishRulesMutation.mutate();
+      publishRulesMutation.mutate(hasPublishedRules ? rulesPublicationMode : 'new_message');
     } catch {
       // The save mutation reports the actionable error and preserves the latest draft.
     } finally {
@@ -4232,7 +4247,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
   const rulesHeaderSummary = hasPublishedRules
     ? rulesPublishedAtLabel
-      ? `Опубликовано · ${rulesPublishedAtLabel}`
+      ? `Пост правил · ${rulesPublishedAtLabel}`
       : 'Опубликовано'
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
@@ -4354,6 +4369,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </div>
       ) : null}
 
+      {hasPublishedRules ? (
+        <SegmentedControl
+          className="rules-publication-mode"
+          ariaLabel="Действие с правилами"
+          value={rulesPublicationMode}
+          options={[
+            { value: 'new_message', label: 'Новый пост', disabled: isRulesBusy },
+            { value: 'update', label: 'Обновить пост', disabled: isRulesBusy },
+          ]}
+          onChange={setRulesPublicationMode}
+        />
+      ) : null}
       <div className="rules-publish-bar__commands">
         {rulesPublishedUrl ? (
           <button
@@ -4397,10 +4424,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             {isPreparingRulesPublish
               ? 'Сохраняем...'
               : isPublishingRules
-                ? 'Публикуем...'
-                : hasPublishedRules
-                  ? 'Обновить'
-                  : 'Опубликовать'}
+                ? hasPublishedRules && rulesPublicationMode === 'update'
+                  ? 'Обновляем...'
+                  : 'Публикуем...'
+                : hasPublishedRules && rulesPublicationMode === 'update'
+                  ? 'Обновить пост'
+                  : 'Опубликовать в чат'}
           </span>
         </button>
       </div>

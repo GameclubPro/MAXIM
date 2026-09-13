@@ -1902,7 +1902,20 @@ const scenarioBehaviors = [
   {
     name: 'chat-settings-rules',
     beforeShot: async (page) => {
+      // FLAG: These publication clicks must stay on the in-memory preview transport.
+      if (new URL(page.url()).searchParams.get('preview') !== '1') {
+        throw new Error('Rules publication interaction smoke requires preview mode.');
+      }
       await openSettingsSection(page, 'Правила', '.settings-drilldown__panel--rules');
+      await page.getByRole('button', { name: 'Опубликовать в чат', exact: true }).click();
+      await page.getByText('Новый пост правил опубликован', { exact: true }).waitFor();
+      await page.getByRole('radio', { name: 'Обновить пост', exact: true }).click();
+      await page.getByRole('button', { name: 'Обновить пост', exact: true }).click();
+      await page.getByText('Прежний пост правил обновлён', { exact: true }).waitFor();
+      await page
+        .locator('.toast__close')
+        .evaluateAll((buttons) => buttons.forEach((button) => button.click()));
+      await page.getByRole('radio', { name: 'Новый пост', exact: true }).click();
     },
   },
   {

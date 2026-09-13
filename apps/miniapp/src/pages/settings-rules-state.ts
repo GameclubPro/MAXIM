@@ -5,8 +5,29 @@ import {
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
+  type PublishChatRulesRequest,
+  type PublishChatRulesResult,
 } from '@maxim/contracts/settings';
 import type { UpdateChatRulesPayload } from '../lib/api/shared-types';
+
+export type RulesPublicationMode = NonNullable<PublishChatRulesRequest['mode']>;
+
+export function getRulesPublicationFeedback(
+  result: Pick<PublishChatRulesResult, 'operation' | 'messageId'>,
+  previousMessageId: string | null,
+) {
+  const operation =
+    result.operation ?? (result.messageId === previousMessageId ? 'updated' : 'created');
+  return operation === 'updated'
+    ? {
+        title: 'Прежний пост правил обновлён',
+        description: 'Изменён прежний пост. Новое сообщение в чат не отправлялось.',
+      }
+    : {
+        title: 'Новый пост правил опубликован',
+        description: 'Новое сообщение отправлено в группу.',
+      };
+}
 
 type RulesDraftSerializable = Pick<
   ChatRules,

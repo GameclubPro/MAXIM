@@ -6894,6 +6894,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
+    mode?: 'new_message' | 'update',
   ): Promise<PublishChatRulesResult> {
     await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
     return publishChatRules({
@@ -6904,12 +6905,13 @@ export class AdminService implements OnModuleDestroy {
       chatId,
       actorUserId: user.userId,
       source,
+      mode,
       resolveBotId: () => this.resolveChatRulesActionBotId(chatId),
       buildAutofilledText: () => this.buildAutofilledChatRulesTextFromCurrentSettings(chatId, user),
       buildFormattedText: (sourceText, options) =>
         this.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
-      sendPrivateConfirmation: (publishedUrl) =>
-        this.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
+      sendPrivateConfirmation: (publishedUrl, operation) =>
+        this.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl, operation),
       deletePreviousPublishedMessage: (cleanup) =>
         this.getManualMessageCleanupService().deleteChatRulesMessage({
           ...cleanup,
@@ -14223,8 +14225,9 @@ export class AdminService implements OnModuleDestroy {
   async sendPublishedChatRulesPrivateConfirmation(
     user: AuthUser,
     publishedUrl: string | null,
+    operation: 'created' | 'updated' = 'created',
   ): Promise<void> {
-    await this.sendRulesPublishedPrivateConfirmation(user, publishedUrl);
+    await this.sendRulesPublishedPrivateConfirmation(user, publishedUrl, operation);
   }
 
   async assertRequiredSubscriptionSettingsForChatSettings(
@@ -20229,6 +20232,7 @@ export class AdminService implements OnModuleDestroy {
   private async sendRulesPublishedPrivateConfirmation(
     user: AuthUser,
     publishedUrl: string | null,
+    operation: 'created' | 'updated' = 'created',
   ): Promise<void> {
     const privateDeliveryBotId = this.resolvePrivateDeliveryBotId();
     const privateChatId = await this.resolvePrivateDialogChatId(user, privateDeliveryBotId);
@@ -20236,9 +20240,11 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    const message = publishedUrl
-      ? `✅ Правила опубликованы.\n${publishedUrl}`
-      : '✅ Правила опубликованы.';
+    const confirmation =
+      operation === 'updated'
+        ? '✅ Правила обновлены в прежнем сообщении. Новое сообщение в группу не отправлялось.'
+        : '✅ Правила опубликованы.';
+    const message = publishedUrl ? `${confirmation}\n${publishedUrl}` : confirmation;
 
     try {
       await this.maxClient.sendMessage(privateChatId, message, undefined, {

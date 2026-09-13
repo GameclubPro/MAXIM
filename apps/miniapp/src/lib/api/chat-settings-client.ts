@@ -8,6 +8,7 @@ import {
   chatSettingsScreenResponseSchema,
   domainAllowlistEntrySchema,
   publishChatRulesResultSchema,
+  publishChatRulesRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   scheduleDomainRemovalRequestSchema,
@@ -23,6 +24,7 @@ import {
   type DomainAllowlistEntry,
   type NavigationAllowlistKind,
   type PublishChatRulesResult,
+  type PublishChatRulesRequest,
   type ResolveRequiredSubscriptionChannelResponse,
 } from '@maxim/contracts/settings';
 import {
@@ -322,9 +324,11 @@ export async function updateRules(
 export async function publishRules(
   api: ApiTransport,
   chatId: string,
+  request: PublishChatRulesRequest = {},
 ): Promise<PublishChatRulesResult> {
   const response = await api.request(`/chats/${chatId}/rules/publish`, {
     method: 'POST',
+    body: JSON.stringify(publishChatRulesRequestSchema.parse(request)),
   });
   return publishChatRulesResultSchema.parse(response);
 }

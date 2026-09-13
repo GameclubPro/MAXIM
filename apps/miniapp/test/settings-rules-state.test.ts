@@ -10,11 +10,31 @@ import {
 } from '@maxim/contracts';
 import {
   buildRulesTextFromSettingsScreen,
+  getRulesPublicationFeedback,
   mergeSavedRulesIntoSettingsScreen,
   runRulesSaveAttempt,
   serializeRulesDraftPayload,
   shouldHydrateRulesDraftFromServer,
 } from '../src/pages/settings-rules-state';
+
+test('publication feedback never describes an existing-post edit as a new publication', () => {
+  assert.deepEqual(getRulesPublicationFeedback({ operation: 'updated', messageId: 'old' }, 'old'), {
+    title: 'Прежний пост правил обновлён',
+    description: 'Изменён прежний пост. Новое сообщение в чат не отправлялось.',
+  });
+  assert.equal(
+    getRulesPublicationFeedback({ operation: 'created', messageId: 'new' }, 'old').title,
+    'Новый пост правил опубликован',
+  );
+  assert.equal(
+    getRulesPublicationFeedback({ messageId: 'old' }, 'old').title,
+    'Прежний пост правил обновлён',
+  );
+  assert.equal(
+    getRulesPublicationFeedback({ messageId: 'new' }, 'old').title,
+    'Новый пост правил опубликован',
+  );
+});
 
 function createRules(overrides: Partial<ChatRules> = {}): ChatRules {
   return chatRulesSchema.parse({

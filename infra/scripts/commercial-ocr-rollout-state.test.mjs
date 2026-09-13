@@ -511,7 +511,11 @@ test('preflights control options privately and leaves timestamp creation to buil
   const cohortPath = join(directory, 'cohort.json');
   const verificationPath = join(directory, 'certification-verification.json');
   const target = cohort();
-  const verification = certificationVerification();
+  const fixtureNow = Date.now();
+  const verification = certificationVerification({
+    issuedAt: new Date(fixtureNow - 60_000).toISOString(),
+    expiresAt: new Date(fixtureNow + 2 * 3_600_000).toISOString(),
+  });
   const helper = import.meta.filename.replace(/\.test\.mjs$/u, '.mjs');
   writeFileSync(cohortPath, JSON.stringify(target), { mode: 0o600 });
   writeFileSync(verificationPath, JSON.stringify(verification), { mode: 0o600 });

@@ -2883,6 +2883,7 @@ describe('PrivateControlService', () => {
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       'private_bot',
+      'new_message',
     );
     expect(adminService.resetPublishedRules).toHaveBeenCalledWith(
       chats[0].id,
@@ -2890,6 +2891,15 @@ describe('PrivateControlService', () => {
       'private_bot',
     );
     expect(getLastUiText(maxClient)).toContain('Публикация правил сброшена.');
+  });
+
+  it('does not announce publication when the rules service returns no receipt', async () => {
+    const { service, maxClient, chats } = createHarness({
+      adminService: { publishRules: jest.fn().mockResolvedValue(undefined) },
+    });
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_publish'));
+    expect(getLastSentText(maxClient)).toContain('Не удалось подтвердить публикацию правил.');
   });
 
   it('surfaces publish error when rules text is empty', async () => {

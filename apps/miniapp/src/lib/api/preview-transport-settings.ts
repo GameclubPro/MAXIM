@@ -18,6 +18,7 @@ import {
   parseStoredAllowlistEntry,
   publishChannelEngagementResultSchema,
   publishChatRulesResultSchema,
+  publishChatRulesRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   sendBroadcastTestResultSchema,
@@ -31,6 +32,8 @@ import {
   type ManagedBroadcastDetails,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
+  type PublishChatRulesRequest,
+  type ChatRules,
 } from '@maxim/contracts';
 import {
   karavanStorefrontAllowlistQuerySchema,
@@ -286,12 +289,21 @@ function buildKaravanStorefrontAllowlistResponse(
 export function createPublishRulesResult(
   chatId: string,
   clock: PreviewClock,
+  request: PublishChatRulesRequest = {},
+  previous?: Pick<ChatRules, 'publishedMessageId' | 'publishedUrl'>,
+  sequence = 0,
 ): PublishChatRulesResult {
   const now = readPreviewClock(clock);
+  const update = request.mode === 'update';
+  if (update && !previous?.publishedMessageId) throw new Error('Нет опубликованного поста правил.');
+  const messageId = update
+    ? previous!.publishedMessageId!
+    : `rules-${now.getTime()}${sequence ? `-${sequence}` : ''}`;
   return publishChatRulesResultSchema.parse({
     chatId,
-    messageId: `rules-${now.getTime()}`,
-    url: 'https://max.ru/community/rules-preview',
+    messageId,
+    operation: update ? 'updated' : 'created',
+    url: update ? previous!.publishedUrl : `https://max.ru/community/${messageId}`,
     publishedAt: now.toISOString(),
   });
 }
@@ -533,7 +545,16 @@ export async function handleChatRequest(
 
   if (tail[0] === 'rules' && tail[1] === 'publish') {
     if (method === 'POST') {
-      const published = createPublishRulesResult(chatId, state.clock);
+      const request = publishChatRulesRequestSchema.parse(parseJsonBody(init) ?? {});
+      const sequence = state.rulesPublicationSequence ?? 0;
+      const published = createPublishRulesResult(
+        chatId,
+        state.clock,
+        request,
+        state.chatRules,
+        sequence,
+      );
+      if (published.operation === 'created') state.rulesPublicationSequence = sequence + 1;
       state.chatRules = chatRulesSchema.parse({
         ...state.chatRules,
         publishedMessageId: published.messageId,

@@ -27,6 +27,12 @@ is ambiguous. This report does not modify rules, permissions, intents, or remote
 
 ## Updating a Blocked Publication
 
+The authenticated rules publication endpoint accepts `{ "mode": "new_message" }` to append a
+fresh post without deleting older posts, and `{ "mode": "update" }` to edit the current post.
+Its receipt identifies `operation` as `created` or `updated`; do not describe an edit as a new
+publication. The miniapp offers both modes and defaults to a new post. Omitted mode preserves the
+legacy conditional behavior described below.
+
 When an older republish cleanup is pending but the current rules post has a stored author bot,
 the regular publish operation updates that exact post in place. Fresh bot membership and the exact
 remote message author must agree, and MAX must return `success: true`. Text, image, and buttons

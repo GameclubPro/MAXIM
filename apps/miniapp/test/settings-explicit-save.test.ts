@@ -89,6 +89,18 @@ test('rules reset uses the in-app confirmation sheet', () => {
   assert.match(settingsPageSource, /onConfirm=\{confirmResetPublishedRules\}/u);
 });
 
+test('rules publication does not replace a missing new link with the previous post URL', () => {
+  assert.match(settingsPageSource, /const rulesPublication = rulesDraft \?\? rulesQuery\.data;/u);
+  assert.match(
+    settingsPageSource,
+    /rulesPublishedUrl = rulesPublication\?\.publishedUrl \?\? null/u,
+  );
+  assert.doesNotMatch(
+    settingsPageSource,
+    /rulesDraft\?\.publishedUrl \?\? rulesQuery\.data\?\.publishedUrl/u,
+  );
+});
+
 test('rules autosave keeps draft editors enabled so mobile keyboard focus survives', () => {
   assert.match(
     settingsPageSource,
@@ -135,7 +147,7 @@ test('rules expose an explicit save action and commit successful saves to query 
   );
   assert.match(
     settingsPageSource,
-    /handlePublishRules\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\.isCurrent\)[\s\S]*?Правила изменились[\s\S]*?return;[\s\S]*?publishRulesMutation\.mutate\(\)/u,
+    /handlePublishRules\(\)[\s\S]*?runRulesSaveAttempt\([\s\S]*?if \(!attempt\.isCurrent\)[\s\S]*?Правила изменились[\s\S]*?return;[\s\S]*?publishRulesMutation\.mutate\(hasPublishedRules \? rulesPublicationMode : 'new_message'\)/u,
   );
 });
 

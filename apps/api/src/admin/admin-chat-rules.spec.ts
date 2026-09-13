@@ -75,7 +75,8 @@ function createPublishFixture(editor?: jest.Mock) {
     order.push('cleanup');
     return 'accepted' as const;
   });
-  const publish = () =>
+  const sendPrivateConfirmation = jest.fn().mockResolvedValue(undefined);
+  const publish = (mode?: 'new_message' | 'update') =>
     publishChatRules({
       prisma: prisma as never,
       chatContextCache: { invalidate: jest.fn().mockResolvedValue(undefined) },
@@ -84,16 +85,108 @@ function createPublishFixture(editor?: jest.Mock) {
       chatId: 'chat-1',
       actorUserId: 'owner-1',
       source: 'miniapp',
+      mode,
       resolveBotId: () => 'bot-new',
       buildAutofilledText: async () => 'Autofilled',
       buildFormattedText: async (text) => ({ text, textFormat: 'markdown' }),
-      sendPrivateConfirmation: jest.fn().mockResolvedValue(undefined),
+      sendPrivateConfirmation,
       deletePreviousPublishedMessage,
     });
-  return { deletePreviousPublishedMessage, maxClient, order, prisma, publish };
+  return {
+    deletePreviousPublishedMessage,
+    maxClient,
+    order,
+    prisma,
+    publish,
+    sendPrivateConfirmation,
+  };
 }
 
 describe('admin chat rules MAX errors', () => {
+  it.each([false, true])(
+    'explicitly publishes a new message without deleting prior posts, pending cleanup=%s',
+    async (pending) => {
+      const editor = jest.fn();
+      const {
+        prisma,
+        publish,
+        maxClient,
+        deletePreviousPublishedMessage,
+        sendPrivateConfirmation,
+      } = createPublishFixture(editor);
+      prisma.chatRules.upsert.mockResolvedValue({
+        ...createRules(),
+        ...(pending
+          ? {
+              pendingCleanupMessageId: 'rules-older',
+              pendingCleanupBotId: 'removed-bot',
+              pendingCleanupKind: 'republish_previous',
+              pendingCleanupIntentId: 'old-intent',
+            }
+          : {}),
+      });
+      await expect(publish('new_message')).resolves.toMatchObject({
+        operation: 'created',
+        messageId: 'rules-new',
+      });
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(editor).not.toHaveBeenCalled();
+      expect(deletePreviousPublishedMessage).not.toHaveBeenCalled();
+      expect(prisma.chatRules.updateMany.mock.calls[1][0].data).not.toHaveProperty(
+        'pendingCleanupMessageId',
+      );
+      expect(prisma.chatRules.updateMany.mock.calls[1][0].data).not.toHaveProperty(
+        'pendingCleanupIntentId',
+      );
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            publicationMode: 'new_message',
+            replacedPreviousPost: false,
+            previousPublishedMessageId: null,
+            previousCleanupOutcome: 'not_needed',
+          }),
+        }),
+      });
+      expect(sendPrivateConfirmation).toHaveBeenCalledWith(expect.any(String), 'created');
+    },
+  );
+
+  it('explicitly updates the current post even without historical cleanup', async () => {
+    const editor = jest.fn();
+    const { publish, maxClient, sendPrivateConfirmation } = createPublishFixture(editor);
+    await expect(publish('update')).resolves.toMatchObject({
+      operation: 'updated',
+      messageId: 'rules-old',
+    });
+    expect(editor).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(sendPrivateConfirmation).toHaveBeenCalledWith(expect.any(String), 'updated');
+  });
+
+  it.each([
+    { publishOperationId: 'ambiguous-send' },
+    { publishSendStartedAt: new Date() },
+    { pendingCleanupMessageId: 'rules-old', pendingCleanupKind: 'reset_current' },
+    { pendingCleanupKind: 'reset_current' },
+  ])('does not bypass a reset or ambiguous publication for a new post: %o', async (override) => {
+    const { prisma, publish, maxClient } = createPublishFixture();
+    prisma.chatRules.upsert.mockResolvedValue({ ...createRules(), ...override });
+    await expect(publish('new_message')).rejects.toThrow();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { messageId: 'rules-old', url: null },
+    { messageId: 'rules-new', chatId: 'another-chat', url: null },
+  ])('does not confirm a new publication for an unexpected MAX target: %o', async (receipt) => {
+    const { prisma, publish, maxClient, sendPrivateConfirmation } = createPublishFixture();
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue(receipt);
+    await expect(publish('new_message')).rejects.toThrow();
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledTimes(1);
+    expect(sendPrivateConfirmation).not.toHaveBeenCalled();
+  });
+
   it('updates the exact current post while an inaccessible older cleanup stays owned', async () => {
     const editor = jest.fn();
     const { prisma, maxClient, deletePreviousPublishedMessage, publish } =

@@ -2659,6 +2659,7 @@ describe('AdminSettingsService chat rules', () => {
     expect(result).toEqual({
       chatId: 'chat-1',
       messageId: 'message-2',
+      operation: 'created',
       url: 'https://max.ru/chats/chat-1/message/2',
       publishedAt: expect.any(String),
     });
@@ -2717,7 +2718,36 @@ describe('AdminSettingsService chat rules', () => {
     expect(legacyAdminService.sendPublishedChatRulesPrivateConfirmation).toHaveBeenCalledWith(
       user,
       'https://max.ru/chats/chat-1/message/2',
+      'created',
     );
+  });
+
+  it('honors an explicit new-message request while preserving an older cleanup', async () => {
+    const { service, maxClient, prisma } = createService({
+      persistedRules: createPersistedChatRules({
+        publishedMessageId: 'old-current',
+        publishedBotId: 'bot-1',
+        pendingCleanupMessageId: 'older-post',
+        pendingCleanupBotId: 'old-bot',
+        pendingCleanupKind: 'republish_previous',
+      }),
+    });
+    await expect(
+      service.publishRules('chat-1', user as never, 'miniapp', { mode: 'new_message' }),
+    ).resolves.toMatchObject({ operation: 'created', messageId: 'message-2' });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.chatRules.updateMany.mock.calls[1][0].data).not.toHaveProperty(
+      'pendingCleanupMessageId',
+    );
+  });
+
+  it('rejects unsupported publication modes without sending a post', async () => {
+    const { service, maxClient } = createService();
+    await expect(
+      service.publishRules('chat-1', user as never, 'miniapp', { mode: 'force_delete' }),
+    ).rejects.toThrow();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
   it.each(['publishRules', 'resetPublishedRules'] as const)(

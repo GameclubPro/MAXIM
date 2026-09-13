@@ -1,0 +1,16 @@
+@layer pages {
+  .settings-drilldown__panel--rules-screen .rules-publication-mode {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .settings-drilldown__panel--rules-screen .rules-publication-mode .segmented-control__item {
+    justify-content: center;
+    min-width: 0;
+    min-height: 40px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+}

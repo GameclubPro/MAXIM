@@ -4,6 +4,7 @@ import { channelPostSignatureSettingsSchema } from './channel-post-signature.js'
 import { karavanStorefrontTextSettingsShape } from './karavan-storefront-texts.js';
 export * from './bot-speech.js';
 export * from './broadcast-common.js';
+export * from './chat-rules-publication.js';
 export * from './channel-stats.js';
 export * from './channel-dialog.js';
 export * from './giveaway.js';
@@ -1367,6 +1368,7 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema
 export type UpdateChatRulesRequest = z.infer<typeof updateChatRulesRequestSchema>;
 
 export const publishChatRulesResultSchema = z.object({
+  operation: z.enum(['created', 'updated']).optional(),
   chatId: z.string().trim().min(1),
   messageId: z.string().trim().min(1),
   url: z

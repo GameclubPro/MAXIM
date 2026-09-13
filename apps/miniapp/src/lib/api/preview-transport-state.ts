@@ -96,6 +96,7 @@ export type PreviewState = {
   chatHeaderParticipantsCount: number;
   chatSettings: ChatSettings;
   chatRules: ChatRules;
+  rulesPublicationSequence?: number;
   chatDomains: DomainAllowlistEntry[];
   chatKaravanStorefrontAllowlist: KaravanStorefrontAllowlistEntry[];
   chatBroadcasts: ManagedBroadcastDetails[];

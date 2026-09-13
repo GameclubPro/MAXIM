@@ -26,10 +26,7 @@ export class AdminSettingsController {
   }
 
   @Get('chats/:chatId/settings-screen')
-  getChatSettingsScreen(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-  ) {
+  getChatSettingsScreen(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.settingsService.getChatSettingsScreen(chatId, user);
   }
 
@@ -72,8 +69,12 @@ export class AdminSettingsController {
   }
 
   @Post('chats/:chatId/rules/publish')
-  publishRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.publishRules(chatId, user);
+  publishRules(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body?: unknown,
+  ) {
+    return this.settingsService.publishRules(chatId, user, 'miniapp', body);
   }
 
   @Delete('chats/:chatId/rules/publish')
@@ -87,10 +88,7 @@ export class AdminSettingsController {
   }
 
   @Get('channels/:chatId/settings-screen')
-  getChannelSettingsScreen(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-  ) {
+  getChannelSettingsScreen(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.settingsService.getChannelSettingsScreen(chatId, user);
   }
 

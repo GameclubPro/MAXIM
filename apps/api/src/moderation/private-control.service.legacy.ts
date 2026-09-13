@@ -194,6 +194,7 @@ import {
 } from './private-control-draft-normalizer';
 import { buildPrivateChatRulesDraft } from './private-control-rules-draft';
 import { buildPrivateRulesScreenTextPreview } from './private-control-rules-preview';
+import { publishPrivateRules } from './private-control-rules-publication';
 import { resolvePrivateControlSetFieldInputText } from './private-control-forward-routing';
 import { PrivateControlSessionStore } from './private-control-session.store';
 import { PrivateControlSessionBotContext } from './private-control-session-bot-context';
@@ -3233,12 +3234,16 @@ export class PrivateControlService {
 
       case 'rules_publish': {
         this.assertSelectedEntityType(session, 'chat');
-        await this.adminService.publishRules(session.selectedChatId!, context.actor, 'private_bot');
+        const notice = await publishPrivateRules(
+          this.adminService,
+          session.selectedChatId!,
+          context.actor,
+        );
         session.screen = 'rules';
-        const view = await this.renderRulesScreen(context, session, '✅ Правила опубликованы.');
+        const view = await this.renderRulesScreen(context, session, notice.text);
         await this.respondWithFreshMessage(context, session, view, {
           callbackId: context.callbackId,
-          notification: '✅ Правила опубликованы',
+          notification: notice.notification,
         });
         return;
       }

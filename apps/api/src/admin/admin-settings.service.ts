@@ -1,6 +1,7 @@
 import {
   channelSettingsScreenResponseSchema,
   chatSettingsScreenResponseSchema,
+  publishChatRulesRequestSchema,
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
@@ -270,8 +271,11 @@ export class AdminSettingsService {
     chatId: string,
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
+    body?: unknown,
   ): Promise<PublishChatRulesResult> {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    const request = publishChatRulesRequestSchema.safeParse(body ?? {});
+    if (!request.success) throw new BadRequestException(request.error.format());
     return publishChatRules({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
@@ -280,12 +284,17 @@ export class AdminSettingsService {
       chatId,
       actorUserId: user.userId,
       source,
+      mode: request.data.mode,
       resolveBotId: () => this.legacyAdminService.resolveChatRulesActionBotId(chatId),
       buildAutofilledText: () => this.buildAutofilledRulesText(chatId, user),
       buildFormattedText: (sourceText, options) =>
         this.legacyAdminService.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
-      sendPrivateConfirmation: (publishedUrl) =>
-        this.legacyAdminService.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
+      sendPrivateConfirmation: (publishedUrl, operation) =>
+        this.legacyAdminService.sendPublishedChatRulesPrivateConfirmation(
+          user,
+          publishedUrl,
+          operation,
+        ),
       ...(this.manualMessageCleanupService
         ? {
             deletePreviousPublishedMessage: (cleanup) =>
