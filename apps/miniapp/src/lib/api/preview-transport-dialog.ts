@@ -397,7 +397,7 @@ function handleChatDialogPreviewRequest(
       );
     }
 
-    if (tail[2] === 'messages' && method === 'POST') {
+    if (tail.length === 3 && tail[2] === 'messages' && method === 'POST') {
       const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
       const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
       const replyTarget = findPreviewDialogMessage(bucket, payload.replyToMessageId);
@@ -542,6 +542,7 @@ function handleChannelDialogPreviewRequest(
     }
 
     if (
+      tail.length === 3 &&
       (tail[2] === 'messages' || (tail[1] === 'suggest' && tail[2] === 'video')) &&
       method === 'POST'
     ) {

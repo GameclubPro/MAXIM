@@ -1,6 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { ChannelDialogMessage } from '@maxim/contracts/channel-dialog';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
+
+for (const [collection, entityId] of [
+  ['chats', 'preview-chat'],
+  ['channels', 'preview-channel'],
+]) {
+  test(`preview ${collection} reactions toggle the existing message without creating comments`, async () => {
+    const api = createPreviewApiTransport();
+    const route = `/${collection}/${entityId}/dialog/comments`;
+    const token = 'preview-comments-token-0001';
+    const before = (await api.request(`${route}?token=${token}`)) as {
+      messages: ChannelDialogMessage[];
+    };
+    const message = before.messages[0]!;
+    const emoji = '\u{1f44d}';
+    for (const expectedActive of [true, false]) {
+      const result = (await api.request(`${route}/messages/${message.id}/reactions`, {
+        method: 'POST',
+        body: JSON.stringify({ token, emoji }),
+      })) as { message: ChannelDialogMessage };
+      assert.equal(result.message.id, message.id);
+      assert.equal(result.message.text, message.text);
+      assert.equal(
+        result.message.reactionGroups.some((group) => group.emoji === emoji && group.reactedByMe),
+        expectedActive,
+      );
+      const after = (await api.request(`${route}?token=${token}`)) as {
+        messages: ChannelDialogMessage[];
+      };
+      assert.equal(after.messages.length, before.messages.length);
+    }
+  });
+}
 
 test('preview video submissions use the same dedicated route and media metadata as production', async () => {
   const api = createPreviewApiTransport();

@@ -1,0 +1,699 @@
+/* FLAG: Public comment themes must override workspace input defaults without styling other routes. */
+@layer workspace {
+  :root .channel-dialog-screen--comments[data-comment-theme] {
+    --comment-bg: #f0f4f1;
+    --comment-surface: #ffffff;
+    --comment-soft: #edf3f0;
+    --comment-ink: #202c29;
+    --comment-muted: #5d716a;
+    --comment-line: #cedbd5;
+    --comment-accent: #167565;
+    --comment-accent-ink: #ffffff;
+    --comment-own: #d3eae1;
+    --comment-own-ink: #183c31;
+    --comment-own-muted: #41675a;
+    --comment-shadow: rgba(17, 30, 25, 0.12);
+    --comment-overlay: rgba(13, 20, 17, 0.36);
+    --comment-danger: #b6414e;
+    --comment-admin: #a44737;
+    --comment-atlas-light: url('../assets/wallpapers/comments-atlas-light.webp');
+    --comment-atlas-dark: url('../assets/wallpapers/comments-atlas-dark.webp');
+    --comment-chrome-light: url('../assets/wallpapers/comments-chrome-light.webp');
+    --comment-chrome-dark: url('../assets/wallpapers/comments-chrome-dark.webp');
+    --comment-sketch-light: url('../assets/wallpapers/comments-sketch-light.webp');
+    --comment-sketch-dark: url('../assets/wallpapers/comments-sketch-dark.webp');
+    --comment-wallpaper: var(--comment-atlas-light);
+    --comments-native-bg: var(--comment-bg);
+    --comments-native-surface: var(--comment-surface);
+    --comments-native-surface-strong: var(--comment-surface);
+    --comments-native-ink: var(--comment-ink);
+    --comments-native-muted: var(--comment-muted);
+    --comments-native-line: var(--comment-line);
+    --comments-native-line-strong: var(--comment-accent);
+    --comments-native-incoming: var(--comment-surface);
+    --comments-native-own: var(--comment-own);
+    --comments-native-own-ink: var(--comment-own-ink);
+    --comments-native-own-muted: var(--comment-own-muted);
+    --comments-native-blue: var(--comment-accent);
+    --comments-native-header-height: 52px;
+    --comments-frost: var(--comment-surface);
+    --comments-frost-strong: var(--comment-surface);
+    --comments-frost-soft: var(--comment-soft);
+    --comments-line: var(--comment-line);
+    --comments-line-strong: var(--comment-accent);
+    --comments-shadow: var(--comment-overlay);
+    --comments-shadow-soft: var(--comment-shadow);
+    --comments-text: var(--comment-ink);
+    --comments-muted: var(--comment-muted);
+    --comments-link: var(--comment-accent);
+    --comments-own-link: var(--comment-own-ink);
+    --comments-own-text: var(--comment-own-ink);
+    --comments-own-muted: var(--comment-own-muted);
+    --comments-own-bg: var(--comment-own);
+    --comments-action-bg: var(--comment-soft);
+    --comments-action-active: var(--comment-own);
+    --comments-accent: var(--comment-accent);
+    --comments-accent-strong: var(--comment-accent);
+    --comments-send-start: var(--comment-accent);
+    --comments-send-end: var(--comment-accent);
+    --dialog-accent: var(--comment-accent);
+    --channel-dialog-wallpaper-image: var(--comment-wallpaper);
+    --channel-dialog-compose-fade-start: transparent;
+    --channel-dialog-compose-fade-mid: transparent;
+    --channel-dialog-compose-fade-end: transparent;
+    --comments-compose-action-size: 44px;
+    --comments-compose-submit-size: 46px;
+    --comments-compose-toolbar-height: 44px;
+    --comments-compose-surface-gap: 2px;
+    --comments-compose-surface-padding: 6px;
+    --comments-compose-field-padding: 11px 12px;
+    color: var(--comment-ink);
+  }
+
+  :root[data-max-theme='dark'] .channel-dialog-screen--comments[data-comment-theme] {
+    --comment-bg: #191f1e;
+    --comment-surface: #252f2c;
+    --comment-soft: #303d37;
+    --comment-ink: #edf3ef;
+    --comment-muted: #adbeb5;
+    --comment-line: #485c50;
+    --comment-accent: #8adbc1;
+    --comment-accent-ink: #173c2e;
+    --comment-own: #274d40;
+    --comment-own-ink: #f0faf4;
+    --comment-own-muted: #b6d2c2;
+    --comment-shadow: rgba(0, 0, 0, 0.24);
+    --comment-overlay: rgba(0, 0, 0, 0.5);
+    --comment-danger: #ffa2ae;
+    --comment-admin: #f0b095;
+    --comment-wallpaper: var(--comment-atlas-dark);
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme='chrome'] {
+    --comment-bg: #eef0f1;
+    --comment-soft: #edf1ef;
+    --comment-ink: #272e2b;
+    --comment-muted: #667069;
+    --comment-line: #d0d8d3;
+    --comment-accent: #197044;
+    --comment-own: #d7e9df;
+    --comment-wallpaper: var(--comment-chrome-light);
+  }
+
+  :root[data-max-theme='dark'] .channel-dialog-screen--comments[data-comment-theme='chrome'] {
+    --comment-bg: #1b1d1e;
+    --comment-surface: #292d2b;
+    --comment-soft: #333c36;
+    --comment-ink: #f0f4f1;
+    --comment-muted: #b7c2b9;
+    --comment-line: #4d5a50;
+    --comment-accent: #8bd6a7;
+    --comment-own: #2c4e39;
+    --comment-wallpaper: var(--comment-chrome-dark);
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme='sketch'] {
+    --comment-bg: #f5f5f7;
+    --comment-soft: #eff0f7;
+    --comment-ink: #2c2d38;
+    --comment-muted: #68697c;
+    --comment-line: #d5d7e3;
+    --comment-accent: #4158bf;
+    --comment-own: #e2e8fc;
+    --comment-own-ink: #283668;
+    --comment-own-muted: #536394;
+    --comment-wallpaper: var(--comment-sketch-light);
+  }
+
+  :root[data-max-theme='dark'] .channel-dialog-screen--comments[data-comment-theme='sketch'] {
+    --comment-bg: #202124;
+    --comment-surface: #2b2c33;
+    --comment-soft: #383944;
+    --comment-ink: #f1f1f7;
+    --comment-muted: #b8baca;
+    --comment-line: #53566b;
+    --comment-accent: #b1beff;
+    --comment-accent-ink: #243064;
+    --comment-own: #364574;
+    --comment-own-ink: #f3f5ff;
+    --comment-own-muted: #c5cdee;
+    --comment-wallpaper: var(--comment-sketch-dark);
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-screen__backdrop {
+    background: var(--comment-wallpaper) center top / cover no-repeat var(--comment-bg);
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-comments-header {
+    min-height: calc(52px + var(--comments-dialog-notification-top-nudge, 0px));
+    padding: 0;
+    background: var(--comment-surface);
+    border-bottom: 1px solid var(--comment-line);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-comments-header__context {
+    top: calc(10px + var(--comments-dialog-notification-top-nudge, 0px));
+    max-width: calc(100% - 100px);
+    padding-inline: 8px;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-comments-header__context
+    strong {
+    font-size: 0.86rem;
+    font-weight: 750;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-comments-header__context
+    span {
+    background: var(--comment-soft);
+    color: var(--comment-muted);
+    font-weight: 650;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-header-actions {
+    position: absolute;
+    top: calc(4px + var(--comments-dialog-notification-top-nudge, 0px));
+    right: 0;
+    display: flex;
+    gap: 2px;
+    pointer-events: auto;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-notifications {
+    position: static;
+    transform: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(.channel-dialog-theme-toggle, .channel-dialog-notifications__toggle) {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--comment-muted);
+    box-shadow: none;
+    cursor: pointer;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(.channel-dialog-theme-toggle, .channel-dialog-notifications__toggle)
+    svg {
+    width: 22px;
+    height: 22px;
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-notifications__toggle.is-active {
+    color: var(--comment-accent);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-message__bubble,
+      .channel-dialog-compose__surface,
+      .channel-dialog-compose__emoji-panel,
+      .channel-dialog-reaction-popover__surface
+    ) {
+    background: var(--comment-surface);
+    color: var(--comment-ink);
+    border: 1px solid var(--comment-line);
+    border-radius: 8px;
+    box-shadow: 0 2px 8px var(--comment-shadow);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__bubble {
+    gap: 6px;
+    padding: 10px 12px;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-message.is-own
+    .channel-dialog-message__bubble {
+    border-radius: 8px;
+    border-color: var(--comment-line);
+    background: var(--comment-own);
+    box-shadow: 0 2px 8px var(--comment-shadow);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-message__bubble.is-grouped {
+    border-radius: 8px;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__bubble p {
+    font-size: 0.94rem;
+    line-height: 1.48;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__meta strong {
+    color: var(--comment-accent);
+    font-weight: 700;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__meta time {
+    color: var(--comment-muted);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-message.is-own
+    .channel-dialog-message__meta
+    strong {
+    color: var(--comment-own-ink);
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__avatar {
+    background: var(--comment-soft);
+    border-color: var(--comment-line);
+    color: var(--comment-accent);
+    box-shadow: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-message__bubble.is-active,
+      .channel-dialog-message.is-source-highlighted .channel-dialog-message__bubble
+    ) {
+    border-color: var(--comment-accent);
+    box-shadow: 0 0 0 2px var(--comment-accent);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-message__reply,
+      .channel-dialog-message.is-own .channel-dialog-message__reply
+    ) {
+    padding: 6px 8px;
+    border-radius: 4px;
+    border-left-color: var(--comment-accent);
+    background: var(--comment-soft);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-message__reply span,
+      .channel-dialog-message.is-own .channel-dialog-message__reply span
+    ) {
+    color: var(--comment-accent);
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-message__reply p,
+      .channel-dialog-message.is-own .channel-dialog-message__reply p
+    ) {
+    font-size: 0.76rem;
+    line-height: 1.35;
+    color: var(--comment-muted);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-message__image-tile,
+      .channel-dialog-message__file-pill,
+      .channel-dialog-message.is-own .channel-dialog-message__file-pill,
+      .channel-dialog-compose__image-chip,
+      .channel-dialog-compose__attachment
+    ) {
+    border-radius: 8px;
+    border-color: var(--comment-line);
+    background: var(--comment-soft);
+    box-shadow: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-message__file-pill-icon,
+      .channel-dialog-message__file-pill-meta b,
+      .channel-dialog-compose__attachment-preview
+    ) {
+    background: var(--comment-soft);
+    color: var(--comment-accent);
+    border-radius: 6px;
+    box-shadow: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-reaction-pill,
+      .channel-dialog-new-comments__pill,
+      .channel-dialog-jump-latest
+    ) {
+    min-height: 32px;
+    background: var(--comment-surface);
+    color: var(--comment-muted);
+    border-color: var(--comment-line);
+    border-radius: 8px;
+    box-shadow: 0 1px 4px var(--comment-shadow);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-reaction-pill.is-active,
+      .channel-dialog-compose__attach.is-active,
+      .channel-dialog-compose__emoji-tab.is-active,
+      .channel-dialog-reaction-popover__emoji.is-active
+    ) {
+    border-color: var(--comment-accent);
+    background: var(--comment-own);
+    color: var(--comment-own-ink);
+    box-shadow: none;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__surface {
+    box-shadow: 0 -2px 12px var(--comment-shadow);
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(
+      .channel-dialog-compose__attach,
+      .channel-dialog-compose__emoji,
+      .channel-dialog-compose__emoji-tab,
+      .channel-dialog-reaction-popover__emoji,
+      .channel-dialog-reaction-popover__toggle,
+      .channel-dialog-reaction-popover__action,
+      .channel-dialog-compose__emoji-close
+    ) {
+    border-color: transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--comment-muted);
+    box-shadow: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-reaction-popover__action--danger {
+    color: var(--comment-danger);
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__attach svg {
+    width: 21px;
+    height: 21px;
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__field
+    textarea {
+    border-color: transparent;
+    border-radius: 8px;
+    background: var(--comment-soft);
+    color: var(--comment-ink);
+    box-shadow: none;
+    font-size: 1rem;
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__field
+    textarea::placeholder {
+    color: var(--comment-muted);
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__field
+    textarea:focus {
+    border-color: var(--comment-accent);
+    box-shadow: none;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-submit {
+    border: 0;
+    border-radius: 8px;
+    background: var(--comment-accent);
+    color: var(--comment-accent-ink);
+    box-shadow: none;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-submit::before {
+    content: none;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(.channel-dialog-compose__meta, .channel-dialog-compose__meta span) {
+    color: var(--comment-muted);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-notification-sheet__button--accent {
+    color: var(--comment-accent-ink);
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__reply {
+    background: var(--comment-soft);
+    border-color: transparent;
+    border-radius: 6px;
+    box-shadow: none;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__reply-copy {
+    border-left-color: var(--comment-accent);
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__reply-copy
+    span {
+    color: var(--comment-accent);
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(.channel-dialog-compose__reply-dismiss, .channel-dialog-compose__attachment-dismiss) {
+    background: var(--comment-surface);
+    color: var(--comment-muted);
+    box-shadow: none;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-empty {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-empty strong {
+    color: var(--comment-ink);
+  }
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-empty span {
+    color: var(--comment-muted);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    :is(button, input, textarea):focus-visible {
+    outline: 2px solid var(--comment-accent);
+    outline-offset: 2px;
+  }
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__attach:focus-within {
+    outline: 2px solid var(--comment-accent);
+    outline-offset: 2px;
+  }
+
+  .channel-dialog-screen--comments .comment-theme-sheet {
+    position: absolute;
+    inset: 0;
+    z-index: 35;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 10px 8px max(10px, var(--safe-bottom, 0px));
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    border: 0;
+    padding: 0;
+    background: var(--comment-overlay);
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__panel {
+    position: relative;
+    width: min(100%, 460px);
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px;
+    border: 1px solid var(--comment-line);
+    border-radius: 8px;
+    background: var(--comment-surface);
+    color: var(--comment-ink);
+    box-shadow: 0 12px 32px var(--comment-shadow);
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__head h2 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 750;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__close {
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--comment-soft);
+    color: var(--comment-muted);
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__close svg {
+    width: 22px;
+    height: 22px;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__options {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__option {
+    display: grid;
+    min-width: 0;
+    padding: 3px;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--comment-ink);
+    cursor: pointer;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__option[aria-checked='true'] {
+    border-color: var(--comment-accent);
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__wallpaper {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    aspect-ratio: 3 / 4;
+    padding: 10px 6px;
+    border-radius: 4px;
+    background: var(--comment-preview-wallpaper) center / cover no-repeat var(--comment-bg);
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__wallpaper i {
+    width: 72%;
+    height: 16px;
+    background: var(--comment-surface);
+    border-radius: 4px;
+    border: 1px solid var(--comment-line);
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__wallpaper i:nth-child(2) {
+    align-self: flex-end;
+    width: 65%;
+    height: 22px;
+    background: var(--comment-preview-own);
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 3px;
+    padding: 10px 2px 5px;
+    font-size: 0.76rem;
+    font-weight: 650;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__label svg {
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    color: var(--comment-accent);
+    visibility: hidden;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__option[aria-checked='true'] svg {
+    visibility: visible;
+  }
+  .channel-dialog-screen--comments .comment-theme-sheet__done {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 16px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--comment-accent);
+    color: var(--comment-accent-ink);
+    font-size: 0.9rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .channel-dialog-screen--comments [data-comment-preview='atlas'] {
+    --comment-preview-wallpaper: var(--comment-atlas-light);
+    --comment-preview-own: #d3eae1;
+  }
+  .channel-dialog-screen--comments [data-comment-preview='chrome'] {
+    --comment-preview-wallpaper: var(--comment-chrome-light);
+    --comment-preview-own: #d7e9df;
+  }
+  .channel-dialog-screen--comments [data-comment-preview='sketch'] {
+    --comment-preview-wallpaper: var(--comment-sketch-light);
+    --comment-preview-own: #e2e8fc;
+  }
+  html[data-max-theme='dark'] .channel-dialog-screen--comments [data-comment-preview='atlas'] {
+    --comment-preview-wallpaper: var(--comment-atlas-dark);
+    --comment-preview-own: #274d40;
+  }
+  html[data-max-theme='dark'] .channel-dialog-screen--comments [data-comment-preview='chrome'] {
+    --comment-preview-wallpaper: var(--comment-chrome-dark);
+    --comment-preview-own: #2c4e39;
+  }
+  html[data-max-theme='dark'] .channel-dialog-screen--comments [data-comment-preview='sketch'] {
+    --comment-preview-wallpaper: var(--comment-sketch-dark);
+    --comment-preview-own: #364574;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .channel-dialog-screen--comments .comment-theme-sheet__panel {
+      animation: comment-theme-open 180ms ease-out;
+    }
+    :root
+      .channel-dialog-screen--comments[data-comment-theme]
+      :is(.channel-dialog-submit, .channel-dialog-reaction-pill, .channel-dialog-theme-toggle) {
+      transition:
+        transform 160ms ease,
+        background-color 160ms ease;
+    }
+    :root
+      .channel-dialog-screen--comments[data-comment-theme]
+      :is(.channel-dialog-submit, .channel-dialog-reaction-pill):active {
+      transform: scale(0.96);
+    }
+  }
+  @keyframes comment-theme-open {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}

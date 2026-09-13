@@ -25,6 +25,7 @@ import {
   Code as IconoirCode,
   Italic as IconoirItalic,
   Link as IconoirLink,
+  Palette as IconoirPalette,
   Strikethrough as IconoirStrikethrough,
   Type as IconoirType,
   Underline as IconoirUnderline,
@@ -55,6 +56,7 @@ import {
 } from '../components/max-markdown-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { PublicDialogUnavailableState } from '../components/public-dialog-unavailable-state';
+import CommentThemeSheet from '../components/comment-theme-sheet';
 import {
   MaxRichTextEditor,
   type MaxRichTextEditorHandle,
@@ -104,12 +106,14 @@ import {
 } from '../lib/max-bridge';
 import { useDialogFocusTrap } from '../lib/dialog-focus';
 import { useNativeBackHandler } from '../lib/native-back';
+import { useCommentTheme } from '../lib/use-comment-theme';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/channel-dialog-comments.css';
 import '../styles/channel-dialog-image-viewer.css';
 import '../styles/channel-dialog-native-comments.css';
+import '../styles/channel-dialog-themes.css';
 
 const LazyChannelDialogNotificationSheet = lazy(
   () => import('../components/channel-dialog-notification-sheet'),
@@ -590,7 +594,9 @@ function buildAdminBubbleStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
   }
 
   return {
-    '--channel-dialog-message-role-accent': isOwnMessage ? '#b8ff7a' : '#00b7c7',
+    '--channel-dialog-message-role-accent': isOwnMessage
+      ? 'var(--comment-own-ink, #b8ff7a)'
+      : 'var(--comment-admin, #00b7c7)',
   } as CSSProperties;
 }
 
@@ -600,7 +606,7 @@ function buildAdminAuthorStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
   }
 
   return {
-    color: isOwnMessage ? '#d9ffc2' : '#007782',
+    color: isOwnMessage ? 'var(--comment-own-ink, #d9ffc2)' : 'var(--comment-admin, #007782)',
   };
 }
 
@@ -1350,6 +1356,9 @@ export function ChannelDialogPage({
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(location.pathname);
+  const { theme: commentTheme, selectTheme: selectCommentTheme } = useCommentTheme(
+    dialogType === 'comments',
+  );
   const entityType = resolveDialogEntityType(location.pathname);
   const { canManageCommentNotifications, canUploadCommentAttachments } =
     resolveChannelDialogProfileCapabilities(profile);
@@ -1363,6 +1372,7 @@ export function ChannelDialogPage({
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isComposeEmojiOpen, setIsComposeEmojiOpen] = useState(false);
   const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
+  const [isThemeSettingsOpen, setIsThemeSettingsOpen] = useState(false);
   const [notificationDraftMode, setNotificationDraftMode] =
     useState<ChannelDialogNotificationMode>('off');
   const [notificationDraftScope, setNotificationDraftScope] =
@@ -1846,6 +1856,14 @@ export function ChannelDialogPage({
     { enabled: canManageCommentNotifications && isNotificationSettingsOpen, priority: 625 },
   );
 
+  useNativeBackHandler(
+    () => {
+      setIsThemeSettingsOpen(false);
+      return true;
+    },
+    { enabled: isThemeSettingsOpen, priority: 626 },
+  );
+
   useEffect(() => {
     if (canManageCommentNotifications) {
       return;
@@ -1890,6 +1908,7 @@ export function ChannelDialogPage({
     setFirstUnreadMessageId(null);
     setTerminalDialogErrorState(null);
     setReactionPopoverLayout(null);
+    setIsThemeSettingsOpen(false);
     setDraft('');
     setDraftAttachments([]);
     setPreparingAttachmentState(null);
@@ -2152,17 +2171,13 @@ export function ChannelDialogPage({
   }, [canManageCommentNotifications, isNotificationSettingsOpen]);
 
   useLayoutEffect(() => {
-    if (
-      !canManageCommentNotifications ||
-      dialogType !== 'comments' ||
-      typeof window === 'undefined'
-    ) {
+    if (dialogType !== 'comments' || typeof window === 'undefined') {
       commentsNotificationTopNudgeRef.current = 0;
       setCommentsNotificationTopNudge(0);
       return undefined;
     }
 
-    const button = notificationToggleRef.current;
+    const button = screenRef.current?.querySelector('.channel-dialog-theme-toggle');
     if (!button) {
       commentsNotificationTopNudgeRef.current = 0;
       setCommentsNotificationTopNudge(0);
@@ -3815,6 +3830,7 @@ export function ChannelDialogPage({
     <div
       ref={screenRef}
       className={cn('channel-dialog-screen', `channel-dialog-screen--${dialogType}`, 'page-enter')}
+      data-comment-theme={dialogType === 'comments' ? commentTheme : undefined}
       style={commentsScreenStyle}
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
@@ -3835,35 +3851,56 @@ export function ChannelDialogPage({
               ) : null}
             </div>
 
-            {canManageCommentNotifications ? (
-              <div className="channel-dialog-notifications">
-                <button
-                  ref={notificationToggleRef}
-                  type="button"
-                  className={cn(
-                    'channel-dialog-notifications__toggle',
-                    notificationMode !== 'off' && 'is-active',
-                    isNotificationSettingsOpen && 'is-open',
-                  )}
-                  onClick={() => {
-                    maxImpact('light');
-                    dismissMessageActions();
-                    setIsComposeEmojiOpen(false);
-                    setIsNotificationSettingsOpen((current) => !current);
-                  }}
-                  aria-label="Настройки уведомлений"
-                  aria-expanded={isNotificationSettingsOpen}
-                  title={notificationToggleLabel}
-                  disabled={isNotificationPending}
-                >
-                  {notificationMode === 'off' ? (
-                    <IconoirBellOff aria-hidden focusable="false" />
-                  ) : (
-                    <IconoirBell aria-hidden focusable="false" />
-                  )}
-                </button>
-              </div>
-            ) : null}
+            <div className="channel-dialog-header-actions">
+              <button
+                type="button"
+                className="channel-dialog-theme-toggle"
+                aria-label="Оформление комментариев"
+                title="Оформление комментариев"
+                aria-haspopup="dialog"
+                aria-expanded={isThemeSettingsOpen}
+                onClick={() => {
+                  maxImpact('light');
+                  dismissMessageActions();
+                  setIsComposeEmojiOpen(false);
+                  setIsNotificationSettingsOpen(false);
+                  composeFieldRef.current?.blur();
+                  setIsThemeSettingsOpen(true);
+                }}
+              >
+                <IconoirPalette aria-hidden focusable="false" />
+              </button>
+              {canManageCommentNotifications ? (
+                <div className="channel-dialog-notifications">
+                  <button
+                    ref={notificationToggleRef}
+                    type="button"
+                    className={cn(
+                      'channel-dialog-notifications__toggle',
+                      notificationMode !== 'off' && 'is-active',
+                      isNotificationSettingsOpen && 'is-open',
+                    )}
+                    onClick={() => {
+                      maxImpact('light');
+                      dismissMessageActions();
+                      setIsComposeEmojiOpen(false);
+                      setIsThemeSettingsOpen(false);
+                      setIsNotificationSettingsOpen((current) => !current);
+                    }}
+                    aria-label="Настройки уведомлений"
+                    aria-expanded={isNotificationSettingsOpen}
+                    title={notificationToggleLabel}
+                    disabled={isNotificationPending}
+                  >
+                    {notificationMode === 'off' ? (
+                      <IconoirBellOff aria-hidden focusable="false" />
+                    ) : (
+                      <IconoirBell aria-hidden focusable="false" />
+                    )}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
@@ -4989,6 +5026,15 @@ export function ChannelDialogPage({
             screenRef.current ?? document.body,
           )
         : null}
+
+      {dialogType === 'comments' && isThemeSettingsOpen ? (
+        <CommentThemeSheet
+          portalTarget={screenRef.current ?? document.body}
+          theme={commentTheme}
+          onSelect={selectCommentTheme}
+          onClose={() => setIsThemeSettingsOpen(false)}
+        />
+      ) : null}
 
       {canManageCommentNotifications && dialogType === 'comments' && isNotificationSettingsOpen ? (
         <Suspense fallback={null}>
