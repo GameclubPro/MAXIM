@@ -116,6 +116,18 @@ test('pilot availability comes from the authenticated server capability, not a c
   assert.doesNotMatch(source, /323459159|initDataUnsafe/u);
 });
 
+test('a pending send supersedes the old result and explicit settings changes reset request context', () => {
+  const source = readFileSync(
+    new URL('../src/pages/settings/settings-advertising-workspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /const status = send\.isPending \? 'SENDING' : data\.lastSend\?\.status/u);
+  assert.match(
+    source,
+    /onSuccess: \(state\) => \{\s*requestId\.current = null;\s*setAcknowledgedId\(null\)/u,
+  );
+});
+
 test('isolated preview keeps nonpilot closed and supports explicit pilot enable, send and disable', async () => {
   const closed = createPreviewApiTransport({ search: '' });
   assert.deepEqual(await closed.request('/advertising-placement/capability'), { available: false });

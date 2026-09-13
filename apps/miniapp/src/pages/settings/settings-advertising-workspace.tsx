@@ -39,7 +39,11 @@ export default function SettingsAdvertisingWorkspace({
           body: JSON.stringify({ enabled, revision: query.data!.revision }),
         }),
       ),
-    onSuccess: (state) => queryClient.setQueryData(queryKey, state),
+    onSuccess: (state) => {
+      requestId.current = null;
+      setAcknowledgedId(null);
+      queryClient.setQueryData(queryKey, state);
+    },
     onError: () => {
       void refresh();
     },
@@ -82,7 +86,7 @@ export default function SettingsAdvertisingWorkspace({
       </div>
     );
   const data = query.data;
-  const status = data.lastSend?.status;
+  const status = send.isPending ? 'SENDING' : data.lastSend?.status;
   const pending = settings.isPending || send.isPending;
   const uncertain = status === 'UNCERTAIN';
   const ready =
