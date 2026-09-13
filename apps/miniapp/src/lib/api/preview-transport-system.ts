@@ -1314,6 +1314,9 @@ export const handleSystemPreviewRequest: PreviewRequestHandler = ({
   method,
   init,
 }) => {
+  if (url.pathname === '/advertising-placement/capability' && method === 'GET') {
+    return { available: state.advertisingPilot };
+  }
   if (url.pathname === '/me' && method === 'GET') {
     return meSchema.parse(cloneJson(state.me));
   }

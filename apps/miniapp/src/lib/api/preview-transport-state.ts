@@ -80,6 +80,7 @@ import {
 import { createPreviewVkParsingFeed } from './preview-transport-vk';
 
 export type PreviewState = {
+  advertisingPilot: boolean;
   clock: PreviewClock;
   me: Me;
   systemModeSelection: 'auto' | 'normal' | 'degrade';
@@ -806,6 +807,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   };
 
   const state: PreviewState = {
+    advertisingPilot: !publisherProfile && searchParams.get('advertisingPilot') === '1',
     clock,
     me: {
       userId: 'preview-admin',

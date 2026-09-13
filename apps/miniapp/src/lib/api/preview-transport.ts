@@ -9,6 +9,7 @@ import { handlePublicationDraftsPreviewRequest } from './preview-transport-publi
 import { handlePublisherPreviewRequest } from './preview-transport-publisher';
 import {
   dispatchPreviewRequest,
+  PREVIEW_NOT_HANDLED,
   type PreviewApiTransportOptions,
   type PreviewRequestHandler,
 } from './preview-transport-runtime';
@@ -20,6 +21,11 @@ import { handleVkPreviewRequest } from './preview-transport-vk';
 export type { PreviewApiTransportOptions, PreviewClock } from './preview-transport-runtime';
 
 export const PREVIEW_REQUEST_HANDLERS: readonly PreviewRequestHandler[] = [
+  async (context) => {
+    if (context.segments[2] !== 'advertising-placement') return PREVIEW_NOT_HANDLED;
+    const { handleAdvertisingPreviewRequest } = await import('./preview-transport-advertising');
+    return handleAdvertisingPreviewRequest(context);
+  },
   handlePublisherPreviewRequest,
   handleSystemPreviewRequest,
   handlePublicationDraftsPreviewRequest,

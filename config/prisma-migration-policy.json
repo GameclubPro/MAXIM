@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260912120000_add_sanction_registry_indexes",
-  "baselineNamesSha256": "e1e2ced70f96bc9eacf55397f4840a1a99bdd607f656ac1d2c20d924a34a573d",
-  "baselineContentsSha256": "b5e3886a9804bc69b87d29d8f49c3fb65480acb2c723b59ec4c6f7166416cd6f",
+  "baselineThrough": "20260913120000_add_advertising_placement_pilot",
+  "baselineNamesSha256": "2add7de46a78823143925455cf6ef6a82e8ef608156f335ac79c67407e09ad5d",
+  "baselineContentsSha256": "0e4d4a09301446483b6dbe6ffe81b31d738cb5906a58ec7a9b517215845fd914",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -84,6 +84,9 @@
     }
   },
   "nonConcurrentIndexExceptions": {
+    "20260913120000_add_advertising_placement_pilot": {
+      "reason": "The index is created on a new empty pilot-send table in the same additive transaction. No existing table or data is changed."
+    },
     "20260824090000_add_karavan_storefront_admin_allowlist": {
       "reason": "The indexes are created immediately after the new empty allowlist table; keeping them in the same atomic additive migration avoids exposing a table without its uniqueness and lookup indexes, and there is no existing workload to block."
     },

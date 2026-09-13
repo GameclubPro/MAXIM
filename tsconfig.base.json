@@ -10,6 +10,7 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
+      "@maxim/contracts/advertising-placement": ["packages/contracts/src/advertising-placement.ts"],
       "@maxim/contracts": ["packages/contracts/src/index.ts"],
       "@maxim/contracts/bot-speech": ["packages/contracts/src/bot-speech.ts"],
       "@maxim/contracts/broadcast": ["packages/contracts/src/broadcast.ts"],

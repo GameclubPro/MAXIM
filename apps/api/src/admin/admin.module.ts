@@ -30,6 +30,8 @@ import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
+import { AdvertisingPlacementController } from './advertising-placement.controller';
+import { AdvertisingPlacementService } from './advertising-placement.service';
 import { AdminSettingsController } from './admin-settings.controller';
 import { PublisherVkParsingController } from './publisher-vk-parsing.controller';
 import { ChannelDialogService } from './channel-dialog.service';
@@ -130,6 +132,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherModule,
   ],
   controllers: [
+    AdvertisingPlacementController,
     AdminManagedEntitiesController,
     AdminSettingsController,
     PublisherVkParsingController,
@@ -146,6 +149,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SupportRequestsController,
   ],
   providers: [
+    AdvertisingPlacementService,
     AdminService,
     {
       provide: MANAGED_ENTITIES_LEGACY_PORT,

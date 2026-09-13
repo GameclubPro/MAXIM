@@ -1973,4 +1973,90 @@
       border-radius: 8px;
     }
   }
+  body[data-miniapp-profile='moderation'] .advertising-workspace {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace p {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 48px;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__listing {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 48px;
+    align-items: center;
+    gap: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace .button {
+    min-height: 48px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    white-space: normal;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__row > strong {
+    margin-right: auto;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace .advertising-workspace__tool {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    flex: 0 0 48px;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace svg {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__preview {
+    margin: 0;
+    padding: 16px;
+    border: 1px solid var(--major-border);
+    border-radius: 8px;
+    display: grid;
+    gap: 12px;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__preview > span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__ack {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 44px;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__ack input {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+  }
+
+  body[data-miniapp-profile='moderation'] .advertising-workspace__note {
+    font-size: 12px;
+  }
 }

@@ -187,6 +187,35 @@ async function assertAdvertisingSoonModule(page) {
   }
 }
 
+async function assertAdvertisingPilotModule(page) {
+  const entry = page.getByRole('button', { name: 'Рекламная площадка', exact: true });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('button[aria-label="Рекламная площадка"]');
+    return button && !button.disabled;
+  });
+  await entry.click();
+  const workspace = page.locator('.advertising-workspace');
+  await workspace.waitFor({ state: 'visible' });
+  const toggle = workspace.getByRole('checkbox', { name: 'Включить рекламную площадку' });
+  await toggle.click();
+  await page.waitForFunction(
+    () => document.querySelector('.advertising-workspace input[type="checkbox"]')?.checked === true,
+  );
+  const send = workspace.getByRole('button', { name: 'Отправить кнопку', exact: true });
+  await send.click();
+  await workspace.getByText('Кнопка отправлена', { exact: true }).waitFor();
+  await toggle.click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.advertising-workspace input[type="checkbox"]')?.checked === false,
+  );
+  if (!(await send.isDisabled())) throw new Error('Disabled placement cannot send a button');
+  await page.keyboard.press('Escape');
+  await workspace.waitFor({ state: 'hidden' });
+  await entry.click();
+  await workspace.getByText('Кнопка отправлена', { exact: true }).waitFor();
+}
+
 async function assertHintDismissal(page, panel, trigger) {
   const hintId = await trigger.getAttribute('aria-controls');
   if (!hintId) throw new Error('The explanation button does not identify its text.');
@@ -2064,8 +2093,19 @@ const scenarioBehaviors = [
     beforeShot: assertAdvertisingSoonModule,
   },
   {
+    name: 'chat-settings-advertising-pilot',
+    beforeShot: assertAdvertisingPilotModule,
+  },
+  {
     name: 'chat-settings',
     beforeShot: async (page) => {
+      await assertAdvertisingSoonModule(page);
+      const originalUrl = page.url();
+      const pilotUrl = new URL(originalUrl);
+      pilotUrl.searchParams.set('advertisingPilot', '1');
+      await page.goto(pilotUrl.href);
+      await assertAdvertisingPilotModule(page);
+      await page.goto(originalUrl);
       await assertAdvertisingSoonModule(page);
       await page
         .locator('[data-managed-entity-workspace="chat-settings"]')

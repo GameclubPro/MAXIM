@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import ts from 'typescript';
+import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
+import { advertisingStateSchema } from '@maxim/contracts/advertising-placement';
 import { applySettingsSectionSchema, chatSettingsSchema } from '@maxim/contracts/settings';
 import {
   MINIAPP_VISUAL_PRESETS,
@@ -56,7 +58,7 @@ test('advertising announcement is a disabled chat module, never a navigation or 
   assert.match(sectionSource, /Рекламная площадка/u);
   assert.match(sectionSource, /Скоро/u);
   assert.match(sectionSource, /data-settings-search="[^"]*Связка[^"]*взаимопиар/u);
-  assert.match(pageSource, /<SettingsAdvertisingSoonSection\s*\/>/u);
+  assert.match(pageSource, /<SettingsAdvertisingSection\s/u);
 });
 
 test('the announcement introduces no writable setting or bulk-apply section', () => {
@@ -101,4 +103,59 @@ test('the unavailable module has a dedicated real-browser scenario and stays cha
   );
   assert.doesNotMatch(channelSource, /SettingsAdvertisingSoonSection/u);
   assert.doesNotMatch(publisherSource, /SettingsAdvertisingSoonSection/u);
+});
+
+test('pilot availability comes from the authenticated server capability, not a client identity constant', () => {
+  const source = readFileSync(
+    new URL('../src/pages/settings/settings-advertising-section.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /api\.request\('\/advertising-placement\/capability'\)/u);
+  assert.match(source, /if \(!capability\.data\?\.available \|\| capability\.isError\)/u);
+  assert.match(source, /return <SettingsAdvertisingSoonSection \/>/u);
+  assert.doesNotMatch(source, /323459159|initDataUnsafe/u);
+});
+
+test('isolated preview keeps nonpilot closed and supports explicit pilot enable, send and disable', async () => {
+  const closed = createPreviewApiTransport({ search: '' });
+  assert.deepEqual(await closed.request('/advertising-placement/capability'), { available: false });
+  await assert.rejects(
+    closed.request('/chats/-100/advertising-placement', { method: 'PUT', body: '{}' }),
+  );
+  const preview = createPreviewApiTransport({ search: '?advertisingPilot=1' });
+  const chats = (await preview.request('/chats')) as { id: string }[];
+  const path = `/chats/${encodeURIComponent(chats[0].id)}/advertising-placement`;
+  advertisingStateSchema.parse(await preview.request(path));
+  assert.deepEqual(await preview.request('/advertising-placement/capability'), { available: true });
+  await preview.request(path, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled: true, revision: 0 }),
+  });
+  const request = {
+    requestId: '10000000-0000-4000-8000-000000000001',
+    revision: 1,
+    previousSendId: null,
+  };
+  const first = await preview.request(`${path}/send`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+  assert.deepEqual(
+    await preview.request(`${path}/send`, { method: 'POST', body: JSON.stringify(request) }),
+    first,
+  );
+  await preview.request(path, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled: false, revision: 1 }),
+  });
+  await assert.rejects(
+    preview.request(`${path}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ ...request, requestId: '10000000-0000-4000-8000-000000000002' }),
+    }),
+  );
+  const publisher = createPreviewApiTransport({ search: '?advertisingPilot=1&profile=publisher' });
+  assert.deepEqual(await publisher.request('/advertising-placement/capability'), {
+    available: false,
+  });
 });

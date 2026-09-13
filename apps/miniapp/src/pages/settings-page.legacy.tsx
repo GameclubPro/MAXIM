@@ -85,7 +85,7 @@ import { SegmentedControl, type SegmentedOption } from '../components/ui/segment
 import { ResetIcon } from '../components/ui/reset-icon';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
-import { SettingsAdvertisingSoonSection } from './settings/settings-advertising-soon-section';
+import { SettingsAdvertisingSection } from './settings/settings-advertising-section';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -7936,7 +7936,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               }
             />
 
-            <SettingsAdvertisingSoonSection />
+            <SettingsAdvertisingSection
+              key={`advertising:${meQuery.data?.userId ?? ''}:${chatId}`}
+              api={api}
+              chatId={chatId ?? ''}
+              userId={meQuery.data?.userId ?? null}
+            />
 
             <SettingsExtraSection
               draft={draft}

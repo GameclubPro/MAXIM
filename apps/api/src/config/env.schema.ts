@@ -631,6 +631,10 @@ const envSchema = z.object({
   VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
+  SVYAZKA_INTEGRATION_TOKEN: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
   KARAVAN_API_BASE_URL: z.string().url().optional(),
   KARAVAN_INTEGRATION_TOKEN: z.string().min(16).optional(),
   KARAVAN_STOREFRONT_CATALOG_URL: z

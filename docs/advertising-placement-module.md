@@ -5,7 +5,75 @@ Date: 2026-09-13. Target: the Major mini app at
 
 ## Current Scope
 
-This release is an unavailable announcement, not a working Svyazka integration.
+The working pilot is implemented locally for the user-authorized MAX identity,
+with fresh chat-admin authorization on every management operation and again
+immediately before sending. Other identities retain the exact disabled
+announcement and coming-soon badge. Pilot availability is returned by the
+authenticated server, not inferred from unsafe launch data or a client ID list.
+
+The separate Svyazka credential was explicitly authorized on 2026-09-13. It can
+only look up an active real chat listing owned by the pilot, by exact MAX chat
+identity. It grants no session, ownership, payment or publication permission.
+The two bots never exchange MAX launch data or tokens. Provisioning is a
+separate guarded step; no key belongs in Git, browser bundles or logs.
+
+Explicit enablement binds the current listing. A separate button sends one
+message using Major's immediate, routed, rate-limited, durably fenced transport.
+There is no scheduler or legacy publication runner. Revision and previous-send
+CAS plus immutable request IDs prevent duplicate or competing requests. Disable,
+lost rights and a missing/replaced listing reject unattempted sends. Uncertain
+delivery is never retried automatically; an explicitly acknowledged new send
+is a new intent, not a rewritten delivery history. Disabling does not remove an
+already delivered button. A missing listing opens normal Svyazka onboarding.
+
+Migration `20260913120000_add_advertising_placement_pilot` creates only two new
+tables. It has no backfill, change to existing settings, or consent mutation.
+The action journal uses exact primary-key reads, not fleet or JSON scans.
+
+### Pilot Verification
+
+- Full isolated `npm run check`: 11,843 API tests, 213 contract tests, 1,273
+  mini app tests, static/infrastructure checks and Safety Desk tests/build/smoke
+  passed. Separate PostgreSQL concurrency tests passed all four cases.
+- Narrow API tests cover nonpilot/nonadmin rejection, wrong-chat/URL binding,
+  upstream errors, disable/revocation before dispatch, concurrent duplicates,
+  uncertain results and a failed final receipt write. The ordinary unavailable
+  card remains covered by its original noninteractive component test.
+- The final 12-case focused API run also verifies that a replaced listing is
+  visibly unbound until explicitly reconnected. Capability decoding and the
+  isolated preview handler stay out of the eager contract/preview dependency
+  graph; only a literal server `available: true` opens the module.
+- Browser pilot checks exercise enable, send, disable, retained result and
+  reopening. Controlled switches wait for the confirmed state; Playwright's
+  immediate checkbox assertion was unsuitable for this non-optimistic mutation.
+- The initial preview used symbolic chat IDs against the numeric MAX response
+  schema. Explicit synthetic MAX IDs and schema validation now guard fixtures.
+- The shared worktree contains concurrent unrelated UI work. Its combined build
+  exceeded startup budget; the isolated task snapshot with lockfile-based
+  dependencies passed without increasing budgets. Do not attribute those
+  unrelated edits to this release. Production dependency audit retains two
+  moderate findings and zero high/critical findings; no packages were upgraded.
+- Concurrent comment/giveaway commits were retained as ancestors. Their separate
+  `f34d086b` startup-preload allowance is not part of this module's diff. The
+  combined production build passed; final mini app validation passed 1,282 tests.
+
+### Pilot Delivery
+
+- [x] Core implementation and isolated full checks.
+- [x] Final mobile visual acceptance: iPhone SE/light and Android/dark, four
+      inspected screenshots; the standard 13-scenario strict smoke passed.
+- [ ] Reviewed source commit.
+- [ ] Separate credential provisioning and both project releases.
+- [ ] Public frontend/API verification.
+- [ ] Real MAX device and live-delivery acceptance.
+
+Until the release checklist is completed, the running Major module remains the
+closed announcement below. Svyazka's integration/launch changes are maintained
+and released only from the separate MAX-MARKET repository.
+
+## Previous Announcement
+
+The previous release was an unavailable announcement, not a working integration.
 Chat settings show `Рекламная площадка` with the visible `Скоро` badge next to
 the other content/service modules. The native button is disabled and has no
 click handler, link, switch, settings panel or writable field. It is unavailable
@@ -17,7 +85,7 @@ Future activation requires a separate reviewed implementation: verified chat-to-
 listing binding, a Svyazka listing deep link and an explicitly enabled delivery
 policy. A future module switch must not stand in for advertisement consent.
 
-## Verification
+## Announcement Verification
 
 - `apps/miniapp/test/settings-advertising-soon.test.ts` guards the disabled,
   noninteractive component, chat-only placement and absence of a writable
@@ -39,7 +107,7 @@ policy. A future module switch must not stand in for advertisement consent.
   exact public arguments produced a matching HTML entry and 57 byte-identical
   entry/settings dependency files. This did not require runtime changes.
 
-## Delivery
+## Announcement Delivery
 
 - [x] Implemented locally as an unavailable announcement.
 - [x] Scoped validation and reviewed commit.
