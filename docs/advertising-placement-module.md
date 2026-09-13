@@ -62,14 +62,37 @@ The action journal uses exact primary-key reads, not fleet or JSON scans.
 - [x] Core implementation and isolated full checks.
 - [x] Final mobile visual acceptance: iPhone SE/light and Android/dark, four
       inspected screenshots; the standard 13-scenario strict smoke passed.
-- [ ] Reviewed source commit.
-- [ ] Separate credential provisioning and both project releases.
-- [ ] Public frontend/API verification.
+- [x] Reviewed source commits `b747616b` and `0d191f00`.
+- [x] Separate credential provisioning and both project releases.
+- [x] Public frontend/API verification.
 - [ ] Real MAX device and live-delivery acceptance.
 
-Until the release checklist is completed, the running Major module remains the
-closed announcement below. Svyazka's integration/launch changes are maintained
-and released only from the separate MAX-MARKET repository.
+Major runtime: `0d191f00f500b0d61efd93335ce188702fca0b21`, release
+`release-20260913T004513Z-0d191f00f500`. Exact-SHA Required and CodeQL checks
+passed. A concurrent standard deployment held the shared lock and already
+targeted this exact SHA; a duplicate release was not forced. The committed
+manifest, all 13 API roles, OCR auxiliary and both active static services were
+verified on the expected images. PostgreSQL and Redis were retained. Prisma
+reports all 271 migrations up to date; ingress/admin live and ready returned
+success after the normal rollout backlog recovered.
+
+Public HTML loads the expected entry; 61 entry/settings/workspace dependency
+files matched the local production build byte for byte. Public iPhone SE/light
+and Android/dark pilot/closed scenarios passed and the images were inspected.
+Unauthenticated capability/state calls return 401. A read-only lookup from the
+running api-admin container confirmed its dedicated credential works; no live
+chat message or advertising consent was changed by these checks. The final
+current-action feedback correction passed 1,283 mini app tests and browser
+verification; old success cannot stand in for a pending send.
+
+Svyazka runtime is independently released as
+`7dfa68059582c7e2749795a4925fe14d1ee49d6c`; its ledger remains in MAX-MARKET.
+Public screenshots are retained under `artifacts/miniapp-screenshots/` in the
+two `2026-09-13T00-53-13-362Z` and `2026-09-13T00-54-57-229Z` folders.
+
+The user-owned API agent notes and concurrent home-stability changes remain
+outside these commits. A newer documentation-only HEAD does not advance the
+runtime SHA or require another deployment.
 
 ## Previous Announcement
 
