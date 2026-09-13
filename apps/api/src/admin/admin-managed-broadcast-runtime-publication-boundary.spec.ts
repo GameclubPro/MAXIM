@@ -375,6 +375,32 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     });
   });
 
+  it('requests missing actor access without treating the queued refresh as authorization', async () => {
+    const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedEntityAccessEdge: {
+          findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-ready' }]),
+        },
+      },
+      publisherReadinessService: { requestActorAccessRefresh },
+      logger: { warn: jest.fn() },
+    } as never);
+    await expect(
+      (runtime as any).publisherDispatch.assertActorAdminAccess({
+        targetChatIds: ['chat-ready', 'chat-stale'],
+        actorUserId: 'author',
+        entityType: 'chat',
+        requiredBotId: 'publik',
+      }),
+    ).rejects.toMatchObject({ blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED' });
+    expect(requestActorAccessRefresh).toHaveBeenCalledWith(
+      [{ chatId: 'chat-stale', entityType: 'chat' }],
+      'author',
+      'publik',
+    );
+  });
+
   it('does not write actor blockers when the managed broadcast lease is already lost', async () => {
     const broadcastUpdate = jest.fn().mockResolvedValue({ count: 0 });
     const occurrenceUpdate = jest.fn();

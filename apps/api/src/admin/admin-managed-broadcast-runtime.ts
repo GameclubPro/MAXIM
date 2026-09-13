@@ -3333,20 +3333,22 @@ export class AdminManagedBroadcastRuntime {
         }
       }
       const entityType = row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
-      const accessResult = await ensureManagedBroadcastActorAccessBeforeExecution({
-        context: this.context,
-        prisma: this.prisma,
-        logger: this.logger,
-        publisherDispatch: this.publisherDispatch,
-        row,
-        occurrenceIndex: currentOccurrence,
-        lease: activeLease,
-        targetChatIds,
-        entityType,
-        requiredPublisherBotId,
-        readLostLeaseResult: (error) =>
-          this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], error),
-      });
+      const checkActorAccess = (accessTargetChatIds: string[]) =>
+        ensureManagedBroadcastActorAccessBeforeExecution({
+          context: this.context,
+          prisma: this.prisma,
+          logger: this.logger,
+          publisherDispatch: this.publisherDispatch,
+          row,
+          occurrenceIndex: currentOccurrence,
+          lease: activeLease,
+          targetChatIds: accessTargetChatIds,
+          entityType,
+          requiredPublisherBotId,
+          readLostLeaseResult: (error) =>
+            this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], error),
+        });
+      const accessResult = isPublikExecution ? null : await checkActorAccess(targetChatIds);
       if (accessResult) {
         return accessResult;
       }
@@ -3388,6 +3390,33 @@ export class AdminManagedBroadcastRuntime {
         targetChatIds,
         initialDeliveries,
       );
+      if (isPublikExecution) {
+        // FLAG: Receipts and terminal outcomes are DB recovery, not new sends. Expired access for
+        // an already delivered target must not block rollup or the remaining authorized recipients.
+        const pendingTargetChatIds = initialDeliveries
+          .filter((delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING)
+          .map((delivery) => delivery.targetChatId);
+        if (pendingTargetChatIds.length > 0) {
+          const pendingAccessResult = await checkActorAccess(pendingTargetChatIds);
+          if (pendingAccessResult) return pendingAccessResult;
+        } else if (
+          initialDeliveries.length > 0 &&
+          initialDeliveries.every(
+            (delivery) => delivery.status !== PrismaManagedBroadcastDeliveryStatus.SENDING,
+          )
+        ) {
+          return await this.finalizeManagedBroadcastOccurrence(
+            row,
+            currentOccurrence,
+            [],
+            [],
+            null,
+            {
+              lease: activeLease,
+            },
+          );
+        }
+      }
       const firstDeadlineScheduledAt =
         reason === 'deadline' &&
         isPublikExecution &&

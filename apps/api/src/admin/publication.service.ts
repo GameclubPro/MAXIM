@@ -112,6 +112,7 @@ import {
 import * as publicationManualRetrySafety from './publication-manual-retry-safety';
 import { expandPublicationSchedule } from './publication-recurrence';
 import { normalizePublicationSchedule } from './publication-schedule-normalization';
+import { recoverPublicationRecurrencePreparationFailure } from './publication-recurrence-recovery';
 
 const PUBLICATION_RECURRENCE_HORIZON_MS = 14 * 24 * 60 * 60_000;
 const PUBLICATION_RECURRENCE_LOOKAHEAD_MS = 450 * 24 * 60 * 60_000;
@@ -2152,29 +2153,12 @@ export class PublicationService {
           }
         });
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        const failed = await this.prisma.publicationSchedule.updateMany({
-          where: {
-            id: schedule.id,
-            revision: schedule.revision,
-            status: PublicationScheduleStatus.ACTIVE,
-          },
-          data: {
-            status: PublicationScheduleStatus.ERROR,
-            nextMaterializeAt: null,
-            lastError: message,
-          },
+        await recoverPublicationRecurrencePreparationFailure({
+          prisma: this.prisma,
+          logger: this.logger,
+          schedule,
+          error,
         });
-        if (failed.count > 0) {
-          await this.prisma.publication.updateMany({
-            where: { id: schedule.publicationId, lifecycle: PublicationLifecycle.ACTIVE },
-            data: { lifecycle: PublicationLifecycle.ERROR },
-          });
-        }
-        this.logger.warn(
-          { scheduleId: schedule.id, publicationId: schedule.publicationId, err: message },
-          'Failed to materialize publication recurrence',
-        );
       }
     }
   }
@@ -2921,6 +2905,9 @@ export class PublicationService {
   }
 
   private async resolveOccurrenceTargets(publication: any): Promise<ResolvedPublicationTarget[]> {
+    if (publication.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
+      return this.publisherRouting.resolveScheduledTargets(publication);
+    }
     return publicationBackgroundAccess.resolveOccurrence(
       publication,
       (user, targets) =>

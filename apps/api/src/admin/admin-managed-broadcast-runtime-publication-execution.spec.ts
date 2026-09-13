@@ -69,7 +69,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
     occurrenceIndex: 1,
     targetChatId: 'chat-target',
     botId: null,
-    status: ManagedBroadcastDeliveryStatus.PENDING,
+    status: ManagedBroadcastDeliveryStatus.PENDING as ManagedBroadcastDeliveryStatus,
     attemptCount: 0,
     remoteMessageId: null,
     lastErrorCode: null,
@@ -197,6 +197,61 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it.each([
+    ManagedBroadcastDeliveryStatus.SENT,
+    ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+    ManagedBroadcastDeliveryStatus.CANCELED,
+    ManagedBroadcastDeliveryStatus.FAILED,
+  ])(
+    'rolls up a terminal %s Publik delivery without actor access or media preparation',
+    async (status) => {
+      const { runtime, delivery, row, publish } = createPublicationPrismaSendFailureHarness(
+        null,
+        false,
+      );
+      delivery.status = status;
+      const loadMedia = jest.spyOn(
+        (runtime as any).mediaRuntime,
+        'loadManagedBroadcastRequestMedia',
+      );
+      loadMedia.mockRejectedValue(new Error('Media no longer available'));
+      const actorAccess = jest.spyOn((runtime as any).publisherDispatch, 'ensureActorAdminAccess');
+      actorAccess.mockRejectedValue(new Error('Expired access must not block receipt recovery'));
+      await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+        ManagedBroadcastStatus.ACTIVE,
+      ]);
+      expect(actorAccess).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(loadMedia).not.toHaveBeenCalled();
+      expect((runtime as any).finalizeManagedBroadcastOccurrence).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('checks only the pending recipients after partial delivery', async () => {
+    const { runtime, delivery, row } = createPublicationPrismaSendFailureHarness(null, false);
+    jest.spyOn(runtime as any, 'resolveManagedBroadcastTargetsFromRow').mockReturnValue({
+      targetMode: 'selected',
+      targetChatIds: ['chat-sent', 'chat-target'],
+    });
+    jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue([
+      {
+        ...delivery,
+        id: 'sent',
+        targetChatId: 'chat-sent',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+      },
+      delivery,
+    ]);
+    const actorAccess = jest.spyOn((runtime as any).publisherDispatch, 'ensureActorAdminAccess');
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(actorAccess).toHaveBeenCalledTimes(1);
+    expect(actorAccess).toHaveBeenCalledWith(
+      expect.objectContaining({ targetChatIds: ['chat-target'] }),
+    );
   });
 
   it.each(['P2024', 'P2028'])(

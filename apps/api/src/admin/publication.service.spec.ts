@@ -128,6 +128,7 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     publisherPolicyService as never,
   );
   const publisherRouting = {
+    resolveScheduledTargets: jest.fn(audienceRouting.resolveScheduledTargets.bind(audienceRouting)),
     resolveAudienceTargets: jest.fn(audienceRouting.resolveAudienceTargets.bind(audienceRouting)),
     resolvePersistedTargets: jest.fn(audienceRouting.resolvePersistedTargets.bind(audienceRouting)),
     requireNewRoute: jest.fn().mockReturnValue({

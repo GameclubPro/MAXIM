@@ -152,7 +152,13 @@ export class PublisherManagedBroadcastDispatch {
       select: { chatId: true },
     });
     const authorizedChatIds = new Set(edges.map((edge) => edge.chatId));
-    if (targetChatIds.some((chatId) => !authorizedChatIds.has(chatId))) {
+    const missingChatIds = targetChatIds.filter((chatId) => !authorizedChatIds.has(chatId));
+    if (missingChatIds.length > 0) {
+      await this.context.publisherReadinessService?.requestActorAccessRefresh(
+        missingChatIds.map((chatId) => ({ chatId, entityType: params.entityType })),
+        actorUserId,
+        requiredBotId,
+      );
       throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE);
     }
   }

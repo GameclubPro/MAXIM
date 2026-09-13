@@ -28,6 +28,7 @@ import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherPolicyService } from './publisher-policy.service';
+import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const DIALOG_CONTEXT_PREPARE_CONCURRENCY = 4;
@@ -178,6 +179,42 @@ export class PublicationPublisherRoutingService {
       },
       dispatchProfile,
     );
+  }
+
+  async resolveScheduledTargets(publication: {
+    actorUserId: string;
+    requiredBotId: string | null;
+    audienceMode: string;
+    audienceSelection: PublicationAudienceInput['selection'];
+    targets: readonly { targetChatId: string; entityType: ChatEntityType }[];
+  }): Promise<ResolvedPublicationTarget[]> {
+    const targets = publication.targets.map((target) => ({
+      chatId: target.targetChatId,
+      entityType:
+        target.entityType === ChatEntityType.CHANNEL ? ('channel' as const) : ('chat' as const),
+    }));
+    try {
+      return await this.resolveAudienceTargets(
+        { userId: publication.actorUserId, username: null, displayName: null },
+        publication.audienceMode === 'SNAPSHOT' || publication.audienceSelection === 'SELECTED'
+          ? { selection: 'SELECTED', mode: 'SNAPSHOT', targets }
+          : { selection: publication.audienceSelection, mode: 'DYNAMIC', targets: [] },
+        PublicationDispatchProfile.PUBLIK_V1,
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof BadRequestException)) throw error;
+      // FLAG: A missing cached recipient is not proof of permanent access loss. Preserve the
+      // scheduled intent while the exact Publisher-owned access is refreshed; never use Major scope.
+      await this.readiness.requestActorAccessRefresh(
+        targets,
+        publication.actorUserId,
+        publication.requiredBotId ?? '',
+      );
+      throw new PublisherSetupRequiredException(
+        targets.map((target) => target.chatId),
+        PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
+      );
+    }
   }
 
   async assertTargetsReady(

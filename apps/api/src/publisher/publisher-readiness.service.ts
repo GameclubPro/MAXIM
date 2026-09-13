@@ -4,7 +4,8 @@ import {
   type ManagedEntityType,
   type PublisherEntityReadiness,
 } from '@maxim/contracts/publisher';
-import { Injectable } from '@nestjs/common';
+import { MAX_PUBLICATION_TARGETS } from '@maxim/contracts/publication';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ChatBotAccessState,
@@ -19,6 +20,8 @@ import {
 import { resolveConfiguredPublisherBotId } from './publisher-route';
 import { PublisherSetupRequiredException } from './publisher-errors';
 import { PublisherRuntimeHeartbeatReaderService } from './publisher-runtime-heartbeat.service';
+import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
+import { publisherRefreshEvidenceWhere } from './publisher-entity-connection.util';
 
 export type PublisherFeature =
   | 'publication'
@@ -78,6 +81,7 @@ const WRITE_PERMISSIONS = new Set([
 
 @Injectable()
 export class PublisherReadinessService {
+  private readonly logger = new Logger(PublisherReadinessService.name);
   private readonly publisherBotId: string;
   private readonly dispatchConfigured: boolean;
 
@@ -85,6 +89,7 @@ export class PublisherReadinessService {
     private readonly prisma: PrismaService,
     private readonly runtimeHeartbeat: PublisherRuntimeHeartbeatReaderService,
     configService: ConfigService,
+    @Optional() private readonly bindingRefreshQueue?: PublisherBindingRefreshQueueService,
   ) {
     const publisherBotId = resolveConfiguredPublisherBotId(configService);
     if (!publisherBotId) {
@@ -92,6 +97,66 @@ export class PublisherReadinessService {
     }
     this.publisherBotId = publisherBotId;
     this.dispatchConfigured = configService.get<boolean>('MAX_PUBLISHER_DISPATCH_ENABLED', false);
+  }
+
+  async requestActorAccessRefresh(
+    targets: readonly { chatId: string; entityType: ManagedEntityType }[],
+    actorUserId: string,
+    requiredBotId: string,
+  ): Promise<void> {
+    if (
+      !this.dispatchConfigured ||
+      !this.bindingRefreshQueue ||
+      targets.length === 0 ||
+      requiredBotId !== this.publisherBotId ||
+      !actorUserId.trim()
+    ) {
+      return;
+    }
+    const now = new Date();
+    // FLAG: Persisted publication targets may nominate a probe, never grant access. Respect fresh
+    // denials and let the Publisher worker revalidate the exact bot/user under its lifecycle fence.
+    const candidates = await this.prisma.chat.findMany({
+      where: {
+        OR: [...new Map(targets.map((target) => [target.chatId, target])).values()]
+          .slice(0, MAX_PUBLICATION_TARGETS)
+          .map((target) => ({
+            id: target.chatId,
+            entityType:
+              target.entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
+          })),
+        publisherBinding: { is: publisherRefreshEvidenceWhere(this.publisherBotId) },
+        accessEdges: {
+          none: {
+            userId: actorUserId,
+            botId: this.publisherBotId,
+            OR: [
+              { expiresAt: { gt: now } },
+              { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 15 * 60_000) } },
+            ],
+          },
+        },
+      },
+      select: { id: true },
+      take: MAX_PUBLICATION_TARGETS,
+    });
+    for (const candidate of candidates) {
+      try {
+        await this.bindingRefreshQueue.enqueue({
+          chatId: candidate.id,
+          publisherBotId: this.publisherBotId,
+          candidateUserId: actorUserId,
+          reason: 'stale_user_access',
+          requestedAt: now,
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'Failed to enqueue scheduled publication actor access refresh',
+        );
+        break;
+      }
+    }
   }
 
   resolvePolicy(row: PublicationPolicyRow): ManagedEntityPublicationPolicy {
