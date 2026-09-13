@@ -45,8 +45,30 @@ SQL was executed. Individual complaints cannot be correlated without exact publi
 - [x] Add regression tests for database failures, access deferral, exact refresh scope,
       disabled dispatch, partial delivery, and receipt-only recovery.
 - [x] Complete broad API validation and source/build guards.
-- [ ] Push only owned files; wait for green exact-SHA required CI checks.
-- [ ] Deploy the shared API image through the guarded VPS wrapper and verify strict smokes.
+- [x] Push only owned files; wait for green exact-SHA required CI checks.
+- [x] Deploy the shared API image through the guarded VPS wrapper and verify strict smokes.
+
+## Validation And Delivery
+
+- `npm run check:api`: 532 passing suites and 11,922 passing tests; 17 suites / 84 tests
+  skipped by local integration-environment gates. API typecheck and production build passed.
+- `npm run check:static`: lint, refactor guards, and all 492 tooling tests passed.
+- Documentation and formatting checks, plus `git diff --check`, passed.
+- All 35 focused mini app calendar, schedule-field, and planner tests passed.
+- Exact runtime commit: `e559773096c30ee56b8a1631ac86e65a608b4aa7`. Both `Required` and
+  `Analyze JavaScript and TypeScript` passed. The CI run also passed PostgreSQL race tests,
+  Redis flow checks, all application checks, and immutable Docker image builds.
+- The checksum-verified CI API image was preloaded through `vps-connect.sh preload-ci-image`;
+  `vps-connect.sh deploy main --auto` updated every shared API role without rebuilding on the VPS.
+  There were no pending migrations. Stateful and static services were not recreated.
+- Release manifest: `release-20260913T123931Z-e559773096c3`. Local ingress/admin live and ready,
+  public live, and isolated OCR/runtime smokes passed. The protected queue pause was released
+  only after exact-image verification; readiness recovered as the backlog drained.
+- The first post-deploy Publisher log sample showed both previously actor-blocked envelopes
+  reaching post-send verification with existing remote message IDs. MAX returned inconclusive
+  HTTP 404 responses, so verification was deferred with backoff; this is not proof of message
+  absence or a successful new send. No automatic resend was introduced.
+- The pre-existing user edit in `apps/api/AGENTS.md` was preserved and excluded from the commit.
 
 ## Recovery Boundaries
 
