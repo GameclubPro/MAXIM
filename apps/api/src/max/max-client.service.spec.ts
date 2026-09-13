@@ -741,6 +741,92 @@ describe('MaxClientService inline keyboard guardrails', () => {
     },
   );
 
+  it.each([true, false])(
+    'preserves live channel actions across a rejected decoration and retry (same profile: %s)',
+    async (sameProfile) => {
+      const build = (publisher: boolean, kind: 'comments' | 'suggest', text: string) =>
+        new AdminDialogLinkHelper({
+          appBaseUrl: null,
+          explicitBotContactId: null,
+          ownBotUserId: publisher ? 'publik' : 'major',
+          maxBotToken: 'test',
+          maxBotTokenValidationSecrets: ['test'],
+          ...(publisher ? { dialogProfile: 'publisher' } : {}),
+        }).buildChannelDialogButton(
+          'channel-1',
+          kind,
+          'retained-thread',
+          text,
+          publisher ? 'publik' : 'major',
+          'MINIAPP',
+        );
+      const comments = build(!sameProfile, 'comments', 'Comments (7)');
+      const contact = build(!sameProfile, 'suggest', 'Contact');
+      const reviews = { type: 'link', text: 'Reviews', url: 'https://example.test/reviews' };
+      const photo = { type: 'image', payload: { token: 'photo-token' } };
+      const callback = { type: 'callback', text: 'Vote', payload: 'vote:existing' };
+      let attachments: unknown[] = [
+        photo,
+        { type: 'inline_keyboard', payload: { buttons: [[comments], [contact], [reviews]] } },
+      ];
+      let attempts = 0;
+      const http = {
+        request: jest.fn((config: { method: string; data?: { attachments: unknown[] } }) => {
+          if (config.method === 'get') {
+            return of({
+              status: 200,
+              data: {
+                messages: [{ body: { mid: 'preserved-retry', text: 'Original', attachments } }],
+              },
+            });
+          }
+          if (attempts++ === 0) {
+            // Another writer's button must also survive the fresh locked read on retry.
+            attachments = [
+              photo,
+              {
+                type: 'inline_keyboard',
+                payload: { buttons: [[comments], [contact], [reviews], [callback]] },
+              },
+            ];
+            return of({ status: 200, data: { success: false } });
+          }
+          attachments = config.data!.attachments;
+          return of({ status: 200, data: { success: true } });
+        }),
+      };
+      const service = createService(http);
+      const options = {
+        buttons: [[build(false, 'comments', 'Comments (0)')], [build(false, 'suggest', 'Suggest')]],
+        mergeExistingInlineKeyboard: true,
+        preserveExistingChannelDialogButtons: true,
+        requireAllAttachmentsPreserved: true,
+      };
+      try {
+        await expect(
+          service.editMessageInlineKeyboard('channel-1', 'preserved-retry', null, options),
+        ).rejects.toThrow();
+        await service.editMessageInlineKeyboard('channel-1', 'preserved-retry', null, {
+          ...options,
+          appendNewInlineKeyboardRows: true,
+        });
+        expect(attempts).toBe(2);
+        expect(attachments).toEqual([
+          photo,
+          {
+            type: 'inline_keyboard',
+            payload: { buttons: [[reviews], [callback], [comments], [contact]] },
+          },
+        ]);
+        for (const [config] of http.request.mock.calls) {
+          if (config.method === 'put') expect(config.data).not.toHaveProperty('text');
+        }
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
   it('skips the MAX mutation when locked keyboard preparation finds no missing buttons', async () => {
     const httpService = {
       request: jest.fn().mockReturnValue(

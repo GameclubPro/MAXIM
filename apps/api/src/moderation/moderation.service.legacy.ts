@@ -15586,6 +15586,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               buttons,
               ...quickButtonMutationOptions,
               mergeExistingInlineKeyboard: true,
+              preserveExistingChannelDialogButtons: true,
+              requireAllAttachmentsPreserved: true,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
               beforeEditMutation: async () => {
@@ -15607,7 +15609,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } catch (mergedEditError: unknown) {
           const mergedEditStatus = this.extractStatusCode(mergedEditError);
           const mergedEditFailure = classifyMaxTerminalChatActionError(mergedEditError);
-          const canRetryWithReplacementKeyboard =
+          const canRetryWithPreservedKeyboard =
             !quickButtons &&
             buttons.length > 0 &&
             mergedEditStatus !== null &&
@@ -15616,24 +15618,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             !wasMaxPreDispatchGuardRejected(mergedEditError) &&
             !isAmbiguousMaxMutationError(mergedEditError) &&
             mergedEditFailure === null;
-          if (!canRetryWithReplacementKeyboard) {
+          if (!canRetryWithPreservedKeyboard) {
             throw mergedEditError;
           }
 
-          const replacementButtons = buildChannelAutoPostButtons(
-            managedChannel.channelSettings,
-            buttonVisibility,
-            (type, buttonText, suggestionEntryMode) =>
-              this.buildChannelDialogButton(
-                chatId,
-                type,
-                threadId,
-                buttonText,
-                autoAttachBotId,
-                suggestionEntryMode,
-              ),
-            ctaButton,
-          );
           this.logger.warn(
             {
               chatId,
@@ -15641,7 +15629,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               status: mergedEditStatus,
               error: this.extractErrorSummary(mergedEditError),
             },
-            'Failed to merge channel post buttons; retrying with a replacement keyboard',
+            'Failed to merge channel post buttons; retrying with preserved actions first',
           );
           maxMutationAttemptStartedAt = new Date();
           await this.maxClient.editMessageInlineKeyboard(
@@ -15649,7 +15637,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageId,
             preparedText.text,
             {
-              buttons: replacementButtons,
+              // FLAG: A rejected merge never authorizes dropping Publisher discussions,
+              // custom links, or media. Re-read and preserve the source under the edit lock.
+              buttons,
+              mergeExistingInlineKeyboard: true,
+              appendNewInlineKeyboardRows: true,
+              preserveExistingChannelDialogButtons: true,
+              requireAllAttachmentsPreserved: true,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               beforeEditMutation: () =>
                 this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId),
@@ -15657,8 +15651,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 screen: 'channel-auto-post',
                 action:
                   source === 'poll'
-                    ? 'scan-attach-buttons-replace-keyboard'
-                    : 'attach-buttons-replace-keyboard',
+                    ? 'scan-attach-buttons-preserve-keyboard'
+                    : 'attach-buttons-preserve-keyboard',
               },
             },
             mutationRequestOptions,

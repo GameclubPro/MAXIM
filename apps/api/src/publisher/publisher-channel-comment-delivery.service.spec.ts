@@ -322,10 +322,129 @@ describe('Publisher channel keyboard webhook and delivery', () => {
     expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload.buttonRows).toEqual(rows);
   });
 
+  it.each(['major_first', 'publisher_first', 'same_button'] as const)(
+    'reconciles duplicate comments on a fresh post even when no action is missing: %s',
+    async (order) => {
+      const h = fixture();
+      const majorLinks = new AdminDialogLinkHelper({
+        appBaseUrl: null,
+        explicitBotContactId: null,
+        ownBotUserId: 'major-bot',
+        maxBotToken: 'major-key',
+        maxBotTokenValidationSecrets: ['major-key'],
+      });
+      const major = majorLinks.buildChannelDialogButton(
+        chatId,
+        'comments',
+        'major-thread',
+        'Comments',
+        'major-bot',
+        'MINIAPP',
+      );
+      const publisher = links.buildChannelDialogButton(
+        chatId,
+        'comments',
+        'publisher-thread',
+        'Comments',
+        'MINIAPP',
+      );
+      const winner = order === 'major_first' ? major : publisher;
+      const duplicate = order === 'publisher_first' ? major : publisher;
+      const contact = links.buildChannelDialogButton(
+        chatId,
+        'suggest',
+        'publisher-thread',
+        'Contact',
+        'MINIAPP',
+      );
+      const reviews = { type: 'link', text: 'Reviews', url: 'https://example.test/reviews' };
+      h.postSignature.buildPostButton.mockResolvedValue(reviews);
+      h.message.body.attachments = [
+        {
+          type: 'inline_keyboard',
+          payload: { buttons: [[winner], [duplicate], [contact], [reviews]] },
+        },
+      ];
+
+      await h.service.process(h.job);
+
+      expect(h.mutate).toHaveBeenCalledWith([[winner], [contact]]);
+      expect(h.prisma.auditLog.upsert.mock.calls[0]![0].create.payload).toMatchObject({
+        includeCommentsButton: order !== 'major_first',
+        threadId: 'publisher-thread',
+      });
+      h.message.body.attachments = [
+        { type: 'inline_keyboard', payload: { buttons: [[winner], [contact], [reviews]] } },
+      ];
+      h.mutate.mockClear();
+      await h.service.process(h.job);
+      expect(h.mutate).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not add a disabled CTA or infer a reviews URL from the message', async () => {
     const h = fixture();
     await h.service.process(h.job);
     expect(h.mutate.mock.calls[0]![0]).toHaveLength(2);
+  });
+
+  it('reconciles duplicate suggestions without relying on enabled comments', async () => {
+    const h = fixture();
+    h.entity.publisherSettings.channelCommentsEnabled = false;
+    const suggestion = links.buildChannelDialogButton(
+      chatId,
+      'suggest',
+      'publisher-thread',
+      'Contact',
+      'MINIAPP',
+    );
+    h.message.body.attachments = [
+      { type: 'inline_keyboard', payload: { buttons: [[suggestion], [suggestion]] } },
+    ];
+    await h.service.process(h.job);
+    expect(h.mutate).toHaveBeenCalledWith([[suggestion]]);
+    expect(h.prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('does not treat same-label external links or another channel as duplicate actions', async () => {
+    const h = fixture();
+    const comments = links.buildChannelDialogButton(
+      chatId,
+      'comments',
+      'publisher-thread',
+      'Comments',
+      'MINIAPP',
+    );
+    const otherComments = links.buildChannelDialogButton(
+      '-200',
+      'comments',
+      'other-thread',
+      'Comments',
+      'MINIAPP',
+    );
+    h.entity.publisherSettings.channelSuggestionsEnabled = false;
+    h.message.body.attachments = [
+      {
+        type: 'inline_keyboard',
+        payload: {
+          buttons: [
+            [comments],
+            [otherComments],
+            [{ type: 'link', text: 'Comments', url: 'https://example.test/comments' }],
+          ],
+        },
+      },
+    ];
+    await h.service.process(h.job);
+    expect(h.mutate).not.toHaveBeenCalled();
+  });
+
+  it('does not use an expired attach job to repair historical duplicates', async () => {
+    const h = fixture();
+    h.job = { ...h.job, createdAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString() };
+    await expect(h.service.process(h.job)).rejects.toThrow('expired');
+    expect(h.maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(h.prisma.auditLog.upsert).not.toHaveBeenCalled();
   });
 
   it('does not edit when the CTA changes after preparing the keyboard', async () => {

@@ -70,6 +70,26 @@ merge comment databases or migrate historical threads.
 
 ## Acceptance Coverage
 
+### Follow-Up Regression Audit
+
+The next audit reproduced two paths not covered by the original fix:
+
+- Major's rejected-edit fallback replaced the entire keyboard without merging.
+  It could remove Publisher's discussion, Reviews, and other existing actions.
+  Both ordinary-post edit attempts now require attachment preservation and retain
+  existing dialog buttons, including their labels and current counters. The retry
+  changes row placement only and reads the source again under the shared edit lock.
+  A preservation failure never authorizes a destructive replacement or a new post.
+- Publisher's no-op check considered only missing actions. A fresh post already
+  containing duplicate comment or suggestion entries was left unchanged when all
+  required actions existed. The check now also detects repeated recognized actions,
+  retaining the first source entry through the existing merge. Correct keyboards
+  remain no-ops, and external same-label links are not considered duplicates.
+
+This is bounded by the existing fresh-post job admission and 24-hour expiry. It
+does not introduce historical scans, bulk repair, or promotion of composer links
+into channel defaults. Counter refreshes retain their separate update behavior.
+
 Regression tests cover both bot arrival orders, repeated decoration, both profiles'
 count refreshes, original thread retention, profile-isolated audit references,
 comments/suggestions toggle combinations, configured/disabled CTA, CTA changes

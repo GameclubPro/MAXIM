@@ -425,6 +425,7 @@ type MaxEditableMessageOptions = Pick<
 > & {
   appendNewInlineKeyboardRows?: boolean;
   mergeExistingInlineKeyboard?: boolean;
+  preserveExistingChannelDialogButtons?: boolean;
   preserveExistingInlineKeyboard?: boolean;
   replaceCallbackPayloadPrefixes?: readonly string[];
   beforeEditMutation?: () => Promise<void>;
@@ -5752,6 +5753,7 @@ export class MaxClientService implements OnModuleDestroy {
             keyboardAttachment,
             editableAttachments,
             options.appendNewInlineKeyboardRows === true,
+            options.preserveExistingChannelDialogButtons === true,
           ),
         ];
       }
@@ -5866,6 +5868,7 @@ export class MaxClientService implements OnModuleDestroy {
     primaryKeyboard: Record<string, unknown>,
     editableAttachments: readonly Record<string, unknown>[],
     appendNewRows: boolean,
+    preserveExistingDialogButtons: boolean,
   ): Record<string, unknown> {
     const existingKeyboard = editableAttachments.find(
       (attachment) => this.readLowerString(attachment.type) === 'inline_keyboard',
@@ -5909,6 +5912,11 @@ export class MaxClientService implements OnModuleDestroy {
           const existing = existingDialogButtons.get(key);
           if (!existing) {
             return [button];
+          }
+          // FLAG: Post decoration must not reset a live counter or relabel an existing
+          // discussion. Count refresh callers keep the default same-target update path.
+          if (preserveExistingDialogButtons) {
+            return [existing.button];
           }
           const primaryTarget = this.readInlineKeyboardButtonIdentity(button);
           const existingTarget = this.readInlineKeyboardButtonIdentity(existing.button);

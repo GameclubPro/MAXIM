@@ -3341,7 +3341,7 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('retries a rejected merged edit by replacing the keyboard without losing the signature', async () => {
+  it('retries a rejected merged edit with preservation on both attempts and keeps the signature', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       auditLog: {
@@ -3421,6 +3421,8 @@ describe('ModerationService channel auto post buttons', () => {
         ],
         textFormat: 'html',
         mergeExistingInlineKeyboard: true,
+        requireAllAttachmentsPreserved: true,
+        preserveExistingChannelDialogButtons: true,
       }),
       expectChannelAutoPostOptions(),
     );
@@ -3442,8 +3444,12 @@ describe('ModerationService channel auto post buttons', () => {
       expectChannelAutoPostOptions(),
     );
     const replacementOptions = maxClient.editMessageInlineKeyboard.mock.calls[1]?.[3];
-    expect(replacementOptions).not.toHaveProperty('appendNewInlineKeyboardRows');
-    expect(replacementOptions).not.toHaveProperty('mergeExistingInlineKeyboard');
+    expect(replacementOptions).toMatchObject({
+      appendNewInlineKeyboardRows: true,
+      mergeExistingInlineKeyboard: true,
+      requireAllAttachmentsPreserved: true,
+      preserveExistingChannelDialogButtons: true,
+    });
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -3542,8 +3548,11 @@ describe('ModerationService channel auto post buttons', () => {
       'appendNewInlineKeyboardRows',
     );
     const replacementOptions = maxClient.editMessageInlineKeyboard.mock.calls[1]?.[3];
-    expect(replacementOptions).not.toHaveProperty('appendNewInlineKeyboardRows');
-    expect(replacementOptions).not.toHaveProperty('mergeExistingInlineKeyboard');
+    expect(replacementOptions).toMatchObject({
+      appendNewInlineKeyboardRows: true,
+      mergeExistingInlineKeyboard: true,
+      requireAllAttachmentsPreserved: true,
+    });
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(markerMock.rows.get('channel-1:mid-channel-terminal-edit-1')).toMatchObject({
       status: 'SKIPPED',

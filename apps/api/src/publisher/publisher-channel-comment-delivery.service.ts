@@ -164,13 +164,22 @@ export class PublisherChannelCommentDeliveryService {
                 : null,
             };
             const existingButtons = readPostButtonRows(message).flat();
+            const seenDialogKinds = new Set<'comments' | 'suggest'>();
+            const hasDuplicateDialogs = existingButtons.some((button) => {
+              const identity = readInternalChannelDialogButtonIdentity(button, job.requiredBotId);
+              if (identity?.chatId !== job.chatId) return false;
+              if (seenDialogKinds.has(identity.kind)) return true;
+              seenDialogKinds.add(identity.kind);
+              return false;
+            });
             const missingComments = comments && !existingComments;
             const missingSuggest = suggest && !existingSuggestion;
             const ctaUrl = ctaButton?.type === 'link' ? ctaButton.url : null;
             const missingCta =
               ctaButton &&
               !existingButtons.some((button) => button.type === 'link' && button.url === ctaUrl);
-            if (!missingComments && !missingSuggest && !missingCta) return null;
+            if (!missingComments && !missingSuggest && !missingCta && !hasDuplicateDialogs)
+              return null;
             const findExistingDialog = (kind: 'comments' | 'suggest') =>
               existingButtons.find((button) => {
                 const identity = readInternalChannelDialogButtonIdentity(button, job.requiredBotId);
