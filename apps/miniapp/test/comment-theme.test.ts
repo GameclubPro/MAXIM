@@ -49,10 +49,10 @@ function installStorage(nativeGet?: () => Promise<{ value: string | null }>) {
   };
 }
 
-test('comment themes accept only the three shipped theme identifiers', () => {
+test('comment themes accept only the six shipped theme identifiers', () => {
   assert.deepEqual(
     COMMENT_THEMES.map((theme) => theme.id),
-    ['atlas', 'chrome', 'sketch'],
+    ['atlas', 'chrome', 'sketch', 'neon', 'obsidian', 'avant'],
   );
   for (const theme of COMMENT_THEMES) assert.equal(parseCommentTheme(theme.id), theme.id);
   for (const invalid of [null, undefined, '', 'dark', 'ATLAS', 'url(https://example.com)', {}, 1]) {
@@ -64,7 +64,7 @@ test('Atlas is the default and selections persist in both device stores', async 
   const storage = installStorage();
   try {
     assert.equal(readCommentTheme(), 'atlas');
-    saveCommentTheme('sketch');
+    await saveCommentTheme('sketch');
     assert.equal(readCommentTheme(), 'sketch');
     assert.equal(storage.local.get(COMMENT_THEME_STORAGE_KEY), 'sketch');
     assert.equal(storage.native.get(COMMENT_THEME_STORAGE_KEY), 'sketch');
@@ -97,6 +97,18 @@ test('an invalid native preference cannot replace a valid local preference', asy
   }
 });
 
+test('the latest local choice wins over an older native backup after reopening', async () => {
+  const storage = installStorage();
+  try {
+    storage.local.set(COMMENT_THEME_STORAGE_KEY, 'obsidian');
+    storage.native.set(COMMENT_THEME_STORAGE_KEY, 'neon');
+    assert.equal(await hydrateCommentTheme(), 'obsidian');
+    assert.equal(storage.native.get(COMMENT_THEME_STORAGE_KEY), 'obsidian');
+  } finally {
+    storage.restore();
+  }
+});
+
 test('late native reads cannot roll back a new user selection', async () => {
   let release!: (value: { value: string }) => void;
   let markReadStarted!: () => void;
@@ -113,7 +125,7 @@ test('late native reads cannot roll back a new user selection', async () => {
   try {
     const pending = hydrateCommentTheme();
     await readStarted;
-    saveCommentTheme('sketch');
+    await saveCommentTheme('sketch');
     release({ value: 'chrome' });
     assert.equal(await pending, 'sketch');
     assert.equal(readCommentTheme(), 'sketch');
@@ -146,8 +158,63 @@ test('restricted WebView storage does not prevent changing the appearance', asyn
       },
     });
     assert.equal(readCommentTheme(), 'atlas');
-    assert.doesNotThrow(() => saveCommentTheme('chrome'));
+    await assert.doesNotReject(saveCommentTheme('chrome'));
     assert.equal(await hydrateCommentTheme(), 'atlas');
+  } finally {
+    storage.restore();
+  }
+});
+
+test('rapid selections serialize native writes while updating the local mirror immediately', async () => {
+  const storage = installStorage();
+  let release!: () => void;
+  const writes: string[] = [];
+  window.WebApp!.DeviceStorage!.setItem = async (key, value) => {
+    writes.push(value);
+    if (value === 'neon')
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    storage.native.set(key, value);
+    return { status: 'ok' };
+  };
+  try {
+    const first = saveCommentTheme('neon');
+    const second = saveCommentTheme('obsidian');
+    assert.equal(readCommentTheme(), 'obsidian');
+    await Promise.resolve();
+    assert.deepEqual(writes, ['neon']);
+    release();
+    await Promise.all([first, second]);
+    assert.deepEqual(writes, ['neon', 'obsidian']);
+    assert.equal(storage.native.get(COMMENT_THEME_STORAGE_KEY), 'obsidian');
+  } finally {
+    storage.restore();
+  }
+});
+
+test('hydration waits for an already pending native selection before reading it', async () => {
+  const storage = installStorage();
+  let release!: () => void;
+  let writes = 0;
+  window.WebApp!.DeviceStorage!.setItem = async (key, value) => {
+    if (writes++ === 0) {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    }
+    storage.native.set(key, value);
+    return { status: 'ok' };
+  };
+  try {
+    storage.native.set(COMMENT_THEME_STORAGE_KEY, 'chrome');
+    const write = saveCommentTheme('neon');
+    await Promise.resolve();
+    const hydration = hydrateCommentTheme();
+    release();
+    await write;
+    assert.equal(await hydration, 'neon');
+    assert.equal(readCommentTheme(), 'neon');
   } finally {
     storage.restore();
   }

@@ -107,11 +107,9 @@ export default function CommentThemeSheet({
                 <i />
                 <i />
                 <i />
+                <Check className="comment-theme-sheet__selected" />
               </span>
-              <span className="comment-theme-sheet__label">
-                {option.label}
-                <Check aria-hidden />
-              </span>
+              <span className="comment-theme-sheet__label">{option.label}</span>
             </button>
           ))}
         </div>

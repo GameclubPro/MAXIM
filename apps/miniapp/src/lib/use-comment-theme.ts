@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   hydrateCommentTheme,
   readCommentTheme,
@@ -8,16 +8,19 @@ import {
 
 export function useCommentTheme(enabled: boolean) {
   const [theme, setTheme] = useState(readCommentTheme);
+  const selectionRevision = useRef(0);
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
+    const revision = selectionRevision.current;
     void hydrateCommentTheme(controller.signal).then((value) => {
-      if (!controller.signal.aborted) setTheme(value);
+      if (!controller.signal.aborted && selectionRevision.current === revision) setTheme(value);
     });
     return () => controller.abort();
   }, [enabled]);
   const selectTheme = useCallback((value: CommentTheme) => {
-    saveCommentTheme(value);
+    selectionRevision.current += 1;
+    void saveCommentTheme(value);
     setTheme(value);
   }, []);
   return { theme, selectTheme };

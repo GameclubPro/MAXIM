@@ -1400,7 +1400,7 @@ export function ChannelDialogPage({
   const suggestComposerRef = useRef<HTMLElement | null>(null);
   const suggestBarRef = useRef<HTMLDivElement | null>(null);
   const suggestionKeyboardBaselineRef = useRef<SuggestionKeyboardViewportBaseline | null>(null);
-  const notificationToggleRef = useRef<HTMLButtonElement | null>(null);
+  const themeToggleRef = useRef<HTMLButtonElement | null>(null);
   const imageViewerPanelRef = useRef<HTMLElement | null>(null);
   const imageViewerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const commentsNotificationTopNudgeRef = useRef(0);
@@ -2177,7 +2177,7 @@ export function ChannelDialogPage({
       return undefined;
     }
 
-    const button = screenRef.current?.querySelector('.channel-dialog-theme-toggle');
+    const button = themeToggleRef.current;
     if (!button) {
       commentsNotificationTopNudgeRef.current = 0;
       setCommentsNotificationTopNudge(0);
@@ -3478,7 +3478,7 @@ export function ChannelDialogPage({
   const notificationToggleLabel =
     notificationMode === 'off' ? 'Уведомления выключены' : 'Уведомления включены';
   const commentsScreenStyle =
-    canManageCommentNotifications && dialogType === 'comments' && commentsNotificationTopNudge > 0
+    dialogType === 'comments' && commentsNotificationTopNudge > 0
       ? ({
           '--comments-dialog-notification-top-nudge': `${commentsNotificationTopNudge}px`,
         } as CSSProperties)
@@ -3835,17 +3835,19 @@ export function ChannelDialogPage({
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div
-        className={cn(
-          'channel-dialog-shell',
-          dialogType === 'suggest' && 'channel-dialog-shell--suggest',
-          dialogType === 'comments' && 'has-comments-header',
-        )}
-      >
-        {dialogType === 'comments' ? (
-          <div className="channel-dialog-comments-header">
+      {dialogType === 'comments' ? (
+        <header
+          className="channel-dialog-comments-header"
+          inert={
+            isThemeSettingsOpen ||
+            isNotificationSettingsOpen ||
+            Boolean(imageViewer) ||
+            Boolean(activeMessageId)
+          }
+        >
+          <div className="channel-dialog-comments-header__inner">
             <div className="channel-dialog-comments-header__context">
-              <strong>{viewModel.title}</strong>
+              <h1>{viewModel.title}</h1>
               {dialogQuery.isSuccess ? (
                 <span aria-label={`Комментариев: ${messages.length}`}>{messages.length}</span>
               ) : null}
@@ -3853,6 +3855,7 @@ export function ChannelDialogPage({
 
             <div className="channel-dialog-header-actions">
               <button
+                ref={themeToggleRef}
                 type="button"
                 className="channel-dialog-theme-toggle"
                 aria-label="Оформление комментариев"
@@ -3873,7 +3876,6 @@ export function ChannelDialogPage({
               {canManageCommentNotifications ? (
                 <div className="channel-dialog-notifications">
                   <button
-                    ref={notificationToggleRef}
                     type="button"
                     className={cn(
                       'channel-dialog-notifications__toggle',
@@ -3885,6 +3887,7 @@ export function ChannelDialogPage({
                       dismissMessageActions();
                       setIsComposeEmojiOpen(false);
                       setIsThemeSettingsOpen(false);
+                      composeFieldRef.current?.blur();
                       setIsNotificationSettingsOpen((current) => !current);
                     }}
                     aria-label="Настройки уведомлений"
@@ -3902,8 +3905,23 @@ export function ChannelDialogPage({
               ) : null}
             </div>
           </div>
-        ) : null}
+        </header>
+      ) : null}
 
+      <div
+        className={cn(
+          'channel-dialog-shell',
+          dialogType === 'suggest' && 'channel-dialog-shell--suggest',
+          dialogType === 'comments' && 'has-comments-header',
+        )}
+        inert={
+          dialogType === 'comments' &&
+          (isThemeSettingsOpen ||
+            isNotificationSettingsOpen ||
+            Boolean(imageViewer) ||
+            Boolean(activeMessageId))
+        }
+      >
         <section
           ref={scrollViewportRef}
           className={cn('channel-dialog-body', dialogType === 'suggest' && 'channel-suggest-body')}
@@ -4445,6 +4463,7 @@ export function ChannelDialogPage({
                       requestAnimationFrame(() => composeFieldRef.current?.focus());
                     }}
                     aria-label="Эмодзи"
+                    title="Эмодзи"
                     aria-expanded={isComposeEmojiOpen}
                     aria-controls="channel-dialog-compose-emoji-panel"
                     disabled={isComposePending}
@@ -4465,24 +4484,13 @@ export function ChannelDialogPage({
                               'is-active',
                           )}
                           aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото`}
+                          title="Добавить фото"
                           aria-disabled={isComposePending || isPreparingAttachment}
-                          role="button"
-                          tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                          onClick={() => {
-                            armDraftAttachmentInputWatcher('image');
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== 'Enter' && event.key !== ' ') {
-                              return;
-                            }
-                            event.preventDefault();
-                            armDraftAttachmentInputWatcher('image');
-                            imageInputRef.current?.click();
-                          }}
                         >
                           <input
                             ref={imageInputRef}
                             className="channel-dialog-compose__attach-input"
+                            aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото`}
                             type="file"
                             accept="image/*"
                             multiple
@@ -4495,7 +4503,7 @@ export function ChannelDialogPage({
                             onPointerDownCapture={() => {
                               armDraftAttachmentInputWatcher('image');
                             }}
-                            tabIndex={-1}
+                            tabIndex={0}
                           />
                           <IconoirCamera aria-hidden focusable="false" />
                         </label>
@@ -4510,24 +4518,13 @@ export function ChannelDialogPage({
                                 'is-active',
                             )}
                             aria-label="Прикрепить файл"
+                            title="Прикрепить файл"
                             aria-disabled={isComposePending || isPreparingAttachment}
-                            role="button"
-                            tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                            onClick={() => {
-                              armDraftAttachmentInputWatcher('file');
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key !== 'Enter' && event.key !== ' ') {
-                                return;
-                              }
-                              event.preventDefault();
-                              armDraftAttachmentInputWatcher('file');
-                              fileInputRef.current?.click();
-                            }}
                           >
                             <input
                               ref={fileInputRef}
                               className="channel-dialog-compose__attach-input"
+                              aria-label="Прикрепить файл"
                               type="file"
                               disabled={isComposePending || isPreparingAttachment}
                               onChange={handleDraftFilesChange}
@@ -4538,7 +4535,7 @@ export function ChannelDialogPage({
                               onPointerDownCapture={() => {
                                 armDraftAttachmentInputWatcher('file');
                               }}
-                              tabIndex={-1}
+                              tabIndex={0}
                             />
                             <IconoirAttachment aria-hidden focusable="false" />
                           </label>
@@ -4557,6 +4554,7 @@ export function ChannelDialogPage({
                               'is-active',
                           )}
                           aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото`}
+                          title="Добавить фото"
                           aria-disabled={isComposePending || isPreparingAttachment}
                           disabled={isComposePending || isPreparingAttachment}
                           onClick={() => {
@@ -4596,6 +4594,7 @@ export function ChannelDialogPage({
                                   'is-active',
                               )}
                               aria-label="Прикрепить файл"
+                              title="Прикрепить файл"
                               aria-disabled={isComposePending || isPreparingAttachment}
                               disabled={isComposePending || isPreparingAttachment}
                               onClick={() => {

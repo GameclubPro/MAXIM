@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
@@ -23,7 +23,12 @@ const themes = [
   ['atlas', 'Атлас'],
   ['chrome', 'Хром'],
   ['sketch', 'Скетч'],
+  ['neon', 'Неон'],
+  ['obsidian', 'Обсидиан'],
+  ['avant', 'Авангард'],
 ];
+const selectedDevices = process.env.COMMENT_THEMES_DEVICES?.split(',');
+const selectedSchemes = process.env.COMMENT_THEMES_SCHEMES?.split(',') ?? ['light', 'dark'];
 const profiles = [
   { name: 'iphone-se', device: devices['iPhone SE'], platform: 'ios', safeTop: 20, safeBottom: 0 },
   { name: 'android', device: devices['Pixel 7'], platform: 'android', safeTop: 24, safeBottom: 0 },
@@ -52,6 +57,13 @@ async function assertLayout(page) {
   const errors = await page.evaluate(() => {
     const failures = [];
     const screen = document.querySelector('.channel-dialog-screen');
+    const screenRect = screen.getBoundingClientRect();
+    const header = screen.querySelector('.channel-dialog-comments-header').getBoundingClientRect();
+    if (
+      Math.abs(header.left - screenRect.left) > 1 ||
+      Math.abs(header.right - screenRect.right) > 1
+    )
+      failures.push('header is not full width');
     const counter = screen.querySelector('.channel-dialog-compose__meta span:last-child');
     if (
       counter &&
@@ -62,6 +74,18 @@ async function assertLayout(page) {
     const shell = document.querySelector('.channel-dialog-shell').getBoundingClientRect();
     const composer = document.querySelector('.channel-dialog-compose').getBoundingClientRect();
     if (Math.abs(composer.bottom - shell.bottom) > 2) failures.push('composer not pinned');
+    const submit = screen.querySelector('.channel-dialog-submit').getBoundingClientRect();
+    if (submit.height > 48 || submit.height < 44)
+      failures.push('send button changes height with the draft');
+    const themeOptions = screen.querySelector('.comment-theme-sheet__options');
+    if (themeOptions && innerHeight >= 560) {
+      const bounds = themeOptions.getBoundingClientRect();
+      for (const label of themeOptions.querySelectorAll('.comment-theme-sheet__label')) {
+        const rect = label.getBoundingClientRect();
+        if (rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1)
+          failures.push('theme label is clipped at full height');
+      }
+    }
     for (const selector of [
       '.channel-dialog-theme-toggle',
       '.channel-dialog-comments-header__context',
@@ -84,9 +108,80 @@ async function assertLayout(page) {
   assert.deepEqual(errors, []);
 }
 
+async function assertThemeContrast(page) {
+  const failures = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const colors = new Map();
+    const rgba = (color) => {
+      if (!colors.has(color)) {
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = color;
+        context.fillRect(0, 0, 1, 1);
+        colors.set(color, [...context.getImageData(0, 0, 1, 1).data]);
+      }
+      return colors.get(color);
+    };
+    const blend = (front, back) =>
+      front
+        .slice(0, 3)
+        .map((value, index) => (value * front[3]) / 255 + back[index] * (1 - front[3] / 255));
+    const luminance = (rgb) =>
+      rgb
+        .map((value) => {
+          const channel = value / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        })
+        .reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index], 0);
+    const selectors =
+      '.channel-dialog-comments-header h1, .channel-dialog-message__bubble p, .channel-dialog-message__bubble a, .channel-dialog-message__meta strong, .channel-dialog-message__meta time, .channel-dialog-compose__meta span, .channel-dialog-compose__field textarea, .comment-theme-sheet__label, .comment-theme-sheet__done, .comment-theme-sheet__head h2, .channel-dialog-notification-sheet :is(button, strong, span)';
+    const failures = [];
+    for (const element of document.querySelectorAll(selectors)) {
+      if (!element.textContent.trim() && element.tagName !== 'TEXTAREA') continue;
+      if (
+        element.closest('[inert]') ||
+        !element.getBoundingClientRect().height ||
+        element.matches(':disabled')
+      )
+        continue;
+      const layers = [];
+      for (let parent = element; parent; parent = parent.parentElement) {
+        const color = rgba(getComputedStyle(parent).backgroundColor);
+        layers.push(color);
+        if (color[3] === 255) break;
+      }
+      let background = [255, 255, 255];
+      for (const layer of layers.reverse()) background = blend(layer, background);
+      const style = getComputedStyle(element);
+      const foreground = blend(rgba(style.color), background);
+      const a = luminance(foreground);
+      const b = luminance(background);
+      const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+      const large =
+        parseFloat(style.fontSize) >= 24 ||
+        (parseFloat(style.fontSize) >= 18.66 && Number(style.fontWeight) >= 700);
+      if (ratio < (large ? 3 : 4.5))
+        failures.push({ element: element.className || element.tagName, ratio });
+    }
+    return failures;
+  });
+  assert.deepEqual(failures, [], 'theme text contrast');
+}
+
 try {
+  assert.ok(
+    selectedSchemes.length > 0 && selectedSchemes.every((mode) => ['light', 'dark'].includes(mode)),
+    'unknown color scheme',
+  );
+  assert.ok(
+    !selectedDevices ||
+      selectedDevices.every((name) => profiles.some((profile) => profile.name === name)),
+    'unknown device',
+  );
   for (const profile of profiles) {
-    for (const mode of ['light', 'dark']) {
+    if (selectedDevices && !selectedDevices.includes(profile.name)) continue;
+    for (const mode of selectedSchemes) {
       const context = await browser.newContext({
         ...profile.device,
         colorScheme: mode,
@@ -107,7 +202,7 @@ try {
       const wallpapers = new Set();
       page.on('pageerror', (error) => errors.push(error.message));
       page.on('response', (response) => {
-        if (/comments-(atlas|chrome|sketch)-.*webp/u.test(response.url()))
+        if (/comments-(atlas|chrome|sketch|neon|obsidian|avant)-.*webp/u.test(response.url()))
           wallpapers.add(response.url());
       });
       await page.goto(commentsUrl(profile));
@@ -124,7 +219,8 @@ try {
       );
       await page.waitForTimeout(200);
       assert.equal(wallpapers.size, 1, 'a cold dialog loads only its active wallpaper');
-      const draft = 'Тема меняется, черновик остаётся.';
+      const draftPrefix = 'Тема меняется, черновик остаётся.';
+      const draft = `${draftPrefix}\nВторая строка.\nТретья строка.\nhttps://example.org/${'x'.repeat(110)}`;
       await page.locator('.channel-dialog-compose__field textarea').fill(draft);
       for (const [id, label] of themes) {
         await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
@@ -141,16 +237,67 @@ try {
           draft,
         );
         await assertLayout(page);
+        await assertThemeContrast(page);
+        assert.equal(await dialog.getByRole('radio').count(), 6);
+        if (id === 'neon' || id === 'obsidian') {
+          assert.equal(
+            await page
+              .locator('[data-comment-theme]')
+              .evaluate((element) => getComputedStyle(element).colorScheme),
+            'dark',
+          );
+        }
         await page.screenshot({
           path: path.join(output, `${profile.name}-${mode}-${id}-sheet.png`),
         });
         await dialog.getByRole('button', { name: 'Готово', exact: true }).click();
+        await assertThemeContrast(page);
         await page.screenshot({ path: path.join(output, `${profile.name}-${mode}-${id}.png`) });
+        await page.getByRole('button', { name: 'Настройки уведомлений', exact: true }).click();
+        await page.getByRole('dialog', { name: 'Уведомления', exact: true }).waitFor();
+        await assertThemeContrast(page);
+        await page.getByRole('button', { name: 'Отмена', exact: true }).click();
+      }
+      const photoInput = page.locator(
+        '.channel-dialog-compose input[type="file"][accept="image/*"]',
+      );
+      const photo = {
+        name: 'layout-test.webp',
+        mimeType: 'image/webp',
+        buffer: await readFile(
+          new URL('../src/assets/wallpapers/comments-neon-dark.webp', import.meta.url),
+        ),
+      };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await photoInput.setInputFiles(photo);
+        await page.locator('.channel-dialog-compose__image-chip').waitFor();
+        await assertLayout(page);
+        await page.locator('.channel-dialog-compose__image-chip-dismiss').click();
+      }
+      const fileInput = page.locator('.channel-dialog-compose input[type="file"]:not([accept])');
+      await fileInput.setInputFiles({
+        name: 'layout-check.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('Comment attachment fixture'),
+      });
+      await page.locator('.channel-dialog-compose__attachment').waitFor();
+      await assertLayout(page);
+      await page.locator('.channel-dialog-compose__attachment-dismiss').click();
+      if (profile.platform === 'android') {
+        assert.equal(await photoInput.getAttribute('tabindex'), '0');
+        assert.equal(await fileInput.getAttribute('tabindex'), '0');
       }
       await page.getByRole('button', { name: 'Отправить', exact: true }).click();
-      await page.locator('.channel-dialog-message.is-own').filter({ hasText: draft }).waitFor();
+      await page
+        .locator('.channel-dialog-message.is-own')
+        .filter({ hasText: draftPrefix })
+        .waitFor();
       assert.equal(await page.locator('.channel-dialog-compose__field textarea').inputValue(), '');
-      const sentMessage = page.locator('.channel-dialog-message.is-own').filter({ hasText: draft });
+      const sentMessage = page
+        .locator('.channel-dialog-message.is-own')
+        .filter({ hasText: draftPrefix });
+      await assertThemeContrast(page);
+      await assertLayout(page);
       await sentMessage.locator('.channel-dialog-message__bubble').press('Enter');
       const actions = page.getByRole('dialog', { name: 'Действия с комментарием', exact: true });
       await actions.waitFor();
@@ -167,19 +314,31 @@ try {
         path: path.join(output, `${profile.name}-${mode}-notifications.png`),
       });
       await page.getByRole('button', { name: 'Отмена', exact: true }).click();
+      await page.locator('.channel-dialog-message__image-tile').first().click();
+      await page.getByRole('dialog', { name: 'Просмотр фото', exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Закрыть просмотр', exact: true }).click();
       await page.reload();
-      await page.locator('[data-comment-theme="sketch"]').waitFor();
+      await page.locator('[data-comment-theme="avant"]').waitFor();
       await applyNativeVisualMode(page, profile);
       await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
       await page.getByRole('dialog', { name: 'Оформление', exact: true }).waitFor();
-      await page.getByRole('radio', { name: 'Скетч', exact: true }).focus();
+      await page.getByRole('radio', { name: 'Авангард', exact: true }).focus();
       await page.keyboard.press('ArrowLeft');
       assert.equal(
-        await page.getByRole('radio', { name: 'Хром', exact: true }).getAttribute('aria-checked'),
+        await page
+          .getByRole('radio', { name: 'Обсидиан', exact: true })
+          .getAttribute('aria-checked'),
         'true',
       );
       await page.keyboard.press('Escape');
       assert.equal(await page.getByRole('dialog', { name: 'Оформление', exact: true }).count(), 0);
+      assert.equal(
+        await page
+          .locator('.channel-dialog-theme-toggle')
+          .evaluate((element) => element === document.activeElement),
+        true,
+        'closing the sheet restores focus',
+      );
       await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
       await page.getByRole('dialog', { name: 'Оформление', exact: true }).waitFor();
       await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
@@ -199,6 +358,12 @@ try {
       await page.waitForTimeout(150);
       await assertLayout(page);
       await page.screenshot({ path: path.join(output, `${profile.name}-${mode}-keyboard.png`) });
+      await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
+      const smallDialog = page.getByRole('dialog', { name: 'Оформление', exact: true });
+      await smallDialog.waitFor();
+      await page.getByRole('radio', { name: 'Авангард', exact: true }).click();
+      await assertLayout(page);
+      await smallDialog.getByRole('button', { name: 'Готово', exact: true }).click();
       await page.setViewportSize(viewport);
       await page.goto(commentsUrl(profile, { profile: 'publisher' }));
       await page.locator('.channel-dialog-message').first().waitFor();
@@ -209,8 +374,24 @@ try {
       );
       assert.equal(
         await page.locator('[data-comment-theme]').getAttribute('data-comment-theme'),
-        'chrome',
+        'avant',
       );
+      await page.evaluate(() => {
+        Object.defineProperty(window.visualViewport, 'offsetTop', {
+          configurable: true,
+          value: 18,
+        });
+        window.visualViewport.dispatchEvent(new Event('scroll'));
+      });
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.channel-dialog-theme-toggle').getBoundingClientRect().top >= 23,
+      );
+      await assertLayout(page);
+      await page.evaluate(() => {
+        delete window.visualViewport.offsetTop;
+        window.visualViewport.dispatchEvent(new Event('scroll'));
+      });
       const suggestUrl = new URL(commentsUrl(profile));
       suggestUrl.pathname = suggestUrl.pathname.replace('/comments', '/suggest');
       await page.evaluate((url) => {
