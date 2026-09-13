@@ -14,6 +14,7 @@ import {
 } from 'iconoir-react';
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
+import { EntityAvatar } from '../components/ui/entity-avatar';
 import {
   claimGiveaway,
   enterGiveaway,
@@ -306,7 +307,12 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
     <main className="giveaway-page" data-phase={phase} data-tone={statusTone}>
       <div className="giveaway-page__content">
         <header className="giveaway-page__header">
-          <img src={`${import.meta.env.BASE_URL}favicon.png`} alt="Майор" width="28" height="28" />
+          <EntityAvatar
+            className="giveaway-page__avatar"
+            title={giveaway?.sourceTitle ?? ''}
+            entityType={giveaway?.entityType ?? 'chat'}
+            avatarUrl={giveaway?.sourceAvatarUrl}
+          />
           <div className="giveaway-page__source">
             <span>Розыгрыш в MAX</span>
             <strong>{giveaway?.sourceTitle ?? 'Майор'}</strong>

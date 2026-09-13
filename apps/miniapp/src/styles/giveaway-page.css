@@ -103,7 +103,7 @@
   }
   .giveaway-page__header {
     display: grid;
-    grid-template-columns: 28px minmax(0, 1fr) 44px;
+    grid-template-columns: 40px minmax(0, 1fr) 44px;
     align-items: center;
     gap: 10px;
     font-size: 13px;
@@ -125,8 +125,16 @@
     font-size: 13px;
     line-height: 1.4;
   }
-  .giveaway-page__header img {
-    border-radius: 6px;
+  .giveaway-page__avatar {
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--giveaway-line);
+    border-radius: 50%;
+    background: var(--giveaway-surface);
+    color: var(--giveaway-secondary);
+    box-shadow: none;
+    font-size: 13px;
+    letter-spacing: 0;
   }
   .giveaway-page__icon-button {
     display: grid;

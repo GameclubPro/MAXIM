@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import {
   applyNativeVisualMode,
@@ -40,10 +41,46 @@ try {
   const page = await browser.newPage({ viewport: { width: 375, height: 667 } });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  const avatarImage = await readFile(new URL('../../../bot.webp', import.meta.url));
+  await page.route('https://images.example.test/**', (route) =>
+    route.request().url().endsWith('/broken.webp')
+      ? route.fulfill({ status: 404 })
+      : route.fulfill({ contentType: 'image/webp', body: avatarImage }),
+  );
   await page.goto(new URL('test/browser/giveaway.html', base).href);
   const main = page.locator('.giveaway-page');
   const primary = main.locator('.giveaway-page__primary');
   await main.getByRole('button', { name: 'Проверить и участвовать' }).waitFor();
+  const avatar = main.locator('.giveaway-page__avatar');
+  for (const entityType of ['chat', 'channel']) {
+    const sourceAvatarUrl = `https://images.example.test/${entityType}.webp`;
+    await page.evaluate(
+      ({ sourceAvatarUrl, entityType }) => {
+        window.giveawayTest.setAvatar(sourceAvatarUrl, entityType);
+      },
+      { sourceAvatarUrl, entityType },
+    );
+    await page.waitForFunction((url) => {
+      const image = document.querySelector('.giveaway-page__avatar img');
+      return image?.getAttribute('src') === url && image.complete && image.naturalWidth > 0;
+    }, sourceAvatarUrl);
+    assert.equal(await avatar.locator('img').getAttribute('referrerpolicy'), 'no-referrer');
+  }
+  for (const sourceAvatarUrl of [null, 'https://images.example.test/broken.webp']) {
+    await page.evaluate((url) => window.giveawayTest.setAvatar(url), sourceAvatarUrl);
+    await page.waitForFunction(() => {
+      const avatar = document.querySelector('.giveaway-page__avatar');
+      return avatar && !avatar.querySelector('img') && avatar.textContent === 'КО';
+    });
+  }
+  await page.evaluate(() =>
+    window.giveawayTest.setAvatar('https://images.example.test/restored.webp'),
+  );
+  await page.waitForFunction(() => {
+    const image = document.querySelector('.giveaway-page__avatar img');
+    return image?.complete && image.naturalWidth > 0;
+  });
+  assert.equal(await main.locator('img[src*="favicon"]').count(), 0);
   assert.equal(await main.getByText('Не проверено', { exact: true }).count(), 2);
   assert.equal(await main.getByText('Скрытый приз').count(), 0);
   assert.equal(await main.getByText('Не дублировать приз').count(), 0);

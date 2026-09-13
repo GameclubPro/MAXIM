@@ -2081,14 +2081,14 @@ export class ManagedGiveawayService {
     const requiredChannelIds = this.readRequiredChannelIds(row.requiredChannelIds).filter(
       (channelId) => channelId !== row.sourceChatId,
     );
-    const [sourceTitle, sourceLink, requiredChannels] = await Promise.all([
+    const [sourceTitle, sourcePresentation, requiredChannels] = await Promise.all([
       this.resolveSourceTitle(row.sourceChatId),
-      this.resolveChatLink(row.sourceChatId),
+      this.resolveChatPresentation(row.sourceChatId),
       Promise.all(
         requiredChannelIds.map(async (channelId) => ({
           id: channelId,
           title: await this.resolveSourceTitle(channelId),
-          link: await this.resolveChatLink(channelId),
+          link: (await this.resolveChatPresentation(channelId)).link,
         })),
       ),
     ]);
@@ -2099,7 +2099,8 @@ export class ManagedGiveawayService {
       sourceChatId: row.sourceChatId,
       serverTime: new Date().toISOString(),
       sourceTitle,
-      sourceLink,
+      sourceLink: sourcePresentation.link,
+      sourceAvatarUrl: sourcePresentation.avatarUrl,
       entityType: this.fromPrismaEntityType(row.entityType),
       title: row.title,
       description: row.description,
@@ -4954,19 +4955,21 @@ export class ManagedGiveawayService {
     return `Chat ${chatId}`;
   }
 
-  private async resolveChatLink(chatId: string): Promise<string | null> {
+  private async resolveChatPresentation(
+    chatId: string,
+  ): Promise<{ link: string | null; avatarUrl: string | null }> {
     try {
       const snapshot = await this.maxClient.getChatSnapshot(
         chatId,
         buildManagedGiveawayMaxApiOptions('miniapp', 'metadata'),
       );
-      return snapshot.link ?? null;
+      return { link: snapshot.link ?? null, avatarUrl: snapshot.avatarUrl ?? null };
     } catch (error: unknown) {
       this.logger.warn(
         { chatId, err: error instanceof Error ? error.message : String(error) },
-        'Failed to resolve giveaway source link',
+        'Failed to resolve giveaway source presentation',
       );
-      return null;
+      return { link: null, avatarUrl: null };
     }
   }
 

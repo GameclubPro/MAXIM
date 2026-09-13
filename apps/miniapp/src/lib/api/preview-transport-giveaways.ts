@@ -140,6 +140,7 @@ export function buildPreviewPublicGiveaway(
     sourceChatId: PREVIEW_CHANNEL_ID,
     sourceTitle: sourceChannel?.title ?? PREVIEW_CHANNEL_TITLE,
     sourceLink: sourceChannel?.link ?? null,
+    sourceAvatarUrl: sourceChannel?.avatarUrl ?? null,
     entityType: 'channel',
     title: variant === 'completed' ? 'Итоги розыгрыша прикормок' : 'Прикормка',
     description:

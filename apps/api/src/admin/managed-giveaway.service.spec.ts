@@ -1623,6 +1623,71 @@ describe('ManagedGiveawayService', () => {
     });
   });
 
+  it.each([ChatEntityType.CHAT, ChatEntityType.CHANNEL])(
+    'returns the source avatar from the existing %s snapshot lookup',
+    async (entityType) => {
+      const prisma = createPrismaMock();
+      const maxClient = createMaxClientMock();
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        maxClient as never,
+        { invalidate: jest.fn() } as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      const giveaway = createGiveaway({
+        entityType,
+        publicationMessageId: 'publication-1',
+        requiredChannelIds: [],
+      });
+      prisma.managedGiveaway.findUnique.mockResolvedValue(giveaway);
+      maxClient.getChatSnapshot.mockResolvedValue({
+        link: 'https://max.ru/source',
+        avatarUrl: 'https://cdn.example.com/source.jpg',
+      });
+
+      await expect(service.getPublicGiveaway('giveaway-1', user)).resolves.toMatchObject({
+        sourceLink: 'https://max.ru/source',
+        sourceAvatarUrl: 'https://cdn.example.com/source.jpg',
+      });
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+        giveaway.sourceChatId,
+        expect.objectContaining({ sourceTag: MAX_API_SOURCE_TAGS.MANAGED_GIVEAWAY }),
+      );
+    },
+  );
+
+  it.each(['no-photo', 'unavailable'])(
+    'keeps a %s source usable without an avatar',
+    async (mode) => {
+      const prisma = createPrismaMock();
+      const maxClient = createMaxClientMock();
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        maxClient as never,
+        { invalidate: jest.fn() } as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      prisma.managedGiveaway.findUnique.mockResolvedValue(
+        createGiveaway({ publicationMessageId: 'publication-1', requiredChannelIds: [] }),
+      );
+      if (mode === 'unavailable')
+        maxClient.getChatSnapshot.mockRejectedValue(new Error('Unavailable'));
+      else
+        maxClient.getChatSnapshot.mockResolvedValue({
+          link: 'https://max.ru/source',
+          avatarUrl: null,
+        });
+
+      await expect(service.getPublicGiveaway('giveaway-1', user)).resolves.toMatchObject({
+        sourceTitle: 'Основной канал',
+        sourceAvatarUrl: null,
+      });
+    },
+  );
+
   it('does not let a stale giveaway read route overwrite the persisted primary bot', async () => {
     const prisma = createPrismaMock();
     const maxBotLinkService = createMaxBotLinkMock({ resolvedBotId: 'stale-read-bot' });

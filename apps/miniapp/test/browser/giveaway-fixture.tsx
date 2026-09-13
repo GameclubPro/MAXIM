@@ -16,6 +16,7 @@ const data = managedGiveawayPublicSchema.parse({
   sourceChatId: 'source',
   sourceTitle: 'Канал организатора',
   sourceLink: 'https://max.ru/source',
+  sourceAvatarUrl: 'https://images.example.test/source.webp',
   entityType: 'channel',
   title: 'Не дублировать приз',
   description: 'Не дублировать описание',
@@ -65,6 +66,11 @@ const fixture = {
   mode: 'verified',
   opened: false,
   openedUrl: '',
+  setAvatar(avatarUrl: string | null, entityType: 'chat' | 'channel' = 'channel') {
+    data.sourceAvatarUrl = avatarUrl;
+    data.entityType = entityType;
+    void client.invalidateQueries();
+  },
   longConditions() {
     data.sourceTitle = 'Канал организатора с очень длинным названием для проверки переноса строк';
     data.requiredChannels = Array.from({ length: 20 }, (_, index) => ({

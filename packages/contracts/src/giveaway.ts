@@ -215,6 +215,7 @@ export const managedGiveawayPublicSchema = z.object({
   sourceChatId: z.string(),
   sourceTitle: z.string(),
   sourceLink: z.string().nullable(),
+  sourceAvatarUrl: z.string().trim().url().nullable().optional(),
   entityType: managedEntityTypeSchema,
   title: managedGiveawayTitleSchema,
   description: managedGiveawayDescriptionSchema,
