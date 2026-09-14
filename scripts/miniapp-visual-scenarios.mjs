@@ -763,6 +763,14 @@ const baseScenarios = [
     ['chat-settings-giveaway-channels-modal', { searchParams: { focus: 'giveaway' } }],
     ['chat-settings-giveaway-publish-step', { searchParams: { focus: 'giveaway' } }],
     ['chat-settings-required-subscription', { searchParams: { focus: 'requiredSubscription' } }],
+    [
+      'chat-settings-required-subscription-help',
+      { searchParams: { focus: 'requiredSubscription' } },
+    ],
+    [
+      'chat-settings-required-subscription-sources',
+      { searchParams: { focus: 'requiredSubscription' } },
+    ],
     ['chat-settings-apply-target', { searchParams: { focus: 'links' } }],
     ['chat-settings-broadcast', { searchParams: { focus: 'broadcast', workspace: 'autoposts' } }],
     ['chat-settings-broadcast-handoff', { searchParams: { focus: 'broadcast', handoff: '1' } }],

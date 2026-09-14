@@ -1,5 +1,10 @@
 import { InfoCircle } from 'iconoir-react';
 import {
+  RequiredSubscriptionExternalSource,
+  RequiredSubscriptionHelp,
+  RequiredSubscriptionSourceDisclosure,
+} from './settings/settings-required-subscription-ui';
+import {
   MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
   MAX_CHAT_RULES_TEXT_LENGTH,
@@ -7552,12 +7557,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-required-subscription-content"
                 open={expandedSections.requiredSubscription}
-                title="Обязательная подписка"
+                title="Подписка"
                 summary={requiredSubscriptionHeaderSummary}
                 tone="sky"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--required-subscription"
                 onClose={() => toggleSection('requiredSubscription')}
-                headerAction={renderApplyTargetHeaderAction('requiredSubscription')}
+                headerAction={
+                  <>
+                    <RequiredSubscriptionHelp />
+                    {renderApplyTargetHeaderAction('requiredSubscription')}
+                  </>
+                }
                 confirmCloseWhen={isSectionDirty('requiredSubscription')}
                 onDiscardChanges={() => discardSectionChanges('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription')}
@@ -7574,8 +7584,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="managed-giveaway__section required-subscription__board">
                         <div className="managed-giveaway__title-row">
                           <div className="managed-giveaway__section-copy required-subscription__heading">
-                            <strong>Источники</strong>
-                            <small>
+                            <strong>Куда подписаться</strong>
+                            <small
+                              className="required-subscription__count"
+                              data-state={
+                                requiredSubscriptionStaleCount > 0
+                                  ? 'warning'
+                                  : requiredSubscriptionIsActive
+                                    ? 'active'
+                                    : 'empty'
+                              }
+                              aria-label={`Выбрано источников: ${requiredSubscriptionSelectedCount} из ${REQUIRED_SUBSCRIPTION_MAX_CHANNELS}`}
+                            >
                               {requiredSubscriptionSelectedCount}/
                               {REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
                             </small>
@@ -7698,87 +7718,199 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <small className="field__hint">{requiredSubscriptionChannelsError}</small>
                         ) : null}
 
-                        <Suspense
-                          fallback={
-                            <div className="required-subscription__source-picker">
-                              <div className="required-subscription__source-skeleton" aria-hidden>
-                                <span />
-                                <span />
-                                <span />
-                              </div>
-                            </div>
-                          }
+                        <RequiredSubscriptionSourceDisclosure
+                          initiallyOpen={requiredSubscriptionSelectedCount === 0}
                         >
-                          <LazyRequiredSubscriptionSourcePicker
-                            choices={availableRequiredSubscriptionChannelChoices}
-                            selectedCount={requiredSubscriptionSelectedCount}
-                            maxSelectedCount={REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
-                            loading={requiredSubscriptionEntitiesLoading}
-                            syncing={requiredSubscriptionEntitiesSyncing}
-                            error={
-                              requiredSubscriptionEntitiesError
-                                ? formatApiError(requiredSubscriptionEntitiesError)
-                                : null
+                          <Suspense
+                            fallback={
+                              <div className="required-subscription__source-picker">
+                                <div className="required-subscription__source-skeleton" aria-hidden>
+                                  <span />
+                                  <span />
+                                  <span />
+                                </div>
+                              </div>
                             }
-                            backoffActive={requiredSubscriptionEntitiesBackoffActive}
-                            emptyState={requiredSubscriptionPickerEmptyState}
-                            onAdd={addRequiredSubscriptionChannel}
-                            onRefresh={refreshRequiredSubscriptionChannels}
-                          />
-                        </Suspense>
+                          >
+                            <LazyRequiredSubscriptionSourcePicker
+                              choices={availableRequiredSubscriptionChannelChoices}
+                              selectedCount={requiredSubscriptionSelectedCount}
+                              maxSelectedCount={REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
+                              loading={requiredSubscriptionEntitiesLoading}
+                              syncing={requiredSubscriptionEntitiesSyncing}
+                              error={
+                                requiredSubscriptionEntitiesError
+                                  ? formatApiError(requiredSubscriptionEntitiesError)
+                                  : null
+                              }
+                              backoffActive={requiredSubscriptionEntitiesBackoffActive}
+                              emptyState={requiredSubscriptionPickerEmptyState}
+                              onAdd={addRequiredSubscriptionChannel}
+                              onRefresh={refreshRequiredSubscriptionChannels}
+                            />
+                          </Suspense>
 
-                        <div className="required-subscription__external-source">
-                          <div className="managed-giveaway__editor-grid">
-                            <label
-                              className={cn(
-                                'field settings-text-field',
-                                requiredSubscriptionExternalChannelError && 'field--error',
-                              )}
-                            >
-                              <span>Добавить по ссылке</span>
-                              <input
-                                type="text"
-                                value={requiredSubscriptionExternalChannelValue}
-                                onChange={(event) => {
-                                  setRequiredSubscriptionExternalChannelValue(event.target.value);
-                                  if (requiredSubscriptionExternalChannelError) {
-                                    setRequiredSubscriptionExternalChannelError('');
-                                  }
-                                }}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter') {
-                                    event.preventDefault();
-                                    handleResolveRequiredSubscriptionExternalChannel();
-                                  }
-                                }}
-                                placeholder="https://max.ru/..."
-                                disabled={isResolvingRequiredSubscriptionChannel}
-                              />
-                              {requiredSubscriptionExternalChannelError ? (
-                                <small className="field__hint">
-                                  {requiredSubscriptionExternalChannelError}
-                                </small>
-                              ) : null}
-                            </label>
-                            <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
-                              <button
-                                type="button"
-                                className="button button--ghost managed-giveaway__channel-action"
-                                disabled={
-                                  isResolvingRequiredSubscriptionChannel ||
-                                  requiredSubscriptionSelectedCount >=
-                                    REQUIRED_SUBSCRIPTION_MAX_CHANNELS
-                                }
-                                onClick={handleResolveRequiredSubscriptionExternalChannel}
-                              >
-                                {isResolvingRequiredSubscriptionChannel
-                                  ? 'Проверяем...'
-                                  : 'Добавить'}
-                              </button>
-                            </div>
-                          </div>
+                          <RequiredSubscriptionExternalSource
+                            value={requiredSubscriptionExternalChannelValue}
+                            error={requiredSubscriptionExternalChannelError}
+                            loading={isResolvingRequiredSubscriptionChannel}
+                            limitReached={
+                              requiredSubscriptionSelectedCount >=
+                              REQUIRED_SUBSCRIPTION_MAX_CHANNELS
+                            }
+                            onChange={(value) => {
+                              setRequiredSubscriptionExternalChannelValue(value);
+                              setRequiredSubscriptionExternalChannelError('');
+                            }}
+                            onSubmit={handleResolveRequiredSubscriptionExternalChannel}
+                          />
+                        </RequiredSubscriptionSourceDisclosure>
+                      </div>
+
+                      <div className="required-subscription__actions">
+                        <div
+                          className="settings-subsection-divider"
+                          role="separator"
+                          aria-label="Действия бота для обязательной подписки"
+                        >
+                          <span>Без подписки</span>
                         </div>
 
+                        <div className="settings-native-toggle required-subscription__explanation">
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">
+                                1. Удаление и объяснение
+                              </span>
+                              <div className="settings-native-toggle__title-actions">
+                                <EditToggleButton
+                                  label="Редактировать объяснение об обязательной подписке"
+                                  onClick={() => toggleBotMessageEditor('requiredSubscription')}
+                                  isOpen={openBotEditorKey === 'requiredSubscription'}
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {openBotEditorKey === 'requiredSubscription' ? (
+                            <LazyBotMessageEditor
+                              editorKey="requiredSubscription"
+                              {...botSpeechEditorProps!}
+                              botSpeechPreviewContext={botSpeechPreviewContext}
+                              value={draft.requiredSubscriptionBotMessageText}
+                              onChange={(nextValue) =>
+                                setFieldValue(
+                                  'requiredSubscriptionBotMessageText',
+                                  nextValue as ChatSettings['requiredSubscriptionBotMessageText'],
+                                )
+                              }
+                              onReset={() =>
+                                setFieldValue('requiredSubscriptionBotMessageText', '')
+                              }
+                              onClose={() => setOpenBotEditorKey(null)}
+                            />
+                          ) : null}
+                        </div>
+
+                        {renderAdminContactToggle(
+                          REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
+                          'Добавить связь с админом в сообщения об обязательной подписке',
+                        )}
+
+                        <div className="settings-native-toggle settings-native-toggle--nested">
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">
+                                2. Предупреждение
+                              </span>
+                              <div className="settings-native-toggle__title-actions">
+                                <EditToggleButton
+                                  label="Редактировать предупреждение об обязательной подписке"
+                                  onClick={() =>
+                                    toggleWarnMessageEditor('requiredSubscriptionWarn')
+                                  }
+                                  isOpen={openWarnEditorKey === 'requiredSubscriptionWarn'}
+                                />
+                              </div>
+                            </div>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Включить предупреждение за второе сообщение без подписки"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.requiredSubscriptionWarnEnabled}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setFieldValue('requiredSubscriptionWarnEnabled', enabled);
+                                  if (enabled) {
+                                    setFieldValue('requiredSubscriptionBotMessageEnabled', true);
+                                  }
+                                }}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+
+                          {openWarnEditorKey === 'requiredSubscriptionWarn' ? (
+                            <LazyWarnMessageEditor
+                              editorKey="requiredSubscriptionWarn"
+                              {...botSpeechEditorProps!}
+                              botSpeechPreviewContext={botSpeechPreviewContext}
+                              value={draft.requiredSubscriptionWarnMessageText}
+                              onChange={(nextValue) =>
+                                setFieldValue(
+                                  'requiredSubscriptionWarnMessageText',
+                                  nextValue as ChatSettings['requiredSubscriptionWarnMessageText'],
+                                )
+                              }
+                              onReset={() =>
+                                setFieldValue('requiredSubscriptionWarnMessageText', '')
+                              }
+                              onClose={() => setOpenWarnEditorKey(null)}
+                            />
+                          ) : null}
+                        </div>
+
+                        {renderMuteStageToggle({
+                          enabledKey: 'requiredSubscriptionMuteEnabled',
+                          durationKey: 'requiredSubscriptionMuteDurationHours',
+                          title: '3. Ограничение',
+                          onEnable: () => {
+                            setFieldValue('requiredSubscriptionWarnEnabled', true);
+                            setFieldValue('requiredSubscriptionBotMessageEnabled', true);
+                          },
+                        })}
+
+                        <div className="settings-native-toggle settings-native-toggle--nested">
+                          <div className="settings-native-toggle__row">
+                            <span className="settings-native-toggle__title">4. Блокировка</span>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Включить блокировку за сообщения без подписки"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.requiredSubscriptionBanEnabled}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setFieldValue('requiredSubscriptionBanEnabled', enabled);
+                                  if (enabled) {
+                                    setFieldValue('requiredSubscriptionWarnEnabled', true);
+                                    setFieldValue('requiredSubscriptionBotMessageEnabled', true);
+                                  }
+                                }}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+                        </div>
                         <label className="field settings-text-field required-subscription__button-label">
                           <span>Текст кнопки</span>
                           <input
@@ -7791,140 +7923,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             placeholder="Канал"
                           />
                         </label>
-                      </div>
-
-                      <div
-                        className="settings-subsection-divider"
-                        role="separator"
-                        aria-label="Действия бота для обязательной подписки"
-                      >
-                        <span>Действия</span>
-                      </div>
-
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">1. Объяснение</span>
-                            <div className="settings-native-toggle__title-actions">
-                              <EditToggleButton
-                                label="Редактировать объяснение об обязательной подписке"
-                                onClick={() => toggleBotMessageEditor('requiredSubscription')}
-                                isOpen={openBotEditorKey === 'requiredSubscription'}
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        {openBotEditorKey === 'requiredSubscription' ? (
-                          <LazyBotMessageEditor
-                            editorKey="requiredSubscription"
-                            {...botSpeechEditorProps!}
-                            botSpeechPreviewContext={botSpeechPreviewContext}
-                            value={draft.requiredSubscriptionBotMessageText}
-                            onChange={(nextValue) =>
-                              setFieldValue(
-                                'requiredSubscriptionBotMessageText',
-                                nextValue as ChatSettings['requiredSubscriptionBotMessageText'],
-                              )
-                            }
-                            onReset={() => setFieldValue('requiredSubscriptionBotMessageText', '')}
-                            onClose={() => setOpenBotEditorKey(null)}
-                          />
-                        ) : null}
-                      </div>
-
-                      {renderAdminContactToggle(
-                        REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
-                        'Добавить связь с админом в сообщения об обязательной подписке',
-                      )}
-
-                      <div className="settings-native-toggle settings-native-toggle--nested">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">2. Предупреждение</span>
-                            <div className="settings-native-toggle__title-actions">
-                              <EditToggleButton
-                                label="Редактировать предупреждение об обязательной подписке"
-                                onClick={() => toggleWarnMessageEditor('requiredSubscriptionWarn')}
-                                isOpen={openWarnEditorKey === 'requiredSubscriptionWarn'}
-                              />
-                            </div>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить предупреждение за второе сообщение без подписки"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.requiredSubscriptionWarnEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('requiredSubscriptionWarnEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('requiredSubscriptionBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openWarnEditorKey === 'requiredSubscriptionWarn' ? (
-                          <LazyWarnMessageEditor
-                            editorKey="requiredSubscriptionWarn"
-                            {...botSpeechEditorProps!}
-                            botSpeechPreviewContext={botSpeechPreviewContext}
-                            value={draft.requiredSubscriptionWarnMessageText}
-                            onChange={(nextValue) =>
-                              setFieldValue(
-                                'requiredSubscriptionWarnMessageText',
-                                nextValue as ChatSettings['requiredSubscriptionWarnMessageText'],
-                              )
-                            }
-                            onReset={() => setFieldValue('requiredSubscriptionWarnMessageText', '')}
-                            onClose={() => setOpenWarnEditorKey(null)}
-                          />
-                        ) : null}
-                      </div>
-
-                      {renderMuteStageToggle({
-                        enabledKey: 'requiredSubscriptionMuteEnabled',
-                        durationKey: 'requiredSubscriptionMuteDurationHours',
-                        title: '3. Ограничение',
-                        onEnable: () => {
-                          setFieldValue('requiredSubscriptionWarnEnabled', true);
-                          setFieldValue('requiredSubscriptionBotMessageEnabled', true);
-                        },
-                      })}
-
-                      <div className="settings-native-toggle settings-native-toggle--nested">
-                        <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">4. Блокировка</span>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить блокировку за сообщения без подписки"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.requiredSubscriptionBanEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('requiredSubscriptionBanEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('requiredSubscriptionWarnEnabled', true);
-                                  setFieldValue('requiredSubscriptionBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
                       </div>
                     </div>
                   ) : null}

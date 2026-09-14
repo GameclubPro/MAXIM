@@ -1,5 +1,5 @@
 import type { ManagedEntityHeader } from '@maxim/contracts/managed-entities';
-import { RefreshCircle, Search, Xmark } from 'iconoir-react';
+import { Plus, RefreshCircle, Search, Xmark } from 'iconoir-react';
 import {
   useEffect,
   useDeferredValue,
@@ -118,6 +118,7 @@ const RequiredSubscriptionSourceRow = memo(function RequiredSubscriptionSourceRo
         role="option"
         aria-selected="false"
         aria-label={`Добавить ${typeLabel.toLowerCase()} ${choice.title}`}
+        title={disabled ? 'Достигнут лимит источников' : `Добавить ${choice.title}`}
       >
         <EntityAvatar
           title={choice.title}
@@ -135,7 +136,7 @@ const RequiredSubscriptionSourceRow = memo(function RequiredSubscriptionSourceRo
           </span>
         </span>
         <span className="required-subscription__source-add" aria-hidden="true">
-          Добавить
+          <Plus />
         </span>
       </button>
     </div>

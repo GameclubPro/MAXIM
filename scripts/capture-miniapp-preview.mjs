@@ -2429,7 +2429,67 @@ const scenarioBehaviors = [
   {
     name: 'chat-settings-required-subscription',
     beforeShot: async (page) => {
-      await page.waitForTimeout(500);
+      const panel = page.locator('.settings-drilldown__panel--required-subscription');
+      await panel.waitFor({ state: 'visible' });
+      const help = panel.getByRole('button', { name: 'Как работает обязательная подписка' });
+      const note = panel.getByRole('note');
+      if (await note.count()) throw new Error('Subscription help must start closed.');
+      await help.click();
+      await note.waitFor({ state: 'visible' });
+      await page.keyboard.press('Escape');
+      await note.waitFor({ state: 'detached' });
+      await panel.waitFor({ state: 'visible' });
+      await help.click();
+      await note.waitFor({ state: 'visible' });
+      const hasNativeBack = await page.evaluate(
+        () => typeof window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__ === 'function',
+      );
+      if (hasNativeBack) {
+        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      } else {
+        await help.click();
+      }
+      await note.waitFor({ state: 'detached' });
+      await panel.waitFor({ state: 'visible' });
+      if (await panel.getByRole('searchbox', { name: 'Найти чат или канал' }).count()) {
+        throw new Error('Configured subscription should defer the source picker.');
+      }
+    },
+  },
+  {
+    name: 'chat-settings-required-subscription-help',
+    beforeShot: async (page) => {
+      const panel = page.locator('.settings-drilldown__panel--required-subscription');
+      await panel.getByRole('button', { name: 'Как работает обязательная подписка' }).click();
+      await panel.getByRole('note').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'chat-settings-required-subscription-sources',
+    beforeShot: async (page) => {
+      const panel = page.locator('.settings-drilldown__panel--required-subscription');
+      await panel.getByRole('button', { name: 'Добавить источник' }).click();
+      const search = panel.getByRole('searchbox', { name: 'Найти чат или канал' });
+      await search.fill('Садоводы');
+      await panel.getByRole('option', { name: 'Добавить чат Садоводы Южного' }).click();
+      await panel.getByRole('button', { name: 'Удалить чат Садоводы Южного' }).click();
+      await search.fill('');
+      const filter = panel.getByRole('radio', { name: /Каналы/u });
+      await filter.click();
+      if (await panel.getByRole('option', { name: 'Добавить чат Садоводы Южного' }).count()) {
+        throw new Error('Channel filter must not include chats.');
+      }
+      await panel.getByRole('radio', { name: /Все/u }).click();
+      await panel.getByRole('option', { name: 'Добавить чат Садоводы Южного' }).waitFor();
+      await panel.locator('.required-subscription__external-source input').fill('https://max.ru/');
+      await panel.locator('.required-subscription__external-source input').fill('');
+      await panel.locator('.required-subscription__external-source input').press('Enter');
+      if (await panel.locator('.required-subscription__external-source [role="alert"]').count()) {
+        throw new Error('Empty subscription URLs must not be submitted.');
+      }
+      await panel.locator('.settings-drilldown__body').evaluate((element) => {
+        element.scrollTop = 0;
+      });
     },
   },
   {
