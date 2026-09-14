@@ -21,24 +21,31 @@ export function createDuplicateDeleteAuthorizationGuard(params: {
 }): {
   beforeImmediateDeleteMutation?: () => Promise<void>;
   wasRejected: () => boolean;
+  verificationFailed: () => boolean;
 } {
   let rejected = false;
+  let failed = false;
   if (!params.assertActiveLease && !params.authorizeDelete) {
-    return { wasRejected: () => false };
+    return { wasRejected: () => false, verificationFailed: () => false };
   }
   return {
     beforeImmediateDeleteMutation: async () => {
       params.assertActiveLease?.();
       if (params.authorizeDelete) {
-        rejected = true;
-        if (!(await params.authorizeDelete())) {
+        // FLAG: An unavailable guard is unfinished work, never a confirmed policy rejection.
+        rejected = false;
+        failed = true;
+        const allowed = await params.authorizeDelete();
+        failed = false;
+        if (!allowed) {
+          rejected = true;
           throw new Error('Duplicate delete authorization was revoked');
         }
-        rejected = false;
       }
       params.assertActiveLease?.();
     },
     wasRejected: () => rejected,
+    verificationFailed: () => failed,
   };
 }
 

@@ -39,6 +39,7 @@ import {
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
 import { ProfanityDeleteGuardRejectedError } from './profanity/profanity-delete-guard.service';
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-duplicate-state';
+import { MessageDuplicateGuardRejectedError } from './message-duplicate/message-duplicate-delete-guard.service';
 
 type ServiceInternals = {
   assertAccessAmbiguousLedgerEvidenceUnchanged(
@@ -793,6 +794,63 @@ describe('ModerationDeleteIntentService', () => {
         );
       expect(events).toEqual(available ? ['guard', 'delete'] : []);
       expect(remoteDelete).toHaveBeenCalledTimes(available ? 1 : 0);
+    },
+  );
+
+  it.each(
+    [
+      'message_duplicate_history_changed',
+      'message_duplicate_author_not_member',
+      'message_duplicate_policy_changed',
+    ].flatMap((code) => [false, true].map((mixed) => ({ code, mixed }))),
+  )(
+    'ends a rejected message duplicate ($code, mixed=$mixed) without resurrecting its own reason',
+    async ({ code, mixed }) => {
+      const intent = {
+        ...baseIntent,
+        messageDuplicateOwned: true,
+        nonCommercialOcrDeleteReason: mixed,
+      };
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const txQueryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([{ id: intent.id }])
+        .mockResolvedValueOnce([intent]);
+      const remoteDelete = jest.fn();
+      const { service, queue } = createService(
+        {},
+        {
+          $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+          $executeRaw: executeRaw,
+          $transaction: jest.fn(async (callback: (tx: unknown) => unknown) =>
+            callback({
+              $queryRaw: txQueryRaw,
+              $executeRaw: executeRaw,
+            }),
+          ),
+        },
+        { deleteMessage: remoteDelete },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      );
+      Object.defineProperty(service, 'messageDuplicateDeleteGuard', {
+        value: {
+          assertIntentStillActionable: jest
+            .fn()
+            .mockRejectedValue(new MessageDuplicateGuardRejectedError(code)),
+        },
+      });
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: 'terminal',
+        status: 'FAILED_TERMINAL',
+      });
+      expect(remoteDelete).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+      expect(txQueryRaw.mock.calls[0]?.[0].strings.join('?')).toContain('FOR UPDATE');
+      expect(
+        executeRaw.mock.calls.some(([query]) =>
+          query.strings?.join('?').includes('"delete_dispatch_started_at" = NULL'),
+        ),
+      ).toBe(true);
     },
   );
 

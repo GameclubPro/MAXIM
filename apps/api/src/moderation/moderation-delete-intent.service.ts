@@ -4368,17 +4368,21 @@ export class ModerationDeleteIntentService {
           details.errorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE;
         const nightModeCleanupGuardRejected =
           details.errorCode === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE;
-        const independentReasonExecutable = details.errorCode.startsWith('profanity_')
-          ? (await tx.moderationDeleteIntentReason.findFirst({
-              where: { intentId: intent.id, ruleCode: { not: PROFANITY_DELETE_RULE_CODE } },
-              select: { id: true },
-            })) !== null
-          : channelCleanupGuardRejected
-            ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
-            : nightModeCleanupGuardRejected
-              ? latest.nightModeCloseNoticeCleanupReason === true &&
-                latest.nightModeCloseNoticeCleanupOnly !== true
-              : this.hasExecutableNonCommercialOcrReason(latest);
+        // FLAG: Every message-owned DELETE must pass its binding guard, even with mixed reasons.
+        // Its own non-OCR classification cannot resurrect a definitively rejected binding.
+        const independentReasonExecutable =
+          !details.errorCode.startsWith('message_duplicate_') &&
+          (details.errorCode.startsWith('profanity_')
+            ? (await tx.moderationDeleteIntentReason.findFirst({
+                where: { intentId: intent.id, ruleCode: { not: PROFANITY_DELETE_RULE_CODE } },
+                select: { id: true },
+              })) !== null
+            : channelCleanupGuardRejected
+              ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
+              : nightModeCleanupGuardRejected
+                ? latest.nightModeCloseNoticeCleanupReason === true &&
+                  latest.nightModeCloseNoticeCleanupOnly !== true
+                : this.hasExecutableNonCommercialOcrReason(latest));
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.

@@ -3486,6 +3486,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (deleteAuthorization.wasRejected()) {
         return;
       }
+      if (deleteAuthorization.verificationFailed()) {
+        throw error;
+      }
       assertActiveLease?.();
       this.logger.warn(
         {
@@ -3803,6 +3806,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } catch (error: unknown) {
       if (deleteAuthorization.wasRejected()) {
         return;
+      }
+      if (deleteAuthorization.verificationFailed()) {
+        throw error;
       }
       assertActiveLease?.();
       this.logger.warn(

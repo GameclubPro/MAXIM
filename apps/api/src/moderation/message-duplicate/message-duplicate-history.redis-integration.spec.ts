@@ -71,6 +71,17 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect((await observe('c', 200, 'a', { controlRevision: 2 }))?.hit.count).toBe(1);
   });
 
+  it('preserves the event-time comparison window while a valid delete waits for dispatch', async () => {
+    const now = Date.now();
+    const override = { settings: duplicateSettings({ duplicateWarnWindowSec: 60 }) };
+    await observe('original', now - start - 65_000, 'a', override);
+    const hit = await observe('repeat', now - start - 10_000, 'a', override);
+    expect(hit?.hit.count).toBe(1);
+    expect(await history.stillMatches(chatId, hit!.binding)).toBe(true);
+    await observe('original', now - start - 1_000, 'edited', override);
+    expect(await history.stillMatches(chatId, hit!.binding)).toBe(false);
+  });
+
   it('persists an explicitly global full policy without expiry and supports a permanent stop', async () => {
     keys.add(MESSAGE_DUPLICATE_CONTROL_KEY);
     keys.add(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`);

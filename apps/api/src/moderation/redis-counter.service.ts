@@ -135,9 +135,9 @@ end
 if not member_of_set then return {0, 0} end
 local score = redis.call('ZSCORE', KEYS[2], ARGV[2])
 if not score or tonumber(score) ~= tonumber(ARGV[3]) then return {0, 0} end
-local time = redis.call('TIME')
-local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
-local cutoff = math.max(now, tonumber(ARGV[3])) - tonumber(ARGV[4]) * 1000
+-- FLAG: Revalidate the same event-time window used at detection. Dispatch authority has its
+-- own absolute deadline; queue delay must not move the comparison past a valid predecessor.
+local cutoff = tonumber(ARGV[3]) - tonumber(ARGV[4]) * 1000
 return {1, math.min(tonumber(ARGV[5]), redis.call('ZCOUNT', KEYS[2], '(' .. tostring(cutoff), ARGV[3]))}
 `;
 

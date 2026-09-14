@@ -1,5 +1,8 @@
 import { ConfigService } from '@nestjs/config';
-import { MessageDuplicateDeleteGuardService } from './message-duplicate-delete-guard.service';
+import {
+  MessageDuplicateDeleteGuardService,
+  MessageDuplicateGuardRejectedError,
+} from './message-duplicate-delete-guard.service';
 import {
   buildMessageDuplicateIdentity,
   extractDuplicateMessageContent,
@@ -108,6 +111,50 @@ function setup() {
 }
 
 describe('message duplicate final delete guard', () => {
+  it('ends enforcement for a confirmed departed author without retrying or applying immunity', async () => {
+    const s = setup();
+    s.max.getChatMemberAccess.mockResolvedValue(null);
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
+      name: 'MessageDuplicateGuardRejectedError',
+      code: 'message_duplicate_author_not_member',
+    });
+    expect(s.max.getChatMemberAccess).toHaveBeenCalledWith(
+      '-123',
+      '123',
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['transport', 'malformed', 'mismatched'])(
+    'keeps %s author access failures retryable',
+    async (kind) => {
+      const s = setup();
+      if (kind === 'mismatched')
+        s.max.getChatMemberAccess.mockResolvedValue({
+          userId: '456',
+          isAdmin: false,
+          isOwner: false,
+        });
+      else s.max.getChatMemberAccess.mockRejectedValue(new Error(kind));
+      const failure = await s.service
+        .assertIntentStillActionable(s.params)
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(MessageDuplicateGuardRejectedError);
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still expires a duplicate at its own absolute enforcement deadline', async () => {
+    const s = setup();
+    s.binding.eventTimestampMs = Date.now() - 3_600_001;
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'message_duplicate_policy_changed',
+    );
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+  });
   it('allows a renewed photo URL with verified content, but rejects a replacement photo', async () => {
     const s = setup();
     s.binding.version = 2;

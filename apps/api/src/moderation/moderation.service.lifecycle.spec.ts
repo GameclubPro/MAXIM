@@ -857,6 +857,46 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it.each(['handleDuplicateDecision', 'handleDuplicateHit'])(
+    'retries %s after a transient delete verification failure without sanctions or notices',
+    async (method) => {
+      const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+      const failure = new Error('temporary duplicate verification failure');
+      const authorizeDelete = jest.fn().mockRejectedValueOnce(failure).mockResolvedValue(true);
+      const internals = service as any;
+      internals.ensureModerationDeleteIntent = jest.fn();
+      internals.executeModerationDelete = jest.fn(async (_input, options) => {
+        await options.beforeImmediateDeleteMutation();
+        return { gone: true, deleted: true, eventPersistedByIntent: true };
+      });
+      internals.applySanctionAction = jest.fn().mockResolvedValue(true);
+      internals.sendBotMessageWithOptionalAutoDelete = jest.fn();
+      const hit = { count: 1, windowSec: 60, hash: 'hash', fingerprintType: 'exact' };
+      const params = {
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        text: 'repeat',
+        createdAt: new Date().toISOString(),
+        userLabel: 'User',
+        hit,
+        decision: { ...hit, action: 'WARN', threshold: 1, nextAction: null },
+        actionClaimed: true,
+        authorizeDelete,
+        suppressNonEssentialMessages: true,
+        duplicateBotMessageEnabled: false,
+      };
+      await expect(internals[method](params)).rejects.toBe(failure);
+      expect(internals.applySanctionAction).not.toHaveBeenCalled();
+      expect(internals.sendBotMessageWithOptionalAutoDelete).not.toHaveBeenCalled();
+      await expect(internals[method](params)).resolves.toBeUndefined();
+      expect(authorizeDelete).toHaveBeenCalledTimes(2);
+      expect(internals.applySanctionAction).toHaveBeenCalledTimes(
+        method === 'handleDuplicateDecision' ? 1 : 0,
+      );
+    },
+  );
+
   it('stops duplicate action recovery when its ordering lease is lost after intent persistence', async () => {
     const leaseLost = new Error('photo ordering lease lost');
     const deleteIntents = {

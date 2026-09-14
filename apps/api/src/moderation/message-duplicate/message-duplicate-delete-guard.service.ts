@@ -108,7 +108,11 @@ export class MessageDuplicateDeleteGuardService {
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
     };
     const access = await this.max.getChatMemberAccess(params.chatId, binding.senderId, options);
-    if (!access || (access.userId !== null && access.userId !== binding.senderId))
+    // FLAG: Null is a valid uncached response without this member, not an unavailable MAX API.
+    // Stop without sanctions; transport errors and malformed/mismatched responses still retry.
+    if (!access)
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_author_not_member');
+    if (access.userId !== null && access.userId !== binding.senderId)
       throw new Error('Message duplicate author access unavailable');
     if (access.isAdmin || access.isOwner)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
