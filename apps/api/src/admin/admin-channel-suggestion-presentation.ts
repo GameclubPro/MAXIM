@@ -6,6 +6,7 @@ import {
   escapeHtmlAttribute,
   escapeHtmlPreservingWhitespace,
   renderMaxTextMarkupAsHtml,
+  renderMaxTextMarkupAsMarkdown,
 } from '../common/max-text-markup.util';
 import type { MaxSendMessageOptions } from '../max/max-client.service';
 import { readTrimmedString } from './admin-legacy-utils';
@@ -191,10 +192,28 @@ export function buildPublishedChannelSuggestionMessagePayload(
     };
   }
 
+  return buildPublishedChannelSuggestionMarkdownPayload(
+    authorAttribution,
+    suggestionText,
+    textFormat,
+    textMarkup,
+  );
+}
+
+export function buildPublishedChannelSuggestionMarkdownPayload(
+  authorAttribution: ChannelSuggestionAuthorAttribution,
+  suggestionText: string,
+  textFormat: BroadcastTextFormat,
+  textMarkup: ChannelSuggestionTextMarkup[],
+): { text: string; textFormat: 'markdown' } {
+  const attribution = `От подписчика ${renderChannelSuggestionAuthorLink(authorAttribution, 'markdown')}`;
+  const content =
+    textMarkup.length > 0
+      ? (renderMaxTextMarkupAsMarkdown(suggestionText, textMarkup) ??
+        escapeMarkdownPlainText(suggestionText))
+      : renderSuggestionTextForMarkdown(suggestionText, textFormat);
   return {
-    text: hasMeaningfulSuggestionText
-      ? `${attribution}\n\n${renderSuggestionTextForMarkdown(suggestionText, textFormat)}`
-      : attribution,
+    text: suggestionText.trim() ? `${attribution}\n\n${content}` : attribution,
     textFormat: 'markdown',
   };
 }

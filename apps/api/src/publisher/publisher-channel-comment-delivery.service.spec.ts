@@ -29,6 +29,11 @@ function fixture() {
       revision: 7,
       updatedAt: new Date(Date.now() - 60_000),
     },
+    channelSettings: {
+      postSignatureEnabled: false,
+      postSignaturePresentation: 'BUTTON',
+      updatedAt: new Date(Date.now() - 60_000),
+    },
   };
   const prisma = {
     chat: {
@@ -386,6 +391,103 @@ describe('Publisher channel keyboard webhook and delivery', () => {
     const h = fixture();
     await h.service.process(h.job);
     expect(h.mutate.mock.calls[0]![0]).toHaveLength(2);
+  });
+
+  it('adds saved Reviews even when Publisher dialogs are off and Major owns the first two buttons', async () => {
+    const h = fixture();
+    h.entity.publisherSettings.channelCommentsEnabled = false;
+    h.entity.publisherSettings.channelSuggestionsEnabled = false;
+    h.entity.channelSettings.postSignatureEnabled = true;
+    const helper = new AdminDialogLinkHelper({
+      appBaseUrl: 'https://major-maksimov.ru',
+      maxBotToken: 'major-token',
+      maxBotTokenValidationSecrets: ['major-token'],
+      ownBotUserId: 'major-bot',
+      explicitBotContactId: null,
+    });
+    const comments = helper.buildChannelDialogButton(
+      chatId,
+      'comments',
+      'major-thread',
+      'Комментарии',
+      'major-bot',
+      'MINIAPP',
+    );
+    const contact = helper.buildChannelDialogButton(
+      chatId,
+      'suggest',
+      'major-thread',
+      'Задать вопрос или приобрести',
+      'major-bot',
+      'MINIAPP',
+    );
+    const reviews = { type: 'link', text: 'Отзывы', url: 'https://example.test/reviews' };
+    h.message.body.attachments = [
+      { type: 'inline_keyboard', payload: { buttons: [[comments], [contact]] } },
+    ];
+    h.postSignature.buildPostButton.mockResolvedValue(reviews);
+
+    await h.producer.observeWebhook(h.update);
+    expect(h.queue.enqueueChannelAttach).toHaveBeenCalledTimes(1);
+    await h.service.process(h.job);
+    expect(h.mutate).toHaveBeenCalledWith([[comments], [contact], [reviews]]);
+    expect(h.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(h.prisma.auditLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          payload: expect.objectContaining({
+            includeCommentsButton: false,
+            includeSuggestButton: false,
+            commentsButton: null,
+          }),
+        }),
+      }),
+    );
+
+    h.message.body.attachments = [
+      { type: 'inline_keyboard', payload: { buttons: [[comments], [contact], [reviews]] } },
+    ];
+    h.mutate.mockClear();
+    await h.service.process(h.job);
+    expect(h.mutate).not.toHaveBeenCalled();
+  });
+
+  it.each(['disabled', 'signature', 'newer', 'publik_off'])(
+    'does not admit a CTA-only edit when its setting is %s',
+    async (state) => {
+      const h = fixture();
+      h.entity.publisherSettings.channelCommentsEnabled = false;
+      h.entity.publisherSettings.channelSuggestionsEnabled = false;
+      h.entity.channelSettings.postSignatureEnabled = state !== 'disabled';
+      if (state === 'signature') h.entity.channelSettings.postSignaturePresentation = 'SIGNATURE';
+      if (state === 'newer') h.entity.channelSettings.updatedAt = new Date(Date.now() + 1_000);
+      if (state === 'publik_off') h.entity.publicationPolicy.publikEnabled = false;
+      await h.producer.observeWebhook(h.update);
+      await h.service.process(h.job);
+      expect(h.queue.enqueueChannelAttach).not.toHaveBeenCalled();
+      expect(h.mutate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('admits a saved CTA without a Publisher settings row and fences later revision changes', async () => {
+    const h = fixture();
+    h.prisma.chat.findFirst.mockResolvedValue({ ...h.entity, publisherSettings: null });
+    h.prisma.chat.findUnique.mockResolvedValue({ ...h.entity, publisherSettings: null });
+    h.entity.channelSettings.postSignatureEnabled = true;
+    h.job = { ...h.job, publisherSettingsRevision: 0 };
+    const reviews = { type: 'link', text: 'Отзывы', url: 'https://example.test/reviews' };
+    h.postSignature.buildPostButton.mockResolvedValue(reviews);
+    await h.producer.observeWebhook(h.update);
+    expect(h.queue.enqueueChannelAttach).toHaveBeenCalledWith(
+      expect.objectContaining({ publisherSettingsRevision: 0 }),
+    );
+    await h.service.process(h.job);
+    expect(h.mutate).toHaveBeenCalledWith([[reviews]]);
+
+    h.mutate.mockClear();
+    h.prisma.chat.findUnique.mockResolvedValue(h.entity);
+    await h.service.process(h.job);
+    expect(h.mutate).not.toHaveBeenCalled();
   });
 
   it('reconciles duplicate suggestions without relying on enabled comments', async () => {

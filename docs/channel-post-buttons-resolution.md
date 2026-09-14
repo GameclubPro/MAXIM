@@ -67,6 +67,12 @@ merge comment databases or migrate historical threads.
   supplies its exact bot ID; that fallback does not depend on a Major send route.
   Publication preparation in other API roles keeps its existing lookup behavior;
   those processes must not attempt to use the Publisher bot token.
+- A saved button also admits fresh direct posts when Publisher comments and
+  suggestions are both disabled or their settings row is absent. This covers
+  channels where Major supplies the existing dialog buttons. CTA-only admission
+  requires an enabled BUTTON setting older than the post, exact Publisher binding,
+  and an enabled publication policy; the worker rechecks those settings and the
+  prepared destination before mutation. It does not enable either Publisher dialog.
 
 ## Acceptance Coverage
 
@@ -110,7 +116,7 @@ Determine whether the second action is a suggestion dialog or an ordinary contac
 link, and whether Reviews is the saved channel CTA or a per-publication link.
 
 - If Reviews is the configured CTA, the direct-post fix supplies it automatically
-  when the Publisher channel dialog processing is enabled.
+  through the active Publisher binding, even when its own dialogs are disabled.
 - If contact and Reviews are both independent external links and only one is the
   configured CTA, exact parity needs a separately configured persistent channel
   button set. The current model has one CTA, not an arbitrary default button list.
@@ -121,6 +127,21 @@ link, and whether Reviews is the saved channel CTA or a per-publication link.
   A schema/UI expansion should follow confirmation of the intended destinations.
 - Do not bulk-rewrite historical posts or hide historical discussions without
   explicit message scope and a choice of the discussion to retain.
+
+## Suggestion Attribution
+
+The Publisher review worker previously copied only raw suggestion text and media
+into Publication, bypassing Major's subscriber attribution and native markup
+rendering. New publish/draft claims now freeze Markdown content containing
+`От подписчика` with the stored author profile/full-name mention and preserve
+native links and contact mentions using the original UTF-16 offsets. The trusted
+audit row identifies the author, not the reviewing administrator.
+
+The frozen claim text survives profile changes and retry. Claims created before
+this change retain the old request bytes to avoid changing an already-recorded
+Publication request hash. No published posts are rewritten. These checks cover
+links/mentions, not importing standalone contact-card attachments; a separate
+contact-recognition complaint still needs an example of the failing input.
 
 ## Validation and Release
 

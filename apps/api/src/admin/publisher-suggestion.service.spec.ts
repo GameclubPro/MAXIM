@@ -70,6 +70,7 @@ function createFixture(payloadOverrides: Record<string, unknown> = {}) {
   const row = () => ({
     id: 'suggestion-1',
     chatId: 'channel-1',
+    actorUserId: '42',
     payload,
     createdAt: new Date('2026-08-27T10:00:00.000Z'),
   });
@@ -90,7 +91,9 @@ function createFixture(payloadOverrides: Record<string, unknown> = {}) {
   };
   const policy = { getEntity: jest.fn().mockResolvedValue({ id: 'channel-1' }) };
   const publications = {
-    create: jest.fn().mockResolvedValue({ id: 'publication-1' }),
+    create: jest
+      .fn<Promise<{ id: string }>, [unknown, any, PublicationDispatchProfile]>()
+      .mockResolvedValue({ id: 'publication-1' }),
   };
   const publicationQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
   const adminQueue = { enqueueSync: jest.fn().mockResolvedValue(undefined) };
@@ -276,7 +279,13 @@ describe('PublisherSuggestionService', () => {
         publicationId: 'publication-draft-1',
       }),
     );
-    expect(claimPending).toHaveBeenCalledWith('suggestion-1', 'channel-1', user, 'draft');
+    expect(claimPending).toHaveBeenCalledWith(
+      'suggestion-1',
+      'channel-1',
+      user,
+      'draft',
+      expect.objectContaining({ actorUserId: '42' }),
+    );
     expect(fixture.publicationQueue.enqueue).toHaveBeenCalledWith('suggestion-1', 'claim-1', {
       recycleCompleted: true,
     });
@@ -518,7 +527,13 @@ describe('PublisherSuggestionService', () => {
     const fixture = createFixture();
     fixture.prisma.$queryRaw.mockResolvedValue([]);
 
-    await (fixture.service as any).claimPending('suggestion-1', 'channel-1', user, 'publish');
+    await (fixture.service as any).claimPending(
+      'suggestion-1',
+      'channel-1',
+      user,
+      'publish',
+      fixture.row(),
+    );
 
     const sql = sqlText(fixture.prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(sql).toContain(
@@ -527,6 +542,74 @@ describe('PublisherSuggestionService', () => {
     expect(sql).toContain("payload->>'reviewClaimToken' IS NULL");
     expect(sql).toContain('action = ?::text');
     expect(sql).toContain('RETURNING id');
+  });
+
+  it.each(['publish', 'draft'] as const)(
+    'freezes the subscriber link and native contact markup for a new %s claim',
+    async (action) => {
+      const fixture = createFixture({
+        actorUserId: '999',
+        authorDisplayName: 'Анна [QA] & Редактор',
+        text: 'Связь: Иван',
+        textFormat: 'plain',
+        textMarkup: [{ type: 'user_mention', from: 7, length: 4, user_id: 123 }],
+      });
+      let claimPatch: Record<string, unknown> = {};
+      fixture.prisma.$queryRaw.mockImplementation(async (query: { values: unknown[] }) => {
+        claimPatch = JSON.parse(
+          query.values.find(
+            (value) => typeof value === 'string' && value.startsWith('{"reviewStatus"'),
+          ) as string,
+        );
+        fixture.setPayload({ ...fixture.row().payload, ...claimPatch });
+        return [fixture.row()];
+      });
+      jest.spyOn(fixture.service as any, 'finalizeClaim').mockImplementation(async () => {
+        fixture.setPayload({
+          ...fixture.row().payload,
+          reviewStatus: action === 'draft' ? 'drafted' : 'published',
+          publicationId: 'publication-1',
+        });
+        return fixture.row();
+      });
+
+      await fixture.service.review('channel-1', 'suggestion-1', user, { action });
+      expect(claimPatch.reviewPublicationText).toBe(
+        'От подписчика [Анна \\[QA\\] & Редактор](max://user/42)\n\nСвязь: [Иван](max://user/123)',
+      );
+      if (action === 'publish') {
+        await fixture.service.processPublicationJob(
+          'suggestion-1',
+          claimPatch.reviewClaimToken as string,
+        );
+      }
+      const firstRequest = fixture.publications.create.mock.calls[0]![1];
+      expect(firstRequest.content).toMatchObject({
+        text: claimPatch.reviewPublicationText,
+        textFormat: 'markdown',
+      });
+      fixture.setPayload({
+        ...fixture.row().payload,
+        reviewStatus: 'publishing',
+        authorDisplayName: 'Другое имя',
+        text: 'Изменено',
+      });
+      await fixture.service.processPublicationJob(
+        'suggestion-1',
+        claimPatch.reviewClaimToken as string,
+      );
+      expect(fixture.publications.create.mock.calls[1]![1]).toEqual(firstRequest);
+    },
+  );
+
+  it('keeps pre-upgrade claims byte-compatible instead of changing an existing request hash', async () => {
+    const fixture = createFixture(createClaimedPayload());
+    jest.spyOn(fixture.service as any, 'finalizeClaim').mockResolvedValue(fixture.row() as never);
+    await fixture.service.processPublicationJob('suggestion-1', 'claim-1');
+    expect(fixture.publications.create.mock.calls[0]![1].content).toMatchObject({
+      text: createClaimedPayload().text,
+      textFormat: 'markdown',
+    });
   });
 
   it('publishes in the worker with the stored actor, stable request id and markdown format', async () => {

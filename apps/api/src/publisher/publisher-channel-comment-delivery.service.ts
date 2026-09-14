@@ -17,7 +17,11 @@ import {
 } from '../max/max-client.service';
 import { hasConfirmedEditMessageAccess } from '../max/max-delete-message-access.util';
 import { readStrictEditableAttachments } from '../max/max-editable-message-preservation';
-import { ChatEntityType, type Prisma } from '../prisma/prisma-client';
+import {
+  ChannelPostSignaturePresentation,
+  ChatEntityType,
+  type Prisma,
+} from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import type { PublisherChannelCommentAttachJob } from './publisher-chat-comment.queue';
@@ -261,19 +265,30 @@ export class PublisherChannelCommentDeliveryService {
       select: {
         entityType: true,
         publicationPolicy: { select: { publikEnabled: true, revision: true } },
+        channelSettings: {
+          select: { postSignatureEnabled: true, postSignaturePresentation: true, updatedAt: true },
+        },
         publisherSettings: {
           select: { channelCommentsEnabled: true, channelSuggestionsEnabled: true, revision: true },
         },
       },
     });
     const settings = entity?.publisherSettings;
+    const hasPostButton =
+      entity?.channelSettings?.postSignatureEnabled === true &&
+      entity.channelSettings.postSignaturePresentation ===
+        ChannelPostSignaturePresentation.BUTTON &&
+      Date.parse(job.createdAt) >= entity.channelSettings.updatedAt.getTime();
     return entity?.entityType === ChatEntityType.CHANNEL &&
-      settings &&
-      (settings.channelCommentsEnabled || settings.channelSuggestionsEnabled) &&
-      settings.revision === job.publisherSettingsRevision &&
+      (settings?.channelCommentsEnabled || settings?.channelSuggestionsEnabled || hasPostButton) &&
+      (settings?.revision ?? 0) === job.publisherSettingsRevision &&
       entity.publicationPolicy?.publikEnabled !== false &&
       (entity.publicationPolicy?.revision ?? 0) === job.publicationPolicyRevision
-      ? settings
+      ? (settings ?? {
+          channelCommentsEnabled: false,
+          channelSuggestionsEnabled: false,
+          revision: 0,
+        })
       : null;
   }
 }

@@ -2,6 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ChannelPostSignaturePresentation,
   ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
@@ -252,6 +253,9 @@ export class PublisherChatCommentProducerService {
       },
       select: {
         publicationPolicy: { select: { publikEnabled: true, revision: true, updatedAt: true } },
+        channelSettings: {
+          select: { postSignatureEnabled: true, postSignaturePresentation: true, updatedAt: true },
+        },
         publisherSettings: {
           select: {
             channelCommentsEnabled: true,
@@ -263,11 +267,17 @@ export class PublisherChatCommentProducerService {
       },
     });
     const settings = entity?.publisherSettings;
+    const hasPostButton =
+      entity?.channelSettings?.postSignatureEnabled === true &&
+      entity.channelSettings.postSignaturePresentation ===
+        ChannelPostSignaturePresentation.BUTTON &&
+      createdAt >= entity.channelSettings.updatedAt;
     if (
-      !settings ||
       entity?.publicationPolicy?.publikEnabled === false ||
-      (!settings.channelCommentsEnabled && !settings.channelSuggestionsEnabled) ||
-      createdAt < settings.updatedAt ||
+      (!settings?.channelCommentsEnabled &&
+        !settings?.channelSuggestionsEnabled &&
+        !hasPostButton) ||
+      (settings && createdAt < settings.updatedAt) ||
       (entity?.publicationPolicy && createdAt < entity.publicationPolicy.updatedAt)
     )
       return;
@@ -275,7 +285,7 @@ export class PublisherChatCommentProducerService {
       await this.queue.enqueueChannelAttach({
         chatId,
         messageId,
-        publisherSettingsRevision: settings.revision,
+        publisherSettingsRevision: settings?.revision ?? 0,
         publicationPolicyRevision: entity?.publicationPolicy?.revision ?? 0,
         createdAt,
       });

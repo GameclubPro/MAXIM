@@ -34,6 +34,7 @@ import type { ChannelSuggestionImageAsset } from './admin.service.support';
 import { PublicationService } from './publication.service';
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
+import { buildPublisherSuggestionPublicationText } from './publisher-suggestion-content';
 import {
   buildPublisherSuggestionPublicationRequestId,
   isPublisherSuggestionReviewProtocol,
@@ -53,6 +54,7 @@ type PublisherSuggestionRow = {
 
 type PublisherSuggestionStoredRow = PublisherSuggestionRow & {
   chatId: string;
+  actorUserId: string;
 };
 
 type LegacyPublisherSuggestion = Omit<
@@ -234,7 +236,7 @@ export class PublisherSuggestionService {
     if (!text && this.readImageCount(payload) === 0) {
       throw new BadRequestException('В предложке нет текста или фото.');
     }
-    const claimed = await this.claimPending(row.id, entityId, user, reviewAction);
+    const claimed = await this.claimPending(row.id, entityId, user, reviewAction, row);
     if (!claimed) {
       const latest = await this.requireRow(row.id, entityId);
       const latestPayload = this.readPayload(latest.payload);
@@ -283,7 +285,7 @@ export class PublisherSuggestionService {
         id: suggestionId.trim(),
         action: PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
       },
-      select: { id: true, chatId: true, payload: true, createdAt: true },
+      select: { id: true, chatId: true, actorUserId: true, payload: true, createdAt: true },
     });
     if (!row) return false;
 
@@ -300,7 +302,9 @@ export class PublisherSuggestionService {
         repository: this.prisma.channelSuggestionImageAsset,
         logger: this.logger,
       });
-      const text = this.readString(payload.text) ?? '';
+      // FLAG: Freeze new claim text before dispatch; legacy claims keep their original request hash.
+      const publicationText = this.readString(payload.reviewPublicationText);
+      const text = publicationText ?? this.readString(payload.text) ?? '';
       if (!text && images.length === 0) {
         await this.releaseTerminalClaim(row, claim, 'В предложке нет текста или фото.');
         return true;
@@ -312,7 +316,10 @@ export class PublisherSuggestionService {
           title: 'Предложка',
           content: {
             text,
-            textFormat: this.readString(payload.textFormat) === 'markdown' ? 'markdown' : 'plain',
+            textFormat:
+              publicationText || this.readString(payload.textFormat) === 'markdown'
+                ? 'markdown'
+                : 'plain',
             buttons: [],
             media: this.buildPublicationImageMedia(images),
           },
@@ -396,7 +403,7 @@ export class PublisherSuggestionService {
         AND payload->>'reviewedByUserId' = ${claimedByUserId}::text
         AND payload->>'reviewedAt' = ${claimedAt}::text
         AND payload->>'reviewedAt' <= ${staleBefore}::text
-      RETURNING id, chat_id AS "chatId", payload, created_at AS "createdAt"
+      RETURNING id, chat_id AS "chatId", actor_user_id AS "actorUserId", payload, created_at AS "createdAt"
     `);
     return rows[0] ?? null;
   }
@@ -406,10 +413,15 @@ export class PublisherSuggestionService {
     entityId: string,
     user: AuthUser,
     action: PublisherSuggestionReviewClaim['action'],
+    source: PublisherSuggestionStoredRow,
   ): Promise<PublisherSuggestionStoredRow | null> {
     const claimToken = randomUUID();
     const claimPatch = {
       reviewStatus: 'publishing',
+      reviewPublicationText: buildPublisherSuggestionPublicationText(
+        source.actorUserId,
+        this.readPayload(source.payload),
+      ),
       reviewAction: action,
       reviewDispatchProfile: PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
       reviewPublicationProtocol: PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
@@ -437,7 +449,7 @@ export class PublisherSuggestionService {
         AND payload->>'type' = 'suggest'
         AND COALESCE(NULLIF(LOWER(payload->>'reviewStatus'), ''), 'pending') = 'pending'
         AND payload->>'reviewClaimToken' IS NULL
-      RETURNING id, chat_id AS "chatId", payload, created_at AS "createdAt"
+      RETURNING id, chat_id AS "chatId", actor_user_id AS "actorUserId", payload, created_at AS "createdAt"
     `);
     return rows[0] ?? null;
   }
@@ -476,7 +488,7 @@ export class PublisherSuggestionService {
         AND payload->>'type' = 'suggest'
         AND COALESCE(NULLIF(LOWER(payload->>'reviewStatus'), ''), 'pending') = 'pending'
         AND payload->>'reviewClaimToken' IS NULL
-      RETURNING id, chat_id AS "chatId", payload, created_at AS "createdAt"
+      RETURNING id, chat_id AS "chatId", actor_user_id AS "actorUserId", payload, created_at AS "createdAt"
     `);
     return rows[0] ?? null;
   }
@@ -518,7 +530,7 @@ export class PublisherSuggestionService {
         AND payload->>'reviewClaimToken' = ${claim.claimToken}::text
         AND payload->>'reviewAction' = ${claim.action}::text
         AND payload->>'reviewClaimedByUserId' = ${claim.user.userId}::text
-      RETURNING id, chat_id AS "chatId", payload, created_at AS "createdAt"
+      RETURNING id, chat_id AS "chatId", actor_user_id AS "actorUserId", payload, created_at AS "createdAt"
     `);
     return rows[0] ?? null;
   }
@@ -564,6 +576,7 @@ export class PublisherSuggestionService {
         - 'reviewDispatchProfile'
         - 'reviewPublicationProtocol'
         - 'reviewPublicationRequestId'
+        - 'reviewPublicationText'
         - 'reviewClaimToken'
         - 'reviewClaimedAt'
         - 'reviewClaimedByUserId'
@@ -708,14 +721,14 @@ export class PublisherSuggestionService {
   private requireRow(id: string, chatId: string): Promise<PublisherSuggestionStoredRow> {
     return this.prisma.auditLog.findFirstOrThrow({
       where: { id, chatId, action: PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST },
-      select: { id: true, chatId: true, payload: true, createdAt: true },
+      select: { id: true, chatId: true, actorUserId: true, payload: true, createdAt: true },
     });
   }
 
   private findRow(id: string, chatId: string): Promise<PublisherSuggestionStoredRow | null> {
     return this.prisma.auditLog.findFirst({
       where: { id, chatId, action: PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST },
-      select: { id: true, chatId: true, payload: true, createdAt: true },
+      select: { id: true, chatId: true, actorUserId: true, payload: true, createdAt: true },
     });
   }
 
