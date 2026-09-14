@@ -1,6 +1,7 @@
 // FLAG: Keep contract modules declarative: sideEffects=false permits dropping unused modules.
 export * from './core.js';
 export * from './duplicate-settings.js';
+export * from './duplicate-diagnostics.js';
 export * from './button-url.js';
 export * from './chat-participants.js';
 export type { ChatSanctionItem, ChatSanctionsPage, ChatSanctionsQuery } from './chat-sanctions.js';

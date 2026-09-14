@@ -30,6 +30,16 @@ export class AdminSettingsController {
     return this.settingsService.getChatSettingsScreen(chatId, user);
   }
 
+  @Get('chats/:chatId/duplicate-diagnostics')
+  getDuplicateDiagnostics(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.settingsService.getDuplicateDiagnostics(chatId, user);
+  }
+
+  @Post('chats/:chatId/duplicate-diagnostics/recheck')
+  recheckDuplicateDiagnostics(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.settingsService.getDuplicateDiagnostics(chatId, user, true);
+  }
+
   @Post('chats/:chatId/required-subscription/channels/resolve')
   resolveRequiredSubscriptionChannel(
     @Param('chatId') chatId: string,

@@ -10,10 +10,10 @@ export function buildDuplicateTextActionPreview(
   settings: DuplicateFlowStageSettings & Pick<ChatSettings, 'duplicateMuteDurationHours'>,
   allowedCount: number,
 ): Array<{ label: string; action: string }> {
-  const rows = [{ label: 'Первое сообщение', action: 'Остаётся в чате' }];
+  const rows = [{ label: 'Сообщение №1', action: 'Остаётся в чате' }];
   if (allowedCount > 0) {
     rows.push({
-      label: allowedCount === 1 ? 'Дубль №1' : `Дубли №1–${allowedCount}`,
+      label: allowedCount === 1 ? 'Сообщение №2' : `Сообщения №2–${allowedCount + 1}`,
       action: allowedCount === 1 ? 'Остаётся в чате' : 'Остаются в чате',
     });
   }
@@ -27,7 +27,7 @@ export function buildDuplicateTextActionPreview(
   if (actions.length === 0) actions.push('Удаление');
   actions.forEach((action, index) => {
     const last = index === actions.length - 1;
-    rows.push({ label: `Дубль №${allowedCount + index + 1}${last ? ' и далее' : ''}`, action });
+    rows.push({ label: `Сообщение №${allowedCount + index + 2}${last ? ' и далее' : ''}`, action });
   });
   return rows;
 }
@@ -49,10 +49,13 @@ export default function SettingsDuplicateActionPreview({
   return (
     <section className="duplicate-action-preview" aria-label="Итог действий антидубля">
       <div className="duplicate-stage__top">
-        <h3 className="duplicate-stage__title">
-          Действия для {photoPolicy.comparison === 'MESSAGE' ? 'сообщений' : 'текста'} за{' '}
-          {windowHours} ч
-        </h3>
+        <div>
+          <h3 className="duplicate-stage__title">По настройкам</h3>
+          <span className="field__hint">
+            Одинаковые {photoPolicy.comparison === 'MESSAGE' ? 'сообщения' : 'тексты'} за{' '}
+            {windowHours} ч
+          </span>
+        </div>
         <SettingsHintAnchor
           hintKey="duplicateActionSummary"
           openHintKey={openHintKey}

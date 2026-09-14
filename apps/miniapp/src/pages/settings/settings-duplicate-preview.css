@@ -1,7 +1,113 @@
 @layer pages {
+  .duplicate-diagnostics {
+    min-width: 0;
+    padding-block: 12px;
+    border-block: 1px solid var(--glass-border);
+    scroll-margin-block-start: 80px;
+  }
+
+  .duplicate-diagnostics__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .duplicate-diagnostics__heading > div {
+    min-width: 0;
+  }
+
+  .duplicate-diagnostics__refresh {
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    padding: 7px;
+  }
+
+  .duplicate-diagnostics__refresh svg,
+  .duplicate-count-stepper__button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .duplicate-diagnostics__status {
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin: 6px 0;
+  }
+
+  .duplicate-diagnostics__status[data-state='CONFIRMED'] {
+    color: var(--text-primary);
+  }
+  .duplicate-diagnostics__status[data-state='MISSING'] {
+    color: var(--danger);
+  }
+
+  .duplicate-diagnostics__facts {
+    display: grid;
+    gap: 8px;
+    margin: 10px 0;
+    font-size: 0.76rem;
+    line-height: 1.45;
+    letter-spacing: 0;
+  }
+
+  .duplicate-diagnostics__facts > div,
+  .duplicate-diagnostics__attempts > li {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr);
+    gap: 10px;
+  }
+
+  .duplicate-diagnostics__facts dt,
+  .duplicate-diagnostics__attempts time {
+    color: var(--text-muted);
+  }
+  .duplicate-diagnostics__facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .duplicate-diagnostics__history {
+    margin-top: 4px;
+    font-size: 0.78rem;
+  }
+  .duplicate-diagnostics__history summary {
+    cursor: pointer;
+    padding-block: 8px;
+    font-weight: 600;
+  }
+  .duplicate-diagnostics__history-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--text-muted);
+  }
+  .duplicate-diagnostics__attempts {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+  }
+  .duplicate-diagnostics__attempts > li {
+    padding-block: 10px;
+    border-top: 1px solid var(--glass-border);
+  }
+  .duplicate-diagnostics__attempts > li > div {
+    display: grid;
+    gap: 4px;
+    overflow-wrap: anywhere;
+  }
+  .duplicate-scope {
+    margin-block: 6px;
+  }
+  .settings-drilldown__panel--duplicates .duplicate-stage__field-label {
+    line-height: 1.4;
+    letter-spacing: 0;
+  }
+
   .duplicate-action-preview {
     min-width: 0;
     padding-block: 12px;
+    scroll-margin-block-start: 80px;
   }
 
   .duplicate-action-preview__rows {

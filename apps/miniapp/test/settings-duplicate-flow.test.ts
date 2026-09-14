@@ -125,12 +125,12 @@ test('duplicate preview separates the original, allowed repeats and enabled sanc
       1,
     ),
     [
-      { label: 'Первое сообщение', action: 'Остаётся в чате' },
-      { label: 'Дубль №1', action: 'Остаётся в чате' },
-      { label: 'Дубль №2', action: 'Удаление и объяснение' },
-      { label: 'Дубль №3', action: 'Удаление и предупреждение' },
-      { label: 'Дубль №4', action: 'Удаление и ограничение на 6 ч' },
-      { label: 'Дубль №5 и далее', action: 'Удаление и блокировка навсегда' },
+      { label: 'Сообщение №1', action: 'Остаётся в чате' },
+      { label: 'Сообщение №2', action: 'Остаётся в чате' },
+      { label: 'Сообщение №3', action: 'Удаление и объяснение' },
+      { label: 'Сообщение №4', action: 'Удаление и предупреждение' },
+      { label: 'Сообщение №5', action: 'Удаление и ограничение на 6 ч' },
+      { label: 'Сообщение №6 и далее', action: 'Удаление и блокировка навсегда' },
     ],
   );
 });
@@ -148,8 +148,8 @@ test('delete-only preview starts on the first repeat and keeps later repeats act
       0,
     ),
     [
-      { label: 'Первое сообщение', action: 'Остаётся в чате' },
-      { label: 'Дубль №1 и далее', action: 'Удаление' },
+      { label: 'Сообщение №1', action: 'Остаётся в чате' },
+      { label: 'Сообщение №2 и далее', action: 'Удаление' },
     ],
   );
 });
@@ -185,7 +185,8 @@ test('preview sanctions follow the shared thresholds for every stage combination
     ] as const) {
       const row = preview.find((item) => item.action === action);
       assert.equal(Boolean(row), enabled);
-      if (row) assert.match(row.label, new RegExp(`^Дубль №${threshold}(?: и далее)?$`, 'u'));
+      if (row)
+        assert.match(row.label, new RegExp(`^Сообщение №${threshold + 1}(?: и далее)?$`, 'u'));
     }
   }
 });

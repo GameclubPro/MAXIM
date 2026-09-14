@@ -64,6 +64,27 @@ CAS revision. New revisions/settings use separate fingerprint membership sets, s
 pre-activation history cannot retrospectively escalate sanctions. Status output omits chat IDs
 and message contents. Do not change unrelated chat or photo settings.
 
+## Administrator Diagnostics
+
+The mini app displays the first deleted message number, not a zero-based allowance:
+stored allowance 0 is message 2, allowance 1 is message 3. The preview uses the same numbering
+for every configured reaction; existing saved thresholds are not migrated or reset.
+
+Authenticated chat administrators can read `GET /v1/chats/:chatId/duplicate-diagnostics` and
+request `POST /v1/chats/:chatId/duplicate-diagnostics/recheck`. GET uses existing capability
+snapshots; POST refreshes this chat through the shared multi-bot planner and its backoff.
+Neither endpoint sends messages, deletes content or changes chat policy. A stale/backoff-retained
+snapshot cannot confirm a requested live recheck. Saved enablement, runtime mode and permission
+proof are separate fields; message OFF/shadow still has the legacy text path and is not labelled
+as globally disabled enforcement.
+
+History samples at most 20 recent intents per status from the existing chat/status/created-time
+index, inspecting at most 9 reason rows per candidate. It returns at most five duplicate entries
+created in the last 24 hours, without text, user/bot identities or free-form errors. Saturated
+samples are explicitly incomplete; a query timeout is unavailable history, not zero attempts.
+Only a persisted remote deletion receipt is labelled deleted; verified absence remains a separate
+outcome. The read query has a two-second statement deadline and a three-second transaction limit.
+
 ## Stop And Rollback
 
 Use `off --expected-revision <current>`, preview then apply. Final dispatch rechecks control,

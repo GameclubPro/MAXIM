@@ -9,6 +9,14 @@ const user = {
 };
 
 describe('AdminSettingsController capability recheck query', () => {
+  it('separates cached diagnostics from an explicit permission recheck', async () => {
+    const settingsService = { getDuplicateDiagnostics: jest.fn() };
+    const controller = new AdminSettingsController(settingsService as never);
+    await controller.getDuplicateDiagnostics('chat', user);
+    expect(settingsService.getDuplicateDiagnostics).toHaveBeenLastCalledWith('chat', user);
+    await controller.recheckDuplicateDiagnostics('chat', user);
+    expect(settingsService.getDuplicateDiagnostics).toHaveBeenLastCalledWith('chat', user, true);
+  });
   it('passes the exact recheck flag into a chat settings mutation', async () => {
     const settingsService = { updateSettings: jest.fn().mockResolvedValue({}) };
     const controller = new AdminSettingsController(settingsService as never);

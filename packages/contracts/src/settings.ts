@@ -137,3 +137,4 @@ export {
   type NavigationAllowlistPolicyKey,
   type ParsedStoredAllowlistEntry,
 } from './settings-utils.js';
+export * from './duplicate-diagnostics.js';

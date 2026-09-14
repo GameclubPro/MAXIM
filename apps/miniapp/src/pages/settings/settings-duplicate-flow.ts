@@ -90,13 +90,5 @@ export function normalizeDuplicateFlowSettings(settings: ChatSettings): ChatSett
 }
 
 export function formatDuplicateAllowanceLabel(count: number): string {
-  if (count === 0) {
-    return 'с первого дубля';
-  }
-
-  if (count === 1) {
-    return 'после 1 дубля';
-  }
-
-  return `после ${count} дублей`;
+  return `удаление с сообщения №${count + 2}`;
 }

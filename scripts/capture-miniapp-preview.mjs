@@ -1986,9 +1986,47 @@ const scenarioBehaviors = [
       await panel.getByLabel('Включить ограничение сообщений за повторы', { exact: true }).check();
       await panel.getByLabel('Включить блокировку за повторы', { exact: true }).check();
       const preview = panel.locator('.duplicate-action-preview');
-      await preview.getByText('Первое сообщение', { exact: true }).waitFor();
+      await preview.getByText('Сообщение №1', { exact: true }).waitFor();
       await preview.getByText('Удаление и блокировка навсегда', { exact: true }).waitFor();
-      await preview.scrollIntoViewIfNeeded();
+      await preview.evaluate((element) => element.scrollIntoView({ block: 'start' }));
+    },
+  },
+  {
+    name: 'chat-settings-duplicates-threshold',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      const earlier = panel.getByRole('button', { name: 'Начинать удаление раньше', exact: true });
+      for (let index = 0; index < 20 && (await earlier.isEnabled()); index += 1)
+        await earlier.click();
+      if ((await panel.locator('.duplicate-count-stepper__value').innerText()).trim() !== '2-го')
+        throw new Error('Strict duplicate threshold must display the second message');
+      const save = panel.getByRole('button', { name: 'Сохранить', exact: true });
+      await save.click();
+      await save.waitFor({ state: 'hidden' });
+      if (await panel.isVisible())
+        await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      await panel.waitFor({ state: 'hidden' });
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      if ((await panel.locator('.duplicate-count-stepper__value').innerText()).trim() !== '2-го')
+        throw new Error('Saved duplicate threshold changed after reopening');
+      await panel
+        .locator('.duplicate-stage')
+        .first()
+        .evaluate((element) => element.scrollIntoView({ block: 'start' }));
+    },
+  },
+  {
+    name: 'chat-settings-duplicate-diagnostics',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await panel.getByText('Права удаления подтверждены', { exact: true }).waitFor();
+      await panel.getByText('Проверка и история', { exact: true }).click();
+      await panel.getByText('Ожидает повторной попытки', { exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
+      await panel.getByText('Права удаления подтверждены', { exact: true }).waitFor();
+      await panel.locator('.duplicate-diagnostics').scrollIntoViewIfNeeded();
     },
   },
   {

@@ -433,6 +433,34 @@ export async function handleChatRequest(
     return cloneJson(buildChatSettingsScreen(state, chatId));
   }
 
+  if (
+    tail[0] === 'duplicate-diagnostics' &&
+    (method === 'GET' || (tail[1] === 'recheck' && method === 'POST'))
+  ) {
+    const { duplicateDiagnosticsResponseSchema } = await import('@maxim/contracts/settings');
+    const now = Date.now();
+    return duplicateDiagnosticsResponseSchema.parse({
+      generatedAt: new Date(now).toISOString(),
+      enabled: buildChatSettingsScreen(state, chatId).settings.antiDuplicateEnabled,
+      mode: 'FULL',
+      capability: { state: 'CONFIRMED', checkedAt: new Date(now).toISOString() },
+      history: {
+        available: true,
+        since: new Date(now - 86400000).toISOString(),
+        sampledIntents: 12,
+        limited: false,
+        attempts: ['DELETED', 'RETRYING', 'CANCELLED'].map((outcome, index) => ({
+          id: `preview-duplicate-${index}`,
+          createdAt: new Date(now - (index + 1) * 60000).toISOString(),
+          updatedAt: new Date(now - index * 60000).toISOString(),
+          outcome,
+          reason: outcome === 'CANCELLED' ? 'IMMUNITY' : null,
+          nextAttemptAt: outcome === 'RETRYING' ? new Date(now + 60000).toISOString() : null,
+        })),
+      },
+    });
+  }
+
   if (tail[0] === 'bots' && tail[1] === 'plan' && method === 'GET') {
     return cloneJson(buildPreviewBotExecutionPlan(state, 'chat', chatId));
   }

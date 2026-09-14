@@ -29,6 +29,7 @@ import { AdminPollController } from './admin-poll.controller';
 import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
+import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
 import { AdvertisingPlacementController } from './advertising-placement.controller';
 import { AdvertisingPlacementService } from './advertising-placement.service';
@@ -162,6 +163,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminManualMessageCleanupService,
     AdminDialogLinkService,
     AdminSettingsBotCapabilityService,
+    AdminDuplicateDiagnosticsService,
     AdminSettingsService,
     ChannelDialogService,
     ChannelPostSignatureService,

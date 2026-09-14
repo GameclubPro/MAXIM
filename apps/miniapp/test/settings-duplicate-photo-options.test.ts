@@ -156,7 +156,7 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.match(messageControlsSource, /mode === 'DELETE_ONLY'/u);
   assert.match(messageControlsSource, /mode === 'FULL'/u);
-  assert.match(messageControlsSource, /Активно: действия по настройкам чата/u);
+  assert.match(messageControlsSource, /Полная проверка: действия по настройкам чата/u);
   assert.match(messageControlsSource, /disabled=\{mode === 'OFF'\}/u);
   assert.match(duplicatesSectionSource, /value=\{draft\.duplicateCompareMode\}/u);
   assert.match(duplicatesSectionSource, /<LazySettingsDuplicateActionPreview/u);
@@ -176,7 +176,7 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   );
   assert.match(duplicatesSectionSource, /aria-invalid=\{Boolean\(fieldErrors\.duplicateWarn/u);
   assert.match(settingsSectionToggleSource, /Антидубль: '.*фото'/u);
-  assert.match(settingsPageSource, /действий: \$\{duplicateStagesEnabledCount\} из 4/u);
+  assert.match(settingsPageSource, /formatDuplicateSettingsSummary\(/u);
   assert.match(
     settingsPageSource,
     /refetchInterval: expandedSections\.duplicates \? 60_000 : false/u,
@@ -274,7 +274,7 @@ test('duplicate action summary follows enabled stages and effective photo mode',
 
   assert.equal(
     formatDuplicateActionSummary(settings, 1, deleteOnlyPolicy),
-    'Текст удаляется с дубля №2. Бот объясняет первое удаление. Дальнейшие действия: ограничение на 24 ч с №3; блокировка с №4. Точные дубли фото удаляются с дубля №2. Объяснение удаления включено. Предупреждения и ограничения для фото выключены.',
+    'Текст удаляется с сообщения №3. Бот объясняет первое удаление. Дальнейшие действия: ограничение на 24 ч с №4; блокировка с №5. Точные дубли фото удаляются с сообщения №3. Объяснение удаления включено. Предупреждения и ограничения для фото выключены.',
   );
   assert.match(
     formatDuplicateActionSummary(settings, 0, mutePolicy),
@@ -283,7 +283,7 @@ test('duplicate action summary follows enabled stages and effective photo mode',
   assert.doesNotMatch(formatDuplicateActionSummary(settings, 0, mutePolicy), /для фото:.*блок/u);
   assert.match(
     formatDuplicateActionSummary(settings, 0, { ...deleteOnlyPolicy, actionCeiling: 'BAN' }),
-    /Точные дубли фото удаляются с дубля №1\..*Предупреждения и ограничения для фото выключены\./u,
+    /Точные дубли фото удаляются с сообщения №2\..*Предупреждения и ограничения для фото выключены\./u,
   );
 });
 
@@ -305,7 +305,7 @@ test('duplicate action summary keeps deletion visible when optional stages are o
         allowedMatchKinds: [],
       },
     ),
-    'Текст удаляется с дубля №1. Предупреждения и ограничения выключены.',
+    'Текст удаляется с сообщения №2. Предупреждения и ограничения выключены.',
   );
 });
 

@@ -215,9 +215,8 @@ import {
 } from '../features/publications/legacy-autoposts';
 import { SettingsCommercialFilterSection } from './settings/settings-commercial-filter-section';
 import {
-  formatDuplicatePhotoCoverageLabel,
+  formatDuplicateSettingsSummary,
   resolveDuplicatePhotoPolicyForDraft,
-  resolveDuplicatePhotoPresentationPolicy,
 } from './settings/settings-duplicate-photo-status';
 import { SettingsDuplicatesSection } from './settings/settings-duplicates-section';
 import { SettingsExtraSection } from './settings/settings-extra-section';
@@ -241,7 +240,6 @@ import {
   shouldHydrateSettingsDraftFromServer,
 } from './settings-page-state';
 import {
-  DUPLICATE_DETECTION_LABELS,
   PROFANITY_SENSITIVITY_HINTS,
   PROFANITY_SENSITIVITY_LABELS,
   PROFANITY_SENSITIVITY_OPTIONS,
@@ -321,7 +319,6 @@ import {
   resolveDuplicateAllowedCountMax,
   buildDuplicateFlowSettings,
   normalizeDuplicateFlowSettings,
-  formatDuplicateAllowanceLabel,
   LINK_POLICY_OPTIONS,
   RUSSIAN_TIMEZONE_OPTIONS,
   resolveBotSpeechPreviewContext,
@@ -4452,32 +4449,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicateSharedWindowHours = draft
     ? secondsToHours(resolveDuplicateSharedWindowSec(draft))
     : 12;
-  const duplicateStagesEnabledCount = [
-    draft?.duplicateBotMessageEnabled,
-    draft?.duplicateWarnEnabled,
-    draft?.duplicateMuteEnabled,
-    draft?.duplicateBanEnabled,
-  ].filter(Boolean).length;
-  const duplicateDetectionLabel = draft
-    ? DUPLICATE_DETECTION_LABELS[draft.duplicateDetectionPreset]
-    : DUPLICATE_DETECTION_LABELS.STANDARD;
-  const duplicateCoverageLabel = formatDuplicatePhotoCoverageLabel(
-    duplicateDetectionLabel,
-    Boolean(draft?.duplicatePhotoEnabled),
-    resolveDuplicatePhotoPresentationPolicy(
-      duplicatePhotoModerationPolicy,
-      settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF',
-      draft?.duplicateCompareMode ?? 'MESSAGE',
-      Boolean(draft?.duplicatePhotoEnabled),
-    ),
-    draft ?? undefined,
+  const duplicatesHeaderSummary = formatDuplicateSettingsSummary(
+    draft,
+    duplicatePhotoModerationPolicy,
+    settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF',
+    duplicateSharedWindowHours,
   );
-  const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
-    ? `${duplicateCoverageLabel} • ${formatDuplicateAllowanceLabel(
-        duplicateAllowedCount,
-      )} • ${duplicateSharedWindowHours}ч • действий: ${duplicateStagesEnabledCount} из 4`
-    : 'Выключено';
-  const duplicatesCardStatus = draft?.antiDuplicateEnabled ? 'Вкл' : 'Выкл';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -6947,6 +6924,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <SettingsDuplicatesSection
               adjustDuplicateAllowedCount={adjustDuplicateAllowedCount}
               api={api}
+              chatId={chatId!}
+              userId={meQuery.data?.userId ?? null}
               applyDuplicateDetectionPreset={applyDuplicateDetectionPreset}
               applyDuplicateFlowConfig={applyDuplicateFlowConfig}
               botSpeechEditorProps={botSpeechEditorProps!}
@@ -6962,7 +6941,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               }
               duplicateSharedWindowHours={duplicateSharedWindowHours}
               duplicateWindowInputValue={duplicateWindowInputValue}
-              duplicatesCardStatus={duplicatesCardStatus}
               duplicatesHeaderSummary={duplicatesHeaderSummary}
               expanded={expandedSections.duplicates}
               fieldErrors={fieldErrors}

@@ -70,6 +70,7 @@ import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManualModerationService } from './manual-moderation.service';
 import { classifySettingsScreenAccessError } from './settings-screen-access.error';
+import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
 
 const NIGHT_MODE_TRANSITION_SETTING_KEYS = new Set<keyof ChatSettings>([
   'nightModeEnabled',
@@ -102,7 +103,15 @@ export class AdminSettingsService {
     @Optional()
     private readonly accessObservability?: MiniappAccessObservabilityService,
     @Optional() private readonly messageDuplicatePolicy?: MessageDuplicatePolicyService,
+    @Optional() private readonly duplicateDiagnostics?: AdminDuplicateDiagnosticsService,
   ) {}
+
+  async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false) {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    if (!this.duplicateDiagnostics)
+      throw new ServiceUnavailableException('Duplicate diagnostics unavailable');
+    return this.duplicateDiagnostics.read(chatId, recheck);
+  }
 
   async getSettings(
     chatId: string,

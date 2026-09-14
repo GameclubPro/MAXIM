@@ -500,6 +500,24 @@ function createService(
 }
 
 describe('AdminSettingsService chat rules', () => {
+  it('authorizes the exact chat before reading or rechecking duplicate diagnostics', async () => {
+    const { service, legacyAdminService } = createService();
+    const diagnostics = { read: jest.fn().mockResolvedValue({ mode: 'FULL' }) };
+    Object.defineProperty(service, 'duplicateDiagnostics', { value: diagnostics });
+    await service.getDuplicateDiagnostics('chat-1', user as never, true);
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
+      'chat-1',
+      user.userId,
+      'chat',
+    );
+    expect(diagnostics.read).toHaveBeenCalledWith('chat-1', true);
+    diagnostics.read.mockClear();
+    legacyAdminService.assertManagedEntityAdminAccess.mockRejectedValue(new Error('access denied'));
+    await expect(service.getDuplicateDiagnostics('other-chat', user as never)).rejects.toThrow(
+      'access denied',
+    );
+    expect(diagnostics.read).not.toHaveBeenCalled();
+  });
   it.each([
     {
       description: 'user access denial',

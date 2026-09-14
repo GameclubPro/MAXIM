@@ -1,5 +1,6 @@
 import type { ChatSettings, DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 import { lazy, Suspense } from 'react';
+import { Minus, Plus } from 'iconoir-react';
 import { resolveDuplicatePhotoPresentationPolicy } from './settings-duplicate-photo-status';
 import './settings-duplicate-preview.css';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
@@ -56,6 +57,8 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     | 'renderAdminContactToggle'
   > & {
     api: ApiTransport;
+    chatId: string;
+    userId: string | null;
     adjustDuplicateAllowedCount: (currentValue: number, delta: number) => void;
     applyDuplicateDetectionPreset: (preset: DuplicateDetectionPreset) => void;
     applyDuplicateFlowConfig: (overrides: {
@@ -72,7 +75,6 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     duplicateMessageModerationMode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY' | 'FULL';
     duplicateSharedWindowHours: number;
     duplicateWindowInputValue: string | null;
-    duplicatesCardStatus: string;
     duplicatesHeaderSummary: string;
     fieldErrors: FieldErrors;
     handleDuplicateWindowHoursBlur: () => void;
@@ -92,6 +94,7 @@ const LazySettingsDuplicateCustomControls = lazy(
 const LazySettingsDuplicateActionPreview = lazy(
   () => import('./settings-duplicate-action-preview'),
 );
+const LazySettingsDuplicateDiagnostics = lazy(() => import('./settings-duplicate-diagnostics'));
 
 export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps) {
   const photoPresentationPolicy = resolveDuplicatePhotoPresentationPolicy(
@@ -115,7 +118,6 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
     duplicateMessageModerationMode = 'OFF',
     duplicateSharedWindowHours,
     duplicateWindowInputValue,
-    duplicatesCardStatus,
     duplicatesHeaderSummary,
     expanded,
     fieldErrors,
@@ -150,7 +152,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
         <SettingsSectionToggle
           title="Антидубль"
           summary={duplicatesHeaderSummary}
-          status={duplicatesCardStatus}
+          status={draft.antiDuplicateEnabled ? 'Вкл' : 'Выкл'}
           icon="repeat"
           tone="rose"
           open={expanded}
@@ -204,6 +206,31 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                   </label>
                 </div>
               </div>
+
+              <dl className="duplicate-diagnostics__facts duplicate-scope">
+                <div>
+                  <dt>Повторы</dt>
+                  <dd>У одного участника в этом чате</dd>
+                </div>
+                <div>
+                  <dt>Исключения</dt>
+                  <dd>Администраторы, боты и участники с иммунитетом</dd>
+                </div>
+              </dl>
+              <Suspense
+                fallback={
+                  <p className="field__hint" role="status">
+                    Загружаем состояние бота
+                  </p>
+                }
+              >
+                <LazySettingsDuplicateDiagnostics
+                  key={`${props.userId}:${props.chatId}`}
+                  api={api}
+                  chatId={props.chatId}
+                  userId={props.userId}
+                />
+              </Suspense>
 
               {draft.antiDuplicateEnabled ? (
                 <>
@@ -338,11 +365,11 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           fieldErrors.duplicateWarnMaxCount && 'field--error',
                         )}
                       >
-                        <span className="duplicate-stage__field-label">Разрешить дублей</span>
+                        <span className="duplicate-stage__field-label">Удалять начиная с</span>
                         <div
                           className="duplicate-count-stepper"
                           role="group"
-                          aria-label="Количество разрешённых дублей"
+                          aria-label="Номер первого удаляемого одинакового сообщения"
                           aria-invalid={Boolean(fieldErrors.duplicateWarnMaxCount) || undefined}
                           aria-describedby={
                             fieldErrors.duplicateWarnMaxCount
@@ -355,13 +382,13 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                             className="duplicate-count-stepper__button"
                             onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, -1)}
                             disabled={duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN}
-                            aria-label="Разрешить меньше дублей"
+                            aria-label="Начинать удаление раньше"
                           >
-                            -
+                            <Minus aria-hidden />
                           </button>
 
                           <output className="duplicate-count-stepper__value" aria-live="polite">
-                            {duplicateAllowedCount}
+                            {duplicateAllowedCount + 2}-го
                           </output>
 
                           <button
@@ -371,11 +398,12 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                             disabled={
                               duplicateAllowedCount >= resolveDuplicateAllowedCountMax(draft)
                             }
-                            aria-label="Разрешить больше дублей"
+                            aria-label="Начинать удаление позже"
                           >
-                            +
+                            <Plus aria-hidden />
                           </button>
                         </div>
+                        <span className="field__hint">одинакового сообщения</span>
                       </div>
                     </div>
 
@@ -407,6 +435,17 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       </div>
                     ) : null}
                   </article>
+
+                  <Suspense fallback={null}>
+                    <LazySettingsDuplicateActionPreview
+                      draft={draft}
+                      allowedCount={duplicateAllowedCount}
+                      windowHours={duplicateSharedWindowHours}
+                      photoPolicy={photoPresentationPolicy}
+                      openHintKey={openHintKey}
+                      toggleHint={toggleHint}
+                    />
+                  </Suspense>
 
                   <h3 className="duplicate-settings-group__title">Что делать</h3>
                 </>
@@ -640,17 +679,6 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       </label>
                     </div>
                   </div>
-
-                  <Suspense fallback={null}>
-                    <LazySettingsDuplicateActionPreview
-                      draft={draft}
-                      allowedCount={duplicateAllowedCount}
-                      windowHours={duplicateSharedWindowHours}
-                      photoPolicy={photoPresentationPolicy}
-                      openHintKey={openHintKey}
-                      toggleHint={toggleHint}
-                    />
-                  </Suspense>
                 </>
               ) : null}
             </div>
