@@ -49,6 +49,9 @@ const DEGRADED_ENQUEUE_BATCH_SIZE = 100;
 const DEGRADED_ENQUEUE_CONCURRENCY = 4;
 const DEGRADED_QUEUED_REPAIR_INTERVAL_MS = 5_000;
 const ENQUEUE_ADMISSION_MODE_CACHE_MS = 5_000;
+const COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS = 5_000;
+const SLOW_ENQUEUE_BATCH_MS = 1_000;
+const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
 const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
 const RECEIVED_BATCH_SHARE = 0.75;
 const RECENT_RECEIPT_BATCH_SHARE = 0.25;
@@ -261,6 +264,7 @@ type WebhookEnqueueAdmission = {
   batchSize: number;
   enqueueConcurrency: number;
   includeQueuedRepair: boolean;
+  includeCompletedTimeoutRepair: boolean;
   expandSelectedChats: boolean;
 };
 
@@ -305,7 +309,7 @@ type WebhookOutboxPersistenceClient = {
   };
 };
 
-function buildEnqueueEligibilitySql(now: Date) {
+function buildEnqueueEligibilitySql(now: Date, includeCompletedTimeoutRepair = true) {
   const staleUserFacingQueuedBefore = new Date(now.getTime() - USER_FACING_STALE_QUEUED_REPAIR_MS);
   const staleBackgroundQueuedBefore = new Date(now.getTime() - BACKGROUND_STALE_QUEUED_REPAIR_MS);
 
@@ -318,7 +322,9 @@ function buildEnqueueEligibilitySql(now: Date) {
       "status" = 'FAILED'::"WebhookStatus"
       AND (
         "next_enqueue_at" <= ${now}
-        OR (
+        ${
+          includeCompletedTimeoutRepair
+            ? Prisma.sql`OR (
           "next_enqueue_at" IS NULL
           AND LEFT(
             COALESCE("error_message", ''),
@@ -339,7 +345,9 @@ function buildEnqueueEligibilitySql(now: Date) {
             ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}
           ) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
           AND ${COMPLETED_MESSAGE_CREATED_SEMANTIC_OWNER_SQL}
-        )
+        )`
+            : Prisma.empty
+        }
       )
     `,
     staleUserFacingQueued: Prisma.sql`
@@ -429,6 +437,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private enqueueAdmissionModeKnown = false;
   private enqueueAdmissionDegraded = false;
   private nextDegradedQueuedRepairAtMs = 0;
+  private nextCompletedTimeoutRepairAtMs = 0;
+  private nextSlowEnqueueBatchLogAtMs = 0;
   private readonly queuesByName: Record<AnyWebhookQueueName, Queue<ProcessWebhookJob>>;
   private readonly joinShardQueuesByName: Record<JoinWebhookQueueName, Queue<ProcessWebhookJob>>;
   private readonly defaultShardQueuesByName: Record<
@@ -563,7 +573,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async enqueueBatch() {
     const now = new Date();
     const admission = await this.resolveEnqueueAdmission(now);
+    const admissionFinishedAtMs = Date.now();
     const candidates = await this.selectEnqueueCandidates(now, admission);
+    const selectionFinishedAtMs = Date.now();
 
     const prioritizedCandidates = await this.prioritizeCandidates(
       candidates,
@@ -573,7 +585,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     let expandedCandidates = prioritizedCandidates;
     if (admission.expandSelectedChats) {
       try {
-        expandedCandidates = await this.expandSelectedChatCandidates(prioritizedCandidates, now);
+        expandedCandidates = await this.expandSelectedChatCandidates(
+          prioritizedCandidates,
+          now,
+          admission.includeCompletedTimeoutRepair,
+        );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -591,7 +607,27 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    const prioritizationFinishedAtMs = Date.now();
     await this.enqueueCandidates(expandedCandidates, admission.enqueueConcurrency);
+    const finishedAtMs = Date.now();
+    const durationMs = finishedAtMs - now.getTime();
+    if (durationMs >= SLOW_ENQUEUE_BATCH_MS && finishedAtMs >= this.nextSlowEnqueueBatchLogAtMs) {
+      this.nextSlowEnqueueBatchLogAtMs = finishedAtMs + SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS;
+      this.logger.warn(
+        {
+          durationMs,
+          admissionMs: admissionFinishedAtMs - now.getTime(),
+          selectionMs: selectionFinishedAtMs - admissionFinishedAtMs,
+          prioritizationMs: prioritizationFinishedAtMs - selectionFinishedAtMs,
+          enqueueMs: finishedAtMs - prioritizationFinishedAtMs,
+          candidateCount: candidates.length,
+          selectedCount: expandedCandidates.length,
+          degraded: admission.degraded,
+          completedTimeoutRepair: admission.includeCompletedTimeoutRepair,
+        },
+        'Slow webhook enqueue batch',
+      );
+    }
   }
 
   private defaultEnqueueAdmission(): WebhookEnqueueAdmission {
@@ -600,6 +636,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       batchSize: this.batchSize,
       enqueueConcurrency: this.enqueueConcurrency,
       includeQueuedRepair: true,
+      includeCompletedTimeoutRepair: true,
       expandSelectedChats: true,
     };
   }
@@ -634,8 +671,15 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // FLAG: Retained timeout settlement probes claims/owners. Pace that recovery only;
+    // due retries and live receipts must remain eligible on every poll.
+    const includeCompletedTimeoutRepair = nowMs >= this.nextCompletedTimeoutRepairAtMs;
+    if (includeCompletedTimeoutRepair) {
+      this.nextCompletedTimeoutRepairAtMs = nowMs + COMPLETED_TIMEOUT_REPAIR_INTERVAL_MS;
+    }
+
     if (!this.enqueueAdmissionDegraded) {
-      return this.defaultEnqueueAdmission();
+      return { ...this.defaultEnqueueAdmission(), includeCompletedTimeoutRepair };
     }
 
     const includeQueuedRepair = nowMs >= this.nextDegradedQueuedRepairAtMs;
@@ -648,6 +692,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       batchSize: Math.min(this.batchSize, DEGRADED_ENQUEUE_BATCH_SIZE),
       enqueueConcurrency: Math.min(this.enqueueConcurrency, DEGRADED_ENQUEUE_CONCURRENCY),
       includeQueuedRepair,
+      includeCompletedTimeoutRepair,
       // Queue repairs and exact-head fences keep order; the optional expansion is throughput work.
       expandSelectedChats: false,
     };
@@ -660,7 +705,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const selectionWindowSize = this.resolvePrioritySelectionWindowSize(admission.batchSize);
     const recentReceiptTake = this.resolveRecentReceiptTake(selectionWindowSize);
     const backlogReceiptTake = selectionWindowSize - recentReceiptTake;
-    const eligibility = buildEnqueueEligibilitySql(now);
+    const eligibility = buildEnqueueEligibilitySql(now, admission.includeCompletedTimeoutRepair);
     const overscanTake = Math.max(
       selectionWindowSize,
       admission.degraded
@@ -888,6 +933,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async expandSelectedChatCandidates(
     selectedCandidates: PrioritizedWebhookEnqueueCandidate[],
     now: Date,
+    includeCompletedTimeoutRepair = true,
   ): Promise<PrioritizedWebhookEnqueueCandidate[]> {
     const selectedChatIds = Array.from(
       new Set(
@@ -901,7 +947,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return selectedCandidates;
     }
 
-    const eligibility = buildEnqueueEligibilitySql(now);
+    const eligibility = buildEnqueueEligibilitySql(now, includeCompletedTimeoutRepair);
     // Expand only after work-unit quota selection so terminal heads can advance without starving peers.
     const expandedCandidates = await this.prisma.$queryRaw<WebhookEnqueueCandidate[]>(Prisma.sql`
       /* selected_chat_candidates */
@@ -1474,6 +1520,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async removeNonCanonicalQueuedJob(event: WebhookEnqueueCandidate): Promise<void> {
+    // FLAG: The pre-preparation snapshot proves no activation was committed for this receipt.
+    if (this.canSkipExistingJobLookupForPristineReceivedEvent(event)) {
+      return;
+    }
     const existingJob = await this.findExistingJob(
       event.id,
       typeof event.queueName === 'string' && ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)

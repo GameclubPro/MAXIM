@@ -23,7 +23,17 @@ type OrderedWebhookHeadReader = {
   findOrderedWebhookHeadsForChats: (
     chatIds: readonly string[],
   ) => Promise<Map<string, OrderedWebhookHead>>;
-  selectEnqueueCandidates: (now: Date) => Promise<
+  selectEnqueueCandidates: (
+    now: Date,
+    admission?: {
+      degraded: boolean;
+      batchSize: number;
+      enqueueConcurrency: number;
+      includeQueuedRepair: boolean;
+      includeCompletedTimeoutRepair: boolean;
+      expandSelectedChats: boolean;
+    },
+  ) => Promise<
     Array<{
       id: string;
       status: WebhookStatus;
@@ -396,6 +406,31 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     });
     const completedCandidates = await reader.selectEnqueueCandidates(now);
     expect(completedCandidates.map(({ id }) => id)).toContain(mirrorId);
+
+    const admissionWithoutTimeoutScan = {
+      degraded: false,
+      batchSize: 100,
+      enqueueConcurrency: 4,
+      includeQueuedRepair: true,
+      includeCompletedTimeoutRepair: false,
+      expandSelectedChats: true,
+    };
+    const pacedCandidates = await reader.selectEnqueueCandidates(now, admissionWithoutTimeoutScan);
+    expect(pacedCandidates.map(({ id }) => id)).not.toContain(mirrorId);
+
+    await prisma.webhookEvent.update({
+      where: { id: mirrorId },
+      data: { nextEnqueueAt: now },
+    });
+    const dueRetryCandidates = await reader.selectEnqueueCandidates(
+      now,
+      admissionWithoutTimeoutScan,
+    );
+    expect(dueRetryCandidates.map(({ id }) => id)).toContain(mirrorId);
+    await prisma.webhookEvent.update({
+      where: { id: mirrorId },
+      data: { nextEnqueueAt: null },
+    });
 
     await prisma.webhookEvent.update({
       where: { id: ownerId },

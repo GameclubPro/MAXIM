@@ -418,7 +418,11 @@ function selectFairEnqueueCandidatesForTest(
     row.status === WebhookStatus.RECEIVED && isDue(row.nextEnqueueAt);
   const isFailed = (row: MockWebhookEventRow) =>
     row.status === WebhookStatus.FAILED &&
-    isMockEnqueueCandidateEligible(row, now, timeoutExecutionClaimCompleted);
+    isMockEnqueueCandidateEligible(
+      row,
+      now,
+      timeoutExecutionClaimCompleted && selectionSql.includes('semantic_owner'),
+    );
   const isStaleQueued = (row: MockWebhookEventRow, queueKind: 'user-facing' | 'background') => {
     const background = row.queueName === WEBHOOK_QUEUE_BACKGROUND;
     const cutoff = background ? staleBackgroundQueuedBefore : staleUserFacingQueuedBefore;
@@ -578,7 +582,8 @@ function createService(params?: {
               isMockEnqueueCandidateEligible(
                 row,
                 now,
-                params?.timeoutExecutionClaim?.status === 'COMPLETED',
+                params?.timeoutExecutionClaim?.status === 'COMPLETED' &&
+                  extractSql(query).includes('semantic_owner'),
               )
             );
           })
@@ -1496,6 +1501,94 @@ describe('WebhookOutboxService', () => {
     });
   });
 
+  it.each(['normal', 'degrade'] as const)(
+    'paces retained timeout scans without delaying due retries in %s mode',
+    async (systemMode) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-14T09:00:00.000Z'));
+      try {
+        const { service, prisma, queues } = createService({
+          systemMode,
+          findManyResult: [
+            {
+              id: 'evt-due-retry',
+              status: WebhookStatus.FAILED,
+              enqueueAttempts: 1,
+              nextEnqueueAt: new Date('2026-09-14T09:00:00.000Z'),
+              normalizedPayload: {
+                type: 'message_created',
+                message: { chatId: 'due-retry-chat', messageId: 'due-retry-message' },
+              },
+            },
+          ],
+        });
+        const internals = service as unknown as { enqueueBatch: () => Promise<void> };
+        const selectionQueries = () =>
+          prisma.$queryRaw.mock.calls
+            .map(([query]) => extractSql(query))
+            .filter((sql) => sql.includes('fair_enqueue_candidates'));
+
+        await internals.enqueueBatch();
+        expect(selectionQueries().at(-1)).toContain('semantic_owner');
+        prisma.$queryRaw.mockClear();
+        for (const queue of Object.values(queues)) queue.add.mockClear();
+
+        jest.setSystemTime(new Date('2026-09-14T09:00:00.200Z'));
+        await internals.enqueueBatch();
+
+        expect(selectionQueries().at(-1)).toContain(`"next_enqueue_at" <= ?`);
+        for (const [query] of prisma.$queryRaw.mock.calls) {
+          expect(extractSql(query)).not.toContain('semantic_owner');
+          expect(extractSql(query)).not.toContain('webhook_execution_claims');
+        }
+        expect(Object.values(queues).flatMap((queue) => queue.add.mock.calls)).toHaveLength(1);
+
+        jest.setSystemTime(new Date('2026-09-14T09:00:05.000Z'));
+        await internals.enqueueBatch();
+        expect(selectionQueries().at(-1)).toContain('semantic_owner');
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('reports slow enqueue stages with bounded identifier-free logging', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-14T09:00:00.000Z'));
+    const { service, prisma } = createService();
+    const warning = jest.spyOn((service as any).logger, 'warn').mockImplementation();
+    try {
+      prisma.$queryRaw.mockImplementation(async () => {
+        jest.setSystemTime(Date.now() + 1_100);
+        return [];
+      });
+      const internals = service as unknown as { enqueueBatch: () => Promise<void> };
+
+      await internals.enqueueBatch();
+      await internals.enqueueBatch();
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith(
+        {
+          durationMs: 1_100,
+          admissionMs: 0,
+          selectionMs: 1_100,
+          prioritizationMs: 0,
+          enqueueMs: 0,
+          candidateCount: 0,
+          selectedCount: 0,
+          degraded: false,
+          completedTimeoutRepair: true,
+        },
+        'Slow webhook enqueue batch',
+      );
+
+      jest.setSystemTime(Date.now() + 30_000);
+      await internals.enqueueBatch();
+      expect(warning).toHaveBeenCalledTimes(2);
+    } finally {
+      warning.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it('skips BullMQ lookups before activating a pristine received event', async () => {
     const chatId = 'chat-pristine-received';
     const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
@@ -1529,6 +1622,70 @@ describe('WebhookOutboxService', () => {
       expect.objectContaining({ jobId: 'evt-pristine-received' }),
     );
   });
+
+  it('does not scan every BullMQ queue for pristine receipts settled during preparation', async () => {
+    const { service, queues, webhookService } = createService({
+      systemMode: 'degrade',
+      findManyResult: Array.from({ length: 100 }, (_, index) => ({
+        id: `evt-pristine-mirror-${index}`,
+        enqueueAttempts: 0,
+        normalizedPayload: { type: 'user_removed', chatId: `mirror-chat-${index}` },
+      })),
+      prepareResult: {
+        canonical: false,
+        prepared: true,
+        normalizedPayload: {},
+        executionBotId: 'owner-bot',
+      },
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(100);
+    for (const queue of Object.values(queues)) {
+      expect(queue.getJob).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['waiting', 'active'])(
+    'still reconciles a previously queued non-canonical receipt whose job is %s',
+    async (state) => {
+      const job: JobMock = {
+        getState: jest.fn().mockResolvedValue(state),
+        retry: jest.fn(),
+        remove: jest.fn().mockResolvedValue(undefined),
+      };
+      const { service, queues } = createService({
+        backgroundJob: job,
+        findManyResult: [
+          {
+            id: 'evt-queued-mirror',
+            status: WebhookStatus.QUEUED,
+            queueName: 'moderation-background',
+            enqueueAttempts: 1,
+            queuedAt: new Date('2026-03-24T00:00:00.000Z'),
+            normalizedPayload: { type: 'user_removed', chatId: 'queued-mirror-chat' },
+          },
+        ],
+        prepareResult: {
+          canonical: false,
+          prepared: true,
+          normalizedPayload: {},
+          executionBotId: 'owner-bot',
+        },
+      });
+
+      await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+      expect(queues.backgroundQueue.getJob).toHaveBeenCalledWith('evt-queued-mirror');
+      expect(job.getState).toHaveBeenCalled();
+      expect(job.remove).toHaveBeenCalledTimes(state === 'active' ? 0 : 1);
+      for (const queue of Object.values(queues)) {
+        expect(queue.add).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it.each([
     {
