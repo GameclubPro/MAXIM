@@ -1145,12 +1145,9 @@ export class WebhookService implements OnModuleDestroy {
       return;
     }
 
-    const primaryBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId, {
-      bypassCache: true,
-    });
+    // FLAG: A mirrored heartbeat neither selects an execution owner nor grants membership.
     await this.maxBotLinkService.observeStoredChatBotWebhook({
       chatId,
-      primaryBotId,
       botId: observedBotId,
       observedAt: new Date(),
     });

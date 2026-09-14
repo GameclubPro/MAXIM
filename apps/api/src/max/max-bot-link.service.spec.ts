@@ -5275,6 +5275,91 @@ describe('MaxBotLinkService', () => {
     );
   });
 
+  it('coalesces 100 concurrent heartbeat observations into one membership write', async () => {
+    const fixture = createServiceFixture();
+    let release!: (value: { count: number }) => void;
+    fixture.prisma.chatBotMembership.updateMany.mockImplementationOnce(
+      () =>
+        new Promise<{ count: number }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const input = { chatId: 'heartbeat-burst', botId: fixture.bots[0]!.id };
+    const pending = Array.from({ length: 100 }, () =>
+      fixture.service.observeStoredChatBotWebhook(input),
+    );
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(1);
+    release({ count: 1 });
+    await Promise.all(pending);
+    await fixture.service.observeStoredChatBotWebhook(input);
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.chat.update).not.toHaveBeenCalled();
+  });
+
+  it('shares a failed heartbeat without caching success and retries the next observation', async () => {
+    const fixture = createServiceFixture();
+    let reject!: (reason: Error) => void;
+    fixture.prisma.chatBotMembership.updateMany.mockImplementationOnce(
+      () =>
+        new Promise<{ count: number }>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const input = { chatId: 'heartbeat-retry', botId: fixture.bots[0]!.id };
+    const pending = Array.from({ length: 20 }, () =>
+      fixture.service.observeStoredChatBotWebhook(input),
+    );
+    const settlement = Promise.allSettled(pending);
+    const error = new Error('temporary membership storage failure');
+    reject(error);
+    expect(await settlement).toEqual(
+      Array.from({ length: 20 }, () => ({ status: 'rejected', reason: error })),
+    );
+    fixture.prisma.chatBotMembership.updateMany.mockResolvedValueOnce({ count: 1 });
+    await fixture.service.observeStoredChatBotWebhook(input);
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not share heartbeats across chats or bots, or retain a missing membership result', async () => {
+    const fixture = createServiceFixture();
+    fixture.prisma.chatBotMembership.updateMany.mockResolvedValue({ count: 0 });
+    const first = { chatId: 'heartbeat-a', botId: fixture.bots[0]!.id };
+    await Promise.all([
+      fixture.service.observeStoredChatBotWebhook(first),
+      fixture.service.observeStoredChatBotWebhook({ ...first, chatId: 'heartbeat-b' }),
+      fixture.service.observeStoredChatBotWebhook({ ...first, botId: fixture.bots[1]!.id }),
+    ]);
+    fixture.prisma.chatBotMembership.updateMany.mockResolvedValueOnce({ count: 1 });
+    await fixture.service.observeStoredChatBotWebhook(first);
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(4);
+    jest.advanceTimersByTime(60_000);
+    await fixture.service.observeStoredChatBotWebhook(first);
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(5);
+  });
+
+  it('bounds completed heartbeat cooldowns without turning eviction into an access grant', async () => {
+    const fixture = createServiceFixture();
+    const cache = (fixture.service as unknown as { observedWebhookTouchCache: Map<string, number> })
+      .observedWebhookTouchCache;
+    const botId = fixture.bots[0]!.id;
+    for (let index = 0; index < 10_000; index++)
+      cache.set(`old-${index}:${botId}`, Date.now() + 60_000);
+    fixture.prisma.chatBotMembership.updateMany.mockResolvedValue({ count: 1 });
+    await fixture.service.observeStoredChatBotWebhook({ chatId: 'new-heartbeat', botId });
+    expect(cache.size).toBe(10_000);
+    expect(cache.has(`old-0:${botId}`)).toBe(false);
+    await fixture.service.observeStoredChatBotWebhook({ chatId: 'old-0', botId });
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.chatBotMembership.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'old-0', botId, status: ChatBotMembershipStatus.ACTIVE },
+        data: { lastSeenAt: expect.any(Date), lastWebhookAt: expect.any(Date) },
+      }),
+    );
+    expect(fixture.prisma.chat.update).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.upsert).not.toHaveBeenCalled();
+  });
+
   it('does not reactivate or clear access loss on an ordinary webhook after bot removal', async () => {
     const fixture = createServiceFixture();
     const removedAt = new Date('2026-05-09T09:00:00.123Z');

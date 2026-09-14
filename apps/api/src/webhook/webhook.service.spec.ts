@@ -420,10 +420,10 @@ describe('WebhookService', () => {
 
     expect(maxBotLinkService.observeStoredChatBotWebhook).toHaveBeenCalledWith({
       chatId: '-100-route-gap',
-      primaryBotId: null,
       botId: 'bot-5',
       observedAt: expect.any(Date),
     });
+    expect(maxBotLinkService.getStoredChatPrimaryBotId).not.toHaveBeenCalled();
   });
 
   it('waits for canonical preparation before reusing it for shadow mirror execution', async () => {
@@ -531,10 +531,10 @@ describe('WebhookService', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(maxBotLinkService.observeStoredChatBotWebhook).toHaveBeenCalledWith({
       chatId: '-100-shadow-membership',
-      primaryBotId: ownerBotId,
       botId: mirrorBotId,
       observedAt: expect.any(Date),
     });
+    expect(maxBotLinkService.getStoredChatPrimaryBotId).not.toHaveBeenCalled();
   });
 
   it('takes over terminal failed shadow membership preparation with the claim lease fenced', async () => {

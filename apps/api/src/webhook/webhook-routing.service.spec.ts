@@ -153,6 +153,122 @@ describe('WebhookRoutingService', () => {
     jest.clearAllMocks();
   });
 
+  it('counts a 10k-chat assignment pool once per shard selection instead of once per shard', () => {
+    const { service } = createService();
+    const now = Date.now();
+    const internals = service as unknown as {
+      chatAssignments: Map<
+        string,
+        {
+          queueName: (typeof DEFAULT_WEBHOOK_QUEUE_NAMES)[number];
+          assignedAtMs: number;
+          expiresAtMs: number;
+        }
+      >;
+      selectLeastPressuredQueue: (
+        chatId: string,
+        snapshot: unknown,
+        currentQueue: string,
+        now: number,
+      ) => string;
+    };
+    for (let index = 0; index < 10_000; index++) {
+      internals.chatAssignments.set(`chat-${index}`, {
+        queueName: DEFAULT_WEBHOOK_QUEUE_NAMES[index % DEFAULT_WEBHOOK_QUEUE_NAMES.length]!,
+        assignedAtMs: now - 1_000,
+        expiresAtMs: index % 3 === 0 ? now : now + 30_000,
+      });
+    }
+    const scans = jest.spyOn(internals.chatAssignments, 'values');
+    const chosen = internals.selectLeastPressuredQueue(
+      'cost-budget-chat',
+      {
+        webhookDefaultShards: buildDefaultShardSnapshot(),
+        webhookDefaultWorkerGroups: buildWorkerGroupSnapshot(),
+      },
+      'moderation-default-7',
+      now,
+    );
+    expect(DEFAULT_WEBHOOK_QUEUE_NAMES).toContain(chosen);
+    expect(scans).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps cached assignments and restores persisted outstanding work after eviction', async () => {
+    const { service, prisma, queueMetricsService } = createService();
+    const now = Date.now();
+    const assignments = (
+      service as unknown as {
+        chatAssignments: Map<
+          string,
+          { queueName: string; assignedAtMs: number; expiresAtMs: number }
+        >;
+      }
+    ).chatAssignments;
+    for (let index = 0; index < 10_000; index++)
+      assignments.set(`chat:cached-${index}`, {
+        queueName: 'moderation-default-7',
+        assignedAtMs: now,
+        expiresAtMs: now + 30_000,
+      });
+    prisma.$queryRaw.mockResolvedValue([{ has_pending: true, queue_name: 'moderation-default-2' }]);
+    await service.resolveQueueName('new-event', {
+      type: 'message_created',
+      message: { chatId: 'new-chat' },
+    });
+    expect(assignments.size).toBe(10_000);
+    expect(assignments.has('chat:cached-0')).toBe(false);
+    await expect(
+      service.resolveQueueName('evicted-event', {
+        type: 'message_created',
+        message: { chatId: 'cached-0' },
+      }),
+    ).resolves.toBe('moderation-default-2');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('preserves queue and worker occupancy while excluding expired assignments', () => {
+    const { service } = createService();
+    const now = Date.now();
+    const internals = service as unknown as {
+      chatAssignments: Map<
+        string,
+        { queueName: string; assignedAtMs: number; expiresAtMs: number }
+      >;
+      countActiveAssignments: (now: number) => {
+        byQueue: Map<string, number>;
+        byWorker: Map<string, number>;
+      };
+    };
+    for (const [index, queueName] of [
+      'moderation-default-0',
+      'moderation-default-0',
+      'moderation-default-4',
+      'moderation-default-2',
+    ].entries()) {
+      internals.chatAssignments.set(`active-${index}`, {
+        queueName,
+        assignedAtMs: now,
+        expiresAtMs: now + 1,
+      });
+    }
+    internals.chatAssignments.set('expired', {
+      queueName: 'moderation-default-2',
+      assignedAtMs: now - 1_000,
+      expiresAtMs: now,
+    });
+    const counts = internals.countActiveAssignments(now);
+    expect(Object.fromEntries(counts.byQueue)).toEqual({
+      'moderation-default-0': 2,
+      'moderation-default-4': 1,
+      'moderation-default-2': 1,
+    });
+    expect(Object.fromEntries(counts.byWorker)).toEqual({
+      'api-moderation': 3,
+      'api-moderation-realtime-c': 1,
+    });
+  });
+
   it('routes critical and background update types without touching adaptive chat routing', async () => {
     const { service, prisma, queueMetricsService } = createService();
     const joinChatId = '-72826040868309';

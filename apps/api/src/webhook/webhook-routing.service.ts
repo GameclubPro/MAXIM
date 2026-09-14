@@ -45,6 +45,12 @@ type QueuePressure = {
   tieOrder: number;
 };
 
+type AssignmentCounts = {
+  byQueue: Map<DefaultWebhookQueueName, number>;
+  byWorker: Map<DefaultWebhookWorkerGroupName, number>;
+};
+
+const MAX_CHAT_ASSIGNMENTS = 10_000;
 const DEFAULT_CHAT_ASSIGNMENT_TTL_SEC = 90;
 const DEFAULT_QUEUE_SNAPSHOT_MAX_AGE_MS = 1_000;
 const ACTIVE_QUEUE_PRESSURE_WEIGHT = 4;
@@ -225,9 +231,10 @@ export class WebhookRoutingService {
     currentQueueName: DefaultWebhookQueueName,
     now: number,
   ): DefaultWebhookQueueName {
+    const assignments = this.countActiveAssignments(now);
     const rotatedQueueNames = this.rotateQueueNames(chatId);
     const candidates = rotatedQueueNames.map((queueName, tieOrder) =>
-      this.buildQueuePressureCandidate(queueName, tieOrder, snapshot, now),
+      this.buildQueuePressureCandidate(queueName, tieOrder, snapshot, assignments),
     );
     const bestCandidate = candidates.reduce((best, current) =>
       this.compareQueuePressure(current, best) < 0 ? current : best,
@@ -264,7 +271,7 @@ export class WebhookRoutingService {
     queueName: DefaultWebhookQueueName,
     tieOrder: number,
     snapshot: Awaited<ReturnType<QueueMetricsService['getWebhookDefaultShardSnapshot']>>,
-    now: number,
+    assignments: AssignmentCounts,
   ): QueuePressure {
     const queueCounters = snapshot.webhookDefaultShards[queueName];
     const queuePressure =
@@ -284,19 +291,10 @@ export class WebhookRoutingService {
       ? workerCounters.waiting + workerCounters.active * ACTIVE_WORKER_PRESSURE_WEIGHT
       : queuePressureScore;
 
-    let leasedChats = 0;
-    let workerLeasedChats = 0;
-    for (const assignment of this.chatAssignments.values()) {
-      if (assignment.expiresAtMs <= now) {
-        continue;
-      }
-      if (assignment.queueName === queueName) {
-        leasedChats += 1;
-      }
-      if (workerGroupName && this.workerGroupByQueue[assignment.queueName] === workerGroupName) {
-        workerLeasedChats += 1;
-      }
-    }
+    const leasedChats = assignments.byQueue.get(queueName) ?? 0;
+    const workerLeasedChats = workerGroupName
+      ? (assignments.byWorker.get(workerGroupName) ?? 0)
+      : 0;
 
     return {
       queueName,
@@ -308,6 +306,17 @@ export class WebhookRoutingService {
       workerLeasedChats,
       tieOrder,
     };
+  }
+
+  private countActiveAssignments(now: number): AssignmentCounts {
+    const counts: AssignmentCounts = { byQueue: new Map(), byWorker: new Map() };
+    for (const assignment of this.chatAssignments.values()) {
+      if (assignment.expiresAtMs <= now) continue;
+      counts.byQueue.set(assignment.queueName, (counts.byQueue.get(assignment.queueName) ?? 0) + 1);
+      const worker = this.workerGroupByQueue[assignment.queueName];
+      if (worker) counts.byWorker.set(worker, (counts.byWorker.get(worker) ?? 0) + 1);
+    }
+    return counts;
   }
 
   private compareQueuePressure(left: QueuePressure, right: QueuePressure): number {
@@ -359,7 +368,7 @@ export class WebhookRoutingService {
     now: number,
   ): DefaultWebhookQueueName {
     const cachedAssignment = this.chatAssignments.get(assignmentKey);
-    this.chatAssignments.set(assignmentKey, {
+    const assignment: ChatQueueAssignment = {
       queueName,
       assignedAtMs: now,
       expiresAtMs:
@@ -367,7 +376,15 @@ export class WebhookRoutingService {
         (cachedAssignment?.queueName === queueName
           ? this.chatAssignmentTtlMs
           : this.resolveAdaptiveTtlMs(queueName)),
-    });
+    };
+    // FLAG: Eviction is only a cache miss. A subsequent refresh must still read outstanding work.
+    this.chatAssignments.delete(assignmentKey);
+    this.chatAssignments.set(assignmentKey, assignment);
+    while (this.chatAssignments.size > MAX_CHAT_ASSIGNMENTS) {
+      const oldestKey = this.chatAssignments.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.chatAssignments.delete(oldestKey);
+    }
     return queueName;
   }
 

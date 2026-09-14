@@ -51,6 +51,7 @@ import {
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
+const MAX_OBSERVED_WEBHOOK_TOUCH_CACHE_ENTRIES = 10_000;
 const NIGHT_MODE_RECONCILIATION_RETRY_DELAY_MS = 5_000;
 const NIGHT_MODE_RECONCILIATION_RETRY_BATCH_SIZE = 50;
 const CHAT_MEMBERSHIP_DEADLOCK_MAX_ATTEMPTS = 3;
@@ -316,6 +317,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
   private readonly logger = new Logger(MaxBotLinkService.name);
   private readonly chatBotBindingCache = new Map<string, ChatBotBindingCacheEntry>();
   private readonly observedWebhookTouchCache = new Map<string, number>();
+  private readonly observedWebhookTouchesInFlight = new Map<string, Promise<void>>();
   private readonly pendingNightModeReconciliations = new Set<string>();
   private readonly nightModeReconciliationsInFlight = new Map<string, Promise<boolean>>();
   private nightModeReconciliationRetryTimer: NodeJS.Timeout | null = null;
@@ -1208,8 +1210,34 @@ export class MaxBotLinkService implements OnModuleDestroy {
     if ((this.observedWebhookTouchCache.get(cacheKey) ?? 0) > nowMs) {
       return;
     }
+    const pending = this.observedWebhookTouchesInFlight.get(cacheKey);
+    if (pending) {
+      return pending;
+    }
 
-    const now = params.observedAt ?? new Date(nowMs);
+    const touch = this.touchObservedMembership(
+      chatId,
+      observedBotId,
+      params.observedAt ?? new Date(nowMs),
+      cacheKey,
+      nowMs,
+    ).finally(() => {
+      if (this.observedWebhookTouchesInFlight.get(cacheKey) === touch) {
+        this.observedWebhookTouchesInFlight.delete(cacheKey);
+      }
+    });
+    this.observedWebhookTouchesInFlight.set(cacheKey, touch);
+    return touch;
+  }
+
+  private async touchObservedMembership(
+    chatId: string,
+    observedBotId: string,
+    observedAt: Date,
+    cacheKey: string,
+    nowMs: number,
+  ): Promise<void> {
+    // FLAG: Coalescing only reduces heartbeat writes; it must never reactivate membership.
     const touched = await this.prisma.chatBotMembership.updateMany({
       where: {
         chatId,
@@ -1217,14 +1245,20 @@ export class MaxBotLinkService implements OnModuleDestroy {
         status: ChatBotMembershipStatus.ACTIVE,
       },
       data: {
-        lastSeenAt: now,
-        lastWebhookAt: now,
+        lastSeenAt: observedAt,
+        lastWebhookAt: observedAt,
       },
     });
     if (touched.count === 0) {
       return;
     }
+    this.observedWebhookTouchCache.delete(cacheKey);
     this.observedWebhookTouchCache.set(cacheKey, nowMs + OBSERVED_WEBHOOK_TOUCH_TTL_MS);
+    while (this.observedWebhookTouchCache.size > MAX_OBSERVED_WEBHOOK_TOUCH_CACHE_ENTRIES) {
+      const oldestKey = this.observedWebhookTouchCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.observedWebhookTouchCache.delete(oldestKey);
+    }
   }
 
   resolveContactIdSync(botId?: string | null): string | null {
