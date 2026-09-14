@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { IsRestoringProvider, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { chatSettingsSchema, duplicateDiagnosticsResponseSchema } from '@maxim/contracts/settings';
 import SettingsDuplicateDiagnostics from '../src/pages/settings/settings-duplicate-diagnostics';
 import { formatDuplicateAllowanceLabel } from '../src/pages/settings/settings-duplicate-flow';
@@ -11,11 +11,6 @@ import type { ApiTransport } from '../src/lib/api/transport';
 
 const time = '2026-09-14T12:00:00.000Z';
 test('settings summary uses the same message numbering as the controls and keeps disabled state explicit', () => {
-  const policy = {
-    moderationMode: 'OFF',
-    actionCeiling: 'DELETE_MESSAGE',
-    allowedMatchKinds: [],
-  } as const;
   const settings = chatSettingsSchema.parse({
     antiDuplicateEnabled: true,
     duplicateBotMessageEnabled: false,
@@ -24,18 +19,8 @@ test('settings summary uses the same message numbering as the controls and keeps
     duplicateMuteEnabled: false,
     duplicateBanEnabled: false,
   });
-  const summary = formatDuplicateSettingsSummary(
-    settings,
-    { ...policy, allowedMatchKinds: [] },
-    'FULL',
-    12,
-  );
-  assert.match(summary, /удаление с сообщения №3/);
-  assert.match(summary, /действий: 1 из 4/);
-  assert.equal(
-    formatDuplicateSettingsSummary(null, { ...policy, allowedMatchKinds: [] }, 'FULL', 12),
-    'Выключено',
-  );
+  assert.equal(formatDuplicateSettingsSummary(settings, 12), 'удаление с сообщения №3 • 12 ч');
+  assert.equal(formatDuplicateSettingsSummary(null, 12), 'Выключено');
 });
 function render(
   state: 'CONFIRMED' | 'MISSING' | 'UNKNOWN',
@@ -68,11 +53,15 @@ function render(
     createElement(
       QueryClientProvider,
       { client },
-      createElement(SettingsDuplicateDiagnostics, {
-        api: {} as ApiTransport,
-        chatId: 'chat',
-        userId: 'user',
-      }),
+      createElement(
+        IsRestoringProvider,
+        { value: true },
+        createElement(SettingsDuplicateDiagnostics, {
+          api: {} as ApiTransport,
+          chatId: 'chat',
+          userId: 'user',
+        }),
+      ),
     ),
   );
   client.clear();

@@ -4449,12 +4449,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicateSharedWindowHours = draft
     ? secondsToHours(resolveDuplicateSharedWindowSec(draft))
     : 12;
-  const duplicatesHeaderSummary = formatDuplicateSettingsSummary(
-    draft,
-    duplicatePhotoModerationPolicy,
-    settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF',
-    duplicateSharedWindowHours,
-  );
+  const duplicatesHeaderSummary = formatDuplicateSettingsSummary(draft, duplicateSharedWindowHours);
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,

@@ -737,6 +737,7 @@ const baseScenarios = [
     'chat-settings-help',
     'chat-settings-duplicates-flow',
     'chat-settings-duplicates-threshold',
+    'chat-settings-duplicate-saved-state',
     'chat-settings-duplicate-diagnostics',
     'chat-settings-duplicates-photos',
     'chat-settings-duplicates-duration',

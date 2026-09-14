@@ -51,6 +51,8 @@ export default function SettingsDuplicateDiagnostics({
       duplicateDiagnosticsResponseSchema.parse(await api.request(path, { signal })),
     enabled: Boolean(userId),
     staleTime: 30_000,
+    // FLAG: Reopening after save must refresh the saved state even while the old cache is fresh.
+    refetchOnMount: 'always',
     retry: false,
     refetchOnWindowFocus: false,
   });

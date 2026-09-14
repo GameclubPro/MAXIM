@@ -5,7 +5,6 @@ import type {
   DuplicatePhotoModerationMode,
   DuplicatePhotoPolicyMatrix,
 } from '@maxim/contracts/settings';
-import { DUPLICATE_DETECTION_LABELS } from '../settings-page.constants';
 import {
   formatDuplicateAllowanceLabel,
   resolveDuplicateAllowedCount,
@@ -22,29 +21,10 @@ export type DuplicatePhotoPresentationPolicy = DuplicatePhotoEffectivePolicy & {
 
 export function formatDuplicateSettingsSummary(
   settings: ChatSettings | null,
-  photoPolicy: DuplicatePhotoEffectivePolicy,
-  messageMode: DuplicatePhotoModerationMode,
   windowHours: number,
 ): string {
   if (!settings?.antiDuplicateEnabled) return 'Выключено';
-  const stageCount = [
-    settings.duplicateBotMessageEnabled,
-    settings.duplicateWarnEnabled,
-    settings.duplicateMuteEnabled,
-    settings.duplicateBanEnabled,
-  ].filter(Boolean).length;
-  const coverage = formatDuplicatePhotoCoverageLabel(
-    DUPLICATE_DETECTION_LABELS[settings.duplicateDetectionPreset],
-    settings.duplicatePhotoEnabled,
-    resolveDuplicatePhotoPresentationPolicy(
-      photoPolicy,
-      messageMode,
-      settings.duplicateCompareMode,
-      settings.duplicatePhotoEnabled,
-    ),
-    settings,
-  );
-  return `${coverage} • ${formatDuplicateAllowanceLabel(resolveDuplicateAllowedCount(settings))} • ${windowHours}ч • действий: ${stageCount} из 4`;
+  return `${formatDuplicateAllowanceLabel(resolveDuplicateAllowedCount(settings))} • ${windowHours} ч`;
 }
 
 export function resolveDuplicatePhotoPresentationPolicy(

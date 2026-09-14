@@ -2017,6 +2017,25 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-duplicate-saved-state',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await panel.getByText('Права удаления подтверждены', { exact: true }).waitFor();
+      await panel.getByLabel('Включить антидубль', { exact: true }).uncheck();
+      const save = panel.getByRole('button', { name: 'Сохранить', exact: true });
+      await save.click();
+      await save.waitFor({ state: 'hidden' });
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      await panel.getByText('Проверка и история', { exact: true }).click();
+      await panel
+        .locator('.duplicate-diagnostics__facts > div')
+        .filter({ has: page.getByText('Сохранённая настройка', { exact: true }) })
+        .getByText('Выключен', { exact: true })
+        .waitFor();
+    },
+  },
+  {
     name: 'chat-settings-duplicate-diagnostics',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
