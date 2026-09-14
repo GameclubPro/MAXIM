@@ -198,8 +198,11 @@ function summarizeWindow(samples, bounds) {
   };
 }
 
-function buildReport(options) {
+function buildReport(options, nowMs = Date.now()) {
   const currentBounds = windowBounds(options.from, options.to);
+  if (!Number.isFinite(nowMs) || currentBounds.end > nowMs) {
+    throw new Error('Report window has not elapsed.');
+  }
   const directory = resolve(options.directory);
   const current = summarizeWindow(readWindow(directory, currentBounds), currentBounds);
   const report = { schemaVersion: 1, basis: 'sampled_oldest_queue_lag', current };

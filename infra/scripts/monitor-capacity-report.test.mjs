@@ -14,7 +14,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import archive from './monitor-capacity-archive.cjs';
-import report from './monitor-capacity-report.cjs';
+import reportModule from './monitor-capacity-report.cjs';
+
+const report = {
+  ...reportModule,
+  buildReport: (options) => reportModule.buildReport(options, Date.parse('2026-09-15T00:00:00Z')),
+};
 
 const from = '2026-09-14T10:59:00Z';
 const to = '2026-09-14T11:04:00Z';
@@ -237,6 +242,18 @@ test('rejects excessive, reversed, malformed, timezone-free, and overlapping win
   assert.throws(() => report.parseArguments(['__proto__', 'value']));
 });
 
+test('rejects a still-open window instead of reporting healthy future coverage', (t) => {
+  const { directory } = fixture(t);
+  assert.throws(
+    () => reportModule.buildReport({ directory, from, to }, Date.parse(to) - 1),
+    /not elapsed/u,
+  );
+  assert.equal(
+    reportModule.buildReport({ directory, from, to }, Date.parse(to)).current.status,
+    'healthy',
+  );
+});
+
 test('rejects duplicate timestamps, wrong hours, oversized files, and excess record counts', (t) => {
   const duplicate = fixture(t, [...series(), series()[0]]);
   assert.throws(
@@ -291,8 +308,10 @@ test('refuses symlinked or publicly readable archives and never creates an absen
 });
 
 test('CLI outputs only sanitized JSON and hides malformed input from errors', (t) => {
-  const { directory, files } = fixture(t);
-  const args = [cli, '--archive-dir', directory, '--from', from, '--to', to];
+  const cliFrom = new Date(Date.now() - 600_000).toISOString();
+  const cliTo = new Date(Date.parse(cliFrom) + 300_000).toISOString();
+  const { directory, files } = fixture(t, series(cliFrom));
+  const args = [cli, '--archive-dir', directory, '--from', cliFrom, '--to', cliTo];
   const success = spawnSync(process.execPath, args, { encoding: 'utf8' });
   assert.equal(success.status, 0, success.stderr);
   assert.equal(JSON.parse(success.stdout).current.status, 'healthy');

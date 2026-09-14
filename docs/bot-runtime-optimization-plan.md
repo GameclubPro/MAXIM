@@ -13,7 +13,7 @@ framework migration, broader bot permissions, native OCR policy changes, or prod
 - [x] Reduce redundant mirror lookups and coalesce concurrent membership heartbeat writes.
 - [x] Bound routing caches and reduce repeated assignment scans without changing queue ordering.
 - [x] Add deterministic performance/safety regressions and a bounded offline capacity report.
-- [ ] Pass local validation, exact-SHA CI, scoped deployment, and production observation.
+- [x] Pass local validation, exact-SHA CI, scoped deployment, and production observation.
 
 ## Baseline And Decisions
 
@@ -82,9 +82,37 @@ and 10,000-entry ceilings with persisted-shard recovery after eviction. Producti
 will be recorded after deployment; these operation-count improvements are not claims of equivalent
 end-to-end speedups.
 
-The offline report has 12 passing tests covering cross-hour windows, missing/sparse samples,
+The offline report has 13 passing tests covering cross-hour windows, missing/sparse samples,
 unknown values, comparison validity, private-file checks, bounded input, output redaction, and
-the distinction between historical restart totals, new increases, and counter resets.
+the distinction between historical restart totals, new increases, counter resets, and unfinished
+future windows.
+
+### Production Verification
+
+- API source `ec530cd3f39fcd9cb09581421531d94557cb3d18` passed the full local API check:
+  532 suites and 11,941 tests, plus typecheck/build. Static, documentation, and infrastructure
+  checks passed. The 17 locally skipped integration suites require their external services;
+  exact-SHA CI passed its PostgreSQL, Redis, native-image, and other required jobs plus CodeQL.
+- The verified CI image was preloaded and deployed through the normal wrapper. Release
+  `release-20260914T105707Z-ec530cd3f39f` passed ingress/admin live and ready, public live, and OCR
+  isolation/raster/shadow smokes. No schema migration, stateful-service recreation, static deploy,
+  queue purge, manual governor override, or concurrency increase was required.
+- The post-release capacity window `2026-09-14T11:02:48Z` through `11:07:48Z` contained 20 samples.
+  Ingress/admin readiness and queue-fence checks had zero failures. Sampled queue lag was
+  0.101-1.431 seconds, with p50 0.495 and p95 1.293 seconds. System mode returned to normal/healthy.
+- Docker inspection confirmed all 13 API roles running with zero restarts. The isolated OCR native
+  sandbox recycled once, producing a transient fleet alert; it is separate from the API roles.
+  This behavior was also present in the baseline and remains visible in the report. The complete
+  observation window is therefore not labeled uniformly healthy simply because it ended healthy.
+- Equal three-minute windows were inspected without claiming a causal speedup. The baseline
+  `10:10:58Z-10:13:58Z` had sampled queue-lag p50 0.272 and p95 2.298 seconds; the post-release
+  `11:04:48Z-11:07:48Z` window had p50 0.613 and p95 1.431 seconds. The report refused an automatic
+  comparison because the baseline restart counter reset. Traffic and startup conditions also
+  differ; the deterministic operation-count tests are the proof of reduced algorithmic work.
+- The 2x/4x end-to-end load profiles were not run: no isolated target was configured and the local
+  Docker daemon was unavailable. Production was observed read-only, not used as a stress-test target.
+- A final local-tool-only correction rejects windows that have not finished yet. It does not change
+  the deployed API image or perform production operations.
 
 ## Offline Comparison
 
@@ -98,7 +126,8 @@ node infra/scripts/monitor-capacity-report.cjs \
 ```
 
 Use actual captured windows when comparing a release. Each window must span 1-60 minutes; the
-baseline must be earlier, non-overlapping, and equally long. `--archive-dir` overrides the normal
+baseline must be earlier, non-overlapping, and equally long; both windows must have ended.
+`--archive-dir` overrides the normal
 XDG state location. Missing files, inadequate cadence, unknown health data, and stale metrics are
 visible rather than interpreted as successful observations. The file/record budgets are inherited
 from the existing archive format. CLI errors never echo archive content.
@@ -106,3 +135,4 @@ from the existing archive format. CLI errors never echo archive content.
 The JSON basis is `sampled_oldest_queue_lag`, not request latency. A negative change in p95 is a
 descriptive comparison, not proof of causation under different production traffic. No additional
 background monitoring process or external observability service is installed.
+Window `status` describes all observations in the selected interval; `last` is the final snapshot.
