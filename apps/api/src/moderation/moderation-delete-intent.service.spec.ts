@@ -5159,9 +5159,15 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
-  it.each([false, true])(
-    'clears a rejected profanity dispatch and preserves concurrent independent reason=%s',
-    async (hasIndependentReason) => {
+  it.each(
+    [false, true].flatMap((hasIndependentReason) =>
+      (['profanity_violation_no_longer_present', 'profanity_author_not_member'] as const).map(
+        (code) => ({ hasIndependentReason, code }),
+      ),
+    ),
+  )(
+    'clears a rejected profanity dispatch ($code) and preserves independent reason=$hasIndependentReason',
+    async ({ hasIndependentReason, code }) => {
       const intent = { ...baseIntent };
       const freshIntent = { ...baseIntent };
       const executeRaw = jest.fn().mockResolvedValue(1);
@@ -5196,10 +5202,7 @@ describe('ModerationDeleteIntentService', () => {
           assertIntentStillActionable: jest
             .fn()
             .mockRejectedValue(
-              new ProfanityDeleteGuardRejectedError(
-                'profanity_violation_no_longer_present',
-                'Current message is clean',
-              ),
+              new ProfanityDeleteGuardRejectedError(code, 'Current guard rejects deletion'),
             ),
         },
       );

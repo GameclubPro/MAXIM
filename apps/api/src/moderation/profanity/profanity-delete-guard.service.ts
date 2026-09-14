@@ -17,6 +17,7 @@ export class ProfanityDeleteGuardRejectedError extends Error {
     readonly code:
       | 'profanity_settings_disabled'
       | 'profanity_author_immune'
+      | 'profanity_author_not_member'
       | 'profanity_message_identity_changed'
       | 'profanity_violation_no_longer_present',
     message: string,
@@ -101,7 +102,15 @@ export class ProfanityDeleteGuardService {
       senderId,
       requestOptions,
     );
-    if (!access || (access.userId !== null && access.userId !== senderId)) {
+    // FLAG: This uncached lookup returns null only after a valid response omits the author.
+    // Cancel without sanctions; transport/malformed-response errors still propagate for retry.
+    if (!access) {
+      throw new ProfanityDeleteGuardRejectedError(
+        'profanity_author_not_member',
+        'Profanity deletion author is no longer a chat member',
+      );
+    }
+    if (access.userId !== null && access.userId !== senderId) {
       throw new Error('Profanity deletion author access is unavailable');
     }
     if (access.isAdmin || access.isOwner) {

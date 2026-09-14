@@ -138,6 +138,38 @@ describe('profanity enforcement dispatch safety', () => {
     expect(harness.maxClient.banMember).not.toHaveBeenCalled();
   });
 
+  it('finishes the webhook without retry or sanctions when the author has left the chat', async () => {
+    const harness = buildHarness();
+    harness.prisma.webhookEvent.findUnique.mockResolvedValue({
+      id: 'event-departed-author',
+      botId: null,
+      normalizedPayload: createUpdate(),
+    });
+    harness.guard.assertMessageStillActionable.mockRejectedValue(
+      new ProfanityDeleteGuardRejectedError(
+        'profanity_author_not_member',
+        'Profanity deletion author is no longer a chat member',
+      ),
+    );
+
+    await expect(
+      harness.service.processWebhookEvent('event-departed-author'),
+    ).resolves.toBeUndefined();
+
+    expect(harness.guard.assertMessageStillActionable).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.webhookEvent.update).toHaveBeenCalledWith({
+      where: { id: 'event-departed-author' },
+      data: expect.objectContaining({ status: 'PROCESSED', nextEnqueueAt: null }),
+    });
+    expect(harness.remoteDelete).not.toHaveBeenCalled();
+    expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    expect(harness.prisma.violation.count).not.toHaveBeenCalled();
+    expect(harness.prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(harness.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(harness.maxClient.kickMember).not.toHaveBeenCalled();
+    expect(harness.maxClient.banMember).not.toHaveBeenCalled();
+  });
+
   it('does not fall back to an unguarded DELETE when the profanity guard is missing', async () => {
     const harness = buildHarness();
     Object.assign(harness.service, { profanityDeleteGuard: undefined });

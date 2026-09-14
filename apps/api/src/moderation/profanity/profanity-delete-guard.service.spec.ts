@@ -238,14 +238,45 @@ describe('ProfanityDeleteGuardService', () => {
     },
   );
 
-  it('keeps unresolved author access retryable', async () => {
+  it('cancels deletion when a valid fresh lookup no longer contains the author', async () => {
     const harness = buildHarness();
     harness.maxClient.getChatMemberAccess.mockResolvedValue(null);
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      name: 'ProfanityDeleteGuardRejectedError',
+      code: 'profanity_author_not_member',
+    });
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(harness.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['MAX unavailable', 'Invalid MAX chat members response'])(
+    'does not mistake a failed lookup for confirmed absence: %s',
+    async (message) => {
+      const harness = buildHarness();
+      const error = new Error(message);
+      harness.maxClient.getChatMemberAccess.mockRejectedValue(error);
+
+      await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toBe(error);
+      expect(error).not.toBeInstanceOf(ProfanityDeleteGuardRejectedError);
+      expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+      expect(harness.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a mismatched author lookup retryable without sanctions', async () => {
+    const harness = buildHarness();
+    harness.maxClient.getChatMemberAccess.mockResolvedValue({
+      userId: 'another-user',
+      isAdmin: false,
+      isOwner: false,
+    });
 
     await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toThrow(
       'author access is unavailable',
     );
     expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(harness.immunity.consumeForMessage).not.toHaveBeenCalled();
   });
 
   it.each([
