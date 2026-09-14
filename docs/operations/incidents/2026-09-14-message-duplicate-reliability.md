@@ -1,5 +1,12 @@
 # Message Duplicate Reliability - 2026-09-14
 
+## Delivery
+
+Fix commit `fb1935bd8ee4bdb9a00b64b271ab71293c456121` is deployed in
+`release-20260914T125200Z-fb1935bd8ee4`. Exact-SHA CI, CodeQL and guarded production smokes passed.
+The verified CI image was preloaded; all 13 API roles and the OCR auxiliary use that image.
+There were no pending migrations. PostgreSQL, Redis and static containers were not recreated.
+
 ## Evidence And Scope
 
 The initial read-only production check found a permanent revision-2 `full` control scoped to
@@ -8,9 +15,9 @@ global disabled switch or a demonstrated fleet-wide MAX outage.
 
 The fixed `postgres-audit duplicate` report found successful duplicate deletes, retryable intents
 and expired work. Its capped samples are lower bounds, not fleet totals or success rates. A bounded
-failed-job Redis sample also contained MAX 404s and media-download failures. No message contents,
-identifiers, settings or queue jobs were exported or changed. These operational samples alone do
-not attribute every reported missed deletion to one cause.
+failed-job Redis sample also contained MAX 404s and media-download failures. Diagnostic summaries
+recorded here contain no message contents or identifiers. Settings and queue jobs were not changed
+for diagnosis. These samples alone do not attribute every reported missed deletion to one cause.
 
 Four defects were reproduced with failing regression tests:
 
@@ -41,10 +48,10 @@ Four defects were reproduced with failing regression tests:
 6. Done: settle rejected message-owned intents under the existing row lock without counting their
    own reason as independent authority. Mixed reasons cannot bypass the required message guard.
    Do not purge queues, reset action claims or replay old moderation manually.
-7. In progress: run focused Redis/BullMQ/media/enforcement tests, all API checks and scoped static
+7. Done: run focused Redis/BullMQ/media/enforcement tests, all API checks and scoped static
    validation; build and deploy the exact green SHA to every shared API role and OCR auxiliary.
-8. Pending: verify production health, unchanged runtime control and bounded duplicate outcomes.
-   Record release and validation results here after delivery.
+8. Done: verify production health, unchanged runtime control and bounded duplicate outcomes.
+   The post-release results and remaining diagnostic limitations are recorded below.
 
 ## Product Boundaries
 
@@ -63,12 +70,43 @@ compatible rollback and live-test boundaries.
 
 ## Validation Notes
 
-- The initial focused run passed 278 tests across 14 suites with disposable local Redis.
+- The final focused run passed 550 tests across 15 suites with disposable local Redis, including
+  message history, media/queue execution, both action handlers and durable delete recovery.
+- Standard `npm run check:api` passed typecheck, build, 533 suites and 11,956 tests. Seventeen
+  environment-dependent suites were skipped in that standard run; Redis coverage ran separately.
 - Typecheck, repository lint/refactor guards, documentation checks and 505 tooling tests passed.
 - A broader-than-CI run with Redis enabled for every API test passed 11,996 tests but failed nine
   tests in the unchanged `commercial-ocr-admission.redis-integration.spec.ts`. Its fixture calls
   the store immediately after construction, while its Redis client disables the offline queue.
   This optional OCR fixture is not enabled by the standard API CI step; the required Redis CI step
   targets `message-duplicate`. This repair does not change OCR admission or its test fixtures.
-- Standard API validation, exact-SHA CI and release smokes are pending below; the expanded Redis
-  run must not be described as fully green.
+- Every required CI lane and CodeQL passed for the exact deployed SHA, including the mandatory
+  message-duplicate Redis lane, PostgreSQL races, Docker builds and native sandbox smokes.
+  The broader local Redis run above must not be described as fully green.
+
+## Post-Release Observation
+
+- Queue pause during rollout temporarily caused readiness 503s. The queue drained through ordinary
+  processing; no manual governor override, queue purge or release-manifest recovery was needed.
+  Ingress/admin live and ready, public live, OCR isolation, UDS raster and shadow smokes passed
+  before the manifest was committed.
+- The completed capacity window `12:57:17Z` to `12:59:17Z` had eight samples with complete coverage:
+  no readiness failures, exact 13-role identity/image, no restarts and a released queue fence.
+  Sampled oldest-queue lag ranged from 0 to 1.578 seconds. These are queue-age samples, not request
+  latencies. The automatic mode was still in its five-minute `stabilizing` recovery window.
+- The final `13:02:51Z` health check confirmed automatic `normal / healthy` mode, successful
+  ingress/admin readiness, database/Redis health and queue lag below two seconds.
+- Runtime control remained revision 2, permanent `full`, scoped to `all_enabled_chats`. The action
+  process uses the enabled environment default. No per-chat settings or photo policy were changed.
+- The first post-release intent audit hit its five-second database statement timeout. It was not
+  widened or bypassed; one later fixed-catalog retry completed after the monitor finished.
+- The later capped intent sample contained 35 successful duplicate deletes and three terminally
+  rejected duplicate intents. The retryable sample still saturated its 64-intent cap, and 13
+  sampled duplicate intents were waiting for capability. This is not proof that every retry or
+  missed deletion has disappeared; the hour-long sample also overlaps the previous runtime.
+- Logs still showed MAX 404s and missing delete-capable routes in some chats. Unknown MAX state,
+  unavailable media and insufficient bot permissions remain non-authorizing outcomes. Investigate
+  any remaining concrete complaint by its chat/time and current settings, not by extrapolating
+  a fleet success rate from these bounded samples.
+- No live test messages or sanctions were sent to real participants. Temporary Redis and monitor
+  logs were cleaned up; only the privacy-safe capacity archive remains under its normal retention.
