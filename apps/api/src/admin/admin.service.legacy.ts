@@ -379,6 +379,7 @@ import {
   PublisherSuggestionAdminQueueService,
 } from '../publisher/publisher-suggestion-admin.queue';
 import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
+import { withCommentWrite } from './comment-restriction-store';
 import {
   countPublisherChatComments,
   toggleDialogCommentReactionForProfile,
@@ -7669,40 +7670,50 @@ export class AdminService implements OnModuleDestroy {
       params.normalizedAttachments,
     );
 
-    const created = await this.prisma.auditLog.create({
-      data: {
+    const created = await withCommentWrite(
+      this.prisma,
+      {
         chatId: params.chatId,
-        actorUserId: params.user.userId,
-        action: resolveDialogAuditAction(params.dialogType, params.dialogProfile),
-        payload: {
-          type: params.dialogType,
-          threadId: params.threadId,
-          text: params.text,
-          authorDisplayName: params.authorDisplayName ?? null,
-          authorAvatarUrl: params.authorAvatarUrl ?? null,
-          ...(params.replyTo
-            ? {
-                replyTo: {
-                  messageId: params.replyTo.messageId,
-                  authorDisplayName: params.replyTo.authorDisplayName,
-                  text: params.replyTo.text,
-                },
-              }
-            : {}),
-          ...(uploadedAttachments.length > 0
-            ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
-            : {}),
-          ...(params.entityType === 'chat'
-            ? {
-                delivered: true,
-                deliveredToUserId: null,
-              }
-            : {}),
-          source: params.source,
-          ...(params.dialogProfile === 'publisher' ? { publisherProfile: true } : {}),
-        },
+        entityType: params.entityType,
+        profile: params.dialogProfile ?? 'moderation',
       },
-    });
+      params.user.userId,
+      (tx) =>
+        tx.auditLog.create({
+          data: {
+            chatId: params.chatId,
+            actorUserId: params.user.userId,
+            action: resolveDialogAuditAction(params.dialogType, params.dialogProfile),
+            payload: {
+              type: params.dialogType,
+              threadId: params.threadId,
+              text: params.text,
+              authorDisplayName: params.authorDisplayName ?? null,
+              authorAvatarUrl: params.authorAvatarUrl ?? null,
+              ...(params.replyTo
+                ? {
+                    replyTo: {
+                      messageId: params.replyTo.messageId,
+                      authorDisplayName: params.replyTo.authorDisplayName,
+                      text: params.replyTo.text,
+                    },
+                  }
+                : {}),
+              ...(uploadedAttachments.length > 0
+                ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
+                : {}),
+              ...(params.entityType === 'chat'
+                ? {
+                    delivered: true,
+                    deliveredToUserId: null,
+                  }
+                : {}),
+              source: params.source,
+              ...(params.dialogProfile === 'publisher' ? { publisherProfile: true } : {}),
+            },
+          },
+        }),
+    );
 
     const message = {
       id: created.id,
@@ -15584,6 +15595,7 @@ export class AdminService implements OnModuleDestroy {
 
     const updated = await updateDialogCommentForProfile({
       prisma: this.prisma,
+      entityType: params.entityType,
       chatId: params.chatId,
       messageId: params.messageId,
       dialogProfile: params.dialogProfile,
@@ -15685,6 +15697,7 @@ export class AdminService implements OnModuleDestroy {
 
     const updated = await toggleDialogCommentReactionForProfile({
       prisma: this.prisma,
+      entityType: params.entityType,
       chatId: params.chatId,
       messageId: params.messageId,
       dialogProfile: params.dialogProfile,

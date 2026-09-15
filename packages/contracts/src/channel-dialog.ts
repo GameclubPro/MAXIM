@@ -496,3 +496,44 @@ export const deleteChannelDialogMessageResponseSchema = /*#__PURE__*/ z.object({
 export type DeleteChannelDialogMessageResponse = z.infer<
   typeof deleteChannelDialogMessageResponseSchema
 >;
+
+export const commentRestrictionSchema = z.object({
+  userId: z.string(),
+  displayName: z.string().nullable(),
+  kind: z.enum(['MUTE', 'BAN']).nullable(),
+  expiresAt: z.string().datetime().nullable(),
+  reason: z.string().max(300),
+  revision: z.number().int().nonnegative(),
+});
+export type CommentRestriction = z.infer<typeof commentRestrictionSchema>;
+
+export const commentModerationStateSchema = z.object({
+  canManage: z.boolean(),
+  restriction: commentRestrictionSchema,
+});
+
+export const commentRestrictionsPageSchema = z.object({
+  items: z.array(commentRestrictionSchema),
+  nextCursor: z.string().nullable(),
+});
+
+export const updateCommentRestrictionRequestSchema = z
+  .object({
+    token: z.string().trim().min(16).max(256),
+    action: z.enum(['MUTE', 'BAN', 'RELEASE']),
+    durationSeconds: z.union([z.literal(3600), z.literal(86400), z.literal(604800)]).optional(),
+    reason: z.string().trim().max(300).default(''),
+    expectedRevision: z.number().int().nonnegative(),
+    sourceMessageId: z.string().trim().min(1).max(191).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.action === 'MUTE') !== (value.durationSeconds !== undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['durationSeconds'],
+        message: 'Укажите срок только для мута.',
+      });
+    }
+  });
+export type UpdateCommentRestrictionRequest = z.infer<typeof updateCommentRestrictionRequestSchema>;

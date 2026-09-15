@@ -2,6 +2,8 @@ import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Prisma, type PrismaClient } from '../prisma/prisma-client';
 import { CHANNEL_DIALOG_MESSAGES_LIMIT } from './admin.service.support';
+import { withCommentWrite } from './comment-restriction-store';
+import type { ManagedEntityType } from '@maxim/contracts';
 
 export type PublisherChatCommentRow = {
   id: string;
@@ -27,6 +29,7 @@ type ParsedDialogCommentTarget = {
 
 type DialogCommentMutationBase = {
   prisma: PrismaClient;
+  entityType: ManagedEntityType;
   chatId: string;
   messageId: string;
   dialogProfile?: MiniappProfile;
@@ -126,21 +129,29 @@ export async function mutatePublisherChatCommentWithLock(
   identity: PublisherChatCommentIdentity,
   mutation: PublisherChatCommentMutation,
 ): Promise<PublisherChatCommentRow | null> {
-  return prisma.$transaction(async (tx) => {
-    const rows = await tx.$queryRaw<PublisherChatCommentRow[]>(
-      buildPublisherChatCommentLockQuery(identity),
-    );
-    const row = rows[0];
-    if (!row) {
-      return null;
-    }
+  return prisma.$transaction((tx) =>
+    mutatePublisherChatCommentInTransaction(tx, identity, mutation),
+  );
+}
 
-    const payload = await mutation(row);
-    return tx.auditLog.update({
-      where: { id: row.id },
-      data: { payload },
-      select: dialogCommentRowSelect,
-    });
+async function mutatePublisherChatCommentInTransaction(
+  tx: Prisma.TransactionClient,
+  identity: PublisherChatCommentIdentity,
+  mutation: PublisherChatCommentMutation,
+): Promise<PublisherChatCommentRow | null> {
+  const rows = await tx.$queryRaw<PublisherChatCommentRow[]>(
+    buildPublisherChatCommentLockQuery(identity),
+  );
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
+
+  const payload = await mutation(row);
+  return tx.auditLog.update({
+    where: { id: row.id },
+    data: { payload },
+    select: dialogCommentRowSelect,
   });
 }
 
@@ -163,23 +174,35 @@ export async function updateDialogCommentForProfile(
   };
 
   if (params.dialogProfile === 'publisher') {
-    return mutatePublisherChatCommentWithLock(
+    return withCommentWrite(
       params.prisma,
-      {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        threadId: params.resolvePublisherThreadId(),
-      },
-      (row) => buildPayload({ row, payload: readObjectPayload(row.payload) }),
+      { chatId: params.chatId, entityType: params.entityType, profile: 'publisher' },
+      params.userId,
+      (tx) =>
+        mutatePublisherChatCommentInTransaction(
+          tx,
+          {
+            chatId: params.chatId,
+            messageId: params.messageId,
+            threadId: params.resolvePublisherThreadId(),
+          },
+          (row) => buildPayload({ row, payload: readObjectPayload(row.payload) }),
+        ),
     );
   }
 
   const target = await params.resolveLegacyTarget();
-  return params.prisma.auditLog.update({
-    where: { id: target.row.id },
-    data: { payload: buildPayload(target) },
-    select: dialogCommentRowSelect,
-  });
+  return withCommentWrite(
+    params.prisma,
+    { chatId: params.chatId, entityType: params.entityType, profile: 'moderation' },
+    params.userId,
+    (tx) =>
+      tx.auditLog.update({
+        where: { id: target.row.id },
+        data: { payload: buildPayload(target) },
+        select: dialogCommentRowSelect,
+      }),
+  );
 }
 
 export async function toggleDialogCommentReactionForProfile(
@@ -192,23 +215,35 @@ export async function toggleDialogCommentReactionForProfile(
     }) as Prisma.InputJsonValue;
 
   if (params.dialogProfile === 'publisher') {
-    return mutatePublisherChatCommentWithLock(
+    return withCommentWrite(
       params.prisma,
-      {
-        chatId: params.chatId,
-        messageId: params.messageId,
-        threadId: params.resolvePublisherThreadId(),
-      },
-      (row) => buildPayload(readObjectPayload(row.payload)),
+      { chatId: params.chatId, entityType: params.entityType, profile: 'publisher' },
+      params.userId,
+      (tx) =>
+        mutatePublisherChatCommentInTransaction(
+          tx,
+          {
+            chatId: params.chatId,
+            messageId: params.messageId,
+            threadId: params.resolvePublisherThreadId(),
+          },
+          (row) => buildPayload(readObjectPayload(row.payload)),
+        ),
     );
   }
 
   const target = await params.resolveLegacyTarget();
-  return params.prisma.auditLog.update({
-    where: { id: target.row.id },
-    data: { payload: buildPayload(target.payload) },
-    select: dialogCommentRowSelect,
-  });
+  return withCommentWrite(
+    params.prisma,
+    { chatId: params.chatId, entityType: params.entityType, profile: 'moderation' },
+    params.userId,
+    (tx) =>
+      tx.auditLog.update({
+        where: { id: target.row.id },
+        data: { payload: buildPayload(target.payload) },
+        select: dialogCommentRowSelect,
+      }),
+  );
 }
 
 function readObjectPayload(value: Prisma.JsonValue): Record<string, unknown> {

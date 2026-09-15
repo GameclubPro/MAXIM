@@ -1,10 +1,18 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
+import type { ManagedEntityType } from '@maxim/contracts';
 import {
   normalizeAppBaseUrl,
   normalizeBotContactId,
@@ -28,6 +36,7 @@ export class ChannelDialogService {
     configService: ConfigService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly maxBotRegistry?: MaxBotRegistryService,
+    @Optional() private readonly publisherDialogLinks?: PublisherDialogLinkService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -49,6 +58,23 @@ export class ChannelDialogService {
       maxBotLinkService: this.maxBotLinkService,
       maxBotRegistry: this.maxBotRegistry,
     });
+  }
+
+  resolveCommentThread(
+    chatId: string,
+    entityType: ManagedEntityType,
+    token: string,
+    profile: MiniappProfile,
+  ): string | null {
+    const links = profile === 'publisher' ? this.publisherDialogLinks : this.dialogLinkHelper;
+    if (!links) throw new ServiceUnavailableException('Комментарии временно недоступны.');
+    const threadId =
+      entityType === 'channel'
+        ? links.resolveChannelDialogThreadId(chatId, 'comments', token)
+        : links.resolveChatDialogThreadId(chatId, 'comments', token);
+    if (profile === 'publisher' && !threadId)
+      throw new BadRequestException('Ссылка на комментарии недействительна.');
+    return threadId;
   }
 
   getChannelSuggestionRedirect(chatId: string, token: string | null) {

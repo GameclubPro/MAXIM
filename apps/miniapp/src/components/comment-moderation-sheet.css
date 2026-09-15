@@ -1,0 +1,190 @@
+@layer components {
+  .comment-moderation-sheet {
+    --text: var(--text-primary);
+    --surface: var(--color-surface);
+    --border: var(--color-border);
+    --comment-moderation-danger: #b42335;
+    --comment-moderation-success: #187346;
+    --comment-moderation-on-action: #fff;
+    position: fixed;
+    inset: 0;
+    z-index: 1800;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 12px 12px max(12px, var(--safe-bottom, 0px));
+    color: var(--text);
+  }
+  .comment-moderation-sheet__backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: var(--color-scrim);
+  }
+  .comment-moderation-sheet__panel {
+    position: relative;
+    width: min(100%, 460px);
+    max-height: min(100%, 720px);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px var(--color-scrim);
+    overflow: hidden;
+  }
+  .comment-moderation-sheet header,
+  .comment-moderation-sheet footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    flex-shrink: 0;
+  }
+  .comment-moderation-sheet h2 {
+    font-size: 18px;
+    line-height: 1.3;
+    margin: 0;
+  }
+  .comment-moderation-sheet__content {
+    padding: 0 16px 16px;
+    overflow-y: auto;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
+    overflow-wrap: anywhere;
+  }
+  .comment-moderation-sheet__scope,
+  .comment-moderation-sheet small {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+  .comment-moderation-sheet__name {
+    display: block;
+    font-size: 17px;
+  }
+  .comment-moderation-sheet__status {
+    font-weight: 600;
+  }
+  .comment-moderation-sheet button,
+  .comment-moderation-sheet select,
+  .comment-moderation-sheet textarea {
+    font: inherit;
+    letter-spacing: 0;
+  }
+  .comment-moderation-sheet button:not(.comment-moderation-sheet__backdrop) {
+    min-height: 44px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .comment-moderation-sheet button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .comment-moderation-sheet button:focus-visible,
+  .comment-moderation-sheet select:focus-visible,
+  .comment-moderation-sheet textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .comment-moderation-sheet button.comment-moderation-sheet__icon {
+    width: 44px;
+    padding: 10px;
+    flex-shrink: 0;
+    border: 0;
+  }
+  .comment-moderation-sheet svg {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .comment-moderation-sheet fieldset {
+    border: 0;
+    padding: 0;
+    margin: 16px 0;
+    display: grid;
+    gap: 2px;
+  }
+  .comment-moderation-sheet legend {
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .comment-moderation-sheet fieldset label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+  }
+  .comment-moderation-sheet input[type='radio'] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+  }
+  .comment-moderation-sheet__field {
+    display: block;
+    margin: 12px 0;
+  }
+  .comment-moderation-sheet__field span {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+  .comment-moderation-sheet select,
+  .comment-moderation-sheet textarea {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    margin-top: 6px;
+    padding: 10px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 16px;
+  }
+  .comment-moderation-sheet textarea {
+    resize: vertical;
+    max-height: 150px;
+  }
+  .comment-moderation-sheet footer {
+    border-top: 1px solid var(--border);
+  }
+  .comment-moderation-sheet footer button {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .comment-moderation-sheet footer .is-danger {
+    background: var(--comment-moderation-danger);
+    border-color: var(--comment-moderation-danger);
+    color: var(--comment-moderation-on-action);
+  }
+  .comment-moderation-sheet footer .is-release {
+    background: var(--comment-moderation-success);
+    border-color: var(--comment-moderation-success);
+    color: var(--comment-moderation-on-action);
+  }
+  .comment-moderation-sheet button.comment-moderation-sheet__participant {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 10px;
+    text-align: left;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    padding: 12px 0;
+  }
+  .comment-moderation-sheet__participant span {
+    display: grid;
+    flex: 1;
+    gap: 4px;
+    min-width: 0;
+  }
+  .comment-moderation-sheet [role='alert'] {
+    color: var(--danger);
+  }
+}

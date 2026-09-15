@@ -510,6 +510,7 @@ export function createPrismaMock() {
     row.updatedAt = new Date('2026-03-01T00:00:00.000Z');
   };
   const prisma = {
+    commentRestriction: { findUnique: jest.fn().mockResolvedValue(null) },
     chat: {
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
       upsert: jest.fn().mockResolvedValue({

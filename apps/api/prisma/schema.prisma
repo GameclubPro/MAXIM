@@ -8,6 +8,22 @@ datasource db {
   provider = "postgresql"
 }
 
+model CommentRestriction {
+  profile     String
+  entityType  ChatEntityType @map("entity_type")
+  chatId      String         @map("chat_id")
+  userId      String         @map("user_id")
+  displayName String?        @map("display_name")
+  kind        String?
+  expiresAt   DateTime?      @map("expires_at") @db.Timestamptz(3)
+  reason      String         @default("")
+  revision    Int            @default(0)
+  updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@id([profile, entityType, chatId, userId])
+  @@map("comment_restrictions")
+}
+
 enum ProfanityLevel {
   LOW
   MEDIUM

@@ -21,6 +21,8 @@ const baseRow = {
 
 function createMutationPrisma(row = baseRow) {
   const prisma: any = {
+    $executeRaw: jest.fn().mockResolvedValue(1),
+    commentRestriction: { findUnique: jest.fn().mockResolvedValue(null) },
     $queryRaw: jest.fn().mockResolvedValue([row]),
     auditLog: {
       update: jest.fn(async ({ data }: any) => ({ ...row, payload: data.payload })),
@@ -66,6 +68,7 @@ describe('Publisher chat comment queries', () => {
     const resolveLegacyTarget = jest.fn();
 
     const updated = await updateDialogCommentForProfile({
+      entityType: 'chat',
       prisma,
       chatId: 'chat-1',
       messageId: 'comment-1',
@@ -94,6 +97,7 @@ describe('Publisher chat comment queries', () => {
 
     await expect(
       updateDialogCommentForProfile({
+        entityType: 'chat',
         prisma,
         chatId: 'chat-1',
         messageId: 'comment-1',
@@ -117,6 +121,7 @@ describe('Publisher chat comment queries', () => {
     });
 
     const updated = await updateDialogCommentForProfile({
+      entityType: 'chat',
       prisma,
       chatId: 'chat-1',
       messageId: 'comment-1',
@@ -134,7 +139,7 @@ describe('Publisher chat comment queries', () => {
         reactions: [{ emoji: 'like', userIds: ['user-2'] }],
       }),
     );
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(resolvePublisherThreadId).not.toHaveBeenCalled();
     expect(resolveLegacyTarget).toHaveBeenCalledTimes(1);
   });
@@ -146,6 +151,7 @@ describe('Publisher chat comment queries', () => {
     const majorTarget = jest.fn().mockResolvedValue({ row: baseRow, payload: baseRow.payload });
 
     const publisher = await toggleDialogCommentReactionForProfile({
+      entityType: 'chat',
       prisma: publisherPrisma,
       chatId: 'chat-1',
       messageId: 'comment-1',
@@ -157,6 +163,7 @@ describe('Publisher chat comment queries', () => {
       toggleReactions,
     });
     const major = await toggleDialogCommentReactionForProfile({
+      entityType: 'chat',
       prisma: majorPrisma,
       chatId: 'chat-1',
       messageId: 'comment-1',
@@ -176,7 +183,7 @@ describe('Publisher chat comment queries', () => {
     );
     expect(major?.payload).toEqual(publisher?.payload);
     expect(publisherPrisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(majorPrisma.$transaction).not.toHaveBeenCalled();
+    expect(majorPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(majorTarget).toHaveBeenCalledTimes(1);
   });
 });

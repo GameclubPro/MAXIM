@@ -640,6 +640,10 @@ export class ManagedEntitiesService {
     return this.assertManagedEntityAdminAccess(chatId, user, 'chat');
   }
 
+  resolveManagedEntityReadBotId(chatId: string): Promise<string | undefined> {
+    return this.legacyAdminService.resolveManagedEntityHeaderReadBotId(chatId);
+  }
+
   assertChannelAdminAccess(chatId: string, user: AuthUser): Promise<void> {
     return this.assertManagedEntityAdminAccess(chatId, user, 'channel');
   }

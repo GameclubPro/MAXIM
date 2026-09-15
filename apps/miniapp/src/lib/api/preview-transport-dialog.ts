@@ -27,6 +27,12 @@ import {
   type PreviewRequestHandler,
 } from './preview-transport-runtime';
 import { buildAuthorBadge, cloneJson, parseJsonBody } from './preview-transport-shared';
+import {
+  updateCommentRestrictionRequestSchema,
+  type CommentRestriction,
+} from '@maxim/contracts/channel-dialog';
+
+const previewRestrictions = new WeakMap<PreviewState, Map<string, CommentRestriction>>();
 
 export function resolveChatTitle(chatId: string, state: PreviewState): string {
   return state.chats.find((item) => item.id === chatId)?.title ?? PREVIEW_CHAT_TITLE;
@@ -654,6 +660,86 @@ export const handleDialogPreviewRequest: PreviewRequestHandler = (context) => {
   const entity = resolvePreviewEntityRequest(context);
   if (!entity || entity.tail[0] !== 'dialog') {
     return PREVIEW_NOT_HANDLED;
+  }
+  if (entity.tail[1] === 'comments') {
+    const { state, method, init, url } = context;
+    const prefix = `${state.me.profile}:${entity.entityType}:${entity.entityId}:`;
+    const restrictions = previewRestrictions.get(state) ?? new Map<string, CommentRestriction>();
+    previewRestrictions.set(state, restrictions);
+    const read = (userId: string): CommentRestriction => {
+      const row = restrictions.get(prefix + userId) ?? {
+        userId,
+        displayName: null,
+        kind: null,
+        expiresAt: null,
+        reason: '',
+        revision: 0,
+      };
+      return row.kind === 'MUTE' &&
+        row.expiresAt &&
+        Date.parse(row.expiresAt) <= readPreviewClock(state.clock).getTime()
+        ? { ...row, kind: null, expiresAt: null, reason: '' }
+        : row;
+    };
+    if (entity.tail[2] === 'moderation') {
+      const targetUserId = entity.tail[4] ? decodeURIComponent(entity.tail[4]) : null;
+      const canManage = state.me.userId.startsWith('preview-admin');
+      if (method === 'GET' && entity.tail.length === 3)
+        return { canManage, restriction: cloneJson(read(state.me.userId)) };
+      if (!canManage) throw new Error('Недостаточно прав администратора.');
+      if (method === 'GET' && entity.tail[3] === 'restrictions') {
+        const cursor = url.searchParams.get('cursor');
+        const items = [...restrictions.keys()]
+          .filter((key) => key.startsWith(prefix))
+          .map((key) => read(key.slice(prefix.length)))
+          .filter((row) => row.kind && (!cursor || row.userId > cursor))
+          .sort((a, b) => a.userId.localeCompare(b.userId));
+        return cloneJson({
+          items: items.slice(0, 50),
+          nextCursor: items.length > 50 ? items[49]!.userId : null,
+        });
+      }
+      if (targetUserId && method === 'GET') return cloneJson(read(targetUserId));
+      if (targetUserId && method === 'PUT') {
+        const request = updateCommentRestrictionRequestSchema.parse(parseJsonBody(init));
+        const current = read(targetUserId);
+        if (current.revision !== request.expectedRevision)
+          throw new Error('Ограничение уже изменилось. Обновите данные.');
+        const source = getPreviewDialogBucket(
+          state,
+          entity.entityType,
+          'comments',
+          request.token,
+        ).messages.find(
+          (message) =>
+            message.id === request.sourceMessageId && message.authorUserId === targetUserId,
+        );
+        if (!current.revision && !source) throw new Error('Комментарий автора не найден.');
+        if (targetUserId === state.me.userId || source?.isAdmin)
+          throw new Error('Администратора нельзя ограничивать.');
+        const updated: CommentRestriction = {
+          userId: targetUserId,
+          displayName: source?.authorDisplayName ?? current.displayName,
+          kind: request.action === 'RELEASE' ? null : request.action,
+          expiresAt:
+            request.action === 'MUTE'
+              ? new Date(
+                  readPreviewClock(state.clock).getTime() + request.durationSeconds! * 1000,
+                ).toISOString()
+              : null,
+          reason: request.action === 'RELEASE' ? '' : request.reason,
+          revision: current.revision + 1,
+        };
+        restrictions.set(prefix + targetUserId, updated);
+        return cloneJson(updated);
+      }
+    }
+    if (
+      entity.tail[2] === 'messages' &&
+      (method === 'POST' || method === 'PATCH') &&
+      read(state.me.userId).kind
+    )
+      throw new Error('Участие в комментариях этого сообщества ограничено.');
   }
   return entity.entityType === 'chat'
     ? handleChatDialogPreviewRequest(

@@ -38,6 +38,8 @@ import { PublisherVkParsingController } from './publisher-vk-parsing.controller'
 import { PublisherVkBotReviewController } from './publisher-vk-bot-review.controller';
 import { VkBotReviewService } from './vk-bot-review.service';
 import { ChannelDialogService } from './channel-dialog.service';
+import { CommentModerationService } from './comment-moderation.service';
+import { CommentModerationController } from './comment-moderation.controller';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { CHANNEL_DIALOG_LEGACY_PORT } from './channel-dialog-legacy.port';
 import { ManualModerationService } from './manual-moderation.service';
@@ -141,6 +143,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherVkParsingController,
     PublisherVkBotReviewController,
     AdminDialogController,
+    CommentModerationController,
     AdminGiveawayController,
     AdminPollController,
     AdminManualModerationController,
@@ -169,6 +172,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminDuplicateDiagnosticsService,
     AdminSettingsService,
     ChannelDialogService,
+    CommentModerationService,
     ChannelPostSignatureService,
     ChannelStatsCollectorService,
     ManualModerationService,

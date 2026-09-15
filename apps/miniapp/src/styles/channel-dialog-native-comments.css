@@ -1,4 +1,21 @@
 @layer pages {
+  .channel-dialog-compose__restriction {
+    padding: 14px 16px;
+    color: var(--comments-text);
+    overflow-wrap: anywhere;
+  }
+  .channel-dialog-compose__restriction strong,
+  .channel-dialog-compose__restriction span {
+    display: block;
+  }
+  .channel-dialog-compose__restriction span {
+    margin-top: 6px;
+    font-size: 13px;
+  }
+  .channel-dialog-compose__restriction p {
+    margin: 6px 0;
+    font-size: 14px;
+  }
   .channel-dialog-screen--comments {
     color-scheme: light;
     --comments-native-bg: #eaf6f8;
