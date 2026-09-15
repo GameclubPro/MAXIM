@@ -293,6 +293,76 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect(expandedTestIds).toContain(fencedNewerId);
     expect(expandedTestIds).not.toContain(lifecycleEventId);
 
+    const hotHead = dueCandidates.find((candidate) => candidate.id === poisonRows[0]!.id)!;
+    const hotExpansion = await reader.expandSelectedChatCandidates(
+      [
+        { ...hotHead, priority: 5 },
+        { ...dueHead, priority: 5 },
+      ],
+      now,
+    );
+    expect(
+      hotExpansion.filter((candidate) => candidate.id.startsWith('outbox-poison-')),
+    ).toHaveLength(16);
+    expect(hotExpansion.map((candidate) => candidate.id)).toContain(fencedNewerId);
+
+    let capturedExpansionQuery: Prisma.Sql | null = null;
+    const expansionCaptureService = Object.create(WebhookOutboxService.prototype) as object;
+    Object.defineProperty(expansionCaptureService, 'batchSize', { value: 100 });
+    Object.defineProperty(expansionCaptureService, 'prisma', {
+      value: {
+        $transaction: async (operation: (tx: unknown) => Promise<unknown>) =>
+          operation({
+            $executeRaw: async () => 0,
+            $queryRaw: async (query: Prisma.Sql) => {
+              capturedExpansionQuery = query;
+              return [];
+            },
+          }),
+      },
+    });
+    await (expansionCaptureService as OrderedWebhookHeadReader).expandSelectedChatCandidates(
+      [
+        { ...hotHead, priority: 5 },
+        { ...dueHead, priority: 5 },
+      ],
+      now,
+    );
+    expect(capturedExpansionQuery).not.toBeNull();
+    expect(capturedExpansionQuery!.sql).toContain('selected_chat_heads AS MATERIALIZED');
+    expect(capturedExpansionQuery!.values.filter((value) => typeof value === 'number')).toEqual([
+      16, 300,
+    ]);
+    const expansionPlan = await prisma.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+      Prisma.sql`EXPLAIN (FORMAT JSON) ${capturedExpansionQuery!}`,
+    );
+    const expansionNodes = collectExplainNodes(expansionPlan);
+    expect(
+      expansionNodes.some((node) => node['Index Name'] === 'webhook_events_ordered_chat_head_idx'),
+    ).toBe(true);
+    expect(
+      expansionNodes.some(
+        (node) => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'webhook_events',
+      ),
+    ).toBe(false);
+
+    // Ineligible heads must consume the window, not trigger an unbounded search for due rows.
+    await prisma.webhookEvent.updateMany({
+      where: { id: { in: poisonRows.slice(0, 16).map((row) => row.id) } },
+      data: { nextEnqueueAt: new Date(now.getTime() + 60_000) },
+    });
+    const fencedExpansion = await reader.expandSelectedChatCandidates(
+      [
+        { ...hotHead, priority: 5 },
+        { ...dueHead, priority: 5 },
+      ],
+      now,
+    );
+    expect(
+      fencedExpansion.filter((candidate) => candidate.id.startsWith('outbox-poison-')),
+    ).toEqual([{ ...hotHead, priority: 5 }]);
+    expect(fencedExpansion.map((candidate) => candidate.id)).toContain(fencedNewerId);
+
     let capturedSelectionQuery: Prisma.Sql | null = null;
     const captureService = Object.create(WebhookOutboxService.prototype) as object;
     Object.defineProperty(captureService, 'batchSize', { value: 100 });
@@ -323,6 +393,54 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect(planNodes.filter((node) => node['Node Type'] === 'Limit').length).toBeGreaterThanOrEqual(
       5,
     );
+  });
+
+  it('cancels blocked optional expansion in PostgreSQL and releases its connection', async () => {
+    let releaseLock!: () => void;
+    let markLocked!: () => void;
+    const lockHeld = new Promise<void>((resolve) => {
+      markLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const blocker = prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`LOCK TABLE webhook_events IN ACCESS EXCLUSIVE MODE`;
+        markLocked();
+        await release;
+      },
+      { timeout: 5_000 },
+    );
+    try {
+      await Promise.race([
+        lockHeld,
+        blocker.then(() => {
+          throw new Error('Lock was not held');
+        }),
+      ]);
+      await expect(
+        reader.expandSelectedChatCandidates(
+          [
+            {
+              id: randomUUID(),
+              status: WebhookStatus.RECEIVED,
+              createdAt: new Date(),
+              normalizedPayload: {
+                type: 'message_created',
+                message: { chatId: 'expansion-timeout' },
+              },
+              priority: 5,
+            },
+          ],
+          new Date(),
+        ),
+      ).rejects.toThrow(/statement timeout/u);
+    } finally {
+      releaseLock();
+      await blocker;
+    }
+    await expect(prisma.$queryRaw`SELECT 1 AS ok`).resolves.toEqual([{ ok: 1 }]);
   });
 
   it('selects a retained snake-case mirror only from a clean completed semantic owner', async () => {

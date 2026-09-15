@@ -41,6 +41,7 @@ const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
 const BACKGROUND_STALE_QUEUED_REPAIR_MS = 120_000;
 const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
+const SELECTED_CHAT_EXPANSION_MAX_PER_CHAT = 16;
 const WEBHOOK_WORK_UNIT_OVERSCAN_SIZE = 5_000;
 const DEGRADED_WEBHOOK_WORK_UNIT_OVERSCAN_SIZE = 1_000;
 const DEGRADED_ENQUEUE_BATCH_SIZE = 100;
@@ -948,9 +949,32 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     const eligibility = buildEnqueueEligibilitySql(now, includeCompletedTimeoutRepair);
-    // Expand only after work-unit quota selection so terminal heads can advance without starving peers.
-    const expandedCandidates = await this.prisma.$queryRaw<WebhookEnqueueCandidate[]>(Prisma.sql`
+    const expansionLimit = this.resolvePrioritySelectionWindowSize();
+    const perChatLimit = Math.max(
+      1,
+      Math.min(
+        SELECTED_CHAT_EXPANSION_MAX_PER_CHAT,
+        Math.floor(expansionLimit / selectedChatIds.length),
+      ),
+    );
+    const requestedChats = Prisma.join(selectedChatIds.map((chatId) => Prisma.sql`(${chatId})`));
+    // FLAG: Bound exact indexed chat heads before eligibility filters; a global IN/ORDER BY
+    // can scan the entire pending backlog and block unrelated Publisher private imports.
+    const expansionQuery = Prisma.sql`
       /* selected_chat_candidates */
+      WITH selected_chat_heads AS MATERIALIZED (
+        SELECT head.*
+        FROM (VALUES ${requestedChats}) AS requested_chats("chatId")
+        JOIN LATERAL (
+          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+          FROM "webhook_events"
+          WHERE ${ORDERED_WEBHOOK_HEAD_STATUS_SQL}
+            AND ${ORDERED_WEBHOOK_MESSAGE_SQL}
+            AND ${ORDERED_WEBHOOK_CHAT_ID_SQL} = requested_chats."chatId"
+          ORDER BY "created_at" ASC, "id" ASC
+          LIMIT ${perChatLimit}
+        ) head ON TRUE
+      )
       SELECT
         "id",
         "status",
@@ -964,19 +988,23 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         "error_message" AS "errorMessage",
         "normalized_payload" AS "normalizedPayload",
         FALSE AS "isRecentReceipt"
-      FROM "webhook_events"
-      WHERE ${ORDERED_WEBHOOK_HEAD_STATUS_SQL}
-        AND ${ORDERED_WEBHOOK_MESSAGE_SQL}
-        AND ${ORDERED_WEBHOOK_CHAT_ID_SQL} IN (${Prisma.join(selectedChatIds)})
-        AND (
+      FROM selected_chat_heads AS "webhook_events"
+      WHERE (
           (${eligibility.received})
           OR (${eligibility.failed})
           OR (${eligibility.staleUserFacingQueued})
           OR (${eligibility.staleBackgroundQueued})
         )
       ORDER BY "created_at" ASC, "id" ASC
-      LIMIT ${this.resolvePrioritySelectionWindowSize()}
-    `);
+      LIMIT ${expansionLimit}
+    `;
+    const expandedCandidates = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw(Prisma.sql`SET LOCAL statement_timeout = '1000ms'`);
+        return tx.$queryRaw<WebhookEnqueueCandidate[]>(expansionQuery);
+      },
+      { maxWait: 1_000, timeout: 2_000 },
+    );
     if (expandedCandidates.length === 0) {
       return selectedCandidates;
     }

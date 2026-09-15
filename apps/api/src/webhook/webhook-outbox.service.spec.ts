@@ -548,6 +548,9 @@ function createService(params?: {
   }));
 
   const prisma = {
+    $transaction: jest.fn(
+      async (operation: (tx: unknown) => unknown): Promise<unknown> => operation(prisma),
+    ),
     $executeRaw: jest.fn().mockResolvedValue(0),
     $queryRaw: jest.fn().mockImplementation(async (query: SqlQuery) => {
       const values = query.values ?? [];
@@ -565,20 +568,23 @@ function createService(params?: {
         const now = values
           .filter((value): value is Date => value instanceof Date)
           .sort((left, right) => right.getTime() - left.getTime())[0];
-        const take = Math.max(
-          0,
-          ...values.filter((value): value is number => typeof value === 'number'),
-        );
+        const limits = values.filter((value): value is number => typeof value === 'number');
+        const take = Math.max(0, ...limits);
+        const perChatLimit = Math.min(...limits);
         if (!now || take === 0) {
           return [];
         }
+        const headCounts = new Map<string, number>();
         return webhookRows
+          .filter((row) => isOrderedMessageRow(row) && isOrderedHeadStatus(row))
+          .sort((left, right) => compareMockWebhookRows(left, right))
           .filter((row) => {
             const chatId = extractOrderedWebhookChatId(row.normalizedPayload);
+            if (!values.includes(chatId)) return false;
+            const count = headCounts.get(chatId) ?? 0;
+            headCounts.set(chatId, count + 1);
             return (
-              isOrderedMessageRow(row) &&
-              isOrderedHeadStatus(row) &&
-              values.includes(chatId) &&
+              count < perChatLimit &&
               isMockEnqueueCandidateEligible(
                 row,
                 now,
@@ -1308,7 +1314,7 @@ describe('WebhookOutboxService', () => {
   });
 
   it('falls back to selected heads when optional chat expansion fails', async () => {
-    const { service, queues } = createService({
+    const { service, prisma, queues } = createService({
       selectedChatQueryError: new Error('selected chat expansion timed out'),
       findManyResult: [
         {
@@ -1327,6 +1333,15 @@ describe('WebhookOutboxService', () => {
     try {
       await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
+      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+        maxWait: 1_000,
+        timeout: 2_000,
+      });
+      expect(
+        prisma.$executeRaw.mock.calls.some(([query]) =>
+          extractSql(query).includes("SET LOCAL statement_timeout = '1000ms'"),
+        ),
+      ).toBe(true);
       expect(
         Object.values(queues).flatMap((queue) =>
           queue.add.mock.calls.map((call) => call[1].webhookEventId),
@@ -2955,7 +2970,7 @@ describe('WebhookOutboxService', () => {
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
     const orderedHeadsQuery = prisma.$queryRaw.mock.calls
       .map(([query]) => query as SqlQuery)
-      .find((query) => extractSql(query).includes('requested_chats'))!;
+      .find((query) => extractSql(query).includes('WITH requested_chats'))!;
     const orderedHeadsSql = extractSql(orderedHeadsQuery);
     const quarantineMarker = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
     expect(orderedHeadsSql).toContain('requested_chats');
@@ -3332,7 +3347,7 @@ describe('WebhookOutboxService', () => {
 
       await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(transaction).toHaveBeenCalledTimes(2);
       expect(mirror).toEqual(
         expect.objectContaining({
           status: WebhookStatus.FAILED,
