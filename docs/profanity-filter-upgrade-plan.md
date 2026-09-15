@@ -20,6 +20,11 @@ for years. It consequently treats age/volume notation as an obfuscated profanity
 Conversely, repeated letters are reduced to two copies, so ordinary stretched Russian mat
 such as `хуууй`, `бляяять`, and `ебааать` is missed.
 
+Adjacent age labels also include `гр.` and `возр.`: their abbreviation period must not
+erase the literal context of `гр. 3-6 л.`. Labels after the quantity, such as
+`3-6 л., группа рисования`, are recognized without borrowing context across unrelated
+sentences, line breaks, URLs, or emails.
+
 The 13:30-16:55 UTC audit (executed before the window end) read 660 events representing 330
 decisions: 40 built-in profanity decisions and 290 administrator stop-list decisions.
 All built-in decisions had structured metadata. These are bounded operational counts,

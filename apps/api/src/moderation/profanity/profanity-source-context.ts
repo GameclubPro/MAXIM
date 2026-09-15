@@ -51,19 +51,24 @@ export function getMeasurementLiteralContext(
   const unambiguousUnit = !/^[лl]$/iu.test(unit);
   const start = candidate.rawIndex;
   const end = candidate.rawEnd ?? start + (candidate.rawValue ?? candidate.value).length;
-  const before =
-    source
-      .slice(Math.max(0, start - 120), start)
-      .split(/[,.;!?\r\n\0]/u)
-      .at(-1) ?? '';
-  const after = source.slice(end, end + 120).split(/[,.;!?\r\n\0]/u)[0] ?? '';
+  const beforeWindow = source.slice(Math.max(0, start - 120), start);
+  const afterWindow = source.slice(end, end + 120);
+  const before = beforeWindow.split(/[,.;!?\r\n\0]/u).at(-1) ?? '';
+  const after = afterWindow.split(/[,.;!?\r\n\0]/u)[0] ?? '';
   const standalone = !/[\p{L}\p{N}]/u.test(source.slice(0, start) + source.slice(end));
   const localContext = `${before} ${after}`;
+  // FLAG: A period in a directly adjacent age label is an abbreviation, not a sentence
+  // boundary. Do not borrow age context across arbitrary completed sentences or URLs.
+  const adjacentAgeLabel =
+    /(?:^|[^\p{L}\p{N}])(?:гр|возр)\.[ \t]*$/iu.test(beforeWindow) ||
+    /^[ \t]*\.?[ \t]*,?[ \t]*(?:гр\.|групп[аы]|дет(?:и|ей)|возраст)(?![\p{L}\p{N}])/iu.test(
+      afterWindow,
+    );
   if (
     !unambiguousUnit &&
     !standalone &&
     !VOLUME_CONTEXT.test(localContext) &&
-    !(unit.toLowerCase() === 'л' && AGE_CONTEXT.test(localContext))
+    !(unit.toLowerCase() === 'л' && (AGE_CONTEXT.test(localContext) || adjacentAgeLabel))
   ) {
     return null;
   }

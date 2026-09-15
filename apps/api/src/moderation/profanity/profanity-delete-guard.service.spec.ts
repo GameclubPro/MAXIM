@@ -102,6 +102,7 @@ describe('ProfanityDeleteGuardService', () => {
     'Лечение педикулеза: как удалить гнид',
     'Открыт набор в арт-студию. ЧЕТВЕРГ: 16:00 - группа 3-6 л. для детей',
     'Занятия для детей 3-6лет',
+    'ЧЕТВЕРГ: 16:00 - гр. 3-6 л.',
   ])('rejects a legacy decision when the latest text is clean: %s', async (text) => {
     const harness = buildHarness();
     harness.maxClient.getExactMessageRow.mockResolvedValue(buildMessage(text));

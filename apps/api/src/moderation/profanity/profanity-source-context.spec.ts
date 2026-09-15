@@ -72,6 +72,9 @@ describe('profanity source boundaries', () => {
     ['Вы записали ребенка на 3–6л?', '3–6л'],
     ['Возраст 3-6лет', '3-6лет'],
     ['Бак 3,6–6,5 л воды', '3,6–6,5 л'],
+    ['ЧЕТВЕРГ: 16:00 - гр. 3-6 л.', '3-6 л.'],
+    ['ЧЕТВЕРГ: 16:00 - гр.3-6л.', '3-6л.'],
+    ['3-6 л., группа рисования', '3-6 л.'],
   ])('recognizes the complete local range in %s', (source, literal) => {
     const rawIndex = source.indexOf(literal);
     expect(
@@ -83,7 +86,7 @@ describe('profanity source boundaries', () => {
     ).not.toBeNull();
   });
 
-  it.each(['Ты 3-6 л', 'Для детей. 3-6 л', 'Бак 3-6лать', 'Возраст 3-6летблять'])(
+  it.each(['Ты 3-6 л', 'Для детей. 3-6 л', 'Гр.\n3-6 л', 'Бак 3-6лать', 'Возраст 3-6летблять'])(
     'does not protect ambiguous or incomplete literals in %s',
     (source) => {
       const rawIndex = source.indexOf('3');
