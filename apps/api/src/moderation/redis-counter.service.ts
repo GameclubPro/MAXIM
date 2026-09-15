@@ -2,6 +2,42 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
+import {
+  DUPLICATE_EVENT_MAX_FUTURE_SKEW_MS,
+  resolveDuplicateHistoryRetentionSeconds,
+} from './duplicate-state';
+
+// FLAG: Cooldowns use event time, not delivery time. Rejected attempts never move the anchor,
+// and retries must recover their original decision before inspecting a newer anchor.
+const CLAIM_EVENT_COOLDOWN_SCRIPT = `
+local time = redis.call('TIME')
+local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+if now_ms >= tonumber(ARGV[4]) then return -1 end
+local occurred_at = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+if now_ms - occurred_at >= window_ms or occurred_at - now_ms > tonumber(ARGV[5]) then
+  return 0
+end
+local replay = redis.call('GET', KEYS[2])
+if replay then
+  local saved = cjson.decode(replay)
+  if saved.timestamp ~= occurred_at then return 0 end
+  return saved.result
+end
+local anchor = redis.call('GET', KEYS[1])
+local result = 1
+if anchor then
+  local previous = tonumber(anchor)
+  if not previous then return redis.error_reply('Invalid cooldown anchor') end
+  if occurred_at < previous then return 0 end
+  if occurred_at - previous < window_ms then result = 2 end
+end
+if result == 1 then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+end
+redis.call('SET', KEYS[2], cjson.encode({timestamp = occurred_at, result = result}), 'EX', ARGV[3])
+return result
+`;
 
 const INCREMENT_WITH_TTL_SCRIPT = `
 local count = redis.call('INCR', KEYS[1])
@@ -239,6 +275,44 @@ export class RedisCounterService implements OnModuleDestroy {
     return Number(
       await this.redis.eval(INCREMENT_WITH_TTL_SCRIPT, 1, key, String(Math.trunc(ttlSeconds))),
     );
+  }
+
+  async claimEventCooldown(params: {
+    key: string;
+    memberKey: string;
+    eventTimestampMs: number;
+    windowSeconds: number;
+    deadlineAtMs: number;
+  }): Promise<'allowed' | 'blocked' | 'stale' | 'deadline_exceeded'> {
+    if (
+      !params.key.trim() ||
+      !params.memberKey.trim() ||
+      params.key === params.memberKey ||
+      ![params.eventTimestampMs, params.windowSeconds, params.deadlineAtMs].every(
+        (value) => Number.isSafeInteger(value) && value > 0,
+      ) ||
+      params.windowSeconds > 86_400
+    ) {
+      throw new Error('Invalid event cooldown input');
+    }
+    const result = Number(
+      await this.redis.eval(
+        CLAIM_EVENT_COOLDOWN_SCRIPT,
+        2,
+        params.key,
+        params.memberKey,
+        String(params.eventTimestampMs),
+        String(params.windowSeconds * 1000),
+        String(resolveDuplicateHistoryRetentionSeconds(params.windowSeconds)),
+        String(params.deadlineAtMs),
+        String(DUPLICATE_EVENT_MAX_FUTURE_SKEW_MS),
+      ),
+    );
+    if (result === -1) return 'deadline_exceeded';
+    if (result === 0) return 'stale';
+    if (result === 1) return 'allowed';
+    if (result === 2) return 'blocked';
+    throw new Error('Redis returned an invalid event cooldown result');
   }
 
   async incrementOncePerMemberWithTtl(

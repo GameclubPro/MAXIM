@@ -570,7 +570,7 @@ export class PhotoDuplicateHistoryStore implements OnModuleDestroy {
     const rows = await this.redis.zrevrangebyscore(
       recentKey,
       String(input.occurredAtMs),
-      String(cutoffAtMs),
+      `(${cutoffAtMs}`,
       'LIMIT',
       0,
       this.maxItems,

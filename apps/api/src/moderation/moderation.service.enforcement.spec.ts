@@ -5418,7 +5418,8 @@ describe('ModerationService', () => {
         nowMs,
       });
 
-    expect(classify(nowMs - 3_600_000)).toBeNull();
+    expect(classify(nowMs - 3_599_999)).toBeNull();
+    expect(classify(nowMs - 3_600_000)).toContain('outside the 3600s window');
     expect(classify(nowMs - 3_600_001)).toContain('outside the 3600s window');
     expect(classify(nowMs + 60_000)).toBeNull();
     expect(classify(nowMs + 60_001)).toContain('ahead of the server clock');

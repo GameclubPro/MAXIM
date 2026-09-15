@@ -203,9 +203,7 @@ describe('PhotoDuplicateHistoryStore', () => {
     const script = String(redis.eval.mock.calls[0]?.[0] ?? '');
     const staleReturn = script.indexOf("'out_of_order'");
     expect(staleReturn).toBeGreaterThan(-1);
-    expect(staleReturn).toBeLessThan(
-      script.indexOf("redis.call('ZREMRANGEBYSCORE', KEYS[2]"),
-    );
+    expect(staleReturn).toBeLessThan(script.indexOf("redis.call('ZREMRANGEBYSCORE', KEYS[2]"));
     expect(script).not.toContain("if classification ~= 'out_of_order' then");
     expect(script.indexOf("redis.call('ZADD', KEYS[3]")).toBeLessThan(
       script.indexOf("redis.call(\n  'HSET',\n  KEYS[1]"),
@@ -375,7 +373,7 @@ describe('PhotoDuplicateHistoryStore', () => {
     expect(redis.zrevrangebyscore).toHaveBeenCalledWith(
       expect.stringContaining(':recent:'),
       '1800000000000',
-      '1799996400000',
+      '(1799996400000',
       'LIMIT',
       0,
       250,

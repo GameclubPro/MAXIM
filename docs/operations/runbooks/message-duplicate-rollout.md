@@ -31,7 +31,10 @@ The bounded exact-photo recovery and UI ownership plan is documented in
 [Exact Photo Duplicate Repair](exact-photo-duplicate-repair.md).
 
 Run the impact planner, API/contracts/Prisma/miniapp/admin checks and infra checks. Run the
-`message-duplicate` specs with `MAXIM_TEST_REDIS_URL` pointing only to disposable local Redis.
+`message-duplicate`, `photo-duplicate-history.redis` and `rule-engine-media-cooldown.redis` specs
+with `MAXIM_TEST_REDIS_URL` pointing only to disposable local Redis. The blocking API CI lane
+runs all three patterns. The interval audit and rollout semantics are documented in
+[Duplicate And Interval Audit](../incidents/2026-09-16-duplicate-interval-audit.md).
 Verify the settings screen on mobile, including OFF, OBSERVE, DELETE_ONLY and FULL status.
 Deploy the exact green SHA to every shared API role and the affected static components.
 

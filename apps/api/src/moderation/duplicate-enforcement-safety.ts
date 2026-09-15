@@ -64,7 +64,7 @@ export function classifyDuplicateEventTime(params: {
   }
 
   const ageMs = nowMs - eventTimestampMs;
-  if (ageMs > windowSec * 1_000) {
+  if (ageMs >= windowSec * 1_000) {
     return `text duplicate event is ${ageMs}ms old, outside the ${windowSec}s window`;
   }
   if (ageMs < -DUPLICATE_EVENT_MAX_FUTURE_SKEW_MS) {

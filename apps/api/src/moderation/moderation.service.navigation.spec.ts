@@ -4477,10 +4477,12 @@ describe('ModerationService', () => {
       await service.handleUpdate(createStickerAttachmentUpdate(index));
     }
 
-    expect(redisCounter.incrementOncePerMemberWithTtl).toHaveBeenCalledWith(
-      expect.stringContaining('message:anti-spam-burst'),
-      expect.any(String),
-      expect.any(Number),
+    expect(redisCounter.replaceRevisionedSetMembershipsBeforeDeadline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stateKey: expect.stringContaining('message:anti-spam-burst'),
+        windowSeconds: 6,
+        countLimit: 6,
+      }),
     );
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-sticker-6');
     expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');

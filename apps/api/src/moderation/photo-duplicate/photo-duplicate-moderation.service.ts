@@ -14,6 +14,7 @@ import {
   type DuplicateFlowConfig,
 } from '../duplicate-flow-policy';
 import { ModerationAccessService } from '../moderation-access.service';
+import { classifyDuplicateEventTime } from '../duplicate-enforcement-safety';
 import {
   DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS,
   type ChatAdminCheckResult,
@@ -206,7 +207,9 @@ export class PhotoDuplicateModerationService {
     }
 
     const flow = resolveDuplicateFlowConfig(initialContext.settings);
-    if (Date.now() - album.createdAtMs > flow.windowSec * 1_000) {
+    if (
+      classifyDuplicateEventTime({ eventTimestampMs: album.createdAtMs, windowSec: flow.windowSec })
+    ) {
       return;
     }
     const initialActionFence = await this.resolveMessageActionFence({
@@ -263,7 +266,7 @@ export class PhotoDuplicateModerationService {
     lease.assertOwned();
     const analysis = await this.analysisService.analyzeAlbum({
       album,
-      ttlSeconds: flow.windowSec + 1,
+      ttlSeconds: flow.windowSec,
       scope: initialContext.settings.duplicatePhotoScope,
       preset: initialContext.settings.duplicatePhotoMatchPreset,
       actionEligible,
@@ -780,7 +783,10 @@ export class PhotoDuplicateModerationService {
     }
     const flow = resolveDuplicateFlowConfig(context.settings);
     if (
-      Date.now() - params.album.createdAtMs > flow.windowSec * 1_000 ||
+      classifyDuplicateEventTime({
+        eventTimestampMs: params.album.createdAtMs,
+        windowSec: flow.windowSec,
+      }) ||
       (manualReleaseAt !== null && isWithinWindow(manualReleaseAt, flow.windowSec))
     ) {
       return null;
@@ -1186,6 +1192,7 @@ export function buildPhotoDuplicateActionBinding(params: {
 function buildPhotoDuplicateSemanticConfig(params: PhotoDuplicateSemanticConfigParams) {
   return {
     version: PHOTO_DUPLICATE_ACTION_BINDING_VERSION,
+    comparisonWindow: 'event-exclusive-v1',
     rolloutMode: params.rolloutMode,
     maxAction: params.maxAction,
     preset: params.settings.duplicatePhotoMatchPreset,

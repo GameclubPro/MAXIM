@@ -148,6 +148,7 @@ type MessageActionIntent = {
 
 function buildHarness(
   params: {
+    createdAt?: string;
     status?: WebhookStatus;
     nextEnqueueAt?: Date | null;
     chatSettings?: ChatSettings;
@@ -192,7 +193,7 @@ function buildHarness(
     resolveActionEligibility?: jest.Mock;
   } = {},
 ) {
-  const createdAt = new Date().toISOString();
+  const createdAt = params.createdAt ?? new Date().toISOString();
   const normalizedUpdate = update(createdAt);
   const currentSettings = params.chatSettings ?? settings();
   const actionSettings = params.actionSettings ?? currentSettings;
@@ -417,20 +418,24 @@ function buildHarness(
     consumePhotoDuplicateParticipantImmunity: jest
       .fn()
       .mockResolvedValue(params.participantImmune ?? false),
-    claimPhotoDuplicateAction: jest.fn().mockImplementation(async (
-      claimParams: Parameters<PhotoDuplicateModerationActions['claimPhotoDuplicateAction']>[0],
-    ) => {
-      const result = params.actionClaimResult ?? 'claimed';
-      if (result === 'claimed') {
-        persistedActionClaims.push({
-          dedupeKey: buildPhotoDuplicateActionClaimDedupeKey(claimParams),
-          messageActionKey: 'v1:claimed-photo-action',
-          userId: claimParams.userId,
-          ruleCode: 'DUPLICATE_MESSAGE_ACTION',
-        });
-      }
-      return result;
-    }),
+    claimPhotoDuplicateAction: jest
+      .fn()
+      .mockImplementation(
+        async (
+          claimParams: Parameters<PhotoDuplicateModerationActions['claimPhotoDuplicateAction']>[0],
+        ) => {
+          const result = params.actionClaimResult ?? 'claimed';
+          if (result === 'claimed') {
+            persistedActionClaims.push({
+              dedupeKey: buildPhotoDuplicateActionClaimDedupeKey(claimParams),
+              messageActionKey: 'v1:claimed-photo-action',
+              userId: claimParams.userId,
+              ruleCode: 'DUPLICATE_MESSAGE_ACTION',
+            });
+          }
+          return result;
+        },
+      ),
     executePhotoDuplicateAction: jest.fn().mockResolvedValue(undefined),
   };
   const service = new PhotoDuplicateModerationService(
@@ -488,6 +493,24 @@ function readDeleteAuthorization(harness: ReturnType<typeof buildHarness>) {
 }
 
 describe('PhotoDuplicateModerationService', () => {
+  it('passes the exact configured comparison window to photo history', async () => {
+    const harness = buildHarness();
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ ttlSeconds: 3600 }),
+    );
+  });
+
+  it.each([-3_600_000, 120_000])(
+    'does no image work for an unsafe event offset %i',
+    async (offset) => {
+      const harness = buildHarness({ createdAt: new Date(Date.now() + offset).toISOString() });
+      await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+      expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+      expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+    },
+  );
+
   it('does no image work when the global photo rollout is off', async () => {
     const harness = buildHarness({ rolloutMode: 'off' });
 

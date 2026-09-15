@@ -71,6 +71,21 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect((await observe('c', 200, 'a', { controlRevision: 2 }))?.hit.count).toBe(1);
   });
 
+  it.each([59_999, 60_000, 60_001])(
+    'uses an exclusive lower window bound at %ims',
+    async (gapMs) => {
+      const override = { settings: duplicateSettings({ duplicateWarnWindowSec: 60 }) };
+      await observe('original', 0, 'a', override);
+      const result = await observe('repeat', gapMs, 'a', override);
+      if (gapMs < 60_000) {
+        expect(result?.hit.count).toBe(1);
+        expect(await history.stillMatches(chatId, result!.binding)).toBe(true);
+      } else {
+        expect(result).toBeNull();
+      }
+    },
+  );
+
   it('preserves the event-time comparison window while a valid delete waits for dispatch', async () => {
     const now = Date.now();
     const override = { settings: duplicateSettings({ duplicateWarnWindowSec: 60 }) };

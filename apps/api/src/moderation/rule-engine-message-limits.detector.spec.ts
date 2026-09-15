@@ -8,6 +8,29 @@ class MockRedisCounterService {
   readonly calls: Array<{ key: string; ttlSec: number }> = [];
   private readonly counters = new Map<string, number>();
   private readonly members = new Set<string>();
+  private readonly cooldownResults = new Map<string, 'allowed' | 'blocked'>();
+  private readonly windowResults = new Map<string, number>();
+
+  async replaceRevisionedSetMembershipsBeforeDeadline(params: {
+    stateKey: string;
+    membershipKeys: string[];
+    ttlSeconds: number;
+  }) {
+    const replay = this.windowResults.get(params.stateKey);
+    if (replay !== undefined) return { kind: 'replayed', counts: [replay] };
+    const count = await this.incrementWithTtl(params.membershipKeys[0]!, params.ttlSeconds);
+    this.windowResults.set(params.stateKey, count);
+    return { kind: 'applied', counts: [count] };
+  }
+
+  async claimEventCooldown(params: { key: string; memberKey: string; windowSeconds: number }) {
+    const replay = this.cooldownResults.get(params.memberKey);
+    if (replay) return replay;
+    const count = await this.incrementWithTtl(params.key, params.windowSeconds);
+    const result = count > 1 ? 'blocked' : 'allowed';
+    this.cooldownResults.set(params.memberKey, result);
+    return result;
+  }
 
   async incrementWithTtl(key: string, ttlSec: number): Promise<number> {
     this.calls.push({ key, ttlSec });
@@ -215,8 +238,8 @@ describe('RuleEngineMessageLimitsDetector', () => {
       }),
     ).resolves.toEqual(expect.objectContaining({ ruleCode: 'MESSAGE_COUNT_LIMIT' }));
     expect(redisCounter.calls[0]).toEqual({
-      key: 'message:count-limit:v1:chat-1:user-1:10:24',
-      ttlSec: 24 * 60 * 60 + 1,
+      key: 'message:count-limit:v2:chat-1:user-1:10:24:legacy',
+      ttlSec: 24 * 60 * 60,
     });
   });
 
@@ -252,8 +275,8 @@ describe('RuleEngineMessageLimitsDetector', () => {
       }),
     );
     expect(redisCounter.calls[0]).toEqual({
-      key: 'message:anti-spam-burst:v1:chat-1:user-1:5:6',
-      ttlSec: 7,
+      key: 'message:anti-spam-burst:v2:chat-1:user-1:5:6:legacy',
+      ttlSec: 6,
     });
   });
 
@@ -267,6 +290,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
           chatId: 'chat-1',
           userId: 'user-1',
           messageId: 'mid-1',
+          eventTimestampMs: Date.now(),
           settings,
         }),
       ).resolves.toBeNull();
@@ -277,6 +301,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-2',
+        eventTimestampMs: Date.now(),
         settings,
       }),
     ).resolves.toBeNull();
@@ -295,6 +320,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-1',
+        eventTimestampMs: Date.now(),
         settings,
       }),
     ).resolves.toBeNull();
@@ -303,6 +329,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-1',
+        eventTimestampMs: Date.now(),
         settings,
       }),
     ).resolves.toBeNull();
@@ -311,6 +338,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-2',
+        eventTimestampMs: Date.now(),
         settings,
       }),
     ).resolves.toEqual(expect.objectContaining({ ruleCode: 'MESSAGE_COUNT_LIMIT' }));
@@ -372,7 +400,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
     expect(redisCounter.calls).toEqual([]);
   });
 
-  it('scopes media cooldown state by media kind and settings update timestamp', async () => {
+  it('preserves media cooldown state after unrelated settings updates', async () => {
     const redisCounter = new MockRedisCounterService();
     const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
     const firstSettings = buildSettings({
@@ -391,6 +419,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-1',
+        eventTimestampMs: Date.now(),
         settings: firstSettings,
         hasPhotoAttachment: true,
       }),
@@ -400,6 +429,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-2',
+        eventTimestampMs: Date.now(),
         settings: firstSettings,
         hasPhotoAttachment: true,
       }),
@@ -408,10 +438,12 @@ describe('RuleEngineMessageLimitsDetector', () => {
       detector.detectMediaCooldownLimits({
         chatId: 'chat-1',
         userId: 'user-1',
+        messageId: 'mid-3',
+        eventTimestampMs: Date.now(),
         settings: secondSettings,
         hasPhotoAttachment: true,
       }),
-    ).resolves.toEqual([]);
+    ).resolves.toEqual([expect.objectContaining({ ruleCode: 'PHOTO_RATE_LIMIT' })]);
   });
 
   it('does not count repeated delivery of the same message id toward media cooldown', async () => {
@@ -426,6 +458,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-1',
+        eventTimestampMs: Date.now(),
         settings,
         hasPhotoAttachment: true,
       }),
@@ -435,6 +468,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'mid-1',
+        eventTimestampMs: Date.now(),
         settings,
         hasPhotoAttachment: true,
       }),

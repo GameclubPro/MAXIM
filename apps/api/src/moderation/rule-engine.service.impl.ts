@@ -1191,6 +1191,7 @@ export class RuleEngineService {
           chatId,
           userId,
           messageId,
+          eventTimestampMs: duplicateStateEventTimestampMs,
           settings,
           hasExcludedAttachment: hasAntiSpamBurstExcludedAttachment,
           skipAntiSpamBurstLimit,
@@ -1206,6 +1207,7 @@ export class RuleEngineService {
           chatId,
           userId,
           messageId,
+          eventTimestampMs: duplicateStateEventTimestampMs,
           settings,
         });
     if (messageCountViolation) {
@@ -1307,6 +1309,7 @@ export class RuleEngineService {
           chatId,
           userId,
           messageId,
+          eventTimestampMs: duplicateStateEventTimestampMs,
           settings,
           hasPhotoAttachment,
           hasStickerAttachment,

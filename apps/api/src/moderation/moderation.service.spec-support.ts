@@ -263,9 +263,39 @@ function createRedisCounterMock() {
   const counters = new Map<string, number>();
   const counterMembers = new Set<string>();
   const locks = new Set<string>();
+  const windowMembers = new Map<string, Map<string, number>>();
+  const windowResults = new Map<string, number[]>();
 
   return {
     stringCache,
+    replaceRevisionedSetMembershipsBeforeDeadline: jest.fn(
+      async (params: {
+        stateKey: string;
+        member: string;
+        revision: number;
+        membershipKeys: string[];
+        windowSeconds: number;
+        countLimit: number;
+      }) => {
+        const replay = windowResults.get(params.stateKey);
+        if (replay) return { kind: 'replayed' as const, counts: replay };
+        const counts = params.membershipKeys.map((key) => {
+          const members = windowMembers.get(key) ?? new Map<string, number>();
+          members.set(params.member, params.revision);
+          windowMembers.set(key, members);
+          return Math.min(
+            params.countLimit,
+            [...members.values()].filter(
+              (timestamp) =>
+                timestamp > params.revision - params.windowSeconds * 1000 &&
+                timestamp <= params.revision,
+            ).length,
+          );
+        });
+        windowResults.set(params.stateKey, counts);
+        return { kind: 'applied' as const, counts };
+      },
+    ),
     getString: jest.fn(async (key: string) => stringCache.get(key) ?? null),
     setStringWithTtl: jest.fn(async (key: string, value: string) => {
       stringCache.set(key, value);

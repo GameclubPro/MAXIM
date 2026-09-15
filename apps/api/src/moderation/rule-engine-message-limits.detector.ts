@@ -1,6 +1,8 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import { createHash } from 'node:crypto';
 import { raceWithTimeout } from '../common/promise-timeout.util';
+import { classifyDuplicateEventTime } from './duplicate-enforcement-safety';
+import { resolveDuplicateHistoryRetentionSeconds } from './duplicate-state';
 import { RedisCounterService } from './redis-counter.service';
 import type { RuleViolation } from './rule-engine.contract';
 import { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
@@ -9,6 +11,7 @@ import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.de
 export const ANTI_SPAM_BURST_LIMIT = 5;
 export const ANTI_SPAM_BURST_WINDOW_SEC = 6;
 const ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS = 120;
+const MESSAGE_LIMIT_STATE_TIMEOUT_MS = 250;
 const PHONE_NUMBER_CANDIDATE_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
 const PHONE_CONTEXT_WORD_PATTERN =
   /(?:тел|телефон|номер|звон|звонить|связь|связаться|whatsapp|ватсап|wa|вайбер|viber|личк|лс)/iu;
@@ -23,6 +26,7 @@ export class RuleEngineMessageLimitsDetector {
     chatId: string;
     userId: string;
     messageId?: string;
+    eventTimestampMs?: number;
     settings: ChatSettings;
     hasExcludedAttachment?: boolean;
     skipAntiSpamBurstLimit?: boolean;
@@ -32,22 +36,16 @@ export class RuleEngineMessageLimitsDetector {
       return null;
     }
 
-    const key = `message:anti-spam-burst:v1:${chatId}:${userId}:${ANTI_SPAM_BURST_LIMIT}:${ANTI_SPAM_BURST_WINDOW_SEC}`;
-    const countResult = await raceWithTimeout<{ inserted: boolean; count: number } | null>({
-      operation: this.incrementStatefulCounter({
-        key,
-        messageId: params.messageId,
-        ttlSec: ANTI_SPAM_BURST_WINDOW_SEC + 1,
-      }),
+    const key = `message:anti-spam-burst:v2:${chatId}:${userId}:${ANTI_SPAM_BURST_LIMIT}:${ANTI_SPAM_BURST_WINDOW_SEC}`;
+    const count = await this.countEventWindow({
+      key,
+      messageId: params.messageId,
+      eventTimestampMs: params.eventTimestampMs,
+      windowSeconds: ANTI_SPAM_BURST_WINDOW_SEC,
+      countLimit: ANTI_SPAM_BURST_LIMIT + 1,
       timeoutMs: ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS,
-      onTimeout: () => null,
     });
-    if (countResult === null || !countResult.inserted) {
-      return null;
-    }
-
-    const { count } = countResult;
-    if (count <= ANTI_SPAM_BURST_LIMIT) {
+    if (count === null || count <= ANTI_SPAM_BURST_LIMIT) {
       return null;
     }
 
@@ -83,6 +81,7 @@ export class RuleEngineMessageLimitsDetector {
     chatId: string;
     userId: string;
     messageId?: string;
+    eventTimestampMs?: number;
     settings: ChatSettings;
   }): Promise<RuleViolation | null> {
     const { chatId, userId, settings } = params;
@@ -92,18 +91,16 @@ export class RuleEngineMessageLimitsDetector {
 
     const windowHours = Math.min(24, Math.max(1, settings.messageCountLimitWindowHours));
     const maxMessages = Math.min(10, Math.max(1, settings.messageCountLimitMessages));
-    const key = `message:count-limit:v1:${chatId}:${userId}:${maxMessages}:${windowHours}`;
-    const countResult = await this.incrementStatefulCounter({
+    const key = `message:count-limit:v2:${chatId}:${userId}:${maxMessages}:${windowHours}`;
+    const count = await this.countEventWindow({
       key,
       messageId: params.messageId,
-      ttlSec: windowHours * 60 * 60 + 1,
+      eventTimestampMs: params.eventTimestampMs,
+      windowSeconds: windowHours * 60 * 60,
+      countLimit: maxMessages + 1,
+      timeoutMs: MESSAGE_LIMIT_STATE_TIMEOUT_MS,
     });
-    if (!countResult.inserted) {
-      return null;
-    }
-
-    const { count } = countResult;
-    if (count <= maxMessages) {
+    if (count === null || count <= maxMessages) {
       return null;
     }
 
@@ -247,6 +244,7 @@ export class RuleEngineMessageLimitsDetector {
     chatId: string;
     userId: string;
     messageId?: string;
+    eventTimestampMs?: number;
     settings: ChatSettings;
     hasPhotoAttachment?: boolean;
     hasStickerAttachment?: boolean;
@@ -261,17 +259,14 @@ export class RuleEngineMessageLimitsDetector {
         chatId,
         userId,
         settings.photoMessageCooldownHours,
-        settings.updatedAt,
       );
-      const { inserted, count } = await this.incrementStatefulCounter({
+      const blocked = await this.isMediaCooldownBlocked({
         key,
         messageId: params.messageId,
-        ttlSec: cooldownSec + 1,
+        eventTimestampMs: params.eventTimestampMs,
+        windowSeconds: cooldownSec,
       });
-      if (!inserted) {
-        return violations;
-      }
-      if (count > 1) {
+      if (blocked) {
         violations.push({
           ruleCode: 'PHOTO_RATE_LIMIT',
           score: 0.86,
@@ -287,17 +282,14 @@ export class RuleEngineMessageLimitsDetector {
         chatId,
         userId,
         settings.stickerMessageCooldownMinutes,
-        settings.updatedAt,
       );
-      const { inserted, count } = await this.incrementStatefulCounter({
+      const blocked = await this.isMediaCooldownBlocked({
         key,
         messageId: params.messageId,
-        ttlSec: cooldownSec + 1,
+        eventTimestampMs: params.eventTimestampMs,
+        windowSeconds: cooldownSec,
       });
-      if (!inserted) {
-        return violations;
-      }
-      if (count > 1) {
+      if (blocked) {
         violations.push({
           ruleCode: 'STICKER_RATE_LIMIT',
           score: 0.86,
@@ -309,25 +301,85 @@ export class RuleEngineMessageLimitsDetector {
     return violations;
   }
 
-  private async incrementStatefulCounter(params: {
+  private async isMediaCooldownBlocked(params: {
     key: string;
     messageId?: string;
-    ttlSec: number;
-  }): Promise<{ inserted: boolean; count: number }> {
+    eventTimestampMs?: number;
+    windowSeconds: number;
+  }): Promise<boolean> {
     const messageId = params.messageId?.trim();
     if (!messageId) {
-      return {
-        inserted: true,
-        count: await this.redisCounter.incrementWithTtl(params.key, params.ttlSec),
-      };
+      return (
+        (await this.redisCounter.incrementWithTtl(`${params.key}:legacy`, params.windowSeconds)) > 1
+      );
     }
+    const eventTimestampMs = params.eventTimestampMs;
+    if (!Number.isSafeInteger(eventTimestampMs) || !eventTimestampMs || eventTimestampMs <= 0)
+      return false;
 
     const messageHash = createHash('sha256').update(messageId).digest('hex').slice(0, 20);
-    return this.redisCounter.incrementOncePerMemberWithTtl(
-      params.key,
-      `${params.key}:msg:${messageHash}`,
-      params.ttlSec,
-    );
+    const deadlineAtMs = Date.now() + MESSAGE_LIMIT_STATE_TIMEOUT_MS;
+    const result = await raceWithTimeout({
+      operation: () =>
+        this.redisCounter.claimEventCooldown({
+          key: params.key,
+          memberKey: `${params.key}:msg:${messageHash}`,
+          eventTimestampMs,
+          windowSeconds: params.windowSeconds,
+          deadlineAtMs,
+        }),
+      timeoutMs: MESSAGE_LIMIT_STATE_TIMEOUT_MS,
+      onTimeout: () => 'deadline_exceeded' as const,
+    });
+    if (result === 'deadline_exceeded') throw new Error('Media cooldown state deadline exceeded');
+    return result === 'blocked';
+  }
+
+  private async countEventWindow(params: {
+    key: string;
+    messageId?: string;
+    eventTimestampMs?: number;
+    windowSeconds: number;
+    countLimit: number;
+    timeoutMs: number;
+  }): Promise<number | null> {
+    const messageId = params.messageId?.trim();
+    if (!messageId) {
+      return raceWithTimeout({
+        operation: () =>
+          this.redisCounter.incrementWithTtl(`${params.key}:legacy`, params.windowSeconds),
+        timeoutMs: params.timeoutMs,
+        onTimeout: () => null,
+      });
+    }
+    const eventTimestampMs = params.eventTimestampMs;
+    if (
+      !Number.isSafeInteger(eventTimestampMs) ||
+      !eventTimestampMs ||
+      eventTimestampMs <= 0 ||
+      classifyDuplicateEventTime({ eventTimestampMs, windowSec: params.windowSeconds })
+    )
+      return null;
+    const messageHash = createHash('sha256').update(messageId).digest('hex').slice(0, 20);
+    const deadlineAtMs = Date.now() + params.timeoutMs;
+    const result = await raceWithTimeout({
+      operation: () =>
+        this.redisCounter.replaceRevisionedSetMembershipsBeforeDeadline({
+          stateKey: `${params.key}:msg:${messageHash}`,
+          member: messageHash,
+          revision: eventTimestampMs,
+          membershipKeys: [params.key],
+          windowSeconds: params.windowSeconds,
+          ttlSeconds: resolveDuplicateHistoryRetentionSeconds(params.windowSeconds),
+          countLimit: params.countLimit,
+          deadlineAtMs,
+        }),
+      timeoutMs: params.timeoutMs,
+      onTimeout: () => ({ kind: 'deadline_exceeded' as const }),
+    });
+    if (result.kind === 'deadline_exceeded')
+      throw new Error('Message limit state deadline exceeded');
+    return result.kind === 'stale' ? null : (result.counts[0] ?? 0);
   }
 }
 
@@ -336,19 +388,8 @@ function buildMediaCooldownKey(
   chatId: string,
   userId: string,
   windowValue: number,
-  settingsUpdatedAt: Date | string,
 ): string {
-  return `${mediaKind}:cooldown:v2:${chatId}:${userId}:${windowValue}:${normalizeSettingsUpdatedAt(settingsUpdatedAt)}`;
-}
-
-function normalizeSettingsUpdatedAt(value: Date | string): string {
-  if (value instanceof Date) {
-    const timestamp = value.getTime();
-    return Number.isFinite(timestamp) ? String(timestamp) : 'na';
-  }
-
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? String(parsed) : 'na';
+  return `${mediaKind}:cooldown:v3:${chatId}:${userId}:${windowValue}`;
 }
 
 export function extractDetectedPhoneNumbers(text: string): string[] {

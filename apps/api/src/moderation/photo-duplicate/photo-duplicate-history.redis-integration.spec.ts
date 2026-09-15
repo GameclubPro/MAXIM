@@ -25,14 +25,69 @@ const isLocalRedisUrl = (() => {
 const describeLocalRedis = isLocalRedisUrl ? describe : describe.skip;
 
 describeLocalRedis('PhotoDuplicateHistoryStore Redis integration', () => {
+  it.each(['canonical', 'perceptual'] as const)(
+    'excludes a %s match exactly at the window boundary',
+    async (kind) => {
+      const chatId = randomUUID();
+      const senderId = randomUUID();
+      const first = album('a'.repeat(64), 'a'.repeat(64), '0'.repeat(64));
+      const second =
+        kind === 'canonical' ? first : album('b'.repeat(64), 'b'.repeat(64), `${'0'.repeat(63)}1`);
+      const service = new PhotoDuplicateHistoryStore({
+        getOrThrow: () => redisIntegrationUrl,
+        get: () => 250,
+      } as never);
+      const inspector = new Redis(redisIntegrationUrl);
+      const cleanupKeys = buildCleanupKeys({
+        chatId,
+        senderId,
+        messageIds: ['first', 'boundary'],
+        albumHashes: [first.albumHash, second.albumHash],
+      });
+      const now = Date.now();
+      const observe = (
+        messageId: string,
+        occurredAtMs: number,
+        fingerprint: PhotoAlbumFingerprint,
+      ) =>
+        service.observeAlbum({
+          chatId,
+          senderId,
+          messageId,
+          occurredAtMs,
+          ttlSeconds: 60,
+          scope: 'SAME_AUTHOR',
+          fingerprintVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+          albumHash: fingerprint.albumHash,
+          exactMatchKind: 'canonical_sha256',
+          perceptualAlbum: fingerprint,
+          allowPerceptualMatch: true,
+          perceptualPreset: 'SAME_IMAGE',
+          authorization: {
+            eligible: true,
+            configDigest: authorizationConfigDigest,
+            allowedMatchKinds: ['canonical_sha256', 'pdq'],
+          },
+        });
+      try {
+        expect(await observe('first', now, first)).toMatchObject({ classification: 'new' });
+        expect(await observe('boundary', now + 60_000, second)).toMatchObject({
+          classification: 'new',
+        });
+      } finally {
+        await inspector.del(...cleanupKeys);
+        await inspector.quit();
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
   it('keeps stale exact observations out of history', async () => {
     const suffix = randomUUID();
     const chatId = `photo-order-chat-${suffix}`;
     const senderId = `photo-order-user-${suffix}`;
     const exactAlbumHash = '6'.repeat(64);
-    const messageIds = ['newest', 'oldest', 'middle'].map(
-      (messageId) => `${messageId}-${suffix}`,
-    );
+    const messageIds = ['newest', 'oldest', 'middle'].map((messageId) => `${messageId}-${suffix}`);
     const cleanupKeys = buildCleanupKeys({
       chatId,
       senderId,
@@ -453,9 +508,7 @@ describeLocalRedis('PhotoDuplicateHistoryStore Redis integration', () => {
     const chatId = `photo-order-chat-${suffix}`;
     const senderId = `photo-order-user-${suffix}`;
     const albumHash = '6'.repeat(64);
-    const messageIds = ['newest', 'oldest', 'middle'].map(
-      (messageId) => `${messageId}-${suffix}`,
-    );
+    const messageIds = ['newest', 'oldest', 'middle'].map((messageId) => `${messageId}-${suffix}`);
     const cleanupKeys = buildCleanupKeys({
       chatId,
       senderId,

@@ -3890,6 +3890,30 @@ describe('RuleEngineService', () => {
     expect(second.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(true);
   });
 
+  it('uses the trusted webhook timestamp for idempotent media cooldown checks', async () => {
+    const claimEventCooldown = jest.fn().mockResolvedValue('blocked');
+    const service = new RuleEngineService({ claimEventCooldown } as never);
+    const eventTimestampMs = Date.now() - 1000;
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      messageId: 'photo-1',
+      duplicateStateEventTimestampMs: eventTimestampMs,
+      text: '',
+      settings: buildSettings({
+        antiDuplicateEnabled: false,
+        antiSpamEnabled: false,
+        photoMessageCooldownEnabled: true,
+      }),
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+    expect(claimEventCooldown).toHaveBeenCalledWith(
+      expect.objectContaining({ eventTimestampMs, windowSeconds: 3600 }),
+    );
+    expect(result.violations).toEqual([expect.objectContaining({ ruleCode: 'PHOTO_RATE_LIMIT' })]);
+  });
+
   it('detects STICKER_RATE_LIMIT from second sticker when cooldown is enabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({
