@@ -1,4 +1,4 @@
-export const PROFANITY_DETECTOR_VERSION = 'profanity-structured-v2';
+export const PROFANITY_DETECTOR_VERSION = 'profanity-structured-v3';
 
 export const PROFANITY_SENSITIVITIES = ['CORE_ONLY', 'BALANCED', 'STRICT'] as const;
 
@@ -16,6 +16,7 @@ export type ProfanityEvidence =
   | 'MIXED_SCRIPT'
   | 'CHAR_SUBSTITUTION'
   | 'LATIN_TRANSLITERATION'
+  | 'REPEATED_LETTERS'
   | 'TARGET_CONTEXT';
 
 export const PROFANITY_CATEGORY_SCORES: Readonly<Record<ProfanityCategory, number>> = {

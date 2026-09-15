@@ -1631,6 +1631,13 @@ export class RuleEngineService {
     if (targetContext) {
       evidence.add('TARGET_CONTEXT');
     }
+    if (
+      /([a-zа-яё])\1/iu.test(rawValue) &&
+      this.normalizeProfanityCandidate(rawValue) !== matchedVariant &&
+      this.normalizeProfanityLatinCandidate(rawValue) !== matchedVariant
+    ) {
+      evidence.add('REPEATED_LETTERS');
+    }
     if (evidence.size === 0) {
       evidence.add('TOKEN');
     }
@@ -2363,7 +2370,7 @@ export class RuleEngineService {
     // FLAG: Numeric lists are not letter fragments. Mask only complete multi-digit numbers;
     // preserve offsets, mixed alphanumeric tokens, and single-digit leetspeak for detection.
     const rawStripped = value.replace(PROFANITY_NUMERIC_LIST_PATTERN, (match) =>
-      ' '.repeat(match.length),
+      '\0'.repeat(match.length),
     );
     const stripped = rawStripped.toLowerCase();
     const whitespaceSegments = [...rawStripped.matchAll(/[^\s\0]+/gu)];
@@ -2379,7 +2386,10 @@ export class RuleEngineService {
       candidates.push(candidate);
     };
 
-    for (const match of whitespaceSegments) {
+    // FLAG: Keep independent words alongside obfuscated whole tokens, so protecting a literal
+    // span cannot hide neighboring profanity attached with punctuation and no whitespace.
+    const wordSegments = rawStripped.matchAll(/[\p{L}\p{N}@!|$€₽¥]+/gu);
+    for (const match of [...wordSegments, ...whitespaceSegments]) {
       const rawSegment = match[0];
       pushCandidate({
         value: rawSegment.toLowerCase(),
@@ -2435,12 +2445,14 @@ export class RuleEngineService {
       }
     }
 
-    // FLAG: A verified measurement must not become profanity again when a longer candidate
+    // FLAG: A verified literal must not become profanity again when a longer candidate
     // joins it to a preposition or the next clause. Independent words retain their own spans.
-    const measurementSpans = candidates.filter((candidate) =>
-      this.matchesMeasurementLiteralException(candidate.value, value, candidate),
+    const literalSpans = candidates.filter(
+      (candidate) =>
+        isLiteralLatinProfanityException(candidate) ||
+        this.matchesMeasurementLiteralException(candidate.value, value, candidate),
     );
-    return excludeProtectedProfanitySpans(candidates, measurementSpans);
+    return excludeProtectedProfanitySpans(candidates, literalSpans);
   }
 
   private normalizeProfanityCandidate(value: string): string {
@@ -2496,6 +2508,21 @@ export class RuleEngineService {
       }
     }
 
+    return this.appendRepeatedProfanityCoreCandidates(candidates, PROFANITY_CORE_TOKEN_PATTERNS);
+  }
+
+  private appendRepeatedProfanityCoreCandidates(
+    candidates: Set<string>,
+    patterns: readonly ProfanityCorePattern[],
+  ): string[] {
+    // FLAG: Repetition folding only expands productive mat roots. Do not fuzzily expand
+    // ambiguous insults or numbers; original candidates and their exceptions remain intact.
+    for (const candidate of [...candidates]) {
+      const collapsed = candidate.replace(/([a-zа-яё])\1+/gu, '$1');
+      if (collapsed !== candidate && this.resolveProfanityCoreFamily(collapsed, patterns)) {
+        candidates.add(collapsed);
+      }
+    }
     return [...candidates];
   }
 
@@ -2565,7 +2592,7 @@ export class RuleEngineService {
       }
     }
 
-    return [...candidates];
+    return this.appendRepeatedProfanityCoreCandidates(candidates, PROFANITY_LATIN_TOKEN_PATTERNS);
   }
 
   private shouldBuildLatinProfanityCandidate(value: string): boolean {

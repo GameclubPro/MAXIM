@@ -67,6 +67,37 @@ describe('profanity source boundaries', () => {
     ).toEqual({ text: ' ебл ', unambiguousUnit: false });
   });
 
+  it.each([
+    ['Группа 3-6 л. для детей', '3-6 л.'],
+    ['Вы записали ребенка на 3–6л?', '3–6л'],
+    ['Возраст 3-6лет', '3-6лет'],
+    ['Бак 3,6–6,5 л воды', '3,6–6,5 л'],
+  ])('recognizes the complete local range in %s', (source, literal) => {
+    const rawIndex = source.indexOf(literal);
+    expect(
+      getMeasurementLiteralContext(
+        source,
+        { value: literal, joined: true, rawIndex, rawEnd: rawIndex + literal.length },
+        'ебл',
+      ),
+    ).not.toBeNull();
+  });
+
+  it.each(['Ты 3-6 л', 'Для детей. 3-6 л', 'Бак 3-6лать', 'Возраст 3-6летблять'])(
+    'does not protect ambiguous or incomplete literals in %s',
+    (source) => {
+      const rawIndex = source.indexOf('3');
+      const value = source.slice(rawIndex);
+      expect(
+        getMeasurementLiteralContext(
+          source,
+          { value, joined: true, rawIndex, rawEnd: source.length },
+          'ебл',
+        ),
+      ).toBeNull();
+    },
+  );
+
   it('removes overlapping measurement joins but keeps independent candidates', () => {
     const candidate = (start: number, end: number): ProfanitySourceCandidate => ({
       value: 'candidate',

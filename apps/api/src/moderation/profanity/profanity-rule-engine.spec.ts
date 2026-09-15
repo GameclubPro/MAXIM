@@ -97,7 +97,15 @@ describe('structured profanity rule-engine decision', () => {
       process.env.PROFANITY_V2_ROLLOUT_MODE = rolloutMode;
       const service = new RuleEngineService({} as never);
       for (const profanitySensitivity of ['CORE_ONLY', 'BALANCED', 'STRICT'] as const) {
-        for (const text of ['Бак 36л', 'ты скотина', 'ты мудак', 'блять']) {
+        for (const text of [
+          'Бак 36л',
+          'ты скотина',
+          'ты мудак',
+          'блять',
+          'Группа 3-6 л. для детей',
+          'хуууй',
+          'привет,блять',
+        ]) {
           const settings = { ...BASE_SETTINGS, profanitySensitivity } as never;
           const pure = service.detectProfanityForSettings(text, settings);
           const result = await service.detect({
@@ -135,6 +143,30 @@ describe('structured profanity rule-engine decision', () => {
       settings: { ...BASE_SETTINGS, messageLimitsBlockedWords: ['EBITDA'] } as never,
     });
     expect(result.violations.map((item) => item.ruleCode)).toEqual(['MESSAGE_BLOCKED_WORD']);
+  });
+
+  it.each(['привет,блять', '3-6лет,блять', 'блять,3-6лет', 'EBITDA,блять', 'блять,EBITDA'])(
+    'retains independent word evidence beside punctuation in %s',
+    (text) => {
+      const service = new RuleEngineService({} as never);
+      expect(service.detectProfanityForSettings(text, BASE_SETTINGS as never)).toMatchObject({
+        category: 'CORE_MAT',
+        familyId: 'core:blyad',
+        matchedVariant: 'блять',
+      });
+    },
+  );
+
+  it('records repetition evidence only when repeated letters were folded', () => {
+    const service = new RuleEngineService({} as never);
+    expect(service.detectProfanityForSettings('хуууй', BASE_SETTINGS as never)).toMatchObject({
+      matchedVariant: 'хуй',
+      evidence: ['REPEATED_LETTERS'],
+      detectorVersion: 'profanity-structured-v3',
+    });
+    expect(
+      service.detectProfanityForSettings('ебанный', BASE_SETTINGS as never)?.evidence,
+    ).not.toContain('REPEATED_LETTERS');
   });
 
   it('does not rescan the whole message for words outside contextual exception families', () => {
@@ -175,7 +207,7 @@ describe('structured profanity rule-engine decision', () => {
           matchKind: 'EXACT_VARIANT',
           matchedVariant: 'скотина',
           evidence: ['TARGET_CONTEXT'],
-          detectorVersion: 'profanity-structured-v2',
+          detectorVersion: 'profanity-structured-v3',
         },
       },
     ]);

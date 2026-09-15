@@ -97,18 +97,20 @@ describe('ProfanityDeleteGuardService', () => {
     expect(harness.detect).not.toHaveBeenCalled();
   });
 
-  it.each(['Спасибо, всё исправил', 'Лечение педикулеза: как удалить гнид'])(
-    'rejects a legacy decision when the latest text is clean: %s',
-    async (text) => {
-      const harness = buildHarness();
-      harness.maxClient.getExactMessageRow.mockResolvedValue(buildMessage(text));
+  it.each([
+    'Спасибо, всё исправил',
+    'Лечение педикулеза: как удалить гнид',
+    'Открыт набор в арт-студию. ЧЕТВЕРГ: 16:00 - группа 3-6 л. для детей',
+    'Занятия для детей 3-6лет',
+  ])('rejects a legacy decision when the latest text is clean: %s', async (text) => {
+    const harness = buildHarness();
+    harness.maxClient.getExactMessageRow.mockResolvedValue(buildMessage(text));
 
-      await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
-        code: 'profanity_violation_no_longer_present',
-      });
-      expect(harness.immunity.consumeForMessage).not.toHaveBeenCalled();
-    },
-  );
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code: 'profanity_violation_no_longer_present',
+    });
+    expect(harness.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
 
   it('accepts edited text that still violates current policy', async () => {
     const harness = buildHarness();

@@ -13,9 +13,11 @@ const EMAIL_PATTERN =
 const LITERAL_LATIN_TERM =
   /^(?:ebit(?:da)?|hues?|huygens)(?:[-_]\d{2,4})?(?:\.(?:csv|xlsx?|pdf|docx?|txt|json))?$/iu;
 const MEASUREMENT_LITERAL =
-  /^(?:(?:на|по|до|за)\s*)?[+-]?\d{1,6}(?:[.,]\d{1,3})?\s*-?\s*(л(?:итр(?:а|ов)?)?|l(?:it(?:er|re)s?)?|л\.?\s*с\.?|лет(?:н(?:ий|яя|ее|ие|его|ей|их|ими|им|ем|юю))?)$/iu;
+  /^(?:(?:на|по|до|за)\s*)?[+-]?\d{1,6}(?:[.,]\d{1,3})?(?:\s*[-–—]\s*\d{1,6}(?:[.,]\d{1,3})?)?\s*[-–—]?\s*(л(?:итр(?:а|ов)?)?|l(?:it(?:er|re)s?)?|л\.?\s*с\.?|лет(?:н(?:ий|яя|ее|ие|его|ему|ей|их|ими|им|ем|юю))?)$/iu;
 const VOLUME_CONTEXT =
   /(?:об[ъь]?ем|емкост|ёмкост|бак|канистр|вод[аыу]|топлив|бензин|дизел|масл|аквариум|рюкзак|кастрюл|ведр|бутыл|бочк|литр|volume|tank|water|fuel|capacity|backpack)/iu;
+const AGE_CONTEXT =
+  /(?:возраст|дет(?:и|ей|ям|ск)|реб[её]н|ребят|малыш|дошколь|школьни|групп|заняти|студи|круж|секци)/iu;
 
 export function prepareProfanitySource(text: string): string {
   // FLAG: Non-linguistic spans are barriers, not joinable gaps. All candidate offsets refer
@@ -56,7 +58,15 @@ export function getMeasurementLiteralContext(
       .at(-1) ?? '';
   const after = source.slice(end, end + 120).split(/[,.;!?\r\n\0]/u)[0] ?? '';
   const standalone = !/[\p{L}\p{N}]/u.test(source.slice(0, start) + source.slice(end));
-  if (!unambiguousUnit && !standalone && !VOLUME_CONTEXT.test(`${before} ${after}`)) return null;
+  const localContext = `${before} ${after}`;
+  if (
+    !unambiguousUnit &&
+    !standalone &&
+    !VOLUME_CONTEXT.test(localContext) &&
+    !(unit.toLowerCase() === 'л' && AGE_CONTEXT.test(localContext))
+  ) {
+    return null;
+  }
   return { text: `${before} ${canonicalToken} ${after}`, unambiguousUnit };
 }
 

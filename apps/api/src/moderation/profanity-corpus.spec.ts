@@ -66,7 +66,7 @@ describe('profanity corpus', () => {
         matchKind: 'EXACT_VARIANT',
         matchedVariant: 'скотина',
         evidence: expect.arrayContaining(['TARGET_CONTEXT']),
-        detectorVersion: 'profanity-structured-v2',
+        detectorVersion: 'profanity-structured-v3',
       }),
     );
     expect(probe.detect('ты валенок', 'STRICT', 'on')).toEqual(
@@ -165,6 +165,28 @@ describe('profanity corpus', () => {
       count: missedCases.length,
       samples: missedCases.slice(0, 30),
     }).toEqual({ count: 0, samples: [] });
+  });
+
+  it('allows Russian age ranges without exempting independent mat in either rollout', () => {
+    const failures: Array<{ text: string; rolloutMode: string; sensitivity: string }> = [];
+    for (const rolloutMode of ['on', 'legacy'] as const) {
+      for (const sensitivity of ['CORE_ONLY', 'BALANCED', 'STRICT'] as const) {
+        for (let age = 2; age <= 16; age += 1) {
+          for (const separator of ['-', '–', ' — ']) {
+            for (const unit of ['л.', ' л.', 'лет', ' лет', '-летние']) {
+              const text = `Приглашаем детей в группу ${age}${separator}${age + 3}${unit}`;
+              if (
+                probe.detect(text, sensitivity, rolloutMode) ||
+                probe.detect(`${text}, блять`, sensitivity, rolloutMode)?.category !== 'CORE_MAT'
+              ) {
+                failures.push({ text, rolloutMode, sensitivity });
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
   });
 
   it('keeps profanity detection within the hot-path budget', () => {
