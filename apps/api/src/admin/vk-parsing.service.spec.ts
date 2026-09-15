@@ -936,7 +936,7 @@ describe('VkParsingService', () => {
         status: 'ACTIVE',
         importEnabled: true,
         autoPublishEnabled: false,
-        publishMode: { not: 'REVIEW' },
+        publishMode: { notIn: ['REVIEW', 'BOT_REVIEW'] },
         syncStatus: { not: 'ERROR' },
         terminalFailureCount: 0,
         circuitOpenedAt: null,

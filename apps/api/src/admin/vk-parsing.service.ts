@@ -274,7 +274,7 @@ export class VkParsingService {
             status: 'ACTIVE',
             importEnabled: true,
             autoPublishEnabled: false,
-            publishMode: { not: 'REVIEW' },
+            publishMode: { notIn: ['REVIEW', 'BOT_REVIEW'] },
             syncStatus: { not: 'ERROR' },
             terminalFailureCount: 0,
             circuitOpenedAt: null,
@@ -454,7 +454,7 @@ export class VkParsingService {
       },
       include: { source: true },
     });
-    if (!post || post.source.publishMode !== 'REVIEW') {
+    if (!post || !['REVIEW', 'BOT_REVIEW'].includes(post.source.publishMode)) {
       throw new NotFoundException('Пост на модерации не найден.');
     }
     if (post.status === 'PUBLISHED' || post.status === 'UNAVAILABLE' || post.status === 'SKIPPED') {
@@ -496,7 +496,10 @@ export class VkParsingService {
         rollbackQueuedAt: null,
         rollbackLockedAt: null,
         rollbackIdempotencyKey: null,
-        source: { ...this.ownership.getPublisherScope(), publishMode: 'REVIEW' },
+        source: { ...this.ownership.getPublisherScope(), publishMode: post.source.publishMode },
+        ...(post.source.publishMode === 'BOT_REVIEW'
+          ? { botReview: { is: { status: 'PENDING', deliveryState: { not: 'AMBIGUOUS' } } } }
+          : {}),
       },
       data: {
         status: 'NEW',
@@ -518,6 +521,13 @@ export class VkParsingService {
     });
     if (updated.count === 0) {
       throw new NotFoundException('Пост на модерации уже обработан или недоступен.');
+    }
+
+    if (post.source.publishMode === 'BOT_REVIEW') {
+      await this.prisma.vkBotReview.updateMany({
+        where: { postId: post.id, status: 'PENDING' },
+        data: { nextAttemptAt: new Date() },
+      });
     }
 
     return this.feedService.buildFeed(
@@ -667,7 +677,7 @@ export class VkParsingService {
           ...ownerScope,
           status: 'ACTIVE',
           importEnabled: true,
-          publishMode: { not: 'REVIEW' },
+          publishMode: { notIn: ['REVIEW', 'BOT_REVIEW'] },
           quietHoursStart: { not: null },
           quietHoursEnd: { not: null },
           ...(includeAutoEnableCandidates

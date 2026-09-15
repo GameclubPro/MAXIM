@@ -34,6 +34,8 @@ const LazyPostEditor = lazy(async () => {
 });
 
 type PostCardProps = {
+  onSendForBotReview?: (postId: string) => void;
+  isSubmittingBotReview?: boolean;
   post: VkParsingPost;
   settings: VkParsingSettings;
   postSignature: ChannelPostSignatureSettings;
@@ -74,6 +76,8 @@ function renderStatusIcon(post: VkParsingPost) {
 }
 
 export function PostCard({
+  onSendForBotReview,
+  isSubmittingBotReview = false,
   post,
   settings,
   postSignature,
@@ -111,7 +115,22 @@ export function PostCard({
   const visiblePhotoUrls = post.photoUrls.slice(0, 4);
   const extraPhotoCount = Math.max(0, post.photoUrls.length - visiblePhotoUrls.length);
   const isReviewMode =
-    post.sourcePublishMode === 'REVIEW' && (post.status === 'NEW' || post.status === 'FAILED');
+    (post.sourcePublishMode === 'REVIEW' || post.sourcePublishMode === 'BOT_REVIEW') &&
+    (post.status === 'NEW' || post.status === 'FAILED');
+  const botReviewLabel =
+    post.botReview?.status === 'REJECTED'
+      ? 'Отклонён в боте'
+      : post.botReview?.status === 'APPROVED'
+        ? 'Принят в публикацию'
+        : post.botReview?.status === 'CANCELLED'
+          ? 'Согласование отменено'
+          : post.botReview?.deliveryState === 'AMBIGUOUS'
+            ? 'Доставка требует проверки'
+            : post.botReview?.deliveryState === 'DELIVERED'
+              ? 'На согласовании в личке'
+              : post.botReview
+                ? 'В очереди согласования'
+                : 'Без задания согласования';
   const visibleStatusLabel = isReviewMode ? null : statusLabel;
   const visiblePostIssue = isReviewMode ? null : postIssue;
 
@@ -293,7 +312,9 @@ export function PostCard({
               <span className="vk-parsing-review-state__icon">
                 <ShieldCheck aria-hidden />
               </span>
-              <strong>На модерации</strong>
+              <strong>
+                {post.sourcePublishMode === 'BOT_REVIEW' ? botReviewLabel : 'На модерации'}
+              </strong>
             </div>
           ) : (
             <div className="vk-parsing-post-card__facts">
@@ -350,6 +371,12 @@ export function PostCard({
             </div>
           )}
 
+          {post.botReview?.lastError ? (
+            <p className="vk-parsing-post-card__issue" role="status">
+              {post.botReview.lastError}
+            </p>
+          ) : null}
+
           {post.status === 'PUBLISHED' && post.publishedUrl ? (
             <div className="vk-parsing-post-card__actions">
               <a
@@ -368,6 +395,19 @@ export function PostCard({
           post.status !== 'SKIPPED' &&
           post.status !== 'UNAVAILABLE' ? (
             <div className="vk-parsing-post-card__actions">
+              {post.sourcePublishMode === 'BOT_REVIEW' &&
+              (!post.botReview || post.botReview.deliveryState === 'ERROR') &&
+              onSendForBotReview ? (
+                <button
+                  type="button"
+                  className="button button--ghost vk-parsing-action-button"
+                  disabled={isSubmittingBotReview}
+                  onClick={() => onSendForBotReview(post.id)}
+                >
+                  <ShieldCheck aria-hidden />
+                  {isSubmittingBotReview ? 'Отправляем...' : 'В личку на согласование'}
+                </button>
+              ) : null}
               {post.status === 'FAILED' && !isReviewMode ? (
                 <button
                   type="button"
@@ -382,6 +422,11 @@ export function PostCard({
               <button
                 type="button"
                 className="button button--ghost vk-parsing-action-button vk-parsing-action-button--primary"
+                disabled={
+                  post.sourcePublishMode === 'BOT_REVIEW' &&
+                  (post.botReview?.status !== 'PENDING' ||
+                    post.botReview.deliveryState === 'AMBIGUOUS')
+                }
                 onPointerDown={() => void loadPostEditor()}
                 onFocus={() => void loadPostEditor()}
                 onClick={() => onStartEditing(post)}

@@ -98,6 +98,24 @@ test('resolves the Publisher auto-replies workspace from a route startapp payloa
   assert.equal(resolveLaunchRoute(''), '/publisher/chat/-68085832859751/auto-replies');
 });
 
+test('opens only the exact Publisher channel VK review workspace', () => {
+  const route = '/publisher/channel/-68085832859751?focus=vk';
+  assignWindow(
+    `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(encodeRouteStartParam(route))}`,
+  );
+  assert.equal(resolveLaunchRoute(''), route);
+  for (const invalid of [
+    '/publisher/chat/-1?focus=vk',
+    '/publisher/channel/-1?focus=vk&admin=1',
+    '/publisher/channel/-1?focus=other',
+  ]) {
+    assignWindow(
+      `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(encodeRouteStartParam(invalid))}`,
+    );
+    assert.equal(resolveLaunchRoute(''), null);
+  }
+});
+
 test('rejects widened Publisher auto-reply route payloads', () => {
   assignWindow(
     `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(

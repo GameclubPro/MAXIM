@@ -35,6 +35,7 @@ export function resolveVkParsingAutopostMode(
   const hasRepairableSource = activeSources.some(
     (source) =>
       source.publishMode !== 'REVIEW' &&
+      source.publishMode !== 'BOT_REVIEW' &&
       source.syncStatus !== 'ERROR' &&
       source.terminalFailureCount === 0 &&
       source.circuitOpenedAt === null &&

@@ -57,6 +57,7 @@ import {
   PublisherSuggestionAdminQueueService,
 } from './publisher-suggestion-admin.queue';
 import { PublisherSuggestionAdminCallbackObserverService } from './publisher-suggestion-admin-callback-observer.service';
+import { PublisherVkBotReviewQueueService } from './publisher-vk-bot-review.queue';
 import { PUBLISHER_START_QUEUE, PublisherStartQueueService } from './publisher-start.queue';
 import { PublisherStartProcessor } from './publisher-start.processor';
 import { PublisherPublicationPostActionsService } from './publisher-publication-post-actions.service';
@@ -99,6 +100,7 @@ const sharedPublisherProviders = [
   PublisherAutoReplyAuthoringService,
   PublisherSuggestionAdminQueueService,
   PublisherSuggestionAdminCallbackObserverService,
+  PublisherVkBotReviewQueueService,
   PublisherPrivateFlowLeaseService,
   PublisherPrivateDialogFlowRouterService,
   PublisherStartQueueService,

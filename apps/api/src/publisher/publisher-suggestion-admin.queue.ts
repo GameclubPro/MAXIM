@@ -2,6 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
+import type { VkBotReviewJob } from './publisher-vk-bot-review.queue';
 
 export const PUBLISHER_SUGGESTION_ADMIN_QUEUE = 'publisher-suggestion-admin';
 export const PUBLISHER_SUGGESTION_ADMIN_CALLBACK_PREFIX = 'psa:v1:';
@@ -18,6 +19,7 @@ export type PublisherSuggestionAdminReviewActor = {
 };
 
 export type PublisherSuggestionAdminJob =
+  | VkBotReviewJob
   | {
       version: 1;
       kind: 'deliver';

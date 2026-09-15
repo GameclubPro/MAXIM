@@ -414,6 +414,14 @@ const baseScenarios = [
       },
     ],
     [
+      'publisher-channel-vk-bot-review',
+      {
+        searchParams: { profile: 'publisher', view: 'channel' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher', 'vk-parsing'],
+      },
+    ],
+    [
       'publisher-entities-empty',
       {
         searchParams: { profile: 'publisher', publisherState: 'empty' },

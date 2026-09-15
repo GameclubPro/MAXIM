@@ -14,6 +14,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkApiClientService } from './vk-api-client.service';
+import { isVkManualReviewMode, VK_BOT_REVIEW_MODE } from './vk-bot-review-protocol';
 import { resolveNextAllowedVkAutoPublishAt } from './vk-autopublish-timing';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import {
@@ -57,7 +58,6 @@ const VK_SOURCE_SYNC_STATUS_QUEUED = 'QUEUED';
 const VK_SOURCE_SYNC_STATUS_SYNCING = 'SYNCING';
 const VK_SOURCE_SYNC_STATUS_ERROR = 'ERROR';
 const VK_SOURCE_PUBLISH_MODE_QUEUE = 'QUEUE';
-const VK_SOURCE_PUBLISH_MODE_REVIEW = 'REVIEW';
 const VK_SOURCE_PRIORITY_NORMAL = 'NORMAL';
 const VK_SYNC_JOB_NAME = 'sync-vk-source';
 const VK_PARSING_AVAILABLE_CAPABILITY: VkParsingCapability = {
@@ -79,7 +79,7 @@ export class VkSourceService {
     private readonly vkApiClient: VkApiClientService,
     @InjectQueue(VK_PARSING_SYNC_QUEUE)
     private readonly syncQueue: Queue<VkParsingSyncJob>,
-    configService: ConfigService,
+    private readonly configService: ConfigService,
     private readonly ownership: VkParsingOwnershipService,
   ) {
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
@@ -243,13 +243,71 @@ export class VkSourceService {
           : {};
       const nextAutoPublishEnabled = parsed.data.autoPublishEnabled ?? source.autoPublishEnabled;
       const nextPublishMode = parsed.data.publishMode ?? source.publishMode;
+      if (nextPublishMode === VK_BOT_REVIEW_MODE) {
+        if (this.configService.get<boolean>('VK_BOT_REVIEW_ENABLED') === false) {
+          throw new BadRequestException('Согласование в боте временно отключено.');
+        }
+        const settings = await tx.vkParsingSettings.findUnique({
+          where: { chatId_ownerProfile_ownerBotId: { chatId, ...ownerScope } },
+        });
+        if (!settings?.botReviewRecipientUserId) {
+          throw new BadRequestException('Сначала подключите личку для согласования.');
+        }
+        const channel = await tx.chat.findUnique({
+          where: { id: chatId },
+          select: { entityType: true },
+        });
+        if (channel?.entityType !== 'CHANNEL')
+          throw new BadRequestException('Согласование доступно только для каналов.');
+        if (parsed.data.autoPublishEnabled === true) {
+          throw new BadRequestException('Согласование в боте несовместимо с автопубликацией.');
+        }
+      }
+      const changesReviewMode =
+        nextPublishMode !== source.publishMode &&
+        (nextPublishMode === VK_BOT_REVIEW_MODE || source.publishMode === VK_BOT_REVIEW_MODE);
+      if (changesReviewMode) {
+        const inFlight = await tx.vkParsingPost.count({
+          where: {
+            sourceId: source.id,
+            ...ownerScope,
+            OR: [
+              { publishLockedAt: { not: null } },
+              { publishIdempotencyKey: { not: null }, publishAttemptCount: { gt: 0 } },
+            ],
+          },
+        });
+        if (inFlight) throw new BadRequestException('Дождитесь завершения текущей публикации.');
+        await tx.vkParsingPost.updateMany({
+          where: {
+            sourceId: source.id,
+            ...ownerScope,
+            publishAttemptCount: 0,
+            publishLockedAt: null,
+          },
+          data: {
+            publishQueuedAt: null,
+            publishScheduledAt: null,
+            publishIdempotencyKey: null,
+            publishReason: null,
+            publishScheduleFingerprint: null,
+          },
+        });
+        await tx.vkBotReview.updateMany({
+          where: {
+            post: { sourceId: source.id, ...ownerScope },
+            status: { in: ['PENDING', 'APPROVED'] },
+          },
+          data: { status: 'CANCELLED', lastError: 'Режим источника изменён.', nextAttemptAt: now },
+        });
+      }
       const nextAutoPublishPausedAt =
         parsed.data.autoPublishEnabled === true ? null : source.autoPublishPausedAt;
       if (
         importEnabled &&
         nextAutoPublishEnabled &&
         nextAutoPublishPausedAt === null &&
-        nextPublishMode !== VK_SOURCE_PUBLISH_MODE_REVIEW
+        !isVkManualReviewMode(nextPublishMode)
       ) {
         const settings = await tx.vkParsingSettings.findUnique({
           where: {
@@ -277,6 +335,16 @@ export class VkSourceService {
         data: {
           ...parsed.data,
           ...normalizedSchedulePatch,
+          ...(nextPublishMode === VK_BOT_REVIEW_MODE
+            ? {
+                autoPublishEnabled: false,
+                autoPublishEnabledAt: null,
+                botReviewEnabledAt:
+                  source.publishMode === VK_BOT_REVIEW_MODE ? source.botReviewEnabledAt : now,
+              }
+            : changesReviewMode
+              ? { botReviewEnabledAt: null }
+              : {}),
           status: VK_SOURCE_STATUS_ACTIVE,
           importEnabled,
           ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
@@ -310,7 +378,7 @@ export class VkSourceService {
       if (
         parsed.data.autoPublishEnabled === false ||
         parsed.data.importEnabled === false ||
-        parsed.data.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+        isVkManualReviewMode(parsed.data.publishMode ?? '')
       ) {
         await this.clearQueuedAutoPublishForSources(tx, chatId, [source.id], ownerScope);
       }
@@ -367,6 +435,15 @@ export class VkSourceService {
         id: { in: sourceIds },
         status: VK_SOURCE_STATUS_ACTIVE,
       } as const;
+      if (
+        await tx.vkParsingSource.count({
+          where: { ...sourceWhere, publishMode: VK_BOT_REVIEW_MODE },
+        })
+      ) {
+        throw new BadRequestException(
+          'Сначала отключите согласование в боте у выбранных источников.',
+        );
+      }
       const syncUpdate = preset.importEnabled
         ? {
             status: VK_SOURCE_STATUS_ACTIVE,

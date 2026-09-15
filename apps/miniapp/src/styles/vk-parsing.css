@@ -1,4 +1,64 @@
 @layer pages {
+  .vk-source-mode-control.is-bot-review {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .vk-bot-review-panel {
+    padding: 16px 0;
+    border-block: 1px solid var(--border-subtle);
+    min-width: 0;
+  }
+  .vk-bot-review-panel__heading,
+  .vk-bot-review-panel__controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .vk-bot-review-panel__heading {
+    margin-bottom: 12px;
+  }
+  .vk-bot-review-panel__heading h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .vk-bot-review-panel__heading svg,
+  .vk-bot-review-panel__controls svg {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+  }
+  .vk-bot-review-panel__heading span,
+  .vk-bot-review-panel__status {
+    font-size: 13px;
+  }
+  .vk-bot-review-panel__status {
+    display: block;
+    margin-top: 10px;
+  }
+  .vk-bot-review-panel__controls .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    white-space: normal;
+  }
+  .vk-bot-review-panel__controls > .vk-parsing-icon-button {
+    margin-left: auto;
+  }
+  .vk-bot-review-panel__toggle {
+    order: 3;
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    font-size: 14px;
+  }
+  .vk-bot-review-panel__toggle input {
+    width: 18px;
+    height: 18px;
+  }
   /* Publik VK import: compact operational layout. */
   .vk-parsing-surface {
     --settings-panel-accent: #0a7cff;

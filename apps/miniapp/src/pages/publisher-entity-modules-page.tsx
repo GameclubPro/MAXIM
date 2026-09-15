@@ -15,7 +15,7 @@ import {
   WarningCircle,
 } from 'iconoir-react';
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, useLocation, useParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
@@ -103,7 +103,10 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
   const entityType =
     params.entityType === 'chat' || params.entityType === 'channel' ? params.entityType : null;
   const entityId = params.entityId?.trim() ?? '';
-  const [vkOpen, setVkOpen] = useState(false);
+  const location = useLocation();
+  const [vkOpen, setVkOpen] = useState(
+    () => new URLSearchParams(location.search).get('focus') === 'vk',
+  );
   const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
   const [entityRecheckPhase, setEntityRecheckPhase] = useState<PublisherEntityRecheckPhase | null>(
     null,

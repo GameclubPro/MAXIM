@@ -14,6 +14,9 @@ import {
   vkParsingFeedSchema,
   vkParsingHealthSummarySchema,
   vkParsingRefreshResultSchema,
+  vkBotReviewStateSchema,
+  vkBotReviewSettingsRequestSchema,
+  type VkBotReviewState,
   type VkParsingFeed,
   type VkParsingPost,
   type VkParsingSettings,
@@ -41,6 +44,7 @@ type DisconnectedPreviewVkSource = {
 };
 
 const disconnectedVkSources = new WeakMap<PreviewState, Map<string, DisconnectedPreviewVkSource>>();
+const previewReviewSettings = new WeakMap<PreviewState, Map<string, VkBotReviewState>>();
 
 function normalizePreviewVkSourceUrl(value: string): { identity: string; url: URL } {
   const trimmed = value.trim();
@@ -481,6 +485,46 @@ export function handleVkParsingPreviewRequest(
     }
   };
 
+  if (tail[1] === 'bot-review' && entityType === 'channel') {
+    let settings = previewReviewSettings.get(state);
+    if (!settings) {
+      settings = new Map();
+      previewReviewSettings.set(state, settings);
+    }
+    const current =
+      settings.get(chatId) ??
+      vkBotReviewStateSchema.parse({
+        available: true,
+        inboxConnected: true,
+        isRecipient: false,
+        recipientConfigured: false,
+        paused: false,
+        pendingCount: 0,
+        botUrl: 'https://max.ru/publik_bot?start=vk_review',
+      });
+    if (method === 'PATCH') {
+      const { action } = vkBotReviewSettingsRequestSchema.parse(parseJsonBody(init));
+      const next = {
+        ...current,
+        isRecipient: true,
+        recipientConfigured: true,
+        paused: action === 'PAUSE',
+      };
+      settings.set(chatId, next);
+      return { handled: true, value: next };
+    }
+    if (method === 'POST' && tail[2] === 'posts') {
+      const feed = readFeed();
+      const post = feed.posts.find((item) => item.id === tail[3]);
+      if (post && !post.botReview) {
+        post.botReview = { status: 'PENDING', deliveryState: 'QUEUED', lastError: null };
+        writeFeed(feed);
+      }
+      return { handled: true, value: current };
+    }
+    if (method === 'GET') return { handled: true, value: current };
+  }
+
   if (tail[1] === 'capability' && method === 'GET') {
     return {
       handled: true,
@@ -560,6 +604,7 @@ export function handleVkParsingPreviewRequest(
                 source.importEnabled &&
                 !source.autoPublishEnabled &&
                 source.publishMode !== 'REVIEW' &&
+                source.publishMode !== 'BOT_REVIEW' &&
                 source.syncStatus !== 'ERROR' &&
                 source.terminalFailureCount === 0 &&
                 source.circuitOpenedAt === null &&
@@ -847,14 +892,28 @@ export function handleVkParsingPreviewRequest(
               ...source,
               ...payload,
               autoPublishEnabledAt:
-                payload.autoPublishEnabled === true
-                  ? (source.autoPublishEnabledAt ?? nowIso)
-                  : payload.autoPublishEnabled === false
-                    ? null
-                    : source.autoPublishEnabledAt,
+                payload.publishMode === 'BOT_REVIEW'
+                  ? null
+                  : payload.autoPublishEnabled === true
+                    ? (source.autoPublishEnabledAt ?? nowIso)
+                    : payload.autoPublishEnabled === false
+                      ? null
+                      : source.autoPublishEnabledAt,
               updatedAt: nowIso,
+              ...(payload.publishMode === 'BOT_REVIEW' ? { autoPublishEnabled: false } : {}),
             }
           : source,
+      ),
+      posts: readFeed().posts.map((post) =>
+        post.sourceId === sourceId && payload.publishMode
+          ? {
+              ...post,
+              sourcePublishMode: payload.publishMode,
+              ...(payload.publishMode === 'BOT_REVIEW'
+                ? { publishQueuedAt: null, publishScheduledAt: null }
+                : {}),
+            }
+          : post,
       ),
     });
     writeFeed(feed);

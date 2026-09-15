@@ -328,6 +328,8 @@ describe('MiniappMutationTunnelController', () => {
       '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review',
       { action: 'publish' },
     ],
+    ['PATCH', '/publisher/entities/channel/channel-1/vk-parsing/bot-review', { action: 'CONNECT' }],
+    ['POST', '/publisher/entities/channel/channel-1/vk-parsing/bot-review/posts/post-1', {}],
     [
       'POST',
       '/channels/channel-1/dialog/suggest/video',
@@ -372,6 +374,10 @@ describe('MiniappMutationTunnelController', () => {
 
   it.each([
     ['PUT', '/publisher/entities/chat/chat-1/modules'],
+    ['PATCH', '/publisher/entities/chat/chat-1/vk-parsing/bot-review'],
+    ['POST', '/publisher/entities/channel/channel-1/vk-parsing/bot-review'],
+    ['PATCH', '/publisher/entities/channel/channel-1/vk-parsing/bot-review/extra'],
+    ['DELETE', '/publisher/entities/channel/channel-1/vk-parsing/bot-review/posts/post-1'],
     ['POST', '/publisher/entities/chat/chat-1/modules'],
     ['PATCH', '/publisher/entities/chat/chat-1/modules/'],
     ['PATCH', '/publisher/entities/unknown/chat-1/modules'],

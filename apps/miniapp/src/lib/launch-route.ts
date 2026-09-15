@@ -262,6 +262,10 @@ function normalizeRouteLaunchPath(value: string): string | null {
       return pathname;
     }
 
+    if (/^\/publisher\/channel\/[^/?#]+$/u.test(pathname) && parsed.search === '?focus=vk') {
+      return `${pathname}${parsed.search}`;
+    }
+
     if (/^\/channel\/[^/?#]+\/stats$/u.test(pathname) && !parsed.search) {
       return pathname;
     }

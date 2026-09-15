@@ -799,6 +799,25 @@ const scenarioBehaviors = [
       await page.waitForTimeout(350);
     },
   },
+  {
+    name: 'publisher-channel-vk-bot-review',
+    beforeShot: async (page) => {
+      await page
+        .getByRole('link', { name: /разделы/iu })
+        .first()
+        .click();
+      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      const panel = page.locator('.vk-bot-review-panel');
+      await panel.getByRole('button', { name: 'Получать мне', exact: true }).click();
+      await panel.getByText('Получатель: вы', { exact: true }).waitFor();
+      const source = page.locator('.vk-source-card').first();
+      await source.getByRole('button', { name: 'Настройки источника', exact: true }).click();
+      await source.getByRole('button', { name: 'Личка', exact: true }).click();
+      await source.getByRole('radio', { name: 'Сбор', exact: true }).waitFor();
+      await panel.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(350);
+    },
+  },
   ...['publication', 'time', 'safety', 'preset', 'queue'].map((section) => ({
     name: `publisher-entity-modules-vk-scheduler-${section}`,
     beforeShot: async (page) => {

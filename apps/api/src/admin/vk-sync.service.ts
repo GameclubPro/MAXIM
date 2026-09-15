@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkApiClientService } from './vk-api-client.service';
+import { isVkManualReviewMode, VK_BOT_REVIEW_MODE } from './vk-bot-review-protocol';
 import {
   parseVkWallPostAttachments,
   type VkParsingPhotoMediaIdentity,
@@ -83,7 +84,6 @@ const VK_SOURCE_SYNC_STATUS_IDLE = 'IDLE';
 const VK_SOURCE_SYNC_STATUS_SYNCING = 'SYNCING';
 const VK_SOURCE_SYNC_STATUS_BACKOFF = 'BACKOFF';
 const VK_SOURCE_SYNC_STATUS_ERROR = 'ERROR';
-const VK_SOURCE_PUBLISH_MODE_REVIEW = 'REVIEW';
 const VK_POST_STATUS_NEW = 'NEW';
 const VK_POST_STATUS_PUBLISHED = 'PUBLISHED';
 const VK_POST_STATUS_CHANGED_AFTER_PUBLISH = 'CHANGED_AFTER_PUBLISH';
@@ -436,7 +436,36 @@ export class VkSyncService {
           reason,
           tx,
         );
-        return this.upsertPostsBatch(currentSource, posts, seenAt, autoPublishImportBaseline, tx);
+        const reviewSettings =
+          currentSource.publishMode === VK_BOT_REVIEW_MODE &&
+          currentSource.status === 'ACTIVE' &&
+          currentSource.importEnabled &&
+          currentSource.lastSuccessAt &&
+          currentSource.botReviewEnabledAt &&
+          reason !== 'source-added'
+            ? await tx.vkParsingSettings.findUnique({
+                where: {
+                  chatId_ownerProfile_ownerBotId: {
+                    chatId: currentSource.chatId,
+                    ownerProfile: currentSource.ownerProfile,
+                    ownerBotId: currentSource.ownerBotId,
+                  },
+                },
+              })
+            : null;
+        return this.upsertPostsBatch(
+          currentSource,
+          posts,
+          seenAt,
+          autoPublishImportBaseline,
+          tx,
+          reviewSettings?.botReviewRecipientUserId && currentSource.botReviewEnabledAt
+            ? {
+                recipientUserId: reviewSettings.botReviewRecipientUserId,
+                baseline: currentSource.botReviewEnabledAt,
+              }
+            : undefined,
+        );
       },
       {
         maxWait: VK_IMPORT_POLICY_TRANSACTION_MAX_WAIT_MS,
@@ -460,6 +489,7 @@ export class VkSyncService {
     seenAt: Date,
     autoPublishImportBaseline: Date | null,
     database: VkParsingPostImportDatabase = this.prisma,
+    botReview?: { recipientUserId: string; baseline: Date },
   ): Promise<ImportedPostsBatchResult> {
     const existingRows = await this.postImportRepository.findExistingPosts(source, posts, database);
     const existingByPostKey = new Map(
@@ -485,6 +515,37 @@ export class VkSyncService {
     });
 
     await this.postImportRepository.persistImportedPosts(source, preparedPosts, seenAt, database);
+
+    // FLAG: Only first-seen posts inside the explicit review baseline get a durable inbox item.
+    if (botReview) {
+      const newIds = posts
+        .filter(
+          (post) =>
+            !existingByPostKey.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)) &&
+            post.vkPublishedAt &&
+            post.vkPublishedAt >= botReview.baseline,
+        )
+        .map((post) => post.vkPostId);
+      if (newIds.length) {
+        const reviewPosts = await database.vkParsingPost.findMany({
+          where: {
+            sourceId: source.id,
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
+            vkPostId: { in: newIds },
+            status: 'NEW',
+          },
+          select: { id: true },
+        });
+        await database.vkBotReview.createMany({
+          data: reviewPosts.map((post) => ({
+            postId: post.id,
+            recipientUserId: botReview.recipientUserId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
 
     const importedCount = posts.filter(
       (post) => !existingByPostKey.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
@@ -660,7 +721,7 @@ export class VkSyncService {
       source.importEnabled !== true ||
       source.autoPublishEnabled !== true ||
       Boolean(source.autoPublishPausedAt) ||
-      source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+      isVkManualReviewMode(source.publishMode)
     ) {
       return null;
     }

@@ -299,6 +299,16 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/settings$`),
   },
   {
+    method: 'PATCH',
+    pattern: new RegExp(`^/publisher/entities/channel/${ENTITY_ID_SEGMENT}/vk-parsing/bot-review$`),
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(
+      `^/publisher/entities/channel/${ENTITY_ID_SEGMENT}/vk-parsing/bot-review/posts/${ENTITY_ID_SEGMENT}$`,
+    ),
+  },
+  {
     method: 'POST',
     pattern: new RegExp(`^${PUBLISHER_VK_PARSING_PATH}/(rollback|refresh)$`),
   },

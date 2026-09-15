@@ -12,9 +12,21 @@ import {
   rollbackVkParsingResultSchema,
   updateVkParsingSettingsRequestSchema,
   vkParsingFeedSchema,
+  vkParsingPublishModeSchema,
+  vkBotReviewSettingsRequestSchema,
 } from '@maxim/contracts/vk-parsing';
 
 describe('VK parsing contracts', () => {
+  it('keeps bot approval distinct from closed Safety Desk review', () => {
+    expect(vkParsingPublishModeSchema.parse('BOT_REVIEW')).toBe('BOT_REVIEW');
+    expect(vkParsingPublishModeSchema.parse('REVIEW')).toBe('REVIEW');
+    expect(
+      vkBotReviewSettingsRequestSchema.parse({ action: 'CONNECT', recipientUserId: 'foreign' }),
+    ).toEqual({ action: 'CONNECT' });
+    expect(vkBotReviewSettingsRequestSchema.safeParse({ action: 'PUBLISH_ALL' }).success).toBe(
+      false,
+    );
+  });
   it('keeps root and subpath schema identity aligned', () => {
     expect(rootPublishVkParsingPostRequestSchema).toBe(publishVkParsingPostRequestSchema);
     expect(rootPublishVkParsingPostResultSchema).toBe(publishVkParsingPostResultSchema);

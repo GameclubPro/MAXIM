@@ -8,6 +8,7 @@ import {
   type VkParsingSettings,
   type VkParsingSource,
   vkParsingFeedQuerySchema,
+  vkBotReviewSummarySchema,
 } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -20,7 +21,9 @@ import type { VkParsingUnsupportedAttachmentSummary } from './vk-parsing-attachm
 import type { VkParsingOwnerScope } from './vk-parsing-ownership.service';
 
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
-type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }>;
+type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }> & {
+  botReview?: { status: string; deliveryState: string; lastError: string | null } | null;
+};
 type VkParsingSettingsRow = Prisma.VkParsingSettingsGetPayload<Record<string, never>>;
 type VkParsingAuditRow = Prisma.AuditLogGetPayload<Record<string, never>>;
 type SourcePostStats = {
@@ -127,7 +130,10 @@ export class VkParsingFeedService {
         }),
         this.prisma.vkParsingPost.findMany({
           where: postWhere,
-          include: { source: true },
+          include: {
+            source: true,
+            botReview: { select: { status: true, deliveryState: true, lastError: true } },
+          },
           orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
           skip: query.offset,
           take: query.limit,
@@ -374,12 +380,15 @@ export class VkParsingFeedService {
                 : 'NEW';
     return {
       id: post.id,
+      botReview: post.botReview ? vkBotReviewSummarySchema.parse(post.botReview) : null,
       sourceId: post.sourceId,
       chatId: post.chatId,
       sourceTitle: post.source.title,
       sourceUrl: post.source.url,
       sourcePublishMode:
-        post.source.publishMode === 'IMMEDIATE' || post.source.publishMode === 'REVIEW'
+        post.source.publishMode === 'IMMEDIATE' ||
+        post.source.publishMode === 'REVIEW' ||
+        post.source.publishMode === 'BOT_REVIEW'
           ? post.source.publishMode
           : 'QUEUE',
       vkOwnerId: post.vkOwnerId,
@@ -488,7 +497,9 @@ export class VkParsingFeedService {
       dailyLimit: Math.max(1, source.dailyLimit ?? 3),
       minPublishIntervalMinutes: Math.max(0, source.minPublishIntervalMinutes ?? 30),
       publishMode:
-        source.publishMode === 'IMMEDIATE' || source.publishMode === 'REVIEW'
+        source.publishMode === 'IMMEDIATE' ||
+        source.publishMode === 'REVIEW' ||
+        source.publishMode === 'BOT_REVIEW'
           ? source.publishMode
           : 'QUEUE',
       priority:

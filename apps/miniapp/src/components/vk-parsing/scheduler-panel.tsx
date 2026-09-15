@@ -22,6 +22,7 @@ import {
 } from './model';
 
 type SchedulerPanelProps = {
+  botReviewEnabled?: boolean;
   settings: VkParsingSettings;
   sources: VkParsingSource[];
   status: AutopostStatusModel;
@@ -48,6 +49,7 @@ const SOURCE_MODE_OPTIONS: Array<{
   { value: 'IMMEDIATE', label: 'Сразу' },
   { value: 'QUEUE', label: 'Очередь' },
   { value: 'REVIEW', label: 'Проверка' },
+  { value: 'BOT_REVIEW', label: 'Личка' },
 ];
 
 const FREQUENCY_OPTIONS = [
@@ -132,6 +134,7 @@ function renderAutopostStatusIcon(tone: AutopostStatusTone) {
 }
 
 export function SchedulerPanel({
+  botReviewEnabled = false,
   settings,
   sources,
   status,
@@ -275,7 +278,9 @@ export function SchedulerPanel({
                     type="button"
                     className={cn(sourceMode === option.value && 'is-active')}
                     aria-pressed={sourceMode === option.value}
-                    disabled={sourceControlsDisabled}
+                    disabled={
+                      sourceControlsDisabled || (option.value === 'BOT_REVIEW' && !botReviewEnabled)
+                    }
                     onClick={() => {
                       void onUpdateSources(sourceIds, { publishMode: option.value });
                     }}

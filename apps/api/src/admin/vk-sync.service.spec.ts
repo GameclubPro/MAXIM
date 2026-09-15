@@ -112,6 +112,7 @@ describe('VkSyncService pending autopublish imports', () => {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'channel-1' }]),
       vkParsingPost,
       vkParsingSettings,
+      vkBotReview: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
       vkParsingSource: {
         findFirst: jest.fn().mockResolvedValue(createSource()),
       },
@@ -188,6 +189,60 @@ describe('VkSyncService pending autopublish imports', () => {
     expect(query?.values).toContain(VK_AUTOPUBLISH_PENDING_SCHEDULE_FINGERPRINT);
     expect(conflictSql).not.toContain('publish_schedule_fingerprint');
   });
+
+  it('creates a review only for newly observed posts after the explicit baseline', async () => {
+    const { internals, prisma, transaction, postImportRepository } = createFixture();
+    const source = createSource({
+      publishMode: 'BOT_REVIEW',
+      autoPublishEnabled: false,
+      botReviewEnabledAt: new Date('2026-09-04T09:00:00Z'),
+    });
+    transaction.vkParsingSource.findFirst.mockResolvedValue(source);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({ botReviewRecipientUserId: '17' });
+    prisma.vkParsingPost.findMany.mockResolvedValue([{ id: 'post-101' }]);
+    postImportRepository.findExistingPosts.mockResolvedValue([
+      createExistingPost(createPost({ vkPostId: 102 })),
+    ]);
+    await internals.importPostsWithPolicyFence(
+      source,
+      [
+        createPost(),
+        createPost({ vkPostId: 102 }),
+        createPost({ vkPostId: 103, vkPublishedAt: new Date('2026-09-01T00:00:00Z') }),
+      ],
+      new Date(),
+      'scheduled',
+    );
+    expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ vkPostId: { in: [101] } }) }),
+    );
+    expect(transaction.vkBotReview.createMany).toHaveBeenCalledWith({
+      data: [{ postId: 'post-101', recipientUserId: '17' }],
+      skipDuplicates: true,
+    });
+  });
+
+  it.each(['source-added', 'first-success'] as const)(
+    'does not review history during %s',
+    async (kind) => {
+      const { internals, prisma, transaction } = createFixture();
+      const source = createSource({
+        publishMode: 'BOT_REVIEW',
+        autoPublishEnabled: false,
+        botReviewEnabledAt: new Date('2026-09-04T09:00:00Z'),
+        ...(kind === 'first-success' ? { lastSuccessAt: null } : {}),
+      });
+      transaction.vkParsingSource.findFirst.mockResolvedValue(source);
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({ botReviewRecipientUserId: '17' });
+      await internals.importPostsWithPolicyFence(
+        source,
+        [createPost()],
+        new Date(),
+        kind === 'source-added' ? 'source-added' : 'scheduled',
+      );
+      expect(transaction.vkBotReview.createMany).not.toHaveBeenCalled();
+    },
+  );
 
   it('marks only a new post inside an enabled Auto baseline as pending', async () => {
     const { internals, postImportRepository } = createFixture();

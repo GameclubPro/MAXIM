@@ -22,6 +22,7 @@ import {
   removeVkParsingSource,
   retryVkParsingPost,
   scheduleVkParsingPost,
+  submitVkBotReviewPost,
   updateVkParsingReviewDraft,
   updateVkParsingSource,
   updateVkParsingSettings,
@@ -358,6 +359,17 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     },
   });
 
+  const botReviewMutation = useMutation({
+    mutationFn: (postId: string) => submitVkBotReviewPost(api, chatId, postId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      void queryClient.invalidateQueries({ queryKey: ['vk-bot-review', chatId] });
+      pushToast({ tone: 'success', title: 'Пост добавлен на согласование' });
+    },
+    onError: (error) =>
+      pushToast({ tone: 'danger', title: 'Не отправлено', description: normalizeApiError(error) }),
+  });
+
   const retryMutation = useMutation({
     mutationFn: (postId: string) => retryVkParsingPost(api, entityType, chatId, postId),
     onSuccess: () => {
@@ -513,7 +525,10 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       linkUrls: selectedLinkUrls,
     };
 
-    if (editingPost.sourcePublishMode === 'REVIEW') {
+    if (
+      editingPost.sourcePublishMode === 'REVIEW' ||
+      editingPost.sourcePublishMode === 'BOT_REVIEW'
+    ) {
       reviewDraftMutation.mutate(payload);
       return;
     }
@@ -695,6 +710,10 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
 
   return {
     feed,
+    submitBotReview: (postId: string) => {
+      if (!botReviewMutation.isPending) botReviewMutation.mutate(postId);
+    },
+    submittingBotReviewPostId: botReviewMutation.isPending ? botReviewMutation.variables : null,
     feedQuery,
     settings,
     settingsSaved: saveFeedbackRevision > 0,

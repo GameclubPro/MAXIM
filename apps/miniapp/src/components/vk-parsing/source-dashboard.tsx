@@ -22,6 +22,7 @@ import { formatVkSourceProblem } from './format';
 import { buildVkParsingSourceMetrics } from './model';
 
 type SourceDashboardProps = {
+  botReviewEnabled?: boolean;
   sourceUrl: string;
   sources: VkParsingSource[];
   selectedSourceId: string | null;
@@ -66,6 +67,7 @@ const SOURCE_MODE_OPTIONS: Array<{ value: SourceModeValue; label: string }> = [
   { value: 'IMMEDIATE', label: 'Сразу' },
   { value: 'QUEUE', label: 'Очередь' },
   { value: 'REVIEW', label: 'Проверка' },
+  { value: 'BOT_REVIEW', label: 'Личка' },
 ];
 
 type SourceRunMode = 'manual' | 'auto' | 'pause';
@@ -80,7 +82,7 @@ function resolveSourceRunMode(source: VkParsingSource): SourceRunMode {
   if (!source.importEnabled) {
     return 'pause';
   }
-  return source.autoPublishEnabled ? 'auto' : 'manual';
+  return source.autoPublishEnabled && source.publishMode !== 'BOT_REVIEW' ? 'auto' : 'manual';
 }
 
 function SourceModeControl({
@@ -94,10 +96,20 @@ function SourceModeControl({
 }) {
   return (
     <AsyncRadioGroup
-      className="vk-source-mode-control"
+      className={cn(
+        'vk-source-mode-control',
+        source.publishMode === 'BOT_REVIEW' && 'is-bot-review',
+      )}
       ariaLabel={`Режим ${source.title}`}
       value={resolveSourceRunMode(source)}
-      options={SOURCE_RUN_MODE_OPTIONS}
+      options={
+        source.publishMode === 'BOT_REVIEW'
+          ? [
+              { value: 'manual', label: 'Сбор' },
+              { value: 'pause', label: 'Пауза' },
+            ]
+          : SOURCE_RUN_MODE_OPTIONS
+      }
       disabled={disabled}
       onChange={onChange}
     />
@@ -186,6 +198,7 @@ function resolveFrequencyPreset(minutes: number): FrequencyPresetValue {
 }
 
 export function SourceDashboard({
+  botReviewEnabled = false,
   sourceUrl,
   sources,
   selectedSourceId,
@@ -445,7 +458,10 @@ export function SourceDashboard({
                                 key={option.value}
                                 type="button"
                                 className={cn(source.publishMode === option.value && 'is-active')}
-                                disabled={isSavingSource}
+                                disabled={
+                                  isSavingSource ||
+                                  (option.value === 'BOT_REVIEW' && !botReviewEnabled)
+                                }
                                 onClick={() =>
                                   onUpdateSource(source.id, { publishMode: option.value })
                                 }

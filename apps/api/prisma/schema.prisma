@@ -2995,6 +2995,7 @@ model VkParsingSource {
   dailyLimit                Int       @default(3) @map("daily_limit")
   minPublishIntervalMinutes Int       @default(30) @map("min_publish_interval_minutes")
   publishMode               String    @default("QUEUE") @map("publish_mode")
+  botReviewEnabledAt        DateTime? @map("bot_review_enabled_at")
   priority                  String    @default("NORMAL")
   quietHoursStart           String?   @map("quiet_hours_start")
   quietHoursEnd             String?   @map("quiet_hours_end")
@@ -3049,6 +3050,8 @@ model VkParsingSettings {
   chatId                       String    @map("chat_id")
   ownerProfile                 VkParsingOwnerProfile @map("owner_profile")
   ownerBotId                   String    @map("owner_bot_id")
+  botReviewRecipientUserId      String?   @map("bot_review_recipient_user_id")
+  botReviewPaused               Boolean   @default(false) @map("bot_review_paused")
   autoPublishEnabled           Boolean   @default(false) @map("auto_publish_enabled")
   autoPublishEnabledAt         DateTime? @map("auto_publish_enabled_at")
   autoPublishKillSwitchEnabled Boolean   @default(false) @map("auto_publish_kill_switch_enabled")
@@ -3143,6 +3146,7 @@ model VkParsingPost {
 
   chat   Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
   source VkParsingSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  botReview VkBotReview?
 
   @@unique([chatId, ownerProfile, ownerBotId, vkOwnerId, vkPostId], map: "vk_parsing_posts_owner_vk_post_key")
   @@index([sourceId, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_source_published_at_idx")
@@ -3159,6 +3163,44 @@ model VkParsingPost {
   @@index([dispatchProfile, rollbackQueuedAt, rollbackLockedAt], map: "vk_parsing_posts_dispatch_rollback_lock_idx")
   @@index([chatId, publishedMessageId], map: "vk_parsing_posts_chat_published_message_idx")
   @@map("vk_parsing_posts")
+}
+
+model VkBotReviewInbox {
+  botId         String   @map("bot_id")
+  userId        String   @map("user_id")
+  privateChatId String   @map("private_chat_id")
+  confirmedAt   DateTime @map("confirmed_at")
+
+  @@id([botId, userId])
+  @@map("vk_bot_review_inboxes")
+}
+
+model VkBotReview {
+  id                  String    @id @default(cuid())
+  postId              String    @unique @map("post_id")
+  recipientUserId     String    @map("recipient_user_id")
+  revision            Int       @default(1)
+  status              String    @default("PENDING")
+  deliveryState       String    @default("QUEUED") @map("delivery_state")
+  snapshot            Json?
+  fingerprint         String?
+  privateChatId       String?   @map("private_chat_id")
+  contentMessageId    String?   @map("content_message_id")
+  controlMessageId    String?   @map("control_message_id")
+  attemptStartedAt    DateTime? @map("attempt_started_at")
+  nextAttemptAt       DateTime  @default(now()) @map("next_attempt_at")
+  presentationKey     String?   @map("presentation_key")
+  decidedAt           DateTime? @map("decided_at")
+  decidedByUserId     String?   @map("decided_by_user_id")
+  lastError           String?   @map("last_error")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  post VkParsingPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryState, nextAttemptAt, id], map: "vk_bot_reviews_due_idx")
+  @@index([recipientUserId, status, deliveryState], map: "vk_bot_reviews_recipient_pending_idx")
+  @@map("vk_bot_reviews")
 }
 
 model VkParsingMediaCache {

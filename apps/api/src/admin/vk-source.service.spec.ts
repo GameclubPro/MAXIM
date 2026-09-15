@@ -36,6 +36,7 @@ describe('VkSourceService autopublish cleanup', () => {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'channel-1' }]),
       $transaction: jest.fn(),
       vkParsingSource: {
+        count: jest.fn().mockResolvedValue(0),
         findFirst: jest.fn().mockResolvedValue(source),
         findMany: jest.fn().mockResolvedValue([]),
         update: jest.fn().mockResolvedValue(source),
@@ -46,11 +47,14 @@ describe('VkSourceService autopublish cleanup', () => {
         upsert: jest.fn().mockResolvedValue({}),
       },
       vkParsingPost: {
+        count: jest.fn().mockResolvedValue(0),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       auditLog: {
         create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
       },
+      chat: { findUnique: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }) },
+      vkBotReview: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     prisma.$transaction.mockImplementation(async (operation: (tx: typeof prisma) => unknown) =>
       operation(prisma),
@@ -140,6 +144,64 @@ describe('VkSourceService autopublish cleanup', () => {
     await service.updateSource('channel-1', 'source-1', { userId: 'admin-1' }, patch);
 
     expectCleanupQuery(prisma.vkParsingPost.updateMany.mock.calls[0]?.[0], ['source-1']);
+  });
+
+  it('requires an explicit recipient before entering bot review', async () => {
+    const { prisma, service } = createFixture();
+    await expect(
+      service.updateSource(
+        'channel-1',
+        'source-1',
+        { userId: '17' },
+        { publishMode: 'BOT_REVIEW' },
+      ),
+    ).rejects.toThrow('подключите личку');
+    expect(prisma.vkParsingSource.update).not.toHaveBeenCalled();
+  });
+
+  it('enters bot review with a new baseline and clears unattempted publication intents', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      botReviewRecipientUserId: '17',
+    } as never);
+    await service.updateSource(
+      'channel-1',
+      'source-1',
+      { userId: '17' },
+      { publishMode: 'BOT_REVIEW' },
+    );
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          publishMode: 'BOT_REVIEW',
+          autoPublishEnabled: false,
+          botReviewEnabledAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ publishAttemptCount: 0, publishLockedAt: null }),
+        data: expect.objectContaining({ publishIdempotencyKey: null }),
+      }),
+    );
+  });
+
+  it('refuses a mode switch while publication dispatch is in flight', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      botReviewRecipientUserId: '17',
+    } as never);
+    prisma.vkParsingPost.count.mockResolvedValue(1);
+    await expect(
+      service.updateSource(
+        'channel-1',
+        'source-1',
+        { userId: '17' },
+        { publishMode: 'BOT_REVIEW' },
+      ),
+    ).rejects.toThrow('Дождитесь');
+    expect(prisma.vkParsingSource.update).not.toHaveBeenCalled();
   });
 
   it('clears queued Auto work and pending markers for a deduplicated REVIEW preset', async () => {

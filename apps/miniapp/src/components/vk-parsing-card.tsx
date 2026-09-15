@@ -15,6 +15,7 @@ import { StatusFilterBar } from './vk-parsing/status-filter-bar';
 import { normalizeApiError } from './vk-parsing/format';
 import { useVkParsingCard } from './vk-parsing/use-vk-parsing-card';
 import { SkeletonCard } from './ui/skeleton';
+import { BotReviewPanel, useVkBotReviewState } from './vk-parsing/bot-review-panel';
 import { StatusState } from './ui/status-state';
 import '../styles/vk-parsing.css';
 
@@ -40,6 +41,7 @@ export function VkParsingCard({
   postSignature,
 }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
+  const botReview = useVkBotReviewState(api, chatId, active && entityType === 'channel');
   const { feed, feedQuery, settings, posts, sources } = state;
   const [now, setNow] = useState(() => new Date());
   const [queueOpen, setQueueOpen] = useState(false);
@@ -73,6 +75,9 @@ export function VkParsingCard({
     <div className="vk-parsing-card">
       {feed && autopostStatus ? (
         <SchedulerPanel
+          botReviewEnabled={Boolean(
+            botReview.data?.available && botReview.data.recipientConfigured,
+          )}
           settings={settings}
           sources={sources}
           status={autopostStatus}
@@ -87,7 +92,12 @@ export function VkParsingCard({
         />
       ) : null}
 
+      {entityType === 'channel' && feed ? (
+        <BotReviewPanel api={api} chatId={chatId} active={active} />
+      ) : null}
+
       <SourceDashboard
+        botReviewEnabled={Boolean(botReview.data?.available && botReview.data.recipientConfigured)}
         sourceUrl={state.sourceUrl}
         sources={sources}
         selectedSourceId={state.selectedSourceId}
@@ -142,6 +152,8 @@ export function VkParsingCard({
         ) : null}
 
         <PostList
+          onSendForBotReview={state.submitBotReview}
+          submittingBotReviewPostId={state.submittingBotReviewPostId}
           posts={posts}
           settings={settings}
           postSignature={effectivePostSignature}

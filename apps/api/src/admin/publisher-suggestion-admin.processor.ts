@@ -1,5 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { ForbiddenException, HttpException } from '@nestjs/common';
+import { ForbiddenException, HttpException, Optional } from '@nestjs/common';
+import { VkBotReviewService } from './vk-bot-review.service';
+import type { VkBotReviewJob } from '../publisher/publisher-vk-bot-review.queue';
 import { UnrecoverableError, type Job } from 'bullmq';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import {
@@ -43,6 +45,7 @@ export class PublisherSuggestionAdminProcessor extends WorkerHost {
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
     private readonly credentials: PublisherActionCredentialService,
+    @Optional() private readonly vkReviews?: VkBotReviewService,
   ) {
     super();
   }
@@ -57,6 +60,12 @@ export class PublisherSuggestionAdminProcessor extends WorkerHost {
     await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
     await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
     await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
+
+    if (job.data.kind === 'vk-bot-review') {
+      if (!this.vkReviews) throw new Error('VK review worker is unavailable');
+      await this.vkReviews.process(job as Job<VkBotReviewJob>);
+      return;
+    }
 
     if (job.data.kind === 'deliver') {
       await this.channelDialogs.processPublisherSuggestionAdminDeliveryJob(

@@ -6,6 +6,8 @@ import type {
 import { PostCard } from './post-card';
 
 type PostListProps = {
+  onSendForBotReview?: (postId: string) => void;
+  submittingBotReviewPostId?: string | null;
   posts: VkParsingPost[];
   settings: VkParsingSettings;
   postSignature: ChannelPostSignatureSettings;
@@ -29,6 +31,8 @@ type PostListProps = {
 };
 
 export function PostList({
+  onSendForBotReview,
+  submittingBotReviewPostId,
   posts,
   settings,
   postSignature,
@@ -58,6 +62,8 @@ export function PostList({
     <div className="vk-parsing-post-list">
       {posts.map((post) => (
         <PostCard
+          onSendForBotReview={onSendForBotReview}
+          isSubmittingBotReview={submittingBotReviewPostId === post.id}
           key={post.id}
           post={post}
           settings={settings}

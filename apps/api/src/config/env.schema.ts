@@ -626,6 +626,7 @@ const envSchema = z.object({
   VK_PARSING_MAX_PAGES: z.coerce.number().int().min(1).max(10).default(5),
   VK_PARSING_MISSING_CONFIRMATION_THRESHOLD: z.coerce.number().int().min(1).max(10).default(3),
   VK_PARSING_QUEUE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+  VK_BOT_REVIEW_ENABLED: envBoolean(true),
   VK_PARSING_LEASE_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(120_000),

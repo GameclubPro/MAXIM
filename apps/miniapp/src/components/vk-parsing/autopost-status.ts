@@ -31,7 +31,9 @@ export function buildAutopostStatus(
   if (!active.length) {
     return { title: 'Нет источников', reason: 'Нет активных источников импорта', tone: 'warning' };
   }
-  if (active.every((source) => source.publishMode === 'REVIEW')) {
+  if (
+    active.every((source) => source.publishMode === 'REVIEW' || source.publishMode === 'BOT_REVIEW')
+  ) {
     return {
       title: 'На проверке',
       reason: 'Все источники требуют ручной публикации',
@@ -39,7 +41,10 @@ export function buildAutopostStatus(
     };
   }
   const automatic = active.filter(
-    (source) => source.autoPublishEnabled && source.publishMode !== 'REVIEW',
+    (source) =>
+      source.autoPublishEnabled &&
+      source.publishMode !== 'REVIEW' &&
+      source.publishMode !== 'BOT_REVIEW',
   );
   if (!automatic.length) {
     return {

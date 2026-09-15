@@ -35,6 +35,8 @@ import { AdvertisingPlacementController } from './advertising-placement.controll
 import { AdvertisingPlacementService } from './advertising-placement.service';
 import { AdminSettingsController } from './admin-settings.controller';
 import { PublisherVkParsingController } from './publisher-vk-parsing.controller';
+import { PublisherVkBotReviewController } from './publisher-vk-bot-review.controller';
+import { VkBotReviewService } from './vk-bot-review.service';
 import { ChannelDialogService } from './channel-dialog.service';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { CHANNEL_DIALOG_LEGACY_PORT } from './channel-dialog-legacy.port';
@@ -137,6 +139,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminManagedEntitiesController,
     AdminSettingsController,
     PublisherVkParsingController,
+    PublisherVkBotReviewController,
     AdminDialogController,
     AdminGiveawayController,
     AdminPollController,
@@ -229,6 +232,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     VkParsingOwnershipService,
     VkParsingPostImportRepository,
     VkParsingService,
+    VkBotReviewService,
     SafetyDeskAdminGuard,
     SafetyDeskService,
     SupportRequestsService,

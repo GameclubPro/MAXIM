@@ -67,7 +67,7 @@ export type VkMissingPostSpotCheck = (
 
 export type VkParsingPostImportDatabase = Pick<
   Prisma.TransactionClient,
-  'vkParsingPost' | '$executeRaw'
+  'vkParsingPost' | 'vkBotReview' | '$executeRaw'
 >;
 
 const VK_POST_STATUS_NEW = 'NEW';

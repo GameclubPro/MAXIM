@@ -17,6 +17,7 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -75,6 +76,13 @@ import {
 } from './admin.service.support';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { buildVkAutoPublishScheduleFingerprint } from './vk-autopublish-policy';
+import {
+  buildVkBotReviewFingerprint,
+  isVkManualReviewMode,
+  VK_BOT_REVIEW_MODE,
+  vkBotReviewSnapshotSchema,
+  type VkBotReviewSnapshot,
+} from './vk-bot-review-protocol';
 import {
   getVkAutoPublishLocalDayRange,
   planVkAutoPublishSourceSlots,
@@ -345,7 +353,7 @@ export class VkPublishService {
     private readonly maxClient: MaxClientService,
     private readonly mediaCache: VkParsingMediaCacheService,
     private readonly feedService: VkParsingFeedService,
-    configService: ConfigService,
+    private readonly configService: ConfigService,
     private readonly ownership: VkParsingOwnershipService,
     @Optional()
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
@@ -419,7 +427,7 @@ export class VkPublishService {
           importEnabled: true,
           autoPublishEnabled: true,
           autoPublishPausedAt: null,
-          publishMode: { not: VK_SOURCE_PUBLISH_MODE_REVIEW },
+          publishMode: { notIn: ['REVIEW', VK_BOT_REVIEW_MODE] },
         },
         ...(params.chatId ? { chatId: params.chatId } : {}),
         ...(sourceIds.length > 0 ? { sourceId: { in: sourceIds } } : {}),
@@ -931,6 +939,143 @@ export class VkPublishService {
     };
   }
 
+  async prepareBotReviewSnapshot(postId: string): Promise<VkBotReviewSnapshot> {
+    const post = await this.prisma.vkParsingPost.findFirst({
+      where: {
+        id: postId,
+        ...this.getPublisherOwnerScope(),
+        source: {
+          ...this.getPublisherOwnerScope(),
+          publishMode: VK_BOT_REVIEW_MODE,
+          status: 'ACTIVE',
+        },
+      },
+      include: { source: true },
+    });
+    if (!post || !['NEW', 'FAILED'].includes(post.status))
+      throw new BadRequestException('VK-пост недоступен для согласования.');
+    this.assertNoAmbiguousMaxSendQuarantine(post);
+    const settings = await this.getSettingsForChat(post.chatId, this.getPublisherOwnerScope());
+    const videoUrls = this.readStringArray(post.videoUrls);
+    const payload = {
+      text: post.text,
+      textFormat: resolveEffectiveVkParsingTextFormat(post),
+      photoUrls: videoUrls.length ? [] : this.readStringArray(post.photoUrls),
+      videoUrls,
+      linkUrls: this.readStringArray(post.linkUrls),
+    };
+    const preserved = { preserveLinkUrls: this.resolveStripPreservedLinkUrls(post) };
+    const skip = resolveVkParsingPostSkipReason(
+      {
+        ...payload,
+        attachments: this.readAttachments(post.attachments),
+        raw: this.asRecord(post.raw) ?? {},
+        isAdvertising: post.isAdvertising,
+        advertisingMarkers: this.readStringArray(post.advertisingMarkers),
+      },
+      settings,
+      preserved,
+    );
+    if (skip) throw new BadRequestException(describeVkParsingSkipReason(skip));
+    const prepared = prepareVkParsingPublishPayload(payload, settings, preserved);
+    this.assertPreparedPublishPayload(prepared);
+    const maxMessage = await this.prepareMaxMessageText(
+      post.chatId,
+      prepared,
+      settings,
+      'background',
+      post.ownerBotId,
+    );
+    return vkBotReviewSnapshotSchema.parse({
+      version: 1,
+      fingerprint: buildVkBotReviewFingerprint(post, settings),
+      payload: prepared,
+      maxMessage,
+    });
+  }
+
+  async prepareBotReviewMedia(
+    postId: string,
+    snapshot: VkBotReviewSnapshot,
+  ): Promise<MaxSendMessageOptions> {
+    const post = await this.prisma.vkParsingPost.findFirst({
+      where: { id: postId, ...this.getPublisherOwnerScope() },
+    });
+    if (!post) throw new NotFoundException('VK-пост не найден.');
+    const request = {
+      botId: post.ownerBotId,
+      trafficClass: 'background' as const,
+      sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+    };
+    if (snapshot.payload.videoUrls.length) {
+      const url = snapshot.payload.videoUrls[0]!;
+      const payload = await this.downloadAndUploadVideo(
+        url,
+        request,
+        this.resolveVideoMediaIdentityMap(post).get(url) ?? null,
+      );
+      return {
+        textFormat: snapshot.maxMessage.textFormat,
+        attachments: [{ type: 'video', payload }],
+      };
+    }
+    const photos = await this.downloadAndUploadImages(
+      snapshot.payload.photoUrls,
+      request,
+      { allowPartialFailures: false, canPublishWithoutPhotos: false },
+      this.resolvePhotoMediaIdentityMap(post),
+    );
+    return {
+      textFormat: snapshot.maxMessage.textFormat,
+      attachments: photos.map((payload) => ({ type: 'image' as const, payload })),
+    };
+  }
+
+  async publishBotReviewedPost(reviewId: string): Promise<void> {
+    const review = await this.prisma.vkBotReview.findFirst({
+      where: { id: reviewId, status: 'APPROVED', post: this.getPublisherOwnerScope() },
+      include: { post: { include: { source: true } } },
+    });
+    if (!review) throw new ConflictException('Решение о публикации не найдено.');
+    const post = review.post;
+    if (post.status === 'PUBLISHED' || post.publishIdempotencyKey) return;
+    if (post.status !== 'NEW')
+      throw new ConflictException('Публикация требует проверки состояния.');
+    const settings = await this.getSettingsForChat(post.chatId, this.getPublisherOwnerScope());
+    await this.assertBotReviewApproved(post, settings);
+    await this.enqueuePostPublish(post, 'manual-retry', review.decidedAt ?? new Date(), {
+      actorUserId: review.recipientUserId,
+      botReviewId: review.id,
+    });
+  }
+
+  private async assertBotReviewApproved(
+    post: VkParsingPostWithSource,
+    settings: VkParsingSettingsLike,
+  ): Promise<VkBotReviewSnapshot> {
+    if (this.configService.get<boolean>('VK_BOT_REVIEW_ENABLED') === false) {
+      throw new PublisherVkDispatchBlockedError(
+        'vk_bot_review_disabled',
+        new Error('VK bot review disabled'),
+      );
+    }
+    const review = await this.prisma.vkBotReview.findUnique({ where: { postId: post.id } });
+    const snapshot = vkBotReviewSnapshotSchema.safeParse(review?.snapshot);
+    if (
+      post.source.publishMode !== VK_BOT_REVIEW_MODE ||
+      post.source.status !== 'ACTIVE' ||
+      post.status === 'UNAVAILABLE' ||
+      review?.status !== 'APPROVED' ||
+      !snapshot.success ||
+      review.fingerprint !== buildVkBotReviewFingerprint(post, settings) ||
+      review.fingerprint !== snapshot.data.fingerprint ||
+      review.decidedByUserId !== review.recipientUserId
+    ) {
+      throw new ConflictException('Пост или настройки изменились. Требуется новое согласование.');
+    }
+    return snapshot.data;
+  }
+
   async publishPost(
     chatId: string,
     postId: string,
@@ -1201,7 +1346,11 @@ export class VkPublishService {
           sourcesWithoutSuccessfulSync += 1;
         }
         const sourceBaseline = this.resolveAutoPublishBaseline(settings, source);
-        if (!sourceBaseline || !source.autoPublishEnabled || source.publishMode === 'REVIEW') {
+        if (
+          !sourceBaseline ||
+          !source.autoPublishEnabled ||
+          isVkManualReviewMode(source.publishMode)
+        ) {
           continue;
         }
         baselineAt =
@@ -1850,6 +1999,9 @@ export class VkPublishService {
       this.assertPublisherRuntimeBeforeClaim();
       await this.assertPublisherHealthAllowed();
       const settings = await this.getSettingsForChat(post.chatId, this.ownerScopeFromRow(post));
+      if (post.source.publishMode === VK_BOT_REVIEW_MODE) {
+        await this.assertBotReviewApproved(post, settings);
+      }
       if (params.reason === 'autopublish') {
         if (!this.canAutoPublishPost(post, settings)) {
           if (post.publishAttemptCount > 0) {
@@ -2108,7 +2260,7 @@ export class VkPublishService {
         await this.clearPendingAutoPublishPost(post);
         continue;
       }
-      if (post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW) {
+      if (isVkManualReviewMode(post.source.publishMode)) {
         await this.clearPendingAutoPublishPost(post);
         continue;
       }
@@ -2333,18 +2485,48 @@ export class VkPublishService {
         publisherExactBotId: publisherBotId,
         beforeSendMutation: async () => {
           await this.assertPublisherIntentReady(post);
+          if (post.source.publishMode === VK_BOT_REVIEW_MODE) {
+            const current = await this.prisma.vkParsingPost.findFirst({
+              where: { id: post.id, ...this.getPublisherOwnerScope() },
+              include: { source: true },
+            });
+            if (!current) throw new VkPublishIntentClaimLostError();
+            const settings = await this.getSettingsForChat(
+              post.chatId,
+              this.getPublisherOwnerScope(),
+            );
+            await this.assertBotReviewApproved(current, settings);
+            const access = (
+              await this.maxClient.getChatMembersAccess(post.chatId, [params.actorUserId], {
+                botId: publisherBotId,
+                trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+                bypassCache: true,
+              })
+            ).get(params.actorUserId);
+            if (!access || (!access.isAdmin && !access.isOwner))
+              throw new ConflictException('Права согласующего больше не подтверждены.');
+          }
           if (params.queuedIdempotencyKey) {
             if (!params.queuedPublishReason || !post.publishLockedAt) {
               throw new VkPublishIntentClaimLostError();
             }
             let recorded: boolean;
             try {
-              recorded = await this.recordPublishAttempt(
-                post.id,
-                params.queuedPublishReason,
-                params.queuedIdempotencyKey,
-                post.publishLockedAt,
-              );
+              recorded =
+                post.source.publishMode === VK_BOT_REVIEW_MODE
+                  ? await this.recordBotReviewPublishAttempt(
+                      post,
+                      params.queuedPublishReason,
+                      params.queuedIdempotencyKey,
+                      post.publishLockedAt,
+                    )
+                  : await this.recordPublishAttempt(
+                      post.id,
+                      params.queuedPublishReason,
+                      params.queuedIdempotencyKey,
+                      post.publishLockedAt,
+                    );
             } catch (error: unknown) {
               throw new VkPublishAttemptPersistenceError(error);
             }
@@ -2874,6 +3056,7 @@ export class VkPublishService {
       actorUserId?: string;
       storedDraft?: VkParsingStoredDraft;
       scheduleFingerprint?: string;
+      botReviewId?: string;
     } = {},
   ): Promise<number> {
     this.assertNoAmbiguousMaxSendQuarantine(post);
@@ -2882,6 +3065,38 @@ export class VkPublishService {
     const now = new Date();
     const expectedRoute = this.readPersistedIntentRoute(post);
     const queued = await this.prisma.$transaction(async (tx) => {
+      if (options.botReviewId) {
+        await tx.$queryRaw`SELECT id FROM chats WHERE id = ${post.chatId} FOR UPDATE`;
+        const review = await tx.vkBotReview.findFirst({
+          where: {
+            id: options.botReviewId,
+            postId: post.id,
+            status: 'APPROVED',
+            recipientUserId: options.actorUserId,
+          },
+        });
+        const current = await tx.vkParsingPost.findUnique({
+          where: { id: post.id },
+          include: { source: true },
+        });
+        const settings = await tx.vkParsingSettings.findUnique({
+          where: {
+            chatId_ownerProfile_ownerBotId: {
+              chatId: post.chatId,
+              ...this.getPublisherOwnerScope(),
+            },
+          },
+        });
+        if (
+          !review ||
+          !current ||
+          !settings ||
+          current.publishIdempotencyKey ||
+          current.source.publishMode !== VK_BOT_REVIEW_MODE ||
+          review.fingerprint !== buildVkBotReviewFingerprint(current, settings)
+        )
+          return { count: 0 };
+      }
       if (reason !== 'autopublish' && post.publishIdempotencyKey !== null) {
         const released = await tx.vkParsingPost.updateMany({
           where: {
@@ -2931,6 +3146,9 @@ export class VkPublishService {
           ownerBotId: post.ownerBotId,
           publishLockedAt: null,
           publishQueuedAt: null,
+          source: {
+            publishMode: options.botReviewId ? VK_BOT_REVIEW_MODE : { not: VK_BOT_REVIEW_MODE },
+          },
           publishScheduledAt: null,
           publishIdempotencyKey: null,
           publishReason: null,
@@ -3378,7 +3596,7 @@ export class VkPublishService {
       post.source.importEnabled === false ||
       post.source.autoPublishEnabled === false ||
       post.source.autoPublishPausedAt !== null ||
-      post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+      isVkManualReviewMode(post.source.publishMode)
     ) {
       return false;
     }
@@ -3456,7 +3674,7 @@ export class VkPublishService {
         !currentSource.importEnabled ||
         !currentSource.autoPublishEnabled ||
         currentSource.autoPublishPausedAt !== null ||
-        currentSource.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+        isVkManualReviewMode(currentSource.publishMode)
       ) {
         return false;
       }
@@ -3971,6 +4189,77 @@ export class VkPublishService {
     return updated.count > 0;
   }
 
+  private async recordBotReviewPublishAttempt(
+    post: VkParsingPostWithSource,
+    reason: VkParsingPublishReason,
+    key: string,
+    lockedAt: Date,
+  ): Promise<boolean> {
+    // FLAG: Approval, the shown revision, and dispatch admission share the source/settings policy lock.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM chats WHERE id = ${post.chatId} FOR UPDATE`;
+      const current = await tx.vkParsingPost.findFirst({
+        where: { id: post.id, ...this.getPublisherOwnerScope() },
+        include: { source: true, botReview: true },
+      });
+      const settings = await tx.vkParsingSettings.findUnique({
+        where: {
+          chatId_ownerProfile_ownerBotId: { chatId: post.chatId, ...this.getPublisherOwnerScope() },
+        },
+      });
+      if (
+        !current ||
+        !settings ||
+        current.source.publishMode !== VK_BOT_REVIEW_MODE ||
+        current.source.status !== 'ACTIVE' ||
+        current.status !== 'NEW' ||
+        current.botReview?.status !== 'APPROVED' ||
+        current.botReview.decidedByUserId !== current.publishActorUserId ||
+        settings.botReviewRecipientUserId !== current.publishActorUserId ||
+        current.botReview.fingerprint !== buildVkBotReviewFingerprint(current, settings)
+      ) {
+        const released = await tx.vkParsingPost.updateMany({
+          where: {
+            id: post.id,
+            publishIdempotencyKey: key,
+            publishReason: reason,
+            publishLockedAt: lockedAt,
+            publishAttemptCount: 0,
+            publishedMessageId: null,
+          },
+          data: {
+            publishQueuedAt: null,
+            publishScheduledAt: null,
+            publishLockedAt: null,
+            publishIdempotencyKey: null,
+            publishReason: null,
+          },
+        });
+        if (released.count)
+          await tx.vkBotReview.updateMany({
+            where: { postId: post.id, status: 'APPROVED' },
+            data: {
+              status: 'PENDING',
+              decidedAt: null,
+              decidedByUserId: null,
+              nextAttemptAt: new Date(),
+            },
+          });
+        return false;
+      }
+      const result = await tx.vkParsingPost.updateMany({
+        where: {
+          id: post.id,
+          publishReason: reason,
+          publishIdempotencyKey: key,
+          publishLockedAt: lockedAt,
+        },
+        data: { publishAttemptCount: { increment: 1 } },
+      });
+      return result.count === 1;
+    });
+  }
+
   private async releaseExactPublishLock(
     postId: string,
     idempotencyKey: string,
@@ -4025,6 +4314,9 @@ export class VkPublishService {
     post: VkParsingPostWithSource,
     actorUserId: string | null,
   ): void {
+    if (post.source.publishMode === VK_BOT_REVIEW_MODE) {
+      throw new BadRequestException('Этот пост согласуется в личке бота.');
+    }
     if (
       post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW &&
       actorUserId !== SAFETY_DESK_ACTOR_USER_ID
@@ -4093,6 +4385,24 @@ export class VkPublishService {
       throw new Error('Publik VK queued post requires the exact Publisher bot');
     }
     const auto = reason === 'autopublish';
+    if (post.source.publishMode === VK_BOT_REVIEW_MODE) {
+      const snapshot = await this.assertBotReviewApproved(post, settings);
+      await this.publishPreparedPostToMax(
+        post,
+        snapshot.payload,
+        { ...snapshot.maxMessage, textFormat: snapshot.maxMessage.textFormat },
+        {
+          actorUserId: post.publishActorUserId!,
+          trafficClass: 'interactive',
+          debugAction: 'bot_review_publish',
+          auto: false,
+          queuedIdempotencyKey: idempotencyKey,
+          queuedPublishReason: reason,
+          onPublishAttemptRecorded,
+        },
+      );
+      return;
+    }
     const photoUrls = this.readStringArray(post.photoUrls);
     const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);

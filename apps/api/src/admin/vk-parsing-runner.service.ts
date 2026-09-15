@@ -1,4 +1,5 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { PublisherVkBotReviewQueueService } from '../publisher/publisher-vk-bot-review.queue';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { VkParsingService } from './vk-parsing.service';
@@ -12,6 +13,7 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly vkParsingService: VkParsingService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
+    @Optional() private readonly botReviews?: PublisherVkBotReviewQueueService,
   ) {}
 
   onModuleInit(): void {
@@ -62,6 +64,11 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
         await this.vkParsingService.recoverStalePublisherRollbackJobs();
       } catch (error) {
         this.logger.warn({ err: error, reason }, 'VK parsing rollback recovery failed');
+      }
+      try {
+        await this.botReviews?.enqueueTick();
+      } catch (error) {
+        this.logger.warn({ err: error }, 'VK review recovery scheduling failed');
       }
     } finally {
       this.inFlight = false;

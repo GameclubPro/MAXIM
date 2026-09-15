@@ -13,6 +13,9 @@ import {
   vkParsingDryRunResultSchema,
   vkParsingFeedSchema,
   vkParsingRefreshResultSchema,
+  vkBotReviewStateSchema,
+  vkBotReviewSettingsRequestSchema,
+  type VkBotReviewSettingsRequest,
   type BulkUpdateVkParsingSourcesRequest,
   type PublishVkParsingPostRequest,
   type PublishVkParsingPostResult,
@@ -34,6 +37,34 @@ export type VkParsingEntityType = 'chat' | 'channel';
 
 function buildVkParsingPath(entityType: VkParsingEntityType, chatId: string): string {
   return `/publisher/entities/${entityType}/${encodeURIComponent(chatId)}/vk-parsing`;
+}
+
+export async function getVkBotReviewState(api: ApiTransport, chatId: string) {
+  return vkBotReviewStateSchema.parse(
+    await api.request(`${buildVkParsingPath('channel', chatId)}/bot-review`),
+  );
+}
+
+export async function submitVkBotReviewPost(api: ApiTransport, chatId: string, postId: string) {
+  return vkBotReviewStateSchema.parse(
+    await api.request(
+      `${buildVkParsingPath('channel', chatId)}/bot-review/posts/${encodeURIComponent(postId)}`,
+      { method: 'POST' },
+    ),
+  );
+}
+
+export async function updateVkBotReviewState(
+  api: ApiTransport,
+  chatId: string,
+  payload: VkBotReviewSettingsRequest,
+) {
+  return vkBotReviewStateSchema.parse(
+    await api.request(`${buildVkParsingPath('channel', chatId)}/bot-review`, {
+      method: 'PATCH',
+      body: JSON.stringify(vkBotReviewSettingsRequestSchema.parse(payload)),
+    }),
+  );
 }
 
 function buildVkParsingQuery(query: Partial<VkParsingFeedQuery> | undefined): string {

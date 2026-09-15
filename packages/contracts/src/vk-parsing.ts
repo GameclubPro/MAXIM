@@ -43,8 +43,30 @@ export const vkParsingPostStatusSchema = z.enum([
 ]);
 export type VkParsingPostStatus = z.infer<typeof vkParsingPostStatusSchema>;
 
-export const vkParsingPublishModeSchema = z.enum(['IMMEDIATE', 'QUEUE', 'REVIEW']);
+export const vkParsingPublishModeSchema = z.enum(['IMMEDIATE', 'QUEUE', 'REVIEW', 'BOT_REVIEW']);
 export type VkParsingPublishMode = z.infer<typeof vkParsingPublishModeSchema>;
+
+export const vkBotReviewSettingsRequestSchema = z.object({
+  action: z.enum(['CONNECT', 'PAUSE', 'RESUME']),
+});
+export type VkBotReviewSettingsRequest = z.infer<typeof vkBotReviewSettingsRequestSchema>;
+
+export const vkBotReviewStateSchema = z.object({
+  available: z.boolean(),
+  inboxConnected: z.boolean(),
+  isRecipient: z.boolean(),
+  recipientConfigured: z.boolean(),
+  paused: z.boolean(),
+  pendingCount: z.number().int().min(0),
+  botUrl: z.string().url(),
+});
+export type VkBotReviewState = z.infer<typeof vkBotReviewStateSchema>;
+
+export const vkBotReviewSummarySchema = z.object({
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']),
+  deliveryState: z.string(),
+  lastError: z.string().nullable(),
+});
 
 export const vkParsingSourcePrioritySchema = z.enum(['LOW', 'NORMAL', 'HIGH']);
 export type VkParsingSourcePriority = z.infer<typeof vkParsingSourcePrioritySchema>;
@@ -162,6 +184,7 @@ export const vkParsingSourceSchema = z.object({
 export type VkParsingSource = z.infer<typeof vkParsingSourceSchema>;
 
 export const vkParsingPostSchema = z.object({
+  botReview: vkBotReviewSummarySchema.nullable().optional(),
   id: z.string(),
   sourceId: z.string(),
   chatId: z.string(),
