@@ -43,3 +43,34 @@ Deployment requires green exact-SHA CI and the complete shared API role rollout.
 least two normal/degraded recovery cycles or a continuous healthy window after rollout before
 attributing the queue recovery to the correction. Revisit the Publik report after queue health
 is stable; do not publish or delete real user content as a diagnostic shortcut.
+
+## Rollout And Follow-Up
+
+Runtime commit `0aaf72696523a40a0b9871cfc8eab0aa20a70993` passed the exact-SHA Required and
+CodeQL checks. Local API validation passed 11,997 tests, typechecking, and build, in addition
+to the four explicit PostgreSQL tests. The immutable CI API image was preloaded because VPS
+disk utilization exceeded the local-build percentage guard. No guard was bypassed.
+
+Release `release-20260915T080733Z-0aaf72696523` updated all 13 API roles and the OCR auxiliary.
+Strict ingress/admin readiness, public liveness, and isolated OCR smokes passed after the
+existing backlog drained. Postgres, Redis, and both active static components were not recreated.
+
+Completed local capacity archives recorded these post-rollout windows (UTC):
+
+| Window            | Samples | Median lag |  p95 lag | Maximum lag | Failed readiness samples |
+| ----------------- | ------: | ---------: | -------: | ----------: | -----------------------: |
+| 08:22:47-08:27:47 |      20 |    0.672 s | 26.695 s |    27.150 s |                        2 |
+| 08:29:22-08:35:22 |      24 |    0.538 s |  3.735 s |    11.777 s |                        0 |
+
+Both windows had complete sampling coverage, exact API image/topology parity, released queue
+fences, and zero restarts. These are sampled oldest-event ages, not request latency percentiles.
+Short lag spikes remain; do not describe this as an entirely spike-free runtime. The system
+was still in automatic stabilization at the second window's end, so these windows alone do not
+prove sustained normal-mode behavior. The bounded expansion and database-side cancellation
+were verified directly by the PostgreSQL tests.
+
+The follow-up import/router suites passed 62 tests. The observed publisher-post-import queue
+had zero waiting, active, delayed, or failed jobs. No user content was sent, modified, or deleted.
+The original screenshot still lacks an actor/receipt identity and send time; a fresh reproduction
+with that context is required to conclusively attribute or investigate that user's remaining
+forward-import failure.
