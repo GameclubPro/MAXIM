@@ -13,6 +13,11 @@ duplicate intents; other status samples hit their caps. These are bounded observ
 a fleet success rate or proof that every production miss has the same cause. No participant
 messages, sanctions, settings, runtime controls or historical jobs were mutated for diagnosis.
 
+The whole-message control was permanent revision 2, `full`, scoped to `all_enabled_chats`.
+The separate photo-filter control was missing, with no revision. A missing photo control cannot
+authorize its standalone enforcement even when per-chat photo settings are saved. Verified
+whole-message media comparison is a separate path. Neither rollout was promoted by this work.
+
 ## Confirmed Defects
 
 1. Photo/sticker, burst and message-count counters discarded the decision on repeated webhook
@@ -51,8 +56,8 @@ history revalidation were retained, with additional exact-boundary coverage.
    align event expiry and future-skew guards. Bind the corrected window semantics into the photo
    authorization digest so old observation/action bindings cannot silently gain new authority.
 6. Completed: add interval and photo-boundary Redis suites to the existing mandatory CI lane.
-7. Pending: full API/static validation, exact-SHA CI and guarded shared-API deployment; then
-   confirm production readiness and runtime controls without replaying historical violations.
+7. Completed: local API/static validation, exact-SHA CI and CodeQL, guarded shared-API deployment,
+   production readiness and runtime-control verification without replaying historical violations.
 
 ## Operational Semantics
 
@@ -96,4 +101,44 @@ history revalidation were retained, with additional exact-boundary coverage.
 
 Focused local run: 39 suites and 1,212 tests passed with disposable loopback-only Redis,
 including text/media duplicate history, photo moderation, rule engine and enforcement.
-Full validation and delivery results will be recorded after completion.
+Full local API validation passed typecheck, build, 542 suites and 12,380 tests. Twenty
+environment-dependent suites (110 tests) were skipped in the standard run; focused Redis tests
+ran separately. Repository lint, refactor guards, documentation checks and 505 tooling tests
+passed. The full API run initially exposed outdated shared test doubles in two suites; those
+were updated and both targeted (139 tests) and full validation then passed.
+
+Runtime changes were committed as `8d5e964bd08497e84655a5a3de028cce95bfbb8e`.
+Exact-SHA CI and CodeQL passed. The mandatory Redis lane passed 13 suites and 148 tests;
+PostgreSQL races, all Docker builds, native OCR smokes and other required CI lanes also passed.
+
+## Delivery
+
+Deployed in `release-20260916T000024Z-8d5e964bd084`. The verified exact-SHA CI image was
+preloaded because host disk utilization was above the normal build target. Checksum, image
+identity and archive-plus-reserve capacity checks passed; no disk guard was weakened and no
+host-wide Docker cleanup was run.
+
+All 13 shared API roles and the OCR sandbox were updated. PostgreSQL, Redis and both active
+static components were not recreated; there were no pending migrations. The standard queue
+fence covered the mixed-version interval. Readiness briefly returned 503 while the paused
+backlog drained, then ingress/admin live/ready, public live and sandbox isolation/UDS/shadow
+smokes passed before the release manifest was committed.
+
+The whole-message runtime control remained permanent `full`, revision 2, `all_enabled_chats`.
+The separate photo control remained missing. Settings and historical sanctions were not reset.
+An early post-release bounded hourly audit included 24 duplicate-delete events; its intent
+sample contained 15 successful, 23 retryable, 12 waiting-capability, 11 expired and one terminal
+duplicate intent. Several status samples saturated their caps and the window overlaps the
+previous image, so these numbers do not establish an improvement rate or eliminate all misses.
+
+The completed `00:04:34Z` to `00:09:34Z` observation window had 20 capacity samples with complete
+coverage: no readiness/queue-fence failures, exact 13-role identity/image, no unexpected roles
+and no restarts. Sampled oldest-queue lag was 0 to 1.249 seconds (p95 0.458); this is not request
+latency. Eighteen samples still carried the automatic stabilization warning, so the whole window
+is not labelled normal. Its last sample was `normal / healthy`. The final `00:10:39Z` health
+check confirmed normal automatic mode, successful ingress/admin readiness and zero queue lag.
+Disk-headroom and swap-usage capacity warnings remain operational follow-ups, not reasons to
+weaken deploy safeguards. No real participant was used for an agent-initiated live sanction test.
+
+Disposable local Redis was stopped and removed. The read-only monitor keeps only its ordinary
+privacy-safe capacity archive; its transient full log is removed by the monitor lifecycle.
