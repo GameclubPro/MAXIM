@@ -85,7 +85,7 @@ test('publication video recovery state is visible and described to assistive tec
   assert.match(publicationVideoToolSource, /aria-label=\{label\}/u);
   assert.match(
     publicationVideoToolSource,
-    /aria-describedby=\{preparing \|\| needsReselection \? statusId : undefined\}/u,
+    /aria-describedby=\{\[statusId, errorId\]\.filter\(Boolean\)\.join\(' '\)\}/u,
   );
   assert.match(publicationVideoToolSource, /needs-reselection/u);
   assert.match(publicationVideoToolSource, /WarningCircle/u);

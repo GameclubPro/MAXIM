@@ -137,3 +137,28 @@ test('selecting video with photos reports the conflict before mutating media', (
     /interactionBlocked \? \([\s\S]*?publication-video-tool__blocker[\s\S]*?\) : \([\s\S]*?<input/u,
   );
 });
+
+test('video failures remain next to the picker instead of depending on transient toasts', () => {
+  assert.match(contentEditorSource, /const \[videoError, setVideoError\] = useState\(''\)/u);
+  assert.match(contentEditorSource, /onFile=\{handleVideoFile\}/u);
+  assert.match(
+    contentEditorSource,
+    /await onVideoFile\(file\);[\s\S]*?catch \(error\)[\s\S]*?setVideoError\(\s*describeUserFacingError/u,
+  );
+  assert.match(contentEditorSource, /id=\{videoErrorId\}[^>]*role="alert"/u);
+  assert.match(contentEditorSource, /errorId=\{videoError \? videoErrorId : undefined\}/u);
+  assert.match(videoToolSource, /aria-invalid=\{needsReselection \|\| Boolean\(errorId\)/u);
+  assert.match(videoToolSource, /aria-describedby=\{\[statusId, errorId\]/u);
+  assert.match(videoToolSource, /Максимум \{PUBLICATION_VIDEO_MAX_SIZE_MB\} МБ/u);
+});
+
+test('video preparation preserves existing media until success and always releases busy state', () => {
+  const handler = pageSource.match(
+    /async function handlePublicationVideoFile[\s\S]*?function confirmDraftClear/u,
+  )?.[0];
+  assert.ok(handler);
+  assert.ok(handler.indexOf('await preparePublicationVideo(file)') < handler.indexOf('setDraft('));
+  assert.match(handler, /finally \{\s*setVideoPreparing\(false\)/u);
+  assert.doesNotMatch(handler, /catch \(error\)/u);
+  assert.match(videoToolSource, /\.finally\(\(\) => \{\s*input.value = '';/u);
+});

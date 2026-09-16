@@ -3,12 +3,14 @@ import { registerHooks } from 'node:module';
 import test from 'node:test';
 import {
   Children,
+  createElement,
   isValidElement,
   type ChangeEvent,
   type InputHTMLAttributes,
   type ReactNode,
   type SetStateAction,
 } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   createEmptyPublicationDraft,
   type PublicationDraft,
@@ -41,41 +43,49 @@ function findTitleInput(node: ReactNode): InputHTMLAttributes<HTMLInputElement> 
   return null;
 }
 
-function renderTitleInput(setDraft: (action: SetStateAction<PublicationDraft>) => void) {
+function renderTitleInput(
+  setDraft: (action: SetStateAction<PublicationDraft>) => void,
+): InputHTMLAttributes<HTMLInputElement> | null {
   const noop = () => undefined;
-  return findTitleInput(
-    PublicationContentEditorSection({
-      sectionRef: { current: null },
-      draft: { ...createEmptyPublicationDraft(), timingMode: 'schedule' },
-      setDraft,
-      importOmissions: [],
-      importing: false,
-      importedAssetPreviews: [],
-      customButtons: [],
-      systemButtons: [],
-      previewTargets: [],
-      previewTargetKey: null,
-      customButtonCount: 0,
-      hasButtonErrors: false,
-      showButtonsLabel: false,
-      isBusy: false,
-      operationBusy: false,
-      imagesNeedReselection: false,
-      missingImageCount: 0,
-      retainedVideo: false,
-      videoPreparing: false,
-      videoNeedsReselection: false,
-      fieldError: '',
-      onDiscardMissingImages: noop,
-      onResolveMissingImages: noop,
-      onPreviewTargetChange: noop,
-      onOpenButtons: noop,
-      onVideoFile: async () => undefined,
-      onImagePreparationChange: noop,
-      onFieldError: noop,
-      onInfo: noop,
-    }),
-  );
+  let input: InputHTMLAttributes<HTMLInputElement> | null = null;
+  function CaptureTitleInput() {
+    input = findTitleInput(
+      PublicationContentEditorSection({
+        sectionRef: { current: null },
+        draft: { ...createEmptyPublicationDraft(), timingMode: 'schedule' },
+        setDraft,
+        importOmissions: [],
+        importing: false,
+        importedAssetPreviews: [],
+        customButtons: [],
+        systemButtons: [],
+        previewTargets: [],
+        previewTargetKey: null,
+        customButtonCount: 0,
+        hasButtonErrors: false,
+        showButtonsLabel: false,
+        isBusy: false,
+        operationBusy: false,
+        imagesNeedReselection: false,
+        missingImageCount: 0,
+        retainedVideo: false,
+        videoPreparing: false,
+        videoNeedsReselection: false,
+        fieldError: '',
+        onDiscardMissingImages: noop,
+        onResolveMissingImages: noop,
+        onPreviewTargetChange: noop,
+        onOpenButtons: noop,
+        onVideoFile: async () => undefined,
+        onImagePreparationChange: noop,
+        onFieldError: noop,
+        onInfo: noop,
+      }),
+    );
+    return null;
+  }
+  renderToStaticMarkup(createElement(CaptureTitleInput));
+  return input;
 }
 
 test('title edits survive deferred and replayed state updates after the input event ends', () => {

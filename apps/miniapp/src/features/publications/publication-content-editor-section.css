@@ -1,4 +1,8 @@
 @layer pages {
+  .publication-video-error {
+    overflow-wrap: anywhere;
+  }
+
   .publication-editor-section__preview-target {
     min-width: 0;
     max-width: min(58%, 240px);

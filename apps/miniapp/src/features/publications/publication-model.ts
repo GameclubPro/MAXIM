@@ -621,19 +621,22 @@ export function inferPublicationVideoMimeType(fileName: string, mimeType: string
       .trim()
       .toLowerCase()
       .match(/\.([a-z0-9]+)$/u)?.[1] ?? '';
+  const extensionMimeType = Object.hasOwn(PUBLICATION_VIDEO_MIME_BY_EXTENSION, extension)
+    ? (PUBLICATION_VIDEO_MIME_BY_EXTENSION[extension] ?? null)
+    : null;
   if (normalizedMimeType) {
     const canonicalMimeType =
       PUBLICATION_VIDEO_MIME_ALIASES[normalizedMimeType] ?? normalizedMimeType;
     if (PUBLICATION_VIDEO_MIME_TYPES.has(canonicalMimeType)) {
       return canonicalMimeType;
     }
-    if (normalizedMimeType === 'application/octet-stream' && extension === 'mkv') {
-      return PUBLICATION_VIDEO_MIME_BY_EXTENSION.mkv;
+    if (normalizedMimeType === 'application/octet-stream') {
+      return extensionMimeType;
     }
     return null;
   }
 
-  return PUBLICATION_VIDEO_MIME_BY_EXTENSION[extension] ?? null;
+  return extensionMimeType;
 }
 
 export function publicationDraftNeedsVideoReselection(

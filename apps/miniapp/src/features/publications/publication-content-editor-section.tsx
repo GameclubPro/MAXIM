@@ -1,10 +1,11 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { MAX_PUBLICATION_IMAGES } from '@maxim/contracts/publication';
 import type { PublisherPostImportOmission } from '@maxim/contracts/publisher';
-import type { Dispatch, RefObject, SetStateAction } from 'react';
+import { useId, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import { Xmark } from 'iconoir-react';
 import { BroadcastContentComposer } from '../../components/broadcast-content-composer';
 import type { BroadcastSystemButtonPreview } from '../../lib/broadcast-system-buttons';
+import { describeUserFacingError } from '../../lib/user-facing-error';
 import { PublicationImportButtonsNotice } from './publication-import-buttons-notice';
 import {
   getPublicationTargetKey,
@@ -81,6 +82,8 @@ export function PublicationContentEditorSection({
   onFieldError,
   onInfo,
 }: PublicationContentEditorSectionProps) {
+  const [videoError, setVideoError] = useState('');
+  const videoErrorId = useId();
   const retainedImageCount = draft.retainedAssets.filter((asset) => asset.type === 'image').length;
   const maxLocalImageCount = Math.max(0, MAX_PUBLICATION_IMAGES - retainedImageCount);
   const imageInputAllowed =
@@ -91,6 +94,20 @@ export function PublicationContentEditorSection({
       : retainedImageCount > 0 || draft.images.length > 0
         ? 'Сначала удалите фото'
         : null;
+
+  async function handleVideoFile(file: File | undefined): Promise<void> {
+    if (!file) {
+      return;
+    }
+    setVideoError('');
+    try {
+      await onVideoFile(file);
+    } catch (error) {
+      setVideoError(
+        describeUserFacingError(error, 'Не удалось подготовить видео. Повторите выбор.'),
+      );
+    }
+  }
 
   return (
     <section
@@ -219,8 +236,9 @@ export function PublicationContentEditorSection({
             disabled={isBusy || videoPreparing}
             preparing={videoPreparing}
             needsReselection={videoNeedsReselection}
+            errorId={videoError ? videoErrorId : undefined}
             blockedReason={videoBlockedReason}
-            onFile={onVideoFile}
+            onFile={handleVideoFile}
             onBlocked={() => videoBlockedReason && onInfo(videoBlockedReason)}
           />
         }
@@ -246,6 +264,7 @@ export function PublicationContentEditorSection({
           onFieldError('');
         }}
         onImagesChange={(images) => {
+          setVideoError('');
           onResolveMissingImages(images.length);
           setDraft((current) => ({
             ...current,
@@ -255,7 +274,8 @@ export function PublicationContentEditorSection({
         }}
         onImagePreparationChange={onImagePreparationChange}
         onOpenButtons={onOpenButtons}
-        onClearVideo={() =>
+        onClearVideo={() => {
+          setVideoError('');
           setDraft((current) => ({
             ...current,
             retainedAssets: current.retainedAssets.filter((asset) => asset.type !== 'video'),
@@ -264,10 +284,19 @@ export function PublicationContentEditorSection({
             mediaBase64: '',
             mediaMimeType: '',
             mediaFileName: '',
-          }))
-        }
+          }));
+        }}
         onError={onInfo}
       />
+      {videoError ? (
+        <p
+          id={videoErrorId}
+          className="publication-field-error publication-video-error"
+          role="alert"
+        >
+          {videoError}
+        </p>
+      ) : null}
     </section>
   );
 }

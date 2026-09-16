@@ -1,7 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   MAX_PUBLICATION_TARGETS,
-  MAX_PUBLICATION_VIDEO_BASE64_LENGTH,
   type ListLegacyPublicationsQuery,
   type PublicationDetails,
   type PublicationOccurrenceSummary,
@@ -70,7 +69,6 @@ import {
   hasSamePublicationTargetMetadata,
   hasPublicationDraftChanges,
   hasFuturePublicationSlot,
-  inferPublicationVideoMimeType,
   isIsolatedPublicationEditor,
   isPublicationOccurrenceContentStale,
   isPublicationRevisionConflictError,
@@ -140,7 +138,7 @@ import {
   trimBroadcastLinkButtons,
   validateBroadcastLinkButtons,
 } from '../lib/broadcast-link-buttons';
-import { readBlobAsBase64 } from '../lib/broadcast-image';
+import { preparePublicationVideo } from '../features/publications/publication-video-preparation';
 import { resolveBroadcastScheduleTimezone } from '../lib/broadcast-schedule';
 import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
@@ -278,8 +276,6 @@ function normalizeLegacyEntityFilter(value: string | null): PublicationEntityFil
 function normalizeLegacyQuery(value: string | null): string {
   return value?.trim().slice(0, 120) ?? '';
 }
-
-const MAX_PUBLICATION_VIDEO_FILE_BYTES = 24_000_000;
 
 export function PublicationsPage({
   api,
@@ -2380,34 +2376,17 @@ export function PublicationsPage({
     }
     setVideoPreparing(true);
     try {
-      const mediaMimeType = inferPublicationVideoMimeType(file.name, file.type);
-      if (!mediaMimeType) {
-        throw new Error('Выберите видеофайл.');
-      }
-      if (file.size > MAX_PUBLICATION_VIDEO_FILE_BYTES) {
-        throw new Error('Видео слишком большое. Максимум 24 МБ.');
-      }
-      const mediaBase64 = await readBlobAsBase64(file);
-      if (mediaBase64.length > MAX_PUBLICATION_VIDEO_BASE64_LENGTH) {
-        throw new Error('Видео слишком большое. Максимум 24 МБ.');
-      }
+      const prepared = await preparePublicationVideo(file);
       setDraft((current) => ({
         ...current,
         images: [],
         retainedAssets: [],
         mediaType: 'video',
         mediaPayload: null,
-        mediaBase64,
-        mediaMimeType,
-        mediaFileName: file.name.trim().slice(0, 128),
+        ...prepared,
       }));
       discardMissingImages();
       setFieldError('');
-    } catch (error) {
-      pushToast({
-        tone: 'info',
-        title: describeUserFacingError(error, 'Не удалось подготовить видео'),
-      });
     } finally {
       setVideoPreparing(false);
     }

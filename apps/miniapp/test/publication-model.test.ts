@@ -1097,7 +1097,17 @@ test('infers safe video MIME types when Android omits file.type', () => {
   assert.equal(inferPublicationVideoMimeType('clip.avi', 'video/x-msvideo'), null);
   assert.equal(inferPublicationVideoMimeType('clip.qt', 'video/quicktime'), 'video/quicktime');
   assert.equal(inferPublicationVideoMimeType('clip.bin', ''), null);
-  assert.equal(inferPublicationVideoMimeType('clip.mp4', 'application/octet-stream'), null);
+  for (const [fileName, expected] of [
+    ['clip.mp4', 'video/mp4'],
+    ['clip.MOV', 'video/quicktime'],
+    ['clip.webm', 'video/webm'],
+  ]) {
+    assert.equal(inferPublicationVideoMimeType(fileName, 'application/octet-stream'), expected);
+  }
+  assert.equal(inferPublicationVideoMimeType('clip.bin', 'application/octet-stream'), null);
+  assert.equal(inferPublicationVideoMimeType('clip.constructor', ''), null);
+  assert.equal(inferPublicationVideoMimeType('clip.constructor', 'application/octet-stream'), null);
+  assert.equal(inferPublicationVideoMimeType('clip.mp4', 'text/plain'), null);
 });
 
 test('drops past slots before opening a publication for editing', () => {
