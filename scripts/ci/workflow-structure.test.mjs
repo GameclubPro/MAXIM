@@ -33,7 +33,17 @@ test('requires duplicate and interval Redis flows in the blocking API lane', () 
   assert.match(api, /MAXIM_TEST_REDIS_URL: redis:\/\/127\.0\.0\.1:6379/u);
   assert.match(
     api,
-    /run: npm test --workspace @maxim\/api -- 'message-duplicate\|photo-duplicate-history\.redis\|rule-engine-media-cooldown\.redis'/u,
+    /run: npm test --workspace @maxim\/api -- 'message-duplicate\|photo-duplicate-history\.redis\|rule-engine-media-cooldown\.redis\|traffic-protection\.redis'/u,
   );
   assert.doesNotMatch(api, /continue-on-error|if:/u);
+});
+
+test('requires traffic revision and activation checks against local PostgreSQL', () => {
+  const postgres = jobBody('postgres-races', 'commercial-benchmark');
+  assert.match(postgres, /MAXIM_TEST_POSTGRES_URL: \$\{\{ env\.DATABASE_URL \}\}/u);
+  assert.match(
+    postgres,
+    /npm test --workspace @maxim\/api -- traffic-protection\.migration-integration\.spec\.ts/u,
+  );
+  assert.doesNotMatch(postgres, /continue-on-error/u);
 });
