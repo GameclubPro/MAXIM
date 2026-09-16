@@ -28,6 +28,8 @@ import { AdminManualModerationController } from './admin-manual-moderation.contr
 import { AdminPollController } from './admin-poll.controller';
 import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
+import { AdminStopWordsService } from './admin-stop-words.service';
+import { AdminStopWordsController } from './admin-stop-words.controller';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
@@ -140,6 +142,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdvertisingPlacementController,
     AdminManagedEntitiesController,
     AdminSettingsController,
+    AdminStopWordsController,
     PublisherVkParsingController,
     PublisherVkBotReviewController,
     AdminDialogController,
@@ -171,6 +174,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminSettingsBotCapabilityService,
     AdminDuplicateDiagnosticsService,
     AdminSettingsService,
+    AdminStopWordsService,
     ChannelDialogService,
     CommentModerationService,
     ChannelPostSignatureService,

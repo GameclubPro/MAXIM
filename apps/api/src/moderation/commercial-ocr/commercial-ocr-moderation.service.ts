@@ -64,6 +64,10 @@ import {
   type ImageTextStopListBinding,
 } from './image-text-stop-list-binding';
 import { resolveImageTextStopListOcrRuntimePolicy } from './image-text-stop-list.runtime';
+import {
+  isStopWordsDecisionConfigured,
+  isStopWordsImageScanEnabled,
+} from '../stop-words/stop-words.policy';
 import { NativeTesseractOcrAdapter } from './native-tesseract-ocr.adapter';
 
 const GOVERNOR_COMPONENT = 'commercial-image-ocr';
@@ -740,6 +744,7 @@ export class CommercialOcrModerationService {
       policyFingerprint: initialPolicyFingerprint,
       ruleCode: params.decision.ruleCode,
       value: params.decision.value,
+      ...(params.decision.ruleId ? { ruleId: params.decision.ruleId } : {}),
       imageIndex: params.decision.imageIndex,
       primaryConfidencePermille: params.decision.primaryConfidencePermille,
       confirmationConfidencePermille: params.decision.confirmationConfidencePermille,
@@ -1362,22 +1367,14 @@ function sameCommercialPolicy(left: ChatSettings, right: ChatSettings): boolean 
 }
 
 function isImageTextStopListEnabled(settings: ChatSettings | null | undefined): boolean {
-  return Boolean(
-    settings?.messageLimitsImageTextScanEnabled &&
-    (settings.messageLimitsBlockedWords.length > 0 ||
-      settings.messageLimitsBlockedDomains.length > 0),
-  );
+  return isStopWordsImageScanEnabled(settings);
 }
 
 function decisionStillConfigured(
   decision: Extract<ImageTextStopListDecision, { kind: 'match' }>,
   settings: ChatSettings,
 ): boolean {
-  const configured =
-    decision.ruleCode === 'MESSAGE_BLOCKED_WORD'
-      ? settings.messageLimitsBlockedWords
-      : settings.messageLimitsBlockedDomains;
-  return configured.includes(decision.value);
+  return isStopWordsDecisionConfigured(settings, decision);
 }
 
 function isBotOrServiceAuthored(update: MaxUpdate): boolean {

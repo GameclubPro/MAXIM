@@ -20,6 +20,7 @@ export type ImageTextStopListBinding = Readonly<{
   policyFingerprint: string;
   ruleCode: 'MESSAGE_BLOCKED_WORD' | 'MESSAGE_BLOCKED_DOMAIN';
   value: string;
+  ruleId?: string;
   imageIndex: number;
   primaryConfidencePermille: number;
   confirmationConfidencePermille: number;
@@ -39,6 +40,7 @@ export function buildImageTextStopListBinding(params: {
   policyFingerprint: string;
   ruleCode: ImageTextStopListBinding['ruleCode'];
   value: string;
+  ruleId?: string;
   imageIndex: number;
   primaryConfidencePermille: number;
   confirmationConfidencePermille: number;
@@ -55,6 +57,8 @@ export function buildImageTextStopListBinding(params: {
   }
   const senderId = boundedText(params.senderId, 512, 'senderId');
   const value = boundedText(params.value, 253, 'value');
+  const ruleId =
+    params.ruleId === undefined ? undefined : boundedText(params.ruleId, 260, 'ruleId');
   const ocrVersion = validateCommercialOcrVersion(params.ocrVersion);
   if (!SHA256_PATTERN.test(params.policyFingerprint)) {
     throw new Error('Image text stop-list policy fingerprint is invalid');
@@ -62,10 +66,7 @@ export function buildImageTextStopListBinding(params: {
   if (!SHA256_PATTERN.test(params.nativeBehaviorFingerprintSha256)) {
     throw new Error('Image text stop-list native behavior fingerprint is invalid');
   }
-  if (
-    params.ruleCode !== 'MESSAGE_BLOCKED_WORD' &&
-    params.ruleCode !== 'MESSAGE_BLOCKED_DOMAIN'
-  ) {
+  if (params.ruleCode !== 'MESSAGE_BLOCKED_WORD' && params.ruleCode !== 'MESSAGE_BLOCKED_DOMAIN') {
     throw new Error('Image text stop-list rule code is invalid');
   }
   const expectedImageCount = params.orderedPhotoIds.length;
@@ -93,6 +94,7 @@ export function buildImageTextStopListBinding(params: {
     policyFingerprint: params.policyFingerprint,
     ruleCode: params.ruleCode,
     value,
+    ...(ruleId ? { ruleId } : {}),
     imageIndex: params.imageIndex,
     primaryConfidencePermille: params.primaryConfidencePermille,
     confirmationConfidencePermille: params.confirmationConfidencePermille,
@@ -117,6 +119,7 @@ export function parseImageTextStopListBinding(metadata: unknown): ImageTextStopL
     !SHA256_PATTERN.test(readString(value.policyFingerprint)) ||
     (value.ruleCode !== 'MESSAGE_BLOCKED_WORD' && value.ruleCode !== 'MESSAGE_BLOCKED_DOMAIN') ||
     !isBoundedString(value.value, 253) ||
+    (value.ruleId !== undefined && !isBoundedString(value.ruleId, 260)) ||
     !isBoundedString(value.senderId, 512) ||
     !isCanonicalTimestamp(value.sourceCreatedAt) ||
     !isCanonicalTimestamp(value.deleteDeadlineAt) ||
@@ -149,6 +152,7 @@ export function parseImageTextStopListBinding(metadata: unknown): ImageTextStopL
     policyFingerprint: readString(value.policyFingerprint),
     ruleCode: value.ruleCode,
     value: value.value,
+    ...(typeof value.ruleId === 'string' ? { ruleId: value.ruleId } : {}),
     imageIndex: value.imageIndex as number,
     primaryConfidencePermille: value.primaryConfidencePermille as number,
     confirmationConfidencePermille: value.confirmationConfidencePermille as number,
@@ -168,7 +172,7 @@ export function fingerprintImageTextStopListPolicy(params: {
     | 'messageLimitsBlockedWords'
     | 'messageLimitsBlockedDomains'
     | 'nightModeTimezone'
-  >;
+  > & { stopWordsPolicy?: unknown; stopWordsRevision?: number };
   domainAllowlist: readonly string[];
 }): string {
   return digestJson({
@@ -180,6 +184,12 @@ export function fingerprintImageTextStopListPolicy(params: {
     domainAllowlist: [...new Set(params.domainAllowlist)].sort((left, right) =>
       left.localeCompare(right),
     ),
+    ...(params.settings.stopWordsPolicy != null
+      ? {
+          stopWordsPolicy: params.settings.stopWordsPolicy,
+          stopWordsRevision: params.settings.stopWordsRevision ?? 0,
+        }
+      : {}),
   });
 }
 
@@ -244,7 +254,12 @@ function isConfidence(value: unknown): value is number {
 }
 
 function isBoundedString(value: unknown, maximum: number): value is string {
-  return typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= maximum;
+  return (
+    typeof value === 'string' &&
+    value.trim() === value &&
+    value.length > 0 &&
+    value.length <= maximum
+  );
 }
 
 function readString(value: unknown): string {

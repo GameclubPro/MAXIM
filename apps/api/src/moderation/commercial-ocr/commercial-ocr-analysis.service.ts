@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { isStopWordsImageScanEnabled } from '../stop-words/stop-words.policy';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -171,9 +172,7 @@ export class CommercialOcrAnalysisService {
     }
 
     const imageTextStopListEnabled =
-      (params.imageTextStopListScanEnabled ?? params.settings.messageLimitsImageTextScanEnabled) &&
-      (params.settings.messageLimitsBlockedWords.length > 0 ||
-        params.settings.messageLimitsBlockedDomains.length > 0);
+      (params.imageTextStopListScanEnabled ?? true) && isStopWordsImageScanEnabled(params.settings);
     const commercialScanEnabled =
       params.commercialScanEnabled ?? params.settings.commercialAdsFilterEnabled;
     const imageTextPasses = new Map<number, ImageTextStopListPasses>();

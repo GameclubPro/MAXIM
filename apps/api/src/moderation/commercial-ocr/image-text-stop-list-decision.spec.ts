@@ -1,4 +1,5 @@
 import type { ChatSettings } from '../../prisma/prisma-client';
+import { stopWordsPolicySchema } from '@maxim/contracts/settings';
 import type { CommercialOcrPass } from './commercial-ocr-decision-policy';
 import {
   evaluateImageTextStopListDecision,
@@ -36,6 +37,38 @@ function pass(
 }
 
 describe('evaluateImageTextStopListDecision', () => {
+  it('preserves the configured Latin identity across both OCR passes', () => {
+    const result = evaluateImageTextStopListDecision({
+      settings: settings({
+        stopWordsPolicy: stopWordsPolicySchema.parse({
+          enabled: true,
+          rules: [{ id: 'latin', kind: 'WORD', value: 'casino' }],
+        }),
+      }),
+      images: [{ imageIndex: 0, primary: pass('CASINO'), confirmation: pass('casino') }],
+    });
+    expect(result).toMatchObject({ kind: 'match', value: 'casino', ruleId: 'latin' });
+  });
+
+  it('requires every phrase token to be independently trusted', () => {
+    const policy = stopWordsPolicySchema.parse({
+      enabled: true,
+      rules: [{ id: 'phrase', kind: 'PHRASE', value: 'доход без вложений' }],
+    });
+    const base = pass('доход без вложений', 990);
+    const primary = {
+      ...base,
+      words: base.words!.map((word, index) =>
+        index === 1 ? { ...word, confidencePermille: 500 } : word,
+      ),
+    };
+    expect(
+      evaluateImageTextStopListDecision({
+        settings: settings({ stopWordsPolicy: policy }),
+        images: [{ imageIndex: 0, primary, confirmation: pass('доход без вложений') }],
+      }),
+    ).toEqual({ kind: 'no_action' });
+  });
   it('requests confirmation only for a high-confidence primary stop-list candidate', () => {
     const currentSettings = settings({ messageLimitsBlockedWords: ['казино'] });
 

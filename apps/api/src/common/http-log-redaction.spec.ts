@@ -2,6 +2,33 @@ import pino from 'pino';
 import { HTTP_LOG_REDACT_PATHS } from './http-log-redaction';
 
 describe('HTTP log redaction', () => {
+  it('never logs preview text or encoded mutation payloads', () => {
+    const output: string[] = [];
+    const logger = pino(
+      { base: null, timestamp: false, redact: HTTP_LOG_REDACT_PATHS },
+      {
+        write: (chunk: string) => {
+          output.push(chunk);
+        },
+      },
+    );
+    logger.info({
+      req: {
+        method: 'POST',
+        body: { text: 'private-preview-text' },
+        query: { body: 'encoded-body', bodyGzip: 'compressed-body', chunk: 'encoded-chunk' },
+      },
+    });
+    const serialized = output.join('');
+    for (const value of [
+      'private-preview-text',
+      'encoded-body',
+      'compressed-body',
+      'encoded-chunk',
+    ])
+      expect(serialized).not.toContain(value);
+    expect(serialized).toContain('POST');
+  });
   it('redacts request credentials and signed launch payloads while preserving useful context', () => {
     const output: string[] = [];
     const logger = pino(

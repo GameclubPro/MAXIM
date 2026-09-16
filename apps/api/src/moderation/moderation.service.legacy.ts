@@ -247,6 +247,17 @@ import type {
 } from './rule-engine.contract';
 import { selectTopModerationViolation } from './moderation-violation-selection';
 import { RuleEngineService } from './rule-engine.service';
+import { StopWordsDeleteGuardService } from './stop-words/stop-words-delete-guard.service';
+import {
+  createStopWordsSanctionGuard,
+  verifyStopWordsSanction,
+} from './stop-words/stop-words.execution';
+import { extractStopWordsTextSegments } from './stop-words/stop-words.detection';
+import {
+  isStopWordsImageScanEnabled,
+  readStopWordsPolicy,
+  withStopWordsSanctions,
+} from './stop-words/stop-words.policy';
 import {
   needsFreshLinkAllowlistRecheck,
   recalculateFreshLinkAllowlistViolations,
@@ -775,6 +786,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     private readonly profanityDeleteGuard?: ProfanityDeleteGuardService,
     @Optional() private readonly messageDuplicateService?: MessageDuplicateService,
+    @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -1497,7 +1509,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const hotChatBackoffActive = this.isWebhookHotTimeoutChatBackoffActive(chatId);
       const chat = await this.loadChatContext(chatId, chatTitle);
       this.markWebhookHotPathStage(hotPathProfile, 'chat-context');
-      const settings = this.applyDegradeSettings(chat.settings, degradeMode);
+      let settings = this.applyDegradeSettings(chat.settings, degradeMode);
       const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
       const nightModeActiveNow = !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
       const destructiveAccessGateActive = manualGroupCloseActiveNow || nightModeActiveNow;
@@ -1637,12 +1649,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         webhookEventId,
         updateType,
         commercialAdsFilterEnabled: settings.commercialAdsFilterEnabled,
-        imageTextScanEnabled: settings.messageLimitsImageTextScanEnabled,
-        hasImageTextStopList:
-          (Array.isArray(settings.messageLimitsBlockedWords) &&
-            settings.messageLimitsBlockedWords.length > 0) ||
-          (Array.isArray(settings.messageLimitsBlockedDomains) &&
-            settings.messageLimitsBlockedDomains.length > 0),
+        imageTextScanEnabled: isStopWordsImageScanEnabled(settings),
+        hasImageTextStopList: isStopWordsImageScanEnabled(settings),
         hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
         chatId,
         messageId,
@@ -2063,6 +2071,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         settings,
         domainAllowlist: chat.domainAllowlist,
         ...(navigationTargets ? { navigationTargets } : {}),
+        stopWordsTextSegments: extractStopWordsTextSegments(update.raw, text),
         effectiveLength: effectiveMessageLength,
         hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
         hasStickerAttachment: mediaFlags.hasStickerAttachment,
@@ -2402,6 +2411,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (!topViolation) {
         return;
       }
+      if (
+        topViolation.ruleCode === 'MESSAGE_BLOCKED_WORD' ||
+        topViolation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN'
+      ) {
+        const stopWordsPolicy = readStopWordsPolicy(settings);
+        if (stopWordsPolicy) settings = withStopWordsSanctions(settings, stopWordsPolicy);
+      }
       const commercialActionBand =
         topViolation.ruleCode === 'COMMERCIAL_AD'
           ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)
@@ -2719,6 +2735,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (action === SanctionAction.MUTE || action === SanctionAction.BAN) {
           userLabel = await this.resolveSanctionUserLabel(chatId, senderId, userLabel);
         }
+
+        const stopWordsSanctionGuard = createStopWordsSanctionGuard(this.stopWordsDeleteGuard, {
+          hasPolicy: settings.stopWordsPolicy != null,
+          chatId,
+          messageId,
+          senderId,
+          ruleCode: topViolation.ruleCode,
+          metadata: topViolation.metadata,
+          action,
+        });
+        if (
+          settings.stopWordsPolicy != null &&
+          !(await verifyStopWordsSanction(stopWordsSanctionGuard))
+        )
+          return;
 
         const isFirstLinkViolation =
           topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
@@ -3049,6 +3080,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         let sanctionEventPersisted = false;
         if (action !== SanctionAction.NONE) {
           sanctionEventPersisted = await this.applySanctionAction({
+            beforeSanctionMutation: stopWordsSanctionGuard,
             chatId,
             userId: senderId,
             action,

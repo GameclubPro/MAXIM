@@ -5,6 +5,7 @@ import type { NavigationTargetEvidence } from './navigation/navigation-evidence.
 import type { RuleViolation } from './rule-engine.contract';
 import type { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
 import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
+import { detectStopWordsViolations } from './stop-words/stop-words.detection';
 
 export function serializeLinkPolicyEffectiveAt(value: unknown): string | null {
   const parsed =
@@ -44,7 +45,10 @@ export function suppressUnverifiedAllowlistDependentViolations(
 
 export function recalculateFreshLinkAllowlistViolations(params: {
   text: string;
-  settings: Pick<ChatSettings, 'linkPolicy' | 'messageLimitsBlockedDomains'>;
+  settings: Pick<ChatSettings, 'linkPolicy' | 'messageLimitsBlockedDomains'> & {
+    stopWordsPolicy?: unknown;
+    stopWordsRevision?: number;
+  };
   freshDomainAllowlist: string[];
   navigationTargets?: readonly NavigationTargetEvidence[];
   violations: readonly RuleViolation[];
@@ -58,11 +62,23 @@ export function recalculateFreshLinkAllowlistViolations(params: {
     freshAllowlistMatcher,
     params.navigationTargets,
   );
-  const blockedDomain = params.blockedDomainDetector.detect(
-    params.text,
-    params.settings.messageLimitsBlockedDomains,
-    { isLinkAllowlisted: freshAllowlistMatcher },
-  );
+  const newDomainViolation =
+    params.settings.stopWordsPolicy == null
+      ? null
+      : detectStopWordsViolations({
+          text: params.text,
+          settings: params.settings,
+          navigationTargets: params.navigationTargets,
+          isLinkAllowlisted: freshAllowlistMatcher,
+        }).find((violation) => violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN');
+  const blockedDomain =
+    params.settings.stopWordsPolicy == null
+      ? params.blockedDomainDetector.detect(
+          params.text,
+          params.settings.messageLimitsBlockedDomains,
+          { isLinkAllowlisted: freshAllowlistMatcher },
+        )
+      : null;
   const hadLinkViolation = params.violations.some(
     (violation) => violation.ruleCode === 'LINK_BLOCKED',
   );
@@ -73,6 +89,20 @@ export function recalculateFreshLinkAllowlistViolations(params: {
     if (violation.ruleCode !== 'MESSAGE_BLOCKED_DOMAIN') {
       return [violation];
     }
+    if (params.settings.stopWordsPolicy != null)
+      return newDomainViolation
+        ? [
+            {
+              ...newDomainViolation,
+              metadata: {
+                ...newDomainViolation.metadata,
+                stopWordsSourceSha256:
+                  violation.metadata?.stopWordsSourceSha256 ??
+                  newDomainViolation.metadata?.stopWordsSourceSha256,
+              },
+            },
+          ]
+        : [];
     return blockedDomain
       ? [
           {

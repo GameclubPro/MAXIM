@@ -33,6 +33,16 @@ import {
 } from './broadcast-common.js';
 import { booleanQueryFlagSchema, logsDashboardRangeSchema } from './dashboard-common.js';
 import * as dupe from './duplicate-settings.js';
+import { stopWordsPolicySchema } from './stop-words.js';
+import {
+  normalizeMessageLimitsBlockedWordCandidate,
+  normalizeMessageLimitsBlockedDomainCandidate,
+} from './stop-words-legacy.js';
+export {
+  normalizeMessageLimitsBlockedWordCandidate,
+  normalizeMessageLimitsBlockedDomainCandidate,
+} from './stop-words-legacy.js';
+export * from './stop-words.js';
 import {
   addBroadcastAudienceIssues,
   addBroadcastScheduleIssues,
@@ -58,7 +68,6 @@ import {
   DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
   isValidDeleteBotMessagesDelayMinutes,
-  normalizeAllowlistDomain,
 } from './settings-utils.js';
 export * from './navigation-allowlist.js';
 export * from './settings-utils.js';
@@ -522,49 +531,6 @@ const chatRulesImageBase64Schema = z
 const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
 const chatRulesImageFileNameSchema = z.string().trim().max(128).default('');
 
-export function normalizeMessageLimitsBlockedWordCandidate(value: string): string | null {
-  const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
-  if (!normalized) {
-    return null;
-  }
-
-  const parts = normalized.split(/\s+/u).filter(Boolean);
-  if (parts.length !== 1) {
-    return null;
-  }
-
-  const fragments = parts[0].match(/[\p{L}\p{N}]+/gu);
-  if (!fragments || fragments.length !== 1) {
-    return null;
-  }
-
-  const [candidate] = fragments;
-  return candidate.length >= 2 && candidate.length <= 32 ? candidate : null;
-}
-
-export function normalizeMessageLimitsBlockedDomainCandidate(value: string): string | null {
-  const normalizedDomain = normalizeAllowlistDomain(value);
-  if (!normalizedDomain) {
-    return null;
-  }
-
-  const candidate = normalizedDomain
-    .trim()
-    .toLowerCase()
-    .replace(/\.$/u, '')
-    .replace(/^www\./u, '');
-  if (candidate.length < 4 || candidate.length > 253 || !candidate.includes('.')) {
-    return null;
-  }
-
-  const labels = candidate.split('.');
-  if (labels.length < 2 || labels.some((label) => label.length === 0 || label.length > 63)) {
-    return null;
-  }
-
-  return candidate;
-}
-
 function parseHttpButtonUrl(value: string): URL | null {
   const normalized = normalizeHttpButtonUrl(value);
   return normalized ? new URL(normalized) : null;
@@ -773,6 +739,11 @@ export const chatSettingsSchema = z
       phoneNumbersAdminContactButtonEnabled: z.boolean().default(false),
       phoneNumbersAdminContactButtonUrl: botButtonUrlSchema,
       messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
+      stopWordsPolicy: z.preprocess(
+        (value) => value ?? undefined,
+        stopWordsPolicySchema.optional(),
+      ),
+      stopWordsRevision: z.number().int().nonnegative().optional(),
       messageLimitsBlockedDomains: messageLimitsBlockedDomainsSchema,
       messageLimitsImageTextScanEnabled: z.boolean().default(false),
       messageLimitsBotMessageEnabled: z.boolean().default(false),
@@ -1499,12 +1470,23 @@ export const applySettingsTargetSchema = z
   }));
 export type ApplySettingsTarget = z.infer<typeof applySettingsTargetSchema>;
 
-export const applySectionToAllRequestSchema = z.object({
-  section: applySettingsSectionSchema,
-  target: applySettingsTargetSchema
-    .optional()
-    .default({ mode: 'current', favoriteTypes: [], chatIds: [] }),
-});
+export const applySectionToAllRequestSchema = z
+  .object({
+    section: applySettingsSectionSchema,
+    expectedSourceRevision: z.number().int().nonnegative().optional(),
+    target: applySettingsTargetSchema
+      .optional()
+      .default({ mode: 'current', favoriteTypes: [], chatIds: [] }),
+  })
+  .superRefine((value, ctx) => {
+    if (value.section === 'stopWords' && value.expectedSourceRevision === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['expectedSourceRevision'],
+        message: 'Обновите раздел стоп-слов перед копированием.',
+      });
+    }
+  });
 export type ApplySectionToAllRequest = z.infer<typeof applySectionToAllRequestSchema>;
 
 export const applySectionToAllResponseSchema = z.object({

@@ -1,4 +1,6 @@
 import type { ChatSettings } from '../../prisma/prisma-client';
+import { StopWordsMatcher } from '../stop-words/stop-words.matcher';
+import { readStopWordsPolicy } from '../stop-words/stop-words.policy';
 import { MessageLimitsBlockedDomainDetector } from '../rule-engine-blocked-domains.detector';
 import { MessageLimitsBlockedWordDetector } from '../rule-engine-blocked-words.detector';
 import type { CommercialOcrPass } from './commercial-ocr-decision-policy';
@@ -9,7 +11,7 @@ export const IMAGE_TEXT_STOP_LIST_POLICY_VERSION = 'image-text-stop-list-v1';
 export type ImageTextStopListSettings = Pick<
   ChatSettings,
   'messageLimitsBlockedWords' | 'messageLimitsBlockedDomains'
->;
+> & { stopWordsPolicy?: unknown };
 
 export type ImageTextStopListPasses = Readonly<{
   imageIndex: number;
@@ -23,6 +25,7 @@ export type ImageTextStopListDecision =
       kind: 'match';
       ruleCode: 'MESSAGE_BLOCKED_WORD' | 'MESSAGE_BLOCKED_DOMAIN';
       value: string;
+      ruleId?: string;
       imageIndex: number;
       primaryConfidencePermille: number;
       confirmationConfidencePermille: number;
@@ -30,10 +33,11 @@ export type ImageTextStopListDecision =
 
 type ImageTextStopListPassMatch = Pick<
   Extract<ImageTextStopListDecision, { kind: 'match' }>,
-  'ruleCode' | 'value'
+  'ruleCode' | 'value' | 'ruleId'
 >;
 
 const blockedWordDetector = new MessageLimitsBlockedWordDetector();
+const stopWordsMatcher = new StopWordsMatcher();
 const blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
 
 /**
@@ -75,6 +79,7 @@ export function evaluateImageTextStopListDecision(params: {
       kind: 'match',
       ruleCode: agreedMatch.ruleCode,
       value: agreedMatch.value,
+      ...(agreedMatch.ruleId ? { ruleId: agreedMatch.ruleId } : {}),
       imageIndex: image.imageIndex,
       primaryConfidencePermille: image.primary.confidencePermille,
       confirmationConfidencePermille: confirmation.confidencePermille,
@@ -176,13 +181,20 @@ function detectPassMatches(
   settings: ImageTextStopListSettings,
   isLinkAllowlisted?: (link: string) => boolean,
 ): ImageTextStopListPassMatch[] {
-  return [
-    ...blockedWordDetector
-      .detectAll(text, settings.messageLimitsBlockedWords)
+  const policy = readStopWordsPolicy(settings);
+  if (policy)
+    return stopWordsMatcher
+      .detect({ text, policy, isLinkAllowlisted, limit: 1_299 })
       .map((match) => ({
-        ruleCode: 'MESSAGE_BLOCKED_WORD' as const,
-        value: match.blockedWord,
-      })),
+        ruleCode: match.kind === 'DOMAIN' ? 'MESSAGE_BLOCKED_DOMAIN' : 'MESSAGE_BLOCKED_WORD',
+        value: match.value,
+        ruleId: match.ruleId,
+      }));
+  return [
+    ...blockedWordDetector.detectAll(text, settings.messageLimitsBlockedWords).map((match) => ({
+      ruleCode: 'MESSAGE_BLOCKED_WORD' as const,
+      value: match.blockedWord,
+    })),
     ...blockedDomainDetector
       .detectAll(
         text,
@@ -197,5 +209,5 @@ function detectPassMatches(
 }
 
 function matchKey(match: ImageTextStopListPassMatch): string {
-  return `${match.ruleCode}\0${match.value}`;
+  return `${match.ruleCode}\0${match.ruleId ?? ''}\0${match.value}`;
 }

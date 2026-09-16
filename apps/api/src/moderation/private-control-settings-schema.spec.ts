@@ -109,15 +109,16 @@ describe('private control settings schema', () => {
     expect(SECTION_CARD_FIELDS.profanityFilter.basic).toContain('profanitySensitivity');
   });
 
-  it('labels image text scanning as delete-only in private controls', () => {
+  it('does not expose legacy stop-list writes through private limits controls', () => {
     expect(
       SECTION_FIELDS.limits.find((field) => field.key === 'messageLimitsImageTextScanEnabled'),
-    ).toEqual(
-      expect.objectContaining({
-        label: 'Текст на фото (только удаление)',
-        type: 'boolean',
-      }),
-    );
+    ).toBeUndefined();
+    expect(
+      SECTION_FIELDS.limits.some(
+        (field) =>
+          field.key === 'messageLimitsBlockedWords' || field.key === 'messageLimitsBlockedDomains',
+      ),
+    ).toBe(false);
   });
 
   it('keeps channel section fields aligned with labels', () => {

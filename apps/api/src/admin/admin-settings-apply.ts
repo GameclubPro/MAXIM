@@ -36,6 +36,12 @@ import {
   type ChatSettingsBotCapabilityRequirement,
 } from './chat-settings-bot-capability';
 import { BotCapabilityRequiredException } from './bot-capability-required.error';
+import {
+  assertLegacyStopWordsWrite,
+  LEGACY_STOP_WORD_SETTING_KEYS,
+  omitStopWordsPolicy,
+} from './stop-words-settings-ownership';
+import { stopWordsPolicyStorage } from '../moderation/stop-words/stop-words.policy';
 
 type SettingsApplyReadinessRefresh = {
   chatIds: readonly string[];
@@ -124,9 +130,7 @@ export async function applySettingsToAllChats(params: {
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
   getCurrentSourceSettings?: () => Promise<Pick<
     ChatSettings,
-    | 'profanitySensitivity'
-    | 'forwardedMessagesEnabled'
-    | 'messageLimitsImageTextScanEnabled'
+    'profanitySensitivity' | 'forwardedMessagesEnabled' | 'messageLimitsImageTextScanEnabled'
   > | null>;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
@@ -221,16 +225,22 @@ export async function applySettingsToAllChats(params: {
         }
       : normalizedSettings;
   // FLAG: Major bulk UPDATE payloads omit Publisher-owned comment fields entirely.
-  const majorSettingsUpdatePayload = omitPublisherOwnedChatSettings(settingsUpdatePayload);
+  const copiedStopWordsPolicy = settingsUpdatePayload.stopWordsPolicy;
+  const majorSettingsUpdatePayload = omitStopWordsPolicy(
+    omitPublisherOwnedChatSettings(settingsUpdatePayload),
+  );
   const majorSettingsCreatePayload = {
-    ...omitPublisherOwnedChatSettings(settingsCreatePayload),
+    ...omitStopWordsPolicy(omitPublisherOwnedChatSettings(settingsCreatePayload)),
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   };
 
-  const capabilityRelevantUpdate = Object.keys(majorSettingsUpdatePayload).some((key) =>
-    Object.hasOwn(CHAT_SETTINGS_BOT_CAPABILITY_SELECT, key) ||
-    key === 'requiredSubscriptionChannelIds',
-  );
+  const capabilityRelevantUpdate =
+    Boolean(copiedStopWordsPolicy?.enabled) ||
+    Object.keys(majorSettingsUpdatePayload).some(
+      (key) =>
+        Object.hasOwn(CHAT_SETTINGS_BOT_CAPABILITY_SELECT, key) ||
+        key === 'requiredSubscriptionChannelIds',
+    );
   const capabilityPreflightConfirmedChatIds = new Set<string>();
   let writeBaselineByChatId = new Map<string, Date>();
   if (capabilityRelevantUpdate) {
@@ -258,6 +268,18 @@ export async function applySettingsToAllChats(params: {
           next,
           requestedSettings: majorSettingsUpdatePayload,
         });
+        if (copiedStopWordsPolicy?.enabled) {
+          requirements.push({ permission: 'write', featureKeys: ['stopWordsPolicy'] });
+          if (
+            copiedStopWordsPolicy.sanctions.muteEnabled ||
+            copiedStopWordsPolicy.sanctions.banEnabled
+          ) {
+            requirements.push({
+              permission: 'add_remove_members',
+              featureKeys: ['stopWordsPolicy'],
+            });
+          }
+        }
         if (requirements.length > 0) {
           try {
             await params.assertBotCapabilities(chatId, requirements);
@@ -289,12 +311,8 @@ export async function applySettingsToAllChats(params: {
       where: { chatId: { in: appliedChatIds } },
       select: { chatId: true, updatedAt: true },
     });
-    const initialRevisionByChatId = new Map(
-      currentRows.map((row) => [row.chatId, row.updatedAt]),
-    );
-    writeBaselineByChatId = new Map(
-      refreshedRows.map((row) => [row.chatId, row.updatedAt]),
-    );
+    const initialRevisionByChatId = new Map(currentRows.map((row) => [row.chatId, row.updatedAt]));
+    writeBaselineByChatId = new Map(refreshedRows.map((row) => [row.chatId, row.updatedAt]));
     if (
       appliedChatIds.some(
         (chatId) =>
@@ -330,6 +348,24 @@ export async function applySettingsToAllChats(params: {
       }
       try {
         const botAssignmentData = await params.resolveBotAssignmentData(chatId);
+        if (
+          !copiedStopWordsPolicy &&
+          LEGACY_STOP_WORD_SETTING_KEYS.some((key) =>
+            Object.hasOwn(majorSettingsUpdatePayload, key),
+          )
+        ) {
+          const stopWordsCurrent = await params.prisma.chatSettings.findUnique({
+            where: { chatId },
+            select: {
+              stopWordsPolicy: true,
+              messageLimitsBlockedWords: true,
+              messageLimitsBlockedDomains: true,
+              messageLimitsImageTextScanEnabled: true,
+            },
+          });
+          if (stopWordsCurrent)
+            assertLegacyStopWordsWrite(stopWordsCurrent, majorSettingsUpdatePayload);
+        }
         const currentTargetSettings =
           shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
             ? await params.prisma.chatSettings.findUnique({
@@ -340,21 +376,28 @@ export async function applySettingsToAllChats(params: {
         const scopedBotSpeechMedia =
           shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
             ? mergeBotSpeechMediaForKeys(
-                currentTargetSettings?.botSpeechMedia as
-                  | ChatSettings['botSpeechMedia']
-                  | undefined,
+                currentTargetSettings?.botSpeechMedia as ChatSettings['botSpeechMedia'] | undefined,
                 normalizedSettings.botSpeechMedia,
                 botSpeechMediaKeys,
               )
             : normalizedSettings.botSpeechMedia;
         const updatePayloadForChat = {
           ...majorSettingsUpdatePayload,
+          ...(copiedStopWordsPolicy
+            ? {
+                ...stopWordsPolicyStorage(copiedStopWordsPolicy),
+                stopWordsRevision: { increment: 1 },
+              }
+            : {}),
           ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
             ? { botSpeechMedia: scopedBotSpeechMedia }
             : {}),
         };
         const createPayloadForChat = {
           ...majorSettingsCreatePayload,
+          ...(copiedStopWordsPolicy
+            ? { ...stopWordsPolicyStorage(copiedStopWordsPolicy), stopWordsRevision: 1 }
+            : {}),
           ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
             ? { botSpeechMedia: scopedBotSpeechMedia }
             : {}),
@@ -375,7 +418,13 @@ export async function applySettingsToAllChats(params: {
             const baselineUpdatedAt = writeBaselineByChatId.get(chatId);
             if (baselineUpdatedAt) {
               const changed = await tx.chatSettings.updateMany({
-                where: { chatId, updatedAt: baselineUpdatedAt },
+                where: {
+                  chatId,
+                  updatedAt: baselineUpdatedAt,
+                  ...(copiedStopWordsPolicy && chatId === params.sourceChatId
+                    ? { stopWordsRevision: normalizedSettings.stopWordsRevision ?? 0 }
+                    : {}),
+                },
                 data: updatePayloadForChat,
               });
               if (changed.count !== 1) {
@@ -399,9 +448,7 @@ export async function applySettingsToAllChats(params: {
                   ...(target.favoriteTypes.length > 0
                     ? { favoriteTypes: target.favoriteTypes }
                     : {}),
-                  ...(filteredSettingKeys.length > 0
-                    ? { settingKeys: filteredSettingKeys }
-                    : {}),
+                  ...(filteredSettingKeys.length > 0 ? { settingKeys: filteredSettingKeys } : {}),
                 },
               },
             });
@@ -419,8 +466,7 @@ export async function applySettingsToAllChats(params: {
           firstWriteError = error;
           if (
             error instanceof ConflictException &&
-            (error.getResponse() as { code?: unknown })?.code ===
-              'CHAT_SETTINGS_CONCURRENT_UPDATE'
+            (error.getResponse() as { code?: unknown })?.code === 'CHAT_SETTINGS_CONCURRENT_UPDATE'
           ) {
             conflictChatId = chatId;
           }
@@ -523,6 +569,12 @@ export async function applySettingsSectionToAllChats(params: {
   const section = parsed.data.section;
 
   const sourceSettings = await params.getSourceSettings();
+  if (
+    section === 'stopWords' &&
+    (sourceSettings.stopWordsRevision ?? 0) !== parsed.data.expectedSourceRevision
+  ) {
+    throw settingsApplyRevisionConflict(params.sourceChatId, []);
+  }
   const result = await params.applySettings(
     sourceSettings,
     parsed.data.target,

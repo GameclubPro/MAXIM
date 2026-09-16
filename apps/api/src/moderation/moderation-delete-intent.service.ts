@@ -4,6 +4,15 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
+import {
+  STOP_WORDS_DELETE_RULE_CODES,
+  StopWordsDeleteGuardService,
+  StopWordsDeleteGuardRejectedError,
+} from './stop-words/stop-words-delete-guard.service';
+import {
+  isStopWordsImageScanEnabled,
+  isStopWordsDecisionConfigured,
+} from './stop-words/stop-words.policy';
 
 import { MaxBotLinkService, type MaxDeleteMessageBotRoute } from '../max/max-bot-link.service';
 import {
@@ -232,6 +241,8 @@ type ImageTextStopListGuardContext = {
   entityType: 'CHAT' | 'CHANNEL';
   settings: {
     messageLimitsImageTextScanEnabled: boolean;
+    stopWordsPolicy?: unknown;
+    stopWordsRevision?: number;
     messageLimitsBlockedWords: string[];
     messageLimitsBlockedDomains: string[];
     nightModeTimezone: string;
@@ -471,6 +482,7 @@ class ModerationDeleteProtectedMessageError extends Error {
 class ModerationDeleteGuardedMessageAbsentError extends Error {
   constructor(
     readonly verificationCode:
+      | 'guarded_stop_words_absence'
       | 'guarded_link_predispatch_exact_absence'
       | 'guarded_commercial_ocr_predispatch_exact_absence'
       | 'guarded_profanity_predispatch_exact_absence'
@@ -560,6 +572,7 @@ export class ModerationDeleteIntentService {
     @Optional()
     private readonly participantImmunity?: ParticipantModerationImmunityService,
     @Optional() private readonly messageDuplicateDeleteGuard?: MessageDuplicateDeleteGuardService,
+    @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -2630,6 +2643,25 @@ export class ModerationDeleteIntentService {
       }
       await options?.beforeDeleteMutation?.();
       if (finalDispatchLeaseToken) {
+        if (this.stopWordsDeleteGuard) {
+          const stopWordsGuard = await this.stopWordsDeleteGuard.assertIntentStillActionable({
+            intentId: intent.id,
+            chatId: intent.chatId,
+            messageId: intent.messageId,
+            subjectUserId: intent.subjectUserId,
+            botId,
+          });
+          if (stopWordsGuard === 'absent')
+            throw new ModerationDeleteGuardedMessageAbsentError('guarded_stop_words_absence');
+        } else {
+          const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+            where: { intentId: intent.id },
+            select: { ruleCode: true },
+          });
+          if (reasons.some((reason) => STOP_WORDS_DELETE_RULE_CODES.has(reason.ruleCode))) {
+            throw new Error('Stop-list delete guard unavailable');
+          }
+        }
         // FLAG: New message fingerprints cannot authorize a DELETE without their fresh binding guard.
         if (intent.messageDuplicateOwned) {
           if (!this.messageDuplicateDeleteGuard)
@@ -2724,6 +2756,7 @@ export class ModerationDeleteIntentService {
   private isTerminalDeleteGuardRejection(error: unknown): boolean {
     if (
       error instanceof ProfanityDeleteGuardRejectedError ||
+      error instanceof StopWordsDeleteGuardRejectedError ||
       error instanceof MessageDuplicateGuardRejectedError
     ) {
       return true;
@@ -3194,6 +3227,8 @@ export class ModerationDeleteIntentService {
         settings: {
           select: {
             messageLimitsImageTextScanEnabled: true,
+            stopWordsPolicy: true,
+            stopWordsRevision: true,
             messageLimitsBlockedWords: true,
             messageLimitsBlockedDomains: true,
             nightModeTimezone: true,
@@ -3218,7 +3253,8 @@ export class ModerationDeleteIntentService {
     if (
       !context ||
       context.entityType !== 'CHAT' ||
-      !context.settings?.messageLimitsImageTextScanEnabled ||
+      !isStopWordsImageScanEnabled(context.settings) ||
+      !context.settings ||
       context.admins.some((admin) => admin.userId === senderId)
     ) {
       throw new ImageTextStopListDeleteIntentGuardRejectedError(
@@ -3234,11 +3270,7 @@ export class ModerationDeleteIntentService {
       bindings.some(
         (binding) =>
           binding.policyFingerprint !== policyFingerprint ||
-          !(
-            binding.ruleCode === 'MESSAGE_BLOCKED_WORD'
-              ? context.settings!.messageLimitsBlockedWords
-              : context.settings!.messageLimitsBlockedDomains
-          ).includes(binding.value),
+          !isStopWordsDecisionConfigured(context.settings!, binding),
       )
     ) {
       throw new ImageTextStopListDeleteIntentGuardRejectedError(
@@ -5431,6 +5463,7 @@ export class ModerationDeleteIntentService {
     leaseToken: string,
     botId: string,
     verificationCode:
+      | 'guarded_stop_words_absence'
       | 'retry_predelete_exact_presence'
       | 'postdelete_exact_presence'
       | 'guarded_link_predispatch_exact_absence'

@@ -14,6 +14,22 @@ import { PrismaService } from '../prisma/prisma.service';
 
 export type ChatAdminAccessState = 'granted' | 'user_denied' | 'bot_denied';
 
+export async function invalidateSharedChatContext(
+  redis: Pick<Redis, 'eval'>,
+  chatId: string,
+): Promise<void> {
+  const normalizedChatId = chatId.trim();
+  if (!normalizedChatId) return;
+  await redis.eval(
+    INVALIDATE_CHAT_CONTEXT_SCRIPT,
+    2,
+    ChatContextCacheService.chatContextRevisionKey(normalizedChatId),
+    ChatContextCacheService.cacheKey(normalizedChatId),
+    CHAT_CONTEXT_INVALIDATION_CHANNEL,
+    JSON.stringify({ chatId: normalizedChatId }),
+  );
+}
+
 export type ChatContext = {
   chatId: string;
   title: string;
@@ -544,14 +560,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.invalidateLocal(normalizedChatId);
-    await this.redis.eval(
-      INVALIDATE_CHAT_CONTEXT_SCRIPT,
-      2,
-      ChatContextCacheService.chatContextRevisionKey(normalizedChatId),
-      ChatContextCacheService.cacheKey(normalizedChatId),
-      CHAT_CONTEXT_INVALIDATION_CHANNEL,
-      JSON.stringify({ chatId: normalizedChatId }),
-    );
+    await invalidateSharedChatContext(this.redis, normalizedChatId);
   }
 
   invalidateLocal(chatId: string): void {

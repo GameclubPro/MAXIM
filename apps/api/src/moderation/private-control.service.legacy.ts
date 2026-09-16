@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import { buildPrivateSectionSummaryLines } from './private-control-section-summaries';
 import { randomBytes } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -257,7 +258,6 @@ import {
   isPrivateDuplicateFlowSettingKey,
   normalizePrivateDuplicateFlowSettings,
   resolvePrivateDuplicateAllowedCount,
-  resolvePrivateDuplicateSharedWindowSec,
 } from './private-control-duplicate-flow';
 import {
   CHANNEL_SECTION_FIELDS,
@@ -5692,6 +5692,20 @@ export class PrivateControlService {
     ];
 
     const rows = this.buildSectionActionRows(section, settings, session.sectionView);
+    if (section === 'limits') {
+      const route = this.buildEntitySettingsMiniappRoute(
+        session.selectedChatId,
+        'chat',
+        'stopWords',
+      );
+      rows.push([
+        this.buildMiniappLaunchButton(
+          'Стоп-слова',
+          route,
+          this.appBaseUrl ? this.appBaseUrl + '/app' + route : null,
+        ),
+      ]);
+    }
 
     if (section === 'links' && session.sectionView === 'advanced') {
       rows.push([this.callbackButton('Разрешённые домены', this.cb('open_domains'))]);
@@ -7186,73 +7200,10 @@ export class PrivateControlService {
     settings: ChatSettings,
     view: PrivateSectionView,
   ): string[] {
-    switch (section) {
-      case 'links':
-        return [
-          `Политика: ${this.describeLinkPolicy(settings.linkPolicy)}`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.linkWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.linkMuteEnabled)} (${settings.linkMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.linkBanEnabled)}`,
-          `Сообщение бота: ${this.describeBooleanCompact(settings.linkBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.linkBotButtonEnabled)}`,
-          ...(view === 'advanced'
-            ? ['Allowlist и тексты предупреждений доступны в расширенном режиме ниже.']
-            : []),
-        ];
-      case 'greeting':
-        return [
-          `Приветствие: ${this.describeBooleanCompact(settings.greetingEnabled)}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.greetingBotMessageEnabled)} • автоудаление ${this.describeBooleanCompact(settings.greetingDeleteBotMessageEnabled)}${settings.greetingDeleteBotMessageEnabled ? ` (${formatDeleteBotMessagesDelayLabel(settings.greetingDeleteBotMessageDelayMinutes)})` : ''} • кнопка ${this.describeBooleanCompact(settings.greetingBotButtonEnabled)} • правила ${this.describeBooleanCompact(settings.greetingRulesButtonEnabled)}`,
-        ];
-      case 'profanityFilter':
-        return [
-          `Фильтр: ${this.describeBooleanCompact(settings.russianProfanityFilterEnabled)} • чувствительность ${formatPrivateControlEnumValue(settings.profanitySensitivity)}`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.profanityWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.profanityMuteEnabled)} (${settings.profanityMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.profanityBanEnabled)}`,
-          `Сообщение бота: ${this.describeBooleanCompact(settings.profanityBotMessageEnabled)}`,
-        ];
-      case 'commercialFilter':
-        return [
-          `Фильтр: ${this.describeBooleanCompact(settings.commercialAdsFilterEnabled)} • строгость ${formatPrivateControlEnumValue(settings.commercialAdsSensitivity)}`,
-          `Пороги: WARN ${settings.commercialAdsWarnThreshold} • DELETE ${settings.commercialAdsDeleteThreshold}`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.textFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.textFiltersMuteEnabled)} (${settings.textFiltersMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.textFiltersBanEnabled)}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.textFiltersBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.textFiltersBotButtonEnabled)}`,
-        ];
-      case 'duplicates': {
-        const duplicateWindowSec = resolvePrivateDuplicateSharedWindowSec(settings);
-        const duplicateAllowedCount = resolvePrivateDuplicateAllowedCount(settings);
-        return [
-          `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • ${duplicateAllowedCount === 0 ? 'с первого дубля' : `после ${duplicateAllowedCount} дубл.`} • окно ${duplicateWindowSec}с`,
-          `Фото: ${this.describeBooleanCompact(settings.duplicatePhotoEnabled)} • совпадение ${formatPrivateControlEnumValue(settings.duplicatePhotoMatchPreset)} • область ${formatPrivateControlEnumValue(settings.duplicatePhotoScope)}`,
-          `Этапы: объяснение ${this.describeBooleanCompact(settings.duplicateBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.duplicateWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} (${settings.duplicateMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.duplicateBanEnabled)}`,
-          `Кнопка: ${this.describeBooleanCompact(settings.duplicateBotButtonEnabled)}`,
-        ];
-      }
-      case 'limits':
-        return [
-          `Антиспам: ${this.describeBooleanCompact(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,
-          `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
-          `Контент: фото ${this.describeBooleanCompact(settings.photoMessagesEnabled)} • видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)} • пересылки ${this.describeBooleanCompact(settings.forwardedMessagesEnabled)} • телефоны ${this.describeBooleanCompact(settings.phoneNumbersEnabled)}`,
-          `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'} • домены ${settings.messageLimitsBlockedDomains.length > 0 ? settings.messageLimitsBlockedDomains.length : 'выкл'}`,
-          `Текст на фото: ${this.describeBooleanCompact(settings.messageLimitsImageTextScanEnabled)} • только удаление`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.messageLimitsWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.messageLimitsMuteEnabled)} (${settings.messageLimitsMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.messageLimitsBanEnabled)}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,
-        ];
-      case 'night':
-        return [
-          `Ночной режим: ${this.describeBooleanCompact(settings.nightModeEnabled)}`,
-          `Окно: ${formatPrivateControlTime(settings.nightModeStartTimeMinutes)}-${formatPrivateControlTime(settings.nightModeEndTimeMinutes)} • ${settings.nightModeTimezone || 'не задан'}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.nightModeBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.nightModeBotButtonEnabled)}`,
-          `Ручное закрытие: ${this.describeBooleanCompact(settings.nightModeForceCloseEnabled)}${settings.nightModeForceCloseEnabled ? ` • ${settings.nightModeForceCloseForever ? 'бессрочно' : `${settings.nightModeForceCloseDays}д ${settings.nightModeForceCloseHours}ч`}` : ''}`,
-        ];
-      case 'storefront':
-        return [
-          `Кнопка Караван: ${this.describeBooleanCompact(settings.karavanStorefrontEnabled)}`,
-          `Только администраторы и разрешённые: ${this.describeBooleanCompact(settings.karavanStorefrontAdminsOnly)}`,
-        ];
-      case 'extra':
-        return [
-          `Удаление спамеров: ${this.describeBooleanCompact(settings.deleteSpammersEnabled)}`,
-          `Сообщения бота: ${this.describeBooleanCompact(settings.deleteBotMessagesEnabled)} • задержка ${formatDeleteBotMessagesDelayLabel(settings.deleteBotMessagesDelayMinutes)}`,
-          `Удаление ботов: ${this.describeBooleanCompact(settings.removeBotsFromGroupEnabled)}`,
-        ];
-    }
+    return buildPrivateSectionSummaryLines(section, settings, view, {
+      boolean: (value) => this.describeBooleanCompact(value),
+      linkPolicy: (value) => this.describeLinkPolicy(value),
+    });
   }
 
   private buildSectionActionRows(

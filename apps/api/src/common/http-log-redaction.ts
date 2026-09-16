@@ -1,4 +1,8 @@
 export const HTTP_LOG_REDACT_PATHS = [
+  'req.body',
+  'req.query.body',
+  'req.query.bodyGzip',
+  'req.query.chunk',
   'req.headers.authorization',
   'req.headers.cookie',
   'req.headers.referer',

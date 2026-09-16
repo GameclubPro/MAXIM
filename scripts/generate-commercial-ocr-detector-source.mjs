@@ -12,6 +12,7 @@ const outputPath = resolve(
 );
 const detectorSupportFiles = [
   'apps/api/src/common/url-text.util.ts',
+  'packages/contracts/src/url-text.ts',
   'apps/api/src/moderation/commercial-campaign.util.ts',
   'apps/api/src/moderation/rule-engine-commercial-second-stage-cache.ts',
   'apps/api/src/moderation/rule-engine-commercial-thresholds.ts',
@@ -80,6 +81,16 @@ export function resolveCommercialOcrRuntimeSourceFiles(repositoryRoot = root) {
     'apps/api/src/moderation/photo-duplicate/photo-image-format.ts',
     'apps/api/src/moderation/photo-duplicate/secure-photo-downloader.ts',
     'packages/contracts/src/core.ts',
+    'packages/contracts/src/settings.ts',
+    'packages/contracts/src/stop-words.ts',
+    'packages/contracts/src/stop-words-matcher.ts',
+    'packages/contracts/src/stop-words-legacy-phrases.ts',
+    'packages/contracts/src/stop-words-legacy.ts',
+    'packages/contracts/src/url-text.ts',
+    'packages/contracts/src/button-url.ts',
+    'packages/contracts/src/broadcast-common.ts',
+    'apps/api/src/moderation/stop-words/stop-words.policy.ts',
+    'apps/api/src/moderation/stop-words/stop-words.matcher.ts',
   ]
     .map((path) => path.split('\\').join('/'))
     .sort((left, right) => left.localeCompare(right));

@@ -73,6 +73,8 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/required-subscription/channels/resolve$`),
   },
   { method: 'PUT', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/settings$`) },
+  { method: 'PUT', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/stop-words$`) },
+  { method: 'POST', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/stop-words/preview$`) },
   {
     method: 'POST',
     pattern: new RegExp(

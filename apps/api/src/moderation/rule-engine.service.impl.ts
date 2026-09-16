@@ -1,4 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
+import { detectStopWordsViolations } from './stop-words/stop-words.detection';
 import { isValidMaxBotStartPayload } from '../max/max-deep-link.util';
 import type { ChatSettings } from '../prisma/prisma-client';
 import {
@@ -1039,6 +1040,7 @@ export class RuleEngineService {
     settings: ChatSettings;
     domainAllowlist: string[];
     navigationTargets?: readonly NavigationTargetEvidence[];
+    stopWordsTextSegments?: readonly string[];
     effectiveLength?: number;
     hasPhotoAttachment?: boolean;
     hasStickerAttachment?: boolean;
@@ -1215,24 +1217,41 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'message-count-limit');
 
-    const blockedWordViolation = this.messageLimitsDetector.detectBlockedWordLimit({
-      text,
-      settings,
-    });
+    const blockedWordViolation =
+      settings.stopWordsPolicy == null
+        ? this.messageLimitsDetector.detectBlockedWordLimit({
+            text,
+            settings,
+          })
+        : null;
     if (blockedWordViolation) {
       violations.push(blockedWordViolation);
     }
     markRuleEngineDetectStage(profile, 'blocked-words');
 
-    const blockedDomainViolation = this.messageLimitsDetector.detectBlockedDomainLimit({
-      text,
-      settings,
-      isLinkAllowlisted: allowlistLinkMatcher,
-    });
+    const blockedDomainViolation =
+      settings.stopWordsPolicy == null
+        ? this.messageLimitsDetector.detectBlockedDomainLimit({
+            text,
+            settings,
+            isLinkAllowlisted: allowlistLinkMatcher,
+          })
+        : null;
     if (blockedDomainViolation) {
       violations.push(blockedDomainViolation);
     }
     markRuleEngineDetectStage(profile, 'blocked-domains');
+    if (settings.stopWordsPolicy != null) {
+      violations.push(
+        ...detectStopWordsViolations({
+          text,
+          settings,
+          textSegments: params.stopWordsTextSegments,
+          navigationTargets,
+          isLinkAllowlisted: allowlistLinkMatcher,
+        }),
+      );
+    }
 
     const phoneNumberViolation = this.messageLimitsDetector.detectPhoneNumberLimit({
       text,

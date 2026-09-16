@@ -2,8 +2,27 @@ import { BadRequestException } from '@nestjs/common';
 
 import { applySettingsSectionToAllChats } from './admin-settings-apply';
 import { SETTINGS_SECTION_KEYS } from './admin.service.support';
+import { chatSettingsSchema, stopWordsPolicySchema } from '@maxim/contracts/settings';
 
 describe('admin settings section apply', () => {
+  it('rejects a changed source revision before copying a stop-list', async () => {
+    const applySettings = jest.fn();
+    await expect(
+      applySettingsSectionToAllChats({
+        sourceChatId: 'source',
+        source: 'miniapp',
+        body: { section: 'stopWords', expectedSourceRevision: 1 },
+        getSourceSettings: async () =>
+          chatSettingsSchema.parse({
+            stopWordsPolicy: stopWordsPolicySchema.parse({}),
+            stopWordsRevision: 2,
+          }),
+        applySettings,
+        syncDomainAllowlistToChats: jest.fn(),
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(applySettings).not.toHaveBeenCalled();
+  });
   it('does not expose the retired thematic section in the server mapping', () => {
     expect(SETTINGS_SECTION_KEYS).not.toHaveProperty('thematicFilters');
   });
@@ -22,8 +41,8 @@ describe('admin settings section apply', () => {
     expect(SETTINGS_SECTION_KEYS.profanityFilter).toContain('profanitySensitivity');
   });
 
-  it('applies image text scanning with the stop-word section', () => {
-    expect(SETTINGS_SECTION_KEYS.stopWords).toContain('messageLimitsImageTextScanEnabled');
+  it('applies the complete independent policy without copying a source revision', () => {
+    expect(SETTINGS_SECTION_KEYS.stopWords).toEqual(['stopWordsPolicy']);
   });
 
   it('keeps the storefront section scoped to its toggles and texts', () => {

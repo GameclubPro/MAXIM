@@ -1624,7 +1624,7 @@ describe('PrivateControlService', () => {
     expect(adminService.updateSettings).not.toHaveBeenCalled();
   });
 
-  it('keeps the legacy limits summary explicit about delete-only image OCR', () => {
+  it('keeps independent stop-word policy out of the legacy limits summary', () => {
     const { service } = createHarness();
     const summary = (
       service as unknown as {
@@ -1640,7 +1640,8 @@ describe('PrivateControlService', () => {
       'basic',
     );
 
-    expect(summary).toContain('Текст на фото: вкл • только удаление');
+    expect(summary.join('\n')).not.toContain('Текст на фото:');
+    expect(summary.join('\n')).not.toContain('Стоп-слова:');
   });
 
   it('treats /legacy and /modern as aliases for the current interface', async () => {

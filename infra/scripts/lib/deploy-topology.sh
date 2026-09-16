@@ -211,6 +211,46 @@ maxim_topology_require_message_duplicate_delete_guard() {
   fi
 }
 
+maxim_topology_require_stop_words_policy_guard() {
+  local commit_sha="$1"
+  local guard_source
+  local executor_source
+  local detector_source
+  local guard_path="apps/api/src/moderation/stop-words/stop-words-delete-guard.service.ts"
+  local executor_path="apps/api/src/moderation/moderation-delete-intent.service.ts"
+  local detector_path="apps/api/src/moderation/rule-engine.service.impl.ts"
+
+  # FLAG: Persisted stop-word policies and queued decisions cannot be executed by legacy readers.
+  if ! guard_source="$(git show "${commit_sha}:${guard_path}" 2>/dev/null)" ||
+    ! executor_source="$(git show "${commit_sha}:${executor_path}" 2>/dev/null)" ||
+    ! detector_source="$(git show "${commit_sha}:${detector_path}" 2>/dev/null)"; then
+    echo "Rollback target predates the stop-word policy guard." >&2
+    return 1
+  fi
+  if ! printf '%s\0%s\0%s' "$guard_source" "$executor_source" "$detector_source" | node -e '
+    const input = require("node:fs").readFileSync(0);
+    if (input.length > 4 * 1024 * 1024) process.exit(1);
+    const parts = input.toString("utf8").split("\0");
+    if (parts.length !== 3) process.exit(1);
+    const [guard, executor, detector] = parts;
+    const start = executor.indexOf("private async runDeletePreDispatchGuards(");
+    const end = executor.indexOf("\n  private ", start + 1);
+    const boundary = executor.slice(start, end);
+    const valid = start >= 0 && end > start &&
+      guard.includes("class StopWordsDeleteGuardService") &&
+      guard.includes("getExactMessageRow(") &&
+      guard.includes("stop_words_delete_no_longer_authorized") &&
+      guard.includes("stopWordsRevision") &&
+      boundary.includes("await this.stopWordsDeleteGuard.assertIntentStillActionable(") &&
+      boundary.includes("Stop-list delete guard unavailable") &&
+      detector.includes("detectStopWordsViolations(") && detector.includes("stopWordsPolicy");
+    process.exit(valid ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks the stop-word policy pre-dispatch guard capability." >&2
+    return 1
+  fi
+}
+
 maxim_topology_image_has_ocr_native_sandbox() {
   local image="$1"
   local capability

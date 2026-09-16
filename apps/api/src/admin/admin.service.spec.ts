@@ -17591,7 +17591,11 @@ describe('AdminService settings screen endpoints', () => {
         displayName: null,
         chatTitle: null,
       },
-      { section: 'stopWords', target: { mode: 'all', favoriteTypes: [], chatIds: [] } },
+      {
+        section: 'stopWords',
+        expectedSourceRevision: 0,
+        target: { mode: 'all', favoriteTypes: [], chatIds: [] },
+      },
     );
 
     expect(applySpy).toHaveBeenLastCalledWith(
@@ -17600,15 +17604,8 @@ describe('AdminService settings screen endpoints', () => {
       settings,
       'miniapp',
       { mode: 'all', favoriteTypes: [], chatIds: [] },
-      [
-        'messageLimitsBlockedWords',
-        'messageLimitsBlockedDomains',
-        'messageLimitsImageTextScanEnabled',
-        'messageLimitsBotMessageText',
-        'messageLimitsWarnMessageText',
-        'botSpeechMedia',
-      ],
-      ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
+      ['stopWordsPolicy'],
+      [],
     );
     expect(stopWordsResult.section).toBe('stopWords');
   });

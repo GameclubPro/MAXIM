@@ -746,13 +746,7 @@ export const SETTINGS_SECTION_KEYS = {
     'messageLimitsAdminContactButtonUrl',
     'phoneNumbersEnabled',
   ],
-  stopWords: [
-    'messageLimitsBlockedWords',
-    'messageLimitsBlockedDomains',
-    'messageLimitsImageTextScanEnabled',
-    'messageLimitsBotMessageText',
-    'messageLimitsWarnMessageText',
-  ],
+  stopWords: ['stopWordsPolicy'],
   phones: [
     'phoneNumbersEnabled',
     'phoneNumbersBotMessageEnabled',
@@ -846,7 +840,7 @@ export const SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS = {
   commercialFilter: ['textFiltersBotMessageText', 'textFiltersWarnMessageText'],
   duplicates: ['duplicateBotMessageText'],
   limits: ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
-  stopWords: ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
+  stopWords: [],
   phones: ['phoneNumbersBotMessageText'],
   night: ['nightModeBotMessageText', 'nightModeOpenMessageText'],
   requiredSubscription: [

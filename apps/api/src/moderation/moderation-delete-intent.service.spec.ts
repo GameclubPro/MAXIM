@@ -7366,7 +7366,7 @@ describe('ModerationDeleteIntentService', () => {
       confirmed: true,
     });
 
-    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany).toHaveBeenCalledTimes(3);
     expect(resolveEffectivePolicy).not.toHaveBeenCalled();
     expect(remoteDelete).toHaveBeenCalledTimes(1);
   });

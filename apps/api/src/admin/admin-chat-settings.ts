@@ -21,6 +21,15 @@ import {
   type ChatSettings,
 } from '@maxim/contracts';
 import { BadRequestException, ConflictException, type Logger } from '@nestjs/common';
+import {
+  assertLegacyStopWordsWrite,
+  hasLegacyStopWordsChanges,
+  omitStopWordsPolicy,
+} from './stop-words-settings-ownership';
+import {
+  migrateStopWordsPolicy,
+  readStopWordsPolicy,
+} from '../moderation/stop-words/stop-words.policy';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -464,6 +473,13 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
   }
 
   let normalizedSettings = settings as Record<string, unknown>;
+  if (normalizedSettings.stopWordsPolicy != null) {
+    // FLAG: An unsupported stop-list policy cannot reset unrelated settings during a read.
+    normalizedSettings = {
+      ...normalizedSettings,
+      stopWordsPolicy: readStopWordsPolicy({ stopWordsPolicy: normalizedSettings.stopWordsPolicy }),
+    };
+  }
 
   if (typeof normalizedSettings.adminBanCommandName !== 'string') {
     normalizedSettings = {
@@ -741,7 +757,17 @@ export async function readChatSettings(params: {
       }
     }
 
-    return normalizedSettings;
+    let stopWordsPolicy = normalizedSettings.stopWordsPolicy;
+    try {
+      stopWordsPolicy = migrateStopWordsPolicy(chat.settings);
+    } catch {
+      params.logger.warn({ chatId: params.chatId }, 'Legacy stop-word policy requires review');
+    }
+    return {
+      ...normalizedSettings,
+      stopWordsPolicy,
+      stopWordsRevision: chat.settings.stopWordsRevision,
+    };
   }
 
   params.logger.warn(
@@ -759,7 +785,7 @@ export async function readChatSettings(params: {
   const repaired = await params.prisma.chatSettings.updateMany({
     where: { chatId: params.chatId, updatedAt: chat.settings.updatedAt },
     data: {
-      ...fallback,
+      ...omitStopWordsPolicy(fallback),
     },
   });
   if (repaired.count > 0) {
@@ -795,6 +821,10 @@ export async function saveChatSettings(params: {
     where: { chatId: params.chatId },
     select: {
       ...CHAT_SETTINGS_BOT_CAPABILITY_SELECT,
+      stopWordsPolicy: true,
+      stopWordsRevision: true,
+      messageLimitsBlockedWords: true,
+      messageLimitsBlockedDomains: true,
       duplicatePhotoMatchPreset: true,
       duplicatePhotoScope: true,
       duplicateDetectionPreset: true,
@@ -887,6 +917,7 @@ export async function saveChatSettings(params: {
       : (currentSettings?.messageLimitsImageTextScanEnabled ??
         parsed.data.messageLimitsImageTextScanEnabled),
   };
+  if (currentSettings) assertLegacyStopWordsWrite(currentSettings, params.body);
   let normalizedSettings = normalizeChatSettings(
     settingsInput,
     {
@@ -904,6 +935,9 @@ export async function saveChatSettings(params: {
     current: {
       ...DEFAULT_CHAT_SETTINGS,
       ...(currentSettings ?? {}),
+      stopWordsPolicy: currentSettings
+        ? (readStopWordsPolicy(currentSettings) ?? undefined)
+        : undefined,
       duplicateCompareMode: currentSettings?.duplicateCompareMode === 'TEXT' ? 'TEXT' : 'MESSAGE',
     },
     next: normalizedSettings,
@@ -915,7 +949,9 @@ export async function saveChatSettings(params: {
   const botAssignmentData = await params.resolveBotAssignmentData();
   // FLAG: Major never includes Publisher-owned comment fields in UPDATE, so concurrent Publisher
   // writes cannot be overwritten by a stale read-modify-write cycle.
-  const majorOwnedSettings = omitPublisherOwnedChatSettings(normalizedSettings);
+  const majorOwnedSettings = omitStopWordsPolicy(
+    omitPublisherOwnedChatSettings(normalizedSettings),
+  );
   const createSettings = {
     ...majorOwnedSettings,
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
@@ -937,7 +973,13 @@ export async function saveChatSettings(params: {
       if (currentSettings) {
         const changed = await tx.chatSettings.updateMany({
           where: { chatId: params.chatId, updatedAt: currentSettings.updatedAt },
-          data: majorOwnedSettings,
+          data: {
+            ...majorOwnedSettings,
+            ...(currentSettings.stopWordsPolicy == null &&
+            hasLegacyStopWordsChanges(currentSettings, majorOwnedSettings)
+              ? { stopWordsRevision: { increment: 1 } }
+              : {}),
+          },
         });
         if (changed.count !== 1) {
           throw chatSettingsRevisionConflict();
