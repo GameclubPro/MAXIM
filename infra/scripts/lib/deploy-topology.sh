@@ -211,6 +211,38 @@ maxim_topology_require_message_duplicate_delete_guard() {
   fi
 }
 
+maxim_topology_require_traffic_protection_guard() {
+  local commit_sha="$1"
+  local guard_source
+  local executor_source
+  # FLAG: Pending traffic intents must never outlive their final policy/source guard.
+  if ! guard_source="$(git show "${commit_sha}:apps/api/src/moderation/traffic-protection-delete-guard.service.ts" 2>/dev/null)" ||
+    ! executor_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)"; then
+    echo "Rollback target predates the traffic protection guard." >&2
+    return 1
+  fi
+  if ! printf '%s\0%s' "$guard_source" "$executor_source" | node -e '
+    const input = require("node:fs").readFileSync(0);
+    if (input.length > 4 * 1024 * 1024) process.exit(1);
+    const parts = input.toString("utf8").split("\0");
+    if (parts.length !== 2) process.exit(1);
+    const [guard, executor] = parts;
+    const start = executor.indexOf("private async runDeletePreDispatchGuards(");
+    const end = executor.indexOf("\n  private ", start + 1);
+    const boundary = executor.slice(start, end);
+    const valid = start >= 0 && end > start &&
+      guard.includes("class TrafficProtectionDeleteGuardService") &&
+      guard.includes("getExactMessageRow(") && guard.includes("trafficPolicyRevision") &&
+      guard.includes("traffic_protection_delete_no_longer_authorized") &&
+      boundary.includes("await this.trafficProtectionDeleteGuard.assertIntentStillActionable(") &&
+      boundary.includes("Traffic protection delete guard unavailable");
+    process.exit(valid ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks the traffic protection pre-dispatch guard." >&2
+    return 1
+  fi
+}
+
 maxim_topology_require_stop_words_policy_guard() {
   local commit_sha="$1"
   local guard_source

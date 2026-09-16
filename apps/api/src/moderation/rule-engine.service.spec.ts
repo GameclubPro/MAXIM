@@ -112,6 +112,13 @@ class MockRedisCounterService {
 
 function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   const base: ChatSettings = {
+    slowModeEnabled: false,
+    slowModeIntervalSeconds: 30,
+    mediaMessageCooldownEnabled: false,
+    mediaMessageCooldownSeconds: 30,
+    stickerMessagesEnabled: true,
+    trafficPolicyRevision: 0,
+    trafficPolicyEffectiveAt: new Date(0),
     id: '1',
     chatId: 'chat-1',
     duplicateWarnEnabled: true,

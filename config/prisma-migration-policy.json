@@ -1,10 +1,15 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260916140000_default_new_chat_stop_words_policy",
-  "baselineNamesSha256": "75745a1c0bd1e4c6812d4ea1f6aa49cd17851bb8fdb6c7e8952529ebd39b48a5",
-  "baselineContentsSha256": "921bc6a12dc8c80f68701f45b04e8de20092ffadaa8d858e88977a251a9c5401",
+  "baselineThrough": "20260916230000_add_chat_traffic_protection",
+  "baselineNamesSha256": "ff2a6e853efa25903f795632a30713c3e63bd06889a7f69d02b7cd19aefcbddb",
+  "baselineContentsSha256": "75cb53d969164e15b7b2da2422fd24793b5344e234e43cfaf85a3323d62762de",
   "approvedDestructive": {
+    "20260916230000_add_chat_traffic_protection": {
+      "reason": "Manual review of one static additive revision trigger. The parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic/destructive; this migration has no dynamic SQL, DROP, DELETE, table rewrite, or existing-data backfill.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The drop-column classification is a parser false positive. New columns have backward-compatible constant or transaction-time defaults; traffic controls remain off and stickers allowed. Old readers ignore them. The trigger modifies only the current row's new revision/effective timestamp, and pending traffic deletion requires the new rollback source floor."
+    },
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
     },

@@ -466,6 +466,13 @@ function createModerationServiceWithSanctionStateLock(params: {
 
 function createSettings(overrides: Record<string, unknown> = {}) {
   return {
+    slowModeEnabled: false,
+    slowModeIntervalSeconds: 30,
+    mediaMessageCooldownEnabled: false,
+    mediaMessageCooldownSeconds: 30,
+    stickerMessagesEnabled: true,
+    trafficPolicyRevision: 0,
+    trafficPolicyEffectiveAt: new Date(0),
     id: 'settings-1',
     chatId: 'chat-1',
     duplicateWarnEnabled: true,

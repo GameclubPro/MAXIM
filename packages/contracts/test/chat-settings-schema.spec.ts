@@ -118,6 +118,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
       'karavanStorefrontEnabled',
       'phoneNumbersEnabled',
       'photoMessagesEnabled',
+      'stickerMessagesEnabled',
       'videoMessagesEnabled',
       'voiceMessagesEnabled',
     ]);

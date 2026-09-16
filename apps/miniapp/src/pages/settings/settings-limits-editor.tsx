@@ -7,6 +7,7 @@ import { cn } from '../../lib/cn';
 import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
 import { enableDefaultSanctionStages } from '../settings-page-state';
 import { EditToggleButton } from './settings-edit-toggle-button';
+import { SettingsTrafficControls } from './settings-traffic-controls';
 import type { BotMessageEditorProps } from './settings-page-helpers';
 import type { SettingsLimitsSectionProps } from './settings-limits-section';
 import {
@@ -98,6 +99,12 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
           </p>
         ) : null}
       </div>
+
+      <SettingsTrafficControls
+        draft={draft}
+        setFieldValue={setFieldValue}
+        fieldErrors={fieldErrors}
+      />
 
       <div className="settings-native-toggle">
         <div className="settings-native-toggle__row">
@@ -422,93 +429,98 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
         ) : null}
       </div>
 
-      <div
-        className={cn(
-          'settings-native-toggle',
-          fieldErrors.stickerMessageCooldownMinutes && 'field--error',
-        )}
-      >
-        <div className="settings-native-toggle__row">
-          <div className="settings-native-toggle__title-wrap">
-            <span className="settings-native-toggle__title">Стикеры: не чаще 1 раза</span>
-            <button
-              type="button"
-              className={cn('settings-info-button', openHintKey === 'stickerCooldown' && 'is-open')}
-              aria-label="Пояснение для ограничения частоты стикеров"
-              aria-controls="sticker-cooldown-hint"
-              aria-expanded={openHintKey === 'stickerCooldown'}
-              data-hint-key="stickerCooldown"
-              onClick={() => toggleHint('stickerCooldown')}
-            >
-              <InfoCircle aria-hidden />
-            </button>
-          </div>
-
-          <label
-            className="settings-native-switch"
-            aria-label="Ограничить отправку стикеров по времени"
-          >
-            <input
-              type="checkbox"
-              checked={draft.stickerMessageCooldownEnabled}
-              onChange={(event) => {
-                const enabled = event.target.checked;
-                setFieldValue('stickerMessageCooldownEnabled', enabled);
-                if (enabled) {
-                  enableDefaultSanctionStages(setFieldValue, 'messageLimits');
-                }
-              }}
-            />
-            <span className="toggle-switch" aria-hidden>
-              <span className="toggle-switch__thumb" />
-            </span>
-          </label>
-        </div>
-
-        {draft.stickerMessageCooldownEnabled ? (
+      {draft.stickerMessagesEnabled ? (
+        <div
+          className={cn(
+            'settings-native-toggle',
+            fieldErrors.stickerMessageCooldownMinutes && 'field--error',
+          )}
+        >
           <div className="settings-native-toggle__row">
-            <span className="settings-native-toggle__title settings-native-toggle__title--sub">
-              Интервал
-            </span>
-            <div
-              className="ban-duration-stepper"
-              role="group"
-              aria-label="Интервал отправки стикеров в минутах"
-            >
+            <div className="settings-native-toggle__title-wrap">
+              <span className="settings-native-toggle__title">Стикеры: не чаще 1 раза</span>
               <button
                 type="button"
-                className="ban-duration-stepper__button"
-                onClick={() => adjustStickerMessageCooldown(-1)}
-                disabled={draft.stickerMessageCooldownMinutes <= STICKER_COOLDOWN_MIN_MINUTES}
-                aria-label="Уменьшить интервал отправки стикеров"
+                className={cn(
+                  'settings-info-button',
+                  openHintKey === 'stickerCooldown' && 'is-open',
+                )}
+                aria-label="Пояснение для ограничения частоты стикеров"
+                aria-controls="sticker-cooldown-hint"
+                aria-expanded={openHintKey === 'stickerCooldown'}
+                data-hint-key="stickerCooldown"
+                onClick={() => toggleHint('stickerCooldown')}
               >
-                -
-              </button>
-              <output className="ban-duration-stepper__value" aria-live="polite">
-                {draft.stickerMessageCooldownMinutes} мин
-              </output>
-              <button
-                type="button"
-                className="ban-duration-stepper__button"
-                onClick={() => adjustStickerMessageCooldown(1)}
-                disabled={draft.stickerMessageCooldownMinutes >= STICKER_COOLDOWN_MAX_MINUTES}
-                aria-label="Увеличить интервал отправки стикеров"
-              >
-                +
+                <InfoCircle aria-hidden />
               </button>
             </div>
-          </div>
-        ) : null}
 
-        {fieldErrors.stickerMessageCooldownMinutes ? (
-          <small className="field__hint">{fieldErrors.stickerMessageCooldownMinutes}</small>
-        ) : openHintKey === 'stickerCooldown' ? (
-          <p id="sticker-cooldown-hint" className="settings-native-toggle__hint">
-            Каждый участник может отправить один стикер за выбранное время. Следующие стикеры до
-            окончания этого времени удаляются. Лимит фото считается отдельно.
-          </p>
-        ) : null}
-      </div>
+            <label
+              className="settings-native-switch"
+              aria-label="Ограничить отправку стикеров по времени"
+            >
+              <input
+                type="checkbox"
+                checked={draft.stickerMessageCooldownEnabled}
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  setFieldValue('stickerMessageCooldownEnabled', enabled);
+                  if (enabled) {
+                    enableDefaultSanctionStages(setFieldValue, 'messageLimits');
+                  }
+                }}
+              />
+              <span className="toggle-switch" aria-hidden>
+                <span className="toggle-switch__thumb" />
+              </span>
+            </label>
+          </div>
+
+          {draft.stickerMessageCooldownEnabled ? (
+            <div className="settings-native-toggle__row">
+              <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                Интервал
+              </span>
+              <div
+                className="ban-duration-stepper"
+                role="group"
+                aria-label="Интервал отправки стикеров в минутах"
+              >
+                <button
+                  type="button"
+                  className="ban-duration-stepper__button"
+                  onClick={() => adjustStickerMessageCooldown(-1)}
+                  disabled={draft.stickerMessageCooldownMinutes <= STICKER_COOLDOWN_MIN_MINUTES}
+                  aria-label="Уменьшить интервал отправки стикеров"
+                >
+                  -
+                </button>
+                <output className="ban-duration-stepper__value" aria-live="polite">
+                  {draft.stickerMessageCooldownMinutes} мин
+                </output>
+                <button
+                  type="button"
+                  className="ban-duration-stepper__button"
+                  onClick={() => adjustStickerMessageCooldown(1)}
+                  disabled={draft.stickerMessageCooldownMinutes >= STICKER_COOLDOWN_MAX_MINUTES}
+                  aria-label="Увеличить интервал отправки стикеров"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {fieldErrors.stickerMessageCooldownMinutes ? (
+            <small className="field__hint">{fieldErrors.stickerMessageCooldownMinutes}</small>
+          ) : openHintKey === 'stickerCooldown' ? (
+            <p id="sticker-cooldown-hint" className="settings-native-toggle__hint">
+              Каждый участник может отправить один стикер за выбранное время. Следующие стикеры до
+              окончания этого времени удаляются. Лимит фото считается отдельно.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         className="settings-subsection-divider"
@@ -516,6 +528,22 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
         aria-label="Разрешённые типы сообщений"
       >
         <span>Разрешённые типы</span>
+      </div>
+
+      <div className="settings-native-toggle">
+        <div className="settings-native-toggle__row">
+          <span className="settings-native-toggle__title">Разрешить стикеры</span>
+          <label className="settings-native-switch" aria-label="Разрешить отправку стикеров">
+            <input
+              type="checkbox"
+              checked={draft.stickerMessagesEnabled}
+              onChange={(event) => setFieldValue('stickerMessagesEnabled', event.target.checked)}
+            />
+            <span className="toggle-switch" aria-hidden>
+              <span className="toggle-switch__thumb" />
+            </span>
+          </label>
+        </div>
       </div>
 
       <div className="settings-native-toggle">

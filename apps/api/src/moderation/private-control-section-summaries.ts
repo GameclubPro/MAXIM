@@ -58,6 +58,7 @@ export function buildPrivateSectionSummaryLines(
     }
     case 'limits':
       return [
+        `Медленный режим: ${settings.slowModeEnabled ? `${settings.slowModeIntervalSeconds} сек` : 'выкл'} • медиа ${settings.mediaMessageCooldownEnabled ? `${settings.mediaMessageCooldownSeconds} сек` : 'без интервала'} • стикеры ${format.boolean(settings.stickerMessagesEnabled)}`,
         `Антиспам: ${format.boolean(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,
         `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
         `Контент: фото ${format.boolean(settings.photoMessagesEnabled)} • видео ${format.boolean(settings.videoMessagesEnabled)} • файлы ${format.boolean(settings.fileMessagesEnabled)} • голосовые ${format.boolean(settings.voiceMessagesEnabled)} • пересылки ${format.boolean(settings.forwardedMessagesEnabled)} • телефоны ${format.boolean(settings.phoneNumbersEnabled)}`,

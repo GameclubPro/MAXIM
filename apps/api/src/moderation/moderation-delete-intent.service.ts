@@ -77,6 +77,11 @@ import {
 import { resolveNightModeTransitionSnapshot } from './night-mode-transition-time.util';
 import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.service';
 import {
+  TrafficProtectionDeleteGuardService,
+  TrafficProtectionGuardRejectedError,
+} from './traffic-protection-delete-guard.service';
+import { TRAFFIC_PROTECTION_DELETE_RULE_CODES } from './traffic-protection';
+import {
   MessageDuplicateDeleteGuardService,
   MessageDuplicateGuardRejectedError,
 } from './message-duplicate/message-duplicate-delete-guard.service';
@@ -482,6 +487,7 @@ class ModerationDeleteProtectedMessageError extends Error {
 class ModerationDeleteGuardedMessageAbsentError extends Error {
   constructor(
     readonly verificationCode:
+      | 'guarded_traffic_protection_absence'
       | 'guarded_stop_words_absence'
       | 'guarded_link_predispatch_exact_absence'
       | 'guarded_commercial_ocr_predispatch_exact_absence'
@@ -573,6 +579,7 @@ export class ModerationDeleteIntentService {
     private readonly participantImmunity?: ParticipantModerationImmunityService,
     @Optional() private readonly messageDuplicateDeleteGuard?: MessageDuplicateDeleteGuardService,
     @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
+    @Optional() private readonly trafficProtectionDeleteGuard?: TrafficProtectionDeleteGuardService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -692,6 +699,9 @@ export class ModerationDeleteIntentService {
     ruleCodes: readonly string[],
   ): ModerationDeleteIntentRollout {
     const normalizedRuleCodes = ruleCodes.map((ruleCode) => ruleCode.trim());
+    // FLAG: Opt-in traffic policies never fall back to an unguarded legacy delete.
+    if (normalizedRuleCodes.some((rule) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(rule)))
+      return 'execute';
     // FLAG: Required-subscription enforcement deletion must retain durable retry ownership.
     if (
       this.requiredSubscriptionDeleteEnabled &&
@@ -2696,6 +2706,28 @@ export class ModerationDeleteIntentService {
           );
         }
         profanityVerified = profanityGuard === 'allowed';
+        // FLAG: Traffic-only policy/source/deadline checks run after the other guards,
+        // so unrelated remote work cannot consume their short authorization window.
+        if (this.trafficProtectionDeleteGuard) {
+          const result = await this.trafficProtectionDeleteGuard.assertIntentStillActionable({
+            intentId: intent.id,
+            chatId: intent.chatId,
+            messageId: intent.messageId,
+            subjectUserId: intent.subjectUserId,
+            botId,
+          });
+          if (result === 'absent')
+            throw new ModerationDeleteGuardedMessageAbsentError(
+              'guarded_traffic_protection_absence',
+            );
+        } else {
+          const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+            where: { intentId: intent.id },
+            select: { ruleCode: true },
+          });
+          if (reasons.some((reason) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(reason.ruleCode)))
+            throw new Error('Traffic protection delete guard unavailable');
+        }
       }
       if (imageTextStopListGuard === 'allowed' && finalDispatchLeaseToken) {
         await this.assertImageTextStopListDispatchDeadline(
@@ -2757,6 +2789,7 @@ export class ModerationDeleteIntentService {
     if (
       error instanceof ProfanityDeleteGuardRejectedError ||
       error instanceof StopWordsDeleteGuardRejectedError ||
+      error instanceof TrafficProtectionGuardRejectedError ||
       error instanceof MessageDuplicateGuardRejectedError
     ) {
       return true;
@@ -5468,6 +5501,7 @@ export class ModerationDeleteIntentService {
     leaseToken: string,
     botId: string,
     verificationCode:
+      | 'guarded_traffic_protection_absence'
       | 'guarded_stop_words_absence'
       | 'retry_predelete_exact_presence'
       | 'postdelete_exact_presence'

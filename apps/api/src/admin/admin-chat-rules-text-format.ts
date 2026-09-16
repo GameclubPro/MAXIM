@@ -103,6 +103,12 @@ export function buildRulesTextItemsFromSettings(input: {
     items.push('Пожалуйста, не флудите и не спамьте.');
   }
 
+  if (settings.slowModeEnabled)
+    items.push(`Интервал между сообщениями: ${settings.slowModeIntervalSeconds} сек.`);
+  if (settings.mediaMessageCooldownEnabled)
+    items.push(`Интервал между медиа: ${settings.mediaMessageCooldownSeconds} сек.`);
+  if (settings.stickerMessagesEnabled === false) items.push('Стикеры сюда отправлять нельзя.');
+
   if (settings.messageCountLimitEnabled) {
     items.push(
       `Пожалуйста, не отправляйте больше ${settings.messageCountLimitMessages} сообщений за ${settings.messageCountLimitWindowHours} ${formatRulesHoursLabel(settings.messageCountLimitWindowHours)}.`,
@@ -121,7 +127,7 @@ export function buildRulesTextItemsFromSettings(input: {
     );
   }
 
-  if (settings.stickerMessageCooldownEnabled) {
+  if (settings.stickerMessageCooldownEnabled && settings.stickerMessagesEnabled !== false) {
     items.push(
       `Стикеры можно отправлять не чаще одного раза в ${settings.stickerMessageCooldownMinutes} ${formatRulesMinutesLabel(settings.stickerMessageCooldownMinutes)}.`,
     );

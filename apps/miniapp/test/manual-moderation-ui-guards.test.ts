@@ -15,6 +15,18 @@ const confirmSheetCss = readFileSync(
   'utf8',
 );
 
+test('event confirmations load only when an action opens them', () => {
+  assert.match(
+    eventsPageSource,
+    /import type \{ ActionConfirmSheet as ActionConfirmSheetComponent \}/u,
+  );
+  assert.match(eventsPageSource, /\(\) => import\('\.\.\/components\/ui\/action-confirm-sheet'\)/u);
+  assert.match(
+    eventsPageSource,
+    /return props\.open \? \(\s*<Suspense fallback=\{null\}>\s*<LazyActionConfirmSheet/u,
+  );
+});
+
 test('manual moderation shows progress on the selected scope action', () => {
   assert.match(eventsPageSource, /setPendingScopeChoice\(scope\);/u);
   assert.match(

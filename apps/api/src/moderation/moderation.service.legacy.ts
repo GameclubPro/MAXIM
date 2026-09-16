@@ -10,6 +10,8 @@ import {
   type Type,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { isTrafficProtectionViolation } from './traffic-protection';
+import { executeDurableModerationDelete } from './moderation-delete-execution';
 import { isCommercialMessageDeleteEligible } from './commercial';
 import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
@@ -2080,6 +2082,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
         hasForwardedMessage: hasForwardedMessage(update),
         hasMediaBatch: mediaFlags.hasMediaBatch,
+        mediaGroupId: extractDirectMediaBatchId(update),
         skipAntiSpamBurstLimit,
         skipDuplicateState: duplicateEventTimeSkipReason !== null || fullMessageDuplicates,
         skipStatefulMessageLimits: updateType === 'message_edited',
@@ -2449,14 +2452,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ? {
               chatId,
               messageId,
-              reasonKey: isLinkBlockedDelete
-                ? `${topViolation.ruleCode}:violation-delete:r${settings.linkPolicyRevision}`
-                : `${topViolation.ruleCode}:violation-delete`,
+              reasonKey: isTrafficProtectionViolation(topViolation.ruleCode)
+                ? `${topViolation.ruleCode}:violation-delete:r${topViolation.metadata?.trafficPolicyRevision}:e${topViolation.metadata?.trafficEventTimestampMs}`
+                : isLinkBlockedDelete
+                  ? `${topViolation.ruleCode}:violation-delete:r${settings.linkPolicyRevision}`
+                  : `${topViolation.ruleCode}:violation-delete`,
               ruleCode: isLinkBlockedDelete
                 ? LINK_BLOCKED_DELETE_RULE_CODE
                 : `${topViolation.ruleCode}_DELETE`,
               subjectUserId: senderId,
               sourceMessageAt: createdAt,
+              ...(isTrafficProtectionViolation(topViolation.ruleCode) &&
+              typeof topViolation.metadata?.trafficDeadlineAtMs === 'number'
+                ? { retryUntilAt: new Date(topViolation.metadata.trafficDeadlineAtMs) }
+                : {}),
               entityType: 'CHAT',
               messageAuthorKind: 'user',
               event: {
@@ -2483,6 +2492,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : null;
       if (violationDeleteIntent) {
         await this.ensureModerationDeleteIntent(violationDeleteIntent);
+      }
+      // FLAG: Traffic policies are delete-only. They must never add strikes, feed
+      // global reputation, or enter the existing configurable sanction ladders.
+      if (isTrafficProtectionViolation(topViolation.ruleCode)) {
+        if (violationDeleteIntent) await this.executeModerationDelete(violationDeleteIntent);
+        this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'traffic-protection');
+        return;
       }
       const isProfanityViolation = topViolation.ruleCode === 'PROFANITY';
       const claimViolation = async () => {
@@ -5093,64 +5109,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<ModerationDeleteExecutionResult> {
     const preparedInput = this.prepareModerationDeleteIntentInput(input, options);
-    if (this.moderationDeleteIntentService) {
-      try {
-        const result = await this.moderationDeleteIntentService.ensureAndAttempt(
-          preparedInput,
-          options?.beforeImmediateDeleteMutation
-            ? { beforeDeleteMutation: options.beforeImmediateDeleteMutation }
-            : undefined,
-        );
-        const rollout = this.moderationDeleteIntentService.getRolloutForInput(preparedInput);
-        const executeExclusively = rollout === 'execute';
-        if (result.kind !== 'off' && result.kind !== 'observed') {
-          return {
-            accepted: result.kind !== 'expired' && result.kind !== 'terminal',
-            gone: result.confirmed,
-            deleted: result.kind === 'confirmed',
-            eventPersistedByIntent: result.kind === 'confirmed',
-            botId: result.kind === 'confirmed' ? result.botId : null,
-            ...(result.kind === 'confirmed' && result.profanityVerified
-              ? { profanityVerified: true as const }
-              : {}),
-          };
-        }
-        if (executeExclusively) {
-          return {
-            accepted: true,
-            gone: false,
-            deleted: false,
-            eventPersistedByIntent: false,
-            botId: null,
-          };
-        }
-      } catch (error: unknown) {
-        if (this.moderationDeleteIntentService.getRolloutForInput(preparedInput) === 'execute') {
-          throw error;
-        }
-        this.logger.warn(
-          {
-            chatId: input.chatId,
-            messageId: input.messageId,
-            ruleCode: input.ruleCode ?? input.reasonKey,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to persist shadow moderation delete intent; using legacy delete path',
-        );
-      }
-    }
-
-    return executeProfanityGuardedLegacyDelete({
+    return executeDurableModerationDelete({
       input: preparedInput,
-      scheduled: Boolean(options?.delayMs && options.delayMs > 0),
-      guard: this.profanityDeleteGuard,
-      execute: (hooks) =>
-        this.deleteMessageImmediatelyLegacy(
-          preparedInput.chatId,
-          preparedInput.messageId,
-          options,
-          hooks,
-        ),
+      service: this.moderationDeleteIntentService,
+      beforeDeleteMutation: options?.beforeImmediateDeleteMutation,
+      logger: this.logger,
+      legacy: () =>
+        executeProfanityGuardedLegacyDelete({
+          input: preparedInput,
+          scheduled: Boolean(options?.delayMs && options.delayMs > 0),
+          guard: this.profanityDeleteGuard,
+          execute: (hooks) =>
+            this.deleteMessageImmediatelyLegacy(
+              preparedInput.chatId,
+              preparedInput.messageId,
+              options,
+              hooks,
+            ),
+        }),
     });
   }
 

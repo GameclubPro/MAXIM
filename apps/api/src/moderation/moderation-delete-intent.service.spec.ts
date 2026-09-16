@@ -653,6 +653,14 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  it.each(['SLOW_MODE_DELETE', 'MEDIA_RATE_LIMIT_DELETE', 'STICKER_BLOCKED_DELETE'])(
+    'keeps %s on guarded durable execution when the legacy rollout is off',
+    (ruleCode) => {
+      const { service } = createService({ MODERATION_DELETE_INTENT_MODE: 'off' });
+      expect(service.getRolloutForRule('chat-1', ruleCode)).toBe('execute');
+      expect(service.getRolloutForRule('chat-1', 'MESSAGE_COUNT_LIMIT_DELETE')).toBe('off');
+    },
+  );
   function boundMessageInput(): EnsureModerationDeleteIntentInput {
     const timestamp = Date.now() - 1000;
     return {
@@ -7370,7 +7378,7 @@ describe('ModerationDeleteIntentService', () => {
       confirmed: true,
     });
 
-    expect(findMany).toHaveBeenCalledTimes(3);
+    expect(findMany).toHaveBeenCalledTimes(4);
     expect(resolveEffectivePolicy).not.toHaveBeenCalled();
     expect(remoteDelete).toHaveBeenCalledTimes(1);
   });

@@ -21,7 +21,7 @@ end
 local replay = redis.call('GET', KEYS[2])
 if replay then
   local saved = cjson.decode(replay)
-  if saved.timestamp ~= occurred_at then return 0 end
+  if math.abs(saved.timestamp - occurred_at) > tonumber(ARGV[6]) then return 0 end
   return saved.result
 end
 local anchor = redis.call('GET', KEYS[1])
@@ -283,6 +283,7 @@ export class RedisCounterService implements OnModuleDestroy {
     eventTimestampMs: number;
     windowSeconds: number;
     deadlineAtMs: number;
+    memberTimestampToleranceMs?: number;
   }): Promise<'allowed' | 'blocked' | 'stale' | 'deadline_exceeded'> {
     if (
       !params.key.trim() ||
@@ -291,7 +292,10 @@ export class RedisCounterService implements OnModuleDestroy {
       ![params.eventTimestampMs, params.windowSeconds, params.deadlineAtMs].every(
         (value) => Number.isSafeInteger(value) && value > 0,
       ) ||
-      params.windowSeconds > 86_400
+      params.windowSeconds > 86_400 ||
+      !Number.isSafeInteger(params.memberTimestampToleranceMs ?? 0) ||
+      (params.memberTimestampToleranceMs ?? 0) < 0 ||
+      (params.memberTimestampToleranceMs ?? 0) > 2_000
     ) {
       throw new Error('Invalid event cooldown input');
     }
@@ -306,6 +310,7 @@ export class RedisCounterService implements OnModuleDestroy {
         String(resolveDuplicateHistoryRetentionSeconds(params.windowSeconds)),
         String(params.deadlineAtMs),
         String(DUPLICATE_EVENT_MAX_FUTURE_SKEW_MS),
+        String(params.memberTimestampToleranceMs ?? 0),
       ),
     );
     if (result === -1) return 'deadline_exceeded';

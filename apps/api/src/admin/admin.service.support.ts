@@ -715,6 +715,11 @@ export const SETTINGS_SECTION_KEYS = {
     'duplicateAdminContactButtonUrl',
   ],
   limits: [
+    'slowModeEnabled',
+    'slowModeIntervalSeconds',
+    'mediaMessageCooldownEnabled',
+    'mediaMessageCooldownSeconds',
+    'stickerMessagesEnabled',
     'antiSpamEnabled',
     'deleteSpammersEnabled',
     'messageCountLimitEnabled',

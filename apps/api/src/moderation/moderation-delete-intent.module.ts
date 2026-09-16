@@ -14,6 +14,7 @@ import { CommercialOcrDeleteGuardService } from './commercial-ocr/commercial-ocr
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr/commercial-ocr-runtime-policy.service';
 import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
 import { StopWordsDeleteGuardService } from './stop-words/stop-words-delete-guard.service';
+import { TrafficProtectionDeleteGuardService } from './traffic-protection-delete-guard.service';
 import { RuleEngineModule } from './rule-engine.module';
 import { MessageDuplicateStateModule } from './message-duplicate/message-duplicate-state.module';
 import { MessageDuplicateDeleteGuardService } from './message-duplicate/message-duplicate-delete-guard.service';
@@ -34,6 +35,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     ParticipantModerationImmunityService,
     ProfanityDeleteGuardService,
     StopWordsDeleteGuardService,
+    TrafficProtectionDeleteGuardService,
     CommercialOcrDeleteGuardService,
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,

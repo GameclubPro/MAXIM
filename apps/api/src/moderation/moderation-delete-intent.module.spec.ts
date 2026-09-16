@@ -10,6 +10,7 @@ import { ParticipantModerationImmunityService } from './participant-moderation-i
 import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr/commercial-ocr-runtime-policy.service';
 import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
+import { TrafficProtectionDeleteGuardService } from './traffic-protection-delete-guard.service';
 import { RuleEngineModule } from './rule-engine.module';
 import { RuleEngineService } from './rule-engine.service';
 
@@ -36,6 +37,7 @@ describe('ModerationDeleteIntentModule', () => {
     expect(intentProviders).toContain(ModerationDeleteIntentService);
     expect(intentProviders).toContain(ParticipantModerationImmunityService);
     expect(intentProviders).toContain(ProfanityDeleteGuardService);
+    expect(intentProviders).toContain(TrafficProtectionDeleteGuardService);
     expect(intentProviders).toContain(CommercialOcrRuntimePolicyService);
     expect(intentProviders).toContain(PhotoDuplicateRuntimePolicyService);
     expect(intentExports).toContain(ModerationDeleteIntentService);

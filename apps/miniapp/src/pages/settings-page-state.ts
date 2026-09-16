@@ -289,6 +289,11 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'duplicateAdminContactButtonUrl',
   ],
   limits: [
+    'slowModeEnabled',
+    'slowModeIntervalSeconds',
+    'mediaMessageCooldownEnabled',
+    'mediaMessageCooldownSeconds',
+    'stickerMessagesEnabled',
     'antiSpamEnabled',
     'deleteSpammersEnabled',
     'messageCountLimitEnabled',

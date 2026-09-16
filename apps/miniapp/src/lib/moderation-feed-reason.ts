@@ -2,6 +2,12 @@ import type { LogsDashboardViolation } from '@maxim/contracts';
 
 type ModerationReasonSource = Pick<LogsDashboardViolation, 'ruleCode' | 'metadata'>;
 
+export const trafficModerationLabels: Record<string, string> = {
+  SLOW_MODE: 'Медленный режим',
+  MEDIA_RATE_LIMIT: 'Интервал медиа',
+  STICKER_BLOCKED: 'Стикеры запрещены',
+};
+
 const commercialSubtypeLabels: Record<string, string> = {
   CHANNEL_PLACEMENT: 'размещение в канале',
   PROPERTY_AGENT: 'риелторские услуги',
@@ -288,6 +294,7 @@ function normalizeRawModerationReason(reason: string | null): string | null {
 
 function resolveFallbackReason(ruleCode: string): string {
   const labels: Record<string, string> = {
+    ...trafficModerationLabels,
     LINK_BLOCKED: 'Ссылка запрещена настройками чата.',
     PROFANITY: 'Грубая лексика запрещена правилами чата.',
     COMMERCIAL_AD: 'Коммерческая реклама запрещена в этом чате.',

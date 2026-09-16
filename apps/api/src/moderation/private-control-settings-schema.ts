@@ -227,6 +227,27 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'duplicateBotButtonText', label: 'Текст кнопки', type: 'text' },
   ],
   limits: [
+    { key: 'slowModeEnabled', label: 'Медленный режим', type: 'boolean' },
+    {
+      key: 'slowModeIntervalSeconds',
+      label: 'Интервал сообщений (сек)',
+      type: 'number',
+      min: 10,
+      max: 86400,
+      step: 10,
+      presets: [10, 30, 60, 300],
+    },
+    { key: 'mediaMessageCooldownEnabled', label: 'Интервал медиа', type: 'boolean' },
+    {
+      key: 'mediaMessageCooldownSeconds',
+      label: 'Интервал медиа (сек)',
+      type: 'number',
+      min: 10,
+      max: 86400,
+      step: 10,
+      presets: [10, 30, 60, 300],
+    },
+    { key: 'stickerMessagesEnabled', label: 'Разрешить стикеры', type: 'boolean' },
     { key: 'antiSpamEnabled', label: 'Включить антиспам', type: 'boolean' },
     { key: 'messageCountLimitEnabled', label: 'Лимит сообщений', type: 'boolean' },
     {
@@ -468,6 +489,11 @@ export const SECTION_CARD_FIELDS: Record<
   },
   limits: {
     basic: [
+      'slowModeEnabled',
+      'slowModeIntervalSeconds',
+      'mediaMessageCooldownEnabled',
+      'mediaMessageCooldownSeconds',
+      'stickerMessagesEnabled',
       'antiSpamEnabled',
       'messageCountLimitEnabled',
       'messageCountLimitMessages',

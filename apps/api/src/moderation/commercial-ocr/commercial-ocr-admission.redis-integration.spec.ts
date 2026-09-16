@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import Redis from 'ioredis';
 
 import { CommercialOcrAdmissionStore } from './commercial-ocr-admission.store';
@@ -30,7 +31,7 @@ const limits = {
 
 describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   it('recovers the durable-webhook crash window through the pending activation CAS', async () => {
-    const context = createContext('worker-crash-window-recovery');
+    const context = await createContext('worker-crash-window-recovery');
     try {
       await expect(
         context.store.reserve(reservation(context.jobA, context.chatA, 2)),
@@ -51,7 +52,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('keeps suppression absorbing when it wins before worker reconciliation', async () => {
-    const context = createContext('worker-suppression-race');
+    const context = await createContext('worker-suppression-race');
     try {
       await expect(
         context.store.reserve(reservation(context.jobA, context.chatA, 2)),
@@ -71,7 +72,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('reports a producer-won activation race without changing the actionable state again', async () => {
-    const context = createContext('worker-producer-activation-race');
+    const context = await createContext('worker-producer-activation-race');
     try {
       await expect(
         context.store.reserve(reservation(context.jobA, context.chatA, 2)),
@@ -91,7 +92,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('reserves global capacity from observations while admitting actionable work', async () => {
-    const context = createContext('actionable-reserve');
+    const context = await createContext('actionable-reserve');
     try {
       await expect(
         context.store.reserve(reservation(context.jobA, context.chatA, 4, false)),
@@ -113,7 +114,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('atomically releases both capacities when pending activation has expired', async () => {
-    const context = createContext('activate-expired');
+    const context = await createContext('activate-expired');
     const chat = chatKeys(context.chatA);
     try {
       await expect(
@@ -145,7 +146,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('absorbs an existing reservation when a replay reports another image count', async () => {
-    const context = createContext('suppress-changed-count');
+    const context = await createContext('suppress-changed-count');
     const chat = chatKeys(context.chatA);
     try {
       await expect(
@@ -175,7 +176,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('releases capacity when a shadow replay absorbs an actionable reservation', async () => {
-    const context = createContext('shadow-replay-release');
+    const context = await createContext('shadow-replay-release');
     const chat = chatKeys(context.chatA);
     try {
       await expect(
@@ -204,7 +205,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('expires an actionable reservation instead of reporting stale actionability', async () => {
-    const context = createContext('activate-actionable-expired');
+    const context = await createContext('activate-actionable-expired');
     const chat = chatKeys(context.chatA);
     try {
       const globalUnitsBeforeReserve = Number((await context.redis.get(globalKeys.units)) ?? '0');
@@ -234,7 +235,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('global expiry cleanup releases the originating chat before another admission', async () => {
-    const context = createContext('cross-chat-cleanup');
+    const context = await createContext('cross-chat-cleanup');
     const chatA = chatKeys(context.chatA);
     try {
       await expect(
@@ -259,7 +260,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 
   it('suppression-only traffic removes expired observation tombstones', async () => {
-    const context = createContext('suppress-cleanup');
+    const context = await createContext('suppress-cleanup');
     try {
       await expect(context.store.suppress(suppression(context.jobA, context.chatA))).resolves.toBe(
         'suppressed',
@@ -283,7 +284,7 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
   });
 });
 
-function createContext(label: string) {
+async function createContext(label: string) {
   const suffix = `${label}-${randomUUID()}`;
   const chatA = `chat-a-${suffix}`;
   const chatB = `chat-b-${suffix}`;
@@ -296,6 +297,18 @@ function createContext(label: string) {
     getOrThrow: () => redisIntegrationUrl,
   } as never);
   const redis = new Redis(redisIntegrationUrl);
+  // The store deliberately disables offline queuing; do not race its initial connection.
+  const clients = [redis, (store as unknown as { redis: Redis }).redis];
+  try {
+    await Promise.all(
+      clients.map(async (client) => {
+        if (client.status !== 'ready') await once(client, 'ready');
+      }),
+    );
+  } catch (error) {
+    clients.forEach((client) => client.disconnect());
+    throw error;
+  }
   const owned = [
     { jobId: jobA, chatId: chatA },
     { jobId: jobB, chatId: chatB },

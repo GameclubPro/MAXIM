@@ -37,7 +37,7 @@ import type { ChatParticipantSheet as ChatParticipantSheetComponent } from '../c
 import type { ChatSanctionsWorkspace as ChatSanctionsWorkspaceComponent } from '../components/dashboard/chat-sanctions-workspace';
 import type { ChatParticipantsRoster as ChatParticipantsRosterComponent } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
-import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
+import type { ActionConfirmSheet as ActionConfirmSheetComponent } from '../components/ui/action-confirm-sheet';
 import { PersonAvatar } from '../components/ui/person-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
@@ -76,7 +76,10 @@ import {
   saveManagedEntityStatsPreferenceForWorkspace,
 } from '../lib/managed-entity-workspace';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
-import { resolveModerationFeedReason } from '../lib/moderation-feed-reason';
+import {
+  resolveModerationFeedReason,
+  trafficModerationLabels,
+} from '../lib/moderation-feed-reason';
 import { queryKeys } from '../lib/query-keys';
 import {
   buildLogsDashboardSnapshotParts,
@@ -118,6 +121,17 @@ const ChatParticipantSheet = recoverableLazyNamedComponent<
 const ChatSanctionsWorkspace = recoverableLazyNamedComponent<
   ComponentProps<typeof ChatSanctionsWorkspaceComponent>
 >(() => import('../components/dashboard/chat-sanctions-workspace'), 'ChatSanctionsWorkspace');
+const LazyActionConfirmSheet = recoverableLazyNamedComponent<
+  ComponentProps<typeof ActionConfirmSheetComponent>
+>(() => import('../components/ui/action-confirm-sheet'), 'ActionConfirmSheet');
+
+function ActionConfirmSheet(props: ComponentProps<typeof ActionConfirmSheetComponent>) {
+  return props.open ? (
+    <Suspense fallback={null}>
+      <LazyActionConfirmSheet {...props} />
+    </Suspense>
+  ) : null;
+}
 
 type ViolationItem = LogsDashboardViolation;
 type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
@@ -401,6 +415,7 @@ function saveChatStatsPreference(
 
 function formatViolationRule(ruleCode: string): string {
   const labels: Record<string, string> = {
+    ...trafficModerationLabels,
     LINK_BLOCKED: 'Ссылки запрещены',
     PROFANITY: 'Нецензурная лексика',
     COMMERCIAL_AD: 'Коммерция',
@@ -427,7 +442,6 @@ function formatViolationRule(ruleCode: string): string {
     THEMATIC_FILTER: 'Объявления по теме',
     GLOBAL_USER_BLACKLIST_KICK: 'Запрет по базе',
     GLOBAL_CROSS_CHAT_SPAM: 'Рассылка по чатам',
-    GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Рассылка по чатам',
     GLOBAL_SPAMMER_BAN: 'База спама',
     GLOBAL_SPAMMER_KICK: 'База спама',
     MUTE_ACTIVE_DELETE: 'Действует запрет сообщений',
@@ -440,7 +454,7 @@ function formatViolationRule(ruleCode: string): string {
   }
 
   if (ruleCode.endsWith('_DELETE')) {
-    return formatViolationRule(ruleCode.replace(/_DELETE$/, ''));
+    return formatViolationRule(ruleCode.slice(0, -7));
   }
 
   return resolveModerationCodeLabel(ruleCode);

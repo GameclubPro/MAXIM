@@ -344,6 +344,13 @@ function buildChatSummary(chatId: string): ChatSummary {
 function buildSettings(chatId: string): ChatSettings {
   const now = new Date();
   return {
+    slowModeEnabled: false,
+    slowModeIntervalSeconds: 30,
+    mediaMessageCooldownEnabled: false,
+    mediaMessageCooldownSeconds: 30,
+    stickerMessagesEnabled: true,
+    trafficPolicyRevision: 0,
+    trafficPolicyEffectiveAt: new Date(0),
     id: 'settings-1',
     chatId,
     duplicateWarnEnabled: true,

@@ -1,3 +1,4 @@
+import { TRAFFIC_PROTECTION_SETTINGS_KEYS } from '../moderation/traffic-protection';
 import {
   applySectionTargetPreviewRequestSchema,
   applySectionTargetPreviewResponseSchema,
@@ -131,7 +132,10 @@ export async function applySettingsToAllChats(params: {
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
   getCurrentSourceSettings?: () => Promise<Pick<
     ChatSettings,
-    'profanitySensitivity' | 'forwardedMessagesEnabled' | 'messageLimitsImageTextScanEnabled'
+    | 'profanitySensitivity'
+    | 'forwardedMessagesEnabled'
+    | 'messageLimitsImageTextScanEnabled'
+    | (typeof TRAFFIC_PROTECTION_SETTINGS_KEYS)[number]
   > | null>;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
@@ -140,6 +144,9 @@ export async function applySettingsToAllChats(params: {
     throw new BadRequestException(parsed.error.format());
   }
   const hasOwnProfanitySensitivity = hasOwnSetting(params.body, 'profanitySensitivity');
+  const omittedTrafficKeys = TRAFFIC_PROTECTION_SETTINGS_KEYS.filter(
+    (key) => !hasOwnSetting(params.body, key),
+  );
   const hasOwnForwardedMessagesEnabled = hasOwnSetting(params.body, 'forwardedMessagesEnabled');
   const hasOwnMessageLimitsImageTextScanEnabled = hasOwnSetting(
     params.body,
@@ -148,13 +155,15 @@ export async function applySettingsToAllChats(params: {
   const currentSourceSettings =
     (!hasOwnProfanitySensitivity ||
       !hasOwnForwardedMessagesEnabled ||
-      !hasOwnMessageLimitsImageTextScanEnabled) &&
+      !hasOwnMessageLimitsImageTextScanEnabled ||
+      omittedTrafficKeys.length > 0) &&
     params.getCurrentSourceSettings
       ? await params.getCurrentSourceSettings()
       : null;
   const parsedSettings = currentSourceSettings
     ? {
         ...parsed.data,
+        ...Object.fromEntries(omittedTrafficKeys.map((key) => [key, currentSourceSettings[key]])),
         ...(!hasOwnProfanitySensitivity
           ? { profanitySensitivity: currentSourceSettings.profanitySensitivity }
           : {}),

@@ -849,6 +849,21 @@ export async function saveChatSettings(params: {
   });
   const settingsInput = {
     ...parsed.data,
+    slowModeEnabled: hasOwnSetting(params.body, 'slowModeEnabled')
+      ? parsed.data.slowModeEnabled
+      : (currentSettings?.slowModeEnabled ?? parsed.data.slowModeEnabled),
+    slowModeIntervalSeconds: hasOwnSetting(params.body, 'slowModeIntervalSeconds')
+      ? parsed.data.slowModeIntervalSeconds
+      : (currentSettings?.slowModeIntervalSeconds ?? parsed.data.slowModeIntervalSeconds),
+    mediaMessageCooldownEnabled: hasOwnSetting(params.body, 'mediaMessageCooldownEnabled')
+      ? parsed.data.mediaMessageCooldownEnabled
+      : (currentSettings?.mediaMessageCooldownEnabled ?? parsed.data.mediaMessageCooldownEnabled),
+    mediaMessageCooldownSeconds: hasOwnSetting(params.body, 'mediaMessageCooldownSeconds')
+      ? parsed.data.mediaMessageCooldownSeconds
+      : (currentSettings?.mediaMessageCooldownSeconds ?? parsed.data.mediaMessageCooldownSeconds),
+    stickerMessagesEnabled: hasOwnSetting(params.body, 'stickerMessagesEnabled')
+      ? parsed.data.stickerMessagesEnabled
+      : (currentSettings?.stickerMessagesEnabled ?? parsed.data.stickerMessagesEnabled),
     duplicatePhotoEnabled: hasOwnSetting(params.body, 'duplicatePhotoEnabled')
       ? parsed.data.duplicatePhotoEnabled
       : (currentSettings?.duplicatePhotoEnabled ?? parsed.data.duplicatePhotoEnabled),

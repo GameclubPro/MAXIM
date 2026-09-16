@@ -1,4 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
+import { TrafficProtectionDetector } from './traffic-protection.detector';
 import { detectStopWordsViolations } from './stop-words/stop-words.detection';
 import { isValidMaxBotStartPayload } from '../max/max-deep-link.util';
 import type { ChatSettings } from '../prisma/prisma-client';
@@ -1015,6 +1016,7 @@ const PROFANITY_CODE_CONTEXT_MARKERS = [
 export class RuleEngineService {
   private readonly duplicateDetector: RuleEngineDuplicateDetector;
   private readonly messageLimitsDetector: RuleEngineMessageLimitsDetector;
+  private readonly trafficProtectionDetector: TrafficProtectionDetector;
   private readonly commercialAdDetector = new CommercialAdDetector();
 
   constructor(
@@ -1028,6 +1030,7 @@ export class RuleEngineService {
       });
     });
     this.messageLimitsDetector = new RuleEngineMessageLimitsDetector(redisCounter);
+    this.trafficProtectionDetector = new TrafficProtectionDetector(redisCounter);
   }
 
   async detect(params: {
@@ -1049,6 +1052,7 @@ export class RuleEngineService {
     hasVoiceAttachment?: boolean;
     hasForwardedMessage?: boolean;
     hasMediaBatch?: boolean;
+    mediaGroupId?: string | null;
     skipAntiSpamBurstLimit?: boolean;
     skipDuplicateState?: boolean;
     skipStatefulMessageLimits?: boolean;
@@ -1273,6 +1277,48 @@ export class RuleEngineService {
       }),
     );
     markRuleEngineDetectStage(profile, 'attachments');
+
+    const trafficEligible = violations.every(
+      (violation) =>
+        violation.ruleCode === 'COMMERCIAL_AD' &&
+        violation.metadata?.actionable === false &&
+        violation.metadata?.recordable === false,
+    );
+    if (
+      trafficEligible &&
+      (settings.slowModeEnabled ||
+        settings.mediaMessageCooldownEnabled ||
+        settings.stickerMessagesEnabled === false)
+    ) {
+      try {
+        const trafficViolation = await this.trafficProtectionDetector.detect({
+          chatId,
+          userId,
+          messageId,
+          eventType: duplicateStateEventType,
+          eventTimestampMs: duplicateStateEventTimestampMs,
+          mediaGroupId: params.mediaGroupId,
+          text,
+          settings,
+          media: {
+            hasPhotoAttachment,
+            hasStickerAttachment,
+            hasVideoAttachment,
+            hasFileAttachment,
+            hasVoiceAttachment,
+            hasMediaBatch,
+          },
+        });
+        if (trafficViolation) violations.push(trafficViolation);
+      } catch {
+        void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+          stage: 'rule-engine.traffic-protection',
+          outcome: 'skip',
+          failOpen: true,
+        });
+      }
+    }
+    markRuleEngineDetectStage(profile, 'traffic-protection');
 
     const hasTransferableAttachment = Boolean(
       hasPhotoAttachment ||

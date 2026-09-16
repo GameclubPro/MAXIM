@@ -1369,6 +1369,11 @@ describe('AdminSettingsService chat rules', () => {
     const { prisma, service } = createService({
       currentSettings: createPersistedChatSettings({
         forwardedMessagesEnabled: false,
+        slowModeEnabled: true,
+        slowModeIntervalSeconds: 90,
+        mediaMessageCooldownEnabled: true,
+        mediaMessageCooldownSeconds: 120,
+        stickerMessagesEnabled: false,
       }),
     });
 
@@ -1377,6 +1382,13 @@ describe('AdminSettingsService chat rules', () => {
     });
 
     expect(result.forwardedMessagesEnabled).toBe(false);
+    expect(result).toMatchObject({
+      slowModeEnabled: true,
+      slowModeIntervalSeconds: 90,
+      mediaMessageCooldownEnabled: true,
+      mediaMessageCooldownSeconds: 120,
+      stickerMessagesEnabled: false,
+    });
     expect(findChatSettingsWritePayload(prisma)).toEqual(
       expect.objectContaining({
         forwardedMessagesEnabled: false,
@@ -2319,6 +2331,11 @@ describe('AdminSettingsService chat rules', () => {
       profanitySensitivity: 'STRICT',
       forwardedMessagesEnabled: false,
       messageLimitsImageTextScanEnabled: true,
+      slowModeEnabled: true,
+      slowModeIntervalSeconds: 90,
+      mediaMessageCooldownEnabled: true,
+      mediaMessageCooldownSeconds: 120,
+      stickerMessagesEnabled: false,
     });
     jest.spyOn(service, 'getSettings').mockResolvedValue(sourceSettings);
     const legacyBody = { ...chatSettingsSchema.parse({ antiSpamEnabled: false }) } as Record<
@@ -2328,6 +2345,14 @@ describe('AdminSettingsService chat rules', () => {
     delete legacyBody.profanitySensitivity;
     delete legacyBody.forwardedMessagesEnabled;
     delete legacyBody.messageLimitsImageTextScanEnabled;
+    for (const key of [
+      'slowModeEnabled',
+      'slowModeIntervalSeconds',
+      'mediaMessageCooldownEnabled',
+      'mediaMessageCooldownSeconds',
+      'stickerMessagesEnabled',
+    ])
+      delete legacyBody[key];
 
     await service.applySettingsToAllChats('chat-1', user as never, legacyBody);
 
@@ -2336,6 +2361,11 @@ describe('AdminSettingsService chat rules', () => {
         antiSpamEnabled: false,
         profanitySensitivity: 'STRICT',
         forwardedMessagesEnabled: false,
+        slowModeEnabled: true,
+        slowModeIntervalSeconds: 90,
+        mediaMessageCooldownEnabled: true,
+        mediaMessageCooldownSeconds: 120,
+        stickerMessagesEnabled: false,
       }),
     );
     expect(findChatSettingsWritePayload(prisma, 'chat-2')).not.toHaveProperty(

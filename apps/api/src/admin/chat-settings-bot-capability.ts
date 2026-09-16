@@ -14,6 +14,8 @@ const WRITE_ENABLE_KEYS = [
   'invitationAccessEnabled',
   'deleteBotMessagesEnabled',
   'antiSpamEnabled',
+  'slowModeEnabled',
+  'mediaMessageCooldownEnabled',
   'messageCountLimitEnabled',
   'maxMessageLengthEnabled',
   'photoMessageCooldownEnabled',
@@ -26,6 +28,7 @@ const WRITE_ENABLE_KEYS = [
 ] as const satisfies readonly (keyof ChatSettings)[];
 
 const WRITE_DISABLE_KEYS = [
+  'stickerMessagesEnabled',
   'photoMessagesEnabled',
   'videoMessagesEnabled',
   'fileMessagesEnabled',
@@ -149,6 +152,11 @@ export const CHAT_SETTINGS_BOT_CAPABILITY_SELECT = {
   invitationAccessEnabled: true,
   deleteBotMessagesEnabled: true,
   antiSpamEnabled: true,
+  slowModeEnabled: true,
+  slowModeIntervalSeconds: true,
+  mediaMessageCooldownEnabled: true,
+  mediaMessageCooldownSeconds: true,
+  stickerMessagesEnabled: true,
   messageCountLimitEnabled: true,
   maxMessageLengthEnabled: true,
   photoMessageCooldownEnabled: true,

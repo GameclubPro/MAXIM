@@ -4308,6 +4308,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     commercialSensitivitySliderValue,
   );
   const limitsRulesEnabledCount = [
+    draft?.slowModeEnabled,
+    draft?.mediaMessageCooldownEnabled,
+    draft?.stickerMessagesEnabled === false,
     draft?.antiSpamEnabled,
     draft?.deleteSpammersEnabled,
     draft?.messageCountLimitEnabled,

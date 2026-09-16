@@ -15,6 +15,19 @@ function resolveRequirements(
 }
 
 describe('resolveChatSettingsBotCapabilityRequirements', () => {
+  it('requires deletion rights, not member-management rights, for traffic controls', () => {
+    expect(
+      resolveRequirements(
+        {},
+        { slowModeEnabled: true, mediaMessageCooldownEnabled: true, stickerMessagesEnabled: false },
+      ),
+    ).toEqual([
+      {
+        permission: 'write',
+        featureKeys: ['slowModeEnabled', 'mediaMessageCooldownEnabled', 'stickerMessagesEnabled'],
+      },
+    ]);
+  });
   it('maps newly enabled enforcement and disabled allowed-content toggles to write', () => {
     expect(
       resolveRequirements(
