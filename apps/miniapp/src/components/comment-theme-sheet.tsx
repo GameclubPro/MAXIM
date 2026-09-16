@@ -1,5 +1,5 @@
 import { Check, Xmark } from 'iconoir-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { COMMENT_THEMES, type CommentTheme } from '../lib/comment-theme';
 import { useDialogFocusTrap } from '../lib/dialog-focus';
@@ -12,6 +12,7 @@ type CommentThemeSheetProps = {
   theme: CommentTheme;
   onSelect: (theme: CommentTheme) => void;
   onClose: () => void;
+  returnFocusRef: RefObject<HTMLButtonElement | null>;
 };
 
 export default function CommentThemeSheet({
@@ -19,10 +20,11 @@ export default function CommentThemeSheet({
   theme,
   onSelect,
   onClose,
+  returnFocusRef,
 }: CommentThemeSheetProps) {
   const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  useDialogFocusTrap(true, panelRef, closeRef);
+  useDialogFocusTrap(true, panelRef, closeRef, returnFocusRef);
   useNativeBackHandler(
     () => {
       onClose();

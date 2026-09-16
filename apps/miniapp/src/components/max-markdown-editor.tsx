@@ -2,16 +2,9 @@ import { Link as IconoirLink } from 'iconoir-react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
 import { useNativeBackHandler } from '../lib/native-back';
+import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from '../lib/max-markdown-tools';
+export { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from '../lib/max-markdown-tools';
 import './max-markdown-editor.css';
-
-export type MaxMarkdownTool =
-  | 'heading'
-  | 'bold'
-  | 'italic'
-  | 'underline'
-  | 'strike'
-  | 'code'
-  | 'link';
 
 type SelectionRange = {
   start: number;
@@ -42,20 +35,6 @@ type MaxMarkdownEditorProps = {
 };
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
-
-export const MAX_MARKDOWN_TOOL_DEFINITIONS: Array<{
-  id: MaxMarkdownTool;
-  label: string;
-  title: string;
-}> = [
-  { id: 'heading', label: 'H', title: 'Заголовок' },
-  { id: 'bold', label: 'B', title: 'Жирный' },
-  { id: 'italic', label: 'I', title: 'Курсив' },
-  { id: 'underline', label: 'U', title: 'Подчеркнутый' },
-  { id: 'strike', label: 'S', title: 'Зачеркнутый' },
-  { id: 'code', label: '</>', title: 'Код' },
-  { id: 'link', label: 'Link', title: 'Ссылка' },
-];
 
 export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdownEditorProps>(
   function MaxMarkdownEditor(

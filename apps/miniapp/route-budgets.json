@@ -8,7 +8,7 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 126336,
+        "jsGzipBytes": 126592,
         "cssGzipBytes": 43008
       },
       "allowances": [
@@ -43,7 +43,19 @@
       "label": "Comments dialog",
       "entries": ["src/pages/channel-dialog-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 84480, "cssGzipBytes": 22528 }
+      "limits": { "jsGzipBytes": 68608, "cssGzipBytes": 20480 }
+    },
+    {
+      "id": "comments-cold",
+      "label": "Comments cold launch",
+      "entries": [
+        "index.html",
+        "src/lib/api/me-client.ts",
+        "src/lib/api/miniapp-server-session.ts",
+        "src/lib/comment-dialog-startup.ts",
+        "src/pages/channel-dialog-page.tsx"
+      ],
+      "limits": { "jsGzipBytes": 176128, "cssGzipBytes": 41984 }
     },
     {
       "id": "suggest",

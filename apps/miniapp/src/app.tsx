@@ -644,6 +644,29 @@ function ProfiledAppRoutes({
   queryClient: ReturnType<typeof createAuthQueryClient>;
 }) {
   const [me, setMe] = useState<Me | null>();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (!/^\/(chat|channel)\/[^/]+\/dialog\/comments\/?$/u.test(location.pathname)) return;
+    let active = true;
+    let cleanup: (() => void) | undefined;
+    void import('./lib/comment-dialog-startup')
+      .then((module) => {
+        if (active) {
+          cleanup = module.prepareCommentDialogStartup(
+            queryClient,
+            apiClient,
+            location.pathname,
+            location.search,
+          );
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      cleanup?.();
+    };
+  }, [apiClient, queryClient, location.pathname, location.search]);
 
   useEffect(() => {
     let active = true;

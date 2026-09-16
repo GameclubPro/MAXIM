@@ -47,6 +47,7 @@ export function useDialogFocusTrap<T extends HTMLElement>(
   open: boolean,
   panelRef: RefObject<HTMLElement | null>,
   initialFocusRef: RefObject<T | null>,
+  returnFocusRef?: RefObject<HTMLElement | null>,
 ): void {
   useEffect(() => {
     if (!open) {
@@ -54,7 +55,8 @@ export function useDialogFocusTrap<T extends HTMLElement>(
     }
 
     const previousFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      returnFocusRef?.current ??
+      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const restoreScopeCandidate = previousFocus?.closest('[role="dialog"], [role="alertdialog"]');
     const restoreScope =
       restoreScopeCandidate instanceof HTMLElement ? restoreScopeCandidate : null;
@@ -96,5 +98,5 @@ export function useDialogFocusTrap<T extends HTMLElement>(
         (getDialogFocusableElements(restoreScope)[0] ?? restoreScope).focus();
       }
     };
-  }, [initialFocusRef, open, panelRef]);
+  }, [initialFocusRef, open, panelRef, returnFocusRef]);
 }

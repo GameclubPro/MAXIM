@@ -342,11 +342,13 @@ try {
         .getByRole('dialog', { name: 'Оформление', exact: true })
         .waitFor({ state: 'hidden' });
       await page.waitForFunction(
-        () => document.activeElement === document.querySelector('.channel-dialog-theme-toggle'),
+        () =>
+          document.activeElement ===
+          document.querySelector('[aria-label="Оформление комментариев"]'),
       );
       assert.equal(
         await page
-          .locator('.channel-dialog-theme-toggle')
+          .getByRole('button', { name: 'Оформление комментариев', exact: true })
           .evaluate((element) => element === document.activeElement),
         true,
         'closing the sheet restores focus',
@@ -458,7 +460,8 @@ try {
       });
       await page.waitForFunction(
         () =>
-          document.querySelector('.channel-dialog-theme-toggle').getBoundingClientRect().top >= 23,
+          document.querySelector('[aria-label="Оформление комментариев"]').getBoundingClientRect()
+            .top >= 23,
       );
       await assertLayout(page);
       await page.evaluate(() => {

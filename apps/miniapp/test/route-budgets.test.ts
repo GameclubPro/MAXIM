@@ -34,6 +34,21 @@ test('route budget config covers new route CSS surfaces', () => {
   }
 });
 
+test('cold comments budget includes authentication and prefetch without subtracting home assets', () => {
+  const budget = routeBudgets.budgets.find((item: { id: string }) => item.id === 'comments-cold');
+  assert.ok(budget);
+  assert.equal(budget.baseline, undefined);
+  assert.deepEqual(budget.entries, [
+    'index.html',
+    'src/lib/api/me-client.ts',
+    'src/lib/api/miniapp-server-session.ts',
+    'src/lib/comment-dialog-startup.ts',
+    'src/pages/channel-dialog-page.tsx',
+  ]);
+  assert.ok(budget.limits.jsGzipBytes <= 176128);
+  assert.ok(budget.limits.cssGzipBytes <= 41984);
+});
+
 test('manifest asset collection deduplicates transitive chunks and supports baselines', () => {
   const manifest = {
     'index.html': {

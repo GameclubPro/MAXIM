@@ -51,17 +51,9 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useParams, useSearchParams } from 'react-router';
-import {
-  MAX_MARKDOWN_TOOL_DEFINITIONS,
-  type MaxMarkdownTool,
-} from '../components/max-markdown-editor';
-import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from '../lib/max-markdown-tools';
 import { PublicDialogUnavailableState } from '../components/public-dialog-unavailable-state';
-import CommentThemeSheet from '../components/comment-theme-sheet';
-import {
-  MaxRichTextEditor,
-  type MaxRichTextEditorHandle,
-} from '../components/max-rich-text-editor';
+import type { MaxRichTextEditorHandle } from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/dialog-api-error';
@@ -127,6 +119,15 @@ import '../styles/channel-dialog-themes.css';
 const LazyChannelDialogNotificationSheet = lazy(
   () => import('../components/channel-dialog-notification-sheet'),
 );
+const CommentThemeSheet = lazy(() => import('../components/comment-theme-sheet'));
+const MaxRichTextEditor = lazy(async () => {
+  const module = await import('../components/max-rich-text-editor');
+  return { default: module.MaxRichTextEditor };
+});
+const MaxMarkdownPreview = lazy(async () => {
+  const module = await import('../components/max-markdown-preview');
+  return { default: module.MaxMarkdownPreview };
+});
 const LazyCommentModerationSheet = lazy(() => import('../components/comment-moderation-sheet'));
 
 const COMMENT_REACTION_OPTIONS = [
@@ -4032,16 +4033,18 @@ export function ChannelDialogPage({
                         />
 
                         <div className="channel-suggest-composer__field">
-                          <MaxRichTextEditor
-                            ref={richTextEditorRef}
-                            value={draft}
-                            onChange={setDraft}
-                            placeholder={viewModel.placeholder}
-                            maxLength={COMMENT_DRAFT_MAX_LENGTH}
-                            disabled={isComposePending}
-                            ariaLabel="Текст предложения"
-                            className="channel-suggest-composer__rich-editor"
-                          />
+                          <Suspense fallback={null}>
+                            <MaxRichTextEditor
+                              ref={richTextEditorRef}
+                              value={draft}
+                              onChange={setDraft}
+                              placeholder={viewModel.placeholder}
+                              maxLength={COMMENT_DRAFT_MAX_LENGTH}
+                              disabled={isComposePending}
+                              ariaLabel="Текст предложения"
+                              className="channel-suggest-composer__rich-editor"
+                            />
+                          </Suspense>
                         </div>
 
                         <span className="channel-suggest-composer__tail" aria-hidden />
@@ -4133,11 +4136,13 @@ export function ChannelDialogPage({
                             {hasSuggestionText ? (
                               <p>
                                 {message.textFormat === 'markdown' ? (
-                                  <MaxMarkdownPreview
-                                    value={message.text}
-                                    preserveLinks
-                                    fallback={suggestionText}
-                                  />
+                                  <Suspense fallback={suggestionText}>
+                                    <MaxMarkdownPreview
+                                      value={message.text}
+                                      preserveLinks
+                                      fallback={suggestionText}
+                                    />
+                                  </Suspense>
                                 ) : (
                                   suggestionText
                                 )}
@@ -5151,12 +5156,15 @@ export function ChannelDialogPage({
         : null}
 
       {dialogType === 'comments' && isThemeSettingsOpen ? (
-        <CommentThemeSheet
-          portalTarget={screenRef.current ?? document.body}
-          theme={commentTheme}
-          onSelect={selectCommentTheme}
-          onClose={() => setIsThemeSettingsOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <CommentThemeSheet
+            returnFocusRef={themeToggleRef}
+            portalTarget={screenRef.current ?? document.body}
+            theme={commentTheme}
+            onSelect={selectCommentTheme}
+            onClose={() => setIsThemeSettingsOpen(false)}
+          />
+        </Suspense>
       ) : null}
 
       {canManageCommentNotifications && dialogType === 'comments' && isNotificationSettingsOpen ? (
