@@ -4034,6 +4034,8 @@ export class ModerationDeleteIntentService {
       const independentProfanityReason =
         normalized.ruleCode !== PROFANITY_DELETE_RULE_CODE &&
         intent.lastErrorCode?.startsWith('profanity_') === true;
+      const freshStopWordsReason =
+        intent.lastErrorCode === 'stop_words_delete_no_longer_authorized';
       if (
         reasonChanged === 1 &&
         effectiveIntent === intent &&
@@ -4041,13 +4043,15 @@ export class ModerationDeleteIntentService {
         normalized.entityType !== null &&
         intent.status === 'FAILED_TERMINAL' &&
         (independentProfanityReason ||
+          freshStopWordsReason ||
           (normalized.ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE &&
             normalized.ruleCode !== NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE &&
             (intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
               intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE ||
               intent.lastErrorCode === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE)))
       ) {
-        // FLAG: A later independent reason must not inherit a terminal cleanup or profanity rejection.
+        // FLAG: Fresh reasons must not inherit a terminal cleanup, profanity or stop-list rejection.
+        // A changed stop-list reason still has to pass the current-source guard before dispatch.
         const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
           UPDATE "moderation_delete_intents"
           SET
@@ -4086,6 +4090,7 @@ export class ModerationDeleteIntentService {
                 ${NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE}
               )
               OR (${independentProfanityReason} AND "last_error_code" LIKE 'profanity_%')
+              OR (${freshStopWordsReason} AND "last_error_code" = 'stop_words_delete_no_longer_authorized')
             )
             AND "remote_delete_succeeded_at" IS NULL
             AND "remote_delete_succeeded_bot_id" IS NULL

@@ -2,6 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
+import {
+  assertStopWordsEditorFlow,
+  assertStopWordsSaveFailure,
+  assertStopWordsLargeList,
+} from './miniapp-stop-words-flow.mjs';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
 import {
   ensureMiniappDevServer,
@@ -2218,10 +2223,20 @@ const scenarioBehaviors = [
   {
     name: 'chat-settings-stop-words',
     beforeShot: async (page) => {
-      await page.locator('.settings-word-banlist__preset-grid').waitFor({ state: 'visible' });
-      await page.getByRole('checkbox', { name: 'Проверять изображения' }).scrollIntoViewIfNeeded();
+      await page.locator('.stop-words-editor__list').waitFor({ state: 'visible' });
+      await page.getByRole('checkbox', { name: 'Стоп-слова включены' }).scrollIntoViewIfNeeded();
       await page.waitForTimeout(350);
     },
+  },
+  { name: 'chat-settings-stop-words-flow', beforeShot: assertStopWordsEditorFlow },
+  { name: 'chat-settings-stop-words-large', beforeShot: assertStopWordsLargeList },
+  {
+    name: 'chat-settings-stop-words-retry',
+    beforeShot: (page) => assertStopWordsSaveFailure(page, 'network'),
+  },
+  {
+    name: 'chat-settings-stop-words-conflict',
+    beforeShot: (page) => assertStopWordsSaveFailure(page, 'conflict'),
   },
   {
     name: 'chat-settings-links',

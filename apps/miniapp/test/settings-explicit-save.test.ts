@@ -196,19 +196,10 @@ test('night schedule validation is shown next to the time controls', () => {
 });
 
 test('stop-word image scanning is an explicit persisted switch', () => {
-  assert.match(settingsStopWordsEditorSource, />Проверять изображения<\/span>/u);
-  assert.match(
-    settingsStopWordsEditorSource,
-    /checked=\{draft\.messageLimitsImageTextScanEnabled\}/u,
-  );
-  assert.match(
-    settingsStopWordsEditorSource,
-    /setFieldValue\('messageLimitsImageTextScanEnabled', event\.target\.checked\)/u,
-  );
-  assert.match(
-    settingsPageSource,
-    /const stopWordsCardStatus =[\s\S]*?draft\?\.messageLimitsImageTextScanEnabled[\s\S]*?'Вкл'/u,
-  );
+  assert.match(settingsStopWordsEditorSource, /label="Проверять изображения"/u);
+  assert.match(settingsStopWordsEditorSource, /checked=\{policy\.imageScanEnabled\}/u);
+  assert.match(settingsStopWordsEditorSource, /update\(\{ \.\.\.policy, imageScanEnabled \}\)/u);
+  assert.match(settingsPageSource, /updateStopWords\(/u);
 });
 
 test('speech style opens on the selected radio and supports arrow navigation', () => {

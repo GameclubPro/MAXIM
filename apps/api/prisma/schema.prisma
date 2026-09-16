@@ -1125,7 +1125,7 @@ model ChatSettings {
   phoneNumbersAdminContactButtonEnabled         Boolean                   @default(false) @map("phone_numbers_admin_contact_button_enabled")
   phoneNumbersAdminContactButtonUrl             String                    @default("") @map("phone_numbers_admin_contact_button_url")
   messageLimitsBlockedWords                     String[]                  @default([]) @map("message_limits_blocked_words")
-  stopWordsPolicy                              Json?                     @map("stop_words_policy")
+  stopWordsPolicy                              Json?                     @default("{}") @map("stop_words_policy")
   stopWordsMedia                               Json?                     @map("stop_words_media")
   stopWordsRevision                            Int                       @default(0) @map("stop_words_revision")
   messageLimitsBlockedDomains                   String[]                  @default([]) @map("message_limits_blocked_domains")

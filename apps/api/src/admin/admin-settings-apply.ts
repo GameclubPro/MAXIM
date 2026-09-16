@@ -40,6 +40,7 @@ import {
   assertLegacyStopWordsWrite,
   LEGACY_STOP_WORD_SETTING_KEYS,
   omitStopWordsPolicy,
+  omitLegacyStopWordsSettings,
 } from './stop-words-settings-ownership';
 import { stopWordsPolicyStorage } from '../moderation/stop-words/stop-words.policy';
 
@@ -226,11 +227,19 @@ export async function applySettingsToAllChats(params: {
       : normalizedSettings;
   // FLAG: Major bulk UPDATE payloads omit Publisher-owned comment fields entirely.
   const copiedStopWordsPolicy = settingsUpdatePayload.stopWordsPolicy;
-  const majorSettingsUpdatePayload = omitStopWordsPolicy(
+  const legacySettingsUpdatePayload = omitStopWordsPolicy(
     omitPublisherOwnedChatSettings(settingsUpdatePayload),
   );
+  const majorSettingsUpdatePayload = omitLegacyStopWordsSettings(legacySettingsUpdatePayload);
+  const requestedLegacySettings = Object.fromEntries(
+    LEGACY_STOP_WORD_SETTING_KEYS.filter(
+      (key) => Object.hasOwn(legacySettingsUpdatePayload, key) && hasOwnSetting(params.body, key),
+    ).map((key) => [key, (params.body as Record<string, unknown>)[key]]),
+  );
   const majorSettingsCreatePayload = {
-    ...omitStopWordsPolicy(omitPublisherOwnedChatSettings(settingsCreatePayload)),
+    ...omitLegacyStopWordsSettings(
+      omitStopWordsPolicy(omitPublisherOwnedChatSettings(settingsCreatePayload)),
+    ),
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
   };
 
@@ -348,12 +357,7 @@ export async function applySettingsToAllChats(params: {
       }
       try {
         const botAssignmentData = await params.resolveBotAssignmentData(chatId);
-        if (
-          !copiedStopWordsPolicy &&
-          LEGACY_STOP_WORD_SETTING_KEYS.some((key) =>
-            Object.hasOwn(majorSettingsUpdatePayload, key),
-          )
-        ) {
+        if (!copiedStopWordsPolicy && Object.keys(requestedLegacySettings).length > 0) {
           const stopWordsCurrent = await params.prisma.chatSettings.findUnique({
             where: { chatId },
             select: {
@@ -363,8 +367,7 @@ export async function applySettingsToAllChats(params: {
               messageLimitsImageTextScanEnabled: true,
             },
           });
-          if (stopWordsCurrent)
-            assertLegacyStopWordsWrite(stopWordsCurrent, majorSettingsUpdatePayload);
+          assertLegacyStopWordsWrite(stopWordsCurrent ?? {}, requestedLegacySettings);
         }
         const currentTargetSettings =
           shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0

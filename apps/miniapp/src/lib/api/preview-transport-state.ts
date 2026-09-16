@@ -29,6 +29,7 @@ import {
   type VkParsingFeed,
 } from '@maxim/contracts';
 import type { KaravanStorefrontAllowlistEntry } from '@maxim/contracts/karavan-storefront';
+import { stopWordsPolicySchema } from '@maxim/contracts/settings';
 import {
   managedPollDetailsSchema,
   type ManagedPollDetails,
@@ -80,6 +81,7 @@ import {
 import { createPreviewVkParsingFeed } from './preview-transport-vk';
 
 export type PreviewState = {
+  stopWordsWriteError: 'network' | 'conflict' | null;
   advertisingPilot: boolean;
   clock: PreviewClock;
   me: Me;
@@ -193,6 +195,26 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     nightModeOpenMessageText: 'Ночью чат закрыт. Напишите утром.',
     messageLimitsBlockedWords: ['казино', 'ставки', 'скидка'],
     messageLimitsBlockedDomains: ['casino.example', 'promo.example'],
+    stopWordsRevision: 1,
+    stopWordsPolicy: stopWordsPolicySchema.parse({
+      enabled: true,
+      rules: ['казино', 'ставки', 'скидка'].map((value, index) => ({
+        id: 'preview-' + index,
+        kind: 'WORD',
+        value,
+      })),
+      domains: ['casino.example', 'promo.example'],
+      ...(searchParams.get('stopWordsSize') === 'max'
+        ? {
+            rules: Array.from({ length: 999 }, (_, index) => ({
+              id: 'max-' + index,
+              kind: 'WORD',
+              value: index === 0 ? 'Д'.repeat(160) : 'маркер' + index,
+            })),
+            domains: Array.from({ length: 300 }, (_, index) => 'site' + index + '.example'),
+          }
+        : {}),
+    }),
     requiredSubscriptionEnabled: true,
     requiredSubscriptionChannelIds: [PREVIEW_CHANNEL_ID, 'preview-channel-2'],
     requiredSubscriptionBotMessageEnabled: true,
@@ -808,6 +830,12 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   };
 
   const state: PreviewState = {
+    stopWordsWriteError:
+      searchParams.get('stopWordsWriteError') === 'network'
+        ? 'network'
+        : searchParams.get('stopWordsWriteError') === 'conflict'
+          ? 'conflict'
+          : null,
     advertisingPilot: !publisherProfile && searchParams.get('advertisingPilot') === '1',
     clock,
     me: {

@@ -6816,7 +6816,11 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
-  it('reopens a stale night cleanup when a later independent reason commits', async () => {
+  it.each([
+    ['night_mode_close_notice_cleanup_stale', 'INDEPENDENT_DELETE'],
+    ['stop_words_delete_no_longer_authorized', 'INDEPENDENT_DELETE'],
+    ['stop_words_delete_no_longer_authorized', 'MESSAGE_BLOCKED_WORD_DELETE'],
+  ])('reopens %s when a fresh %s reason commits', async (priorError, ruleCode) => {
     const independentDeadline = new Date(Date.now() + 120_000);
     const terminalNightCleanup = {
       ...baseIntent,
@@ -6827,7 +6831,7 @@ describe('ModerationDeleteIntentService', () => {
       nightModeCloseNoticeCleanupOnly: true,
       status: 'FAILED_TERMINAL' as const,
       completedAt: new Date(),
-      lastErrorCode: 'night_mode_close_notice_cleanup_stale',
+      lastErrorCode: priorError,
       lastError: 'Night mode cleanup generation changed',
       leaseToken: null,
       leaseExpiresAt: null,
@@ -6861,7 +6865,7 @@ describe('ModerationDeleteIntentService', () => {
         chatId: 'chat-1',
         messageId: 'message-1',
         reasonKey: 'independent-delete-after-night-cleanup-stale',
-        ruleCode: 'INDEPENDENT_DELETE',
+        ruleCode,
         subjectUserId: 'user-1',
         entityType: 'CHAT',
         messageAuthorKind: 'user',

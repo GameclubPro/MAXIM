@@ -53,7 +53,7 @@ export const stopWordsRuleSchema = z
       normalizedValue.length > STOP_WORDS_VALUE_MAX ||
       tokens.length > STOP_WORDS_TOKENS_MAX ||
       !tokens.every((token) =>
-        /^[\p{L}\p{N}][\p{L}\p{N}\p{M}]*(?:[-'][\p{L}\p{N}][\p{L}\p{N}\p{M}]*)*$/u.test(token),
+        /^[\p{L}\p{N}][\p{L}\p{N}\p{M}]*(?:[-'’][\p{L}\p{N}][\p{L}\p{N}\p{M}]*)*$/u.test(token),
       )
     ) {
       ctx.addIssue({

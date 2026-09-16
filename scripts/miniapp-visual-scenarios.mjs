@@ -758,6 +758,19 @@ const baseScenarios = [
     'chat-settings-extra',
     'chat-settings-speech-style',
     ['chat-settings-stop-words', { searchParams: { focus: 'stopWords' } }],
+    ['chat-settings-stop-words-flow', { searchParams: { focus: 'stopWords' } }],
+    [
+      'chat-settings-stop-words-large',
+      { searchParams: { focus: 'stopWords', stopWordsSize: 'max' } },
+    ],
+    [
+      'chat-settings-stop-words-retry',
+      { searchParams: { focus: 'stopWords', stopWordsWriteError: 'network' } },
+    ],
+    [
+      'chat-settings-stop-words-conflict',
+      { searchParams: { focus: 'stopWords', stopWordsWriteError: 'conflict' } },
+    ],
     ['chat-settings-links', { searchParams: { focus: 'links' } }],
     ['chat-settings-bot-message-editor', { searchParams: { focus: 'links' } }],
     ['chat-settings-links-timer', { searchParams: { focus: 'links' } }],

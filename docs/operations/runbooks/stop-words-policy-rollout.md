@@ -24,6 +24,8 @@ Migration preserves configured sanctions, mute duration, messages, buttons and n
 
 ## Editor Release
 
+Apply `20260916140000_default_new_chat_stop_words_policy` with the editor release. It gives future settings rows an independent disabled policy at creation, without rewriting legacy null rows. This prevents later edits to general limits from becoming implicit stop-word defaults in a new chat.
+
 Deploy `miniapp-major-static` after compatible APIs. Use only `https://major-maksimov.ru/app/`. The editor saves through `PUT /chats/:chatId/stop-words` with `expectedRevision`; ordinary settings updates cannot write the policy. Section copy transfers policy content, increments each target's own revision, and leaves the allowlist in its existing ownership boundary.
 
 `GET /stop-words/status` exposes revision and effective OCR availability without returning policy/media. `POST /stop-words/preview` uses the production matcher, requires chat-admin access and does not persist test text or create actions.

@@ -320,13 +320,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'messageLimitsAdminContactButtonUrl',
     'phoneNumbersEnabled',
   ],
-  stopWords: [
-    'messageLimitsBlockedWords',
-    'messageLimitsBlockedDomains',
-    'messageLimitsImageTextScanEnabled',
-    'messageLimitsBotMessageText',
-    'messageLimitsWarnMessageText',
-  ],
+  stopWords: ['stopWordsPolicy', 'stopWordsRevision'],
   phones: [
     'phoneNumbersEnabled',
     'phoneNumbersBotMessageEnabled',

@@ -23,7 +23,7 @@ import {
 import { BadRequestException, ConflictException, type Logger } from '@nestjs/common';
 import {
   assertLegacyStopWordsWrite,
-  hasLegacyStopWordsChanges,
+  omitLegacyStopWordsSettings,
   omitStopWordsPolicy,
 } from './stop-words-settings-ownership';
 import {
@@ -917,7 +917,7 @@ export async function saveChatSettings(params: {
       : (currentSettings?.messageLimitsImageTextScanEnabled ??
         parsed.data.messageLimitsImageTextScanEnabled),
   };
-  if (currentSettings) assertLegacyStopWordsWrite(currentSettings, params.body);
+  assertLegacyStopWordsWrite(currentSettings ?? {}, params.body);
   let normalizedSettings = normalizeChatSettings(
     settingsInput,
     {
@@ -949,8 +949,8 @@ export async function saveChatSettings(params: {
   const botAssignmentData = await params.resolveBotAssignmentData();
   // FLAG: Major never includes Publisher-owned comment fields in UPDATE, so concurrent Publisher
   // writes cannot be overwritten by a stale read-modify-write cycle.
-  const majorOwnedSettings = omitStopWordsPolicy(
-    omitPublisherOwnedChatSettings(normalizedSettings),
+  const majorOwnedSettings = omitLegacyStopWordsSettings(
+    omitStopWordsPolicy(omitPublisherOwnedChatSettings(normalizedSettings)),
   );
   const createSettings = {
     ...majorOwnedSettings,
@@ -973,13 +973,7 @@ export async function saveChatSettings(params: {
       if (currentSettings) {
         const changed = await tx.chatSettings.updateMany({
           where: { chatId: params.chatId, updatedAt: currentSettings.updatedAt },
-          data: {
-            ...majorOwnedSettings,
-            ...(currentSettings.stopWordsPolicy == null &&
-            hasLegacyStopWordsChanges(currentSettings, majorOwnedSettings)
-              ? { stopWordsRevision: { increment: 1 } }
-              : {}),
-          },
+          data: majorOwnedSettings,
         });
         if (changed.count !== 1) {
           throw chatSettingsRevisionConflict();

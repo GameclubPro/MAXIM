@@ -60,60 +60,35 @@ test('stop-word catalog mounts the recoverable editor only when its panel is ope
   assert.match(stopWordsSectionSource, /<SettingsDrilldownPanel/u);
   assert.match(
     stopWordsSectionSource,
-    /recoverableLazyNamedComponent<SettingsStopWordsSectionProps>/u,
+    /recoverableLazyNamedComponent<SettingsStopWordsEditorProps>/u,
   );
   assert.match(stopWordsSectionSource, /\(\) => import\('\.\/settings-stop-words-editor'\)/u);
   assert.match(
     stopWordsSectionSource,
-    /\{expanded \? \(\s*<Suspense fallback=\{<Spinner[^>]+\/>\}>\s*<LazySettingsStopWordsEditor \{\.\.\.props\} \/>/u,
+    /\{expanded \? \(\s*<Suspense fallback=\{<Spinner[^>]+\/>\}>\s*<LazySettingsStopWordsEditor \{\.\.\.props\} mode=\{mode\} onModeChange=\{setMode\} \/>/u,
   );
   assert.doesNotMatch(
     stopWordsSectionSource,
     /<input|LazyMessageLimitsBlockedWordPresets|useHintPopoverAutoPosition/u,
   );
-  assert.match(stopWordsSource, /import type \{ SettingsStopWordsSectionProps \}/u);
-  assert.doesNotMatch(stopWordsSource, /SettingsDrilldownPanel|GlassCard/u);
-  assert.match(
-    stopWordsSource,
-    /import type \{[^}]*HintKey[^}]*\} from '\.\/settings-page-helpers'/u,
-  );
-  assert.match(
-    stopWordsSource,
-    /import \{ EditToggleButton \} from '\.\/settings-edit-toggle-button'/u,
-  );
-  assert.match(
-    stopWordsSource,
-    /\(\) => import\('\.\.\/\.\.\/components\/bot-speech-message-editor'\)/u,
-  );
-  assert.match(
-    stopWordsSource,
-    /\(\) => import\('\.\.\/\.\.\/components\/message-limits-blocked-word-presets'\)/u,
-  );
+  assert.match(stopWordsSource, /import type \{ SettingsStopWordsEditorProps \}/u);
+  assert.doesNotMatch(stopWordsSource, /GlassCard/u);
+  assert.match(stopWordsSource, /import.*prepareStopWordsInput/u);
+  assert.match(stopWordsSource, /previewStopWords/u);
 });
 
-test('stop-list keyboard submission respects the same disabled and composition states as buttons', () => {
-  assert.equal(stopWordsSource.match(/!event\.nativeEvent\.isComposing/gu)?.length, 2);
-  assert.match(
-    stopWordsSource,
-    /if \(!isMessageLimitsBlockedWordsApplyDisabled\) \{\s*addMessageLimitsBlockedWords\(\)/u,
-  );
-  assert.match(
-    stopWordsSource,
-    /if \(!isMessageLimitsBlockedDomainsApplyDisabled\) \{\s*addMessageLimitsBlockedDomains\(\)/u,
-  );
-  assert.match(stopWordsSource, /inputMode="url"/u);
-  assert.match(stopWordsSource, /aria-invalid=\{Boolean\(messageLimitsBlockedWordsError\)\}/u);
-  assert.match(stopWordsSource, /aria-invalid=\{Boolean\(messageLimitsBlockedDomainsError\)\}/u);
+test('stop-list keyboard submission preserves composition and multiline entry', () => {
+  assert.match(stopWordsSource, /!event\.nativeEvent\.isComposing/u);
+  assert.match(stopWordsSource, /!event\.shiftKey/u);
+  assert.match(stopWordsSource, /prepared\.errors\.length/u);
+  assert.match(stopWordsSource, /aria-describedby="stop-words-input-result"/u);
 });
 
-test('stop-list explanations are on demand and describe shared actions and allowed exceptions', () => {
-  assert.match(stopWordsSource, /hintKey="stopWordsImageText"/u);
-  assert.match(stopWordsSource, /hintKey="stopWordsText"/u);
-  assert.match(stopWordsSource, /hintKey="stopWordsDomains"/u);
-  const normalizedSource = stopWordsSource.replace(/\s+/gu, ' ');
-  assert.match(normalizedSource, /действия берутся из раздела «Ограничения»/u);
-  assert.match(normalizedSource, /Разрешённые исключения из раздела «Ссылки»/u);
-  assert.doesNotMatch(normalizedSource, /мут и бан/u);
+test('stop-list controls own their sanctions and expose image runtime status', () => {
+  assert.match(stopWordsSource, /const sanctions = policy\.sanctions/u);
+  assert.match(stopWordsSource, /imageScanStatus/u);
+  assert.match(stopWordsSource, /'shadow'/u);
+  assert.doesNotMatch(stopWordsSource, /действия берутся из раздела «Ограничения»/u);
 });
 
 test('command fields preserve case and expose limits, errors, and individual explanations', () => {

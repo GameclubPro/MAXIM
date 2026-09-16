@@ -1,12 +1,11 @@
-import { Suspense, type Dispatch, type SetStateAction } from 'react';
+import { Suspense, useState, type Dispatch, type SetStateAction } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
-import type { SegmentedOption } from '../../components/ui/segmented-control';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
 import { Spinner } from '../../components/ui/spinner';
 import { cn } from '../../lib/cn';
+import type { ApiTransport } from '../../lib/api/transport';
 import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
-import type { StopWordsMode } from '../settings-page.constants';
 import type {
   SettingsSectionEditorProps,
   SettingsSectionMutationProps,
@@ -14,60 +13,51 @@ import type {
 } from './settings-section-shared';
 
 export type SettingsStopWordsSectionProps = SettingsSectionShellProps &
-  SettingsSectionEditorProps &
+  Pick<SettingsSectionEditorProps, 'botSpeechPreviewContext'> &
   Pick<SettingsSectionMutationProps, 'draft' | 'setFieldValue' | 'clearFieldError'> & {
-    addMessageLimitsBlockedDomains: () => void;
-    addMessageLimitsBlockedWords: () => void;
-    applyMessageLimitsBlockedWords: (nextWords: string[]) => void;
-    hasMessageLimitsBlockedDomainsOverflow: boolean;
-    hasMessageLimitsBlockedDomainsRemoveInputActions: boolean;
-    hasMessageLimitsBlockedWordsOverflow: boolean;
-    hasMessageLimitsBlockedWordsRemoveInputActions: boolean;
-    isMessageLimitsBlockedDomainsApplyDisabled: boolean;
-    isMessageLimitsBlockedWordsApplyDisabled: boolean;
-    messageLimitsBlockedDomains: string[];
-    messageLimitsBlockedDomainsCaption: string;
-    messageLimitsBlockedDomainsError?: string;
-    messageLimitsBlockedDomainsExpanded: boolean;
-    messageLimitsBlockedDomainsInput: string;
-    messageLimitsBlockedWords: string[];
-    messageLimitsBlockedWordsCaption: string;
-    messageLimitsBlockedWordsError?: string;
-    messageLimitsBlockedWordsExpanded: boolean;
+    api: ApiTransport;
+    chatId: string;
+    busy: boolean;
+    reloadPolicy: () => Promise<void>;
     messageLimitsBlockedWordsInput: string;
-    messageLimitsBlockedWordsRemaining: number;
-    removeMessageLimitsBlockedDomain: (domain: string) => void;
-    removeMessageLimitsBlockedWord: (word: string) => void;
-    setMessageLimitsBlockedDomainsExpanded: Dispatch<SetStateAction<boolean>>;
-    setMessageLimitsBlockedDomainsInput: Dispatch<SetStateAction<string>>;
-    setMessageLimitsBlockedWordsExpanded: Dispatch<SetStateAction<boolean>>;
-    setMessageLimitsBlockedWordsInput: Dispatch<SetStateAction<string>>;
-    setStopWordsMode: Dispatch<SetStateAction<StopWordsMode>>;
-    stopWordsCardStatus: string;
+    messageLimitsBlockedDomainsInput: string;
+    messageLimitsBlockedWordsError?: string;
+    messageLimitsBlockedDomainsError?: string;
     stopWordsError?: string;
-    stopWordsHeaderSummary: string;
-    stopWordsMode: StopWordsMode;
-    stopWordsSegmentOptions: Array<SegmentedOption<StopWordsMode>>;
-    visibleMessageLimitsBlockedDomains: string[];
-    visibleMessageLimitsBlockedWords: string[];
+    setMessageLimitsBlockedWordsInput: Dispatch<SetStateAction<string>>;
+    setMessageLimitsBlockedDomainsInput: Dispatch<SetStateAction<string>>;
   };
 
-const LazySettingsStopWordsEditor = recoverableLazyNamedComponent<SettingsStopWordsSectionProps>(
+export type SettingsStopWordsEditorProps = SettingsStopWordsSectionProps & {
+  mode: 'words' | 'domains';
+  onModeChange: (mode: 'words' | 'domains') => void;
+};
+
+const LazySettingsStopWordsEditor = recoverableLazyNamedComponent<SettingsStopWordsEditorProps>(
   () => import('./settings-stop-words-editor'),
   'SettingsStopWordsEditor',
 );
 
 export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
+  const [mode, setMode] = useState<'words' | 'domains'>('words');
   const {
     discardSectionChanges,
     expanded,
     isSectionDirty,
     renderApplyTargetHeaderAction,
     renderSectionSaveFooter,
-    stopWordsCardStatus,
-    stopWordsHeaderSummary,
     toggleSection,
   } = props;
+  const policy = props.draft.stopWordsPolicy;
+  const count = policy
+    ? policy.rules.filter((rule) => rule.enabled).length + policy.domains.length
+    : 0;
+  const stopWordsCardStatus = !policy ? 'Проверить' : policy.enabled ? String(count) : 'Выкл';
+  const stopWordsHeaderSummary = !policy
+    ? 'Требуется проверка списка'
+    : policy.enabled
+      ? `Активно: ${count}`
+      : 'Выключено';
 
   return (
     <GlassCard
@@ -107,7 +97,7 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
         >
           {expanded ? (
             <Suspense fallback={<Spinner label="Загружаем стоп-слова" />}>
-              <LazySettingsStopWordsEditor {...props} />
+              <LazySettingsStopWordsEditor {...props} mode={mode} onModeChange={setMode} />
             </Suspense>
           ) : null}
         </div>

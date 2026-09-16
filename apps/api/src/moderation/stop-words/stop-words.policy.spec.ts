@@ -7,6 +7,16 @@ import {
 } from './stop-words.policy';
 
 describe('stop-word policy migration', () => {
+  it('keeps newly created chats independent of later limit settings', () => {
+    const policy = migrateStopWordsPolicy({
+      stopWordsPolicy: {},
+      messageLimitsWarnEnabled: true,
+      messageLimitsMuteEnabled: true,
+    });
+    expect(policy.enabled).toBe(false);
+    expect(policy.sanctions.warnEnabled).toBe(false);
+    expect(policy.sanctions.muteEnabled).toBe(false);
+  });
   it('does not treat object prototype names as preset phrases', () => {
     expect(
       migrateStopWordsPolicy({ messageLimitsBlockedWords: ['constructor'] }).rules[0]?.value,

@@ -22,12 +22,16 @@ export function assertLegacyStopWordsWrite(
   >,
   requested: unknown,
 ): void {
-  if (current.stopWordsPolicy == null || !requested || typeof requested !== 'object') return;
+  if (!requested || typeof requested !== 'object') return;
   const body = requested as Record<string, unknown>;
   if (
     LEGACY_STOP_WORD_SETTING_KEYS.some(
       (key) =>
-        Object.hasOwn(body, key) && JSON.stringify(body[key]) !== JSON.stringify(current[key]),
+        Object.hasOwn(body, key) &&
+        JSON.stringify(body[key]) !==
+          JSON.stringify(
+            current[key] ?? (key === 'messageLimitsImageTextScanEnabled' ? false : []),
+          ),
     )
   ) {
     throw new ConflictException({
@@ -37,11 +41,10 @@ export function assertLegacyStopWordsWrite(
   }
 }
 
-export function hasLegacyStopWordsChanges(
-  current: Partial<Pick<ChatSettings, (typeof LEGACY_STOP_WORD_SETTING_KEYS)[number]>>,
-  next: Partial<ChatSettings>,
-): boolean {
-  return LEGACY_STOP_WORD_SETTING_KEYS.some(
-    (key) => Object.hasOwn(next, key) && JSON.stringify(next[key]) !== JSON.stringify(current[key]),
-  );
+export function omitLegacyStopWordsSettings<T extends Partial<ChatSettings>>(
+  settings: T,
+): Omit<T, (typeof LEGACY_STOP_WORD_SETTING_KEYS)[number]> {
+  const result = { ...settings };
+  for (const key of LEGACY_STOP_WORD_SETTING_KEYS) delete result[key];
+  return result;
 }

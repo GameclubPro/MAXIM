@@ -1,12 +1,12 @@
 import { InfoCircle } from 'iconoir-react';
+import { getStopWords, updateStopWords } from '../lib/api/stop-words-client';
+import { prepareStopWordsInput } from '../lib/stop-words-editor';
 import {
   RequiredSubscriptionExternalSource,
   RequiredSubscriptionHelp,
   RequiredSubscriptionSourceDisclosure,
 } from './settings/settings-required-subscription-ui';
 import {
-  MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
-  MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
   MAX_CHAT_RULES_TEXT_LENGTH,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   type ApplySettingsTarget,
@@ -51,7 +51,6 @@ import '../styles/settings-interaction-polish.css';
 import '../styles/managed-giveaway.css';
 import '../styles/broadcast-studio.css';
 import './settings-page.css';
-import './settings/settings-word-banlist.css';
 import './settings/settings-duplicate-stage.css';
 import './settings/settings-duplicate-photo.css';
 import '../styles/broadcast-autopost-polish.css';
@@ -87,7 +86,7 @@ import {
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { DateField } from '../components/ui/date-field';
 import { GlassCard } from '../components/ui/glass-card';
-import { SegmentedControl, type SegmentedOption } from '../components/ui/segmented-control';
+import { SegmentedControl } from '../components/ui/segmented-control';
 import { ResetIcon } from '../components/ui/reset-icon';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
@@ -186,13 +185,6 @@ import {
   buildBroadcastAudiencePreviewBundle,
   toManagedBroadcastTargetPreview,
 } from '../lib/broadcast-audience-presentation';
-import {
-  applyMessageLimitsBlockedDomainsInput,
-  applyMessageLimitsBlockedWordsInput,
-  findMessageLimitsBlockedDomainCoveringRule,
-  splitMessageLimitsBlockedDomainsInput,
-  splitMessageLimitsBlockedWordsInput,
-} from '../lib/message-limits-blocked-words';
 import { maxNotify, openMaxBotLink } from '../lib/max-bridge';
 import type { BotPermissionBlocker } from '../lib/bot-permission-error';
 import { shouldRetryTransientApiError } from '../lib/api-retry';
@@ -245,7 +237,6 @@ import {
   PROFANITY_SENSITIVITY_OPTIONS,
   type DuplicateDetectionPreset,
   type NumericChatSettingKey,
-  type StopWordsMode,
 } from './settings-page.constants';
 import {
   buildRulesTextFromSettingsScreen,
@@ -297,7 +288,6 @@ import {
   LINK_ADMIN_CONTACT_BUTTON_GROUP,
   PROFANITY_ADMIN_CONTACT_BUTTON_GROUP,
   REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
-  MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT,
   DEFAULT_RULES_POST_BUTTON_TEXT,
   ADMIN_CONTACT_BUTTON_TEXT,
   BROADCAST_HOUR_MS,
@@ -430,12 +420,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [domainInput, setDomainInput] = useState('');
   const [domainInputKind, setDomainInputKind] = useState<NavigationAllowlistKind>('WEB_DOMAIN');
   const [domainInputError, setDomainInputError] = useState('');
-  const [stopWordsMode, setStopWordsMode] = useState<StopWordsMode>('words');
   const [messageLimitsBlockedWordsInput, setMessageLimitsBlockedWordsInput] = useState('');
   const [messageLimitsBlockedDomainsInput, setMessageLimitsBlockedDomainsInput] = useState('');
-  const [messageLimitsBlockedWordsExpanded, setMessageLimitsBlockedWordsExpanded] = useState(false);
-  const [messageLimitsBlockedDomainsExpanded, setMessageLimitsBlockedDomainsExpanded] =
-    useState(false);
   const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
@@ -1355,17 +1341,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const rulesPublishedUrl = rulesPublication?.publishedUrl ?? null;
   const hasPublishedRules = Boolean(rulesPublishedMessageId || rulesPublishedUrl);
   const saveSectionMutation = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
+      section,
       payload,
       recheckBotCapabilities,
     }: {
       section: ApplySectionKey;
       payload: ChatSettings;
       recheckBotCapabilities?: boolean;
-    }) => updateSettings(api, chatId ?? '', payload, { recheckBotCapabilities }),
+    }) => {
+      if (section === 'stopWords' && payload.stopWordsPolicy) {
+        const saved = await updateStopWords(
+          api,
+          chatId ?? '',
+          payload.stopWordsPolicy,
+          payload.stopWordsRevision ?? 0,
+        );
+        return { ...payload, stopWordsPolicy: saved.policy, stopWordsRevision: saved.revision };
+      }
+      return updateSettings(api, chatId ?? '', payload, { recheckBotCapabilities });
+    },
     onSuccess: (saved, variables) => {
       pendingPermissionRetryRef.current = null;
       syncSavedSectionSettings(variables.section, saved);
+      if (variables.section === 'stopWords') {
+        setMessageLimitsBlockedWordsInput('');
+        setMessageLimitsBlockedDomainsInput('');
+      }
       pushToast({
         tone: 'success',
         title: `Блок «${SECTION_LABELS[variables.section]}» сохранен`,
@@ -1639,18 +1641,46 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
 
       applyTargetSavedSourceRef.current = null;
-      const savedSourceSettings = await updateSettings(api, chatId, sourceSettings);
+      const savedStopWords =
+        section === 'stopWords' && sourceSettings.stopWordsPolicy
+          ? await updateStopWords(
+              api,
+              chatId,
+              sourceSettings.stopWordsPolicy,
+              sourceSettings.stopWordsRevision ?? 0,
+            )
+          : null;
+      const savedSourceSettings = savedStopWords
+        ? {
+            ...sourceSettings,
+            stopWordsPolicy: savedStopWords.policy,
+            stopWordsRevision: savedStopWords.revision,
+          }
+        : await updateSettings(api, chatId, sourceSettings);
       applyTargetSavedSourceRef.current = { section, settings: savedSourceSettings };
-      const result = await applySettingsSectionToAll(api, chatId, section, target);
+      const result = await applySettingsSectionToAll(
+        api,
+        chatId,
+        section,
+        target,
+        savedStopWords?.revision,
+      );
       return {
         ...result,
         section,
-        sourceSettings: savedSourceSettings,
+        sourceSettings:
+          savedStopWords && result.appliedChatIds.includes(chatId)
+            ? { ...savedSourceSettings, stopWordsRevision: savedStopWords.revision + 1 }
+            : savedSourceSettings,
       };
     },
     onSuccess: (result) => {
       applyTargetSavedSourceRef.current = null;
       syncSavedSectionSettings(result.section, result.sourceSettings);
+      if (result.section === 'stopWords') {
+        setMessageLimitsBlockedWordsInput('');
+        setMessageLimitsBlockedDomainsInput('');
+      }
       pushToast({
         tone: 'success',
         title: `Настройки «${SECTION_LABELS[result.section]}» применены`,
@@ -1660,10 +1690,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       maxNotify('success');
     },
     onError: async (error, variables) => {
-      const savedSource = applyTargetSavedSourceRef.current;
+      let savedSource = applyTargetSavedSourceRef.current;
       applyTargetSavedSourceRef.current = null;
       const sourceSaved = savedSource?.section === variables.section;
-      if (sourceSaved) {
+      if (sourceSaved && variables.section === 'stopWords' && chatId && savedSource) {
+        try {
+          const fresh = await getStopWords(api, chatId);
+          savedSource = {
+            section: 'stopWords',
+            settings: {
+              ...savedSource.settings,
+              stopWordsPolicy: fresh.policy,
+              stopWordsRevision: fresh.revision,
+            },
+          };
+        } catch {
+          /* Preserve the last confirmed source snapshot on transport failure. */
+        }
+        setMessageLimitsBlockedWordsInput('');
+        setMessageLimitsBlockedDomainsInput('');
+      }
+      if (sourceSaved && savedSource) {
         syncSavedSectionSettings(savedSource.section, savedSource.settings);
       }
       const { resolveChatSettingsSaveError } = await import('../lib/chat-settings-save-error');
@@ -2710,158 +2757,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearFieldError('duplicateIgnoreLinksEnabled');
     clearFieldError('duplicateIgnorePhonesEnabled');
     clearFieldError('duplicateNearMatchEnabled');
-  }
-
-  function addMessageLimitsBlockedWords() {
-    if (!draft) {
-      return;
-    }
-
-    const { actions, addedWords, nextWords, removedWords } = applyMessageLimitsBlockedWordsInput(
-      draft.messageLimitsBlockedWords,
-      messageLimitsBlockedWordsInput,
-      MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
-    );
-
-    if (actions.length === 0) {
-      if (messageLimitsBlockedWordsInput.trim()) {
-        setFieldErrors((current) => ({
-          ...current,
-          messageLimitsBlockedWords: 'Нужно одно слово без пробелов, можно с префиксом + или -.',
-        }));
-      }
-      return;
-    }
-
-    if (addedWords.length === 0 && removedWords.length === 0) {
-      const hasAddActions = actions.some((action) => action.operation === 'add');
-      if (
-        hasAddActions &&
-        draft.messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX
-      ) {
-        setFieldErrors((current) => ({
-          ...current,
-          messageLimitsBlockedWords:
-            'Лимит стоп-слов достигнут. Уберите лишнее или используйте -слово.',
-        }));
-      } else {
-        clearFieldError('messageLimitsBlockedWords');
-      }
-      return;
-    }
-
-    clearFieldError('messageLimitsBlockedWords');
-    setDraft((current) =>
-      current
-        ? {
-            ...current,
-            messageLimitsBlockedWords: nextWords,
-          }
-        : current,
-    );
-    setMessageLimitsBlockedWordsInput('');
-  }
-
-  function applyMessageLimitsBlockedWords(nextWords: string[]) {
-    clearFieldError('messageLimitsBlockedWords');
-    setDraft((current) =>
-      current
-        ? {
-            ...current,
-            messageLimitsBlockedWords: nextWords,
-          }
-        : current,
-    );
-  }
-
-  function removeMessageLimitsBlockedWord(wordToRemove: string) {
-    if (!draft) {
-      return;
-    }
-
-    setFieldValue(
-      'messageLimitsBlockedWords',
-      draft.messageLimitsBlockedWords.filter(
-        (word) => word !== wordToRemove,
-      ) as ChatSettings['messageLimitsBlockedWords'],
-    );
-  }
-
-  function addMessageLimitsBlockedDomains() {
-    if (!draft) {
-      return;
-    }
-
-    const { actions, addedDomains, nextDomains, removedDomains } =
-      applyMessageLimitsBlockedDomainsInput(
-        draft.messageLimitsBlockedDomains,
-        messageLimitsBlockedDomainsInput,
-        MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
-      );
-
-    if (actions.length === 0) {
-      if (messageLimitsBlockedDomainsInput.trim()) {
-        setFieldErrors((current) => ({
-          ...current,
-          messageLimitsBlockedDomains: 'Укажите домен или ссылку.',
-        }));
-      }
-      return;
-    }
-
-    if (addedDomains.length === 0 && removedDomains.length === 0) {
-      const hasAddActions = actions.some((action) => action.operation === 'add');
-      if (
-        hasAddActions &&
-        draft.messageLimitsBlockedDomains.length >= MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX
-      ) {
-        setFieldErrors((current) => ({
-          ...current,
-          messageLimitsBlockedDomains: 'Лимит доменов достигнут.',
-        }));
-      } else {
-        const addAction = actions.find((action) => action.operation === 'add');
-        const coveredBy = addAction
-          ? findMessageLimitsBlockedDomainCoveringRule(
-              addAction.domain,
-              draft.messageLimitsBlockedDomains,
-            )
-          : null;
-        setFieldErrors((current) => ({
-          ...current,
-          messageLimitsBlockedDomains: addAction
-            ? coveredBy && coveredBy !== addAction.domain
-              ? `Уже закрыт через ${coveredBy}.`
-              : 'Этот домен уже в списке.'
-            : 'Такого домена нет в списке.',
-        }));
-      }
-      return;
-    }
-
-    clearFieldError('messageLimitsBlockedDomains');
-    setDraft((current) =>
-      current
-        ? {
-            ...current,
-            messageLimitsBlockedDomains: nextDomains,
-          }
-        : current,
-    );
-    setMessageLimitsBlockedDomainsInput('');
-  }
-
-  function removeMessageLimitsBlockedDomain(domainToRemove: string) {
-    if (!draft) {
-      return;
-    }
-
-    setFieldValue(
-      'messageLimitsBlockedDomains',
-      draft.messageLimitsBlockedDomains.filter(
-        (domain) => domain !== domainToRemove,
-      ) as ChatSettings['messageLimitsBlockedDomains'],
-    );
   }
 
   useEffect(() => {
@@ -4118,81 +4013,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const showMessageLimitsBotButtonErrors = Boolean(
     draft?.messageLimitsBotMessageEnabled && draft?.messageLimitsBotButtonEnabled,
   );
-  const messageLimitsBlockedWords = draft?.messageLimitsBlockedWords ?? [];
-  const messageLimitsBlockedDomains = draft?.messageLimitsBlockedDomains ?? [];
   const messageLimitsBlockedWordsError = fieldErrors.messageLimitsBlockedWords;
   const messageLimitsBlockedDomainsError = fieldErrors.messageLimitsBlockedDomains;
-  const messageLimitsBlockedWordsInputActions = splitMessageLimitsBlockedWordsInput(
-    messageLimitsBlockedWordsInput,
-  );
-  const messageLimitsBlockedDomainsInputActions = splitMessageLimitsBlockedDomainsInput(
-    messageLimitsBlockedDomainsInput,
-  );
-  const hasMessageLimitsBlockedWordsRemoveInputActions = messageLimitsBlockedWordsInputActions.some(
-    (action) => action.operation === 'remove',
-  );
-  const hasMessageLimitsBlockedDomainsRemoveInputActions =
-    messageLimitsBlockedDomainsInputActions.some((action) => action.operation === 'remove');
-  const messageLimitsBlockedWordsRemaining = Math.max(
-    0,
-    MESSAGE_LIMITS_BLOCKED_WORDS_MAX - messageLimitsBlockedWords.length,
-  );
-  const isMessageLimitsBlockedWordsApplyDisabled =
-    !messageLimitsBlockedWordsInput.trim() ||
-    (messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX &&
-      messageLimitsBlockedWordsInputActions.length > 0 &&
-      !hasMessageLimitsBlockedWordsRemoveInputActions);
-  const isMessageLimitsBlockedDomainsApplyDisabled =
-    !messageLimitsBlockedDomainsInput.trim() ||
-    (messageLimitsBlockedDomains.length >= MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX &&
-      messageLimitsBlockedDomainsInputActions.length > 0 &&
-      !hasMessageLimitsBlockedDomainsRemoveInputActions);
-  const hasMessageLimitsBlockedWordsOverflow =
-    messageLimitsBlockedWords.length > MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT;
-  const hasMessageLimitsBlockedDomainsOverflow =
-    messageLimitsBlockedDomains.length > MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT;
-  const visibleMessageLimitsBlockedWords =
-    hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
-      ? messageLimitsBlockedWords.slice(-MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT)
-      : messageLimitsBlockedWords;
-  const visibleMessageLimitsBlockedDomains =
-    hasMessageLimitsBlockedDomainsOverflow && !messageLimitsBlockedDomainsExpanded
-      ? messageLimitsBlockedDomains.slice(-MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT)
-      : messageLimitsBlockedDomains;
-  const messageLimitsBlockedWordsCaption =
-    hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
-      ? `Показаны последние ${visibleMessageLimitsBlockedWords.length} из ${formatRussianCountLabel(messageLimitsBlockedWords.length, 'слова', 'слов', 'слов')}`
-      : `Все ${formatRussianCountLabel(messageLimitsBlockedWords.length, 'слово', 'слова', 'слов')}`;
-  const messageLimitsBlockedDomainsCaption =
-    hasMessageLimitsBlockedDomainsOverflow && !messageLimitsBlockedDomainsExpanded
-      ? `Показаны последние ${visibleMessageLimitsBlockedDomains.length} из ${formatRussianCountLabel(messageLimitsBlockedDomains.length, 'домена', 'доменов', 'доменов')}`
-      : `Все ${formatRussianCountLabel(messageLimitsBlockedDomains.length, 'домен', 'домена', 'доменов')}`;
   const stopWordsError =
-    stopWordsMode === 'words' ? messageLimitsBlockedWordsError : messageLimitsBlockedDomainsError;
-  const stopWordsSegmentOptions = useMemo<Array<SegmentedOption<StopWordsMode>>>(
-    () => [
-      { value: 'words', label: 'Слова', count: messageLimitsBlockedWords.length },
-      { value: 'domains', label: 'Сайты', count: messageLimitsBlockedDomains.length },
-    ],
-    [messageLimitsBlockedDomains.length, messageLimitsBlockedWords.length],
-  );
+    fieldErrors.stopWordsPolicy ||
+    messageLimitsBlockedWordsError ||
+    messageLimitsBlockedDomainsError;
   const messageLimitsBotButtonErrors =
     showMessageLimitsBotButtonErrors && fieldErrors.messageLimitsBotButtons
       ? validateBroadcastLinkButtons(draft?.messageLimitsBotButtons ?? [])
       : [];
   const hasMessageLimitsBotButtonError = Boolean(fieldErrors.messageLimitsBotButtons);
 
-  useEffect(() => {
-    if (!hasMessageLimitsBlockedWordsOverflow && messageLimitsBlockedWordsExpanded) {
-      setMessageLimitsBlockedWordsExpanded(false);
-    }
-  }, [hasMessageLimitsBlockedWordsOverflow, messageLimitsBlockedWordsExpanded]);
-
-  useEffect(() => {
-    if (!hasMessageLimitsBlockedDomainsOverflow && messageLimitsBlockedDomainsExpanded) {
-      setMessageLimitsBlockedDomainsExpanded(false);
-    }
-  }, [hasMessageLimitsBlockedDomainsOverflow, messageLimitsBlockedDomainsExpanded]);
   const showTextFiltersBotButtonErrors = Boolean(
     draft?.textFiltersBotMessageEnabled && draft?.textFiltersBotButtonEnabled,
   );
@@ -4490,20 +4322,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.phoneNumbersEnabled : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
-  const stopWordsTotalCount = messageLimitsBlockedWords.length + messageLimitsBlockedDomains.length;
-  const stopWordsListSummary =
-    stopWordsTotalCount > 0
-      ? `Слова: ${messageLimitsBlockedWords.length} · Сайты: ${messageLimitsBlockedDomains.length}`
-      : 'Список пуст';
-  const stopWordsHeaderSummary = draft?.messageLimitsImageTextScanEnabled
-    ? `${stopWordsListSummary} · Изображения: вкл`
-    : stopWordsListSummary;
-  const stopWordsCardStatus =
-    stopWordsTotalCount > 0
-      ? `${stopWordsTotalCount}`
-      : draft?.messageLimitsImageTextScanEnabled
-        ? 'Вкл'
-        : 'Выкл';
   const nightTimezoneLabel =
     RUSSIAN_TIMEZONE_OPTIONS.find((option) => option.value === draft?.nightModeTimezone)?.label ??
     'Москва (UTC+3)';
@@ -5118,6 +4936,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (!draft || !settingsQuery.data) {
       return false;
     }
+    if (
+      section === 'stopWords' &&
+      (messageLimitsBlockedWordsInput.trim() || messageLimitsBlockedDomainsInput.trim())
+    )
+      return true;
 
     const draftSettings = normalizeSectionDraftSettings(draft, section);
     const savedSettings = normalizeSectionDraftSettings(settingsQuery.data, section);
@@ -5133,6 +4956,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const savedSettings = normalizeSectionDraftSettings(settingsQuery.data, section);
+    if (section === 'stopWords') {
+      setMessageLimitsBlockedWordsInput('');
+      setMessageLimitsBlockedDomainsInput('');
+      clearFieldError('messageLimitsBlockedWords');
+      clearFieldError('messageLimitsBlockedDomains');
+    }
 
     if (section === 'duplicates') {
       setDuplicateWindowInputValue(null);
@@ -5152,10 +4981,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       section === 'requiredSubscription'
         ? normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)
         : settingsQuery.data;
-    const draftSettings =
+    let draftSettings =
       section === 'requiredSubscription'
         ? normalizeRequiredSubscriptionDraftSettings(draft)
         : draft;
+    if (section === 'stopWords' && draft.stopWordsPolicy) {
+      const prepared = prepareStopWordsInput(
+        draft.stopWordsPolicy,
+        messageLimitsBlockedWordsInput,
+        messageLimitsBlockedDomainsInput,
+      );
+      if (prepared.errors.length) {
+        setFieldErrors((current) => ({
+          ...current,
+          messageLimitsBlockedWords: prepared.errors.join(' '),
+        }));
+        return null;
+      }
+      draftSettings = { ...draft, stopWordsPolicy: prepared.policy };
+    }
 
     return validateDraft(mergeSectionSettings(baseSettings, draftSettings, section));
   }
@@ -6993,63 +6837,37 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <SettingsStopWordsSection
-              addMessageLimitsBlockedDomains={addMessageLimitsBlockedDomains}
-              addMessageLimitsBlockedWords={addMessageLimitsBlockedWords}
-              applyMessageLimitsBlockedWords={applyMessageLimitsBlockedWords}
-              botSpeechEditorProps={botSpeechEditorProps!}
-              botSpeechPreviewContext={botSpeechPreviewContext}
-              clearFieldError={clearFieldError}
-              discardSectionChanges={discardSectionChanges}
+              api={api}
+              chatId={chatId ?? ''}
               draft={draft}
+              busy={isSavingSettings || isApplyingSectionToAll}
               expanded={expandedSections.stopWords}
-              hasMessageLimitsBlockedDomainsOverflow={hasMessageLimitsBlockedDomainsOverflow}
-              hasMessageLimitsBlockedDomainsRemoveInputActions={
-                hasMessageLimitsBlockedDomainsRemoveInputActions
-              }
-              hasMessageLimitsBlockedWordsOverflow={hasMessageLimitsBlockedWordsOverflow}
-              hasMessageLimitsBlockedWordsRemoveInputActions={
-                hasMessageLimitsBlockedWordsRemoveInputActions
-              }
-              isMessageLimitsBlockedDomainsApplyDisabled={
-                isMessageLimitsBlockedDomainsApplyDisabled
-              }
-              isMessageLimitsBlockedWordsApplyDisabled={isMessageLimitsBlockedWordsApplyDisabled}
+              toggleSection={toggleSection}
               isSectionDirty={isSectionDirty}
-              messageLimitsBlockedDomains={messageLimitsBlockedDomains}
-              messageLimitsBlockedDomainsCaption={messageLimitsBlockedDomainsCaption}
-              messageLimitsBlockedDomainsError={messageLimitsBlockedDomainsError}
-              messageLimitsBlockedDomainsExpanded={messageLimitsBlockedDomainsExpanded}
-              messageLimitsBlockedDomainsInput={messageLimitsBlockedDomainsInput}
-              messageLimitsBlockedWords={messageLimitsBlockedWords}
-              messageLimitsBlockedWordsCaption={messageLimitsBlockedWordsCaption}
-              messageLimitsBlockedWordsError={messageLimitsBlockedWordsError}
-              messageLimitsBlockedWordsExpanded={messageLimitsBlockedWordsExpanded}
-              messageLimitsBlockedWordsInput={messageLimitsBlockedWordsInput}
-              messageLimitsBlockedWordsRemaining={messageLimitsBlockedWordsRemaining}
-              openBotEditorKey={openBotEditorKey}
-              openWarnEditorKey={openWarnEditorKey}
-              removeMessageLimitsBlockedDomain={removeMessageLimitsBlockedDomain}
-              removeMessageLimitsBlockedWord={removeMessageLimitsBlockedWord}
+              discardSectionChanges={discardSectionChanges}
               renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
               renderSectionSaveFooter={renderSectionSaveFooter}
               setFieldValue={setFieldValue}
-              setMessageLimitsBlockedDomainsExpanded={setMessageLimitsBlockedDomainsExpanded}
-              setMessageLimitsBlockedDomainsInput={setMessageLimitsBlockedDomainsInput}
-              setMessageLimitsBlockedWordsExpanded={setMessageLimitsBlockedWordsExpanded}
+              clearFieldError={clearFieldError}
+              botSpeechPreviewContext={botSpeechPreviewContext}
+              messageLimitsBlockedWordsInput={messageLimitsBlockedWordsInput}
+              messageLimitsBlockedDomainsInput={messageLimitsBlockedDomainsInput}
               setMessageLimitsBlockedWordsInput={setMessageLimitsBlockedWordsInput}
-              setOpenBotEditorKey={setOpenBotEditorKey}
-              setOpenWarnEditorKey={setOpenWarnEditorKey}
-              setStopWordsMode={setStopWordsMode}
-              stopWordsCardStatus={stopWordsCardStatus}
+              setMessageLimitsBlockedDomainsInput={setMessageLimitsBlockedDomainsInput}
+              messageLimitsBlockedWordsError={messageLimitsBlockedWordsError}
+              messageLimitsBlockedDomainsError={messageLimitsBlockedDomainsError}
               stopWordsError={stopWordsError}
-              stopWordsHeaderSummary={stopWordsHeaderSummary}
-              stopWordsMode={stopWordsMode}
-              stopWordsSegmentOptions={stopWordsSegmentOptions}
-              toggleBotMessageEditor={toggleBotMessageEditor}
-              toggleSection={toggleSection}
-              toggleWarnMessageEditor={toggleWarnMessageEditor}
-              visibleMessageLimitsBlockedDomains={visibleMessageLimitsBlockedDomains}
-              visibleMessageLimitsBlockedWords={visibleMessageLimitsBlockedWords}
+              reloadPolicy={async () => {
+                if (!chatId || !settingsQuery.data) return;
+                const saved = await getStopWords(api, chatId);
+                syncSavedSectionSettings('stopWords', {
+                  ...settingsQuery.data,
+                  stopWordsPolicy: saved.policy,
+                  stopWordsRevision: saved.revision,
+                });
+                setMessageLimitsBlockedWordsInput('');
+                setMessageLimitsBlockedDomainsInput('');
+              }}
             />
 
             <SettingsNightSection

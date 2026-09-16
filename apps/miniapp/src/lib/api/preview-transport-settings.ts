@@ -1,4 +1,11 @@
 import {
+  StopWordsMatcher,
+  normalizeStopWordsDomain,
+  stopWordsPolicySchema,
+  stopWordsPreviewRequestSchema,
+  updateStopWordsRequestSchema,
+} from '@maxim/contracts/settings';
+import {
   addDomainRequestSchema,
   applySectionTargetPreviewResponseSchema,
   applySectionToAllResponseSchema,
@@ -524,15 +531,90 @@ export async function handleChatRequest(
     }
 
     if (method === 'PUT') {
-      state.chatSettings = chatSettingsSchema.parse(parseJsonBody(init));
+      state.chatSettings = chatSettingsSchema.parse({
+        ...(parseJsonBody(init) as object),
+        stopWordsPolicy: state.chatSettings.stopWordsPolicy,
+        stopWordsRevision: state.chatSettings.stopWordsRevision,
+        messageLimitsBlockedWords: state.chatSettings.messageLimitsBlockedWords,
+        messageLimitsBlockedDomains: state.chatSettings.messageLimitsBlockedDomains,
+        messageLimitsImageTextScanEnabled: state.chatSettings.messageLimitsImageTextScanEnabled,
+      });
       return cloneJson(state.chatSettings);
     }
   }
 
+  if (tail[0] === 'stop-words') {
+    assertPreviewSettingsScreenAvailable(state);
+    if (tail[1] === 'status' && method === 'GET')
+      return { revision: state.chatSettings.stopWordsRevision ?? 0, imageScanStatus: 'shadow' };
+    if (tail.length === 1 && method === 'GET')
+      return cloneJson({
+        policy: state.chatSettings.stopWordsPolicy ?? stopWordsPolicySchema.parse({}),
+        revision: state.chatSettings.stopWordsRevision ?? 0,
+        imageScanStatus: 'shadow',
+      });
+    if (tail.length === 1 && method === 'PUT') {
+      const failure = state.stopWordsWriteError;
+      state.stopWordsWriteError = null;
+      if (failure === 'network')
+        throw new ApiRequestError(503, '{}', 'Сервис временно недоступен. Повторите позже.');
+      if (failure === 'conflict') {
+        state.chatSettings.stopWordsRevision = (state.chatSettings.stopWordsRevision ?? 0) + 1;
+        throw new ApiRequestError(409, '{}', 'Стоп-слова уже изменены. Обновите список.');
+      }
+      const payload = updateStopWordsRequestSchema.parse(parseJsonBody(init));
+      if (payload.expectedRevision !== (state.chatSettings.stopWordsRevision ?? 0))
+        throw new ApiRequestError(409, '{}', 'Стоп-слова уже изменены. Обновите список.');
+      state.chatSettings = {
+        ...state.chatSettings,
+        stopWordsPolicy: payload.policy,
+        stopWordsRevision: payload.expectedRevision + 1,
+      };
+      return cloneJson({
+        policy: payload.policy,
+        revision: payload.expectedRevision + 1,
+        imageScanStatus: 'shadow',
+      });
+    }
+    if (tail[1] === 'preview' && method === 'POST') {
+      const input = stopWordsPreviewRequestSchema.parse(parseJsonBody(init));
+      const matcher = new StopWordsMatcher();
+      return {
+        enabled: input.policy.enabled,
+        matches: matcher.detect({
+          ...input,
+          isLinkAllowlisted: (link) => {
+            const host = normalizeStopWordsDomain(link);
+            return state.chatDomains.some((entry) => {
+              if (
+                entry.removeAfterAt &&
+                Date.parse(entry.removeAfterAt) <= readPreviewClock(state.clock).getTime()
+              )
+                return false;
+              return entry.matchType === 'DOMAIN'
+                ? host === entry.domain || host?.endsWith('.' + entry.domain) === true
+                : link === entry.domain;
+            });
+          },
+        }),
+      };
+    }
+  }
+
   if (tail[0] === 'settings' && tail[1] === 'apply-section-to-all' && method === 'POST') {
-    const payload = parseJsonBody(init) as { section?: string; target?: unknown } | null;
+    const payload = parseJsonBody(init) as {
+      section?: string;
+      target?: unknown;
+      expectedSourceRevision?: number;
+    } | null;
     const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'current' });
     const targetChats = resolvePreviewApplyTargetChats(state, chatId, target);
+    if (payload?.section === 'stopWords') {
+      if (payload.expectedSourceRevision !== (state.chatSettings.stopWordsRevision ?? 0))
+        throw new ApiRequestError(409, '{}', 'Стоп-слова уже изменены.');
+      if (targetChats.some((chat) => chat.id === chatId))
+        state.chatSettings.stopWordsRevision = payload.expectedSourceRevision + 1;
+    }
     return applySectionToAllResponseSchema.parse({
       section: payload?.section ?? 'links',
       sourceChatId: chatId,

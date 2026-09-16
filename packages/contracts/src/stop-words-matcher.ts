@@ -33,11 +33,19 @@ const visualGroups = Object.entries(VISUAL_EQUIVALENTS).flatMap(([left, right]) 
   [right, left + right],
 ]);
 const visualMap = new Map(visualGroups as [string, string][]);
-const WORD_BOUNDARY = String.raw`[\p{L}\p{N}\p{M}\p{Cf}\p{Pc}'\-]`;
+const WORD_BOUNDARY = String.raw`[\p{L}\p{N}\p{M}\p{Cf}\p{Pc}]`;
+const WORD_CONNECTOR = "['’-]";
 const INVISIBLE_CHARACTER = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
-const LEFT_WORD_BOUNDARY = new RegExp(WORD_BOUNDARY + '$', 'u');
-const RIGHT_WORD_BOUNDARY = new RegExp('^' + WORD_BOUNDARY, 'u');
-const WORD_TOKENS = new RegExp(WORD_BOUNDARY + '+', 'gu');
+// FLAG: Quotes delimit words; apostrophes and hyphens join only adjacent word parts.
+const LEFT_WORD_BOUNDARY = new RegExp(
+  `(?:${WORD_BOUNDARY}|${WORD_BOUNDARY}${WORD_CONNECTOR})$`,
+  'u',
+);
+const RIGHT_WORD_BOUNDARY = new RegExp(
+  `^(?:${WORD_BOUNDARY}|${WORD_CONNECTOR}${WORD_BOUNDARY})`,
+  'u',
+);
+const WORD_TOKENS = new RegExp(`${WORD_BOUNDARY}+(?:${WORD_CONNECTOR}${WORD_BOUNDARY}+)*`, 'gu');
 
 function escapePattern(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
@@ -73,7 +81,10 @@ function buildRulePattern(rule: StopWordsRule, normalizedValue: string): RegExp 
     .split(' ')
     .map((token) => tokenPattern(token, rule.matchMode === 'MASKED'))
     .join(String.raw`[\p{Zs}\t\r\n]+`);
-  return new RegExp(`(?<!${WORD_BOUNDARY})${pattern}(?!${WORD_BOUNDARY})`, 'gu');
+  return new RegExp(
+    `(?<!${WORD_BOUNDARY})(?<!${WORD_BOUNDARY}${WORD_CONNECTOR})${pattern}(?!${WORD_BOUNDARY})(?!${WORD_CONNECTOR}${WORD_BOUNDARY})`,
+    'gu',
+  );
 }
 
 function compactMaskedText(text: string): string {
@@ -113,13 +124,28 @@ function collapseWhitespace(view: TextView): TextView {
   return result;
 }
 
-function findLiteral(view: TextView, value: string): { start: number; end: number } | null {
+function hasSourceBoundary(text: string, start: number, end: number, masked = false): boolean {
+  const before = masked
+    ? text.slice(0, start).replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '')
+    : text.slice(Math.max(0, start - 3), start);
+  const after = masked
+    ? text.slice(end).replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '')
+    : text.slice(end, end + 3);
+  return !LEFT_WORD_BOUNDARY.test(before.slice(-3)) && !RIGHT_WORD_BOUNDARY.test(after.slice(0, 3));
+}
+
+function findLiteral(
+  view: TextView,
+  value: string,
+  source: string,
+): { start: number; end: number } | null {
   let index = view.text.indexOf(value);
   while (index !== -1) {
     const end = index + value.length;
     if (
-      !LEFT_WORD_BOUNDARY.test(view.text.slice(Math.max(0, index - 2), index)) &&
-      !RIGHT_WORD_BOUNDARY.test(view.text.slice(end, end + 2))
+      !LEFT_WORD_BOUNDARY.test(view.text.slice(Math.max(0, index - 3), index)) &&
+      !RIGHT_WORD_BOUNDARY.test(view.text.slice(end, end + 3)) &&
+      hasSourceBoundary(source, view.starts[index], view.ends[end - 1])
     ) {
       return { start: view.starts[index], end: view.ends[end - 1] };
     }
@@ -178,7 +204,7 @@ export class StopWordsMatcher {
         if (seen.has(rule.id)) continue;
         if (rule.matchMode === 'EXACT') {
           if (!normalizedValue.split(' ').every((token) => exactTokens.has(token))) continue;
-          const match = findLiteral(exactView, normalizedValue);
+          const match = findLiteral(exactView, normalizedValue, text);
           if (match) {
             matches.push({
               ruleId: rule.id,
@@ -202,10 +228,10 @@ export class StopWordsMatcher {
           if (/\n[\t\p{Zs}\r]*\n/u.test(match[0])) continue;
           const start = matchingView.starts[match.index] ?? 0;
           const end = matchingView.ends[match.index + match[0].length - 1] ?? start;
+          if (!hasSourceBoundary(text, start, end, true)) continue;
           const exact =
             normalizeStopWordsValue(text.slice(start, end)) === normalizedValue &&
-            !LEFT_WORD_BOUNDARY.test(text.slice(Math.max(0, start - 2), start)) &&
-            !RIGHT_WORD_BOUNDARY.test(text.slice(end, end + 2));
+            hasSourceBoundary(text, start, end);
           matches.push({
             ruleId: rule.id,
             value: rule.value,

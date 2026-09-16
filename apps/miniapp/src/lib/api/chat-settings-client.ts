@@ -213,7 +213,17 @@ export async function updateSettings(
   options: { recheckBotCapabilities?: boolean } = {},
 ): Promise<ChatSettings> {
   const query = options.recheckBotCapabilities ? '?recheckBotCapabilities=1' : '';
-  const requestBody = updateSettingsRequestSchema.parse(data);
+  const requestBody: Partial<ChatSettings> = updateSettingsRequestSchema.parse({
+    ...data,
+    stopWordsPolicy: undefined,
+    stopWordsRevision: undefined,
+  });
+  // FLAG: The ordinary settings endpoint cannot author or transport independent stop-list data.
+  delete requestBody.stopWordsPolicy;
+  delete requestBody.stopWordsRevision;
+  delete requestBody.messageLimitsBlockedWords;
+  delete requestBody.messageLimitsBlockedDomains;
+  delete requestBody.messageLimitsImageTextScanEnabled;
   const response = await api.request(`/chats/${chatId}/settings${query}`, {
     method: 'PUT',
     body: JSON.stringify(requestBody),
@@ -279,9 +289,11 @@ export async function applySettingsSectionToAll(
   chatId: string,
   section: ApplySectionToAllResponse['section'],
   target?: ApplySettingsTarget,
+  expectedSourceRevision?: number,
 ): Promise<ApplySectionToAllResponse> {
   const requestBody = {
     section,
+    ...(section === 'stopWords' ? { expectedSourceRevision } : {}),
     ...(target ? { target: applySettingsTargetSchema.parse(target) } : {}),
   };
   const response = await api.request(`/chats/${chatId}/settings/apply-section-to-all`, {

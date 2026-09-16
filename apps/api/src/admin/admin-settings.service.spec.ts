@@ -1404,8 +1404,8 @@ describe('AdminSettingsService chat rules', () => {
     });
 
     expect(result.messageLimitsImageTextScanEnabled).toBe(true);
-    expect(findChatSettingsWritePayload(prisma)).toEqual(
-      expect.objectContaining({ messageLimitsImageTextScanEnabled: true }),
+    expect(findChatSettingsWritePayload(prisma)).not.toHaveProperty(
+      'messageLimitsImageTextScanEnabled',
     );
   });
 
@@ -2336,8 +2336,10 @@ describe('AdminSettingsService chat rules', () => {
         antiSpamEnabled: false,
         profanitySensitivity: 'STRICT',
         forwardedMessagesEnabled: false,
-        messageLimitsImageTextScanEnabled: true,
       }),
+    );
+    expect(findChatSettingsWritePayload(prisma, 'chat-2')).not.toHaveProperty(
+      'messageLimitsImageTextScanEnabled',
     );
   });
 

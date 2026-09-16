@@ -1,0 +1,278 @@
+@layer pages {
+  .stop-words-editor {
+    --stop-words-error: #b3283c;
+    --stop-words-preview-bg: color-mix(in srgb, var(--color-success) 12%, var(--color-surface));
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    color: var(--text-primary);
+  }
+  .stop-words-editor input:not([type='checkbox']),
+  .stop-words-editor textarea {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: inherit;
+    font: inherit;
+    font-size: 16px;
+    line-height: 1.4;
+  }
+  .settings-drilldown .stop-words-editor > .segmented-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--color-surface-muted);
+    overflow: visible;
+    box-shadow: none;
+  }
+  .settings-drilldown .stop-words-editor .segmented-control__item {
+    min-width: 0;
+    min-height: 44px;
+    padding: 8px 6px;
+    justify-content: center;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    white-space: normal;
+    box-shadow: none;
+  }
+  .settings-drilldown .stop-words-editor .segmented-control__item.is-active {
+    color: var(--text-primary);
+    background: var(--color-surface);
+    box-shadow: none;
+  }
+  .settings-drilldown .stop-words-editor .segmented-control__item small {
+    opacity: 1;
+    color: inherit;
+  }
+  .stop-words-editor textarea {
+    resize: vertical;
+    min-height: 76px;
+  }
+  .stop-words-editor button svg {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+  }
+  .stop-words-editor .button {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+  }
+  .stop-words-editor__toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+  }
+  .stop-words-editor__toggle > span:first-child {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+  }
+  .stop-words-editor__input {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 8px;
+    align-items: end;
+  }
+  .stop-words-editor__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 40px;
+    padding: 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+  .stop-words-editor__icon:hover {
+    background: var(--color-surface-muted);
+  }
+  .stop-words-editor__icon:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .stop-words-editor__input > button {
+    width: 44px;
+    background: var(--color-accent-strong);
+    color: var(--color-on-accent);
+  }
+  .stop-words-editor__input-result {
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .stop-words-editor__input-result:empty {
+    display: none;
+  }
+  .stop-words-editor [role='alert'] {
+    color: var(--stop-words-error);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .stop-words-editor__toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .stop-words-editor__search {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    flex: 1;
+    gap: 6px;
+  }
+  .stop-words-editor__search > svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+  .stop-words-editor__selection {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 36px;
+    font-size: 13px;
+  }
+  .stop-words-editor__selection label {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .stop-words-editor__selection-box {
+    display: flex;
+    flex: 0 0 44px;
+    height: 44px;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .stop-words-editor input[type='checkbox'] {
+    accent-color: var(--color-accent-strong);
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+  .stop-words-editor__list {
+    min-width: 0;
+  }
+  .stop-words-editor__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0;
+    min-height: 52px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .stop-words-editor__value {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+  .stop-words-editor__value > span {
+    font-size: 15px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .stop-words-editor__value small {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .stop-words-editor__row .settings-native-switch {
+    flex-shrink: 0;
+  }
+  .stop-words-editor__empty {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 20px 0;
+    font-size: 14px;
+  }
+  .stop-words-editor__section {
+    border-top: 1px solid var(--border-strong);
+    padding: 12px 0;
+    min-width: 0;
+  }
+  .stop-words-editor__section > summary {
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 6px 0;
+  }
+  .stop-words-editor__section[open] > summary {
+    margin-bottom: 12px;
+  }
+  .stop-words-editor__section > summary small {
+    display: block;
+    margin-top: 5px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .stop-words-editor__section > .button {
+    margin-top: 10px;
+  }
+  .stop-words-editor__section > p,
+  .stop-words-editor__section [role='status'] {
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .stop-words-editor__preview-values {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .stop-words-editor__preview-values > span {
+    font-size: 12px;
+    padding: 4px 6px;
+    background: var(--stop-words-preview-bg);
+    color: var(--text-primary);
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+  .stop-words-editor__field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 80px;
+    gap: 10px;
+    align-items: center;
+    font-size: 14px;
+  }
+  .stop-words-editor__buttons > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 36px;
+    gap: 8px;
+    margin: 10px 0;
+  }
+  .stop-words-editor__buttons > div > input {
+    grid-column: 1;
+  }
+  .stop-words-editor__buttons > div > button {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+  html[data-max-theme='dark'] .stop-words-editor {
+    --stop-words-error: #ffa0ab;
+  }
+}

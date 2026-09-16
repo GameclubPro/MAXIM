@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chatSettingsSchema, type ChatSettings } from '@maxim/contracts';
+import { stopWordsPolicySchema } from '@maxim/contracts/settings';
 import {
   BOT_SPEECH_SYNC_SETTING_KEYS,
   NIGHT_SECTION_SETTING_KEYS,
@@ -251,9 +252,7 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.limits.includes('photoMessagesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('forwardedMessagesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsBotButtons'));
-  assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsBlockedWords'));
-  assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsBlockedDomains'));
-  assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsImageTextScanEnabled'));
+  assert.deepEqual(SECTION_SETTING_KEYS.stopWords, ['stopWordsPolicy', 'stopWordsRevision']);
   assert.ok(!SECTION_SETTING_KEYS.limits.includes('messageLimitsBlockedWords'));
   assert.ok(!SECTION_SETTING_KEYS.limits.includes('messageLimitsBlockedDomains'));
   assert.ok(!SECTION_SETTING_KEYS.limits.includes('messageLimitsImageTextScanEnabled'));
@@ -567,6 +566,14 @@ test('mergeSectionSettings syncs stop words without copying limit sanctions', ()
   });
   const saved = createSettings({
     antiSpamEnabled: false,
+    stopWordsRevision: 3,
+    stopWordsPolicy: stopWordsPolicySchema.parse({
+      enabled: true,
+      imageScanEnabled: true,
+      domains: ['casino.example'],
+      rules: [{ id: 'one', kind: 'WORD', value: 'казино' }],
+      sanctions: { warnEnabled: true },
+    }),
     messageLimitsBlockedWords: ['казино', 'ставки'],
     messageLimitsBlockedDomains: ['casino.example'],
     messageLimitsImageTextScanEnabled: true,
@@ -574,9 +581,11 @@ test('mergeSectionSettings syncs stop words without copying limit sanctions', ()
   });
 
   const merged = mergeSectionSettings(current, saved, 'stopWords');
-  assert.deepEqual(merged.messageLimitsBlockedWords, ['казино', 'ставки']);
-  assert.deepEqual(merged.messageLimitsBlockedDomains, ['casino.example']);
-  assert.equal(merged.messageLimitsImageTextScanEnabled, true);
+  assert.deepEqual(merged.stopWordsPolicy, saved.stopWordsPolicy);
+  assert.equal(merged.stopWordsRevision, 3);
+  assert.deepEqual(merged.messageLimitsBlockedWords, ['старое']);
+  assert.deepEqual(merged.messageLimitsBlockedDomains, ['old.example']);
+  assert.equal(merged.messageLimitsImageTextScanEnabled, false);
   assert.equal(merged.messageLimitsBotMessageEnabled, false);
   assert.equal(merged.antiSpamEnabled, true);
 });

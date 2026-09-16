@@ -11,6 +11,15 @@ function detect(value: string, text: string, matchMode: StopWordsRule['matchMode
 }
 
 describe('StopWordsMatcher', () => {
+  it.each(['EXACT', 'MASKED'] as const)(
+    'does not create boundaries at a removed URL in %s mode',
+    (mode) => {
+      expect(detect('доход', 'доходhttps://example.com', mode)).toEqual([]);
+    },
+  );
+  it.each(["'casino'", '‘casino’', '"casino"'])('matches a complete quoted word: %s', (text) => {
+    expect(detect('casino', text)[0]).toMatchObject({ value: 'casino', fragment: 'casino' });
+  });
   it('handles a cold maximum-size dictionary without compiling one regex per exact entry', () => {
     const policy = stopWordsPolicySchema.parse({
       enabled: true,
@@ -44,7 +53,7 @@ describe('StopWordsMatcher', () => {
       matchKind: 'exact',
     });
   });
-  it.each(['casino_code', 'casino-code', "casino's"])(
+  it.each(['casino_code', 'casino-code', "casino's", 'casino’s'])(
     'does not match part of an identifier or compound: %s',
     (text) => {
       expect(detect('casino', text)).toEqual([]);
