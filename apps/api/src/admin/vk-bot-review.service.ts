@@ -86,8 +86,8 @@ export class VkBotReviewService {
         where: { post: { chatId, ...scope }, status: 'PENDING' },
       }),
       botUrl:
-        this.links.buildBotStartUrlSync(VK_BOT_REVIEW_START, scope.ownerBotId) ??
-        this.links.buildBotUrlSync(scope.ownerBotId),
+        this.links.buildPublisherBotStartUrlSync(VK_BOT_REVIEW_START) ??
+        this.links.buildPublisherBotUrlSync(),
     };
   }
 
@@ -886,9 +886,8 @@ export class VkBotReviewService {
         },
       ]);
     buttons.push([{ type: 'link', text: 'Оригинал VK', url: row.post.url }]);
-    const editorUrl = this.links.buildMiniappStartUrlSync(
+    const editorUrl = this.links.buildPublisherMiniappStartUrlSync(
       `mr-${Buffer.from(JSON.stringify({ v: 1, k: 'route', r: `/publisher/channel/${encodeURIComponent(row.post.chatId)}?focus=vk` })).toString('base64url')}`,
-      row.post.ownerBotId,
     );
     if (editorUrl) buttons.push([{ type: 'link', text: 'Открыть в приложении', url: editorUrl }]);
     if (published && row.post.publishedUrl)
@@ -977,9 +976,8 @@ export class VkBotReviewService {
           payload: vkBotReviewCallback('menu', settings[19]!.id),
         },
       ]);
-    const cabinetUrl = this.links.buildMiniappStartUrlSync(
+    const cabinetUrl = this.links.buildPublisherMiniappStartUrlSync(
       `mr-${Buffer.from(JSON.stringify({ v: 1, k: 'route', r: '/' })).toString('base64url')}`,
-      job.data.requiredBotId,
     );
     if (cabinetUrl) buttons.push([{ type: 'link', text: 'Настройки каналов', url: cabinetUrl }]);
     buttons.push([

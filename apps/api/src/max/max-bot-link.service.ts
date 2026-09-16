@@ -358,6 +358,25 @@ export class MaxBotLinkService implements OnModuleDestroy {
     return `https://max.ru/${encodeURIComponent(this.resolveBotIdSync(botId))}`;
   }
 
+  buildPublisherBotUrlSync(): string {
+    // FLAG: Outside api-publisher this identity is descriptor-only. Never use action-route fallback.
+    return `https://max.ru/${encodeURIComponent(this.botRegistry.getPublisherBotDescriptor().id)}`;
+  }
+
+  buildPublisherBotStartUrlSync(startPayload: string): string | null {
+    if (!isValidMaxBotStartPayload(startPayload)) return null;
+    const url = new URL(this.buildPublisherBotUrlSync());
+    url.searchParams.set('start', startPayload);
+    return url.toString();
+  }
+
+  buildPublisherMiniappStartUrlSync(startParam: string): string | null {
+    if (!isValidMaxMiniappStartPayload(startParam)) return null;
+    const url = new URL(this.buildPublisherBotUrlSync());
+    url.searchParams.set('startapp', startParam);
+    return url.toString();
+  }
+
   buildInitDataBotUrlSync(botId: string | null | undefined): string | null {
     const bot = this.botRegistry.getBotById(botId);
     return bot && canAuthenticateInitDataForBotState(bot.state)

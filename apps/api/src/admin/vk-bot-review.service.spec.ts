@@ -1,4 +1,13 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import type { MaxSendMessageOptions } from '../max/max-client.service';
+import { WebhookParser } from '../webhook/webhook.parser';
+import {
+  PublisherVkBotReviewQueueService,
+  type VkBotReviewJob,
+} from '../publisher/publisher-vk-bot-review.queue';
 import { VkBotReviewService } from './vk-bot-review.service';
 import { buildVkBotReviewFingerprint } from './vk-bot-review-protocol';
 
@@ -78,6 +87,7 @@ function fixture() {
     post,
   };
   const prisma = {
+    $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
     $queryRaw: jest.fn().mockResolvedValue([{ id: '-1' }]),
     auditLog: { create: jest.fn().mockResolvedValue({}) },
@@ -95,6 +105,7 @@ function fixture() {
       findFirst: jest.fn().mockResolvedValue({ ...post, botReview: null }),
     },
     vkParsingSettings: {
+      findMany: jest.fn().mockResolvedValue([{ ...settings, chat: { title: 'Channel' } }]),
       findUnique: jest.fn().mockResolvedValue(settings),
       upsert: jest.fn().mockResolvedValue(settings),
     },
@@ -123,16 +134,31 @@ function fixture() {
   const config = { get: jest.fn().mockReturnValue(true) };
   const queue = { enqueueTick: jest.fn().mockResolvedValue(undefined) };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
+  const registry = new MaxBotRegistryService(
+    new ConfigService({
+      APP_ROLE: 'admin',
+      APP_BASE_URL: 'https://major-maksimov.ru',
+      MAX_BOT_ID: 'major_bot',
+      MAX_ENTRY_BOT_ID: 'major_bot',
+      MAX_BOT_TOKEN: 'test-major-token',
+      MAX_WEBHOOK_SECRET_PATH: 'test-path',
+      MAX_WEBHOOK_HEADER_SECRET: 'test-header',
+      MAX_PUBLISHER_BOT_ID: scope.ownerBotId,
+    }),
+  );
+  const links = new MaxBotLinkService(
+    {} as never,
+    registry,
+    { getActiveBotId: () => 'major_bot' } as never,
+    {} as never,
+  );
   const service = new VkBotReviewService(
     prisma as never,
     access as never,
     { getPublisherScope: () => scope } as never,
     publish as never,
     max as never,
-    {
-      buildBotStartUrlSync: () => 'https://max.ru/publik_bot?start=vk_review',
-      buildMiniappStartUrlSync: () => 'https://max.ru/publik_bot?startapp=route',
-    } as never,
+    links,
     queue as never,
     config as never,
     governor as never,
@@ -154,6 +180,7 @@ function fixture() {
     revision: 1,
   };
   return {
+    registry,
     service,
     internals,
     prisma,
@@ -170,10 +197,134 @@ function fixture() {
 }
 
 describe('VkBotReviewService', () => {
+  it('returns the Publisher private start from token-isolated api-admin, never the Major fallback', async () => {
+    const { service, registry } = fixture();
+    expect(registry.getBotById('publik_bot')).toBeNull();
+    expect(registry.getValidationTokensForBot('publik_bot')).toEqual([]);
+    const state = await service.getState('-1', { userId: '17', username: null, displayName: null });
+    expect(state.botUrl).toBe('https://max.ru/publik_bot?start=vk_review');
+  });
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-15T12:00:00Z'));
   });
   afterEach(() => jest.useRealTimers());
+
+  it('connects the API-issued link through MAX start and delivers the post and decision buttons to the Publisher DM', async () => {
+    const { service, registry, internals, prisma, max, row, publish } = fixture();
+    const user = { userId: '17', username: null, displayName: null, launchBotId: 'publik_bot' };
+    const url = new URL((await service.getState('-1', user)).botUrl);
+    const parser = new WebhookParser();
+    const outbound = { add: jest.fn().mockResolvedValue(undefined) };
+    const producer = new PublisherVkBotReviewQueueService(outbound as never, registry);
+    const started = parser.parse(
+      {
+        update_id: 'vk-start',
+        update_type: 'bot_started',
+        timestamp: Date.now(),
+        chat_id: 42,
+        user: { user_id: 17 },
+        payload: url.searchParams.get('start'),
+      },
+      { botId: url.pathname.slice(1) },
+    );
+    expect(await producer.observeWebhook(started)).toBe(true);
+    const startJob = outbound.add.mock.calls[0]![1] as VkBotReviewJob;
+    expect(startJob).toMatchObject({
+      action: 'connect',
+      requiredBotId: 'publik_bot',
+      userId: '17',
+      privateChatId: '42',
+    });
+
+    const environment = jest.replaceProperty(process, 'env', {
+      ...process.env,
+      APP_ROLE: 'publisher',
+      APP_SERVICE_NAME: 'api-publisher',
+    });
+    try {
+      await service.process({
+        data: startJob,
+        updateData: jest.fn().mockResolvedValue(undefined),
+      } as never);
+      expect(prisma.$executeRaw).toHaveBeenCalled();
+      await service.configure('-1', user, { action: 'CONNECT' });
+
+      const review = {
+        ...row,
+        deliveryState: 'QUEUED',
+        contentMessageId: null,
+        controlMessageId: null,
+      };
+      prisma.vkBotReview.findFirst.mockResolvedValue(review);
+      prisma.vkBotReview.findUnique.mockResolvedValue(review);
+      prisma.vkBotReview.updateMany.mockImplementation(
+        async ({ data }: { data: Record<string, unknown> }) => {
+          Object.assign(review, data);
+          return { count: 1 };
+        },
+      );
+      let sequence = 0;
+      max.sendMessageImmediateWithId.mockImplementation(async (_chat, _text, options) => {
+        await options.beforeSend?.();
+        return { messageId: `vk-dm-${++sequence}` };
+      });
+      await internals.advance(review);
+      expect(review.deliveryState).toBe('CONTENT_SENT');
+      await internals.advance(review);
+      expect(review.deliveryState).toBe('DELIVERED');
+      expect(max.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+        2,
+        '42',
+        'Post',
+        expect.any(Object),
+        expect.objectContaining({ botId: 'publik_bot' }),
+      );
+      const controls = max.sendMessageImmediateWithId.mock.calls[2]![2] as MaxSendMessageOptions;
+      expect(controls.messageLink).toEqual({ type: 'reply', mid: 'vk-dm-1' });
+      expect(controls.buttons?.flat()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'callback', text: 'Опубликовать' }),
+          expect.objectContaining({ type: 'callback', text: 'Отклонить' }),
+        ]),
+      );
+      for (const button of controls.buttons?.flat() ?? []) {
+        if (button.type === 'link' && button.text !== 'Оригинал VK')
+          expect(new URL(button.url).pathname).toBe('/publik_bot');
+      }
+      const publishButton = controls.buttons
+        ?.flat()
+        .find((button) => button.type === 'callback' && button.text === 'Опубликовать');
+      if (publishButton?.type !== 'callback') throw new Error('Missing approval button');
+      const callback = parser.parse(
+        {
+          update_id: 'vk-approve',
+          update_type: 'message_callback',
+          timestamp: Date.now(),
+          callback: {
+            timestamp: Date.now(),
+            callback_id: 'vk-callback',
+            payload: publishButton.payload,
+            user: { user_id: 17 },
+          },
+          message: {
+            recipient: { chat_id: 42, chat_type: 'dialog' },
+            sender: { user_id: 777 },
+            body: { mid: 'vk-dm-2', text: 'Review' },
+          },
+        },
+        { botId: 'publik_bot' },
+      );
+      expect(await producer.observeWebhook(callback)).toBe(true);
+      const decision = outbound.add.mock.calls[1]![1] as VkBotReviewJob;
+      await service.process({ data: decision } as never);
+      await service.process({ data: decision } as never);
+      expect(publish.publishBotReviewedPost).toHaveBeenCalledTimes(1);
+      expect(publish.publishBotReviewedPost).toHaveBeenCalledWith('review-1');
+      expect(review.status).toBe('APPROVED');
+    } finally {
+      environment.restore();
+    }
+  });
 
   it('finishes an existing preview/control pair ahead of new previews', async () => {
     const { internals, row, prisma } = fixture();
