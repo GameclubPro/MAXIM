@@ -81,6 +81,20 @@ try {
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
+    assert.equal(
+      await panel
+        .locator('.settings-native-toggle__title-wrap:has(.settings-native-toggle__title-actions)')
+        .evaluateAll((rows) =>
+          rows.every((row) => {
+            const title = row.querySelector('.settings-native-toggle__title');
+            return (
+              !title || title.getBoundingClientRect().width >= row.getBoundingClientRect().width - 2
+            );
+          }),
+        ),
+      true,
+      `${name}: status must not squeeze the title into a narrow column`,
+    );
     assert.deepEqual(errors, []);
     await context.close();
     console.log(`PASS ${name}: intervals, sticker permission, save and layout`);

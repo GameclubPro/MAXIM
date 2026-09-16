@@ -1130,14 +1130,13 @@
   body[data-miniapp-profile='moderation']
     .settings-drilldown__panel--limits
     .settings-native-toggle__title-wrap:has(.settings-native-toggle__title-actions) {
-    display: flex;
-    flex-wrap: wrap;
+    grid-template-columns: minmax(0, 1fr);
   }
   body[data-miniapp-profile='moderation']
     .settings-drilldown__panel--limits
     .settings-native-toggle__title-wrap:has(.settings-native-toggle__title-actions)
-    > .settings-native-toggle__title {
-    flex-basis: 100%;
+    > :is(.settings-native-toggle__title, .settings-native-toggle__title-actions) {
+    grid-column: 1;
   }
   body[data-miniapp-profile='moderation']
     :is(.participant-sheet__stat, .participant-sheet__action, .participant-sheet__mode-switch) {
