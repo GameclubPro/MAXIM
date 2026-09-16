@@ -72,6 +72,7 @@
 - Stop-word UI owns both blocked words and blocked domains. Domain entry defaults to `DOMAIN`, not an accidental exact root URL.
 - Stop-word edits use the revision-checked `/chats/:chatId/stop-words` API. Keep words/phrases atomic during bulk input, preserve unsaved buffers on failed saves, and poll only `/stop-words/status` for lightweight OCR availability. Legacy settings writes must not overwrite the independent policy.
 - Keep `VkParsingCard` lazy-loaded on chat/channel settings routes.
+- Publication video selection uploads up to 100 MB directly to the MAX-issued HTTPS address. Keep progress, cancellation, persistent errors, generic native MIME inference, and actor-owned asset references; never encode the selected file as base64 or send it through the API mutation tunnel. `node apps/miniapp/test/publication-video-picker.browser.mjs` checks the local upload UI after builds finish.
 
 ## Performance And Product Presentation
 

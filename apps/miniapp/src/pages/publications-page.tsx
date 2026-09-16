@@ -138,7 +138,10 @@ import {
   trimBroadcastLinkButtons,
   validateBroadcastLinkButtons,
 } from '../lib/broadcast-link-buttons';
-import { preparePublicationVideo } from '../features/publications/publication-video-preparation';
+import {
+  uploadPublicationVideo,
+  type PublicationVideoUploadProgress,
+} from '../lib/api/publication-video-upload';
 import { resolveBroadcastScheduleTimezone } from '../lib/broadcast-schedule';
 import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
@@ -293,6 +296,7 @@ export function PublicationsPage({
   const [searchParams, setSearchParams] = useSearchParams();
   const [editorContext, setEditorContext] = useState<PublicationEditorContext | null>(null);
   const [mediaPreparing, setMediaPreparing] = useState(false);
+  const [videoPreparing, setVideoPreparing] = useState(false);
   const [editorClosePending, setEditorClosePending] = useState(false);
   const isEditor = isPublisherProfile && editorContext !== null;
   const isEditorKeyboardOpen = useKeyboardOpen(96, isEditor);
@@ -315,7 +319,7 @@ export function PublicationsPage({
     isEditor,
     persistenceEnabled,
     isPublisherProfile,
-    mediaPreparing,
+    mediaPreparing || videoPreparing,
     userId,
   );
   const savedCreateDraftRef = useRef<{
@@ -365,7 +369,10 @@ export function PublicationsPage({
   const [importOmissions, setImportOmissions] = useState<PublisherPostImportOmission[]>([]);
   const [fieldError, setFieldError] = useState('');
   const [validationStarted, setValidationStarted] = useState(false);
-  const [videoPreparing, setVideoPreparing] = useState(false);
+  const [videoUploadProgress, setVideoUploadProgress] =
+    useState<PublicationVideoUploadProgress | null>(null);
+  const videoUploadAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => videoUploadAbortRef.current?.abort(), []);
   const [pendingReview, setPendingReview] = useState(false);
   const [pendingConflict, setPendingConflict] = useState(false);
   const [pendingEditorClose, setPendingEditorClose] = useState(false);
@@ -2375,19 +2382,26 @@ export function PublicationsPage({
       return;
     }
     setVideoPreparing(true);
+    const abort = new AbortController();
+    videoUploadAbortRef.current = abort;
     try {
-      const prepared = await preparePublicationVideo(file);
+      const asset = await uploadPublicationVideo(api, file, abort.signal, setVideoUploadProgress);
+      abort.signal.throwIfAborted();
       setDraft((current) => ({
         ...current,
         images: [],
-        retainedAssets: [],
-        mediaType: 'video',
+        retainedAssets: [asset],
+        mediaType: null,
         mediaPayload: null,
-        ...prepared,
+        mediaBase64: '',
+        mediaMimeType: '',
+        mediaFileName: '',
       }));
       discardMissingImages();
       setFieldError('');
     } finally {
+      videoUploadAbortRef.current = null;
+      setVideoUploadProgress(null);
       setVideoPreparing(false);
     }
   }
@@ -2578,6 +2592,8 @@ export function PublicationsPage({
               missingImageCount={missingImageCount}
               retainedVideo={Boolean(retainedVideo)}
               videoPreparing={videoPreparing}
+              videoUploadProgress={videoUploadProgress}
+              onCancelVideoUpload={() => videoUploadAbortRef.current?.abort()}
               videoNeedsReselection={videoNeedsReselection}
               fieldError={fieldError}
               onDiscardMissingImages={discardMissingImages}

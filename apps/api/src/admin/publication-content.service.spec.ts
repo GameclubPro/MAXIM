@@ -1,4 +1,6 @@
 import { PublicationContentService } from './publication-content.service';
+import { PUBLICATION_UPLOADED_VIDEO_FIELD } from './publication-video-media';
+import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
 import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
 import { validateMaxMediaUploadPayload } from '../max/max-media-upload-validation';
 import {
@@ -46,6 +48,100 @@ function createService(prisma: unknown = {}) {
 }
 
 describe('PublicationContentService', () => {
+  it('accepts a confirmed owned direct upload before its first draft link without copying bytes', async () => {
+    const asset = {
+      id: 'uploaded',
+      mimeType: 'video/mp4',
+      fileName: 'clip.mp4',
+      sizeBytes: 36_000_000,
+      sha256: 'digest',
+      durablePayload: {
+        [PUBLICATION_UPLOADED_VIDEO_FIELD]: {
+          version: 1,
+          botId: DEFAULT_MAX_PUBLISHER_BOT_ID,
+          token: 'token',
+        },
+      },
+    };
+    const findFirst = jest
+      .fn()
+      .mockImplementation(async ({ where }) =>
+        where.bytes === null && where.actorUserId === 'owner' ? asset : null,
+      );
+    const service = createService({ publicationAsset: { findFirst } });
+    const prepared = await service.prepareContentRevision({
+      text: '',
+      textFormat: 'plain',
+      buttons: [],
+      media: [{ type: 'video-ref', assetId: 'uploaded' }],
+    });
+    await expect(
+      service.assertPublisherCompatibleContent(prepared, 'owner'),
+    ).resolves.toBeUndefined();
+    await expect(service.assertPublisherCompatibleContent(prepared, 'other')).rejects.toThrow(
+      'другим ботом',
+    );
+    const tx = createTransaction();
+    tx.publicationAsset.findFirst = findFirst;
+    await service.persistPreparedContentRevision(tx, 'publication', 1, prepared, 'owner');
+    expect(tx.publicationAsset.upsert).not.toHaveBeenCalled();
+    expect(tx.publicationContentAsset.create).toHaveBeenCalledWith({
+      data: { contentRevisionId: 'content-1', assetId: 'uploaded', position: 0 },
+    });
+  });
+
+  it('never trusts a direct-upload marker supplied through public video payloads', async () => {
+    await expect(
+      createService().prepareContentRevision({
+        text: '',
+        textFormat: 'plain',
+        buttons: [],
+        media: [
+          {
+            type: 'video',
+            base64: '',
+            mimeType: 'video/mp4',
+            fileName: 'clip.mp4',
+            payload: {
+              [PUBLICATION_UPLOADED_VIDEO_FIELD]: {
+                version: 1,
+                botId: DEFAULT_MAX_PUBLISHER_BOT_ID,
+                token: 'forged',
+              },
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('rejects saved remote uploads from another Publisher bot', async () => {
+    const findFirst = jest.fn().mockImplementation(async ({ where }) =>
+      where.bytes === null
+        ? {
+            mimeType: 'video/mp4',
+            durablePayload: {
+              [PUBLICATION_UPLOADED_VIDEO_FIELD]: {
+                version: 1,
+                botId: 'another-bot',
+                token: 'token',
+              },
+            },
+          }
+        : null,
+    );
+    const service = createService({ publicationAsset: { findFirst } });
+    const prepared = await service.prepareContentRevision({
+      text: '',
+      textFormat: 'plain',
+      buttons: [],
+      media: [{ type: 'video-ref', assetId: 'uploaded' }],
+    });
+    await expect(service.assertPublisherCompatibleContent(prepared, 'owner')).rejects.toThrow(
+      'другим ботом',
+    );
+  });
+
   it('serves bytes only from an actor-owned Publisher publication link', async () => {
     const prisma = {
       publicationAsset: {
@@ -214,6 +310,7 @@ describe('PublicationContentService', () => {
   it('allows a saved video reference for Publik only when durable bytes are present', async () => {
     const findFirst = jest
       .fn()
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ mimeType: 'video/mp4' });
     const service = createService({ publicationAsset: { findFirst } });

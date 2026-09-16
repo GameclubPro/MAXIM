@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
@@ -16,6 +16,10 @@ import {
 const baseUrl = 'http://127.0.0.1:3000/app/';
 const server = await ensureMiniappDevServer(baseUrl);
 const screenshots = await mkdtemp(path.join(tmpdir(), 'maxim-video-picker-'));
+const oversizedPath = path.join(screenshots, 'oversized.mp4');
+const oversizedFile = await open(oversizedPath, 'wx');
+await oversizedFile.truncate(100_000_001);
+await oversizedFile.close();
 let browser;
 
 try {
@@ -29,8 +33,25 @@ try {
   ]) {
     const context = await browser.newContext({ ...device, colorScheme });
     try {
-      await context.route('**/*', (route) => {
+      let binaryMode = 'success';
+      let binaryRequests = 0;
+      await context.route('**/*', async (route) => {
         const url = new URL(route.request().url());
+        if (url.hostname === 'preview.okcdn.ru') {
+          if (route.request().method() === 'POST') binaryRequests += 1;
+          if (binaryMode === 'slow') await new Promise((resolve) => setTimeout(resolve, 2000));
+          return route
+            .fulfill({
+              status: binaryMode === 'failure' ? 503 : 200,
+              body: '',
+              headers: {
+                'access-control-allow-origin': new URL(baseUrl).origin,
+                'access-control-allow-methods': 'POST, OPTIONS',
+                'access-control-allow-headers': '*',
+              },
+            })
+            .catch(() => undefined);
+        }
         return url.origin === new URL(baseUrl).origin ? route.continue() : route.abort();
       });
       await installMaxBridgeShimInitScript(context, {}, { colorScheme });
@@ -48,14 +69,11 @@ try {
       const editor = page.getByRole('textbox', { name: 'Текст публикации', exact: true });
       await editor.fill('Video attachment regression');
       const error = page.locator('.publication-video-error');
-      const tooLarge = {
-        name: '36mb.mp4',
-        mimeType: 'video/mp4',
-        buffer: Buffer.alloc(36_000_000),
-      };
+      const tooLarge = oversizedPath;
       await input.setInputFiles(tooLarge);
       await error.waitFor({ state: 'visible' });
-      assert.match(await error.textContent(), /Максимум 24 МБ/u);
+      assert.match(await error.textContent(), /Максимум 100 МБ/u);
+      assert.equal(binaryRequests, 0);
       assert.equal(await input.getAttribute('aria-invalid'), 'true');
       assert.ok(
         (await input.getAttribute('aria-describedby')).includes(await error.getAttribute('id')),
@@ -92,7 +110,7 @@ try {
       };
       await input.setInputFiles(smallVideo);
       await error.waitFor({ state: 'detached' });
-      const selected = page.locator('.broadcast-message-card__video-preview');
+      const selected = page.locator('.publication-retained-media');
       await selected.waitFor({ state: 'visible' });
       assert.match(await selected.textContent(), /small.mp4/u);
       assert.equal(await input.getAttribute('aria-invalid'), null);
@@ -115,10 +133,39 @@ try {
       );
       await input.setInputFiles(smallVideo);
       await error.waitFor({ state: 'detached' });
+      await selected.waitFor({ state: 'visible' });
+      await page.locator('.publication-video-upload').waitFor({ state: 'detached' });
+      binaryMode = 'failure';
+      await input.setInputFiles(smallVideo);
+      await page.waitForFunction(() =>
+        document.querySelector('.publication-video-error')?.textContent.includes('MAX не принял'),
+      );
+      assert.match(await selected.textContent(), /small.mp4/u);
+      binaryMode = 'slow';
+      await input.setInputFiles(smallVideo);
+      await page.getByRole('button', { name: 'Отменить загрузку видео', exact: true }).click();
+      await page.waitForFunction(() =>
+        document.querySelector('.publication-video-error')?.textContent.includes('отменена'),
+      );
+      assert.match(await selected.textContent(), /small.mp4/u);
+      binaryMode = 'success';
+      await input.setInputFiles({
+        name: '36mb.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.alloc(36_000_000),
+      });
+      await page.waitForFunction(() =>
+        document.querySelector('.publication-retained-media')?.textContent.includes('36mb.mp4'),
+      );
+      assert.equal(await error.count(), 0);
+      assert.equal(
+        await page.getByRole('button', { name: 'Убрать видео', exact: true }).count(),
+        1,
+      );
       await page.screenshot({ path: path.join(screenshots, `${name}-attached.png`) });
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${name}: oversized, persistent error, cancel, retry, generic MIME, empty, preserved draft`,
+        `PASS ${name}: 36 MB direct upload, 100 MB limit, persistent error, cancel, retry, generic MIME, empty, preserved draft`,
       );
     } finally {
       await context.close();

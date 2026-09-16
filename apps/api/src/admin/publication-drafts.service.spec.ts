@@ -3,6 +3,7 @@ import { MINIAPP_PROFILES_METADATA } from '../auth/miniapp-profile';
 import { PublicationDraftsService } from './publication-drafts.service';
 import { PublicationDraftsController } from './publication-drafts.controller';
 import { PublicationAssetsController } from './publication-assets.controller';
+import { PublicationVideoUploadsController } from './publication-video-uploads.controller';
 import { MAX_PUBLICATION_DRAFT_STORAGE_BYTES } from '@maxim/contracts/publication-draft';
 
 const actor = { userId: 'owner', username: null, displayName: null };
@@ -83,12 +84,13 @@ function setup() {
 }
 
 describe('PublicationDraftsService', () => {
-  it.each([PublicationDraftsController, PublicationAssetsController])(
-    'keeps %p Publisher-only',
-    (controller) => {
-      expect(Reflect.getMetadata(MINIAPP_PROFILES_METADATA, controller)).toEqual(['publisher']);
-    },
-  );
+  it.each([
+    PublicationDraftsController,
+    PublicationAssetsController,
+    PublicationVideoUploadsController,
+  ])('keeps %p Publisher-only', (controller) => {
+    expect(Reflect.getMetadata(MINIAPP_PROFILES_METADATA, controller)).toEqual(['publisher']);
+  });
   it('saves an empty, recipient-free draft without any dispatchable schedule', async () => {
     const { service, tx, content, policy } = setup();
     await service.save(null, actor, request);

@@ -6,6 +6,7 @@ import { Xmark } from 'iconoir-react';
 import { BroadcastContentComposer } from '../../components/broadcast-content-composer';
 import type { BroadcastSystemButtonPreview } from '../../lib/broadcast-system-buttons';
 import { describeUserFacingError } from '../../lib/user-facing-error';
+import type { PublicationVideoUploadProgress } from '../../lib/api/publication-video-upload';
 import { PublicationImportButtonsNotice } from './publication-import-buttons-notice';
 import {
   getPublicationTargetKey,
@@ -39,6 +40,8 @@ type PublicationContentEditorSectionProps = {
   missingImageCount: number;
   retainedVideo: boolean;
   videoPreparing: boolean;
+  videoUploadProgress?: PublicationVideoUploadProgress | null;
+  onCancelVideoUpload?: () => void;
   videoNeedsReselection: boolean;
   fieldError: string;
   onDiscardMissingImages: () => void;
@@ -71,6 +74,8 @@ export function PublicationContentEditorSection({
   missingImageCount,
   retainedVideo,
   videoPreparing,
+  videoUploadProgress,
+  onCancelVideoUpload,
   videoNeedsReselection,
   fieldError,
   onDiscardMissingImages,
@@ -104,7 +109,9 @@ export function PublicationContentEditorSection({
       await onVideoFile(file);
     } catch (error) {
       setVideoError(
-        describeUserFacingError(error, 'Не удалось подготовить видео. Повторите выбор.'),
+        error instanceof Error && error.name === 'AbortError'
+          ? 'Загрузка видео отменена.'
+          : describeUserFacingError(error, 'Не удалось подготовить видео. Повторите выбор.'),
       );
     }
   }
@@ -156,12 +163,13 @@ export function PublicationContentEditorSection({
         assets={draft.retainedAssets.filter((asset) => asset.type === 'video')}
         previews={importedAssetPreviews}
         disabled={isBusy}
-        onRemove={(assetId) =>
+        onRemove={(assetId) => {
+          setVideoError('');
           setDraft((current) => ({
             ...current,
             retainedAssets: current.retainedAssets.filter((asset) => asset.id !== assetId),
-          }))
-        }
+          }));
+        }}
       />
       {imagesNeedReselection ? (
         <div className="publications-inline-notice is-warning" role="alert">
@@ -232,7 +240,7 @@ export function PublicationContentEditorSection({
         showButtonsLabel={showButtonsLabel}
         additionalMediaAction={
           <PublicationVideoTool
-            active={draft.mediaType === 'video'}
+            active={draft.mediaType === 'video' || retainedVideo}
             disabled={isBusy || videoPreparing}
             preparing={videoPreparing}
             needsReselection={videoNeedsReselection}
@@ -242,13 +250,7 @@ export function PublicationContentEditorSection({
             onBlocked={() => videoBlockedReason && onInfo(videoBlockedReason)}
           />
         }
-        videoLabel={
-          draft.mediaType === 'video'
-            ? draft.mediaFileName || 'Видео'
-            : retainedVideo
-              ? 'Видео'
-              : null
-        }
+        videoLabel={draft.mediaType === 'video' ? draft.mediaFileName || 'Видео' : null}
         disabled={operationBusy}
         textError={
           fieldError.includes('текст') ||
@@ -288,6 +290,23 @@ export function PublicationContentEditorSection({
         }}
         onError={onInfo}
       />
+      {videoPreparing ? (
+        <div className="publication-video-upload" role="status">
+          <span>
+            {videoUploadProgress?.processing
+              ? 'Обработка видео в MAX'
+              : `Загрузка видео: ${videoUploadProgress?.percent ?? 0}%`}
+          </span>
+          <button
+            type="button"
+            onClick={onCancelVideoUpload}
+            aria-label="Отменить загрузку видео"
+            title="Отменить загрузку видео"
+          >
+            <Xmark aria-hidden />
+          </button>
+        </div>
+      ) : null}
       {videoError ? (
         <p
           id={videoErrorId}

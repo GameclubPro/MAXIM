@@ -10,11 +10,13 @@ import { MaxClientService } from '../max/max-client.service';
 import { MaxMediaUploadValidationError } from '../max/max-media-upload-validation';
 import { Prisma, PublicationContentFormat } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import {
   hasPublicationVideoInternalMarker,
   PUBLICATION_MAX_VIDEO_BYTES,
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
+  readPublicationUploadedVideo,
 } from './publication-video-media';
 import {
   PUBLICATION_MAX_IMAGE_BYTES,
@@ -153,7 +155,10 @@ export class PublicationContentService {
         },
         select: { mimeType: true },
       });
-      if (!persisted || !persisted.mimeType.toLowerCase().startsWith('video/')) {
+      if (
+        (!persisted || !persisted.mimeType.toLowerCase().startsWith('video/')) &&
+        !(await this.findOwnedUploadedVideo(this.prisma, asset.assetId, actorUserId))
+      ) {
         throw new BadRequestException(
           'Сохранённое видео загружено другим ботом. Выберите видеофайл снова.',
         );
@@ -272,8 +277,8 @@ export class PublicationContentService {
           });
         } else {
           const payload = this.readJsonObject(asset.durablePayload);
-          if (!payload) {
-            if (asset.bytes && asset.mimeType.toLowerCase().startsWith('video/')) {
+          if (!payload || readPublicationUploadedVideo(payload, this.publisherBotId())) {
+            if ((asset.bytes || payload) && asset.mimeType.toLowerCase().startsWith('video/')) {
               video = {
                 payload: { [PUBLICATION_VIDEO_ASSET_ID_FIELD]: asset.id },
                 mimeType: asset.mimeType,
@@ -401,7 +406,7 @@ export class PublicationContentService {
     let totalImageBytes = 0;
     for (const item of prepared) {
       if (item.kind === 'reference') {
-        const asset = await tx.publicationAsset.findFirst({
+        const linkedAsset = await tx.publicationAsset.findFirst({
           where: {
             id: item.assetId,
             actorUserId,
@@ -411,6 +416,11 @@ export class PublicationContentService {
           },
           select: PUBLICATION_ASSET_METADATA_SELECT,
         });
+        const asset =
+          linkedAsset ??
+          (item.expectedType === 'video'
+            ? await this.findOwnedUploadedVideo(tx, item.assetId, actorUserId)
+            : null);
         if (!asset) {
           throw new BadRequestException('Медиа публикации больше недоступно.');
         }
@@ -454,6 +464,22 @@ export class PublicationContentService {
       throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
     }
     return resolved;
+  }
+
+  private publisherBotId(): string {
+    return buildPublisherBotDescriptor({ id: process.env.MAX_PUBLISHER_BOT_ID }).id;
+  }
+
+  private async findOwnedUploadedVideo(tx: any, assetId: string, actorUserId: string) {
+    const asset = await tx.publicationAsset.findFirst({
+      where: { id: assetId, actorUserId, bytes: null },
+      select: PUBLICATION_ASSET_METADATA_SELECT,
+    });
+    return asset &&
+      asset.mimeType.startsWith('video/') &&
+      readPublicationUploadedVideo(asset.durablePayload, this.publisherBotId())
+      ? asset
+      : null;
   }
 
   private decodeImageBase64(value: string): Buffer {

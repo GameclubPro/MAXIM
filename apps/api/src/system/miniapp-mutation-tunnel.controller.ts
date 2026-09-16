@@ -148,6 +148,8 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   { method: 'POST', pattern: /^\/publications(?:\/test)?$/u },
   { method: 'POST', pattern: /^\/publications\/calendar-availability$/u },
   { method: 'POST', pattern: /^\/publications\/drafts$/u },
+  { method: 'POST', pattern: /^\/publications\/video-uploads$/u },
+  { method: 'POST', pattern: /^\/publications\/video-uploads\/[A-Za-z0-9_-]{16,80}\/complete$/u },
   { method: 'PUT', pattern: new RegExp(`^/publications/drafts/${ENTITY_ID_SEGMENT}$`) },
   { method: 'DELETE', pattern: new RegExp(`^/publications/drafts/${ENTITY_ID_SEGMENT}$`) },
   {

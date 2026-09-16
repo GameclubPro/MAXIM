@@ -189,6 +189,44 @@ export const publicationAssetSchema = z.object({
 });
 export type PublicationAsset = z.infer<typeof publicationAssetSchema>;
 
+export const MAX_PUBLICATION_VIDEO_UPLOAD_BYTES = 100_000_000;
+export const publicationVideoUploadIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,80}$/u);
+export const createPublicationVideoUploadSchema = z
+  .object({
+    requestId: publicationVideoUploadIdSchema,
+    fileName: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(/^[^\p{Cc}]+$/u),
+    mimeType: z.enum(['video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm']),
+    sizeBytes: z.number().int().positive().max(MAX_PUBLICATION_VIDEO_UPLOAD_BYTES),
+  })
+  .strict();
+export type CreatePublicationVideoUpload = z.infer<typeof createPublicationVideoUploadSchema>;
+export const publicationVideoUploadStatusSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('PENDING'), uploadId: publicationVideoUploadIdSchema }),
+  z.object({
+    status: z.literal('UPLOADING'),
+    uploadId: publicationVideoUploadIdSchema,
+    url: z.string().url().max(8192),
+    expiresAt: z.string().datetime(),
+  }),
+  z.object({ status: z.literal('PROCESSING'), uploadId: publicationVideoUploadIdSchema }),
+  z.object({
+    status: z.literal('READY'),
+    uploadId: publicationVideoUploadIdSchema,
+    asset: publicationAssetSchema,
+  }),
+  z.object({
+    status: z.literal('FAILED'),
+    uploadId: publicationVideoUploadIdSchema,
+    message: z.string(),
+  }),
+]);
+export type PublicationVideoUploadStatus = z.infer<typeof publicationVideoUploadStatusSchema>;
+
 export const publicationDraftContentInputSchema = z
   .object({
     postPublish: publicationPostPublishSchema.optional(),

@@ -49,6 +49,10 @@ import { stripSupportedMarkdownToPlainText } from '../max-markdown';
 
 const previewPostActionRequests = new WeakMap<PreviewState, Map<string, string>>();
 import { normalizeLegacyMultilineMarkdown } from '../max-markdown-multiline';
+import {
+  getPreviewUploadedVideos,
+  handlePublicationVideoPreviewRequest,
+} from './preview-transport-publication-video';
 
 function resolvePublicationContentPreview(content: PublicationContentInput): string {
   const source = content.text.trim();
@@ -245,7 +249,10 @@ export function buildPreviewPublicationDetails(
   const targets = request.audience.targets.map((target) =>
     resolvePreviewPublicationTarget(state, target),
   );
-  const assets = buildPreviewPublicationAssets(options.id, request.content, options.retainedAssets);
+  const assets = buildPreviewPublicationAssets(options.id, request.content, [
+    ...(options.retainedAssets ?? []),
+    ...getPreviewUploadedVideos(state),
+  ]);
   const slots =
     request.intent === 'publish' ? buildPreviewPublicationSlots(request.schedule, now) : [];
   const occurrences = slots.map((scheduledAt, occurrenceIndex) => ({
@@ -1406,6 +1413,8 @@ export function handlePublicationsRequest(
 }
 
 export const handlePublicationsPreviewRequest: PreviewRequestHandler = (context) => {
+  const video = handlePublicationVideoPreviewRequest(context);
+  if (video !== PREVIEW_NOT_HANDLED) return video;
   if (context.segments[0] !== 'publications') {
     return PREVIEW_NOT_HANDLED;
   }

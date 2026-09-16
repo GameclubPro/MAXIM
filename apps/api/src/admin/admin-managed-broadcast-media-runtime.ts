@@ -22,6 +22,8 @@ import {
   PUBLICATION_MAX_VIDEO_BYTES,
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
+  PUBLICATION_UPLOADED_VIDEO_FIELD,
+  readPublicationUploadedVideo,
 } from './publication-video-media';
 import {
   PUBLICATION_MAX_IMAGE_BYTES,
@@ -358,7 +360,10 @@ export class AdminManagedBroadcastMediaRuntime {
         imageFileName: '',
         images: [],
         mediaType: 'video',
-        mediaPayload: payload ?? { [PUBLICATION_VIDEO_ASSET_ID_FIELD]: asset.id },
+        mediaPayload:
+          payload && !(PUBLICATION_UPLOADED_VIDEO_FIELD in payload)
+            ? payload
+            : { [PUBLICATION_VIDEO_ASSET_ID_FIELD]: asset.id },
         mediaMimeType: asset.mimeType.trim(),
         mediaFileName: asset.fileName.trim(),
       };
@@ -570,9 +575,11 @@ export class AdminManagedBroadcastMediaRuntime {
           some: { contentRevision: { publication: { actorUserId } } },
         },
       },
-      select: { bytes: true, mimeType: true, fileName: true },
+      select: { bytes: true, mimeType: true, fileName: true, durablePayload: true },
     });
     const mimeType = asset?.mimeType.trim().toLowerCase() ?? '';
+    const uploaded = readPublicationUploadedVideo(asset?.durablePayload, botId ?? '');
+    if (uploaded && mimeType.startsWith('video/')) return uploaded;
     if (!asset?.bytes || !mimeType.startsWith('video/')) {
       throw new BadRequestException('Видео публикации больше недоступно.');
     }

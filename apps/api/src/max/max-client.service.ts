@@ -2320,6 +2320,31 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
+  async createVideoUploadSession(
+    options: MaxApiRequestOptions,
+  ): Promise<{ token: string; url: string }> {
+    const bot = this.resolveExecutableBot(options.botId, {
+      explicit: Boolean(options.botId?.trim()),
+    });
+    return this.botContext.runWithBot(bot.id, async () => {
+      const session = await this.createUploadSession('video', options, bot.id);
+      const url = new URL(session.url);
+      if (
+        !session.token ||
+        session.token.length > 512 ||
+        session.url.length > 8192 ||
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        (url.port && url.port !== '443') ||
+        !url.hostname.endsWith('.okcdn.ru')
+      ) {
+        throw new Error('MAX video upload session is invalid');
+      }
+      return session;
+    });
+  }
+
   private async createUploadSession(
     uploadType: MaxMediaAttachmentType,
     requestOptions: MaxApiRequestOptions,

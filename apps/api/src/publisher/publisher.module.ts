@@ -61,6 +61,11 @@ import { PublisherVkBotReviewQueueService } from './publisher-vk-bot-review.queu
 import { PUBLISHER_START_QUEUE, PublisherStartQueueService } from './publisher-start.queue';
 import { PublisherStartProcessor } from './publisher-start.processor';
 import { PublisherPublicationPostActionsService } from './publisher-publication-post-actions.service';
+import {
+  PUBLISHER_VIDEO_UPLOAD_QUEUE,
+  PublisherVideoUploadQueueService,
+} from './publisher-video-upload.queue';
+import { PublisherVideoUploadProcessor } from './publisher-video-upload.processor';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -77,6 +82,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherAutoReplyContentCaptureService,
       PublisherStartProcessor,
       PublisherPublicationPostActionsService,
+      PublisherVideoUploadProcessor,
     ]
   : [];
 
@@ -104,6 +110,7 @@ const sharedPublisherProviders = [
   PublisherPrivateFlowLeaseService,
   PublisherPrivateDialogFlowRouterService,
   PublisherStartQueueService,
+  PublisherVideoUploadQueueService,
 ];
 
 @Global()
@@ -119,6 +126,7 @@ const sharedPublisherProviders = [
       { name: PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE },
       { name: PUBLISHER_SUGGESTION_ADMIN_QUEUE },
       { name: PUBLISHER_START_QUEUE },
+      { name: PUBLISHER_VIDEO_UPLOAD_QUEUE },
     ),
   ],
   providers: [...sharedPublisherProviders, ...publisherRuntimeProviders],

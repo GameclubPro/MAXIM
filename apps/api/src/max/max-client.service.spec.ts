@@ -7930,6 +7930,36 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('allocates a bounded direct video session without sending any binary data', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValue(
+          of({ data: { url: 'https://omub.okcdn.ru/upload', token: 'media-token' } }),
+        ),
+    };
+    const service = createService(httpService);
+    await expect(
+      service.createVideoUploadSession({ trafficClass: 'interactive' }),
+    ).resolves.toEqual({ url: 'https://omub.okcdn.ru/upload', token: 'media-token' });
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'post', params: { type: 'video' } }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    { url: 'http://omub.okcdn.ru/upload', token: 'token' },
+    { url: 'https://omub.okcdn.ru.evil.example/upload', token: 'token' },
+    { url: 'https://user:password@omub.okcdn.ru/upload', token: 'token' },
+    { url: 'https://omub.okcdn.ru/upload', token: '' },
+  ])('rejects unsafe or incomplete direct upload sessions', async (data) => {
+    const service = createService({ request: jest.fn().mockReturnValue(of({ data })) });
+    await expect(service.createVideoUploadSession({})).rejects.toThrow('session is invalid');
+    await service.onModuleDestroy();
+  });
+
   it('keeps multipart video upload available through the rollback flag', async () => {
     const httpService = {
       request: jest

@@ -6,6 +6,7 @@ import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime'
 import {
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
+  PUBLICATION_UPLOADED_VIDEO_FIELD,
 } from './publication-video-media';
 
 const TINY_JPEG_BASE64 =
@@ -59,6 +60,54 @@ function createVideoRequestPayload(mediaPayload: Record<string, unknown>) {
 }
 
 describe('AdminManagedBroadcastRuntime publication media', () => {
+  it('reuses a directly uploaded MAX video without a local file or reupload and fences its bot', async () => {
+    const { runtime, findUnique, assetFindFirst, uploadVideo } = createRuntime();
+    const asset = {
+      id: 'direct-video',
+      bytes: null,
+      mimeType: 'video/mp4',
+      fileName: 'clip.mp4',
+      durablePayload: {
+        [PUBLICATION_UPLOADED_VIDEO_FIELD]: {
+          version: 1,
+          botId: 'publisher-bot',
+          token: 'remote-token',
+        },
+      },
+    };
+    findUnique.mockResolvedValue({ assets: [{ asset }] });
+    assetFindFirst.mockResolvedValue(asset);
+    const mediaRuntime = (runtime as any).mediaRuntime;
+    const request = await mediaRuntime.loadManagedBroadcastRequestMedia(createBroadcastRow());
+    expect(request.mediaPayload).toEqual({ [PUBLICATION_VIDEO_ASSET_ID_FIELD]: asset.id });
+    const result = await mediaRuntime.resolveManagedBroadcastMedia(
+      request,
+      'channel',
+      'channel-1',
+      'owner',
+      'publisher-bot',
+      undefined,
+      undefined,
+      { trustedPublicationVideoMarkers: true },
+    );
+    expect(result).toEqual({
+      attachments: [{ type: 'video', payload: { token: 'remote-token' } }],
+    });
+    expect(uploadVideo).not.toHaveBeenCalled();
+    await expect(
+      mediaRuntime.resolveManagedBroadcastMedia(
+        request,
+        'channel',
+        'channel-1',
+        'owner',
+        'other-bot',
+        undefined,
+        undefined,
+        { trustedPublicationVideoMarkers: true },
+      ),
+    ).rejects.toThrow('больше недоступно');
+  });
+
   it('canonicalizes a valid image even when its declared MIME type is not media', async () => {
     const { runtime } = createRuntime();
     const payload = {
@@ -415,7 +464,7 @@ describe('AdminManagedBroadcastRuntime publication media', () => {
           some: { contentRevision: { publication: { actorUserId: 'user-1' } } },
         },
       },
-      select: { bytes: true, mimeType: true, fileName: true },
+      select: { bytes: true, mimeType: true, fileName: true, durablePayload: true },
     });
     expect(uploadVideo).toHaveBeenCalledWith(
       Buffer.from('owned-video'),

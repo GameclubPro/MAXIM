@@ -24,6 +24,7 @@
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
 - The domain-separated Publisher dialog signing key is mounted only in `api-admin`, `api-action`, and `api-publisher`. Keep the Publisher bot token exclusive to `api-publisher` and init-data verification keys exclusive to `api-admin`.
 - Plain Publisher private starts use `publisher-start`, consumed only by `api-publisher`; preserve its pre-send dispatch marker on retries and retain jobs longer than the one-day accepted event age.
+- `publisher-video-upload` carries bounded metadata and MAX upload receipts only, with its worker exclusively in `api-publisher`. Video bytes travel directly from the mini app to MAX, not through nginx, Redis, Postgres, or a VPS spool. No upload volume or larger proxy/JSON body limit is required; preserve the Publisher-only credential boundary.
 - `miniapp-major-static` serves `https://major-maksimov.ru/app/` on local port 3003. `miniapp-static` serves legacy support host `maxim.play-team.ru` on port 3000 and is not a routine target.
 - `admin-static` serves the closed Safety Desk on local port 3004 behind `admin.major-maksimov.ru` Basic Auth.
 - Current canonical user host is `https://major-maksimov.ru`; `/app/` is the only routine production mini app path.

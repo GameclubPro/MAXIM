@@ -56,7 +56,7 @@ test('publishing page owns media preparation and blocks review, test, publish, a
 test('pending image work protects native and browser close before the first image is ready', () => {
   assert.match(
     pageSource,
-    /usePublicationComposer\([\s\S]*?isPublisherProfile,[\s\S]*?mediaPreparing,[\s\S]*?userId,/u,
+    /usePublicationComposer\([\s\S]*?isPublisherProfile,[\s\S]*?mediaPreparing \|\| videoPreparing,[\s\S]*?userId,/u,
   );
   assert.match(composerHookSource, /pendingWork \|\| hasDraft/u);
 });
@@ -143,7 +143,7 @@ test('video failures remain next to the picker instead of depending on transient
   assert.match(contentEditorSource, /onFile=\{handleVideoFile\}/u);
   assert.match(
     contentEditorSource,
-    /await onVideoFile\(file\);[\s\S]*?catch \(error\)[\s\S]*?setVideoError\(\s*describeUserFacingError/u,
+    /await onVideoFile\(file\);[\s\S]*?catch \(error\)[\s\S]*?setVideoError\([\s\S]*?describeUserFacingError/u,
   );
   assert.match(contentEditorSource, /id=\{videoErrorId\}[^>]*role="alert"/u);
   assert.match(contentEditorSource, /errorId=\{videoError \? videoErrorId : undefined\}/u);
@@ -157,8 +157,8 @@ test('video preparation preserves existing media until success and always releas
     /async function handlePublicationVideoFile[\s\S]*?function confirmDraftClear/u,
   )?.[0];
   assert.ok(handler);
-  assert.ok(handler.indexOf('await preparePublicationVideo(file)') < handler.indexOf('setDraft('));
-  assert.match(handler, /finally \{\s*setVideoPreparing\(false\)/u);
+  assert.ok(handler.indexOf('await uploadPublicationVideo(') < handler.indexOf('setDraft('));
+  assert.match(handler, /finally \{[\s\S]*?setVideoPreparing\(false\)/u);
   assert.doesNotMatch(handler, /catch \(error\)/u);
   assert.match(videoToolSource, /\.finally\(\(\) => \{\s*input.value = '';/u);
 });

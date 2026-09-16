@@ -69,6 +69,7 @@ import { PublicationPostActionsController } from './publication-post-actions.con
 import { PublicationDraftsController } from './publication-drafts.controller';
 import { PublicationDraftsService } from './publication-drafts.service';
 import { PublicationAssetsController } from './publication-assets.controller';
+import { PublicationVideoUploadsController } from './publication-video-uploads.controller';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherPublicationDispatchRunnerService } from './publisher-publication-dispatch-runner.service';
@@ -154,6 +155,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublicationPostActionsController,
     PublicationDraftsController,
     PublicationAssetsController,
+    PublicationVideoUploadsController,
     PublisherController,
     SafetyDeskController,
     SupportRequestsController,

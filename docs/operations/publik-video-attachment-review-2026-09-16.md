@@ -27,7 +27,7 @@ permissions therefore cannot remove this rejection. No evidence establishes a
 Windows-specific picker defect or a toast stacking defect. The original user's file
 and native MAX Desktop session were not available for reproduction.
 
-## Implemented Plan
+## Initial Remediation
 
 1. Extract publication video preparation into a focused, testable helper. Derive its
    byte limit from the existing base64 contract instead of duplicating the number.
@@ -42,7 +42,42 @@ and native MAX Desktop session were not available for reproduction.
    text or cancelling the file picker does not.
 5. Preserve the previous video and post text on failed replacement. Reset the file
    input after processing so selecting the same file again works.
-6. Validate the mini app and deploy only `miniapp-major-static` through exact-SHA CI.
+6. Validate the mini app. The initial error-feedback fix was committed separately;
+   the subsequent request to increase capacity expanded the final release scope.
+
+## Direct Upload, 100 MB
+
+The follow-up request asks for larger videos without filling the VPS. New selection
+therefore uses direct browser-to-MAX multipart upload, capped at 100,000,000 bytes.
+The 24 MB inline compatibility path is unchanged; raising its limit would increase
+JSON/base64 buffers and database storage without solving the disk concern.
+
+1. The authenticated Publisher API accepts only file metadata and an idempotent
+   request ID. Admission is limited to three starts/user/minute, 30 starts/minute
+   globally, and a bounded pending queue.
+2. The `publisher-video-upload` worker runs only in `api-publisher` and uses the
+   existing per-bot MAX request machinery to obtain a video upload session. Only
+   its signed upload URL is returned to the owner; the bot credential and media
+   token are never returned to the mini app.
+3. The browser sends the original Blob directly to MAX. There is no base64 conversion,
+   API binary body, Redis binary payload, database bytea, or VPS temporary video file.
+   The UI shows progress and supports cancellation while preserving existing content.
+4. Completion is checked against MAX by the Publisher worker, not trusted from a
+   client-supplied token. Only after MAX exposes a playable video does the worker save
+   a small `PublicationAsset` record with `bytes: null` and an internal exact-bot marker.
+5. The owned asset can be attached to its first draft, saved, scheduled, duplicated,
+   and reused. Public content cannot forge the internal marker. Dispatch resolves it
+   only for the original Publisher bot and sends the MAX token without reuploading.
+6. Upload sessions expire after one hour. Completed/failed job history is limited
+   by both age and count. Abandoned uploads do not leave video files on the VPS;
+   completed unattached assets contain metadata only. Existing draft removal also
+   removes its unreferenced metadata assets.
+
+The 100 MB selected-file limit is checked in the client and in session metadata;
+MAX owns the binary upload and its server-side size validation. No claim is made
+that metadata constrains an adversarial client's direct upload at MAX's endpoint.
+The original report's missing/generic MIME case is normalized in both the metadata
+and multipart part without reading the whole file into JavaScript memory.
 
 ## Verification
 
@@ -50,28 +85,36 @@ and native MAX Desktop session were not available for reproduction.
 npm run check:miniapp
 npm run build:miniapp:production
 node apps/miniapp/test/publication-video-picker.browser.mjs
+npm test --workspace @maxim/api -- publisher-video-upload publication-content.service.spec admin-managed-broadcast-runtime-publication-media.spec
 ```
 
 The browser regression uses local preview transport and blocks external requests.
-It checks the reported 36 MB rejection, persistence beyond the old toast lifetime,
-text edits, cancellation, same-file retry, generic-MIME selection, empty files,
-preservation of the old attachment, accessible errors, and visible error bounds.
+It checks 36 MB direct upload, rejection above 100 MB, persistence beyond the old toast
+lifetime, text edits, picker cancellation, upload cancellation/failure, same-file retry,
+generic-MIME selection, empty files, preservation of the old attachment, accessible
+errors, and visible error bounds. MAX binary responses are mocked in this regression.
 Desktop light/dark, iPhone, Android dark, and narrow iPhone SE are covered. Screenshots
 are generated in a temporary directory, outside the repository. Successful small-file
 selection uses synthetic bytes and does not assert MAX upload or playback support.
-Unit tests also cover the exact 24 MB boundary, one byte over, read failures, and
-base64 length consistency. Run the browser check after builds finish: rebuilding
+Unit tests cover the exact 100 MB boundary, one byte over, metadata-only API traffic,
+queue admission/expiry, ownership, bot binding, and rejection of forged tokens.
+Run the browser check after builds finish: rebuilding
 contracts while Vite runs can hot-reload the editor and reset its transient state.
 
-## Larger Files
+A live protocol smoke uploaded a valid 36,000,000-byte MP4 from Chromium on the
+production public origin directly to the MAX-issued upload URL. Multipart upload
+returned HTTP 200 and `GET /videos/{token}` confirmed a playable video. The fixture
+was local to the test machine; the VPS handled session/readiness metadata only.
+No chat/channel message was sent, and signed URLs/tokens were not logged or saved.
 
-This fix makes rejection explicit; it does not enable a 36 MB upload. The immediate
-workaround is reducing the video to at most 24,000,000 bytes and selecting it again.
-Keep a margin below the displayed limit because operating systems may display MiB
-as MB.
+## Delivery And Limits
 
-Larger-file support is a separate ingestion change: bounded authenticated binary or
-chunked upload, durable asset references instead of base64 JSON and database bytea,
-quotas and expiry, streaming validation, cancellation/progress, and retry semantics.
-Review server memory, storage, proxy limits, and all publication/draft consumers before
-raising the limit. MAX outbound resumable upload alone does not solve ingestion.
+The shared contract/API change requires all shared API roles and both active static
+components, with green exact-SHA CI and normal release smokes. No Prisma migration,
+stateful-service recreation, proxy limit increase, or VPS media cleanup is required.
+Old byte-backed videos are left intact. API rollback must retain support for the
+internal remote-video marker while publications reference it; a static-only rollback
+does not change saved assets. Native MAX Desktop 26.31.0 on Windows 11
+still requires user confirmation; browser automation is not that native client.
+
+MAX upload protocol reference: <https://dev.max.ru/docs-api/methods/POST/uploads>.

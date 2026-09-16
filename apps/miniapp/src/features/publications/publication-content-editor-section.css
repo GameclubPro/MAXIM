@@ -1,4 +1,25 @@
 @layer pages {
+  .publication-video-upload {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+  }
+
+  .publication-video-upload button {
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+
   .publication-video-error {
     overflow-wrap: anywhere;
   }

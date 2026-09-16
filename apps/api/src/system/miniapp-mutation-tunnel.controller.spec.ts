@@ -599,6 +599,8 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/publications/test'],
     ['POST', '/publications/calendar-availability'],
     ['POST', '/publications/drafts'],
+    ['POST', '/publications/video-uploads'],
+    ['POST', '/publications/video-uploads/upload_request_123456/complete'],
     ['PUT', '/publications/drafts/draft-1'],
     ['DELETE', '/publications/drafts/draft-1'],
     ['POST', '/publications/publication-1/deliveries/delivery-1/post-actions'],
