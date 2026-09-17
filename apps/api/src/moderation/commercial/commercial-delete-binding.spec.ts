@@ -29,7 +29,9 @@ describe('commercial text decision binding', () => {
       eventTimestampMs: Date.now(),
       campaignContext: null,
     });
-    expect(binding.sourceSha256).not.toBe(fingerprintCommercialDeleteText(text.replace('\n', ' ')));
+    expect(binding.sourceSha256).not.toBe(
+      fingerprintCommercialDeleteText(text.replaceAll('\n', ' ')),
+    );
     expect(JSON.stringify(binding)).not.toContain('Такси');
     expect(JSON.stringify(binding)).not.toContain('900 000');
   });
