@@ -400,9 +400,7 @@ function resolveClipboardNodeMarks(tagName: string, style: string): ClipboardInl
   if (/font-weight\s*:\s*(?:bold|[6-9]00|[1-9]\d{3,})/iu.test(normalizedStyle)) {
     marks.add('bold');
   }
-  if (/background(?:-color)?\s*:\s*(?!\s*(?:transparent|none)\b)/iu.test(normalizedStyle)) {
-    marks.add('highlight');
-  }
+  // Clipboard backgrounds include page/theme colors. Only semantic <mark> means MAX red text.
 
   return CLIPBOARD_MARK_ORDER.filter((mark) => marks.has(mark));
 }

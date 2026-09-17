@@ -21,6 +21,30 @@ test('converts common styled clipboard spans without duplicated marks', () => {
   );
 });
 
+test('does not turn clipboard page or theme backgrounds into MAX red text', () => {
+  for (const background of [
+    'background-color: rgb(255, 255, 255)',
+    'background: #202020',
+    'background-color: rgba(0, 0, 0, 0)',
+    'background-color: transparent',
+    'background: none',
+    'background-color: yellow',
+  ]) {
+    const markdown = clipboardHtmlToSupportedMarkdown(
+      `<div style="${background}"><strong>Welcome</strong><p><span style="${background}; font-style: italic">Read the rules</span></p></div>`,
+    );
+    assert.equal(markdown, '**Welcome**_Read the rules_');
+    assert.doesNotMatch(renderSupportedMarkdownAsHtml(markdown), /<mark>|\^\^/u);
+  }
+});
+
+test('preserves explicit semantic highlights without importing surrounding backgrounds', () => {
+  const markdown = clipboardHtmlToSupportedMarkdown(
+    '<div style="background: white">Normal <mark style="background: yellow"><b>Important</b></mark> <a href="https://max.ru/test">Rules</a></div>',
+  );
+  assert.equal(markdown, 'Normal ^^**Important**^^ [Rules](https://max.ru/test)');
+});
+
 test('keeps only safe clipboard links', () => {
   assert.equal(
     clipboardHtmlToSupportedMarkdown(
@@ -88,10 +112,7 @@ test('closes and reopens pasted links around multiline labels', () => {
     '<a href="https://max.ru/example">Первая<br>Вторая</a>',
   );
 
-  assert.equal(
-    markdown,
-    '[Первая](https://max.ru/example)\n[Вторая](https://max.ru/example)',
-  );
+  assert.equal(markdown, '[Первая](https://max.ru/example)\n[Вторая](https://max.ru/example)');
   assert.equal(
     renderSupportedMarkdownAsHtml(markdown, { blockMode: 'inline' }),
     '<a href="https://max.ru/example">Первая</a><br><a href="https://max.ru/example">Вторая</a>',

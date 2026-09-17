@@ -11,10 +11,8 @@
   }
 
   .max-rich-text-editor__surface mark {
-    border-radius: 2px;
-    background: var(--color-accent-soft);
-    color: inherit;
-    padding-inline: 0.08em;
+    background: transparent;
+    color: var(--color-danger);
   }
 
   .max-rich-text-editor__surface blockquote {
