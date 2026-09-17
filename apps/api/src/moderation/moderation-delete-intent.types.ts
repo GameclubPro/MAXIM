@@ -91,6 +91,8 @@ export type ModerationDeleteAttemptResult =
       botId: string | null;
       // FLAG: Ephemeral proof from this dispatch, never reconstructed from a stored success.
       profanityVerified?: true;
+      commercialVerified?: true;
+      commercialVerifiedReasonKeys?: string[];
     }
   | {
       kind: 'already_absent';

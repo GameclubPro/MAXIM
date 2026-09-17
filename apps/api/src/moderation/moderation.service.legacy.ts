@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { isTrafficProtectionViolation } from './traffic-protection';
-import { executeDurableModerationDelete } from './moderation-delete-execution';
+import { executeGuardedModerationDelete } from './moderation-delete-execution';
 import { isCommercialMessageDeleteEligible } from './commercial';
 import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
@@ -149,8 +149,9 @@ import {
 } from './moderation-violation-persistence';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
+import { CommercialDeleteGuardService } from './commercial/commercial-delete-guard.service';
+import { bindCommercialTextDeleteIntent } from './commercial/commercial-delete-binding';
 import {
-  executeProfanityGuardedLegacyDelete,
   type ModerationDeleteExecutionResult,
   type ProfanityDeleteMutationHooks,
 } from './profanity/profanity-delete-execution';
@@ -789,6 +790,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly profanityDeleteGuard?: ProfanityDeleteGuardService,
     @Optional() private readonly messageDuplicateService?: MessageDuplicateService,
     @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
+    @Optional() private readonly commercialDeleteGuard?: CommercialDeleteGuardService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -2456,7 +2458,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           commercialMetadata?.messageDisposition,
         );
       const isLinkBlockedDelete = topViolation.ruleCode === 'LINK_BLOCKED';
-      const violationDeleteIntent: EnsureModerationDeleteIntentInput | null =
+      let violationDeleteIntent: EnsureModerationDeleteIntentInput | null =
         shouldDeleteByCommercialPolicy
           ? {
               chatId,
@@ -2500,6 +2502,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             }
           : null;
       if (violationDeleteIntent) {
+        violationDeleteIntent = bindCommercialTextDeleteIntent(violationDeleteIntent, {
+          text,
+          settings,
+          campaignContext: commercialCampaignContext ?? null,
+        });
         await this.ensureModerationDeleteIntent(violationDeleteIntent);
       }
       // FLAG: Traffic policies are delete-only. They must never add strikes, feed
@@ -2510,6 +2517,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       const isProfanityViolation = topViolation.ruleCode === 'PROFANITY';
+      const requiresConfirmedTextDelete =
+        isProfanityViolation ||
+        (topViolation.ruleCode === 'COMMERCIAL_AD' && !isCommercialReviewOnly);
       const claimViolation = async () => {
         if (!isCommercialReviewOnly) {
           this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
@@ -2537,27 +2547,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               (claimKey, context) => this.markRedisMessageViolationProcessing(claimKey, context),
             );
       };
-      if (!isProfanityViolation && !(await claimViolation())) {
+      if (!requiresConfirmedTextDelete && !(await claimViolation())) {
         this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-dedup');
         return;
       }
 
-      if (this.globalSpammerIntelligence && !isCommercialReviewOnly) {
-        this.runGlobalSpammerSideEffect(
-          { chatId, userId: senderId, messageId, action: 'record-commercial-spammer-observations' },
-          async () => {
-            await this.globalSpammerIntelligence!.recordCommercialObservations({
+      const recordCommercialObservations = () => {
+        if (this.globalSpammerIntelligence && !isCommercialReviewOnly) {
+          this.runGlobalSpammerSideEffect(
+            {
               chatId,
               userId: senderId,
               messageId,
-              text,
-              userLabel,
-              topViolation,
-              commercialCampaignContext,
-            });
-          },
-        );
-      }
+              action: 'record-commercial-spammer-observations',
+            },
+            async () => {
+              await this.globalSpammerIntelligence!.recordCommercialObservations({
+                chatId,
+                userId: senderId,
+                messageId,
+                text,
+                userLabel,
+                topViolation,
+                commercialCampaignContext,
+              });
+            },
+          );
+        }
+      };
+      if (!requiresConfirmedTextDelete) recordCommercialObservations();
 
       let messageDeleted = false;
 
@@ -2565,16 +2583,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-delete');
         const deleteResult = await this.executeModerationDelete(violationDeleteIntent);
         messageDeleted = deleteResult.gone;
-        // FLAG: Only a fresh profanity check followed by this attempt's confirmed DELETE may
+        // FLAG: Only a fresh text-policy check followed by this attempt's confirmed DELETE may
         // create a violation or escalate. Absence, independent reasons and background retries do not.
-        if (isProfanityViolation) {
-          if (!deleteResult.deleted || !deleteResult.profanityVerified) {
+        if (requiresConfirmedTextDelete) {
+          if (
+            !deleteResult.deleted ||
+            !(isProfanityViolation
+              ? deleteResult.profanityVerified
+              : deleteResult.commercialVerified)
+          ) {
             return;
           }
           if (!(await claimViolation())) {
             this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-dedup');
             return;
           }
+          recordCommercialObservations();
         }
         if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
           await this.createBotModerationEvent({
@@ -5117,25 +5141,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     input: EnsureModerationDeleteIntentInput,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<ModerationDeleteExecutionResult> {
-    const preparedInput = this.prepareModerationDeleteIntentInput(input, options);
-    return executeDurableModerationDelete({
-      input: preparedInput,
+    return executeGuardedModerationDelete({
+      input: this.prepareModerationDeleteIntentInput(input, options),
       service: this.moderationDeleteIntentService,
-      beforeDeleteMutation: options?.beforeImmediateDeleteMutation,
+      options,
       logger: this.logger,
-      legacy: () =>
-        executeProfanityGuardedLegacyDelete({
-          input: preparedInput,
-          scheduled: Boolean(options?.delayMs && options.delayMs > 0),
-          guard: this.profanityDeleteGuard,
-          execute: (hooks) =>
-            this.deleteMessageImmediatelyLegacy(
-              preparedInput.chatId,
-              preparedInput.messageId,
-              options,
-              hooks,
-            ),
-        }),
+      profanityGuard: this.profanityDeleteGuard,
+      commercialGuard: this.commercialDeleteGuard,
+      legacyExecute: (hooks) =>
+        this.deleteMessageImmediatelyLegacy(input.chatId, input.messageId, options, hooks),
     });
   }
 

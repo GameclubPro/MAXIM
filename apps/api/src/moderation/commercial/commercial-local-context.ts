@@ -2,6 +2,11 @@ import { normalizeCommercialText } from './commercial-normalization';
 import { hasCommercialPhoneLikeText } from './commercial-phone';
 import { hasPaidCommercialPlacementOffer } from './commercial-recall-patterns';
 import {
+  COMMERCIAL_OWNED_SERVICE_FRAME,
+  COMMERCIAL_SERVICE_CONTRAST_BOUNDARY,
+  resolveCommercialServiceSpeechAct,
+} from './commercial-service-speech-act';
+import {
   ADS_ATTRIBUTED_COMMERCIAL_FRAME_PATTERN,
   ADS_BUSINESS_PATTERNS,
   ADS_BUYOUT_PATTERNS,
@@ -113,6 +118,8 @@ const SOURCE_SIDE_SERVICE_NUMERIC_PRICE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:(?:цен[аы]|стоимост[ьи])\s*(?:от\s*)?\d{2,}|от\s+\d{2,}|\d[\d\s.,]{0,16}\s*(?:р(?:уб)?\.?|₽))(?=$|[^\p{L}\p{N}_-])/iu;
 const SERVICE_RESPONSE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:звоните|пишите|обращайтесь|записывайтесь)(?![\p{L}\p{N}_-])/iu;
+const STRUCTURED_SERVICE_CARD_PATTERN =
+  /^(?:монтаж|ремонт|установк[а-яё-]*|химчистк[а-яё-]*|перетяжк[а-яё-]*|чистк[а-яё-]*|заточк[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 const THIRD_PARTY_SERVICE_RESPONSE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:звоните|пишите|обращайтесь|записывайтесь)(?:[^.!?\n]{0,48})(?:ему|ей|им|мастер[а-яё-]*|подрядчик[а-яё-]*|специалист[а-яё-]*|исполнител[а-яё-]*|к\s+(?:нему|ней|ним)|по\s+(?:(?:их|е[её]|его)\s+(?:номеру|телефону)|(?:номеру|телефону)\s+(?:компани[иия]|из\s+объявлени[а-яё-]*)|контакт[а-яё-]*\s+(?:мастер[а-яё-]*|подрядчик[а-яё-]*|специалист[а-яё-]*|исполнител[а-яё-]*)))(?=$|[^\p{L}\p{N}_-])/iu;
 const BUYER_SERVICE_RESPONSE_PATTERN =
@@ -272,6 +279,7 @@ type LocalAssertion = {
 };
 
 export type CommercialLocalContext = {
+  fullyInspected: boolean;
   hasIndependentCommercialOffer: boolean;
   hasIndependentEscalationOffer: boolean;
   hasOnlyProtectedEscalationMentions: boolean;
@@ -294,10 +302,11 @@ export function resolveCommercialLocalContext(params: {
     ATTRIBUTED_REPORT_QUALIFIER_PREFILTER.test(boundedRawLoweredText);
   const hasQualifiedEditorialQuoteDisclaimer =
     QUALIFIED_EDITORIAL_QUOTE_DISCLAIMER_PATTERN.test(boundedRawLoweredText);
-  const assertionTexts =
+  const initialInspection =
     mightHaveAttributedCommercialReport || hasQualifiedEditorialQuoteDisclaimer
-      ? splitCommercialAssertions(boundedRawLoweredText)
+      ? inspectCommercialAssertions(params.rawLoweredText)
       : null;
+  const assertionTexts = initialInspection?.assertions ?? null;
   const attributedCommercialReportAssertionIndexes = assertionTexts
     ? collectAttributedCommercialReportAssertionIndexes(assertionTexts)
     : new Set<number>();
@@ -315,6 +324,7 @@ export function resolveCommercialLocalContext(params: {
     !(includeOrdinaryProtectedContext && isOrdinaryProtectedAssertion(boundedRawLoweredText))
   ) {
     return {
+      fullyInspected: false,
       hasIndependentCommercialOffer: false,
       hasIndependentEscalationOffer: false,
       hasOnlyProtectedEscalationMentions: false,
@@ -326,8 +336,9 @@ export function resolveCommercialLocalContext(params: {
   }
 
   const riskPatterns = selectRiskPatterns(params.escalationRiskLabels);
+  const inspection = initialInspection ?? inspectCommercialAssertions(params.rawLoweredText);
   const assertions = classifyAssertions(
-    assertionTexts ?? splitCommercialAssertions(boundedRawLoweredText),
+    inspection.assertions,
     riskPatterns,
     includeOrdinaryProtectedContext,
     attributedCommercialReportAssertionIndexes,
@@ -346,6 +357,7 @@ export function resolveCommercialLocalContext(params: {
   );
 
   return {
+    fullyInspected: inspection.complete,
     hasIndependentCommercialOffer,
     hasIndependentEscalationOffer,
     hasOnlyProtectedEscalationMentions:
@@ -375,6 +387,13 @@ export function resolveStandaloneEditorialQuoteContext(params: {
 }
 
 export function splitCommercialAssertions(rawLoweredText: string): string[] {
+  return inspectCommercialAssertions(rawLoweredText).assertions;
+}
+
+function inspectCommercialAssertions(rawLoweredText: string): {
+  assertions: string[];
+  complete: boolean;
+} {
   const boundedText = rawLoweredText
     .slice(0, MAX_LOCAL_CONTEXT_LENGTH)
     .replace(CLOSING_QUOTE_ASSERTION_BOUNDARY, '$1$2\n')
@@ -382,12 +401,18 @@ export function splitCommercialAssertions(rawLoweredText: string): string[] {
 
   const assertions = insertNoSpaceDotAssertionBoundaries(boundedText)
     .replace(CONTRASTIVE_SELF_PROMO_BOUNDARY, '\n')
+    .replace(COMMERCIAL_SERVICE_CONTRAST_BOUNDARY, '\n')
     .split(ASSERTION_BOUNDARY)
     .flatMap(splitWarningPrefixedSelfPromo)
     .map((assertion) => assertion.trim())
-    .filter(Boolean)
-    .slice(0, MAX_LOCAL_ASSERTIONS);
-  return bindStandaloneEditorialQuoteAssertions(assertions);
+    .filter(Boolean);
+  return {
+    assertions: bindStandaloneEditorialQuoteAssertions(assertions.slice(0, MAX_LOCAL_ASSERTIONS)),
+    // FLAG: Count before quote grouping; merging truncated assertions cannot restore coverage.
+    complete:
+      rawLoweredText.length <= MAX_LOCAL_CONTEXT_LENGTH &&
+      assertions.length <= MAX_LOCAL_ASSERTIONS,
+  };
 }
 
 function bindStandaloneEditorialQuoteAssertions(assertions: readonly string[]): string[] {
@@ -463,7 +488,8 @@ function classifyAssertions(
     let resetsOrdinaryProtectedCarry = false;
     if (ordinaryProtectedCarry) {
       const ordinaryResetWindow = buildForwardAssertionWindow(assertionTexts, index);
-      const hasExplicitSelfPromotion = SELF_PROMO_RESET_PATTERN.test(text);
+      const hasExplicitSelfPromotion =
+        SELF_PROMO_RESET_PATTERN.test(text) || COMMERCIAL_OWNED_SERVICE_FRAME.test(text);
       const hasExplicitSourceSideOffer = ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN.test(text);
       const hasCurrentCommercialOffer =
         hasGeneralCommercialOffer(ordinaryResetWindow) ||
@@ -487,6 +513,7 @@ function classifyAssertions(
     const resetsProtectedCarry =
       protectedCarry > 0 &&
       (SELF_PROMO_RESET_PATTERN.test(text) ||
+        COMMERCIAL_OWNED_SERVICE_FRAME.test(text) ||
         ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN.test(text) ||
         (!intrinsicProtected &&
           (hasEscalationOffer(rawAssertion, riskPatterns) ||
@@ -754,6 +781,7 @@ function hasQualifiedEditorialRiskContext(
 
 function isOrdinaryProtectedAssertion(text: string): boolean {
   return (
+    resolveCommercialServiceSpeechAct(text) !== 'NONE' ||
     TRANSPORT_DEMAND_PATTERN.test(text) ||
     CHANNEL_AD_DUE_DILIGENCE_PATTERN.test(text) ||
     QUESTION_OR_RECOMMENDATION_PATTERN.test(text) ||
@@ -844,6 +872,9 @@ function hasGeneralCommercialOffer(assertion: LocalAssertion): boolean {
     return false;
   }
   return (
+    (STRUCTURED_SERVICE_CARD_PATTERN.test(assertion.text) &&
+      SOURCE_SIDE_SERVICE_NUMERIC_PRICE_PATTERN.test(assertion.text) &&
+      hasUnattributedServiceResponse(assertion.text, true)) ||
     GENERAL_COMMERCIAL_PATTERNS.some(
       ({ pattern }) =>
         testPattern(pattern, assertion.text) || testPattern(pattern, assertion.normalizedText),

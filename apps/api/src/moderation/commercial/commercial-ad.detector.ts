@@ -36,6 +36,8 @@ import {
   ADS_BOUNDED_WHERE_TO_BUY_REQUEST_PATTERN,
 } from './commercial-patterns';
 import { classifyCommercialDetection } from './commercial-subtypes';
+import { resolveCommercialServiceSpeechAct } from './commercial-service-speech-act';
+import { hasPostQuestionPaidServiceOffer } from './commercial-safe-context';
 import type {
   CommercialLegacyEvidenceStrength,
   CommercialMessageDisposition,
@@ -454,8 +456,11 @@ export class CommercialAdDetector {
       MIXED_PROTECTED_COMMERCIAL_CONTEXT_PREFILTER.test(rawLoweredText);
     const hasSearchRequestOfferBoundary =
       state.hasSearchRequestContext && BOUNDARY_LOCAL_CURRENT_OFFER_PREFILTER.test(rawLoweredText);
+    const hasProtectedServiceSpeechAct =
+      resolveCommercialServiceSpeechAct(rawLoweredText) !== 'NONE';
     const shouldInspectOrdinaryProtectedContext =
       (hasMixedProtectedCommercialContext ||
+        hasProtectedServiceSpeechAct ||
         hasExplicitAttributedSafeContext ||
         hasSearchRequestOfferBoundary) &&
       (escalationRiskLabels.length === 0 ||
@@ -479,6 +484,20 @@ export class CommercialAdDetector {
       extractIndependentSourceSideOfferAroundQuestionFromText(rawLoweredText);
     const localOfferText =
       protectedContextOfferText ?? explicitTopicOfferText ?? questionSequenceOfferText;
+    // FLAG: Protect the assertion's author role, not isolated service/phone tokens. Existing
+    // qualified/rhetorical offers retain their authority; incomplete analysis cannot grant protection.
+    if (
+      hasProtectedServiceSpeechAct &&
+      localContext?.fullyInspected &&
+      localContext.hasProtectedContext &&
+      !localContext.hasIndependentCommercialOffer &&
+      !localOfferText &&
+      escalationRiskLabels.length === 0 &&
+      !state.hasRecruitmentContext &&
+      !hasQualifiedSourceSideServiceOffer(rawLoweredText) &&
+      !hasPostQuestionPaidServiceOffer(rawLoweredText)
+    )
+      return null;
     let isolatedIndependentOffer = false;
     if (localOfferText) {
       const localRawLoweredText = normalizeCommercialRawText(localOfferText);

@@ -34,6 +34,7 @@ import {
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { classifyDuplicateEventTime } from './duplicate-enforcement-safety';
+import { CommercialDeleteGuardRejectedError } from './commercial/commercial-delete-guard.service';
 import { buildNightModeTransitionScheduleFingerprint } from './night-mode-transition-generation.util';
 
 const NIGHT_MODE_V4_JOB_METADATA = {
@@ -57,6 +58,20 @@ function installProfanityDeleteGuard(service: ModerationService): void {
     await options?.beforeImmediateDeleteMutation?.();
     return originalDelete?.(...args);
   });
+}
+
+function installCommercialDeleteGuard(service: ModerationService) {
+  const guard = { assertMessageStillActionable: jest.fn().mockResolvedValue('allowed') };
+  Object.assign(service, { commercialDeleteGuard: guard });
+  const maxClient = (service as unknown as { maxClient: { deleteMessage: jest.Mock } }).maxClient;
+  const remoteDelete = jest.fn(maxClient.deleteMessage.getMockImplementation());
+  maxClient.deleteMessage.mockImplementation(async (...args: unknown[]) => {
+    await (
+      args[2] as { beforeImmediateDeleteMutation?: () => Promise<void> }
+    )?.beforeImmediateDeleteMutation?.();
+    return remoteDelete(...args);
+  });
+  return { guard, remoteDelete };
 }
 
 jest
@@ -7885,13 +7900,15 @@ describe('ModerationService', () => {
   });
 
   it.each([
-    { actionBand: 'DELETE', messageDisposition: undefined },
-    { actionBand: 'WARN', messageDisposition: undefined },
-    { actionBand: 'WARN', messageDisposition: 'DELETE' },
-    { actionBand: 'DELETE', messageDisposition: 'DELETE' },
+    { actionBand: 'DELETE', messageDisposition: undefined, guardResult: 'allowed' },
+    { actionBand: 'WARN', messageDisposition: undefined, guardResult: 'allowed' },
+    { actionBand: 'WARN', messageDisposition: 'DELETE', guardResult: 'allowed' },
+    { actionBand: 'DELETE', messageDisposition: 'DELETE', guardResult: 'allowed' },
+    { actionBand: 'WARN', messageDisposition: 'DELETE', guardResult: 'absent' },
+    { actionBand: 'WARN', messageDisposition: 'DELETE', guardResult: 'rejected' },
   ])(
     'deletes an eligible commercial ad and sends first-step explanation: %j',
-    async ({ actionBand, messageDisposition }) => {
+    async ({ actionBand, messageDisposition, guardResult }) => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -7962,7 +7979,21 @@ describe('ModerationService', () => {
         maxClient as never,
       );
 
+      const proof = installCommercialDeleteGuard(service);
+      if (guardResult === 'rejected')
+        proof.guard.assertMessageStillActionable.mockRejectedValue(
+          new CommercialDeleteGuardRejectedError('commercial_text_settings_disabled'),
+        );
+      else proof.guard.assertMessageStillActionable.mockResolvedValue(guardResult);
       await service.handleUpdate(createUpdate());
+      if (guardResult !== 'allowed') {
+        expect(proof.remoteDelete).not.toHaveBeenCalled();
+        expect(prisma.violation.create).not.toHaveBeenCalled();
+        expect(maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(maxClient.banMember).not.toHaveBeenCalled();
+        expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+        return;
+      }
 
       expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
@@ -8260,6 +8291,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installCommercialDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
@@ -8367,6 +8399,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installCommercialDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
@@ -8584,6 +8617,7 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
+    installCommercialDeleteGuard(service);
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');

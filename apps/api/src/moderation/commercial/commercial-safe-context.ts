@@ -108,7 +108,7 @@ const POST_QUESTION_PAID_SERVICE_PRICE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:(?:цен[аы]|стоимост[ьи])\s*(?:от\s*)?\d{2,}|\d[\d\s.,]{0,16}\s*(?:р(?:уб)?\.?|₽))(?=$|[^\p{L}\p{N}_-])/iu;
 const QUESTION_ASSERTION_END_PATTERN = /[?？]+["'»”’“]?\s*$/u;
 
-function hasPostQuestionPaidServiceOffer(text: string): boolean {
+export function hasPostQuestionPaidServiceOffer(text: string): boolean {
   const assertions = splitCommercialAssertions(text.slice(0, 1_400).toLowerCase()).slice(0, 8);
   const offerIndex = assertions.findIndex(
     (assertion, index) =>

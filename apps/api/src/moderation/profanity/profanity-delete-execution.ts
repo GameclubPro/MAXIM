@@ -11,6 +11,7 @@ export type ModerationDeleteExecutionResult = {
   eventPersistedByIntent: boolean;
   botId: string | null;
   profanityVerified?: true;
+  commercialVerified?: true;
 };
 
 export type ProfanityDeleteMutationHooks = {

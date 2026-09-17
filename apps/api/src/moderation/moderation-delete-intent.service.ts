@@ -98,6 +98,16 @@ import {
   ProfanityDeleteGuardService,
 } from './profanity/profanity-delete-guard.service';
 import {
+  COMMERCIAL_TEXT_DELETE_RULE_CODE,
+  fingerprintCommercialDeleteReasons,
+  readCommercialTextDeleteBinding,
+} from './commercial/commercial-delete-binding';
+import {
+  CommercialDeleteGuardService,
+  CommercialDeleteGuardRejectedError,
+  COMMERCIAL_TEXT_MAX_INTENT_REASONS,
+} from './commercial/commercial-delete-guard.service';
+import {
   LINK_BLOCKED_DELETE_RULE_CODE,
   LINK_HISTORY_RECOVERY_RULE_CODE,
 } from './link-history-recovery.util';
@@ -492,6 +502,7 @@ class ModerationDeleteGuardedMessageAbsentError extends Error {
       | 'guarded_link_predispatch_exact_absence'
       | 'guarded_commercial_ocr_predispatch_exact_absence'
       | 'guarded_profanity_predispatch_exact_absence'
+      | 'guarded_commercial_text_absence'
       | 'guarded_message_duplicate_absence'
       | 'guarded_image_text_stop_list_predispatch_exact_absence',
   ) {
@@ -580,6 +591,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly messageDuplicateDeleteGuard?: MessageDuplicateDeleteGuardService,
     @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
     @Optional() private readonly trafficProtectionDeleteGuard?: TrafficProtectionDeleteGuardService,
+    @Optional() private readonly commercialDeleteGuard?: CommercialDeleteGuardService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -1841,6 +1853,7 @@ export class ModerationDeleteIntentService {
 
         let dispatchMarkerPersisted = false;
         let profanityVerified = false;
+        let commercialVerifiedReasonKeys: string[] = [];
         try {
           await this.assertLeaseForExternalCall(heartbeat);
           const beforeImmediateDeleteMutation = async () => {
@@ -1860,9 +1873,14 @@ export class ModerationDeleteIntentService {
             intent.deleteDispatchStartedAt = new Date();
             intent.deleteDispatchStartedBotId = botId;
             unresolvedDeleteDispatch = true;
-            profanityVerified = (
-              await this.runDeletePreDispatchGuards(intent, botId, options, leaseToken)
-            ).profanityVerified;
+            const textProof = await this.runDeletePreDispatchGuards(
+              intent,
+              botId,
+              options,
+              leaseToken,
+            );
+            profanityVerified = textProof.profanityVerified;
+            commercialVerifiedReasonKeys = textProof.commercialVerifiedReasonKeys;
           };
           await this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
             immediate: true,
@@ -1911,12 +1929,17 @@ export class ModerationDeleteIntentService {
             );
             const terminalGuardRejection = this.isTerminalDeleteGuardRejection(error.guardError);
             const outcome = terminalGuardRejection
-              ? await this.finishTerminalPreDispatchGuardRejection(intent, leaseToken, {
-                  ...details,
-                  status: 'FAILED_TERMINAL',
-                  errorCode: details.errorCode,
-                  retryDelayMs: null,
-                })
+              ? await this.finishTerminalPreDispatchGuardRejection(
+                  intent,
+                  leaseToken,
+                  {
+                    ...details,
+                    status: 'FAILED_TERMINAL',
+                    errorCode: details.errorCode,
+                    retryDelayMs: null,
+                  },
+                  error.guardError,
+                )
               : await this.finishRetryableAttempt(intent, leaseToken, {
                   ...details,
                   status: 'RETRYABLE',
@@ -2017,9 +2040,16 @@ export class ModerationDeleteIntentService {
           leaseToken,
           botId,
           profanityVerified,
+          commercialVerifiedReasonKeys,
         );
-        return outcome.kind === 'confirmed' && profanityVerified
-          ? { ...outcome, profanityVerified: true }
+        return outcome.kind === 'confirmed'
+          ? {
+              ...outcome,
+              ...(profanityVerified ? { profanityVerified: true as const } : {}),
+              ...(commercialVerifiedReasonKeys.length
+                ? { commercialVerified: true as const, commercialVerifiedReasonKeys }
+                : {}),
+            }
           : outcome;
       }
 
@@ -2594,9 +2624,10 @@ export class ModerationDeleteIntentService {
     botId: string,
     options?: ModerationDeleteIntentAttemptOptions,
     finalDispatchLeaseToken?: string,
-  ): Promise<{ profanityVerified: boolean }> {
+  ): Promise<{ profanityVerified: boolean; commercialVerifiedReasonKeys: string[] }> {
     try {
       let profanityVerified = false;
+      let commercialVerifiedReasonKeys: string[] = [];
       // FLAG: A remote DELETE must always have a durable reason at the exact dispatch boundary.
       // Derived rule classifiers cannot represent a reasonless intent and therefore cannot fence it.
       // FLAG: A channel replacement cleanup must never cross an entity reclassification boundary.
@@ -2729,6 +2760,30 @@ export class ModerationDeleteIntentService {
             throw new Error('Traffic protection delete guard unavailable');
         }
       }
+      if (finalDispatchLeaseToken) {
+        // FLAG: New commercial bindings require a fresh current-message guard on every dispatch.
+        if (this.commercialDeleteGuard) {
+          const result = await this.commercialDeleteGuard.assertIntentStillActionable({
+            intentId: intent.id,
+            chatId: intent.chatId,
+            messageId: intent.messageId,
+            subjectUserId: intent.subjectUserId,
+            botId,
+          });
+          if (result === 'missing_reason') throw new ModerationDeleteReasonMissingError();
+          if (result === 'absent')
+            throw new ModerationDeleteGuardedMessageAbsentError('guarded_commercial_text_absence');
+          if (typeof result === 'object' && result.kind === 'allowed')
+            commercialVerifiedReasonKeys = result.reasonKeys;
+        } else {
+          const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+            where: { intentId: intent.id },
+            select: { ruleCode: true },
+          });
+          if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_TEXT_DELETE_RULE_CODE))
+            throw new Error('Commercial delete guard unavailable');
+        }
+      }
       if (imageTextStopListGuard === 'allowed' && finalDispatchLeaseToken) {
         await this.assertImageTextStopListDispatchDeadline(
           intent.id,
@@ -2739,7 +2794,7 @@ export class ModerationDeleteIntentService {
       if (commercialOcrGuardRequired && finalDispatchLeaseToken) {
         await this.assertCommercialOcrDispatchDeadline(intent.id, finalDispatchLeaseToken, botId);
       }
-      return { profanityVerified };
+      return { profanityVerified, commercialVerifiedReasonKeys };
     } catch (error: unknown) {
       if (error instanceof ModerationDeleteGuardedMessageAbsentError) {
         throw error;
@@ -2788,6 +2843,7 @@ export class ModerationDeleteIntentService {
   private isTerminalDeleteGuardRejection(error: unknown): boolean {
     if (
       error instanceof ProfanityDeleteGuardRejectedError ||
+      error instanceof CommercialDeleteGuardRejectedError ||
       error instanceof StopWordsDeleteGuardRejectedError ||
       error instanceof TrafficProtectionGuardRejectedError ||
       error instanceof MessageDuplicateGuardRejectedError
@@ -4069,13 +4125,26 @@ export class ModerationDeleteIntentService {
         intent.lastErrorCode?.startsWith('profanity_') === true;
       const freshStopWordsReason =
         intent.lastErrorCode === 'stop_words_delete_no_longer_authorized';
+      const freshCommercialReason = intent.lastErrorCode?.startsWith('commercial_text_') === true;
+      const incomingCommercialBinding =
+        normalized.ruleCode === COMMERCIAL_TEXT_DELETE_RULE_CODE
+          ? readCommercialTextDeleteBinding(
+              this.asRecord(normalized.event.metadata)?.commercialTextBinding,
+            )
+          : null;
+      const freshCommercialExpiredReason =
+        intent.status === 'EXPIRED' &&
+        incomingCommercialBinding !== null &&
+        incomingCommercialBinding.deadlineAtMs > Date.now();
       if (
         reasonChanged === 1 &&
         effectiveIntent === intent &&
         initialStatus === 'PENDING' &&
         normalized.entityType !== null &&
-        intent.status === 'FAILED_TERMINAL' &&
+        (intent.status === 'FAILED_TERMINAL' || freshCommercialExpiredReason) &&
         (independentProfanityReason ||
+          freshCommercialReason ||
+          freshCommercialExpiredReason ||
           freshStopWordsReason ||
           (normalized.ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE &&
             normalized.ruleCode !== NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE &&
@@ -4083,8 +4152,8 @@ export class ModerationDeleteIntentService {
               intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE ||
               intent.lastErrorCode === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE)))
       ) {
-        // FLAG: Fresh reasons must not inherit a terminal cleanup, profanity or stop-list rejection.
-        // A changed stop-list reason still has to pass the current-source guard before dispatch.
+        // FLAG: Fresh reasons cannot inherit a stale text/cleanup rejection. Reopened commercial
+        // and stop-list revisions still have to pass their current-source guards before dispatch.
         const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
           UPDATE "moderation_delete_intents"
           SET
@@ -4115,8 +4184,7 @@ export class ModerationDeleteIntentService {
             "leased_from_status" = NULL,
             "updated_at" = CURRENT_TIMESTAMP
           WHERE "id" = ${intent.id}
-            AND "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
-            AND (
+            AND (("status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus") AND (
               "last_error_code" IN (
                 ${CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE},
                 ${CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE},
@@ -4124,7 +4192,8 @@ export class ModerationDeleteIntentService {
               )
               OR (${independentProfanityReason} AND "last_error_code" LIKE 'profanity_%')
               OR (${freshStopWordsReason} AND "last_error_code" = 'stop_words_delete_no_longer_authorized')
-            )
+              OR (${freshCommercialReason} AND "last_error_code" LIKE 'commercial_text_%')
+            )) OR (${freshCommercialExpiredReason} AND "status" = CAST('EXPIRED' AS "ModerationDeleteIntentStatus")))
             AND "remote_delete_succeeded_at" IS NULL
             AND "remote_delete_succeeded_bot_id" IS NULL
             AND "delete_dispatch_started_at" IS NULL
@@ -4405,6 +4474,7 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     leaseToken: string,
     details: DeleteErrorDetails,
+    guardError?: unknown,
   ): Promise<ModerationDeleteAttemptResult> {
     const current = await this.prisma.$transaction(
       async (tx) => {
@@ -4442,17 +4512,33 @@ export class ModerationDeleteIntentService {
         // Its own non-OCR classification cannot resurrect a definitively rejected binding.
         const independentReasonExecutable =
           !details.errorCode.startsWith('message_duplicate_') &&
-          (details.errorCode.startsWith('profanity_')
+          (details.errorCode.startsWith('commercial_text_')
             ? (await tx.moderationDeleteIntentReason.findFirst({
-                where: { intentId: intent.id, ruleCode: { not: PROFANITY_DELETE_RULE_CODE } },
+                where: { intentId: intent.id, ruleCode: { not: COMMERCIAL_TEXT_DELETE_RULE_CODE } },
                 select: { id: true },
-              })) !== null
-            : channelCleanupGuardRejected
-              ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
-              : nightModeCleanupGuardRejected
-                ? latest.nightModeCloseNoticeCleanupReason === true &&
-                  latest.nightModeCloseNoticeCleanupOnly !== true
-                : this.hasExecutableNonCommercialOcrReason(latest));
+              })) !== null ||
+              (guardError instanceof CommercialDeleteGuardRejectedError &&
+                typeof guardError.reasonFingerprint === 'string' &&
+                guardError.reasonFingerprint !==
+                  fingerprintCommercialDeleteReasons(
+                    await tx.moderationDeleteIntentReason.findMany({
+                      where: { intentId: intent.id },
+                      select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
+                      orderBy: { reasonKey: 'asc' },
+                      take: COMMERCIAL_TEXT_MAX_INTENT_REASONS + 1,
+                    }),
+                  ))
+            : details.errorCode.startsWith('profanity_')
+              ? (await tx.moderationDeleteIntentReason.findFirst({
+                  where: { intentId: intent.id, ruleCode: { not: PROFANITY_DELETE_RULE_CODE } },
+                  select: { id: true },
+                })) !== null
+              : channelCleanupGuardRejected
+                ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
+                : nightModeCleanupGuardRejected
+                  ? latest.nightModeCloseNoticeCleanupReason === true &&
+                    latest.nightModeCloseNoticeCleanupOnly !== true
+                  : this.hasExecutableNonCommercialOcrReason(latest));
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.
@@ -4521,6 +4607,7 @@ export class ModerationDeleteIntentService {
     leaseToken: string,
     botId: string,
     profanityVerified = false,
+    commercialVerifiedReasonKeys: string[] = [],
   ): Promise<ModerationDeleteAttemptResult> {
     if (this.isBotMessageAutoDeleteOnlyReason(intent)) {
       return this.recordRemoteSuccessPendingVerification(intent, leaseToken, botId);
@@ -4545,6 +4632,7 @@ export class ModerationDeleteIntentService {
       leaseToken,
       botId,
       profanityVerified,
+      commercialVerifiedReasonKeys,
     );
   }
 
@@ -4599,6 +4687,7 @@ export class ModerationDeleteIntentService {
     leaseToken: string,
     botId: string,
     profanityVerified = false,
+    commercialVerifiedReasonKeys: string[] = [],
   ): Promise<ModerationDeleteAttemptResult> {
     try {
       const completed = await this.completeSucceeded(
@@ -4607,6 +4696,7 @@ export class ModerationDeleteIntentService {
         botId,
         null,
         profanityVerified,
+        commercialVerifiedReasonKeys,
       );
       return this.toAttemptResult(completed);
     } catch (error: unknown) {
@@ -4708,6 +4798,7 @@ export class ModerationDeleteIntentService {
     botId: string,
     absenceVerificationCode: 'post_success_exact_absence' | null = null,
     profanityVerified = false,
+    commercialVerifiedReasonKeys: string[] = [],
   ): Promise<IntentRow> {
     const absenceVerifiedAt = absenceVerificationCode ? new Date() : null;
     await this.prisma.$transaction(async (tx) => {
@@ -4740,7 +4831,12 @@ export class ModerationDeleteIntentService {
         return;
       }
 
-      await this.materializeModerationEventsForIntent(tx, intentId, profanityVerified);
+      await this.materializeModerationEventsForIntent(
+        tx,
+        intentId,
+        profanityVerified,
+        commercialVerifiedReasonKeys,
+      );
     });
     const completed = await this.loadRequiredIntent(intentId);
     if (completed.status === 'SUCCEEDED') {
@@ -4753,9 +4849,14 @@ export class ModerationDeleteIntentService {
     tx: Prisma.TransactionClient,
     intentId: string,
     profanityVerified = false,
+    commercialVerifiedReasonKeys: string[] = [],
   ): Promise<void> {
     // FLAG: A successful DELETE under another reason or a recovered success is not proof of
-    // profanity. Preserve historical events, but never create or mark new unverified attribution.
+    // a text violation. Preserve historical events, never add unverified reason attribution.
+    const commercialAttribution =
+      commercialVerifiedReasonKeys.length > 0
+        ? Prisma.sql`reason."reason_key" IN (${Prisma.join(commercialVerifiedReasonKeys)})`
+        : Prisma.sql`FALSE`;
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "moderation_events" (
         "id", "chat_id", "bot_id", "user_id", "message_id", "event_type",
@@ -4787,6 +4888,7 @@ export class ModerationDeleteIntentService {
         AND reason."event_type" IS NOT NULL
         AND COALESCE(reason."user_id", intent."subject_user_id") IS NOT NULL
         AND (${profanityVerified} OR reason."rule_code" <> ${PROFANITY_DELETE_RULE_CODE})
+        AND (reason."rule_code" <> ${COMMERCIAL_TEXT_DELETE_RULE_CODE} OR ${commercialAttribution})
       ON CONFLICT ("id") DO NOTHING
     `);
 
@@ -4803,6 +4905,7 @@ export class ModerationDeleteIntentService {
         AND reason."event_type" IS NOT NULL
         AND COALESCE(reason."user_id", intent."subject_user_id") IS NOT NULL
         AND (${profanityVerified} OR reason."rule_code" <> ${PROFANITY_DELETE_RULE_CODE})
+        AND (reason."rule_code" <> ${COMMERCIAL_TEXT_DELETE_RULE_CODE} OR ${commercialAttribution})
     `);
   }
 
@@ -5508,6 +5611,7 @@ export class ModerationDeleteIntentService {
       | 'guarded_link_predispatch_exact_absence'
       | 'guarded_commercial_ocr_predispatch_exact_absence'
       | 'guarded_profanity_predispatch_exact_absence'
+      | 'guarded_commercial_text_absence'
       | 'guarded_message_duplicate_absence'
       | 'guarded_image_text_stop_list_predispatch_exact_absence',
   ): Promise<IntentRow> {

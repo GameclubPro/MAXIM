@@ -1,7 +1,14 @@
 import type { Logger } from '@nestjs/common';
 import type { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
-import type { ModerationDeleteExecutionResult } from './profanity/profanity-delete-execution';
+import {
+  executeProfanityGuardedLegacyDelete,
+  type ModerationDeleteExecutionResult,
+  type ProfanityDeleteMutationHooks,
+} from './profanity/profanity-delete-execution';
+import type { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
+import type { CommercialDeleteGuardService } from './commercial/commercial-delete-guard.service';
+import { executeCommercialGuardedLegacyDelete } from './commercial/commercial-delete-execution';
 import { TRAFFIC_PROTECTION_DELETE_RULE_CODES } from './traffic-protection';
 
 export async function executeDurableModerationDelete(params: {
@@ -36,6 +43,11 @@ export async function executeDurableModerationDelete(params: {
           ...(result.kind === 'confirmed' && result.profanityVerified
             ? { profanityVerified: true as const }
             : {}),
+          ...(result.kind === 'confirmed' &&
+          result.commercialVerified &&
+          result.commercialVerifiedReasonKeys?.includes(input.reasonKey)
+            ? { commercialVerified: true as const }
+            : {}),
         };
       if (executeExclusively)
         return {
@@ -59,4 +71,37 @@ export async function executeDurableModerationDelete(params: {
     }
   }
   return params.legacy();
+}
+
+export function executeGuardedModerationDelete(
+  params: Omit<
+    Parameters<typeof executeDurableModerationDelete>[0],
+    'legacy' | 'beforeDeleteMutation'
+  > & {
+    options?: { delayMs?: number; beforeImmediateDeleteMutation?: () => Promise<void> };
+    profanityGuard?: Pick<ProfanityDeleteGuardService, 'assertMessageStillActionable'>;
+    commercialGuard?: Pick<CommercialDeleteGuardService, 'assertMessageStillActionable'>;
+    legacyExecute(
+      hooks?: ProfanityDeleteMutationHooks,
+    ): Promise<{ ok: boolean; botId: string | null }>;
+  },
+): Promise<ModerationDeleteExecutionResult> {
+  const scheduled = Boolean(params.options?.delayMs && params.options.delayMs > 0);
+  return executeDurableModerationDelete({
+    ...params,
+    beforeDeleteMutation: params.options?.beforeImmediateDeleteMutation,
+    legacy: () =>
+      executeCommercialGuardedLegacyDelete({
+        input: params.input,
+        scheduled,
+        guard: params.commercialGuard,
+        execute: (commercialHooks) =>
+          executeProfanityGuardedLegacyDelete({
+            input: params.input,
+            scheduled,
+            guard: params.profanityGuard,
+            execute: (profanityHooks) => params.legacyExecute(commercialHooks ?? profanityHooks),
+          }),
+      }),
+  });
 }

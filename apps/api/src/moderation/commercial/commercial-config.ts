@@ -1,5 +1,5 @@
 export const COMMERCIAL_ENGINE_CONFIG = {
-  decisionVersion: 'commercial-deterministic-v3',
+  decisionVersion: 'commercial-deterministic-v4',
   patternPolicyVersion: 'commercial-patterns-v2',
   actionPolicy: {
     highFpRiskThreshold: 70,

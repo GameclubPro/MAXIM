@@ -1,4 +1,5 @@
 import type { CommercialCampaignContext } from '../commercial-campaign.util';
+import { resolveCommercialServiceSpeechAct } from './commercial-service-speech-act';
 
 export type CommercialRecallCap = 'WARN' | 'REVIEW_ONLY';
 
@@ -608,6 +609,53 @@ export function resolveProfessionalRetailRecall(params: {
 }
 
 export function resolveLocalServiceRecall(text: string): CommercialRecallMatch | null {
+  if (
+    text.length <= 900 &&
+    /(?:перетяж|колодц|заточ|торт|3[dд])/iu.test(text) &&
+    resolveCommercialServiceSpeechAct(text) === 'NONE' &&
+    !isServiceDemandOrRecommendation(text) &&
+    PHONE_OR_LINK_PATTERN.test(text)
+  ) {
+    if (
+      /(?:^|[^\p{L}\p{N}_-])перетяжк[а-яё-]*\s+(?:мебел[а-яё-]*|диван[а-яё-]*|крес[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+        text,
+      ) &&
+      /(?:собственн[а-яё-]*\s+цех|выбор\s+ткан[а-яё-]*|принима(?:ю|ем)\s+заказ[а-яё-]*)/iu.test(
+        text,
+      ) &&
+      RESPONSE_PATTERN.test(text)
+    )
+      return { label: 'furniture-restoration-offer', cap: 'WARN' };
+    if (
+      /(?:^|[^\p{L}\p{N}_-])(?:чистк[а-яё-]*|ремонт[а-яё-]*|углублени[а-яё-]*)\s+(?:(?:и\s+ремонт|и\s+чистка)\s+)?колодц[а-яё-]*(?=$|[^\p{L}\p{N}_-])/iu.test(
+        text,
+      ) &&
+      /(?:работа(?:ем|ю)|выполн(?:им|ю)|оказыва(?:ем|ю))/iu.test(text) &&
+      /(?:гаранти[а-яё-]*|договор[а-яё-]*|цен[а-яё-]*|выезд)/iu.test(text)
+    )
+      return { label: 'well-maintenance-offer', cap: 'WARN' };
+    if (
+      /(?:^|[^\p{L}\p{N}_-])заточк[а-яё-]*\s+(?:нож[а-яё-]*|инструмент[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+        text,
+      ) &&
+      /принима(?:ю|ем)\s+заказ[а-яё-]*/iu.test(text) &&
+      countMatches(text, PRICE_PATTERN, 1) > 0
+    )
+      return { label: 'tool-sharpening-offer', cap: 'WARN' };
+    if (
+      /(?:^|[^\p{L}\p{N}_-])принима(?:ю|ем)\s+заказ[а-яё-]*\s+на\s+торт[а-яё-]*(?=$|[^\p{L}\p{N}_-])/iu.test(
+        text,
+      ) &&
+      countMatches(text, PRICE_PATTERN, 1) > 0
+    )
+      return { label: 'custom-cake-order-offer', cap: 'WARN' };
+    if (
+      /печать\s+детал[а-яё-]*\s+на\s+3[dд][-\s]*принтер[а-яё-]*/iu.test(text) &&
+      /изготавлива(?:ю|ем)\s+на\s+заказ/iu.test(text) &&
+      /(?:по\s+вашим\s+чертеж[а-яё-]*|расч[её]т\s+стоимости)/iu.test(text)
+    )
+      return { label: 'custom-3d-owned-order', cap: 'WARN' };
+  }
   if (shouldSkipBoundedRecall(text, LOCAL_SERVICE_RECALL_PREFILTER)) {
     return null;
   }

@@ -283,6 +283,42 @@ maxim_topology_require_stop_words_policy_guard() {
   fi
 }
 
+maxim_topology_require_commercial_text_delete_guard() {
+  local commit_sha="$1"
+  local binding_source guard_source executor_source
+  # FLAG: Pending commercial v1 bindings must never reach an unguarded old executor.
+  if ! binding_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial/commercial-delete-binding.ts" 2>/dev/null)" ||
+    ! guard_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial/commercial-delete-guard.service.ts" 2>/dev/null)" ||
+    ! executor_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)"; then
+    echo "Rollback target predates the commercial text delete guard." >&2
+    return 1
+  fi
+  if ! printf '%s\0%s\0%s' "$binding_source" "$guard_source" "$executor_source" | node -e '
+    const input = require("node:fs").readFileSync(0);
+    if (input.length > 4 * 1024 * 1024) process.exit(1);
+    const parts = input.toString("utf8").split("\0");
+    if (parts.length !== 3) process.exit(1);
+    const [binding, guard, executor] = parts;
+    const start = executor.indexOf("private async runDeletePreDispatchGuards(");
+    const end = executor.indexOf("\n  private ", start + 1);
+    const boundary = executor.slice(start, end);
+    const dispatch = boundary.indexOf("if (finalDispatchLeaseToken)");
+    const call = boundary.indexOf("await this.commercialDeleteGuard.assertIntentStillActionable(");
+    const valid = start >= 0 && end > start && dispatch >= 0 && call > dispatch &&
+      /COMMERCIAL_TEXT_DELETE_BINDING_VERSION\s*=\s*1\s+as const/u.test(binding) &&
+      guard.includes("class CommercialDeleteGuardService") &&
+      guard.includes("getExactMessageRow(") && guard.includes("isCommercialTextDeleteBindingCurrent(") &&
+      guard.includes("commercial_text_binding_stale") &&
+      boundary.includes("Commercial delete guard unavailable") &&
+      executor.includes("commercialVerifiedReasonKeys.length > 0") &&
+      executor.includes("Prisma.join(commercialVerifiedReasonKeys)");
+    process.exit(valid ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks the commercial text pre-dispatch guard capability." >&2
+    return 1
+  fi
+}
+
 maxim_topology_image_has_ocr_native_sandbox() {
   local image="$1"
   local capability

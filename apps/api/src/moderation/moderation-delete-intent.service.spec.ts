@@ -38,6 +38,8 @@ import {
 } from './night-mode-transition-generation.util';
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
 import { ProfanityDeleteGuardRejectedError } from './profanity/profanity-delete-guard.service';
+import { CommercialDeleteGuardRejectedError } from './commercial/commercial-delete-guard.service';
+import { fingerprintCommercialDeleteReasons } from './commercial/commercial-delete-binding';
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-duplicate-state';
 import { MessageDuplicateGuardRejectedError } from './message-duplicate/message-duplicate-delete-guard.service';
 
@@ -128,6 +130,7 @@ function createService(
   commercialOcrDeleteGuardOverrides?: Record<string, unknown>,
   participantImmunityOverrides?: Record<string, unknown>,
   profanityDeleteGuardOverrides?: Record<string, unknown>,
+  commercialDeleteGuardOverrides?: Record<string, unknown>,
 ) {
   const config = {
     MODERATION_DELETE_INTENT_MODE: 'on',
@@ -229,6 +232,10 @@ function createService(
     assertIntentStillActionable: jest.fn().mockResolvedValue('not_applicable'),
     ...profanityDeleteGuardOverrides,
   };
+  const commercialDeleteGuard = {
+    assertIntentStillActionable: jest.fn().mockResolvedValue('not_applicable'),
+    ...commercialDeleteGuardOverrides,
+  };
   const service = new ModerationDeleteIntentService(
     prisma as never,
     maxClient as never,
@@ -240,6 +247,10 @@ function createService(
     commercialOcrDeleteGuard as never,
     profanityDeleteGuard as never,
     participantImmunity as never,
+    undefined,
+    undefined,
+    undefined,
+    commercialDeleteGuard as never,
   );
   return {
     service,
@@ -252,6 +263,7 @@ function createService(
     commercialOcrDeleteGuard,
     participantImmunity,
     profanityDeleteGuard,
+    commercialDeleteGuard,
   };
 }
 
@@ -5225,6 +5237,162 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
+  it.each([
+    {
+      recovered: false,
+      guardResult: { kind: 'allowed', reasonKeys: ['commercial-revision'] },
+      keys: ['commercial-revision'],
+    },
+    { recovered: false, guardResult: 'not_applicable', keys: [] },
+    {
+      recovered: true,
+      guardResult: { kind: 'allowed', reasonKeys: ['commercial-revision'] },
+      keys: [],
+    },
+  ])(
+    'limits commercial proof and event attribution to this dispatch: %j',
+    async ({ recovered, guardResult, keys }) => {
+      const intent = {
+        ...baseIntent,
+        ...(recovered
+          ? { remoteDeleteSucceededAt: new Date(), remoteDeleteSucceededBotId: 'bot-1' }
+          : {}),
+      };
+      const completed = {
+        ...intent,
+        status: 'SUCCEEDED',
+        succeededBotId: 'bot-1',
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-1',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const events: string[] = [];
+      const txExecuteRaw = jest.fn().mockResolvedValue(1);
+      const executeRaw = jest.fn(async (query: Prisma.Sql) => {
+        if (query.strings.join('?').includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP'))
+          events.push('dispatch-fence');
+        return 1;
+      });
+      const { service, commercialDeleteGuard } = createService(
+        {},
+        {
+          $queryRaw: jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]),
+          $executeRaw: executeRaw,
+          $transaction: jest.fn(async (callback) => callback({ $executeRaw: txExecuteRaw })),
+        },
+        {
+          deleteMessage: jest.fn(async () => {
+            events.push('max-delete');
+          }),
+        },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          assertIntentStillActionable: jest.fn(async () => {
+            events.push('commercial-guard');
+            return guardResult;
+          }),
+        },
+      );
+      const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+      expect(result).toMatchObject({ kind: 'confirmed' });
+      if (keys.length)
+        expect(result).toMatchObject({
+          commercialVerified: true,
+          commercialVerifiedReasonKeys: keys,
+        });
+      else expect(result).not.toHaveProperty('commercialVerified');
+      expect(events).toEqual(recovered ? [] : ['dispatch-fence', 'commercial-guard', 'max-delete']);
+      expect(commercialDeleteGuard.assertIntentStillActionable).toHaveBeenCalledTimes(
+        recovered ? 0 : 1,
+      );
+      const queries = txExecuteRaw.mock.calls
+        .map(([query]) => query as Prisma.Sql)
+        .filter((query) =>
+          query.strings.join('?').includes('reason."moderation_event_id" IS NULL'),
+        );
+      expect(queries).toHaveLength(2);
+      for (const query of queries) {
+        expect(query.values).toEqual([
+          'intent-1',
+          false,
+          'PROFANITY_DELETE',
+          'COMMERCIAL_AD_DELETE',
+          ...keys,
+        ]);
+        expect(query.strings.join('?')).toContain(
+          keys.length ? 'reason."reason_key" IN (?)' : 'OR FALSE)',
+        );
+      }
+    },
+  );
+
+  it.each([
+    { independent: false, changed: false },
+    { independent: true, changed: false },
+    { independent: false, changed: true },
+  ])(
+    'fences cancellation against concurrent commercial reasons: %j',
+    async ({ independent, changed }) => {
+      const reasons = [
+        { ruleCode: 'COMMERCIAL_AD_DELETE', reasonKey: 'old-revision', score: 0.5, metadata: {} },
+      ];
+      const error = new CommercialDeleteGuardRejectedError('commercial_text_message_changed');
+      error.reasonFingerprint = fingerprintCommercialDeleteReasons(reasons);
+      const txQueryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([{ id: baseIntent.id }])
+        .mockResolvedValueOnce([baseIntent]);
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const findFirst = jest.fn().mockResolvedValue(independent ? { id: 'independent' } : null);
+      const findMany = jest
+        .fn()
+        .mockResolvedValue(
+          changed ? [...reasons, { ...reasons[0], reasonKey: 'new-revision' }] : reasons,
+        );
+      const remoteDelete = jest.fn();
+      const { service, queue } = createService(
+        {},
+        {
+          $queryRaw: jest.fn().mockResolvedValueOnce([baseIntent]),
+          $executeRaw: executeRaw,
+          $transaction: jest.fn(async (callback) =>
+            callback({
+              $queryRaw: txQueryRaw,
+              $executeRaw: executeRaw,
+              moderationDeleteIntentReason: { findFirst, findMany },
+            }),
+          ),
+        },
+        { deleteMessage: remoteDelete },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { assertIntentStillActionable: jest.fn().mockRejectedValue(error) },
+      );
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: independent || changed ? 'pending' : 'terminal',
+        status: independent || changed ? 'RETRYABLE' : 'FAILED_TERMINAL',
+      });
+      expect(remoteDelete).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalledTimes(independent || changed ? 1 : 0);
+      expect(txQueryRaw.mock.calls[0][0].strings.join('?')).toContain('FOR UPDATE');
+      expect(
+        executeRaw.mock.calls.some(([query]) =>
+          query.strings.join('?').includes('"delete_dispatch_started_at" = NULL'),
+        ),
+      ).toBe(true);
+    },
+  );
+
   it.each(
     [false, true].flatMap((hasIndependentReason) =>
       (['profanity_violation_no_longer_present', 'profanity_author_not_member'] as const).map(
@@ -5423,7 +5591,13 @@ describe('ModerationDeleteIntentService', () => {
       for (const query of [eventInsert!, reasonMarker!]) {
         expect(query.strings.join('?')).toContain('AND (? OR reason."rule_code" <> ?)');
         expect(query.strings.join('?')).toContain('reason."moderation_event_id" IS NULL');
-        expect(query.values).toEqual(['intent-1', proof, 'PROFANITY_DELETE']);
+        expect(query.values).toEqual([
+          'intent-1',
+          proof,
+          'PROFANITY_DELETE',
+          'COMMERCIAL_AD_DELETE',
+        ]);
+        expect(query.strings.join('?')).toContain('OR FALSE)');
       }
       expect(eventInsert!.strings.join('?')).toContain('ON CONFLICT ("id") DO NOTHING');
       expect(remoteDelete).toHaveBeenCalledTimes(recovered ? 0 : 1);
@@ -6828,6 +7002,8 @@ describe('ModerationDeleteIntentService', () => {
     ['night_mode_close_notice_cleanup_stale', 'INDEPENDENT_DELETE'],
     ['stop_words_delete_no_longer_authorized', 'INDEPENDENT_DELETE'],
     ['stop_words_delete_no_longer_authorized', 'MESSAGE_BLOCKED_WORD_DELETE'],
+    ['commercial_text_message_changed', 'INDEPENDENT_DELETE'],
+    ['commercial_text_message_changed', 'COMMERCIAL_AD_DELETE'],
   ])('reopens %s when a fresh %s reason commits', async (priorError, ruleCode) => {
     const independentDeadline = new Date(Date.now() + 120_000);
     const terminalNightCleanup = {
@@ -6895,6 +7071,62 @@ describe('ModerationDeleteIntentService', () => {
       { intentId: 'intent-1' },
       expect.objectContaining({ priority: 1 }),
     );
+  });
+
+  it('reopens an expired intent only after a fresh bound commercial revision is inserted', async () => {
+    const expired = {
+      ...baseIntent,
+      status: 'EXPIRED',
+      entityType: 'CHAT',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      completedAt: new Date(),
+      lastErrorCode: 'retry_horizon_exceeded',
+    };
+    const pending = { ...expired, status: 'PENDING', completedAt: null, lastErrorCode: null };
+    const txQueryRaw = jest.fn().mockResolvedValueOnce([expired]).mockResolvedValueOnce([pending]);
+    const { service } = createService(
+      {},
+      {
+        $transaction: jest.fn(async (callback) =>
+          callback({ $queryRaw: txQueryRaw, $executeRaw: jest.fn().mockResolvedValue(1) }),
+        ),
+      },
+    );
+    const eventTimestampMs = Date.now();
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        subjectUserId: 'user-1',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        reasonKey: 'fresh-commercial-revision',
+        ruleCode: 'COMMERCIAL_AD_DELETE',
+        retryUntilAt: new Date(eventTimestampMs + 300_000),
+        event: {
+          metadata: {
+            commercialTextBinding: {
+              version: 1,
+              decisionVersion: 'commercial-deterministic-v3',
+              detectorSourceSha256: 'a'.repeat(64),
+              sourceSha256: 'b'.repeat(64),
+              settingsSha256: 'c'.repeat(64),
+              eventTimestampMs,
+              deadlineAtMs: eventTimestampMs + 300_000,
+              campaignContext: null,
+            },
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ status: 'PENDING' });
+    const query = txQueryRaw.mock.calls[1][0] as Prisma.Sql;
+    expect(query.strings.join('?')).toContain(
+      '"status" = CAST(\'EXPIRED\' AS "ModerationDeleteIntentStatus")',
+    );
+    expect(query.strings.join('?')).toContain('"delete_dispatch_started_at" IS NULL');
+    expect(query.strings.join('?')).toContain('"remote_delete_succeeded_at" IS NULL');
   });
 
   it('does not reopen a channel cleanup entity rejection with an unresolved dispatch marker', async () => {
@@ -9280,7 +9512,12 @@ describe('ModerationDeleteIntentService', () => {
     const eventInsert = executeRaw.mock.calls.find(([query]) =>
       query.strings?.join('?').includes('INSERT INTO "moderation_events"'),
     )?.[0] as Prisma.Sql;
-    expect(eventInsert.values).toEqual(['intent-1', false, 'PROFANITY_DELETE']);
+    expect(eventInsert.values).toEqual([
+      'intent-1',
+      false,
+      'PROFANITY_DELETE',
+      'COMMERCIAL_AD_DELETE',
+    ]);
     expect(queue.add).not.toHaveBeenCalled();
   });
 

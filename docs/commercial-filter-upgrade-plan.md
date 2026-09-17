@@ -1,11 +1,89 @@
 # Commercial Filter Upgrade Plan
 
-Дата ревизии: 2026-07-24.
+Дата ревизии: 2026-09-18.
 
 Актуальный аудит трёх production-срезов 10-11 сентября и следующий план работ:
 [проверка реальных данных от 12 сентября 2026](commercial-filter-audit-2026-09-12.md).
 Он фиксирует ошибки ownership, дрейф обезличивания и критерии безопасности удаления;
 исторические метрики ниже не заменяют независимую оценку текущей версии.
+
+## September 18: Service Intent Corrections
+
+The incumbent deterministic detector advances to `commercial-deterministic-v4`.
+Sensitivity thresholds and the second-stage scoring weights are unchanged. The
+correction uses assertion-scoped request, testimonial and refusal roles in the
+existing local-context resolver, not a whole-message keyword allowlist. Qualified
+provider offers, paid rhetorical service cards, recruitment and separate offers
+before/after protected speech retain their existing policy.
+
+Bounded offer recognition covers furniture restoration, well maintenance, tool
+sharpening, made-to-order cakes and noun-first 3D-printing offers. Each addition
+requires independent offer/transaction/contact evidence and retains the existing
+WARN cap; WARN still means cleanup eligibility, not a new sanction tier. Local
+analysis exposes completeness before quote grouping, so truncated text or an
+assertion limit cannot silently certify a safe context.
+
+### Measured Regression Results
+
+Baseline behavior: `f201e032`, with the pending guard implementation but unchanged
+v3 detector logic. The 52-case development set was frozen before detector edits:
+32 initial examples and 20 paired counterexamples, comprising 29 negatives and
+23 explicit offers. At BALANCED 45/65, using the original synthetic phone forms:
+
+| Set                    | Cases | False Cleanup Before | After | Missed Offers Before | After |
+| ---------------------- | ----: | -------------------: | ----: | -------------------: | ----: |
+| Initial examples       |    32 |                    8 |     0 |                    3 |     0 |
+| Paired counterexamples |    20 |                    4 |     0 |                    2 |     0 |
+| Total                  |    52 |                   12 |     0 |                    5 |     0 |
+
+The fixtures live in `apps/api/src/moderation/commercial-intent.fixture.ts`, SHA-256
+`1fd9311f59748052a9db358ecd3d8c094230b18119e4aab2d9824767c2d8e4aa`.
+Tests additionally check STRICT 38/55, phone placeholders, greetings, mixed
+statements, campaign repetition and incomplete analysis. These generated variants
+are not independent observations and are not counted as extra quality samples.
+
+Historical replay retained all 1,895 action decisions, with the frozen transport
+adjudication enabled. Baseline and candidate result JSONL SHA-256 both equal
+`7752efe8f922c1f2a9d558966151cff93139ce59b5dde97b1c5869928965bcaa`.
+This is regression parity, not proof of perfect historical labels: existing band
+comparison remains 741 exact, 205 under, 1 over and 948 unspecified. Band mismatch
+is not the same as an incorrect cleanup decision. Historical labels were not
+rewritten to make the result look better.
+
+The development set is deliberately targeted, not a representative production
+sample or independent holdout. No population-wide precision/recall or measured
+"times fewer errors" claim follows from these results. Independent temporal
+annotation and any learned-model/global shadow-canary rollout remain separate;
+Commercial OCR is not promoted by this release.
+
+Before local TSX corpus replays, regenerate the checked-in detector source identity
+with `node scripts/generate-commercial-ocr-detector-source.mjs`; the provenance
+records the generated runtime identity. Source identities for the final comparison:
+baseline `6cb51f4f4df5541c3a796a3c9d190fb472840449d91dd518e1a38dc0cffbbed4`,
+candidate `79483899dc958d150bf4b635f3169add2c76b96ccc338d911829cf7f3aeba520`.
+
+## September 17: Guarded Deletion
+
+Commercial text now has a mandatory current-message guard in durable dispatch and
+immediate legacy compatibility. Each edit receives a versioned reason key bound
+to text SHA-256, relevant filter/sanction settings, detector identity, event time
+and a five-minute deadline. Older revisions cannot override the latest event.
+Legacy reasons are checked without unbound historical campaign counters.
+
+Current author access, exact message identity, participant immunity and final
+settings/deadline are verified before each remote DELETE. A confirmed deletion
+provides ephemeral proof for specific reason keys; another revision, exact absence,
+pending work or recovered success cannot add a commercial strike or reputation
+observation. Events are attributed only to the reasons verified by that attempt.
+Concurrent/new reasons are fenced against obsolete terminal rejection; fresh bound
+revisions can reopen expired work without reviving ambiguous dispatches.
+
+Both API rollback paths now require the commercial text guard capability. See
+[the commercial deletion runbook](operations/runbooks/commercial-text-delete-guard.md).
+Delayed legacy actions cannot preserve a transport callback and must use the
+durable executor. This release changes deletion safety, not classification weights,
+sensitivity settings or OCR promotion. Global shadow/canary policy control and
+independent holdout collection are still separate follow-up work.
 
 ## September 17: Correctness Foundation
 
@@ -36,12 +114,14 @@ Remaining release work, deliberately not represented as completed:
 1. Collect an independently double-adjudicated temporal holdout, with campaign
    grouping and sampling probabilities. Existing automatic labels and these
    deterministic regression tests do not establish population precision/recall.
-2. Extend the existing local-context parser into reusable assertion-owned evidence,
-   then evaluate the remaining request/testimonial/mixed-language errors on that
-   holdout. Do not lower thresholds globally to compensate for missing context.
-3. Before activating any new text-policy authority, deliver its versioned pending
-   intent binding, execution-time guards/kill switch and guard-compatible rollback
-   floor. The disposition compatibility reader alone is not that rollout mechanism.
+2. Assertion-scoped service speech acts and bounded recall corrections are delivered
+   above. Evaluate remaining contexts and mixed-language errors on the independent
+   holdout before further widening recognition. Do not lower thresholds globally
+   to compensate for missing context.
+3. Pending-intent binding, current-message guard and compatible rollback floor are
+   delivered by Guarded Deletion above. Before activating a new text-policy
+   authority, add its shared shadow/canary control and global execution-time kill
+   switch; current per-chat settings checks are not that rollout mechanism.
 4. Profile real cache misses, normalization and Redis work before further hot-path
    optimization. Evaluate a calibrated local learned second stage offline only
    after the corrected deterministic baseline and independent holdout are frozen.

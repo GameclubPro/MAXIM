@@ -13,6 +13,7 @@ import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-dupl
 import { CommercialOcrDeleteGuardService } from './commercial-ocr/commercial-ocr-delete-guard.service';
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr/commercial-ocr-runtime-policy.service';
 import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.service';
+import { CommercialDeleteGuardService } from './commercial/commercial-delete-guard.service';
 import { StopWordsDeleteGuardService } from './stop-words/stop-words-delete-guard.service';
 import { TrafficProtectionDeleteGuardService } from './traffic-protection-delete-guard.service';
 import { RuleEngineModule } from './rule-engine.module';
@@ -34,6 +35,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     LinkHistoryDeleteGuardService,
     ParticipantModerationImmunityService,
     ProfanityDeleteGuardService,
+    CommercialDeleteGuardService,
     StopWordsDeleteGuardService,
     TrafficProtectionDeleteGuardService,
     CommercialOcrDeleteGuardService,
@@ -48,6 +50,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     ModerationDeleteIntentService,
     ParticipantModerationImmunityService,
     ProfanityDeleteGuardService,
+    CommercialDeleteGuardService,
     CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
     MessageDuplicateDeleteGuardService,
