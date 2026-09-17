@@ -285,18 +285,14 @@ export class PublisherDialogProfileRuntime {
     if (dialogType !== 'comments') {
       throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
     }
-    await this.assertChatReady(params.chatId);
     const threadId = this.resolveChatThreadId(params.chatId, dialogType, params.token, 'publisher');
-    const [chatSettings, rows, adminUserIds] = await Promise.all([
-      this.readChatCommentSettings(params.chatId),
+    await this.assertChatReady(params.chatId);
+    const [rows, adminUserIds] = await Promise.all([
       this.context.prisma.$queryRaw<DialogAuditLogRow[]>(
         buildPublisherChatCommentsQuery(params.chatId, threadId),
       ),
       this.readAdminUserIds(params.chatId),
     ]);
-    if (!chatSettings.commentsEnabled) {
-      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
-    }
     return channelDialogResponseSchema.parse({
       chatId: params.chatId,
       type: dialogType,
@@ -314,7 +310,9 @@ export class PublisherDialogProfileRuntime {
     if (!readiness) {
       throw new ServiceUnavailableException('Диалог Публика временно недоступен.');
     }
-    const route = await readiness.assertEntityReady(chatId, 'chat_comments');
+    // FLAG: Creation switches govern new buttons, not already signed comment threads.
+    // Keep the same policy/access/runtime fence as existing Publisher channel threads.
+    const route = await readiness.assertEntityReady(chatId, 'publication');
     if (route.entityType !== 'chat') {
       throw new BadRequestException('Комментарии Публика доступны только для чатов.');
     }
@@ -330,7 +328,11 @@ export class PublisherDialogProfileRuntime {
       return this.context.majorDialogLinks.resolveChatDialogThreadId(chatId, type, token);
     }
     const links = this.requirePublisherDialogLinks();
-    return links.resolveChatDialogThreadId(chatId, type, token);
+    const threadId = links.resolveChatDialogThreadId(chatId, type, token);
+    if (!threadId) {
+      throw new BadRequestException('Ссылка на комментарии недействительна.');
+    }
+    return threadId;
   }
 
   resolveChannelThreadId(
@@ -362,31 +364,10 @@ export class PublisherDialogProfileRuntime {
     return threadId;
   }
 
-  async readChatCommentSettings(
-    chatId: string,
-  ): Promise<
-    Pick<
-      ChatSettings,
-      | 'commentsEnabled'
-      | 'commentsAdminsEnabled'
-      | 'commentsAllEnabled'
-      | 'commentsChatBroadcastsEnabled'
-    >
-  > {
-    const settings = await this.context.prisma.publisherEntitySettings.findUnique({
-      where: { chatId },
-      select: {
-        chatCommentsEnabled: true,
-        chatCommentsAdminsEnabled: true,
-        chatCommentsPostsEnabled: true,
-      },
-    });
-    return {
-      commentsEnabled: settings?.chatCommentsEnabled ?? false,
-      commentsAdminsEnabled: settings?.chatCommentsAdminsEnabled ?? false,
-      commentsAllEnabled: false,
-      commentsChatBroadcastsEnabled: settings?.chatCommentsPostsEnabled ?? false,
-    };
+  readChatCommentSettings(_chatId: string): Promise<Pick<ChatSettings, 'commentsEnabled'>> {
+    // FLAG: This adapter is only for existing signed dialogs. Producers still read the
+    // persisted creation switches; dialog entry points enforce assertChatReady separately.
+    return Promise.resolve({ commentsEnabled: true });
   }
 
   async readChannelCommentThreadSettings(chatId: string): Promise<ChannelSettings> {

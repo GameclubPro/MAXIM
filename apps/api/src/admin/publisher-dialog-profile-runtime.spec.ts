@@ -12,6 +12,7 @@ import {
 } from './admin-service-test-support';
 import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
 import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
+import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 
 const CHAT_ID = 'chat-shared';
 const CHANNEL_ID = 'channel-shared';
@@ -92,17 +93,18 @@ function createHarness() {
     createConfigMock() as never,
   );
   const majorDialogLinks = (service as any).dialogLinkHelper;
-  const assertEntityReady = jest.fn(async (chatId: string) => ({
+  const assertEntityReady = jest.fn(async (chatId: string, _feature?: string) => ({
     entityType: chatId === CHANNEL_ID ? 'channel' : 'chat',
   }));
+  const publisherDialogLinks = {
+    getBotId: () => 'publisher-bot',
+    resolveChatDialogThreadId: jest.fn<string | null, []>().mockReturnValue(THREAD_ID),
+    resolveChannelDialogThreadId: () => THREAD_ID,
+  };
   const publisherRuntime = new PublisherDialogProfileRuntime({
     prisma,
     majorDialogLinks,
-    publisherDialogLinks: {
-      getBotId: () => 'publisher-bot',
-      resolveChatDialogThreadId: () => THREAD_ID,
-      resolveChannelDialogThreadId: () => THREAD_ID,
-    } as never,
+    publisherDialogLinks: publisherDialogLinks as never,
     publisherReadiness: {
       assertEntityReady,
     } as never,
@@ -115,7 +117,15 @@ function createHarness() {
     'comments',
     THREAD_ID,
   );
-  return { assertEntityReady, majorRow, prisma, publisherRow, service, majorToken };
+  return {
+    assertEntityReady,
+    majorRow,
+    prisma,
+    publisherRow,
+    service,
+    majorToken,
+    publisherDialogLinks,
+  };
 }
 
 function createSuggestionHarness() {
@@ -174,6 +184,105 @@ function createSuggestionHarness() {
 }
 
 describe('Publisher chat dialog profile ownership', () => {
+  it('keeps a signed chat thread readable after all creation switches are disabled', async () => {
+    const { assertEntityReady, prisma, publisherRow, service } = createHarness();
+    prisma.publisherEntitySettings.findUnique.mockResolvedValue({
+      chatCommentsEnabled: false,
+      chatCommentsAdminsEnabled: false,
+      chatCommentsPostsEnabled: false,
+    });
+    assertEntityReady.mockImplementation(async (_chatId, feature) => {
+      if (feature === 'chat_comments') {
+        throw new PublisherSetupRequiredException([CHAT_ID], 'module_disabled');
+      }
+      return { entityType: 'chat' };
+    });
+
+    const result = await service.getChatDialog(CHAT_ID, user, 'comments', TOKEN, 'publisher');
+
+    expect(result.messages.map((message) => message.id)).toEqual([publisherRow.id]);
+    expect(assertEntityReady).toHaveBeenCalledWith(CHAT_ID, 'publication');
+    expect(prisma.publisherEntitySettings.findUnique).not.toHaveBeenCalled();
+    const query = prisma.$queryRaw.mock.calls[0][0];
+    expect(extractSqlText(query)).toContain("audit.payload->>'threadId' =");
+    expect(query.values).toContain(THREAD_ID);
+  });
+
+  it.each(['create', 'edit', 'delete', 'react'] as const)(
+    'allows %s in an existing signed chat thread without re-enabling new buttons',
+    async (operation) => {
+      const { assertEntityReady, prisma, publisherRow, service } = createHarness();
+      prisma.publisherEntitySettings.findUnique.mockResolvedValue({ chatCommentsEnabled: false });
+      prisma.auditLog.findFirst.mockResolvedValue(publisherRow);
+      prisma.auditLog.update.mockResolvedValue(publisherRow);
+      prisma.auditLog.delete.mockResolvedValue(publisherRow);
+      if (operation === 'create') {
+        await service.createChatDialogMessage(
+          CHAT_ID,
+          user,
+          'comments',
+          { token: TOKEN, text: 'Ответ' },
+          'publisher',
+        );
+      } else if (operation === 'edit') {
+        await service.updateChatDialogMessage(
+          CHAT_ID,
+          user,
+          'comments',
+          publisherRow.id,
+          { token: TOKEN, text: 'Правка' },
+          'publisher',
+        );
+      } else if (operation === 'delete') {
+        await service.deleteChatDialogMessage(
+          CHAT_ID,
+          user,
+          'comments',
+          publisherRow.id,
+          { token: TOKEN },
+          'publisher',
+        );
+      } else {
+        await service.toggleEntityDialogReactionForDialog({
+          chatId: CHAT_ID,
+          entityType: 'chat',
+          userId: user.userId,
+          dialogType: 'comments',
+          messageId: publisherRow.id,
+          token: TOKEN,
+          emoji: 'like',
+          dialogProfile: 'publisher',
+        });
+      }
+      expect(assertEntityReady).toHaveBeenCalledWith(CHAT_ID, 'publication');
+      expect(prisma.publisherEntitySettings.findUnique).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a Publisher token without an exact thread before reading comments', async () => {
+    const { prisma, publisherDialogLinks, service } = createHarness();
+    publisherDialogLinks.resolveChatDialogThreadId.mockReturnValue(null);
+    await expect(
+      service.getChatDialog(CHAT_ID, user, 'comments', TOKEN, 'publisher'),
+    ).rejects.toThrow('Ссылка на комментарии недействительна.');
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'policy_disabled',
+    'bot_not_connected',
+    'bot_not_admin',
+    'bot_access_expired',
+    'publisher_runtime_unavailable',
+  ])('preserves the %s readiness fence for existing threads', async (blocker) => {
+    const { assertEntityReady, prisma, service } = createHarness();
+    assertEntityReady.mockRejectedValue(new PublisherSetupRequiredException([CHAT_ID], blocker));
+    await expect(
+      service.getChatDialog(CHAT_ID, user, 'comments', TOKEN, 'publisher'),
+    ).rejects.toBeInstanceOf(PublisherSetupRequiredException);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
   it('keeps Major and Publisher comments separate even when their thread ids match', async () => {
     const { prisma, service, majorToken } = createHarness();
 
