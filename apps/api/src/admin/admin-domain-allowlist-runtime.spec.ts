@@ -135,6 +135,15 @@ describe('AdminDomainAllowlistRuntime typed navigation targets', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects adversarial legacy identifiers without a backtracking host expression', async () => {
+    const { runtime, prisma } = createRuntime();
+    const domain = `${'".'.repeat(50_000)}/`;
+    await expect(runtime.removeDomain('chat-1', ADMIN_USER, domain)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('does not report success or write audit when a rule expires during scheduling', async () => {
     const { runtime, prisma, chatContextCache } = createRuntime([{ domain: 'domain:example.com' }]);
     prisma.domainAllowlist.updateMany.mockResolvedValueOnce({ count: 0 });

@@ -275,9 +275,10 @@ export class AdminDomainAllowlistRuntime {
   private parseMutationEntry(value: string) {
     const trimmed = value.trim();
     // FLAG: Legacy GET emits bare hosts for DOMAIN, but full URLs for WEB_EXACT.
-    const domain = /^[^/:?#]+\.[^/:?#]+$/u.test(trimmed)
-      ? normalizeStoredAllowlistEntry(trimmed, 'DOMAIN')
-      : null;
+    const domain =
+      trimmed.includes('.') && !/[/:?#]/u.test(trimmed)
+        ? normalizeStoredAllowlistEntry(trimmed, 'DOMAIN')
+        : null;
     return parseStoredAllowlistEntry(domain ?? trimmed);
   }
 
