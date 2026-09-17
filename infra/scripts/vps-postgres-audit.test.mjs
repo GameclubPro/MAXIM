@@ -15,6 +15,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
 import { buildRulesCleanupAuditSql } from './rules-cleanup-audit.mjs';
+import { buildPublisherCommentsAuditSql } from './publisher-comments-audit.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const audit = resolve(root, 'infra/scripts/vps-postgres-audit.sh');
@@ -322,6 +323,26 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(cleanup, /live\.backend_start = singleton\.backend_start/u);
   const auditSource = readFileSync(audit, 'utf8');
   assert.match(auditSource, /timeout --signal=TERM --kill-after=1s 4s[\s\\]+docker compose/u);
+});
+
+test('Publisher comments audit is exact-key, metadata-only and rejects operator SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['publisher-comments', '-123', '--explain']).status, 0);
+  assert.equal(runConnect(data, ['postgres-audit', 'publisher-comments', '-123']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) SELECT/u);
+  assert.match(sql, /FROM \(VALUES \('-123'\)\)/u);
+  assert.doesNotMatch(
+    buildPublisherCommentsAuditSql('-123'),
+    /audit_logs|webhook_events|payload|permissions_snapshot|publisher_bot_id|EXPLAIN ANALYZE/u,
+  );
+  for (const value of ['', '123', '-0', '-01', '-1\n', "-1' OR true --", '/tmp/query.sql']) {
+    assert.throws(() => buildPublisherCommentsAuditSql(value));
+    assert.notEqual(runAudit(data, ['publisher-comments', value]).status, 0);
+    assert.notEqual(runConnect(data, ['postgres-audit', 'publisher-comments', value]).status, 0);
+  }
+  assert.notEqual(runAudit(data, ['publisher-comments', '-123', '--apply']).status, 0);
 });
 
 test('activity audit exposes only fixed workload categories and aggregate backend state', (t) => {
@@ -671,6 +692,19 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     );
     CREATE INDEX moderation_events_created_at_idx ON moderation_events(created_at);
     CREATE TABLE webhook_events (id TEXT PRIMARY KEY);
+    CREATE TABLE publisher_entity_bindings (
+      chat_id TEXT PRIMARY KEY, status TEXT, bot_access_state TEXT,
+      bot_access_checked_at TIMESTAMP, bot_access_expires_at TIMESTAMP,
+      send_route_quarantined_until TIMESTAMP, publisher_bot_id TEXT
+    );
+    CREATE TABLE publisher_entity_settings (
+      chat_id TEXT PRIMARY KEY, chat_comments_enabled BOOLEAN,
+      chat_comments_admins_enabled BOOLEAN, chat_comments_posts_enabled BOOLEAN,
+      channel_comments_enabled BOOLEAN, updated_at TIMESTAMP, updated_by_user_id TEXT
+    );
+    CREATE TABLE managed_entity_publication_policies (
+      chat_id TEXT PRIMARY KEY, publik_enabled BOOLEAN, updated_by_user_id TEXT
+    );
     CREATE TABLE chat_rules (
       chat_id TEXT PRIMARY KEY,
       published_message_id TEXT,
@@ -843,6 +877,20 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   const verificationSql = extractProvisionVerificationSql();
   await database.exec(verificationSql);
 
+  await database.exec('GRANT SELECT (publisher_bot_id) ON publisher_entity_bindings TO PUBLIC;');
+  await assert.rejects(
+    database.exec(verificationSql),
+    /Publisher metadata privileges are not exact/u,
+  );
+  await database.exec('REVOKE SELECT (publisher_bot_id) ON publisher_entity_bindings FROM PUBLIC;');
+  await database.exec(`
+    INSERT INTO publisher_entity_bindings
+      (chat_id, status, bot_access_state, bot_access_expires_at)
+    VALUES ('-123', 'ACTIVE', 'CONFIRMED_ADMIN', CURRENT_TIMESTAMP + interval '1 hour');
+    INSERT INTO publisher_entity_settings (chat_id, chat_comments_enabled)
+    VALUES ('-123', false);
+  `);
+
   await database.exec('GRANT SELECT (text) ON TABLE chat_rules TO PUBLIC;');
   await assert.rejects(database.exec(verificationSql), /rules metadata privileges are not exact/u);
   await database.exec('REVOKE SELECT (text) ON TABLE chat_rules FROM PUBLIC;');
@@ -865,6 +913,31 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   );
   assert.match(rulesPlan, /chat_rules_pkey/u);
   assert.match(rulesPlan, /moderation_delete_intents_pkey/u);
+  const commentsReport = (await database.query(buildPublisherCommentsAuditSql('-123'))).rows[0]
+    .json_build_object;
+  assert.equal(commentsReport.binding_present, true);
+  assert.equal(commentsReport.access_expired, false);
+  assert.equal(commentsReport.chat_comments_enabled, false);
+  assert.equal(commentsReport.publik_enabled, true);
+  assert.equal(
+    (await database.query(buildPublisherCommentsAuditSql('-456'))).rows[0].json_build_object
+      .binding_present,
+    false,
+  );
+  const commentsPlan = JSON.stringify(
+    (await database.query(buildPublisherCommentsAuditSql('-123', true))).rows,
+  );
+  for (const table of [
+    'publisher_entity_bindings',
+    'publisher_entity_settings',
+    'managed_entity_publication_policies',
+  ]) {
+    assert.match(commentsPlan, new RegExp(`${table}_pkey`, 'u'));
+  }
+  await assert.rejects(
+    database.query('SELECT publisher_bot_id FROM publisher_entity_bindings'),
+    /permission denied/u,
+  );
   await database.exec('SET SESSION AUTHORIZATION postgres;');
 
   await database.exec('GRANT SELECT (chat_id) ON TABLE chat_settings TO PUBLIC;');

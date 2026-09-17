@@ -22,6 +22,7 @@ local Docker-socket access under the production pg_hba rules, with:
   - table SELECT only on webhook_events/moderation_events
   - exact Antiduplicate column SELECT grants and pg_read_all_stats membership
   - ten rules-publication metadata columns; no rules text, media, links, or settings
+  - fourteen Publisher comment readiness columns; no messages, identities, or tokens
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
 
@@ -111,6 +112,9 @@ BEGIN
     FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name IN (
+        'publisher_entity_bindings',
+        'publisher_entity_settings',
+        'managed_entity_publication_policies',
         'chat_rules',
         'chat_settings',
         'moderation_delete_intents',
@@ -131,6 +135,17 @@ $revoke_audit_columns$;
 GRANT CONNECT ON DATABASE maxim TO maxim_audit;
 GRANT USAGE ON SCHEMA public TO maxim_audit;
 GRANT SELECT ON TABLE public.webhook_events, public.moderation_events TO maxim_audit;
+GRANT SELECT (
+  chat_id, status, bot_access_state, bot_access_checked_at,
+  bot_access_expires_at, send_route_quarantined_until
+) ON TABLE public.publisher_entity_bindings TO maxim_audit;
+GRANT SELECT (
+  chat_id, chat_comments_enabled, chat_comments_admins_enabled,
+  chat_comments_posts_enabled, channel_comments_enabled, updated_at
+) ON TABLE public.publisher_entity_settings TO maxim_audit;
+GRANT SELECT (
+  chat_id, publik_enabled
+) ON TABLE public.managed_entity_publication_policies TO maxim_audit;
 GRANT SELECT (
   id,
   anti_duplicate_enabled,
@@ -332,6 +347,41 @@ BEGIN
     SELECT 1
     FROM pg_class relation
     JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+    WHERE namespace.nspname = 'public'
+      AND relation.relname IN (
+        'publisher_entity_bindings', 'publisher_entity_settings',
+        'managed_entity_publication_policies'
+      )
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND has_column_privilege('maxim_audit', relation.oid, attribute.attnum, 'SELECT')
+      AND NOT (
+        (relation.relname = 'publisher_entity_bindings' AND attribute.attname IN (
+          'chat_id', 'status', 'bot_access_state', 'bot_access_checked_at',
+          'bot_access_expires_at', 'send_route_quarantined_until'
+        ))
+        OR (relation.relname = 'publisher_entity_settings' AND attribute.attname IN (
+          'chat_id', 'chat_comments_enabled', 'chat_comments_admins_enabled',
+          'chat_comments_posts_enabled', 'channel_comments_enabled', 'updated_at'
+        ))
+        OR (relation.relname = 'managed_entity_publication_policies'
+          AND attribute.attname IN ('chat_id', 'publik_enabled'))
+      )
+  ) OR 14 <> (
+    SELECT count(*) FROM information_schema.role_column_grants
+    WHERE grantee = 'maxim_audit' AND table_schema = 'public'
+      AND table_name IN (
+        'publisher_entity_bindings', 'publisher_entity_settings',
+        'managed_entity_publication_policies'
+      ) AND privilege_type = 'SELECT'
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit Publisher metadata privileges are not exact';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
     WHERE relation.relkind IN ('r', 'p', 'v', 'm', 'f')
       AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
       AND namespace.nspname !~ '^pg_toast'
@@ -342,6 +392,9 @@ BEGIN
             AND relation.relname IN (
               'webhook_events',
               'moderation_events',
+              'publisher_entity_bindings',
+              'publisher_entity_settings',
+              'managed_entity_publication_policies',
               'chat_rules',
               'chat_settings',
               'moderation_delete_intents',

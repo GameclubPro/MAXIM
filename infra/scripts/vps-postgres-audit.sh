@@ -28,6 +28,7 @@ usage() {
 Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|all]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -70,7 +71,7 @@ SIGNAL_WINDOW_MIN=''
 RULES_CLEANUP_CHAT_ID=''
 RULES_CLEANUP_EXPLAIN=''
 case "$AUDIT_MODE" in
-  rules-cleanup)
+  rules-cleanup|publisher-comments)
     if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
           ( $# -eq 3 && "$3" != '--explain' ) ]]; then
       usage
@@ -176,6 +177,31 @@ SELECT CASE
         )
     )
     AND NOT has_table_privilege('maxim_audit', 'public.moderation_delete_intents', 'SELECT')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+      WHERE namespace.nspname = 'public'
+        AND relation.relname IN (
+          'publisher_entity_bindings', 'publisher_entity_settings',
+          'managed_entity_publication_policies'
+        )
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit', relation.oid, attribute.attnum, 'SELECT')
+        AND NOT (
+          (relation.relname = 'publisher_entity_bindings' AND attribute.attname IN (
+            'chat_id', 'status', 'bot_access_state', 'bot_access_checked_at',
+            'bot_access_expires_at', 'send_route_quarantined_until'
+          ))
+          OR (relation.relname = 'publisher_entity_settings' AND attribute.attname IN (
+            'chat_id', 'chat_comments_enabled', 'chat_comments_admins_enabled',
+            'chat_comments_posts_enabled', 'channel_comments_enabled', 'updated_at'
+          ))
+          OR (relation.relname = 'managed_entity_publication_policies'
+            AND attribute.attname IN ('chat_id', 'publik_enabled'))
+        )
+    )
     AND NOT has_table_privilege(
       'maxim_audit',
       'public.moderation_delete_intent_reasons',
@@ -316,9 +342,12 @@ SELECT CASE
             NOT (
               namespace.nspname = 'public'
               AND relation.relname IN (
-                'webhook_events',
-                'moderation_events',
-                'chat_rules',
+              'webhook_events',
+              'moderation_events',
+              'publisher_entity_bindings',
+              'publisher_entity_settings',
+              'managed_entity_publication_policies',
+              'chat_rules',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -1250,6 +1279,13 @@ emit_sql() {
         args+=("$RULES_CLEANUP_EXPLAIN")
       fi
       node "$ROOT_DIR/infra/scripts/rules-cleanup-audit.mjs" "${args[@]}"
+      ;;
+    publisher-comments)
+      local publisher_args=("$RULES_CLEANUP_CHAT_ID")
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        publisher_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/publisher-comments-audit.mjs" "${publisher_args[@]}"
       ;;
     all)
       emit_queue_audit

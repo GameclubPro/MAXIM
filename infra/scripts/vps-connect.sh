@@ -48,6 +48,7 @@ Commands:
                               Sample health, ps, restarts, public app, and error logs
   postgres-audit [queue|activity|duplicate|publication-schema|all]
   postgres-audit rules-cleanup <chat-id> [--explain]
+  postgres-audit publisher-comments <chat-id> [--explain]
   recover-publication-post-actions-migration [--apply]
                               Run fixed, bounded, privacy-safe PostgreSQL diagnostics
   postgres-audit-provision [--apply]
@@ -299,10 +300,10 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
-  if [[ "$mode" == 'rules-cleanup' ]]; then
+  if [[ "$mode" == 'rules-cleanup' || "$mode" == 'publisher-comments' ]]; then
     if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
           ( $# -eq 3 && "$3" != '--explain' ) ]]; then
-      echo 'Usage: postgres-audit rules-cleanup <negative-numeric-chat-id> [--explain]' >&2
+      echo "Usage: postgres-audit $mode <negative-numeric-chat-id> [--explain]" >&2
       exit 2
     fi
     remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
