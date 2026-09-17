@@ -100,6 +100,8 @@ export type CommercialActionBand =
   | 'DELETE'
   | 'DELETE_AND_ESCALATE';
 
+export type CommercialMessageDisposition = 'KEEP' | 'DELETE';
+
 export type CommercialEvidenceTier =
   | 'NONE'
   | 'BORDERLINE'
@@ -130,6 +132,7 @@ export type CommercialReviewPriority = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'URG
 
 export type CommercialActionPolicyDecision = {
   actionBand: CommercialActionBand;
+  messageDisposition: CommercialMessageDisposition;
   actionScore: number;
   reviewPriority: CommercialReviewPriority;
   actionable: boolean;
@@ -147,6 +150,7 @@ export type CommercialExplainableDecision = {
   evidenceTier: CommercialEvidenceTier;
   subtype: CommercialSubtype;
   actionBand: CommercialActionBand;
+  messageDisposition: CommercialMessageDisposition;
   reviewPriority: CommercialReviewPriority;
   campaignStrength: CommercialCampaignStrength;
   safeContextBucket: CommercialSafeContextBucket;

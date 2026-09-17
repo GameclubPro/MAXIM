@@ -169,6 +169,7 @@ type CommercialDecisionSignature = {
   supportingSubtypes: string[];
   reviewRecommended: boolean;
   actionBand: string | null;
+  messageDisposition: string;
   evidenceTier: string | null;
   reviewPriority: string | null;
   campaignStrength: string | null;
@@ -191,6 +192,7 @@ function decisionSignatureFromDetection(
     supportingSubtypes: detection?.supportingSubtypes ?? [],
     reviewRecommended: detection?.reviewRecommended === true,
     actionBand: detection?.actionBand ?? null,
+    messageDisposition: detection?.messageDisposition ?? 'KEEP',
     evidenceTier: detection?.evidenceTier ?? null,
     reviewPriority: detection?.reviewPriority ?? null,
     campaignStrength: detection?.campaignStrength ?? null,
@@ -215,6 +217,8 @@ function decisionSignatureFromViolation(
     supportingSubtypes: readStringArray(metadata.supportingSubtypes),
     reviewRecommended: metadata.reviewRecommended === true,
     actionBand: typeof metadata.actionBand === 'string' ? metadata.actionBand : null,
+    messageDisposition:
+      typeof metadata.messageDisposition === 'string' ? metadata.messageDisposition : 'KEEP',
     evidenceTier: typeof metadata.evidenceTier === 'string' ? metadata.evidenceTier : null,
     reviewPriority: typeof metadata.reviewPriority === 'string' ? metadata.reviewPriority : null,
     campaignStrength:

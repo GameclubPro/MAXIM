@@ -1153,6 +1153,7 @@ export class RuleEngineService {
             evidenceTier: commercial.evidenceTier,
             subtype: commercial.subtype,
             actionBand: commercial.actionBand,
+            messageDisposition: commercial.messageDisposition,
             reviewPriority: commercial.reviewPriority,
             campaignStrength: commercial.campaignStrength,
             safeContextBucket: commercial.safeContextBucket,

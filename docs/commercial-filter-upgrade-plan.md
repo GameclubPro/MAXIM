@@ -7,6 +7,48 @@
 Он фиксирует ошибки ownership, дрейф обезличивания и критерии безопасности удаления;
 исторические метрики ниже не заменяют независимую оценку текущей версии.
 
+## September 17: Correctness Foundation
+
+This delivery implements the verified correctness prerequisites, not the full
+quality/policy rollout. Existing sensitivity thresholds and action bands remain
+unchanged; Commercial OCR is not promoted.
+
+- The second-stage cache hashes its complete typed input, including raw assertion
+  layout, signals, review context and unrounded numeric values. Cached arrays are
+  isolated from caller mutation. Cold/warm and forward/reverse-order regression
+  tests cover the positive/negative fixtures under BALANCED and STRICT settings.
+- The scorer uses the shared phone parser and counts distinct canonical contacts.
+  National/international formatting and line/slash separators must not change
+  repeated-contact evidence; repeating one contact does not add that evidence.
+- Decisions explicitly expose `messageDisposition: KEEP | DELETE`. Legacy records
+  without the field retain existing band semantics, including WARN cleanup.
+  Explicit KEEP or an invalid disposition cannot create cleanup, strikes or user
+  sanctions and cannot mask another actionable violation. `deleteSuppressed`
+  remains legacy band-suppression metadata, not a deletion permission.
+- Rule-engine metadata, audit snapshots, cleanup summaries and replay equivalence
+  carry the disposition. KEEP-to-DELETE is a material replay difference even with
+  an unchanged action band. Replay rejects malformed or inconsistent dispositions.
+- Decision/classifier versions advance to `commercial-deterministic-v3` and
+  `2026-service-private-v5`; historical fixtures are not relabeled or rewritten.
+
+Remaining release work, deliberately not represented as completed:
+
+1. Collect an independently double-adjudicated temporal holdout, with campaign
+   grouping and sampling probabilities. Existing automatic labels and these
+   deterministic regression tests do not establish population precision/recall.
+2. Extend the existing local-context parser into reusable assertion-owned evidence,
+   then evaluate the remaining request/testimonial/mixed-language errors on that
+   holdout. Do not lower thresholds globally to compensate for missing context.
+3. Before activating any new text-policy authority, deliver its versioned pending
+   intent binding, execution-time guards/kill switch and guard-compatible rollback
+   floor. The disposition compatibility reader alone is not that rollout mechanism.
+4. Profile real cache misses, normalization and Redis work before further hot-path
+   optimization. Evaluate a calibrated local learned second stage offline only
+   after the corrected deterministic baseline and independent holdout are frozen.
+
+No new chat settings, external model calls, schema migrations or automatic policy
+promotion are introduced by this foundation release.
+
 ## September Implementation: Scoped Corrections
 
 The first implementation preserves chat settings, thresholds, the meaning of `WARN`,

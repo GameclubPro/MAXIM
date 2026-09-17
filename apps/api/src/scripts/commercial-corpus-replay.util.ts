@@ -22,6 +22,8 @@ import {
   type CommercialDetection,
 } from '../moderation/commercial/commercial-ad.detector';
 import { createRuleDetectionContext } from '../moderation/rule-engine-detection-context';
+import { resolveCommercialMessageDisposition } from '../moderation/commercial/commercial-action-policy';
+import type { CommercialMessageDisposition } from '../moderation/commercial/commercial.types';
 import {
   COMMERCIAL_MANUAL_OVERLAY_SCHEMA_VERSION,
   fingerprintCommercialManualOverlayContext,
@@ -95,6 +97,7 @@ export type CommercialReplaySnapshot = {
   evidenceTier: string | null;
   subtype: string | null;
   actionBand: string | null;
+  messageDisposition?: CommercialMessageDisposition;
   reviewPriority: string | null;
   campaignStrength: string | null;
   safeContextBucket: string | null;
@@ -192,6 +195,7 @@ export type CommercialReplayDecisionSignature = {
   subtype: string | null;
   evidenceTier: string | null;
   actionBand: string | null;
+  messageDisposition: CommercialMessageDisposition;
   reviewPriority: string | null;
   safeContextBucket: string | null;
   reviewRecommended: boolean;
@@ -366,6 +370,7 @@ const SNAPSHOT_FIELDS: readonly (keyof CommercialReplaySnapshot)[] = [
   'evidenceTier',
   'subtype',
   'actionBand',
+  'messageDisposition',
   'reviewPriority',
   'campaignStrength',
   'safeContextBucket',
@@ -712,6 +717,7 @@ export function emptyCommercialReplaySnapshot(): CommercialReplaySnapshot {
     evidenceTier: null,
     subtype: null,
     actionBand: null,
+    messageDisposition: 'KEEP',
     reviewPriority: null,
     campaignStrength: null,
     safeContextBucket: null,
@@ -757,6 +763,7 @@ function snapshotFromStored(
     evidenceTier: readOptionalString(record.evidenceTier),
     subtype: readOptionalString(record.subtype),
     actionBand: readOptionalString(record.actionBand),
+    messageDisposition: readMessageDisposition(record, line, field),
     reviewPriority: readOptionalString(record.reviewPriority),
     campaignStrength: readOptionalString(record.campaignStrength),
     safeContextBucket: readOptionalString(record.safeContextBucket),
@@ -771,6 +778,30 @@ function snapshotFromStored(
 
 function strictSnapshotError(line: number, field: string, message: string): Error {
   return new Error(`Invalid corpus record at line ${line}: ${field} ${message}`);
+}
+
+function readMessageDisposition(
+  record: Record<string, unknown>,
+  line: number,
+  field: string,
+): CommercialMessageDisposition {
+  const value = record.messageDisposition;
+  if (value !== undefined && value !== 'KEEP' && value !== 'DELETE') {
+    throw strictSnapshotError(line, `${field}.messageDisposition`, 'must be KEEP or DELETE');
+  }
+  const resolved = resolveCommercialMessageDisposition(
+    readOptionalString(record.actionBand),
+    record.actionable === true,
+    value,
+  );
+  if (value === 'DELETE' && (!record.hit || resolved !== 'DELETE')) {
+    throw strictSnapshotError(
+      line,
+      `${field}.messageDisposition`,
+      'is inconsistent with eligibility',
+    );
+  }
+  return resolved;
 }
 
 function readStrictNullableString(
@@ -882,7 +913,11 @@ function strictSnapshotFromStored(
     throw strictSnapshotError(line, field, 'must be an object');
   }
   for (const key of SNAPSHOT_FIELDS) {
-    if (key !== 'policyFpRisk' && !Object.prototype.hasOwnProperty.call(record, key)) {
+    if (
+      key !== 'policyFpRisk' &&
+      key !== 'messageDisposition' &&
+      !Object.prototype.hasOwnProperty.call(record, key)
+    ) {
       throw strictSnapshotError(line, `${field}.${key}`, 'is required');
     }
   }
@@ -933,6 +968,7 @@ function strictSnapshotFromStored(
     evidenceTier: readStrictNullableString(record, 'evidenceTier', line, field),
     subtype: readStrictNullableString(record, 'subtype', line, field),
     actionBand,
+    messageDisposition: readMessageDisposition(record, line, field),
     reviewPriority: readStrictNullableString(record, 'reviewPriority', line, field),
     campaignStrength: readStrictNullableString(record, 'campaignStrength', line, field),
     safeContextBucket: readStrictNullableString(record, 'safeContextBucket', line, field),
@@ -976,6 +1012,11 @@ export function snapshotFromCommercialDetection(
     evidenceTier: readOptionalString(detection.evidenceTier),
     subtype: readOptionalString(detection.subtype),
     actionBand: readOptionalString(detection.actionBand),
+    messageDisposition: resolveCommercialMessageDisposition(
+      detection.actionBand ?? null,
+      detection.actionable === true,
+      detection.messageDisposition,
+    ),
     reviewPriority: readOptionalString(detection.reviewPriority),
     campaignStrength: readOptionalString(detection.campaignStrength),
     safeContextBucket: readOptionalString(detection.safeContextBucket),
@@ -1223,6 +1264,11 @@ function decisionSignature(snapshot: CommercialReplaySnapshot): CommercialReplay
     subtype: snapshot.subtype,
     evidenceTier: snapshot.evidenceTier,
     actionBand: snapshot.actionBand,
+    messageDisposition: resolveCommercialMessageDisposition(
+      snapshot.actionBand,
+      snapshot.actionable,
+      snapshot.messageDisposition,
+    ),
     reviewPriority: snapshot.reviewPriority,
     safeContextBucket: snapshot.safeContextBucket,
     reviewRecommended: snapshot.reviewRecommended,

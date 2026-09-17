@@ -1,5 +1,6 @@
 import {
   isCommercialMessageDeleteEligible,
+  resolveCommercialMessageDisposition,
   resolveCommercialActionPolicy,
 } from './commercial-action-policy';
 import type { CommercialActionPolicyInput } from './commercial-action-policy';
@@ -45,6 +46,25 @@ const actionOf = (input: Partial<CommercialActionPolicyInput>) =>
   resolveCommercialActionPolicy({ ...BASE_INPUT, ...input }).actionBand;
 
 describe('commercial action policy', () => {
+  it.each(['WARN', 'DELETE', 'DELETE_AND_ESCALATE'])(
+    'honors explicit disposition without changing legacy %s semantics',
+    (band) => {
+      expect(resolveCommercialMessageDisposition(band, true)).toBe('DELETE');
+      expect(resolveCommercialMessageDisposition(band, true, 'DELETE')).toBe('DELETE');
+      for (const disposition of ['KEEP', null, '', 'delete', false, {}]) {
+        expect(isCommercialMessageDeleteEligible(band, true, disposition)).toBe(false);
+      }
+      expect(isCommercialMessageDeleteEligible(band, false, 'DELETE')).toBe(false);
+    },
+  );
+
+  it.each([null, 'ALLOW', 'REVIEW_ONLY', 'UNKNOWN'])(
+    'does not let DELETE disposition override a non-actionable band %s',
+    (band) => {
+      expect(isCommercialMessageDeleteEligible(band, true, 'DELETE')).toBe(false);
+    },
+  );
+
   it.each(['WARN', 'DELETE', 'DELETE_AND_ESCALATE'])(
     'maps actionable %s to message cleanup',
     (band) => {

@@ -2427,25 +2427,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : null;
       const commercialMetadata =
         topViolation.ruleCode === 'COMMERCIAL_AD' ? this.asRecord(topViolation.metadata) : null;
+      const commercialDispositionAllowsEnforcement =
+        commercialMetadata?.messageDisposition === undefined ||
+        commercialMetadata.messageDisposition === 'DELETE';
       const commercialRecordable =
         topViolation.ruleCode === 'COMMERCIAL_AD'
-          ? (this.readBoolean(commercialMetadata?.recordable) ??
-            (commercialActionBand !== null &&
-              commercialActionBand !== 'ALLOW' &&
-              commercialActionBand !== 'REVIEW_ONLY'))
+          ? commercialDispositionAllowsEnforcement &&
+            (this.readBoolean(commercialMetadata?.recordable) ??
+              (commercialActionBand !== null &&
+                commercialActionBand !== 'ALLOW' &&
+                commercialActionBand !== 'REVIEW_ONLY'))
           : true;
       const commercialActionable =
         topViolation.ruleCode === 'COMMERCIAL_AD'
-          ? (this.readBoolean(commercialMetadata?.actionable) ??
-            (commercialActionBand !== null &&
-              commercialActionBand !== 'ALLOW' &&
-              commercialActionBand !== 'REVIEW_ONLY'))
+          ? commercialDispositionAllowsEnforcement &&
+            (this.readBoolean(commercialMetadata?.actionable) ??
+              (commercialActionBand !== null &&
+                commercialActionBand !== 'ALLOW' &&
+                commercialActionBand !== 'REVIEW_ONLY'))
           : true;
       const isCommercialReviewOnly =
         topViolation.ruleCode === 'COMMERCIAL_AD' && !commercialRecordable;
       const shouldDeleteByCommercialPolicy =
         topViolation.ruleCode !== 'COMMERCIAL_AD' ||
-        isCommercialMessageDeleteEligible(commercialActionBand, commercialActionable);
+        isCommercialMessageDeleteEligible(
+          commercialActionBand,
+          commercialActionable,
+          commercialMetadata?.messageDisposition,
+        );
       const isLinkBlockedDelete = topViolation.ruleCode === 'LINK_BLOCKED';
       const violationDeleteIntent: EnsureModerationDeleteIntentInput | null =
         shouldDeleteByCommercialPolicy

@@ -1,12 +1,16 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { isCommercialMessageDeleteEligible } from '../moderation/commercial/commercial-action-policy';
+import {
+  isCommercialMessageDeleteEligible,
+  resolveCommercialMessageDisposition,
+} from '../moderation/commercial/commercial-action-policy';
 
 type AuditSnapshot = {
   hit?: unknown;
   actionable?: unknown;
   actionBand?: unknown;
+  messageDisposition?: unknown;
   campaignStrength?: unknown;
   evidenceTier?: unknown;
   evidenceStrength?: unknown;
@@ -123,13 +127,16 @@ export function summarizeCommercialAuditRecords(
     const reasonCodes = readStringArray(current.reasonCodes);
     const matchedSignals = readStringArray(current.matchedSignals);
     const negativeSignals = readStringArray(current.negativeSignals);
-    const isDelete = DELETE_ACTIONS.has(action);
-    const isEnforcement = ENFORCEMENT_ACTIONS.has(action);
+    const dispositionAllowsEnforcement =
+      current.messageDisposition === undefined || current.messageDisposition === 'DELETE';
+    const isDelete = DELETE_ACTIONS.has(action) && dispositionAllowsEnforcement;
+    const isEnforcement = ENFORCEMENT_ACTIONS.has(action) && dispositionAllowsEnforcement;
     if (
       current.hit === true &&
       isCommercialMessageDeleteEligible(
         action,
         typeof current.actionable === 'boolean' ? current.actionable : isEnforcement,
+        current.messageDisposition,
       )
     ) {
       messageDeleteEligible += 1;
@@ -141,7 +148,17 @@ export function summarizeCommercialAuditRecords(
         current.hit !== sanitized.hit ||
         current.actionBand !== sanitized.actionBand ||
         current.primarySubtype !== sanitized.primarySubtype ||
-        current.actionable !== sanitized.actionable
+        current.actionable !== sanitized.actionable ||
+        resolveCommercialMessageDisposition(
+          action,
+          current.actionable === true,
+          current.messageDisposition,
+        ) !==
+          resolveCommercialMessageDisposition(
+            readString(sanitized.actionBand),
+            sanitized.actionable === true,
+            sanitized.messageDisposition,
+          )
       ) {
         sanitizationDecisionDrift += 1;
       }

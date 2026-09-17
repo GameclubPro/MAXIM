@@ -23,6 +23,9 @@ function isActionableCommercialViolation(violation: RuleViolation): boolean {
   }
 
   const metadata = violation.metadata;
+  if (metadata?.messageDisposition !== undefined && metadata.messageDisposition !== 'DELETE') {
+    return false;
+  }
   const actionBand = typeof metadata?.actionBand === 'string' ? metadata.actionBand : null;
   const fallbackActionable =
     actionBand !== null && actionBand !== 'ALLOW' && actionBand !== 'REVIEW_ONLY';

@@ -26,7 +26,11 @@ import {
   type CommercialAuditRunLock,
 } from './commercial-audit-run-lock.util';
 import { sanitizeCommercialCorpusText } from './commercial-corpus-sanitization.util';
-import { isCommercialMessageDeleteEligible } from '../moderation/commercial';
+import {
+  isCommercialMessageDeleteEligible,
+  resolveCommercialMessageDisposition,
+  type CommercialMessageDisposition,
+} from '../moderation/commercial';
 
 const DEFAULT_LOOKBACK_DAYS = 7;
 const DEFAULT_LIMIT = 1500;
@@ -173,6 +177,7 @@ export type CommercialSnapshot = {
   evidenceTier: string | null;
   subtype: string | null;
   actionBand: string | null;
+  messageDisposition?: CommercialMessageDisposition;
   reviewPriority: string | null;
   campaignStrength: string | null;
   safeContextBucket: string | null;
@@ -1012,6 +1017,7 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
       evidenceTier: null,
       subtype: null,
       actionBand: null,
+      messageDisposition: 'KEEP',
       reviewPriority: null,
       campaignStrength: null,
       safeContextBucket: null,
@@ -1049,6 +1055,11 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
     evidenceTier: readOptionalString(metadata?.evidenceTier),
     subtype: readOptionalString(metadata?.subtype),
     actionBand: readOptionalString(metadata?.actionBand),
+    messageDisposition: resolveCommercialMessageDisposition(
+      readOptionalString(metadata?.actionBand),
+      readOptionalBoolean(metadata?.actionable),
+      metadata?.messageDisposition,
+    ),
     reviewPriority: readOptionalString(metadata?.reviewPriority),
     campaignStrength: readOptionalString(metadata?.campaignStrength),
     safeContextBucket: readOptionalString(metadata?.safeContextBucket),
@@ -1092,6 +1103,11 @@ function snapshotFromHistorical(
     evidenceTier: readOptionalString(normalizedMetadata?.evidenceTier),
     subtype: readOptionalString(normalizedMetadata?.subtype),
     actionBand: readOptionalString(normalizedMetadata?.actionBand),
+    messageDisposition: resolveCommercialMessageDisposition(
+      readOptionalString(normalizedMetadata?.actionBand),
+      readOptionalBoolean(normalizedMetadata?.actionable),
+      normalizedMetadata?.messageDisposition,
+    ),
     reviewPriority: readOptionalString(normalizedMetadata?.reviewPriority),
     campaignStrength: readOptionalString(normalizedMetadata?.campaignStrength),
     safeContextBucket: readOptionalString(normalizedMetadata?.safeContextBucket),
@@ -1872,7 +1888,12 @@ export function isCommercialEnforcementAction(actionBand: string | null): boolea
 export function assessCommercialExecution(snapshot: CommercialSnapshot) {
   return {
     messageDeleteEligible:
-      snapshot.hit && isCommercialMessageDeleteEligible(snapshot.actionBand, snapshot.actionable),
+      snapshot.hit &&
+      isCommercialMessageDeleteEligible(
+        snapshot.actionBand,
+        snapshot.actionable,
+        snapshot.messageDisposition,
+      ),
     executionVerified: false,
   };
 }
@@ -1881,9 +1902,9 @@ export function assessCommercialSanitizationParity(
   current: CommercialSnapshot,
   sanitized: CommercialSnapshot,
 ) {
-  const changedFields = (['hit', 'actionBand', 'actionable', 'primarySubtype'] as const).filter(
-    (field) => current[field] !== sanitized[field],
-  );
+  const changedFields = (
+    ['hit', 'actionBand', 'actionable', 'primarySubtype', 'messageDisposition'] as const
+  ).filter((field) => current[field] !== sanitized[field]);
   return { decisionEquivalent: changedFields.length === 0, changedFields };
 }
 

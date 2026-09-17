@@ -161,6 +161,54 @@ function commercialDetection(
 }
 
 describe('commercial corpus replay', () => {
+  it('reports KEEP to DELETE as a material change even when the action band stays WARN', () => {
+    const detection = commercialDetection('WARN');
+    const evaluation = replayCommercialCorpusRecord({
+      value: corpusRecord({
+        text: 'Ремонт обуви',
+        current: snapshotFromCommercialDetection({ ...detection, messageDisposition: 'KEEP' }),
+      }),
+      line: 1,
+      detector: { detect: () => ({ ...detection, messageDisposition: 'DELETE' }) },
+    });
+    expect(evaluation.materialChanged).toBe(true);
+    expect(evaluation.equivalence.exact).toBe(false);
+    expect(evaluation.diff?.changes.messageDisposition).toEqual({
+      stored: 'KEEP',
+      replayed: 'DELETE',
+    });
+  });
+
+  it('retains the legacy disposition when reading a snapshot without the new field', () => {
+    const detection = commercialDetection('WARN');
+    const current = snapshotFromCommercialDetection(detection);
+    delete current.messageDisposition;
+    const evaluation = replayCommercialCorpusRecord({
+      value: corpusRecord({ text: 'Ремонт обуви', current }),
+      line: 1,
+      detector: { detect: () => detection },
+    });
+    expect(evaluation.equivalence.exact).toBe(true);
+    expect(evaluation.equivalence.stored.messageDisposition).toBe('DELETE');
+  });
+
+  it.each([null, 'delete', false, 'UNKNOWN'])(
+    'rejects malformed stored dispositions: %j',
+    (messageDisposition) => {
+      const current = {
+        ...snapshotFromCommercialDetection(commercialDetection('WARN')),
+        messageDisposition,
+      };
+      expect(() =>
+        replayCommercialCorpusRecord({
+          value: { ...corpusRecord({ text: 'Ремонт обуви' }), current },
+          line: 1,
+          detector: { detect: () => null },
+        }),
+      ).toThrow('messageDisposition must be KEEP or DELETE');
+    },
+  );
+
   it('replays stored settings/context and emits a structured decision diff', () => {
     const detect = jest.fn(() => commercialDetection('WARN'));
     const evaluation = replayCommercialCorpusRecord({

@@ -30,14 +30,25 @@ describe('selectTopModerationViolation', () => {
   it.each([
     ['explicit flags', { actionBand: 'REVIEW_ONLY', actionable: false, recordable: false }],
     ['action-band fallback', { actionBand: 'REVIEW_ONLY' }],
-  ])('does not let review-only commercial telemetry mask another violation: %s', (_label, metadata) => {
-    expect(
-      selectTopModerationViolation([
-        violation('COMMERCIAL_AD', metadata),
-        violation('MESSAGE_BLOCKED_WORD'),
-      ])?.ruleCode,
-    ).toBe('MESSAGE_BLOCKED_WORD');
-  });
+    [
+      'explicit keep',
+      { actionBand: 'WARN', actionable: true, recordable: true, messageDisposition: 'KEEP' },
+    ],
+    [
+      'invalid disposition',
+      { actionBand: 'DELETE', actionable: true, recordable: true, messageDisposition: null },
+    ],
+  ])(
+    'does not let review-only commercial telemetry mask another violation: %s',
+    (_label, metadata) => {
+      expect(
+        selectTopModerationViolation([
+          violation('COMMERCIAL_AD', metadata),
+          violation('MESSAGE_BLOCKED_WORD'),
+        ])?.ruleCode,
+      ).toBe('MESSAGE_BLOCKED_WORD');
+    },
+  );
 
   it('falls back to an unknown non-commercial violation before review telemetry', () => {
     expect(

@@ -1,8 +1,8 @@
-import type { CommercialCampaignContext } from '../commercial-campaign.util';
 import {
   CommercialSecondStageDecisionCache,
   COMMERCIAL_SECOND_STAGE_VERSION,
   type CommercialSecondStageDecision,
+  type CommercialSecondStageInput,
 } from '../rule-engine-commercial-second-stage-cache';
 import type { CommercialThresholdProfile } from '../rule-engine-commercial-thresholds';
 import type { CommercialDecisionBand, CommercialSubtype } from '../rule-engine.contract';
@@ -22,6 +22,7 @@ import {
   ADS_REVIEW_CLEARING_HIGH_RISK_SIGNALS,
 } from './commercial-patterns';
 import { countPatternMatches, hasPriceLikeText } from './commercial-match-utils';
+import { parseCommercialPhones } from './commercial-phone';
 import { isThirdPartyServiceRecommendationWithoutCurrentOffer } from './commercial-features';
 import type {
   CommercialActionBand,
@@ -96,16 +97,7 @@ function shouldRunCommercialSecondStage(params: {
 export class CommercialSecondStageScorer {
   private readonly cache = new CommercialSecondStageDecisionCache();
 
-  evaluate(params: {
-    normalizedText: string;
-    rawLoweredText: string;
-    state: CommercialSignalState;
-    confidenceScore: number;
-    decisionBand: CommercialDecisionBand;
-    appliedThresholds: CommercialThresholdProfile;
-    classification: CommercialClassification;
-    commercialCampaignContext?: CommercialCampaignContext | null;
-  }): CommercialSecondStageDecision | null {
+  evaluate(params: CommercialSecondStageInput): CommercialSecondStageDecision | null {
     const {
       normalizedText,
       rawLoweredText,
@@ -132,14 +124,7 @@ export class CommercialSecondStageScorer {
       return null;
     }
 
-    const cacheKey = this.cache.buildKey({
-      normalizedText,
-      confidenceScore,
-      decisionBand,
-      appliedThresholds,
-      classification,
-      commercialCampaignContext,
-    });
+    const cacheKey = this.cache.buildKey(params);
     const cached = this.cache.read(cacheKey);
     if (cached) {
       return cached;
@@ -159,7 +144,9 @@ export class CommercialSecondStageScorer {
       (hasPriceLikeText(normalizedText) &&
         countPatternMatches(normalizedText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN)) ||
       0;
-    const phoneMatchCount = rawLoweredText.match(/(?:\+?\d[\d\s()/-]{8,}\d)/g)?.length ?? 0;
+    const phoneMatchCount = new Set(
+      parseCommercialPhones(rawLoweredText).map((contact) => contact.normalizedNumber),
+    ).size;
     const multiSkuPriceLineCount = countPatternMatches(
       rawLoweredText,
       ADS_MULTI_SKU_PRICE_LINE_PATTERN,

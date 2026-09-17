@@ -735,6 +735,24 @@ describe('corpus sanitized baseline scheduling', () => {
     ).toBe(false);
   });
 
+  it('honors an explicit KEEP even when legacy band and flags allow cleanup', () => {
+    const snapshot = { ...emptySnapshot, hit: true, actionable: true, actionBand: 'WARN' };
+    expect(assessCommercialExecution({ ...snapshot, messageDisposition: 'KEEP' })).toEqual({
+      messageDeleteEligible: false,
+      executionVerified: false,
+    });
+    expect(
+      assessCommercialExecution({ ...snapshot, messageDisposition: 'DELETE' })
+        .messageDeleteEligible,
+    ).toBe(true);
+    expect(
+      assessCommercialSanitizationParity(
+        { ...snapshot, messageDisposition: 'KEEP' },
+        { ...snapshot, messageDisposition: 'DELETE' },
+      ),
+    ).toEqual({ decisionEquivalent: false, changedFields: ['messageDisposition'] });
+  });
+
   it('flags action changes introduced by sanitization separately from explanations', () => {
     const warn = { ...emptySnapshot, hit: true, actionable: true, actionBand: 'WARN' };
     expect(assessCommercialSanitizationParity(emptySnapshot, warn)).toEqual({

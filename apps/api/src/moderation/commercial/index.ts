@@ -1,6 +1,9 @@
 export { CommercialAdDetector, type CommercialDetection } from './commercial-ad.detector';
 export { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
-export { isCommercialMessageDeleteEligible } from './commercial-action-policy';
+export {
+  isCommercialMessageDeleteEligible,
+  resolveCommercialMessageDisposition,
+} from './commercial-action-policy';
 export { resolveCommercialCampaignStrength } from './commercial-campaign';
 export {
   COMMERCIAL_PATTERN_POLICY_VERSION,
@@ -36,6 +39,7 @@ export type {
   CommercialExplainableDecision,
   CommercialFeatureVector,
   CommercialLegacyEvidenceStrength,
+  CommercialMessageDisposition,
   CommercialPatternEvidence,
   CommercialPatternRule,
   CommercialRequiredAnchor,

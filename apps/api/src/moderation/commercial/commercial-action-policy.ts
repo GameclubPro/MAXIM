@@ -8,6 +8,7 @@ import type {
   CommercialActionPolicyDecision,
   CommercialEvidenceTier,
   CommercialFeatureVector,
+  CommercialMessageDisposition,
   CommercialRequiredAnchor,
   CommercialReviewPriority,
 } from './commercial.types';
@@ -39,15 +40,28 @@ export type CommercialActionPolicyInput = {
   hasIndependentCommercialOfferEvidence: boolean;
 };
 
-// FLAG: WARN includes message cleanup; the separate text-filter ladder owns user sanctions.
+// FLAG: Legacy WARN includes cleanup; explicit KEEP/invalid dispositions never permit deletion.
+// The separate text-filter ladder owns user sanctions.
 export function isCommercialMessageDeleteEligible(
   actionBand: string | null,
   actionable: boolean,
+  messageDisposition?: unknown,
 ): boolean {
   return (
     actionable &&
+    (messageDisposition === undefined || messageDisposition === 'DELETE') &&
     (actionBand === 'WARN' || actionBand === 'DELETE' || actionBand === 'DELETE_AND_ESCALATE')
   );
+}
+
+export function resolveCommercialMessageDisposition(
+  actionBand: string | null,
+  actionable: boolean,
+  messageDisposition?: unknown,
+): CommercialMessageDisposition {
+  return isCommercialMessageDeleteEligible(actionBand, actionable, messageDisposition)
+    ? 'DELETE'
+    : 'KEEP';
 }
 
 export function resolveCommercialActionPolicy(
@@ -349,6 +363,7 @@ function buildDecision(params: {
     params.actionBand !== 'DELETE_AND_ESCALATE';
   return {
     actionBand: params.actionBand,
+    messageDisposition: resolveCommercialMessageDisposition(params.actionBand, true),
     actionScore: params.actionScore,
     reviewPriority: params.reviewPriority,
     actionable: params.actionBand !== 'ALLOW' && params.actionBand !== 'REVIEW_ONLY',

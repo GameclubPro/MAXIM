@@ -1,4 +1,6 @@
 import { COMMERCIAL_OCR_BENCHMARK_ENVIRONMENT_PROFILE_ID } from '../../../scripts/commercial-run-provenance.util';
+import { COMMERCIAL_ENGINE_CONFIG } from '../../commercial/commercial-config';
+import { COMMERCIAL_SECOND_STAGE_VERSION } from '../../rule-engine-commercial-second-stage-cache';
 import {
   createCommercialOcrNativeBehaviorIdentity,
   resolveCommercialOcrBehaviorIdentity,
@@ -231,6 +233,11 @@ describe('commercial OCR eval gates', () => {
     setProvenanceValue(report, ['fingerprints', 'policy', 'version'], 'legacy-policy');
     setProvenanceValue(report, ['fingerprints', 'preprocess', 'profiles', 'primary'], 'legacy');
     setProvenanceValue(report, ['fingerprints', 'detector', 'decisionVersion'], 'legacy');
+    setProvenanceValue(
+      report,
+      ['fingerprints', 'detector', 'classifierVersion'],
+      '2026-service-private-v4',
+    );
     setProvenanceValue(report, ['tesseract', 'languages'], ['eng', 'rus']);
     setProvenanceValue(report, ['tesseract', 'oem'], 3);
     setProvenanceValue(report, ['tesseract', 'psm', 'primary'], 6);
@@ -244,6 +251,7 @@ describe('commercial OCR eval gates', () => {
         'Certification policy version identity does not match the current runtime',
         'Certification primary preprocess identity does not match the current runtime',
         'Certification detector decision identity does not match the current runtime',
+        'Certification detector classifier identity does not match the current runtime',
         'Certification detector fingerprints are internally inconsistent',
         'Certification OCR language order must be exactly rus+eng',
         'Certification Tesseract OEM must be 1',
@@ -860,9 +868,9 @@ function buildValidProvenance(): CommercialOcrEvalReport['provenance'] {
   const detector: CommercialOcrEvalReport['provenance']['fingerprints']['detector'] = {
     digestKind: 'SOURCE_FILES',
     sourceSha256: '1'.repeat(64),
-    decisionVersion: 'commercial-deterministic-v2',
+    decisionVersion: COMMERCIAL_ENGINE_CONFIG.decisionVersion,
     patternPolicyVersion: 'commercial-patterns-v2',
-    classifierVersion: '2026-service-private-v4',
+    classifierVersion: COMMERCIAL_SECOND_STAGE_VERSION,
   };
   const behaviorIdentity = buildVerifiedBehaviorIdentity();
   const benchmarkDescriptor = {

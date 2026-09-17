@@ -1,6 +1,41 @@
 import { summarizeCommercialAuditRecords } from './commercial-audit-summary';
 
 describe('commercial-audit-summary', () => {
+  it('separates explicit retention from legacy cleanup and detects disposition drift', () => {
+    const warn = { hit: true, actionBand: 'WARN', actionable: true };
+    const summary = summarizeCommercialAuditRecords([
+      {
+        current: { ...warn, messageDisposition: 'KEEP' },
+        sanitizedBaseline: { ...warn, messageDisposition: 'DELETE' },
+      },
+      { current: { ...warn, messageDisposition: null } },
+      { current: { ...warn, messageDisposition: 'DELETE' }, sanitizedBaseline: warn },
+      { current: warn },
+    ]);
+    expect(summary.messageDeleteEligible).toBe(2);
+    expect(summary.sanitizationDecisionDrift).toBe(1);
+  });
+
+  it('does not report an explicit KEEP as an unsafe enforcement', () => {
+    const summary = summarizeCommercialAuditRecords([
+      {
+        label: 'negative_candidate',
+        policyCategory: 'campaign_only',
+        current: {
+          hit: true,
+          actionBand: 'WARN',
+          actionable: true,
+          messageDisposition: 'KEEP',
+          safeContextBucket: 'private_one_off_sale',
+        },
+      },
+    ]);
+    expect(summary.messageDeleteEligible).toBe(0);
+    expect(summary.enforcementFalsePositiveCandidates).toBe(0);
+    expect(summary.safeContextEnforcements).toEqual({});
+    expect(summary.campaignOnlyEnforcements).toBe(0);
+  });
+
   it('separates category labels, planned cleanup, and sanitized decision drift', () => {
     const warn = { hit: true, actionBand: 'WARN', actionable: true };
     const summary = summarizeCommercialAuditRecords([

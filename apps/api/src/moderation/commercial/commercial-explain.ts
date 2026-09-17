@@ -119,6 +119,7 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     safeContextBucket,
     actionable: actionPolicy.actionable,
     recordable: actionPolicy.recordable,
+    messageDisposition: actionPolicy.messageDisposition,
     deleteSuppressed: actionPolicy.deleteSuppressed,
     suppressionReasons: actionPolicy.suppressionReasons,
     reasonCodes,

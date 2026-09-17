@@ -36,7 +36,10 @@ import {
   ADS_BOUNDED_WHERE_TO_BUY_REQUEST_PATTERN,
 } from './commercial-patterns';
 import { classifyCommercialDetection } from './commercial-subtypes';
-import type { CommercialLegacyEvidenceStrength } from './commercial.types';
+import type {
+  CommercialLegacyEvidenceStrength,
+  CommercialMessageDisposition,
+} from './commercial.types';
 
 const COMMERCIAL_WARMUP_SETTINGS = {
   commercialAdsSensitivity: 'BALANCED',
@@ -347,6 +350,7 @@ export type CommercialDetection = {
   evidenceTier?: string;
   subtype?: CommercialSubtype;
   actionBand?: string;
+  messageDisposition?: CommercialMessageDisposition;
   reviewPriority?: string;
   campaignStrength?: string;
   safeContextBucket?: string;

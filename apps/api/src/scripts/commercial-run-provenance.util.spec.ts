@@ -39,9 +39,9 @@ describe('commercial run provenance', () => {
         detector: expect.objectContaining({
           digestKind: 'SOURCE_FILES',
           sourceSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
-          decisionVersion: 'commercial-deterministic-v2',
+          decisionVersion: 'commercial-deterministic-v3',
           patternPolicyVersion: 'commercial-patterns-v2',
-          classifierVersion: '2026-service-private-v4',
+          classifierVersion: '2026-service-private-v5',
         }),
         auditTool: {
           digestKind: 'SOURCE_FILES',
