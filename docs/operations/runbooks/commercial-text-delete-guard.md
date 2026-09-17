@@ -13,6 +13,10 @@ logs. The event timestamp, not processing time, defines the deadline.
 - At every transport attempt, the guard checks current chat settings, local and
   remote author access, configured-bot immunity, one exact MAX message and
   participant immunity. It rechecks settings and deadline after remote work.
+- A successful membership lookup that confirms the author has left does not
+  exempt an extant, exactly bound ad. Local/admin and participant immunity still
+  apply. Transport or malformed membership results remain unknown and cannot
+  authorize deletion.
 - Bound campaign counters are usable only with their exact original text,
   settings, detector identity and unexpired deadline. Legacy reasons receive a
   fresh classification without unbound campaign counters.

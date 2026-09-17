@@ -60,7 +60,7 @@ Before local TSX corpus replays, regenerate the checked-in detector source ident
 with `node scripts/generate-commercial-ocr-detector-source.mjs`; the provenance
 records the generated runtime identity. Source identities for the final comparison:
 baseline `6cb51f4f4df5541c3a796a3c9d190fb472840449d91dd518e1a38dc0cffbbed4`,
-candidate `79483899dc958d150bf4b635f3169add2c76b96ccc338d911829cf7f3aeba520`.
+candidate `ed918015ee1b0a6bc166f6fb9c53b29e61d42c149a9e9a0bf64a5556d009d553`.
 
 ## September 17: Guarded Deletion
 

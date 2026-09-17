@@ -269,7 +269,7 @@ describe('CommercialDeleteGuardService', () => {
     });
   });
 
-  it.each(['bot', 'local-admin', 'remote-admin', 'participant', 'missing-member'])(
+  it.each(['bot', 'local-admin', 'remote-admin', 'participant'])(
     'protects current author access: %s',
     async (kind) => {
       const h = harness();
@@ -282,15 +282,31 @@ describe('CommercialDeleteGuardService', () => {
           isOwner: false,
         });
       if (kind === 'participant') h.immunity.consumeForMessage.mockResolvedValue('granted');
-      if (kind === 'missing-member') h.max.getChatMemberAccess.mockResolvedValue(null);
       await expect(h.service.assertIntentStillActionable(input)).rejects.toMatchObject({
-        code:
-          kind === 'missing-member'
-            ? 'commercial_text_author_not_member'
-            : 'commercial_text_author_immune',
+        code: 'commercial_text_author_immune',
       });
     },
   );
+
+  it('does not leave an extant bound ad in the chat merely because its author left', async () => {
+    const h = harness();
+    h.max.getChatMemberAccess.mockResolvedValue(null);
+    await expect(h.service.assertIntentStillActionable(input)).resolves.toEqual({
+      kind: 'allowed',
+      reasonKeys: [h.reason.reasonKey],
+    });
+    expect(h.max.getExactMessageRow).toHaveBeenCalledTimes(1);
+    expect(h.immunity.consumeForMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat an unavailable membership check as a verified departure', async () => {
+    const h = harness();
+    h.max.getChatMemberAccess.mockRejectedValue(new Error('Invalid MAX chat members response'));
+    await expect(h.service.assertIntentStillActionable(input)).rejects.toThrow(
+      'Invalid MAX chat members response',
+    );
+    expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
 
   it('treats exact absence as absence, not proof for a new strike', async () => {
     const h = harness();

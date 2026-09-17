@@ -22,7 +22,6 @@ export class CommercialDeleteGuardRejectedError extends Error {
     readonly code:
       | 'commercial_text_settings_disabled'
       | 'commercial_text_author_immune'
-      | 'commercial_text_author_not_member'
       | 'commercial_text_message_changed'
       | 'commercial_text_binding_invalid'
       | 'commercial_text_binding_stale'
@@ -112,10 +111,11 @@ export class CommercialDeleteGuardService {
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000,
     };
     const access = await this.maxClient.getChatMemberAccess(params.chatId, userId, options);
-    if (!access) throw new CommercialDeleteGuardRejectedError('commercial_text_author_not_member');
-    if (access.userId !== null && access.userId !== userId)
+    // FLAG: A verified departure is not immunity for an extant ad. Transport/malformed lookup
+    // failures throw; only an actual absent member may proceed to the exact-message check.
+    if (access && access.userId !== null && access.userId !== userId)
       throw new Error('Commercial author access could not be verified');
-    if (access.isAdmin || access.isOwner)
+    if (access?.isAdmin || access?.isOwner)
       throw new CommercialDeleteGuardRejectedError('commercial_text_author_immune');
 
     // FLAG: Read exactly one current message per dispatch attempt; never store or log its text.
