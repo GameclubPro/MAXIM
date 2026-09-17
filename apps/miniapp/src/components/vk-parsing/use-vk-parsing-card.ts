@@ -34,7 +34,11 @@ import { queryKeys } from '../../lib/query-keys';
 import { useToast } from '../ui/toast';
 import { normalizeApiError, toggleValue } from './format';
 import { resolveVkParsingInitialLinkSelection } from './link-selection';
-import { buildVkParsingSourceConnectionToast, mergeVkParsingMutationFeed } from './model';
+import {
+  buildVkParsingSourceConnectionToast,
+  mergeVkParsingMutationFeed,
+  resolveVkParsingPollInterval,
+} from './model';
 import {
   VK_PARSING_INITIAL_STATUS_FILTER,
   VK_PARSING_PAGE_SIZE,
@@ -102,10 +106,15 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
 
   const feedQuery = useQuery({
     queryKey: queryKeys.vkParsing(entityType, chatId, feedQueryScope),
-    queryFn: () => getVkParsing(api, entityType, chatId, feedQueryScope),
+    queryFn: ({ signal }) => getVkParsing(api, entityType, chatId, feedQueryScope, signal),
     enabled: Boolean(chatId) && active,
     staleTime: 30_000,
-    refetchInterval: active ? 15_000 : false,
+    refetchInterval: (query) =>
+      resolveVkParsingPollInterval({
+        active,
+        hasError: Boolean(query.state.error),
+        feed: query.state.data,
+      }),
     refetchOnWindowFocus: false,
   });
 

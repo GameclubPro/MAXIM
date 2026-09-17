@@ -14,6 +14,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkApiClientService } from './vk-api-client.service';
+import { VkApiRequestError } from './vk-parsing-errors';
 import { isVkManualReviewMode, VK_BOT_REVIEW_MODE } from './vk-bot-review-protocol';
 import { resolveNextAllowedVkAutoPublishAt } from './vk-autopublish-timing';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
@@ -980,6 +981,9 @@ export class VkSourceService {
       if (host !== 'vk.com' && host !== 'vk.ru') {
         throw new BadRequestException('Поддерживаются только ссылки vk.ru и vk.com.');
       }
+      if (url.username || url.password || url.port) {
+        throw new BadRequestException('Некорректная ссылка на VK-сообщество.');
+      }
 
       const segment = url.pathname
         .split('/')
@@ -1016,13 +1020,15 @@ export class VkSourceService {
       .map((item) => this.asRecord(item))
       .find((item): item is Record<string, unknown> => item !== null);
     const groupIdFromPost = this.resolveGroupIdFromPost(firstPost ?? null);
+    if (firstPost && groupIdFromPost === null) {
+      throw new BadRequestException('Нужна ссылка на VK-сообщество, не на личную страницу.');
+    }
     const group =
       typeof groupIdFromPost === 'number'
         ? (groups.find((item) => this.readNumber(item.id) === groupIdFromPost) ?? null)
-        : (this.findGroupByInputDomain(groups, input.domain) ??
-          (groups.length === 1 ? groups[0] : null));
+        : this.findGroupByInputDomain(groups, input.domain);
     const groupId = groupIdFromPost ?? this.readNumber(group?.id);
-    if (!groupId) {
+    if (!groupId || !Number.isSafeInteger(groupId) || groupId < 0) {
       throw new BadRequestException('VK-сообщество не найдено или недоступно.');
     }
 
@@ -1039,7 +1045,7 @@ export class VkSourceService {
 
   private resolveGroupIdFromPost(post: Record<string, unknown> | null): number | null {
     const ownerId = this.readNumber(post?.owner_id);
-    if (typeof ownerId !== 'number' || ownerId >= 0) {
+    if (typeof ownerId !== 'number' || !Number.isSafeInteger(ownerId) || ownerId >= 0) {
       return null;
     }
 
@@ -1059,7 +1065,9 @@ export class VkSourceService {
       }
       if (
         typeof id === 'number' &&
-        (normalizedDomain === `club${id}` || normalizedDomain === `public${id}`)
+        (normalizedDomain === `club${id}` ||
+          normalizedDomain === `public${id}` ||
+          normalizedDomain === `event${id}`)
       ) {
         return group;
       }
@@ -1098,8 +1106,8 @@ export class VkSourceService {
     }
 
     const response = await this.vkApiClient.request('wall.get', params);
-    if (!this.asRecord(response)) {
-      throw new BadRequestException('VK вернул пустой ответ.');
+    if (!this.asRecord(response) || !Array.isArray(this.asRecord(response)?.items)) {
+      throw new VkApiRequestError('VK вернул неполную стену.', 'invalid_response', true);
     }
 
     return response as VkWallGetResponse;

@@ -97,9 +97,11 @@ export async function getVkParsing(
   entityType: VkParsingEntityType,
   chatId: string,
   query?: Partial<VkParsingFeedQuery>,
+  signal?: AbortSignal,
 ): Promise<VkParsingFeed> {
   const response = await api.request(
     `${buildVkParsingPath(entityType, chatId)}${buildVkParsingQuery(query)}`,
+    { signal },
   );
   return vkParsingFeedSchema.parse(response);
 }

@@ -1,5 +1,5 @@
 import { VK_PARSING_MAX_LINKS, VK_PARSING_MAX_PHOTOS } from '@maxim/contracts';
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
@@ -689,9 +689,7 @@ export class VkSyncService {
     try {
       return await this.fetchWallPostKeySet(posts);
     } catch (error) {
-      if (error instanceof VkApiRequestError && !error.retryable) {
-        return new Set();
-      }
+      // FLAG: Auth, captcha and access failures never prove that a post was deleted.
       this.logger.warn({ err: error }, 'VK missing post spot-check failed');
       return null;
     }
@@ -917,8 +915,8 @@ export class VkSyncService {
     }
 
     const response = await this.vkApiClient.request('wall.get', params);
-    if (!this.asRecord(response)) {
-      throw new BadRequestException('VK вернул пустой ответ.');
+    if (!this.asRecord(response) || !Array.isArray(this.asRecord(response)?.items)) {
+      throw new VkApiRequestError('VK вернул неполную стену.', 'invalid_response', true);
     }
 
     return response as VkWallGetResponse;
@@ -930,24 +928,34 @@ export class VkSyncService {
     if (posts.length === 0) {
       return new Set();
     }
-    const response = await this.vkApiClient.request('wall.getById', {
-      posts: posts.map((post) => `${post.vkOwnerId}_${post.vkPostId}`).join(','),
-      extended: '0',
-    });
-    const record = this.asRecord(response);
-    const items = Array.isArray(response)
-      ? response
-      : Array.isArray(record?.items)
-        ? record.items
-        : [];
-
     const found = new Set<string>();
-    for (const item of items) {
-      const post = this.asRecord(item);
-      const ownerId = this.readNumber(post?.owner_id);
-      const postId = this.readNumber(post?.id);
-      if (typeof ownerId === 'number' && typeof postId === 'number') {
-        found.add(this.buildPostKey(ownerId, postId));
+    for (let offset = 0; offset < posts.length; offset += 100) {
+      const response = await this.vkApiClient.request('wall.getById', {
+        posts: posts
+          .slice(offset, offset + 100)
+          .map((post) => `${post.vkOwnerId}_${post.vkPostId}`)
+          .join(','),
+        extended: '0',
+      });
+      const record = this.asRecord(response);
+      const items = Array.isArray(response) ? response : record?.items;
+      if (!Array.isArray(items)) {
+        throw new VkApiRequestError('VK вернул неполный список постов.', 'invalid_response', true);
+      }
+      for (const item of items) {
+        const post = this.asRecord(item);
+        const ownerId = this.readNumber(post?.owner_id);
+        const postId = this.readNumber(post?.id);
+        if (
+          !Number.isSafeInteger(ownerId) ||
+          !ownerId ||
+          !Number.isSafeInteger(postId) ||
+          !postId ||
+          postId < 0
+        ) {
+          throw new VkApiRequestError('VK вернул неполный пост.', 'invalid_response', true);
+        }
+        if (post?.is_deleted !== 1) found.add(this.buildPostKey(ownerId, postId));
       }
     }
 

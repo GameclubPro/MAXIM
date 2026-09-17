@@ -2,8 +2,41 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { formatVkSourceProblem, normalizeApiError } from '../src/components/vk-parsing/format';
+import { ApiRequestError } from '../src/lib/api-request-error';
 
 const vkParsingCss = readFileSync(new URL('../src/styles/vk-parsing.css', import.meta.url), 'utf8');
+
+test('VK preserves safe structured upstream error codes without exposing internal messages', () => {
+  for (const [code, expected] of [
+    ['VK_API_VK_14', 'VK требует проверку доступа. Повторите после проверки подключения.'],
+    ['VK_API_VK_15', 'Сообщество закрыто или недоступно для подключения VK.'],
+    ['VK_API_VK_6', 'VK временно ограничил запросы. Повторите позже.'],
+    ['VK_API_TIMEOUT', 'VK не успел ответить. Повторите позже.'],
+  ]) {
+    const error = new ApiRequestError(
+      503,
+      JSON.stringify({ code, message: 'internal detail' }),
+      'Сервис временно недоступен. Повторите позже.',
+    );
+    assert.equal(normalizeApiError(error), expected);
+  }
+  assert.equal(
+    normalizeApiError(
+      new ApiRequestError(429, '', 'Слишком много запросов. Повторите чуть позже.'),
+    ),
+    'Слишком много запросов. Повторите позже.',
+  );
+  assert.equal(
+    normalizeApiError(
+      new ApiRequestError(
+        409,
+        JSON.stringify({ code: 'PUBLISHER_SETUP_REQUIRED' }),
+        'Publik setup is required for the selected target',
+      ),
+    ),
+    'Публикация недоступна. Проверьте подключение и права Публика.',
+  );
+});
 
 test('VK errors preserve safe validation without exposing server internals', () => {
   assert.equal(
@@ -21,9 +54,13 @@ test('VK errors preserve safe validation without exposing server internals', () 
 test('VK errors localize common access, throttling, and network failures', () => {
   assert.equal(
     normalizeApiError(new Error('API request failed: 429 Too Many Requests')),
-    'VK временно ограничил запросы. Повторите позже.',
+    'Слишком много запросов. Повторите позже.',
   );
   assert.equal(normalizeApiError(new Error('Failed to fetch')), 'Нет связи с сервисом. Повторите.');
+  assert.equal(
+    normalizeApiError(new Error('Сервис не отвечает. Повторите.')),
+    'Сервис не успел ответить. Повторите позже.',
+  );
   assert.equal(
     normalizeApiError(new Error('API request failed: 403 Forbidden')),
     'Недостаточно прав для этого действия.',
@@ -41,11 +78,19 @@ test('VK source problems stay actionable without backend diagnostics', () => {
 
   assert.equal(
     formatVkSourceProblem({ ...base, syncStatus: 'BACKOFF' }),
-    'VK временно ограничил обновление. Повторим автоматически.',
+    'Источник временно недоступен. Повторим автоматически.',
   );
   assert.equal(
     formatVkSourceProblem({ ...base, circuitOpenedAt: '2026-07-17T10:00:00.000Z' }),
-    'Автопубликация приостановлена.',
+    'Обновление источника приостановлено после повторных ошибок.',
+  );
+  assert.equal(
+    formatVkSourceProblem({ ...base, syncStatus: 'BACKOFF', lastErrorCode: 'vk_api.vk_6' }),
+    'VK временно ограничил обновление. Повторим автоматически.',
+  );
+  assert.equal(
+    formatVkSourceProblem({ ...base, syncStatus: 'ERROR', lastErrorCode: 'vk_api.vk_14' }),
+    'VK требует проверку доступа. Обновление источника приостановлено.',
   );
   assert.equal(
     formatVkSourceProblem({ ...base, lastError: 'VK_SERVICE_TOKEN is missing' }),

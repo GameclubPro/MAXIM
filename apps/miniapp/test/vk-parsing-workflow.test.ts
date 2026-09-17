@@ -11,6 +11,7 @@ import {
   buildVkParsingSourceMetrics,
   mergeVkParsingMutationFeed,
   resolveVkParsingAutopostMode,
+  resolveVkParsingPollInterval,
 } from '../src/components/vk-parsing/model';
 import {
   VK_PARSING_INITIAL_STATUS_FILTER,
@@ -18,6 +19,53 @@ import {
 } from '../src/components/vk-parsing/types';
 
 const PUBLISHER_CHANNEL_VK_PATH = '/publisher/entities/channel/preview-channel/vk-parsing';
+
+test('VK polling is fast only for active work, not a distant publication schedule', () => {
+  const nowMs = Date.parse('2026-09-17T09:00:00Z');
+  const base = { active: true, hasError: false, nowMs };
+  assert.equal(resolveVkParsingPollInterval({ ...base, active: false }), false);
+  assert.equal(resolveVkParsingPollInterval({ ...base, hasError: true }), 60_000);
+  assert.equal(resolveVkParsingPollInterval(base), 30_000);
+  assert.equal(
+    resolveVkParsingPollInterval({
+      ...base,
+      feed: { sources: [{ syncStatus: 'SYNCING' }], queue: [] },
+    }),
+    5_000,
+  );
+  assert.equal(
+    resolveVkParsingPollInterval({
+      ...base,
+      feed: {
+        sources: [],
+        queue: [{ publishLockedAt: null, publishScheduledAt: '2026-09-17T12:00:00Z' }],
+      },
+    }),
+    30_000,
+  );
+  assert.equal(
+    resolveVkParsingPollInterval({
+      ...base,
+      feed: {
+        sources: [],
+        queue: [{ publishLockedAt: null, publishScheduledAt: '2026-09-17T09:00:20Z' }],
+      },
+    }),
+    5_000,
+  );
+  assert.equal(
+    resolveVkParsingPollInterval({
+      ...base,
+      feed: {
+        sources: [],
+        queue: [
+          { publishLockedAt: '2026-09-17T09:00:00Z', publishScheduledAt: '2026-09-17T12:00:00Z' },
+        ],
+      },
+    }),
+    5_000,
+  );
+});
 
 const HEALTHY_MANUAL_SOURCE = {
   importEnabled: true,

@@ -63,6 +63,12 @@ describe('VkParsingPostImportRepository', () => {
       },
     );
 
+    expect(vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 100,
+        orderBy: [{ lastAvailabilityCheckedAt: { sort: 'asc', nulls: 'first' } }, { id: 'asc' }],
+      }),
+    );
     expect(vkParsingPost.updateMany).toHaveBeenCalledTimes(1);
     expect(vkParsingPost.updateMany).toHaveBeenCalledWith({
       where: {

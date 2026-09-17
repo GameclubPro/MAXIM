@@ -1,6 +1,81 @@
 import { VkParsingOwnerProfile } from '../prisma/prisma-client';
 import { VkSourceService } from './vk-source.service';
 
+describe('VkSourceService source identity', () => {
+  function fixture() {
+    const service = new VkSourceService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { get: () => undefined } as never,
+      {} as never,
+    );
+    return service as unknown as {
+      normalizeSourceInput: (input: string) => { domain: string; url: string };
+      resolveSourceInfo: (
+        input: { domain: string; url: string },
+        wall: unknown,
+      ) => { wallOwnerId: number; title: string };
+    };
+  }
+
+  it('does not connect a group mentioned on a personal wall', () => {
+    const service = fixture();
+    const input = service.normalizeSourceInput('https://vk.ru/person');
+    expect(() =>
+      service.resolveSourceInfo(input, {
+        items: [{ owner_id: 123, id: 1 }],
+        groups: [{ id: 999, name: 'Unrelated' }],
+      }),
+    ).toThrow('личную страницу');
+  });
+
+  it('does not use the only extended group unless it matches an empty source wall', () => {
+    const service = fixture();
+    expect(() =>
+      service.resolveSourceInfo(service.normalizeSourceInput('public123'), {
+        items: [],
+        groups: [{ id: 999, name: 'Unrelated' }],
+      }),
+    ).toThrow('не найдено');
+  });
+
+  it.each(['club123', 'public123', 'event123', 'community'])(
+    'resolves an exact empty-wall group for %s',
+    (domain) => {
+      const service = fixture();
+      expect(
+        service.resolveSourceInfo(service.normalizeSourceInput(domain), {
+          items: [],
+          groups: [{ id: 123, name: 'Community', screen_name: 'community' }],
+        }),
+      ).toMatchObject({ wallOwnerId: -123, title: 'Community' });
+    },
+  );
+
+  it.each([
+    'https://user:password@vk.ru/club123',
+    'https://vk.ru:8443/club123',
+    'https://vk.ru.evil.test/club123',
+  ])('rejects an ambiguous source URL: %s', (url) => {
+    expect(() => fixture().normalizeSourceInput(url)).toThrow();
+  });
+
+  it('trusts the post wall owner, not the first referenced group', () => {
+    const service = fixture();
+    expect(
+      service.resolveSourceInfo(service.normalizeSourceInput('community'), {
+        items: [{ owner_id: -123, id: 1 }],
+        groups: [
+          { id: 999, name: 'Unrelated' },
+          { id: 123, name: 'Correct' },
+        ],
+      }),
+    ).toMatchObject({ wallOwnerId: -123, title: 'Correct' });
+  });
+});
+
 type CleanupQuery = {
   where: Record<string, unknown> & { OR?: Array<Record<string, unknown>> };
   data: Record<string, unknown>;

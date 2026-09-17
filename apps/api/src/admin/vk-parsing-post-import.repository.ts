@@ -169,6 +169,8 @@ export class VkParsingPostImportRepository {
         vkPostId: true,
         missingSeenCount: true,
       },
+      orderBy: [{ lastAvailabilityCheckedAt: { sort: 'asc', nulls: 'first' } }, { id: 'asc' }],
+      take: 100,
     });
     if (candidates.length === 0) {
       return;

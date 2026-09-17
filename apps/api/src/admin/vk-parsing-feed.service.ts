@@ -10,7 +10,7 @@ import {
   vkParsingFeedQuerySchema,
   vkBotReviewSummarySchema,
 } from '@maxim/contracts';
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,11 +21,14 @@ import type { VkParsingUnsupportedAttachmentSummary } from './vk-parsing-attachm
 import type { VkParsingOwnerScope } from './vk-parsing-ownership.service';
 
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
-type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }> & {
+const feedPostOmit = { raw: true, attachments: true, publishDialogContext: true } as const;
+type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{
+  omit: typeof feedPostOmit;
+  include: { source: true };
+}> & {
   botReview?: { status: string; deliveryState: string; lastError: string | null } | null;
 };
 type VkParsingSettingsRow = Prisma.VkParsingSettingsGetPayload<Record<string, never>>;
-type VkParsingAuditRow = Prisma.AuditLogGetPayload<Record<string, never>>;
 type SourcePostStats = {
   newPostCount: number;
   queuedPostCount: number;
@@ -94,9 +97,10 @@ export class VkParsingFeedService {
     ownerScope: VkParsingOwnerScope,
   ): Promise<VkParsingFeed> {
     const parsedQuery = vkParsingFeedQuerySchema.safeParse(rawQuery);
-    const query: VkParsingFeedQuery = parsedQuery.success
-      ? parsedQuery.data
-      : { status: 'ALL', limit: 50, offset: 0 };
+    if (!parsedQuery.success) {
+      throw new BadRequestException('Некорректные параметры списка VK-постов.');
+    }
+    const query: VkParsingFeedQuery = parsedQuery.data;
     const statusWhere =
       query.status === 'ALL'
         ? {}
@@ -114,68 +118,50 @@ export class VkParsingFeedService {
       ...(query.sourceId ? { sourceId: query.sourceId } : {}),
     };
 
-    const [settings, sources, posts, total, summary, queue, auditEvents, sourceStats] =
-      await Promise.all([
-        this.prisma.vkParsingSettings.findUnique({
-          where: {
-            chatId_ownerProfile_ownerBotId: {
-              chatId,
-              ...ownerScope,
-            },
-          },
-        }),
-        this.prisma.vkParsingSource.findMany({
-          where: { chatId, status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
-          orderBy: [{ createdAt: 'asc' }],
-        }),
-        this.prisma.vkParsingPost.findMany({
-          where: postWhere,
-          include: {
-            source: true,
-            botReview: { select: { status: true, deliveryState: true, lastError: true } },
-          },
-          orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
-          skip: query.offset,
-          take: query.limit,
-        }),
-        this.prisma.vkParsingPost.count({ where: postWhere }),
-        this.buildHealthSummary(chatId, ownerScope),
-        this.prisma.vkParsingPost.findMany({
-          where: {
+    const [settings, sources, posts, total, queue, sourceStats] = await Promise.all([
+      this.prisma.vkParsingSettings.findUnique({
+        where: {
+          chatId_ownerProfile_ownerBotId: {
             chatId,
             ...ownerScope,
-            publishQueuedAt: { not: null },
-            status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
-            source: { status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
           },
-          include: { source: true },
-          orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }],
-          take: 20,
-        }),
-        this.prisma.auditLog?.findMany?.({
-          where: {
-            chatId,
-            action: { startsWith: 'VK_PARSING_' },
-            AND: [
-              {
-                payload: {
-                  path: ['ownerProfile'],
-                  equals: ownerScope.ownerProfile,
-                },
-              },
-              {
-                payload: {
-                  path: ['ownerBotId'],
-                  equals: ownerScope.ownerBotId,
-                },
-              },
-            ],
-          },
-          orderBy: [{ createdAt: 'desc' }],
-          take: 12,
-        }) ?? Promise.resolve([]),
-        this.loadSourcePostStats(chatId, ownerScope),
-      ]);
+        },
+      }),
+      this.prisma.vkParsingSource.findMany({
+        where: { chatId, status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
+        orderBy: [{ createdAt: 'asc' }],
+      }),
+      this.prisma.vkParsingPost.findMany({
+        where: postWhere,
+        omit: feedPostOmit,
+        include: {
+          source: true,
+          botReview: { select: { status: true, deliveryState: true, lastError: true } },
+        },
+        orderBy: [
+          { vkPublishedAt: { sort: 'desc', nulls: 'last' } },
+          { createdAt: 'desc' },
+          { id: 'desc' },
+        ],
+        skip: query.offset,
+        take: query.limit,
+      }),
+      this.prisma.vkParsingPost.count({ where: postWhere }),
+      this.prisma.vkParsingPost.findMany({
+        where: {
+          chatId,
+          ...ownerScope,
+          publishQueuedAt: { not: null },
+          status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+          source: { status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
+        },
+        omit: feedPostOmit,
+        include: { source: true },
+        orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }, { id: 'asc' }],
+        take: 20,
+      }),
+      this.loadSourcePostStats(chatId, ownerScope),
+    ]);
     const nextOffset = query.offset + query.limit;
 
     return {
@@ -184,7 +170,7 @@ export class VkParsingFeedService {
       sources: sources.map((source) => this.mapSource(source, sourceStats.get(source.id))),
       posts: posts.map((post) => this.mapPost(post)),
       queue: queue.map((post) => this.mapPost(post)),
-      auditEvents: auditEvents.map((event) => this.mapAuditEvent(event)),
+      auditEvents: [],
       pagination: {
         limit: query.limit,
         offset: query.offset,
@@ -192,7 +178,8 @@ export class VkParsingFeedService {
         hasMore: nextOffset < total,
         nextOffset: nextOffset < total ? nextOffset : null,
       },
-      summary,
+      // Operational diagnostics are available through /summary, outside the polled feed.
+      summary: null,
     };
   }
 
@@ -546,17 +533,6 @@ export class VkParsingFeedService {
       lastError: source.lastError,
       createdAt: source.createdAt.toISOString(),
       updatedAt: source.updatedAt.toISOString(),
-    };
-  }
-
-  private mapAuditEvent(event: VkParsingAuditRow): VkParsingFeed['auditEvents'][number] {
-    const payload = this.asRecord(event.payload) ?? {};
-    return {
-      id: event.id,
-      action: event.action,
-      actorUserId: event.actorUserId,
-      payload,
-      createdAt: event.createdAt.toISOString(),
     };
   }
 

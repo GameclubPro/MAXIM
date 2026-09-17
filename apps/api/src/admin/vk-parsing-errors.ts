@@ -12,7 +12,12 @@ export class VkApiRequestError extends ServiceUnavailableException {
     readonly code: string,
     readonly retryable: boolean,
   ) {
-    super(message);
+    super({
+      statusCode: 503,
+      message,
+      code: `VK_API_${code.toUpperCase()}`,
+      retryable,
+    });
     this.name = 'VkApiRequestError';
   }
 }

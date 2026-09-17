@@ -6,6 +6,7 @@ import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 const VK_API_RATE_LIMIT_ERROR_CODE = 6;
 const VK_API_RETRYABLE_ERROR_CODES = new Set([VK_API_RATE_LIMIT_ERROR_CODE, 9, 10, 29]);
 const VK_API_TERMINAL_ERROR_CODES = new Set([5, 14, 15, 18, 19, 30, 100, 203, 210]);
+const VK_API_REQUEST_BUDGET_MS = 20_000;
 
 @Injectable()
 export class VkApiClientService {
@@ -32,20 +33,21 @@ export class VkApiClientService {
       throw new ServiceUnavailableException('VK_SERVICE_TOKEN не настроен.');
     }
 
+    const deadlineAt = Date.now() + VK_API_REQUEST_BUDGET_MS;
     for (let attempt = 1; attempt <= this.vkApiMaxAttempts; attempt += 1) {
       try {
         await this.vkRateLimitService.reserveVkApiSlot(method);
-        const response = await this.fetchVkApi(method, params, token);
-        const payload = await this.readVkResponsePayload(response);
-        const record = this.asRecord(payload);
-
-        if (!response.ok) {
-          throw new VkApiRequestError(
-            `VK API вернул статус ${response.status}.`,
-            `http_${response.status}`,
-            response.status === 429 || response.status >= 500,
-          );
+        const remainingMs = deadlineAt - Date.now();
+        if (remainingMs <= 0) {
+          throw new VkApiRequestError('VK API не ответил вовремя.', 'timeout', true);
         }
+        const payload = await this.fetchVkApi(
+          method,
+          params,
+          token,
+          Math.min(this.vkApiTimeoutMs, remainingMs),
+        );
+        const record = this.asRecord(payload);
 
         const error = this.asRecord(record?.error);
         if (error) {
@@ -61,8 +63,11 @@ export class VkApiClientService {
           );
         }
 
+        if (!record || record.response === undefined || record.response === null) {
+          throw new VkApiRequestError('VK API вернул неполный ответ.', 'invalid_response', true);
+        }
         await this.vkRateLimitService.recordVkApiOutcome({ method, outcome: 'success' });
-        return record?.response;
+        return record.response;
       } catch (error) {
         const classified = this.classifyVkRequestError(error);
         await this.vkRateLimitService.recordVkApiOutcome({
@@ -70,11 +75,16 @@ export class VkApiClientService {
           outcome: 'error',
           code: classified.code,
         });
-        if (!classified.retryable || attempt >= this.vkApiMaxAttempts) {
+        const retryDelayMs = this.resolveVkRequestRetryDelayMs(attempt, classified.code);
+        if (
+          !classified.retryable ||
+          attempt >= this.vkApiMaxAttempts ||
+          Date.now() + retryDelayMs >= deadlineAt
+        ) {
           throw classified.error;
         }
 
-        await this.sleep(this.resolveVkRequestRetryDelayMs(attempt, classified.code));
+        await this.sleep(retryDelayMs);
       }
     }
 
@@ -85,21 +95,35 @@ export class VkApiClientService {
     method: string,
     params: Record<string, string>,
     token: string,
-  ): Promise<Response> {
+    timeoutMs: number,
+  ): Promise<unknown> {
     const search = new URLSearchParams({
       ...params,
       v: this.vkApiVersion,
     });
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.vkApiTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetch(`${this.vkApiBaseUrl}/method/${method}?${search.toString()}`, {
+      const response = await fetch(`${this.vkApiBaseUrl}/method/${method}?${search.toString()}`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
         signal: controller.signal,
       });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new VkApiRequestError(
+          `VK API вернул статус ${response.status}.`,
+          `http_${response.status}`,
+          response.status === 408 || response.status === 429 || response.status >= 500,
+        );
+      }
+      return await this.readVkResponsePayload(response);
     } catch (error) {
+      if (controller.signal.aborted) {
+        throw new VkApiRequestError('VK API не ответил вовремя.', 'timeout', true);
+      }
+      if (error instanceof VkApiRequestError) throw error;
       const aborted =
         error instanceof Error &&
         (error.name === 'AbortError' || /abort|timeout/iu.test(error.message));

@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 
 const VK_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
 const VK_API_METRICS_TTL_SEC = 6 * 60 * 60;
+const VK_API_METRICS_MAX_WINDOW_SEC = 900;
 const VK_API_RATE_LIMIT_RESERVATION_SCRIPT = `
 local ttlMs = tonumber(ARGV[#ARGV])
 local keyCount = #KEYS
@@ -44,7 +45,13 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
   private lastMetricFailureLogAtMs = 0;
 
   constructor(configService: ConfigService) {
-    this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'), {
+      commandTimeout: 1_000,
+      connectTimeout: 1_000,
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+    });
+    this.redis.on('error', (error) => this.logMetricFailure(error));
     this.rpsLimit = this.readPositiveInt(configService.get<number>('VK_API_RPS'), 5);
     this.maxWaitMs = this.readNonNegativeInt(
       configService.get<number>('VK_API_RATE_LIMIT_WAIT_MS'),
@@ -69,7 +76,8 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
         throw new Error(`VK API rate limit exceeded for ${method}`);
       }
 
-      await this.sleep(Math.min(reservation.retryAfterMs, Math.max(25, remainingWaitMs)));
+      const nextWindowMs = 1_000 - (Date.now() % 1_000);
+      await this.sleep(Math.min(reservation.retryAfterMs, nextWindowMs, remainingWaitMs));
     }
   }
 
@@ -79,11 +87,16 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
     code?: string | number | null;
   }): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1_000);
-    const method = this.normalizeMetricPart(params.method) || 'unknown';
     const code = this.normalizeMetricPart(String(params.code ?? params.outcome));
-    const key = `vkapi:metrics:v1:${params.outcome}:${method}:${code}:${nowSec}`;
+    const key = `vkapi:metrics:v2:${nowSec}`;
     try {
-      await this.redis.multi().incr(key).expire(key, VK_API_METRICS_TTL_SEC).exec();
+      const result = await this.redis
+        .multi()
+        .hincrby(key, `${params.outcome}:${code}`, 1)
+        .expire(key, VK_API_METRICS_TTL_SEC)
+        .exec();
+      const error = result?.find(([error]) => error)?.[0];
+      if (error) throw error;
     } catch (error) {
       this.logMetricFailure(error);
     }
@@ -95,34 +108,30 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
     recentErrors: Array<{ code: string; count: number }>;
   }> {
     const nowSec = Math.floor(Date.now() / 1_000);
-    const cutoffSec = Math.max(0, nowSec - Math.max(1, Math.trunc(windowSec)));
+    const boundedWindowSec = Number.isFinite(windowSec)
+      ? Math.max(1, Math.min(VK_API_METRICS_MAX_WINDOW_SEC, Math.trunc(windowSec)))
+      : 300;
     const counts = new Map<string, number>();
-    let cursor = '0';
-
-    do {
-      const [nextCursor, keys] = (await this.redis.scan(
-        cursor,
-        'MATCH',
-        'vkapi:metrics:v1:*',
-        'COUNT',
-        200,
-      )) as [string, string[]];
-      cursor = nextCursor;
-      if (keys.length === 0) {
-        continue;
+    const pipeline = this.redis.pipeline();
+    for (let offset = 0; offset < boundedWindowSec; offset += 1) {
+      pipeline.hgetall(`vkapi:metrics:v2:${nowSec - offset}`);
+    }
+    const results = await pipeline.exec();
+    if (!results) throw new Error('VK metrics are unavailable');
+    for (const [error, values] of results) {
+      if (error) throw error;
+      if (!values || typeof values !== 'object') continue;
+      for (const [key, value] of Object.entries(values)) {
+        const count = Number(value);
+        if (
+          !/^(success|error):[a-z0-9_.-]+$/u.test(key) ||
+          !Number.isSafeInteger(count) ||
+          count <= 0
+        )
+          continue;
+        counts.set(key, (counts.get(key) ?? 0) + count);
       }
-
-      const values = await this.redis.mget(...keys);
-      keys.forEach((key, index) => {
-        const parsed = this.parseMetricKey(key);
-        const count = Number(values[index] ?? 0);
-        if (!parsed || !Number.isFinite(count) || count <= 0 || parsed.second < cutoffSec) {
-          return;
-        }
-        const bucketKey = `${parsed.outcome}:${parsed.code}`;
-        counts.set(bucketKey, (counts.get(bucketKey) ?? 0) + count);
-      });
-    } while (cursor !== '0');
+    }
 
     const success = [...counts.entries()].reduce(
       (total, [key, count]) => (key.startsWith('success:') ? total + count : total),
@@ -140,7 +149,7 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
       .slice(0, 10);
 
     return {
-      rps: total / Math.max(1, Math.trunc(windowSec)),
+      rps: total / boundedWindowSec,
       errorRate: total > 0 ? error / total : 0,
       recentErrors,
     };
@@ -189,21 +198,6 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
       .toLowerCase()
       .replace(/[^a-z0-9_.-]+/giu, '_')
       .slice(0, 80);
-  }
-
-  private parseMetricKey(
-    key: string,
-  ): { outcome: 'success' | 'error'; code: string; second: number } | null {
-    const match = key.match(/^vkapi:metrics:v1:(success|error):([^:]+):([^:]+):(\d+)$/u);
-    if (!match) {
-      return null;
-    }
-
-    return {
-      outcome: match[1] as 'success' | 'error',
-      code: match[3] ?? 'unknown',
-      second: Number(match[4] ?? 0),
-    };
   }
 
   private readPositiveInt(value: unknown, fallback: number): number {

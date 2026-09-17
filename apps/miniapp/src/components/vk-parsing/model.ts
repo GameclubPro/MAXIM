@@ -2,10 +2,39 @@ import type {
   UpdateVkParsingSettingsRequest,
   UpdateVkParsingSourceRequest,
   VkParsingFeed,
+  VkParsingPost,
   VkParsingSource,
 } from '@maxim/contracts';
 
 export type VkParsingAutopostMode = 'manual' | 'auto' | 'pause';
+
+export function resolveVkParsingPollInterval({
+  active,
+  hasError,
+  feed,
+  nowMs = Date.now(),
+}: {
+  active: boolean;
+  hasError: boolean;
+  feed?: {
+    sources: ReadonlyArray<Pick<VkParsingSource, 'syncStatus'>>;
+    queue: ReadonlyArray<Pick<VkParsingPost, 'publishLockedAt' | 'publishScheduledAt'>>;
+  };
+  nowMs?: number;
+}): number | false {
+  if (!active) return false;
+  if (hasError) return 60_000;
+  const syncing = feed?.sources.some(
+    (source) => source.syncStatus === 'QUEUED' || source.syncStatus === 'SYNCING',
+  );
+  const publishing = feed?.queue.some(
+    (post) =>
+      post.publishLockedAt ||
+      !post.publishScheduledAt ||
+      Date.parse(post.publishScheduledAt) <= nowMs + 30_000,
+  );
+  return syncing || publishing ? 5_000 : 30_000;
+}
 
 export function resolveVkParsingAutopostMode(
   settings: Pick<VkParsingFeed['settings'], 'autoPublishEnabled' | 'autoPublishKillSwitchEnabled'>,

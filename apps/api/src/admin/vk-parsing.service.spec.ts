@@ -749,17 +749,18 @@ describe('VkParsingService', () => {
         }),
       );
     }
-    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          chatId: 'channel-1',
-          AND: expect.arrayContaining([
-            { payload: { path: ['ownerProfile'], equals: VkParsingOwnerProfile.PUBLISHER } },
-            { payload: { path: ['ownerBotId'], equals: 'publisher-bot' } },
-          ]),
-        }),
+    expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid feed filters without reading posts or operational diagnostics', async () => {
+    const { service, prisma, vkRateLimitService } = createFixture();
+    await expect(
+      service.listVkParsing('channel-1', { userId: 'channel-admin' } as never, {
+        status: 'INVALID',
       }),
-    );
+    ).rejects.toThrow('Некорректные параметры');
+    expect(prisma.vkParsingPost.findMany).not.toHaveBeenCalled();
+    expect(vkRateLimitService.getRecentVkApiMetrics).not.toHaveBeenCalled();
   });
 
   it('reports VK parsing as not configured to channel admins when the VK token is missing', async () => {
@@ -814,8 +815,8 @@ describe('VkParsingService', () => {
     expect(adminService.assertChatAdmin).toHaveBeenCalledWith('chat-1', 'chat-admin', 'chat');
   });
 
-  it('exposes source retry and stale sync lock metrics in the feed', async () => {
-    const { service, prisma } = createFixture();
+  it('keeps source retry in the feed and loads operational metrics only through summary', async () => {
+    const { service, prisma, vkRateLimitService } = createFixture();
     const retryAt = new Date('2026-05-25T10:30:00.000Z');
     prisma.vkParsingSource.findMany.mockResolvedValue([
       createSource({
@@ -830,6 +831,17 @@ describe('VkParsingService', () => {
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(2);
+    const feed = await service.listVkParsing('channel-1', { userId: '183470701' } as never);
+    expect(feed.summary).toBeNull();
+    expect(feed.auditEvents).toEqual([]);
+    expect(vkRateLimitService.getRecentVkApiMetrics).not.toHaveBeenCalled();
+    expect(prisma.vkParsingMediaCache.count).not.toHaveBeenCalled();
+    expect(prisma.vkParsingSource.count).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        omit: { raw: true, attachments: true, publishDialogContext: true },
+      }),
+    );
     prisma.$queryRaw.mockResolvedValueOnce([
       {
         attemptedSources: 2,
@@ -839,16 +851,15 @@ describe('VkParsingService', () => {
       },
     ]);
 
-    const feed = await service.listVkParsing('channel-1', { userId: '183470701' } as never);
-
     expect(feed.sources[0]).toMatchObject({
       syncStatus: 'BACKOFF',
       nextRetryAt: retryAt.toISOString(),
       terminalFailureCount: 1,
       circuitRetryAt: retryAt.toISOString(),
     });
-    expect(feed.summary?.staleSyncLockCount).toBe(2);
-    expect(feed.summary).toMatchObject({
+    const summary = await service.getHealthSummary('channel-1', { userId: '183470701' } as never);
+    expect(summary.staleSyncLockCount).toBe(2);
+    expect(summary).toMatchObject({
       circuitOpenSourceCount: 1,
       importSuccessRate: 0.5,
       p95SyncDurationMs: 1500,
