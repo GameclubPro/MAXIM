@@ -11,6 +11,7 @@ import {
 import { BadRequestException } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { Prisma } from '../prisma/prisma-client';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import type { AdminDomainAllowlistRuntimeContext } from './admin-domain-allowlist-runtime-context';
@@ -47,7 +48,7 @@ export class AdminDomainAllowlistRuntime {
       },
     });
 
-    const normalizedRows = await this.canonicalizeActiveAllowlistRows(chatId, rows);
+    const normalizedRows = this.canonicalizeActiveAllowlistRows(rows);
 
     return normalizedRows.map((row) =>
       row.kind === 'WEB_DOMAIN' ? row.domain : row.normalizedValue,
@@ -72,7 +73,7 @@ export class AdminDomainAllowlistRuntime {
       },
     });
 
-    return this.canonicalizeActiveAllowlistRows(chatId, rows);
+    return this.canonicalizeActiveAllowlistRows(rows);
   }
 
   async addDomain(
@@ -101,22 +102,24 @@ export class AdminDomainAllowlistRuntime {
       throw new BadRequestException('Invalid allowlist link');
     }
 
-    await this.upsertNormalizedAllowlistDomain(chatId, normalizedEntry.normalizedValue);
+    await this.withAllowlistWrite(chatId, async (tx) => {
+      await this.upsertNormalizedAllowlistDomain(tx, chatId, normalizedEntry.normalizedValue);
 
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'ADD_DOMAIN',
-        payload: {
-          domain: normalizedEntry.domain,
-          target: normalizedEntry.target,
-          kind: normalizedEntry.kind,
-          matchType: normalizedEntry.matchType,
-          normalizedValue: normalizedEntry.normalizedValue,
-          source,
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'ADD_DOMAIN',
+          payload: {
+            domain: normalizedEntry.domain,
+            target: normalizedEntry.target,
+            kind: normalizedEntry.kind,
+            matchType: normalizedEntry.matchType,
+            normalizedValue: normalizedEntry.normalizedValue,
+            source,
+          },
         },
-      },
+      });
     });
     await this.chatContextCache.invalidate(chatId);
 
@@ -130,39 +133,41 @@ export class AdminDomainAllowlistRuntime {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalizedEntry = parseStoredAllowlistEntry(domain);
+    const normalizedEntry = this.parseMutationEntry(domain);
     if (!normalizedEntry) {
       throw new BadRequestException('Invalid allowlist link');
     }
 
-    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalizedEntry);
-    if (matchingDomains.length === 0) {
-      throw new BadRequestException('Link not found in allowlist');
-    }
+    await this.withAllowlistWrite(chatId, async (tx) => {
+      const matchingDomains = await this.findStoredAllowlistDomains(tx, chatId, normalizedEntry);
+      if (matchingDomains.length === 0) {
+        throw new BadRequestException('Link not found in allowlist');
+      }
 
-    await this.prisma.domainAllowlist.deleteMany({
-      where: {
-        chatId,
-        domain: {
-          in: matchingDomains,
+      await tx.domainAllowlist.deleteMany({
+        where: {
+          chatId,
+          domain: {
+            in: matchingDomains,
+          },
         },
-      },
-    });
+      });
 
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'REMOVE_DOMAIN',
-        payload: {
-          domain: normalizedEntry.domain,
-          target: normalizedEntry.target,
-          kind: normalizedEntry.kind,
-          matchType: normalizedEntry.matchType,
-          normalizedValue: normalizedEntry.normalizedValue,
-          source,
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'REMOVE_DOMAIN',
+          payload: {
+            domain: normalizedEntry.domain,
+            target: normalizedEntry.target,
+            kind: normalizedEntry.kind,
+            matchType: normalizedEntry.matchType,
+            normalizedValue: normalizedEntry.normalizedValue,
+            source,
+          },
         },
-      },
+      });
     });
     await this.chatContextCache.invalidate(chatId);
 
@@ -177,7 +182,7 @@ export class AdminDomainAllowlistRuntime {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalizedEntry = parseStoredAllowlistEntry(domain);
+    const normalizedEntry = this.parseMutationEntry(domain);
     if (!normalizedEntry) {
       throw new BadRequestException('Invalid allowlist link');
     }
@@ -201,38 +206,51 @@ export class AdminDomainAllowlistRuntime {
       removeAfterAt = scheduledAt;
     }
 
-    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalizedEntry);
-    if (matchingDomains.length === 0) {
-      throw new BadRequestException('Link not found in allowlist');
-    }
-
-    await this.prisma.domainAllowlist.updateMany({
-      where: {
+    await this.withAllowlistWrite(chatId, async (tx) => {
+      if (removeAfterAt && removeAfterAt.getTime() <= Date.now()) {
+        throw new BadRequestException('Removal datetime must be in the future');
+      }
+      const matchingDomains = await this.findStoredAllowlistDomains(
+        tx,
         chatId,
-        domain: {
-          in: matchingDomains,
-        },
-      },
-      data: {
-        removeAfterAt,
-      },
-    });
+        normalizedEntry,
+        true,
+      );
+      if (matchingDomains.length === 0) {
+        throw new BadRequestException('Link not found in allowlist');
+      }
 
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: removeAfterAt ? 'SCHEDULE_DOMAIN_REMOVE' : 'CLEAR_DOMAIN_REMOVE_SCHEDULE',
-        payload: {
-          domain: normalizedEntry.domain,
-          target: normalizedEntry.target,
-          kind: normalizedEntry.kind,
-          matchType: normalizedEntry.matchType,
-          normalizedValue: normalizedEntry.normalizedValue,
-          removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
-          source,
+      const updated = await tx.domainAllowlist.updateMany({
+        where: {
+          ...this.activeDomainWhere(chatId),
+          domain: {
+            in: matchingDomains,
+          },
         },
-      },
+        data: {
+          removeAfterAt,
+        },
+      });
+      if (updated.count === 0) {
+        throw new BadRequestException('Link not found in active allowlist');
+      }
+
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: removeAfterAt ? 'SCHEDULE_DOMAIN_REMOVE' : 'CLEAR_DOMAIN_REMOVE_SCHEDULE',
+          payload: {
+            domain: normalizedEntry.domain,
+            target: normalizedEntry.target,
+            kind: normalizedEntry.kind,
+            matchType: normalizedEntry.matchType,
+            normalizedValue: normalizedEntry.normalizedValue,
+            removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
+            source,
+          },
+        },
+      });
     });
     await this.chatContextCache.invalidate(chatId);
 
@@ -254,6 +272,26 @@ export class AdminDomainAllowlistRuntime {
     };
   }
 
+  private parseMutationEntry(value: string) {
+    const trimmed = value.trim();
+    // FLAG: Legacy GET emits bare hosts for DOMAIN, but full URLs for WEB_EXACT.
+    const domain = /^[^/:?#]+\.[^/:?#]+$/u.test(trimmed)
+      ? normalizeStoredAllowlistEntry(trimmed, 'DOMAIN')
+      : null;
+    return parseStoredAllowlistEntry(domain ?? trimmed);
+  }
+
+  private withAllowlistWrite<T>(
+    chatId: string,
+    write: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      // FLAG: Serialize every allowlist writer, including legacy aliases and bulk replacement.
+      await tx.$queryRaw`SELECT chat.id FROM chats AS chat WHERE chat.id = ${chatId} FOR UPDATE OF chat`;
+      return write(tx);
+    });
+  }
+
   private async syncDomainAllowlistToChats(
     sourceChatId: string,
     targetChatIds: readonly string[],
@@ -266,20 +304,21 @@ export class AdminDomainAllowlistRuntime {
         removeAfterAt: true,
       },
     });
-    const sourceEntries = await this.canonicalizeActiveAllowlistRows(sourceChatId, rows);
+    const sourceEntries = this.canonicalizeActiveAllowlistRows(rows);
 
     await mapWithConcurrencyLimit(
-      targetChatIds.filter((chatId) => chatId !== sourceChatId),
+      [...new Set(targetChatIds)].filter((chatId) => chatId !== sourceChatId),
       APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY,
       async (chatId) => {
-        await this.prisma.$transaction([
-          this.prisma.domainAllowlist.deleteMany({
+        await this.withAllowlistWrite(chatId, async (tx) => {
+          await tx.domainAllowlist.deleteMany({
             where: {
               chatId,
             },
-          }),
-          ...sourceEntries.map((entry) =>
-            this.prisma.domainAllowlist.upsert({
+          });
+          for (const entry of sourceEntries) {
+            if (entry.removeAfterAt && Date.parse(entry.removeAfterAt) <= Date.now()) continue;
+            await tx.domainAllowlist.upsert({
               where: {
                 chatId_domain: {
                   chatId,
@@ -294,22 +333,27 @@ export class AdminDomainAllowlistRuntime {
               update: {
                 removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
               },
-            }),
-          ),
-        ]);
+            });
+          }
+        });
 
         await this.chatContextCache.invalidate(chatId);
       },
     );
   }
 
-  private async upsertNormalizedAllowlistDomain(chatId: string, normalizedDomain: string) {
-    const rows = await this.prisma.domainAllowlist.findMany({
+  private async upsertNormalizedAllowlistDomain(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    normalizedDomain: string,
+  ) {
+    const rows = await tx.domainAllowlist.findMany({
       where: {
         chatId,
       },
       select: {
         domain: true,
+        removeAfterAt: true,
       },
     });
 
@@ -321,7 +365,11 @@ export class AdminDomainAllowlistRuntime {
           parseStoredAllowlistEntry(storedDomain)?.normalizedValue === normalizedDomain,
       );
 
-    await this.prisma.domainAllowlist.upsert({
+    const activeEntry = this.canonicalizeActiveAllowlistRows(rows).find(
+      (entry) => entry.normalizedValue === normalizedDomain,
+    );
+    const removeAfterAt = activeEntry?.removeAfterAt ? new Date(activeEntry.removeAfterAt) : null;
+    await tx.domainAllowlist.upsert({
       where: {
         chatId_domain: {
           chatId,
@@ -331,9 +379,10 @@ export class AdminDomainAllowlistRuntime {
       create: {
         chatId,
         domain: normalizedDomain,
+        ...(removeAfterAt ? { removeAfterAt } : {}),
       },
       update: {
-        removeAfterAt: null,
+        removeAfterAt,
       },
     });
 
@@ -341,7 +390,7 @@ export class AdminDomainAllowlistRuntime {
       return;
     }
 
-    await this.prisma.domainAllowlist.deleteMany({
+    await tx.domainAllowlist.deleteMany({
       where: {
         chatId,
         domain: {
@@ -352,16 +401,16 @@ export class AdminDomainAllowlistRuntime {
   }
 
   private async findStoredAllowlistDomains(
+    tx: Prisma.TransactionClient,
     chatId: string,
     targetEntry: {
       normalizedValue: string;
       matchType: AllowlistMatchType;
     },
+    activeOnly = false,
   ): Promise<string[]> {
-    const rows = await this.prisma.domainAllowlist.findMany({
-      where: {
-        chatId,
-      },
+    const rows = await tx.domainAllowlist.findMany({
+      where: activeOnly ? this.activeDomainWhere(chatId) : { chatId },
       select: {
         domain: true,
       },
@@ -378,10 +427,9 @@ export class AdminDomainAllowlistRuntime {
       });
   }
 
-  private async canonicalizeActiveAllowlistRows(
-    chatId: string,
+  private canonicalizeActiveAllowlistRows(
     rows: Array<{ domain: string; removeAfterAt: Date | null }>,
-  ): Promise<DomainAllowlistEntry[]> {
+  ): DomainAllowlistEntry[] {
     const byDomain = new Map<
       string,
       {
@@ -393,42 +441,35 @@ export class AdminDomainAllowlistRuntime {
         removeAfterAt: Date | null;
       }
     >();
-    const exactRows = new Map<string, Date | null>();
-    const obsoleteDomains = new Set<string>();
+    const now = Date.now();
 
     for (const row of rows) {
+      if (row.removeAfterAt && row.removeAfterAt.getTime() <= now) continue;
       const normalizedEntry = parseStoredAllowlistEntry(row.domain);
       if (!normalizedEntry) {
-        obsoleteDomains.add(row.domain);
         continue;
-      }
-
-      if (row.domain === normalizedEntry.normalizedValue) {
-        exactRows.set(normalizedEntry.normalizedValue, row.removeAfterAt);
-      } else {
-        obsoleteDomains.add(row.domain);
       }
 
       const current = byDomain.get(normalizedEntry.normalizedValue);
       if (current === undefined) {
         byDomain.set(normalizedEntry.normalizedValue, {
           ...normalizedEntry,
-          removeAfterAt: row.removeAfterAt,
+          removeAfterAt: row.removeAfterAt ?? null,
         });
         continue;
       }
 
-      if (current.removeAfterAt === null || row.removeAfterAt === null) {
+      if (current.removeAfterAt === null || row.removeAfterAt == null) {
         current.removeAfterAt = null;
         continue;
       }
 
-      if (row.removeAfterAt.getTime() < current.removeAfterAt.getTime()) {
+      if (row.removeAfterAt.getTime() > current.removeAfterAt.getTime()) {
         current.removeAfterAt = row.removeAfterAt;
       }
     }
 
-    const normalizedRows = Array.from(byDomain.values())
+    return Array.from(byDomain.values())
       .sort((leftEntry, rightEntry) => {
         if (leftEntry.removeAfterAt === null && rightEntry.removeAfterAt !== null) {
           return -1;
@@ -458,66 +499,5 @@ export class AdminDomainAllowlistRuntime {
         kind: entry.kind,
         removeAfterAt: entry.removeAfterAt ? entry.removeAfterAt.toISOString() : null,
       }));
-
-    const domainsToUpsert = normalizedRows.filter((entry) => {
-      const existing = exactRows.get(entry.normalizedValue);
-      return !this.isSameOptionalIsoDate(existing, entry.removeAfterAt);
-    });
-
-    if (domainsToUpsert.length === 0 && obsoleteDomains.size === 0) {
-      return normalizedRows;
-    }
-
-    await this.prisma.$transaction([
-      ...domainsToUpsert.map((entry) =>
-        this.prisma.domainAllowlist.upsert({
-          where: {
-            chatId_domain: {
-              chatId,
-              domain: entry.normalizedValue,
-            },
-          },
-          create: {
-            chatId,
-            domain: entry.normalizedValue,
-            removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
-          },
-          update: {
-            removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
-          },
-        }),
-      ),
-      ...(obsoleteDomains.size > 0
-        ? [
-            this.prisma.domainAllowlist.deleteMany({
-              where: {
-                chatId,
-                domain: {
-                  in: Array.from(obsoleteDomains),
-                },
-              },
-            }),
-          ]
-        : []),
-    ]);
-
-    await this.chatContextCache.invalidate(chatId);
-    return normalizedRows;
-  }
-
-  private isSameOptionalIsoDate(value: Date | null | undefined, isoValue: string | null): boolean {
-    if (value === undefined) {
-      return false;
-    }
-
-    if (value === null) {
-      return isoValue === null;
-    }
-
-    if (isoValue === null) {
-      return false;
-    }
-
-    return value.toISOString() === isoValue;
   }
 }

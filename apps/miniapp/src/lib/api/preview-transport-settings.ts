@@ -84,6 +84,13 @@ import {
 } from './preview-transport-system';
 import type { PreviewState } from './preview-transport-state';
 
+function activePreviewDomains(state: PreviewState) {
+  const now = readPreviewClock(state.clock).getTime();
+  return state.chatDomains.filter(
+    (entry) => !entry.removeAfterAt || Date.parse(entry.removeAfterAt) > now,
+  );
+}
+
 export function buildBroadcastSummary(details: ManagedBroadcastDetails) {
   const imageCount = details.images.length || (details.imageEnabled ? 1 : 0);
   return {
@@ -218,7 +225,7 @@ export function buildChatSettingsScreen(
         };
       },
     ),
-    domains: state.chatDomains,
+    domains: activePreviewDomains(state),
     managedBroadcasts: [],
   });
 }
@@ -778,7 +785,7 @@ export async function handleChatRequest(
   }
 
   if (tail[0] === 'domain-allowlist' && tail[1] === 'details' && method === 'GET') {
-    return cloneJson(state.chatDomains);
+    return cloneJson(activePreviewDomains(state));
   }
 
   if (tail[0] === 'domain-allowlist' && tail.length === 1 && method === 'POST') {
@@ -792,14 +799,18 @@ export async function handleChatRequest(
     }
 
     if (
-      !state.chatDomains.some((item) => item.normalizedValue === normalizedEntry.normalizedValue)
+      !activePreviewDomains(state).some(
+        (item) => item.normalizedValue === normalizedEntry.normalizedValue,
+      )
     ) {
       state.chatDomains = [
         domainAllowlistEntrySchema.parse({
           ...normalizedEntry,
           removeAfterAt: null,
         }),
-        ...state.chatDomains,
+        ...state.chatDomains.filter(
+          (item) => item.normalizedValue !== normalizedEntry.normalizedValue,
+        ),
       ];
     }
     return null;

@@ -8,8 +8,34 @@ import {
   formatNavigationAllowlistEntryKindLabel,
   formatNavigationAllowlistEntryTarget,
   getNavigationAllowlistTargetOption,
+  getNavigationAllowlistRefreshInterval,
   resolveNavigationAllowlistEntryKind,
 } from '../src/pages/settings/settings-link-allowlist';
+
+test('allowlist refresh follows the nearest expiry without polling permanent rules', () => {
+  const now = Date.parse('2026-09-17T10:00:00.000Z');
+  assert.equal(getNavigationAllowlistRefreshInterval([], now), false);
+  assert.equal(getNavigationAllowlistRefreshInterval([{ removeAfterAt: null }], now), false);
+  assert.equal(getNavigationAllowlistRefreshInterval([{ removeAfterAt: 'invalid' }], now), false);
+  assert.equal(
+    getNavigationAllowlistRefreshInterval(
+      [
+        { removeAfterAt: '2026-09-17T10:02:00.000Z' },
+        { removeAfterAt: '2026-09-17T10:01:00.000Z' },
+      ],
+      now,
+    ),
+    60_250,
+  );
+  assert.equal(
+    getNavigationAllowlistRefreshInterval([{ removeAfterAt: '2026-09-17T09:00:00.000Z' }], now),
+    1_000,
+  );
+  assert.equal(
+    getNavigationAllowlistRefreshInterval([{ removeAfterAt: '2030-09-17T10:00:00.000Z' }], now),
+    2_147_483_647,
+  );
+});
 
 test('link allowlist composer exposes every supported navigation target kind', () => {
   assert.deepEqual(
@@ -87,7 +113,8 @@ test('allowlist labels resolve typed responses and legacy response fallbacks', (
 test('strict link policy copy includes structured clickable navigation', () => {
   assert.match(STRICT_NAVIGATION_POLICY_DESCRIPTION, /ссылки/u);
   assert.match(STRICT_NAVIGATION_POLICY_DESCRIPTION, /кнопки/u);
-  assert.match(STRICT_NAVIGATION_POLICY_DESCRIPTION, /упоминания/u);
+  assert.doesNotMatch(STRICT_NAVIGATION_POLICY_DESCRIPTION, /упоминания/u);
+  assert.doesNotMatch(ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION, /упоминания/u);
   assert.match(ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION, /список разрешённых/u);
 });
 

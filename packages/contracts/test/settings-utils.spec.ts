@@ -30,6 +30,39 @@ describe('allowlist URL normalization', () => {
 });
 
 describe('typed navigation allowlist normalization', () => {
+  it.each([
+    'Разрешить example.com и evil.example',
+    'mailto:admin@example.com',
+    'tg://resolve?domain=example.com',
+    'https://example.com@evil.example',
+    'https://example.com\\@evil.example',
+    'https://example.com\u200b.evil.example',
+  ])('rejects ambiguous domain input and policy keys: %s', (domain) => {
+    expect(normalizeStoredAllowlistEntry(domain, 'WEB_DOMAIN')).toBeNull();
+    expect(addDomainRequestSchema.safeParse({ domain, kind: 'WEB_DOMAIN' }).success).toBe(false);
+    expect(buildNavigationAllowlistPolicyKeys(domain, 'external_url')).toEqual([]);
+  });
+
+  it.each(['https://com', 'https://-bad.example', 'https://bad-.example', 'https://example..com'])(
+    'rejects malformed domain rules: %s',
+    (domain) => {
+      expect(normalizeStoredAllowlistEntry(domain, 'WEB_DOMAIN')).toBeNull();
+      expect(addDomainRequestSchema.safeParse({ domain, kind: 'WEB_DOMAIN' }).success).toBe(false);
+    },
+  );
+
+  it('accepts an entire internationalized domain URL without decoding its path', () => {
+    expect(normalizeStoredAllowlistEntry('https://пример.рф/a%20b?q=1', 'WEB_DOMAIN')).toBe(
+      'domain:xn--e1afmkfd.xn--p1ai',
+    );
+    expect(normalizeStoredAllowlistEntry('https://Example.com./path', 'WEB_DOMAIN')).toBe(
+      'domain:example.com',
+    );
+    expect(
+      buildNavigationAllowlistPolicyKeys(`https://example.com/${'a'.repeat(3000)}`, 'external_url'),
+    ).toContainEqual({ kind: 'WEB_DOMAIN', target: 'example.com' });
+  });
+
   it('preserves legacy exact and domain storage formats', () => {
     const exact = normalizeStoredAllowlistEntry('https://Example.com/path', 'EXACT');
     const domain = normalizeStoredAllowlistEntry('https://www.Example.com/path', 'DOMAIN');

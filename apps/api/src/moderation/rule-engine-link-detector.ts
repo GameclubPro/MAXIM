@@ -1,7 +1,6 @@
 import {
   buildNavigationAllowlistPolicyKeys,
-  normalizeAllowlistDomain,
-  normalizeAllowlistLink,
+  normalizeNavigationAllowlistTarget,
   parseStoredAllowlistEntry,
   type NavigationAllowlistPolicyKey,
 } from '@maxim/contracts/settings';
@@ -178,15 +177,7 @@ function isAllowlistedNavigationPolicyKey(
   if (key.kind !== 'WEB_DOMAIN') {
     return false;
   }
-  if (matchers.domains.has(key.target)) {
-    return true;
-  }
-  for (const domain of matchers.domains) {
-    if (key.target.endsWith(`.${domain}`)) {
-      return true;
-    }
-  }
-  return false;
+  return matchesAllowedDomain(matchers.domains, key.target);
 }
 
 function serializeNavigationPolicyKey(key: NavigationAllowlistPolicyKey): string {
@@ -201,14 +192,10 @@ function resolveDetectedLinks(
 
   for (const raw of links) {
     const match = resolveAllowlistMatch(raw);
-    if (!match) {
-      continue;
-    }
-
     resolved.push({
       raw,
-      match,
-      allowlisted: allowlistMatcher(raw),
+      match: match ?? { normalizedLink: raw, normalizedDomain: null },
+      allowlisted: match !== null && allowlistMatcher(raw),
       explicit: isExplicitLink(raw),
     });
   }
@@ -219,14 +206,17 @@ function resolveDetectedLinks(
 function resolveAllowlistMatch(
   value: string,
 ): { normalizedLink: string; normalizedDomain: string | null } | null {
-  const normalizedLink = normalizeAllowlistLink(value);
-  if (!normalizedLink) {
+  const normalizedLink = normalizeNavigationAllowlistTarget(value, 'WEB_EXACT');
+  const normalizedDomain = normalizedLink
+    ? new URL(normalizedLink).hostname.replace(/\.$/u, '')
+    : normalizeNavigationAllowlistTarget(value, 'WEB_DOMAIN');
+  if (!normalizedLink && !normalizedDomain) {
     return null;
   }
 
   return {
-    normalizedLink,
-    normalizedDomain: normalizeAllowlistDomain(value),
+    normalizedLink: normalizedLink ?? value,
+    normalizedDomain,
   };
 }
 
@@ -238,18 +228,18 @@ function isAllowlistedLink(
     return true;
   }
 
-  if (match.normalizedDomain && matchers.domains.has(match.normalizedDomain)) {
-    return true;
-  }
+  return Boolean(
+    match.normalizedDomain && matchesAllowedDomain(matchers.domains, match.normalizedDomain),
+  );
+}
 
-  if (match.normalizedDomain) {
-    for (const domain of matchers.domains) {
-      if (match.normalizedDomain.endsWith(`.${domain}`)) {
-        return true;
-      }
-    }
+function matchesAllowedDomain(domains: ReadonlySet<string>, hostname: string): boolean {
+  for (let start = 0; start < hostname.length; ) {
+    if (domains.has(hostname.slice(start))) return true;
+    const dot = hostname.indexOf('.', start);
+    if (dot === -1) break;
+    start = dot + 1;
   }
-
   return false;
 }
 

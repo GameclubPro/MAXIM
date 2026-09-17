@@ -2,9 +2,49 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-entities';
 import type { VkParsingFeed } from '@maxim/contracts/vk-parsing';
+import type { DomainAllowlistEntry } from '@maxim/contracts/settings';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { publishRules } from '../src/lib/api/chat-settings-client';
+
+test('preview allowlist preserves active timers, hides expired rules and supports re-adding', async () => {
+  let now = new Date('2026-09-17T10:00:00.000Z');
+  const api = createPreviewApiTransport({ clock: { now: () => now } });
+  const base = '/chats/preview-chat/domain-allowlist';
+  const add = () =>
+    api.request(base, {
+      method: 'POST',
+      body: JSON.stringify({ domain: 'timer.example', kind: 'WEB_DOMAIN' }),
+    });
+  const read = async () => (await api.request(`${base}/details`)) as DomainAllowlistEntry[];
+  await add();
+  const removeAfterAt = '2026-09-17T10:01:00.000Z';
+  await api.request(`${base}/removal-schedule?domain=domain%3Atimer.example`, {
+    method: 'PUT',
+    body: JSON.stringify({ removeAfterAt }),
+  });
+  await add();
+  assert.equal(
+    (await read()).find((entry) => entry.domain === 'timer.example')?.removeAfterAt,
+    removeAfterAt,
+  );
+  now = new Date(removeAfterAt);
+  assert.equal(
+    (await read()).some((entry) => entry.domain === 'timer.example'),
+    false,
+  );
+  const screen = (await api.request('/chats/preview-chat/settings-screen')) as {
+    domains: DomainAllowlistEntry[];
+  };
+  assert.equal(
+    screen.domains.some((entry) => entry.domain === 'timer.example'),
+    false,
+  );
+  await add();
+  const entries = (await read()).filter((entry) => entry.domain === 'timer.example');
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.removeAfterAt, null);
+});
 
 test('rules command roundtrip distinguishes a new post from editing the same post', async () => {
   const api = createPreviewApiTransport();

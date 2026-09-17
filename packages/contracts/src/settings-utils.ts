@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeStopWordsDomain } from './stop-words.js';
 
 export const DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES = 0.5;
 export const DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES = 60;
@@ -227,7 +228,8 @@ function parseStrictWebAllowlistCandidate(value: string): ParsedAllowlistCandida
   if (
     !normalized ||
     normalized.length > NAVIGATION_ALLOWLIST_STORED_VALUE_MAX_LENGTH ||
-    hasNavigationTargetWhitespaceOrControl(normalized)
+    hasNavigationTargetWhitespaceOrControl(normalized) ||
+    normalized.includes('\\')
   ) {
     return null;
   }
@@ -550,7 +552,7 @@ export function normalizeNavigationAllowlistTarget(
     case 'WEB_EXACT':
       return normalizeStrictWebAllowlistLink(value);
     case 'WEB_DOMAIN':
-      return normalizeAllowlistDomain(value);
+      return value.includes('\\') ? null : normalizeStopWordsDomain(value);
     case 'MAX_PROFILE':
       return normalizeMaxProfileIdentity(value);
     case 'MAX_ENTITY':

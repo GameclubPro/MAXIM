@@ -179,7 +179,11 @@ test('anti-duplicate screen keeps the requested task order and effective photo s
   assert.match(settingsPageSource, /formatDuplicateSettingsSummary\(/u);
   assert.match(
     settingsPageSource,
-    /refetchInterval: expandedSections\.duplicates \? 60_000 : false/u,
+    /return expandedSections\.duplicates\s*\? Math\.min\(60_000, expiryInterval \|\| Infinity\)\s*: expiryInterval/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /const expiryInterval = expandedSections\.links\s*\? getNavigationAllowlistRefreshInterval\(query\.state\.data\?\.domains\)\s*: false/u,
   );
   assert.match(settingsPageSource, /shouldHydrateSettingsDraftFromServer\(\s*draftRef\.current/u);
   assert.match(settingsPageSource, /if \(!shouldHydrate\) \{\s*return;\s*\}/u);

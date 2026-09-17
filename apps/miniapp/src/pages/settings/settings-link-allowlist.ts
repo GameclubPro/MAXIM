@@ -70,10 +70,9 @@ export const NAVIGATION_ALLOWLIST_TARGET_OPTIONS: readonly NavigationAllowlistTa
   },
 ] as const;
 
-export const STRICT_NAVIGATION_POLICY_DESCRIPTION =
-  'Удаляются ссылки, кнопки перехода и кликабельные упоминания профилей MAX.';
+export const STRICT_NAVIGATION_POLICY_DESCRIPTION = 'Удаляются ссылки и кнопки перехода.';
 export const ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION =
-  'Удаляются ссылки, кнопки перехода и упоминания профилей MAX, кроме добавленных в список разрешённых.';
+  'Удаляются ссылки и кнопки перехода, кроме добавленных в список разрешённых.';
 
 export function getNavigationAllowlistTargetOption(
   kind: NavigationAllowlistKind,
@@ -82,6 +81,21 @@ export function getNavigationAllowlistTargetOption(
     NAVIGATION_ALLOWLIST_TARGET_OPTIONS.find((option) => option.value === kind) ??
     NAVIGATION_ALLOWLIST_TARGET_OPTIONS[0]
   );
+}
+
+export function getNavigationAllowlistRefreshInterval(
+  entries: readonly Pick<DomainAllowlistEntry, 'removeAfterAt'>[] = [],
+  now = Date.now(),
+): number | false {
+  let nextExpiry = Infinity;
+  for (const entry of entries) {
+    if (!entry.removeAfterAt) continue;
+    const expiresAt = Date.parse(entry.removeAfterAt);
+    if (Number.isFinite(expiresAt)) nextExpiry = Math.min(nextExpiry, expiresAt);
+  }
+  return Number.isFinite(nextExpiry)
+    ? Math.min(2_147_483_647, Math.max(1_000, nextExpiry - now + 250))
+    : false;
 }
 
 export function resolveNavigationAllowlistEntryKind(

@@ -1,6 +1,6 @@
 import { LinkPolicy } from '../prisma/prisma-client';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
-import { detectBlockedLink } from './rule-engine-link-detector';
+import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
 
 function target(
   kind: NavigationTargetEvidence['kind'],
@@ -19,6 +19,62 @@ function target(
 }
 
 describe('typed link moderation', () => {
+  it('preserves the entire exact URL in the shared stop-word and legacy matcher', () => {
+    const isAllowed = createAllowlistLinkMatcher(['https://example.com/path']);
+    expect(isAllowed('https://example.com/path')).toBe(true);
+    expect(isAllowed('https://example.com/path%20other')).toBe(false);
+    expect(isAllowed('https://example.com/path(evil)')).toBe(false);
+    expect(isAllowed('https://example.com/path?x=1')).toBe(false);
+    expect(
+      createAllowlistLinkMatcher(['https://example.com/a%20b'])('https://example.com/a%20b'),
+    ).toBe(true);
+  });
+
+  it('does not silently drop an extracted URL rejected by strict normalization', () => {
+    const url = 'https://example.com@evil.test/path';
+    expect(detectBlockedLink(url, LinkPolicy.ALLOWLIST_ONLY, ['domain:example.com'])).toBe(
+      `Link ${url} is not in allowlist`,
+    );
+  });
+
+  it.each(['https://example.com/path', 'https://a.b.example.com/path'])(
+    'matches domain labels: %s',
+    (url) => {
+      expect(createAllowlistLinkMatcher(['domain:example.com'])(url)).toBe(true);
+      expect(
+        detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, ['domain:example.com'], undefined, [
+          target('external_url', url),
+        ]),
+      ).toBeNull();
+    },
+  );
+
+  it.each(['https://example.com./path', `https://example.com/${'a'.repeat(3000)}`])(
+    'keeps valid domain permissions for absolute DNS names and long paths',
+    (url) => {
+      expect(createAllowlistLinkMatcher(['domain:example.com'])(url)).toBe(true);
+      expect(
+        detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, ['domain:example.com'], undefined, [
+          target('external_url', url),
+        ]),
+      ).toBeNull();
+    },
+  );
+
+  it.each([
+    'https://notexample.com',
+    'https://example.com.evil.test',
+    'tg://resolve?domain=example.com',
+    'https://example.com@evil.test',
+  ])('does not widen domain rules: %s', (url) => {
+    expect(createAllowlistLinkMatcher(['domain:example.com'])(url)).toBe(false);
+    expect(
+      detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, ['domain:example.com'], undefined, [
+        target('external_url', url),
+      ]),
+    ).not.toBeNull();
+  });
+
   it('blocks a hidden structured URL even when visible text has no URL', () => {
     expect(
       detectBlockedLink('обычный текст', LinkPolicy.BLOCKLIST_ONLY, [], undefined, [

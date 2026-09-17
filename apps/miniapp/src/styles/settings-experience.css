@@ -1436,12 +1436,12 @@
     box-shadow: none;
   }
 
-  /* Link schedules keep date and time in one compact, legible row. */
+  /* Link schedules wrap by available width so time labels do not collide with icons. */
   body.settings-drilldown-open
     .settings-drilldown
     .settings-drilldown__panel--links
     .allowlist-item__schedule-fields {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
     gap: 8px;
   }
 

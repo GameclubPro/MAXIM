@@ -44,6 +44,7 @@ import '../styles/broadcast-studio-base.css';
 import '../styles/settings-rules-studio.css';
 import './settings/settings-rules-publication.css';
 import '../styles/settings-link-allowlist.css';
+import { getNavigationAllowlistRefreshInterval } from './settings/settings-link-allowlist';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-duration-editor.css';
 import '../styles/settings-route-polish.css';
@@ -787,8 +788,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     queryFn: ({ signal }) =>
       getSettingsScreen(api, chatId ?? '', { signal, prefetch: handoffRequested }),
     enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-    refetchInterval: expandedSections.duplicates ? 60_000 : false,
+    refetchOnWindowFocus: expandedSections.links,
+    refetchInterval: (query) => {
+      const expiryInterval = expandedSections.links
+        ? getNavigationAllowlistRefreshInterval(query.state.data?.domains)
+        : false;
+      return expandedSections.duplicates
+        ? Math.min(60_000, expiryInterval || Infinity)
+        : expiryInterval;
+    },
     ...(handoffRequested
       ? {
           retry: (failureCount: number, error: unknown) =>
@@ -1794,16 +1802,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const addDomainMutation = useMutation({
     mutationFn: (payload: { domain: string; kind: NavigationAllowlistKind }) =>
       addDomain(api, chatId ?? '', payload),
-    onSuccess: (_, payload) => {
+    onSuccess: async (_, payload) => {
       setDomainInput('');
       setDomainInputError('');
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      await queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
         tone: 'success',
         title: getNavigationAllowlistTargetOption(payload.kind).successTitle,
       });
     },
     onError: (error, payload) => {
+      setDomainInputError(formatApiError(error));
       pushToast({
         tone: 'danger',
         title: getNavigationAllowlistTargetOption(payload.kind).errorTitle,
@@ -1814,10 +1823,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const removeDomainMutation = useMutation({
     mutationFn: (domain: string) => removeDomain(api, chatId ?? '', domain),
-    onSuccess: () => {
+    onSuccess: async () => {
       setScheduleDomain(null);
       setScheduleError('');
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      await queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({ tone: 'success', title: 'Удалено из разрешённых целей' });
     },
     onError: (error) => {
@@ -1832,10 +1841,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const scheduleDomainRemovalMutation = useMutation({
     mutationFn: (payload: { domain: string; removeAfterAt: string | null }) =>
       scheduleDomainRemoval(api, chatId ?? '', payload.domain, payload.removeAfterAt),
-    onSuccess: (_, payload) => {
+    onSuccess: async (_, payload) => {
       setScheduleError('');
       setScheduleDomain(null);
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      await queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       if (payload.removeAfterAt) {
         pushToast({
           tone: 'success',
@@ -1848,6 +1857,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({ tone: 'success', title: 'Отложенное удаление отменено' });
     },
     onError: (error) => {
+      setScheduleError(formatApiError(error));
       pushToast({
         tone: 'danger',
         title: 'Не удалось обновить расписание удаления',
@@ -2809,7 +2819,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]);
 
   function handleAddDomain() {
-    if (!chatId) {
+    if (!chatId || isDomainMutationPending) {
       return;
     }
 
@@ -2854,7 +2864,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function submitDomainSchedule(domain: string) {
-    if (!chatId) {
+    if (!chatId || isDomainMutationPending) {
       return;
     }
 
@@ -2887,7 +2897,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function clearDomainSchedule(domain: string) {
-    if (!chatId) {
+    if (!chatId || isDomainMutationPending) {
       return;
     }
 
@@ -5411,6 +5421,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   <select
                                     className="button button--ghost"
                                     value={domainInputKind}
+                                    disabled={isDomainMutationPending}
                                     onChange={(event) => {
                                       setDomainInputKind(
                                         event.target.value as NavigationAllowlistKind,
@@ -5433,6 +5444,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       getNavigationAllowlistTargetOption(domainInputKind).inputMode
                                     }
                                     value={domainInput}
+                                    disabled={isDomainMutationPending}
+                                    aria-invalid={Boolean(domainInputError)}
+                                    aria-describedby={
+                                      domainInputError ? 'allowlist-input-error' : undefined
+                                    }
                                     autoCapitalize="none"
                                     autoCorrect="off"
                                     spellCheck={false}
@@ -5470,7 +5486,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               {domainInputError ? (
-                                <small className="field__hint">{domainInputError}</small>
+                                <small
+                                  id="allowlist-input-error"
+                                  className="field__hint"
+                                  role="alert"
+                                >
+                                  {domainInputError}
+                                </small>
                               ) : null}
 
                               {domainsQuery.isLoading ? (

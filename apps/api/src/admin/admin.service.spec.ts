@@ -17613,6 +17613,7 @@ describe('AdminService settings screen endpoints', () => {
   it('syncs allowlist entries when applying links section to all chats', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
+    const removeAfterAt = new Date(Date.now() + 86_400_000);
     prisma.domainAllowlist.findMany.mockResolvedValueOnce([
       {
         domain: 'domain:max.ru',
@@ -17620,7 +17621,7 @@ describe('AdminService settings screen endpoints', () => {
       },
       {
         domain: 'https://max.ru/join/srAq1j6jwW-enxSWrppR16_AC_NZpAA3oy-gyVPgGCsl',
-        removeAfterAt: new Date('2026-03-31T09:00:00.000Z'),
+        removeAfterAt,
       },
     ]);
 
@@ -17690,10 +17691,10 @@ describe('AdminService settings screen endpoints', () => {
       create: {
         chatId: 'chat-2',
         domain: 'https://max.ru/join/srAq1j6jwW-enxSWrppR16_AC_NZpAA3oy-gyVPgGCsl',
-        removeAfterAt: new Date('2026-03-31T09:00:00.000Z'),
+        removeAfterAt,
       },
       update: {
-        removeAfterAt: new Date('2026-03-31T09:00:00.000Z'),
+        removeAfterAt,
       },
     });
   });
