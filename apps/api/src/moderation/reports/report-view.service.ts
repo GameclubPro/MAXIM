@@ -1,8 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { reportSummarySchema, type ReportSummary } from '@maxim/contracts';
+import { z } from 'zod';
 import type { ChatReportCase } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReportStateService } from './report-state.service';
+
+const reportCursorSchema = z.string().max(200).optional();
 
 @Injectable()
 export class ReportViewService {
@@ -42,10 +45,10 @@ export class ReportViewService {
     });
   }
 
-  async list(chatId: string, cursor?: unknown) {
-    if (cursor !== undefined && typeof cursor !== 'string')
-      throw new BadRequestException('Некорректный курсор.');
-    if (cursor && cursor.length > 200) throw new BadRequestException('Некорректный курсор.');
+  async list(chatId: string, cursorInput?: unknown) {
+    const parsed = reportCursorSchema.safeParse(cursorInput);
+    if (!parsed.success) throw new BadRequestException('Некорректный курсор.');
+    const cursor = parsed.data;
     const anchor = cursor
       ? await this.prisma.chatReportCase.findFirst({ where: { id: cursor, chatId } })
       : null;
