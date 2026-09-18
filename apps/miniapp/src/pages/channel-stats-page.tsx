@@ -1860,10 +1860,10 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
   const activityFeed = useMembershipActivityFeed({
+    entityId: chatId,
     enabled: Boolean(chatId) && section === 'events',
     range,
     initialPage: initialActivityPageSnapshot,
-    refetchInitialPage: Boolean(initialActivityPageSnapshot),
     loadPage: (query, request) => getChannelActivityFeed(api, chatId, query, request),
   });
 
@@ -2311,7 +2311,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               isLoadingMore={activityFeed.isLoadingMore}
               error={activityFeed.error}
               onLoadMore={() => void activityFeed.loadMore()}
-              onRetry={() => void activityFeed.retry()}
+              onRetry={() => void activityFeed.retryFailed()}
               onProfileActivate={activateChannelProfile}
             />
           </section>

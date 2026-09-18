@@ -32,6 +32,7 @@ import {
 import { selectModerationFeedReadModelRows } from './stats-read-model-selectors';
 import {
   EVENTS_FEED_PAGE_CACHE_TTL_MS,
+  EVENTS_FEED_HEAD_CACHE_TTL_MS,
   LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
   LOGS_DASHBOARD_VIOLATIONS_LIMIT,
   MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
@@ -704,7 +705,8 @@ export class AdminLogsDashboardRuntime {
     });
 
     this.moderationFeedPageCache.set(cacheKey, {
-      expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
+      expiresAtMs:
+        Date.now() + (query.cursor ? EVENTS_FEED_PAGE_CACHE_TTL_MS : EVENTS_FEED_HEAD_CACHE_TTL_MS),
       promise: pending,
     });
 
@@ -748,7 +750,8 @@ export class AdminLogsDashboardRuntime {
     });
 
     this.membershipActivityFeedPageCache.set(cacheKey, {
-      expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
+      expiresAtMs:
+        Date.now() + (query.cursor ? EVENTS_FEED_PAGE_CACHE_TTL_MS : EVENTS_FEED_HEAD_CACHE_TTL_MS),
       promise: pending,
     });
 

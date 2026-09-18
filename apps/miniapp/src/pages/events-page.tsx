@@ -16,7 +16,7 @@ import type {
   MembershipActivityItem,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { InfoCircle, NavArrowDown as IconNavArrowDown } from 'iconoir-react';
+import { InfoCircle, NavArrowDown as IconNavArrowDown, Refresh } from 'iconoir-react';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-experience.css';
 import '../styles/dashboard-events.css';
@@ -81,6 +81,7 @@ import {
   trafficModerationLabels,
 } from '../lib/moderation-feed-reason';
 import { queryKeys } from '../lib/query-keys';
+import { isTerminalApiClientError } from '../lib/api-retry';
 import {
   buildLogsDashboardSnapshotParts,
   buildChatParticipantsSnapshotParts,
@@ -107,6 +108,7 @@ import {
 import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
+import { useEventFeedRefresh } from '../lib/use-event-feed-refresh';
 import { recoverableLazyNamedComponent } from '../lib/recoverable-lazy';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
@@ -2257,7 +2259,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     initialData: initialDashboardSnapshot ?? undefined,
     initialDataUpdatedAt: initialDashboardSnapshot ? 0 : undefined,
     placeholderData: (previousData) => previousData,
-    refetchOnWindowFocus: false,
+    refetchInterval: (query) => (isTerminalApiClientError(query.state.error) ? false : 30_000),
+    refetchOnWindowFocus: true,
   });
   const participantsIdentityQuery = useQuery({
     queryKey: ['chat-statistics-identity', chatId],
@@ -2293,7 +2296,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         includeModerationPreview,
       );
       if (!queryClient.getQueryData(queryKey)) {
-        queryClient.setQueryData(queryKey, snapshot);
+        queryClient.setQueryData(queryKey, snapshot, { updatedAt: 0 });
       }
     });
 
@@ -2327,12 +2330,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     );
   }, [chatId, dashboardQuery.data, includeActivityPreview, includeModerationPreview, range]);
 
+  const prefetchParticipantsCount =
+    chatId && isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
+      ? dashboardQuery.data.chat.participantsCount
+      : undefined;
   useEffect(() => {
     if (
       !chatId ||
       section === 'participants' ||
       isSanctionsView ||
-      !isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
+      prefetchParticipantsCount === undefined
     ) {
       return undefined;
     }
@@ -2340,7 +2347,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     if (
       !shouldPrefetchSecondaryEventsDashboard({
         range,
-        participantsCount: dashboardQuery.data.chat.participantsCount,
+        participantsCount: prefetchParticipantsCount,
         network: readEventsDashboardPrefetchNetwork(),
       })
     ) {
@@ -2370,7 +2377,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
     const timeoutId = window.setTimeout(prefetch, IDLE_PREFETCH_DELAY_MS);
     return () => window.clearTimeout(timeoutId);
-  }, [api, chatId, dashboardQuery.data, queryClient, range, section, isSanctionsView]);
+  }, [api, chatId, prefetchParticipantsCount, queryClient, range, section, isSanctionsView]);
 
   const dashboard =
     chatId && isLogsDashboardResponseForRange(dashboardQuery.data, chatId, range)
@@ -2467,21 +2474,24 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     total: 0,
   };
   const activityFeed = useMembershipActivityFeed({
+    entityId: chatId ?? '',
     enabled: Boolean(chatId) && section === 'activity',
     range,
     initialPage: includeActivityPreview ? (dashboard?.activityFeed ?? null) : null,
     loadPage: (query, request) => getChatActivityFeed(api, chatId ?? '', query, request),
   });
   const moderationFeed = useModerationFeed({
-    enabled:
-      Boolean(chatId) &&
-      section === 'moderation' &&
-      !isSanctionsView &&
-      (!includeModerationPreview || Boolean(dashboard) || hasBlockingDashboardError),
+    chatId: chatId ?? '',
+    enabled: Boolean(chatId) && section === 'moderation' && !isSanctionsView,
     range,
     filter: eventsFilter,
     initialPage: includeModerationPreview ? (dashboard?.moderationFeed ?? null) : null,
     loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
+  });
+  useEventFeedRefresh({
+    enabled: Boolean(chatId) && section !== 'participants' && !isSanctionsView,
+    scopeKey: JSON.stringify([chatId, section, range, eventsFilter, activityFeed.filter]),
+    feed: section === 'activity' ? activityFeed : moderationFeed,
   });
   const spammerReviewQueueKey = queryKeys.globalSpammerReviewQueue(
     chatId,
@@ -3228,6 +3238,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         counterpartTo={buildManagedEntitySettingsRoute('chat', chatId)}
         compact
         busy={isAppbarBusy}
+        status={
+          section !== 'participants' && !isSanctionsView ? (
+            <button
+              type="button"
+              className="managed-entity-workspace-header__counterpart"
+              aria-label="Обновить события"
+              title="Обновить события"
+              disabled={activityFeed.isReloading || moderationFeed.isReloading}
+              onClick={() => {
+                void dashboardQuery.refetch();
+                void (section === 'activity' ? activityFeed : moderationFeed).retry();
+              }}
+            >
+              <Refresh width={20} height={20} aria-hidden />
+            </button>
+          ) : null
+        }
         className="events-stage__workspace-header"
       />
 
@@ -3491,7 +3518,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           isLoadingMore={activityFeed.isLoadingMore}
           error={activityFeed.error}
           onLoadMore={() => void activityFeed.loadMore()}
-          onRetry={() => void activityFeed.retry()}
+          onRetry={() => void activityFeed.retryFailed()}
           onProfileActivate={(item: MembershipActivityItem) =>
             activateProfile(item.userId, item.userDisplayName)
           }
@@ -3561,7 +3588,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {dashboard && violationsSummary.total === 0 ? (
+          {dashboard &&
+          violationsSummary.total === 0 &&
+          moderationFeed.items.length === 0 &&
+          !moderationFeed.isReloading &&
+          !moderationFeed.error ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
@@ -3571,7 +3602,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {dashboard && violationsSummary.total > 0 && selectedFilterCount === 0 ? (
+          {dashboard &&
+          violationsSummary.total > 0 &&
+          selectedFilterCount === 0 &&
+          moderationFeed.items.length === 0 &&
+          !moderationFeed.isReloading &&
+          !moderationFeed.error ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
@@ -3591,7 +3627,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   <button
                     type="button"
                     className="button button--ghost"
-                    onClick={() => void moderationFeed.retry()}
+                    onClick={() => void moderationFeed.retryFailed()}
                   >
                     Повторить
                   </button>
