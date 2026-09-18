@@ -86,3 +86,26 @@ test('disabling the last chat comment scope disables the master setting', () => 
     },
   );
 });
+
+test('replacement mode never implicitly enables comments and survives scope changes', () => {
+  const current = {
+    commentsEnabled: false,
+    commentsAdminsEnabled: false,
+    commentsChatBroadcastsEnabled: false,
+  };
+  const selected = updatePublisherChatCommentSetting(
+    current,
+    'commentsReplaceOriginalEnabled',
+    true,
+  );
+  assert.deepEqual(selected, { ...current, commentsReplaceOriginalEnabled: true });
+  assert.equal(
+    updatePublisherChatCommentSetting(selected, 'commentsEnabled', true)
+      .commentsReplaceOriginalEnabled,
+    true,
+  );
+  assert.deepEqual(
+    updatePublisherChatCommentSetting(selected, 'commentsReplaceOriginalEnabled', false),
+    { ...current, commentsReplaceOriginalEnabled: false },
+  );
+});

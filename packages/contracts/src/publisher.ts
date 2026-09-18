@@ -54,6 +54,7 @@ export const publisherChatCommentSettingsSchema = z
     commentsEnabled: z.boolean(),
     commentsAdminsEnabled: z.boolean(),
     commentsChatBroadcastsEnabled: z.boolean(),
+    commentsReplaceOriginalEnabled: z.boolean().optional(),
   })
   .strict();
 export type PublisherChatCommentSettings = z.infer<typeof publisherChatCommentSettingsSchema>;

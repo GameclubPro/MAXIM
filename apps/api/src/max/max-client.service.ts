@@ -1343,10 +1343,12 @@ export class MaxClientService implements OnModuleDestroy {
     fallbackText: string | null,
     options?: MaxEditableMessageOptions & {
       beforeSend?: () => Promise<void>;
+      inspectSource?: (message: Record<string, unknown> | null) => void;
     },
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage> {
     const sourceMessage = await this.getMessageById(sourceMessageId, requestOptions);
+    options?.inspectSource?.(sourceMessage);
     this.assertExpectedEditableMessageText(sourceMessage, options);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);

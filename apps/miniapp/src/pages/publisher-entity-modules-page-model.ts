@@ -23,6 +23,9 @@ export function updatePublisherChatCommentSetting(
   enabled: boolean,
 ): PublisherChatCommentSettings {
   const next = { ...current, [key]: enabled };
+  if (key === 'commentsReplaceOriginalEnabled') {
+    return next;
+  }
   if (key === 'commentsEnabled') {
     return enabled && !next.commentsAdminsEnabled && !next.commentsChatBroadcastsEnabled
       ? { ...next, commentsAdminsEnabled: true }

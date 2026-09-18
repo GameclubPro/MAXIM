@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260916230000_add_chat_traffic_protection",
-  "baselineNamesSha256": "ff2a6e853efa25903f795632a30713c3e63bd06889a7f69d02b7cd19aefcbddb",
-  "baselineContentsSha256": "75cb53d969164e15b7b2da2422fd24793b5344e234e43cfaf85a3323d62762de",
+  "baselineThrough": "20260918180000_add_publisher_comment_replacement_mode",
+  "baselineNamesSha256": "3a8b9e99858a617ab0024a0f01aae9446e10211e4f07127246ec6caf279e8419",
+  "baselineContentsSha256": "020d62c1930a6d898bedadf5a72394b2a13e18410c37788f44224e0c7250b8fe",
   "approvedDestructive": {
     "20260916230000_add_chat_traffic_protection": {
       "reason": "Manual review of one static additive revision trigger. The parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic/destructive; this migration has no dynamic SQL, DROP, DELETE, table rewrite, or existing-data backfill.",

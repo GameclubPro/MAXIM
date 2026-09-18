@@ -1,7 +1,4 @@
-import type {
-  PublisherChatCommentSettings,
-  UpdatePublisherEntityModuleSettingsRequest,
-} from '@maxim/contracts/publisher';
+import type { UpdatePublisherEntityModuleSettingsRequest } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChatBubble,
@@ -39,11 +36,10 @@ import {
 import {
   buildPublisherAutoRepliesRoute,
   buildPublisherEntityListRoute,
-  updatePublisherChatCommentSetting,
-  type PublisherChatCommentSettingKey,
 } from './publisher-entity-modules-page-model';
 import './publisher-entity-modules-page.css';
 import { PublisherPolicyCard } from '../components/publisher-policy-card';
+import { PublisherCommentsModule } from '../components/publisher-comments-module';
 
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
 const PUBLISHER_CATALOG_QUERY_ROOT = ['publications', 'sources', 'publisher'] as const;
@@ -166,15 +162,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const saveChatCommentSetting = (
-    current: PublisherChatCommentSettings,
-    key: PublisherChatCommentSettingKey,
-    enabled: boolean,
-  ) => {
-    mutation.mutate({
-      chatComments: updatePublisherChatCommentSetting(current, key, enabled),
-    });
-  };
   useEffect(() => {
     setVkOpen(false);
   }, [entityId, entityType]);
@@ -409,50 +396,13 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           ) : null}
         </article>
 
-        {entity.entityType === 'chat' && chatComments ? (
-          <article className="publisher-entity-module is-settings">
-            <div className="publisher-entity-module__heading">
-              <span className="publisher-entity-module__icon is-comments" aria-hidden>
-                <ChatBubble />
-              </span>
-              <span className="publisher-entity-module__copy">
-                <strong>Комментарии</strong>
-              </span>
-              <ModuleSwitch
-                checked={chatComments.commentsEnabled}
-                disabled={mutation.isPending}
-                label={`${chatComments.commentsEnabled ? 'Выключить' : 'Включить'} комментарии`}
-                onChange={(enabled) =>
-                  saveChatCommentSetting(chatComments, 'commentsEnabled', enabled)
-                }
-              />
-            </div>
-            <div className="publisher-entity-module__settings">
-              <div className="publisher-entity-module__setting">
-                <span>Сообщения администраторов</span>
-                <ModuleSwitch
-                  checked={chatComments.commentsAdminsEnabled}
-                  disabled={mutation.isPending || !chatComments.commentsEnabled}
-                  label="Комментарии для сообщений администраторов"
-                  onChange={(enabled) =>
-                    saveChatCommentSetting(chatComments, 'commentsAdminsEnabled', enabled)
-                  }
-                />
-              </div>
-              <div className="publisher-entity-module__setting">
-                <span>Посты Публика</span>
-                <ModuleSwitch
-                  checked={chatComments.commentsChatBroadcastsEnabled}
-                  disabled={mutation.isPending || !chatComments.commentsEnabled}
-                  label="Комментарии для постов Публика"
-                  onChange={(enabled) =>
-                    saveChatCommentSetting(chatComments, 'commentsChatBroadcastsEnabled', enabled)
-                  }
-                />
-              </div>
-            </div>
-          </article>
-        ) : null}
+        <PublisherCommentsModule
+          key={`${entity.entityType}:${entity.id}`}
+          chatComments={chatComments}
+          channelEnabled={entity.moduleSettings.channelCommentsEnabled === true}
+          pending={mutation.isPending}
+          onChange={(change) => mutation.mutate(change)}
+        />
 
         {entity.entityType === 'chat' ? (
           <article className="publisher-entity-module">
@@ -472,25 +422,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               <span>Открыть</span>
               <NavArrowRight aria-hidden />
             </Link>
-          </article>
-        ) : null}
-
-        {entity.entityType === 'channel' ? (
-          <article className="publisher-entity-module is-settings">
-            <div className="publisher-entity-module__heading">
-              <span className="publisher-entity-module__icon is-comments" aria-hidden>
-                <ChatBubble />
-              </span>
-              <span className="publisher-entity-module__copy">
-                <strong>Комментарии</strong>
-              </span>
-              <ModuleSwitch
-                checked={entity.moduleSettings.channelCommentsEnabled === true}
-                disabled={mutation.isPending}
-                label={`${entity.moduleSettings.channelCommentsEnabled ? 'Выключить' : 'Включить'} комментарии под постами Публика`}
-                onChange={(channelCommentsEnabled) => mutation.mutate({ channelCommentsEnabled })}
-              />
-            </div>
           </article>
         ) : null}
 

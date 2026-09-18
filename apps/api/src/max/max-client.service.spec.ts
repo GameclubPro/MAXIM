@@ -4645,12 +4645,16 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const service = createService(httpService);
 
     await service.sendMessageCopyWithInlineKeyboard('chat-1', 'mid-source-fence', 'Source', {
+      inspectSource: (message) => {
+        expect(message?.body).toMatchObject({ mid: 'mid-source-fence', text: 'Source' });
+        order.push('inspect');
+      },
       beforeSend: async () => {
         order.push('fence');
       },
     });
 
-    expect(order).toEqual(['get', 'fence', 'post']);
+    expect(order).toEqual(['get', 'inspect', 'fence', 'post']);
     await service.onModuleDestroy();
   });
 

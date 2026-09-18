@@ -1085,6 +1085,7 @@ describe('PublisherPolicyService', () => {
               commentsEnabled: true,
               commentsAdminsEnabled: false,
               commentsChatBroadcastsEnabled: true,
+              commentsReplaceOriginalEnabled: false,
             },
             autoRepliesEnabled: true,
             channelCommentsEnabled: null,
@@ -1741,7 +1742,7 @@ describe('PublisherPolicyService', () => {
       }),
     ).resolves.toEqual({
       revision: 5,
-      chatComments,
+      chatComments: { ...chatComments, commentsReplaceOriginalEnabled: false },
       autoRepliesEnabled: false,
       channelCommentsEnabled: null,
       channelSuggestionsEnabled: null,
@@ -1800,6 +1801,7 @@ describe('PublisherPolicyService', () => {
         commentsEnabled: true,
         commentsAdminsEnabled: false,
         commentsChatBroadcastsEnabled: true,
+        commentsReplaceOriginalEnabled: false,
       },
       autoRepliesEnabled: true,
       channelCommentsEnabled: null,
@@ -1822,6 +1824,44 @@ describe('PublisherPolicyService', () => {
         payload: { changed: { autoRepliesEnabled: true }, revision: 3 },
       },
     });
+  });
+
+  it('persists the explicit replacement mode and preserves it for older clients', async () => {
+    const fixture = createPolicyMutationFixture({
+      storedEntityType: ChatEntityType.CHAT,
+      publisherSettings: { revision: 4, chatCommentsReplaceOriginalEnabled: true },
+    });
+    jest.spyOn(fixture.service, 'getEntity').mockResolvedValue({ id: 'chat-1' } as never);
+    const chatComments = {
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+      commentsReplaceOriginalEnabled: true,
+    };
+    const saved = await fixture.service.updateModuleSettings('chat', 'chat-1', user, {
+      expectedRevision: 4,
+      chatComments,
+    });
+    expect(saved.chatComments?.commentsReplaceOriginalEnabled).toBe(true);
+    expect(fixture.tx.publisherEntitySettings.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ chatCommentsReplaceOriginalEnabled: true }),
+      }),
+    );
+    const legacy = {
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    };
+    await fixture.service.updateModuleSettings('chat', 'chat-1', user, {
+      expectedRevision: 4,
+      chatComments: legacy,
+    });
+    expect(fixture.tx.publisherEntitySettings.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ chatCommentsReplaceOriginalEnabled: undefined }),
+      }),
+    );
   });
 
   it('keeps the Major toggle and Publisher secondary-module writes disjoint', async () => {

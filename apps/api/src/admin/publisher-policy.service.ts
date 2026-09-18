@@ -761,6 +761,8 @@ export class PublisherPolicyService {
                     chatCommentsEnabled: request.chatComments.commentsEnabled,
                     chatCommentsAdminsEnabled: request.chatComments.commentsAdminsEnabled,
                     chatCommentsPostsEnabled: request.chatComments.commentsChatBroadcastsEnabled,
+                    chatCommentsReplaceOriginalEnabled:
+                      request.chatComments.commentsReplaceOriginalEnabled,
                   }
                 : {}),
               ...(request.channelSuggestionsEnabled !== undefined
@@ -784,6 +786,8 @@ export class PublisherPolicyService {
                     chatCommentsEnabled: request.chatComments.commentsEnabled,
                     chatCommentsAdminsEnabled: request.chatComments.commentsAdminsEnabled,
                     chatCommentsPostsEnabled: request.chatComments.commentsChatBroadcastsEnabled,
+                    chatCommentsReplaceOriginalEnabled:
+                      request.chatComments.commentsReplaceOriginalEnabled,
                   }
                 : {}),
               ...(request.channelSuggestionsEnabled !== undefined
@@ -846,6 +850,7 @@ export class PublisherPolicyService {
       chatCommentsEnabled: boolean;
       chatCommentsAdminsEnabled: boolean;
       chatCommentsPostsEnabled: boolean;
+      chatCommentsReplaceOriginalEnabled?: boolean;
       channelCommentsEnabled: boolean;
       channelSuggestionsEnabled: boolean;
       autoRepliesEnabled: boolean;
@@ -859,6 +864,7 @@ export class PublisherPolicyService {
               commentsEnabled: settings?.chatCommentsEnabled ?? false,
               commentsAdminsEnabled: settings?.chatCommentsAdminsEnabled ?? false,
               commentsChatBroadcastsEnabled: settings?.chatCommentsPostsEnabled ?? false,
+              commentsReplaceOriginalEnabled: settings?.chatCommentsReplaceOriginalEnabled ?? false,
             }
           : null,
       autoRepliesEnabled:
@@ -1270,6 +1276,7 @@ export class PublisherPolicyService {
         commentsEnabled: boolean;
         commentsAdminsEnabled: boolean;
         commentsChatBroadcastsEnabled: boolean;
+        commentsReplaceOriginalEnabled?: boolean;
       };
       channelCommentsEnabled?: boolean;
       channelSuggestionsEnabled?: boolean;
@@ -1279,6 +1286,7 @@ export class PublisherPolicyService {
       chatCommentsEnabled: boolean;
       chatCommentsAdminsEnabled: boolean;
       chatCommentsPostsEnabled: boolean;
+      chatCommentsReplaceOriginalEnabled?: boolean;
       channelCommentsEnabled: boolean;
       channelSuggestionsEnabled: boolean;
       autoRepliesEnabled: boolean;
@@ -1306,6 +1314,13 @@ export class PublisherPolicyService {
     }
     if (request.autoRepliesEnabled && current?.autoRepliesEnabled !== true) {
       featureKeys.push('autoRepliesEnabled');
+    }
+    if (
+      effectiveChatCommentsEnabled &&
+      request.chatComments?.commentsReplaceOriginalEnabled &&
+      current?.chatCommentsReplaceOriginalEnabled !== true
+    ) {
+      featureKeys.push('chatComments.commentsReplaceOriginalEnabled');
     }
     if (request.channelSuggestionsEnabled && current?.channelSuggestionsEnabled !== true) {
       featureKeys.push('channelSuggestionsEnabled');

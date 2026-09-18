@@ -10,9 +10,13 @@ const pageCss = readFileSync(
   new URL('../src/pages/publisher-entity-modules-page.css', import.meta.url),
   'utf8',
 );
+const commentsSource = readFileSync(
+  new URL('../src/components/publisher-comments-module.tsx', import.meta.url),
+  'utf8',
+);
 
 test('Publik module workspace owns its settings and never imports Major presentation state', () => {
-  assert.match(pageSource, /chatComments: updatePublisherChatCommentSetting/u);
+  assert.match(commentsSource, /chatComments: updatePublisherChatCommentSetting/u);
   assert.match(pageSource, /channelCommentsEnabled/u);
   assert.match(pageSource, /channelSuggestionsEnabled/u);
   assert.match(pageSource, /updatePublisherModules/u);
@@ -23,10 +27,13 @@ test('Publik module workspace owns its settings and never imports Major presenta
 });
 
 test('Publik channels expose comments independently from suggestions', () => {
-  assert.match(pageSource, /checked=\{entity\.moduleSettings\.channelCommentsEnabled === true\}/u);
-  assert.match(pageSource, /mutation\.mutate\(\{ channelCommentsEnabled \}\)/u);
+  assert.match(
+    pageSource,
+    /channelEnabled=\{entity\.moduleSettings\.channelCommentsEnabled === true\}/u,
+  );
+  assert.match(commentsSource, /onChange\(\{ channelCommentsEnabled: value \}\)/u);
   assert.doesNotMatch(pageSource, /<small>Посты Публика<\/small>/u);
-  assert.match(pageSource, /<strong>Комментарии<\/strong>/u);
+  assert.match(commentsSource, /<strong>Комментарии<\/strong>/u);
 });
 
 test('module labels and refresh feedback avoid internal workflow copy', () => {
@@ -55,15 +62,23 @@ test('VK module is capability-gated, lazy, and inactive while its workspace is c
 });
 
 test('comment child settings follow the master switch and module rows avoid duplicate statuses', () => {
-  const dependentSwitches = pageSource.match(
-    /disabled=\{mutation\.isPending \|\| !chatComments\.commentsEnabled\}/gu,
+  assert.match(commentsSource, /disabled=\{pending \|\| disabled\}/u);
+  assert.match(
+    commentsSource,
+    /disabled=\{pending \|\| !enabled \|\| !chatComments\.commentsAdminsEnabled\}/u,
   );
-
-  assert.equal(dependentSwitches?.length, 2);
   assert.doesNotMatch(pageSource, /<small>\{entity\.readiness\.canPublish \? 'Доступен'/u);
   assert.doesNotMatch(pageSource, /publisher-entity-module__blocked/u);
   assert.doesNotMatch(pageSource, /<small>\{chatComments\.commentsEnabled/u);
   assert.doesNotMatch(pageSource, /<small>\{entity\.moduleSettings\.channelSuggestionsEnabled/u);
+});
+
+test('comments start collapsed and mutually exclusive modes keep details in info dialogs', () => {
+  assert.match(commentsSource, /\[open, setOpen\] = useState\(false\)/u);
+  assert.match(commentsSource, /aria-expanded=\{open\}/u);
+  assert.match(commentsSource, /type="radio"/u);
+  assert.match(commentsSource, /<LazySettingsDrilldownPanel/u);
+  assert.match(commentsSource, /aria-haspopup="dialog"/u);
 });
 
 test('module controls keep stable mobile touch targets without nested module cards', () => {

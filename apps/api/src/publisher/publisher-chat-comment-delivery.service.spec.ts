@@ -22,12 +22,14 @@ type MarkerRow = {
   lastError: string | null;
   lastStatusCode: number | null;
   originalDeleted: boolean;
+  publisherSourceContentHash?: string | null;
 };
 
 type PublisherSettingsRow = {
   revision: number;
   chatCommentsEnabled: boolean;
   chatCommentsAdminsEnabled: boolean;
+  chatCommentsReplaceOriginalEnabled?: boolean;
 };
 
 type PublicationPolicyRow = {
@@ -207,6 +209,20 @@ function createHarness() {
     },
   };
   const maxClient = {
+    getExactMessageRow: jest.fn().mockResolvedValue({
+      sender: { user_id: 'admin-1' },
+      recipient: { chat_id: 'chat-1' },
+      body: { text: 'Original', markup: [], attachments: [] },
+    }),
+    getExactMessagePresence: jest.fn().mockResolvedValue('present'),
+    deleteMessage: jest.fn().mockImplementation(async (...args) => {
+      await args[2]?.beforeImmediateDeleteMutation?.();
+    }),
+    sendMessageCopyWithInlineKeyboard: jest.fn().mockImplementation(async (...args) => {
+      args[3]?.inspectSource?.(await maxClient.getExactMessageRow());
+      await args[3]?.beforeSend?.();
+      return { messageId: 'publisher-copy-1', url: null };
+    }),
     sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async (...args) => {
       await args[2]?.beforeSend?.();
       return { messageId: 'publisher-reply-1', url: null };
@@ -265,6 +281,119 @@ function createHarness() {
 const firstAttempt = { final: false, attemptsMade: 1, maxAttempts: 12 };
 
 describe('PublisherChatCommentDeliveryService', () => {
+  function replacementHarness() {
+    const harness = createHarness();
+    harness.publisherSettings.chatCommentsReplaceOriginalEnabled = true;
+    const job = { ...buildAttachJob(), createdAt: new Date().toISOString() };
+    return { ...harness, job };
+  }
+
+  it('persists a replacement receipt and audit before deleting the original with the exact Publisher bot', async () => {
+    const h = replacementHarness();
+    h.maxClient.deleteMessage.mockImplementation(async (...args) => {
+      expect(h.row.replyMessageId).toBe('publisher-copy-1');
+      expect(h.prisma.auditLog.create).toHaveBeenCalled();
+      await args[2].beforeImmediateDeleteMutation();
+    });
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      null,
+      expect.objectContaining({ requireAllAttachmentsPreserved: true }),
+      expect.objectContaining({ botId: 'publik-bot' }),
+    );
+    expect(h.maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'message-1',
+      expect.objectContaining({ botId: 'publik-bot', immediate: true }),
+    );
+    expect(h.row).toMatchObject({
+      status: 'SUCCEEDED',
+      originalDeleted: true,
+      deliveryMode: 'publisher_replace_with_bot_message',
+    });
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(h.maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries only deletion after a cleanup failure', async () => {
+    const h = replacementHarness();
+    h.maxClient.deleteMessage.mockRejectedValueOnce(new Error('timeout'));
+    await expect(h.service.process(h.job, firstAttempt)).rejects.toThrow('timeout');
+    expect(h.row).toMatchObject({ status: 'IN_PROGRESS', replyMessageId: 'publisher-copy-1' });
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(h.row.originalDeleted).toBe(true);
+  });
+
+  it('does not delete until the replacement audit is durable', async () => {
+    const h = replacementHarness();
+    h.prisma.auditLog.create.mockRejectedValueOnce(new Error('database unavailable'));
+    await expect(h.service.process(h.job, firstAttempt)).rejects.toThrow('database unavailable');
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(h.row.originalDeleted).toBe(true);
+  });
+
+  it('keeps an edited original after a confirmed copy', async () => {
+    const h = replacementHarness();
+    h.maxClient.getExactMessageRow.mockResolvedValueOnce({
+      sender: { user_id: 'admin-1' },
+      recipient: { chat_id: 'chat-1' },
+      body: { text: 'Earlier version' },
+    });
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(h.row).toMatchObject({ status: 'SUCCEEDED', originalDeleted: false });
+  });
+
+  it('keeps the original if the replacement is absent', async () => {
+    const h = replacementHarness();
+    h.maxClient.getExactMessagePresence.mockResolvedValue('absent');
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(h.row.originalDeleted).toBe(false);
+  });
+
+  it('cancels cleanup if settings changed after sending', async () => {
+    const h = replacementHarness();
+    h.prisma.auditLog.create.mockImplementation(async () => {
+      h.publisherSettings.revision += 1;
+    });
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(h.row.originalDeleted).toBe(false);
+  });
+
+  it('quarantines an ambiguous copy without deleting or republishing', async () => {
+    const h = replacementHarness();
+    h.maxClient.sendMessageCopyWithInlineKeyboard.mockImplementation(async (...args) => {
+      args[3].inspectSource(await h.maxClient.getExactMessageRow());
+      await args[3].beforeSend();
+      throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
+    });
+    await h.service.process(h.job, firstAttempt);
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects a source from another author or chat without deletion', async () => {
+    const h = replacementHarness();
+    h.maxClient.getExactMessageRow.mockResolvedValue({
+      sender: { user_id: 'someone-else' },
+      recipient: { chat_id: 'chat-1' },
+      body: { text: 'Other' },
+    });
+    await h.service.process(h.job, firstAttempt);
+    expect(h.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(h.row.status).toBe('SKIPPED');
+  });
+
   it('sends once through the immutable publisher and completes marker plus audit', async () => {
     const harness = createHarness();
 

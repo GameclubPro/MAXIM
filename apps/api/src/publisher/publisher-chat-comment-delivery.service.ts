@@ -1,4 +1,5 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { UnrecoverableError } from 'bullmq';
 import { countPublisherChatComments } from '../admin/publisher-chat-comment-store';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
@@ -50,6 +51,13 @@ type PublisherJobAttempt = {
 };
 
 const PUBLISHER_COMMENT_SENDER_ACCESS_FRESH_MS = 15 * 60_000;
+const PUBLISHER_REPLACEMENT_MODE = 'publisher_replace_with_bot_message';
+
+function sourceContentHash(message: Record<string, unknown> | null): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ body: message?.body, link: message?.link }))
+    .digest('hex');
+}
 
 class PublisherCommentSenderNotAdminError extends Error {
   constructor() {
@@ -111,6 +119,24 @@ export class PublisherChatCommentDeliveryService {
     job: PublisherChatCommentAttachJob,
     attempt: PublisherJobAttempt,
   ): Promise<void> {
+    const persisted = await this.prisma.chatAutoCommentAttachMarker.findUnique({
+      where: { chatId_messageId: { chatId: job.chatId, messageId: job.messageId } },
+    });
+    if (
+      persisted?.id === job.markerId &&
+      persisted.botId === this.publisherBotId &&
+      persisted.deliveryMode === PUBLISHER_REPLACEMENT_MODE &&
+      persisted.replyMessageId
+    ) {
+      if (persisted.status === 'IN_PROGRESS' && persisted.lockToken === job.lockToken) {
+        await this.finishReplacement(
+          job,
+          persisted.replyMessageId,
+          persisted.publisherSourceContentHash,
+        );
+      }
+      return;
+    }
     const auditRecovery = await this.markerStore.probeChatAutoCommentAuditRecovery({
       chatId: job.chatId,
       messageId: job.messageId,
@@ -202,6 +228,12 @@ export class PublisherChatCommentDeliveryService {
 
     let sendFenceStartedAt: Date | null = null;
     let replyMessageId: string;
+    const settings = await this.prisma.publisherEntitySettings.findUnique({
+      where: { chatId: job.chatId },
+      select: { chatCommentsReplaceOriginalEnabled: true },
+    });
+    const replaceOriginal = settings?.chatCommentsReplaceOriginalEnabled === true;
+    let originalHash: string | undefined;
     try {
       const button =
         job.button ??
@@ -211,51 +243,76 @@ export class PublisherChatCommentDeliveryService {
           job.markerId,
           formatCommentsButtonText('💬 Комментарии', 0),
         );
-      const sent = await this.maxClient.sendMessageImmediateWithResolvedLink(
-        job.chatId,
-        CHAT_COMMENTS_REPLY_TEXT,
-        {
-          buttons: [[button]],
-          messageLink: {
-            type: 'reply',
-            mid: job.messageId,
-          },
-          beforeSend: async () => {
-            const immediateRoute = await this.assertReady(job.chatId, 'chat_comments');
-            this.assertAttachIdentity(job, immediateRoute);
-            if (!(await this.isSenderAdmin(job, false))) {
-              throw new PublisherCommentSenderNotAdminError();
-            }
-            route = immediateRoute;
-            const sendFence = await this.markerStore.recordChatReplySendStarted({
-              markerId: job.markerId,
-              chatId: job.chatId,
-              messageId: job.messageId,
-              lockToken: job.lockToken,
-              senderBotId: route.requiredBotId,
-              publisherSettingsRevision: job.publisherSettingsRevision,
-              publicationPolicyRevision: job.publicationPolicyRevision,
-            });
-            if (sendFence.status !== 'started') {
-              if (sendFence.status === 'settings_changed') {
-                throw new PublisherCommentSettingsChangedError();
-              }
-              throw new PublisherCommentClaimLostBeforeSendError();
-            }
-            sendFenceStartedAt = sendFence.sendStartedAt;
-          },
-          debugContext: {
-            screen: 'chat-auto-comments',
-            action: 'publisher-reply-to-admin-message',
-          },
-        },
-        {
-          trafficClass: 'background',
-          actionHealthLane: 'background',
-          sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
-          botId: route.requiredBotId,
-        },
-      );
+      const beforeSend = async () => {
+        const immediateRoute = await this.assertReady(job.chatId, 'chat_comments');
+        this.assertAttachIdentity(job, immediateRoute);
+        if (!(await this.isSenderAdmin(job, false))) {
+          throw new PublisherCommentSenderNotAdminError();
+        }
+        route = immediateRoute;
+        const sendFence = await this.markerStore.recordChatReplySendStarted({
+          markerId: job.markerId,
+          chatId: job.chatId,
+          messageId: job.messageId,
+          lockToken: job.lockToken,
+          senderBotId: route.requiredBotId,
+          publisherSettingsRevision: job.publisherSettingsRevision,
+          publicationPolicyRevision: job.publicationPolicyRevision,
+          ...(originalHash ? { publisherSourceContentHash: originalHash } : {}),
+        });
+        if (sendFence.status !== 'started') {
+          if (sendFence.status === 'settings_changed') {
+            throw new PublisherCommentSettingsChangedError();
+          }
+          throw new PublisherCommentClaimLostBeforeSendError();
+        }
+        sendFenceStartedAt = sendFence.sendStartedAt;
+      };
+      const requestOptions = {
+        trafficClass: 'background' as const,
+        actionHealthLane: 'background' as const,
+        sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+        botId: route.requiredBotId,
+      };
+      const sent = replaceOriginal
+        ? await this.maxClient.sendMessageCopyWithInlineKeyboard(
+            job.chatId,
+            job.messageId,
+            null,
+            {
+              buttons: [[button]],
+              mergeExistingInlineKeyboard: true,
+              appendNewInlineKeyboardRows: true,
+              requireAllAttachmentsPreserved: true,
+              inspectSource: (message) => {
+                const sender = message?.sender as { user_id?: unknown } | undefined;
+                const recipient = message?.recipient as { chat_id?: unknown } | undefined;
+                if (
+                  String(sender?.user_id) !== job.senderId ||
+                  String(recipient?.chat_id) !== job.chatId
+                ) {
+                  throw new PublisherCommentSenderNotAdminError();
+                }
+                originalHash = sourceContentHash(message);
+              },
+              beforeSend,
+            },
+            requestOptions,
+          )
+        : await this.maxClient.sendMessageImmediateWithResolvedLink(
+            job.chatId,
+            CHAT_COMMENTS_REPLY_TEXT,
+            {
+              buttons: [[button]],
+              messageLink: { type: 'reply', mid: job.messageId },
+              beforeSend,
+              debugContext: {
+                screen: 'chat-auto-comments',
+                action: 'publisher-reply-to-admin-message',
+              },
+            },
+            requestOptions,
+          );
       replyMessageId = sent.messageId;
     } catch (error: unknown) {
       const attempted = sendFenceStartedAt !== null || wasMaxMessageSendAttempted(error);
@@ -312,6 +369,25 @@ export class PublisherChatCommentDeliveryService {
         sendFenceStartedAt,
       );
       throw error;
+    }
+
+    if (replaceOriginal) {
+      // FLAG: This Publisher-only receipt is also the durable cleanup intent. Legacy moderation
+      // cleanup must never claim it: only api-publisher holds the exact sending bot credential.
+      const receipt = await this.prisma.chatAutoCommentAttachMarker.updateMany({
+        where: {
+          id: job.markerId,
+          lockToken: job.lockToken,
+          status: 'IN_PROGRESS',
+          deliveryMode: PUBLISHER_REPLACEMENT_MODE,
+          replyMessageId: null,
+        },
+        data: { replyMessageId, replacementSendStartedAt: null },
+      });
+      if (receipt.count !== 1) throw new Error('Publisher replacement receipt claim lost');
+      await this.finishReplacement(job, replyMessageId, originalHash ?? null);
+      await this.recordSendSuccess(job.chatId);
+      return;
     }
 
     let replyMarkerError: unknown = null;
@@ -376,6 +452,106 @@ export class PublisherChatCommentDeliveryService {
       });
     }
     await this.recordSendSuccess(job.chatId);
+  }
+
+  private async finishReplacement(
+    job: PublisherChatCommentAttachJob,
+    replacementMessageId: string,
+    originalHash: string | null,
+  ): Promise<void> {
+    await this.persistAttachAudit({
+      job,
+      replyMessageId: replacementMessageId,
+      publisherBotId: this.publisherBotId,
+      replacement: true,
+    });
+    let originalDeleted = false;
+    let retainedReason: string | null = null;
+    const options = {
+      botId: this.publisherBotId,
+      trafficClass: 'background' as const,
+      actionHealthLane: 'background' as const,
+      sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+    };
+    const canCleanUp =
+      originalHash &&
+      Date.now() - Date.parse(job.createdAt) < 24 * 60 * 60_000 &&
+      (await this.isAdminMessageSettingsCurrent(job)) &&
+      (await this.isSenderAdmin(job, false));
+    if (!canCleanUp) {
+      retainedReason =
+        'Original retained: replacement settings, author access, or cleanup window changed';
+    } else {
+      const route = await this.assertReady(job.chatId, 'chat_comments');
+      this.assertAttachIdentity(job, route);
+      const original = await this.maxClient.getExactMessageRow(job.chatId, job.messageId, options);
+      if (!original || sourceContentHash(original) !== originalHash) {
+        originalDeleted =
+          (await this.maxClient.getExactMessagePresence(job.chatId, job.messageId, options)) ===
+          'absent';
+        retainedReason = originalDeleted
+          ? null
+          : 'Original retained: message changed after copying';
+      } else if (
+        (await this.maxClient.getExactMessagePresence(
+          job.chatId,
+          replacementMessageId,
+          options,
+        )) !== 'present'
+      ) {
+        retainedReason = 'Original retained: replacement message is no longer confirmed';
+      } else {
+        // FLAG: Never delete before the exact bot's receipt and dialog audit are durable.
+        // A retry resumes this cleanup only; it must not publish a second copy.
+        const guard = async () => {
+          const immediateRoute = await this.assertReady(job.chatId, 'chat_comments');
+          this.assertAttachIdentity(job, immediateRoute);
+          const marker = await this.prisma.chatAutoCommentAttachMarker.findUnique({
+            where: { id: job.markerId },
+          });
+          if (
+            marker?.status !== 'IN_PROGRESS' ||
+            marker.lockToken !== job.lockToken ||
+            marker.botId !== this.publisherBotId ||
+            marker.replyMessageId !== replacementMessageId ||
+            marker.deliveryMode !== PUBLISHER_REPLACEMENT_MODE ||
+            !(await this.isAdminMessageSettingsCurrent(job)) ||
+            !(await this.isSenderAdmin(job, false)) ||
+            sourceContentHash(
+              await this.maxClient.getExactMessageRow(job.chatId, job.messageId, options),
+            ) !== originalHash
+          )
+            throw new Error('Publisher replacement cleanup guard changed');
+        };
+        try {
+          await this.maxClient.deleteMessage(job.chatId, job.messageId, {
+            ...options,
+            immediate: true,
+            idempotencyKey: `publisher-comment-cleanup:${job.markerId}`,
+            beforeImmediateDeleteMutation: guard,
+          });
+          originalDeleted = true;
+        } catch (error: unknown) {
+          originalDeleted =
+            (await this.maxClient.getExactMessagePresence(job.chatId, job.messageId, options)) ===
+            'absent';
+          if (!originalDeleted) throw error;
+        }
+      }
+    }
+    await this.markerStore.completeChatAutoComment({
+      chatId: job.chatId,
+      messageId: job.messageId,
+      lockToken: job.lockToken,
+      status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+      source: 'webhook',
+      botId: this.publisherBotId,
+      deliveryMode: PUBLISHER_REPLACEMENT_MODE,
+      replyMessageId: replacementMessageId,
+      originalDeleted,
+      lastError: retainedReason,
+      lastStatusCode: null,
+    });
   }
 
   private async processKeyboardEdit(job: PublisherCommentKeyboardEditJob): Promise<void> {
@@ -677,6 +853,7 @@ export class PublisherChatCommentDeliveryService {
     job: PublisherChatCommentAttachJob;
     replyMessageId: string;
     publisherBotId: string;
+    replacement?: boolean;
   }): Promise<void> {
     const auditId = buildChatAutoCommentAuditId(params.job.markerId);
     if (!auditId) {
@@ -693,8 +870,9 @@ export class PublisherChatCommentDeliveryService {
             messageId: params.job.messageId,
             threadId: params.job.markerId,
             source: 'webhook',
-            deliveryMode: 'reply_message',
+            deliveryMode: params.replacement ? 'replace_with_bot_message' : 'reply_message',
             replyMessageId: params.replyMessageId,
+            ...(params.replacement ? { replacementMessageId: params.replyMessageId } : {}),
             originalDeleted: false,
             botId: params.publisherBotId,
             publisherBotId: params.publisherBotId,

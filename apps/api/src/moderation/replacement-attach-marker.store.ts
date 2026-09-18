@@ -706,6 +706,7 @@ export class ReplacementAttachMarkerStore {
     senderBotId?: string | null;
     publisherSettingsRevision?: number;
     publicationPolicyRevision?: number;
+    publisherSourceContentHash?: string;
   }): Promise<ChatAutoCommentSendFenceResult> {
     // FLAG: Keep replies on this durable fence so stale recovery and Safety Desk see every send.
     return this.recordChatReplySendFence(params);
@@ -835,6 +836,8 @@ export class ReplacementAttachMarkerStore {
       data: {
         lockedAt: new Date(),
         replacementSendStartedAt: null,
+        deliveryMode: null,
+        publisherSourceContentHash: null,
         botId: params.senderBotId,
         lastError: params.lastError,
         lastStatusCode: params.lastStatusCode,
@@ -1455,6 +1458,7 @@ export class ReplacementAttachMarkerStore {
     senderBotId?: string | null;
     publisherSettingsRevision?: number;
     publicationPolicyRevision?: number;
+    publisherSourceContentHash?: string;
   }): Promise<ChatAutoCommentSendFenceResult> {
     const epoch = this.resolvePublisherChatCommentInputEpoch(
       params.publisherSettingsRevision,
@@ -1504,7 +1508,12 @@ export class ReplacementAttachMarkerStore {
         },
       },
       data: {
-        deliveryMode: 'reply_message',
+        deliveryMode: params.publisherSourceContentHash
+          ? 'publisher_replace_with_bot_message'
+          : 'reply_message',
+        ...(params.publisherSourceContentHash
+          ? { publisherSourceContentHash: params.publisherSourceContentHash }
+          : {}),
         replacementSendStartedAt: sendStartedAt,
         ...(params.senderBotId ? { botId: params.senderBotId } : {}),
       },

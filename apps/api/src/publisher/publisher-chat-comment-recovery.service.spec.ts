@@ -138,6 +138,20 @@ function createHarness(
 }
 
 describe('PublisherChatCommentRecoveryService', () => {
+  it('recovers a Publisher replacement receipt without treating cleanup as a new send', async () => {
+    const harness = createHarness({
+      marker: buildMarker({
+        deliveryMode: 'publisher_replace_with_bot_message',
+        replyMessageId: 'publisher-copy-1',
+        publisherSourceContentHash: 'a'.repeat(64),
+      }),
+    });
+    const result = await harness.service.recoverOnce();
+    expect(result.retried).toBe(1);
+    expect(harness.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(harness.prisma.publisherEntitySettings.findUnique).not.toHaveBeenCalled();
+    expect(harness.job.retry).toHaveBeenCalledTimes(1);
+  });
   it('resets exhausted attempts for a stale authoritative marker when readiness returns', async () => {
     const harness = createHarness();
     const now = new Date('2026-08-26T10:00:00.000Z');

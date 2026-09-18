@@ -49,7 +49,7 @@ const broadcastAutopostPolishSource = readFileSync(
 
 test('chat comment settings belong to Publik instead of Major settings', () => {
   assert.doesNotMatch(settingsPageSource, /handleSaveComments|mutateCommentsAsync/u);
-  assert.match(publisherModulesSource, /chatComments: updatePublisherChatCommentSetting/u);
+  assert.match(publisherModulesSource, /<PublisherCommentsModule/u);
   assert.match(publisherModulesSource, /updatePublisherModules/u);
 });
 

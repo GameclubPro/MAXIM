@@ -605,6 +605,7 @@ model PublisherEntitySettings {
   chatCommentsEnabled       Boolean  @default(false) @map("chat_comments_enabled")
   chatCommentsAdminsEnabled Boolean  @default(false) @map("chat_comments_admins_enabled")
   chatCommentsPostsEnabled  Boolean  @default(false) @map("chat_comments_posts_enabled")
+  chatCommentsReplaceOriginalEnabled Boolean @default(false) @map("chat_comments_replace_original_enabled")
   channelCommentsEnabled    Boolean  @default(false) @map("channel_comments_enabled")
   channelSuggestionsEnabled Boolean  @default(false) @map("channel_suggestions_enabled")
   autoRepliesEnabled        Boolean  @default(false) @map("auto_replies_enabled")
@@ -2508,6 +2509,7 @@ model ChatAutoCommentAttachMarker {
   botId                    String?                     @map("bot_id")
   source                   String
   deliveryMode             String?                     @map("delivery_mode")
+  publisherSourceContentHash String?                   @map("publisher_source_content_hash")
   replacementMessageId     String?                     @map("replacement_message_id")
   replyMessageId           String?                     @map("reply_message_id")
   publishedUrl             String?                     @map("published_url")
