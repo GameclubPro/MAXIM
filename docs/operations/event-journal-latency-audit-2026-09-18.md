@@ -103,3 +103,38 @@ Required deployment selects `api-shared` and `miniapp-major-static`, after exact
 and CodeQL success. All shared API roles and the OCR auxiliary must converge through the normal
 queue-fenced rollout. Postgres, Redis, and Safety Desk are not deployment targets. A successful
 release requires strict smokes and a bounded post-deploy observation, not merely passing tests.
+
+## Delivery Outcome
+
+Runtime commit `f1598fcb6c011bea622614ef4d9b6c1d34db8fba` passed exact-SHA Required and
+CodeQL checks and was deployed in `release-20260918T155456Z-f1598fcb6c01` using verified CI images.
+All 13 API roles, their OCR auxiliary, and the Major mini app were updated. Postgres, Redis,
+and Safety Desk were not recreated; there were no pending migrations. Ingress/admin live and
+ready, public live, canonical mini app, and isolated OCR smokes passed.
+
+Local validation passed 12,820 API tests, 1,353 mini app tests, 510 tooling tests, typechecking,
+API/production mini app builds, and responsive/browser regressions for both feeds. The 121
+environment-gated API tests were skipped in the ordinary API lane; CI separately passed 156
+Redis integration tests and the PostgreSQL race lane. The bundle check initially detected
+unnecessary polling code on channel statistics; separating the journal-only scheduler restored
+the existing budget check without raising limits. The generic visual smoke initially reused an
+old dev server interrupted by contract rebuilding; the same smoke passed on a fresh local port.
+
+The queue-fenced rollout temporarily reached 183.928 seconds of oldest pending-event age.
+After resume it drained through ordinary processing. The first post-release capacity window,
+15:59:07-16:02:07 UTC, had complete coverage (12 samples), zero readiness/fleet/fence failures,
+zero restarts, and queue age from zero to 1.997 seconds (median 0.38 seconds). Automatic mode
+remained `stabilizing` throughout this window; do not describe it as uniformly normal or use
+these queue-age measurements as end-to-end journal latency percentiles.
+
+Extended observation confirmed automatic return to `normal` / `healthy` at 16:04:12 UTC,
+without a manual governor override. At 16:05:01 UTC readiness was healthy with 0.044 seconds
+of oldest pending-event age. The same 60-second action snapshot still contained 28 failures
+out of 1,501 actions, with zero critical failures: the journal correction does not resolve
+every MAX action failure. The existing per-entity/not-found follow-up gates remain necessary.
+
+Deployment also reported that production `.env` lacks `POSTGRES_PASSWORD` and Compose still
+uses its legacy compatibility fallback. No secret was printed or changed. Before any separately
+planned PostgreSQL recreation, an operator must synchronize this setting with the current
+database credential through the existing secret-management process. It is not a reason to
+recreate the database during an application release.
