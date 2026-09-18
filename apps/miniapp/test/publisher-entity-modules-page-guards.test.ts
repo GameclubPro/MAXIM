@@ -73,12 +73,15 @@ test('comment child settings follow the master switch and module rows avoid dupl
   assert.doesNotMatch(pageSource, /<small>\{entity\.moduleSettings\.channelSuggestionsEnabled/u);
 });
 
-test('comments start collapsed and mutually exclusive modes keep details in info dialogs', () => {
+test('comments open a separate fullscreen workspace and keep details in info dialogs', () => {
   assert.match(commentsSource, /\[open, setOpen\] = useState\(false\)/u);
   assert.match(commentsSource, /aria-expanded=\{open\}/u);
   assert.match(commentsSource, /type="radio"/u);
   assert.match(commentsSource, /<LazySettingsDrilldownPanel/u);
   assert.match(commentsSource, /aria-haspopup="dialog"/u);
+  assert.match(commentsSource, /variant="screen"/u);
+  assert.match(commentsSource, /publisher-comments-workspace-overlay/u);
+  assert.match(commentsSource, /headerAction=\{switchControl/u);
 });
 
 test('module controls keep stable mobile touch targets without nested module cards', () => {

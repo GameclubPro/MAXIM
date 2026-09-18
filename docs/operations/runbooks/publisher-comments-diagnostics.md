@@ -44,5 +44,5 @@ or exact-message absence, never a bare HTTP 404. Do not manually retry an ambigu
 copy as a fresh publication.
 
 Local UI regression: `node apps/miniapp/test/publisher-comments.browser.mjs` after
-contract builds finish. It covers collapsed chat/channel modules, mode persistence,
+contract builds finish. It covers separate full-screen chat/channel modules, mode persistence,
 save failures and info dialogs on iPhone SE, Android and desktop in light/dark themes.

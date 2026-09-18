@@ -399,6 +399,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         <PublisherCommentsModule
           key={`${entity.entityType}:${entity.id}`}
           chatComments={chatComments}
+          entityTitle={entity.title}
           channelEnabled={entity.moduleSettings.channelCommentsEnabled === true}
           pending={mutation.isPending}
           onChange={(change) => mutation.mutate(change)}

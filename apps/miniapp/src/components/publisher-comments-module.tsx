@@ -28,11 +28,13 @@ const MODES = [
 export function PublisherCommentsModule({
   chatComments,
   channelEnabled,
+  entityTitle,
   pending,
   onChange,
 }: {
   chatComments: PublisherChatCommentSettings | null;
   channelEnabled: boolean;
+  entityTitle: string;
   pending: boolean;
   onChange: (change: Omit<UpdatePublisherEntityModuleSettingsRequest, 'expectedRevision'>) => void;
 }) {
@@ -67,104 +69,122 @@ export function PublisherCommentsModule({
 
   return (
     <section className="publisher-entity-module is-settings" data-publisher-module="comments">
-      <div className="publisher-comments-heading">
-        <button
-          type="button"
-          className="publisher-comments-toggle"
-          aria-expanded={open}
-          aria-controls={`${id}-settings`}
-          onClick={() => setOpen((value) => !value)}
-        >
-          <span className="publisher-entity-module__icon is-comments" aria-hidden>
-            <ChatBubble />
-          </span>
-          <span className="publisher-entity-module__copy">
-            <strong>Комментарии</strong>
-          </span>
-          <NavArrowRight className={open ? 'is-open' : undefined} aria-hidden />
-        </button>
-        {switchControl('Включить комментарии', enabled, (value) =>
-          chatComments
-            ? toggle('commentsEnabled', value)
-            : onChange({ channelCommentsEnabled: value }),
-        )}
-      </div>
-      <div id={`${id}-settings`} hidden={!open}>
-        {open ? (
-          <div className="publisher-entity-module__settings">
-            {chatComments ? (
-              <>
-                <div className="publisher-entity-module__setting">
-                  <span>Сообщения администраторов</span>
-                  {switchControl(
-                    'Комментарии для сообщений администраторов',
-                    chatComments.commentsAdminsEnabled,
-                    (value) => toggle('commentsAdminsEnabled', value),
-                    !enabled,
-                  )}
-                </div>
-                <fieldset className="publisher-comments-modes">
-                  <legend className="publisher-comments-sr-only">Режим комментариев</legend>
-                  {MODES.map((mode) => (
-                    <div className="publisher-comments-mode" key={mode.label}>
-                      <label>
-                        <input
-                          type="radio"
-                          name={`${id}-mode`}
-                          checked={
-                            Boolean(chatComments.commentsReplaceOriginalEnabled) === mode.replace
-                          }
-                          disabled={pending || !enabled || !chatComments.commentsAdminsEnabled}
-                          onChange={() => toggle('commentsReplaceOriginalEnabled', mode.replace)}
-                        />
-                        <span>{mode.label}</span>
-                      </label>
-                      <button
-                        type="button"
-                        className="publisher-comments-info"
-                        aria-label={`О режиме «${mode.label}»`}
-                        title={`О режиме «${mode.label}»`}
-                        aria-haspopup="dialog"
-                        onClick={() => setHint(mode)}
-                      >
-                        <InfoCircle aria-hidden />
-                      </button>
-                    </div>
-                  ))}
-                </fieldset>
-                <div className="publisher-entity-module__setting">
-                  <span>Посты Публика</span>
-                  {switchControl(
-                    'Комментарии для постов Публика',
-                    chatComments.commentsChatBroadcastsEnabled,
-                    (value) => toggle('commentsChatBroadcastsEnabled', value),
-                    !enabled,
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="publisher-entity-module__setting">
-                <span>Под постами канала</span>
-                <button
-                  type="button"
-                  className="publisher-comments-info"
-                  aria-label="О комментариях канала"
-                  title="О комментариях канала"
-                  aria-haspopup="dialog"
-                  onClick={() =>
-                    setHint({
-                      label: 'Комментарии канала',
-                      info: 'Публик добавляет кнопку комментариев под новыми постами канала. Обсуждение открывается в мини-приложении.',
-                    })
-                  }
-                >
-                  <InfoCircle aria-hidden />
-                </button>
-              </div>
+      <button
+        type="button"
+        className="publisher-comments-toggle"
+        aria-expanded={open}
+        aria-controls={`${id}-settings`}
+        aria-haspopup="dialog"
+        onClick={() => setOpen(true)}
+      >
+        <span className="publisher-entity-module__icon is-comments" aria-hidden>
+          <ChatBubble />
+        </span>
+        <span className="publisher-entity-module__copy">
+          <strong>Комментарии</strong>
+        </span>
+        <NavArrowRight aria-hidden />
+      </button>
+      {open ? (
+        <Suspense fallback={null}>
+          <LazySettingsDrilldownPanel
+            id={`${id}-workspace`}
+            open
+            title="Комментарии"
+            summary={entityTitle}
+            variant="screen"
+            overlayClassName="publisher-comments-overlay publisher-comments-workspace-overlay"
+            className="publisher-comments-dialog publisher-comments-workspace"
+            headerAction={switchControl('Включить комментарии', enabled, (value) =>
+              chatComments
+                ? toggle('commentsEnabled', value)
+                : onChange({ channelCommentsEnabled: value }),
             )}
-          </div>
-        ) : null}
-      </div>
+            onClose={() => {
+              setHint(null);
+              setOpen(false);
+            }}
+          >
+            <div id={`${id}-settings`}>
+              <div className="publisher-entity-module__settings">
+                {chatComments ? (
+                  <>
+                    <div className="publisher-entity-module__setting">
+                      <span>Сообщения администраторов</span>
+                      {switchControl(
+                        'Комментарии для сообщений администраторов',
+                        chatComments.commentsAdminsEnabled,
+                        (value) => toggle('commentsAdminsEnabled', value),
+                        !enabled,
+                      )}
+                    </div>
+                    <fieldset className="publisher-comments-modes">
+                      <legend className="publisher-comments-sr-only">Режим комментариев</legend>
+                      {MODES.map((mode) => (
+                        <div className="publisher-comments-mode" key={mode.label}>
+                          <label>
+                            <input
+                              type="radio"
+                              name={`${id}-mode`}
+                              checked={
+                                Boolean(chatComments.commentsReplaceOriginalEnabled) ===
+                                mode.replace
+                              }
+                              disabled={pending || !enabled || !chatComments.commentsAdminsEnabled}
+                              onChange={() =>
+                                toggle('commentsReplaceOriginalEnabled', mode.replace)
+                              }
+                            />
+                            <span>{mode.label}</span>
+                          </label>
+                          <button
+                            type="button"
+                            className="publisher-comments-info"
+                            aria-label={`О режиме «${mode.label}»`}
+                            title={`О режиме «${mode.label}»`}
+                            aria-haspopup="dialog"
+                            onClick={() => setHint(mode)}
+                          >
+                            <InfoCircle aria-hidden />
+                          </button>
+                        </div>
+                      ))}
+                    </fieldset>
+                    <div className="publisher-entity-module__setting">
+                      <span>Посты Публика</span>
+                      {switchControl(
+                        'Комментарии для постов Публика',
+                        chatComments.commentsChatBroadcastsEnabled,
+                        (value) => toggle('commentsChatBroadcastsEnabled', value),
+                        !enabled,
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="publisher-entity-module__setting">
+                    <span>Под постами канала</span>
+                    <button
+                      type="button"
+                      className="publisher-comments-info"
+                      aria-label="О комментариях канала"
+                      title="О комментариях канала"
+                      aria-haspopup="dialog"
+                      onClick={() =>
+                        setHint({
+                          label: 'Комментарии канала',
+                          info: 'Публик добавляет кнопку комментариев под новыми постами канала. Обсуждение открывается в мини-приложении.',
+                        })
+                      }
+                    >
+                      <InfoCircle aria-hidden />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </LazySettingsDrilldownPanel>
+        </Suspense>
+      ) : null}
       {hint ? (
         <Suspense fallback={null}>
           <LazySettingsDrilldownPanel

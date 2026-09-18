@@ -77,11 +77,25 @@ try {
       await applyNativeVisualMode(page, profile);
       assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
       assert.equal(await page.getByRole('radio').count(), 0);
+      assert.equal(await page.getByLabel('Включить комментарии', { exact: true }).count(), 0);
       await page.screenshot({
         path: path.join(output, `${profile.name}-${colorScheme}-collapsed.png`),
       });
-      await select(page.getByLabel('Включить комментарии', { exact: true }));
       await toggle.click();
+      const workspace = page.getByRole('dialog', { name: 'Комментарии', exact: true });
+      await workspace.waitFor();
+      assert.equal(
+        await page
+          .locator('.publisher-entity-modules-page input[aria-label="Включить комментарии"]')
+          .count(),
+        0,
+      );
+      const screen = await workspace.boundingBox();
+      assert.ok(
+        screen.y <= 1 && screen.height >= profile.device.viewport.height - 1,
+        JSON.stringify(screen),
+      );
+      await select(page.getByLabel('Включить комментарии', { exact: true }));
       await select(page.getByLabel('Комментарии для сообщений администраторов', { exact: true }));
       const replacement = page.getByRole('radio', { name: 'От имени бота', exact: true });
       await select(replacement);
@@ -90,24 +104,27 @@ try {
           window.publisherCommentsTest.changes.at(-1)?.chatComments
             ?.commentsReplaceOriginalEnabled === true,
       );
+      await page.keyboard.press('Escape');
+      await workspace.waitFor({ state: 'hidden' });
       await page.getByRole('button', { name: 'Обновить данные', exact: true }).click();
+      await toggle.click();
+      await workspace.waitFor();
       assert.equal(await replacement.isChecked(), true);
       await page.screenshot({
-        path: path.join(output, `${profile.name}-${colorScheme}-expanded.png`),
+        path: path.join(output, `${profile.name}-${colorScheme}-workspace.png`),
       });
-      const metrics = await page
-        .locator('[data-publisher-module="comments"]')
-        .evaluate((element) => ({
-          overflow: element.scrollWidth - element.clientWidth,
-          outside: [...element.querySelectorAll('label, button')].some((control) => {
-            const rect = control.getBoundingClientRect();
-            return rect.left < 0 || rect.right > innerWidth + 1;
-          }),
-        }));
+      const metrics = await page.locator('.publisher-comments-workspace').evaluate((element) => ({
+        overflow: element.scrollWidth - element.clientWidth,
+        outside: [...element.querySelectorAll('label, button')].some((control) => {
+          const rect = control.getBoundingClientRect();
+          return rect.left < 0 || rect.right > innerWidth + 1;
+        }),
+      }));
       assert.ok(metrics.overflow <= 1 && !metrics.outside, JSON.stringify(metrics));
       await page.getByRole('button', { name: 'О режиме «От имени бота»', exact: true }).click();
-      await page.getByRole('dialog').waitFor();
-      const dialogLayout = await page.getByRole('dialog').evaluate((dialog) => {
+      const info = page.getByRole('dialog', { name: 'От имени бота', exact: true });
+      await info.waitFor();
+      const dialogLayout = await info.evaluate((dialog) => {
         const rect = dialog.getBoundingClientRect();
         const copy = dialog.querySelector('p');
         const text = copy.getBoundingClientRect();
@@ -127,20 +144,23 @@ try {
       );
       await page.screenshot({ path: path.join(output, `${profile.name}-${colorScheme}-info.png`) });
       await page.keyboard.press('Escape');
-      await page.getByRole('dialog').waitFor({ state: 'hidden' });
+      await info.waitFor({ state: 'hidden' });
+      await workspace.waitFor();
       await page.evaluate(() => window.publisherCommentsTest.failNext());
       await page.getByRole('radio', { name: 'Кнопка к сообщению', exact: true }).click();
       await page.getByText('Не удалось сохранить', { exact: true }).waitFor();
       assert.equal(await replacement.isChecked(), true);
+      await page.keyboard.press('Escape');
+      await workspace.waitFor({ state: 'hidden' });
       await toggle.click();
-      await toggle.click();
+      await workspace.waitFor();
       assert.equal(await replacement.isChecked(), true);
       await page.goto(`${base}?channel=1`);
       await toggle.waitFor();
       assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
       await toggle.click();
       await page.getByRole('button', { name: 'О комментариях канала', exact: true }).click();
-      await page.getByRole('dialog').waitFor();
+      await page.getByRole('dialog', { name: 'Комментарии канала', exact: true }).waitFor();
       assert.deepEqual(errors, []);
       await context.close();
     }
