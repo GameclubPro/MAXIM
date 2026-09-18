@@ -133,6 +133,15 @@ of oldest pending-event age. The same 60-second action snapshot still contained 
 out of 1,501 actions, with zero critical failures: the journal correction does not resolve
 every MAX action failure. The existing per-entity/not-found follow-up gates remain necessary.
 
+A second brief MAX-action error-rate breach occurred around 16:05 UTC (35 failures out of
+1,550 actions, zero critical failures), restarting automatic stabilization despite low queue
+age. Fresh bounded logs still included moderation-delete 404/not.found and missing permissions;
+the coalesced logs do not identify every failed action. The governor returned to `normal` /
+`healthy` again at 16:10:32 UTC without intervention. Final ingress/admin readiness and public
+liveness passed at 16:10:53 UTC, with queue age 0.485-0.525 seconds and six noncritical failures
+out of 1,507 actions. These transient mode changes and remaining failures are not erased by the
+successful release or by the journal freshness fix.
+
 Deployment also reported that production `.env` lacks `POSTGRES_PASSWORD` and Compose still
 uses its legacy compatibility fallback. No secret was printed or changed. Before any separately
 planned PostgreSQL recreation, an operator must synchronize this setting with the current
