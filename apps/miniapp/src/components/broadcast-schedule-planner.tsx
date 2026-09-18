@@ -10,6 +10,7 @@ import {
   type PointerEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { Xmark } from 'iconoir-react';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { TimeField } from './ui/time-field';
 import { cn } from '../lib/cn';
@@ -84,6 +85,7 @@ import {
 import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import './broadcast-schedule-planner.css';
+import './broadcast-schedule-planner-precise.css';
 
 type BroadcastSchedulePlannerProps = {
   value: string[];
@@ -116,6 +118,7 @@ type BroadcastSchedulePlannerProps = {
   onCycleChange?: (cycle: BroadcastCycleDraft) => void;
   viewMode?: 'compose' | 'calendar';
   allowRecipe?: boolean;
+  preciseTime?: boolean;
 };
 
 export type BroadcastSchedulePlannerSelectionState = {
@@ -184,7 +187,9 @@ export function BroadcastSchedulePlanner({
   onCycleChange,
   viewMode = 'compose',
   allowRecipe = true,
+  preciseTime = false,
 }: BroadcastSchedulePlannerProps) {
+  const minuteStep = preciseTime ? 1 : 30;
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   const liveNow = useMemo(() => new Date(liveNowMs), [liveNowMs]);
   const liveTodayKey = getBroadcastScheduleDayKey(liveNow);
@@ -252,8 +257,8 @@ export function BroadcastSchedulePlanner({
     applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
   const selectedTargetMinutes =
     applyToAllPickedDays && pickedDayKeys.length > 1
-      ? getCommonSelectedMinutesForDays(targetDayKeys, normalizedValue)
-      : getSelectedMinutesForDay(activeDayKey, normalizedValue);
+      ? getCommonSelectedMinutesForDays(targetDayKeys, normalizedValue, minuteStep)
+      : getSelectedMinutesForDay(activeDayKey, normalizedValue, minuteStep);
   const selectedTargetMinuteLabels = selectedTargetMinutes.map(formatMinuteLabel);
   const slotsByDay = useMemo(() => buildSlotsByDay(normalizedValue), [normalizedValue]);
   const recipeOccupiedSlots = occupiedSlotList.filter(
@@ -1081,7 +1086,7 @@ export function BroadcastSchedulePlanner({
     }
 
     setCustomTimeValue('');
-    toggleSlot(normalizeBroadcastPlannerTimeMinutes(parsedMinutes));
+    toggleSlot(normalizeBroadcastPlannerTimeMinutes(parsedMinutes, minuteStep));
   }
 
   const monthCells = getMonthCells(visibleMonthKey);
@@ -2064,23 +2069,42 @@ export function BroadcastSchedulePlanner({
                           className="broadcast-planner__selected-strip"
                           aria-label="Выбранное время"
                         >
-                          {selectedTargetMinuteLabels.map((label) => (
-                            <span key={label} className="broadcast-planner__selected-chip">
-                              {label}
-                            </span>
-                          ))}
+                          {selectedTargetMinuteLabels.map((label) =>
+                            preciseTime ? (
+                              <button
+                                key={label}
+                                type="button"
+                                className="broadcast-planner__selected-chip is-removable"
+                                aria-label={`Удалить время ${label}`}
+                                title={`Удалить время ${label}`}
+                                disabled={disabled}
+                                onClick={() => {
+                                  const minutes = parseBroadcastPlannerTimeLabel(label);
+                                  if (minutes !== null) toggleSlot(minutes);
+                                }}
+                              >
+                                <span>{label}</span>
+                                <Xmark aria-hidden />
+                              </button>
+                            ) : (
+                              <span key={label} className="broadcast-planner__selected-chip">
+                                {label}
+                              </span>
+                            ),
+                          )}
                         </div>
                       ) : null}
 
                       <div className="broadcast-planner__custom-time">
                         <TimeField
-                          label="+ время"
+                          label={preciseTime ? 'Точное время' : '+ время'}
                           value={customTimeValue}
-                          placeholder="+ время"
+                          placeholder={preciseTime ? 'Точное время' : '+ время'}
                           allowEmpty
                           clearLabel="Очистить"
                           variant="compact"
-                          minuteStep={30}
+                          minuteStep={minuteStep}
+                          precise={preciseTime}
                           disabled={disabled}
                           onChange={(nextValue) => {
                             setCustomTimeValue(nextValue);

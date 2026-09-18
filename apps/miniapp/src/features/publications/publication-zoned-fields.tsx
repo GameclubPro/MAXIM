@@ -58,7 +58,7 @@ export function PublicationOnceFields({
         label="Время"
         value={time}
         allowEmpty
-        minuteStep={30}
+        precise
         disabled={disabled}
         onChange={(value) =>
           onChange(date, value, parsePublicationScheduleField(`${date}T${value}`, timezone))

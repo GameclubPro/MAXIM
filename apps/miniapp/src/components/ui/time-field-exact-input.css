@@ -1,0 +1,146 @@
+@layer components {
+  .time-field-sheet--precise {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .time-field-sheet--precise .time-field-sheet__panel {
+    min-height: 0;
+    align-self: end;
+    max-height: min(100%, 560px);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    border-radius: 8px 8px 0 0;
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    gap: 12px;
+  }
+
+  .time-field-sheet--precise .time-field-sheet__head {
+    color: var(--color-ink);
+  }
+
+  .time-field-sheet--precise .time-field-sheet__head small {
+    display: none;
+  }
+
+  .time-field-sheet--precise .time-field-sheet__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .time-field-sheet--precise .time-field-sheet__actions--with-clear {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .time-field-sheet--precise .time-field-sheet__button {
+    font-size: 0.8125rem;
+    box-shadow: none;
+  }
+
+  .time-field-sheet--precise .time-field-sheet__button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .time-field-exact {
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    padding: 2px;
+  }
+
+  .time-field-exact__parts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .time-field-exact__part,
+  .time-field-exact__part label {
+    display: grid;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .time-field-exact__part label > span {
+    color: var(--color-ink-muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+
+  .time-field-exact__part input {
+    width: 100%;
+    height: 64px;
+    min-width: 0;
+    padding: 6px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 2rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  .time-field-exact__part input[aria-invalid='true'] {
+    border-color: var(--color-danger);
+  }
+
+  .time-field-exact__steppers {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .time-field-exact__steppers button,
+  .time-field-exact__presets button {
+    min-width: 0;
+    min-height: 44px;
+    display: grid;
+    place-items: center;
+    padding: 4px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 0.875rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .time-field-exact__steppers svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .time-field-exact__steppers button:disabled {
+    opacity: 0.45;
+  }
+
+  .time-field-exact__presets {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .time-field-exact__presets button[aria-pressed='true'] {
+    border-color: var(--color-success);
+    background: var(--color-success);
+    color: var(--color-surface);
+  }
+
+  .time-field-exact :is(input, button):focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  .time-field-exact__error {
+    min-height: 26px;
+    display: grid;
+    align-items: center;
+    color: var(--color-danger);
+    font-size: 0.75rem;
+  }
+}

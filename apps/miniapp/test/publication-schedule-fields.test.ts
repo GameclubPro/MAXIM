@@ -52,6 +52,10 @@ test('publication schedule rejects malformed dates and DST gaps', () => {
 });
 
 test('adding recurrence times skips duplicates and wraps around midnight', () => {
+  assert.equal(getNextPublicationRecurrenceTime(['09:17']), '10:17');
+  assert.equal(getNextPublicationRecurrenceTime(['09:17', '10:32']), '11:47');
+  assert.equal(getNextPublicationRecurrenceTime(['23:17', '00:47']), '02:17');
+  assert.equal(getNextPublicationRecurrenceTime(['00:00', '12:00']), '13:00');
   assert.equal(getNextPublicationRecurrenceTime(['17:30', '18:00']), '18:30');
   assert.equal(getNextPublicationRecurrenceTime(['00:00', '23:30']), '00:30');
   let times = ['09:00'];

@@ -22,9 +22,16 @@ export function getNextPublicationRecurrenceTime(times: readonly string[]): stri
   const last = times.at(-1) ?? '08:00';
   const start = new Date(`2000-01-01T${last}:00Z`);
   if (!Number.isFinite(start.getTime())) start.setTime(Date.UTC(2000, 0, 1, 8));
-  for (let step = 1; step <= 48; step += 1) {
-    const time = new Date(start.getTime() + step * 30 * 60_000).toISOString().slice(11, 16);
-    if (!times.includes(time)) return time;
+  const previous = Date.parse(`2000-01-01T${times.at(-2)}:00Z`);
+  const gap = ((start.getTime() - previous) / 60_000 + 24 * 60) % (24 * 60);
+  const interval = gap > 0 && gap <= 12 * 60 ? gap : 60;
+  for (const increment of [interval, 60]) {
+    for (let step = 1; step <= times.length + 1; step += 1) {
+      const time = new Date(start.getTime() + step * increment * 60_000)
+        .toISOString()
+        .slice(11, 16);
+      if (!times.includes(time)) return time;
+    }
   }
   return '09:00';
 }

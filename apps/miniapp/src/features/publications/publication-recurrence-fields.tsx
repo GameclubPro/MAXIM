@@ -111,7 +111,7 @@ export function PublicationRecurrenceFields({
             <TimeField
               label={`Время ${index + 1}`}
               value={time}
-              minuteStep={30}
+              precise
               onChange={(value) => updateRecurrenceTime(index, value)}
               disabled={isBusy}
             />

@@ -744,7 +744,7 @@ describe('PublicationService', () => {
     expect(occurrenceFindMany).toHaveBeenCalledTimes(3);
   });
 
-  it('anchors recurrence and rejects off-grid local times', () => {
+  it('anchors recurrence and accepts exact-minute local times', () => {
     const { service } = createService();
     const now = new Date('2026-07-10T09:00:00.000Z');
 
@@ -771,7 +771,7 @@ describe('PublicationService', () => {
       }),
     );
 
-    expect(() =>
+    expect(
       (service as any).normalizeSchedule(
         {
           mode: 'once',
@@ -781,7 +781,7 @@ describe('PublicationService', () => {
         },
         now,
       ),
-    ).toThrow('шагом 30 минут');
+    ).toEqual(expect.objectContaining({ at: '2026-07-10T12:15:00.000+03:00' }));
   });
 
   it('returns a bad request for an unknown IANA timezone', () => {
@@ -818,7 +818,7 @@ describe('PublicationService', () => {
         },
         new Date('2026-07-10T09:00:00.000Z'),
       ),
-    ).toThrow('шагом 30 минут');
+    ).toThrow('без секунд');
   });
 
   it('rejects a bounded recurrence with no possible future occurrence', () => {

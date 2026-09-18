@@ -1,10 +1,16 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
 import './time-field.css';
+
+const LazyTimeFieldExactInput = lazy(() =>
+  import('./time-field-exact-input').then((module) => ({
+    default: module.TimeFieldExactInput,
+  })),
+);
 
 type TimeParts = {
   hour: number;
@@ -24,6 +30,7 @@ type TimeFieldProps = {
   placeholder?: string;
   variant?: 'default' | 'embedded' | 'compact';
   minuteStep?: number;
+  precise?: boolean;
   onChange: (nextValue: string) => void;
 };
 
@@ -100,6 +107,7 @@ export function TimeField({
   placeholder = 'Не задано',
   variant = 'default',
   minuteStep = 1,
+  precise = false,
   onChange,
 }: TimeFieldProps) {
   const reactId = useId();
@@ -109,6 +117,7 @@ export function TimeField({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<TimeParts>(() => parseTime(value));
   const [draftTouched, setDraftTouched] = useState(false);
+  const [draftValid, setDraftValid] = useState(true);
   const panelRef = useRef<HTMLElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const overlayStyle = useVisualViewportOverlayStyle(open);
@@ -134,10 +143,12 @@ export function TimeField({
 
     setDraft(parseTime(value));
     setDraftTouched(false);
+    setDraftValid(true);
     setOpen(true);
   };
 
   const apply = () => {
+    if (!draftValid || disabled) return;
     if (isEmpty && !draftTouched) {
       close();
       return;
@@ -230,13 +241,16 @@ export function TimeField({
 
     setDraft(parseTime(value));
     setDraftTouched(false);
+    setDraftValid(true);
     const frame = window.requestAnimationFrame(() => {
       const panel = panelRef.current;
       const selectedOptions = panel?.querySelectorAll('.time-field-sheet__option.is-active');
       const selectedHour = panel?.querySelector<HTMLButtonElement>(
         '.time-field-sheet__option.is-active[data-time-part="hour"]',
       );
-      (selectedHour ?? panel)?.focus();
+      if (!panel?.contains(document.activeElement)) {
+        (selectedHour ?? panel)?.focus();
+      }
       selectedOptions?.forEach((option) => {
         option.scrollIntoView({ block: 'center', inline: 'nearest' });
       });
@@ -315,7 +329,11 @@ export function TimeField({
   const sheet =
     open && portalTarget
       ? createPortal(
-          <div className="time-field-sheet" style={overlayStyle} aria-hidden={!open}>
+          <div
+            className={cn('time-field-sheet', precise && 'time-field-sheet--precise')}
+            style={overlayStyle}
+            aria-hidden={!open}
+          >
             <button
               type="button"
               className="time-field-sheet__backdrop"
@@ -341,63 +359,78 @@ export function TimeField({
                 <TimeFieldClockIcon size={22} />
               </div>
 
-              <div className="time-field-sheet__wheels" aria-label="Выбор времени">
-                <div className="time-field-sheet__column">
-                  <span className="time-field-sheet__column-label">Часы</span>
-                  <div className="time-field-sheet__options" role="listbox" aria-label="Часы">
-                    {HOURS.map((hour) => {
-                      const active = hour === draft.hour;
+              {precise ? (
+                <Suspense fallback={<div aria-busy="true" style={{ minHeight: 280 }} />}>
+                  <LazyTimeFieldExactInput
+                    key={value}
+                    initialValue={parseTime(value)}
+                    onChange={(next) => {
+                      setDraft(next);
+                      setDraftTouched(true);
+                    }}
+                    onValidityChange={setDraftValid}
+                    onComplete={apply}
+                  />
+                </Suspense>
+              ) : (
+                <div className="time-field-sheet__wheels" aria-label="Выбор времени">
+                  <div className="time-field-sheet__column">
+                    <span className="time-field-sheet__column-label">Часы</span>
+                    <div className="time-field-sheet__options" role="listbox" aria-label="Часы">
+                      {HOURS.map((hour) => {
+                        const active = hour === draft.hour;
 
-                      return (
-                        <button
-                          key={hour}
-                          type="button"
-                          className={cn('time-field-sheet__option', active && 'is-active')}
-                          aria-selected={active}
-                          role="option"
-                          tabIndex={active ? 0 : -1}
-                          data-time-part="hour"
-                          data-time-value={hour}
-                          onClick={() => setDraftPart('hour', hour)}
-                          onKeyDown={(event) => handleOptionKeyDown(event, 'hour')}
-                        >
-                          {padTimePart(hour)}
-                        </button>
-                      );
-                    })}
+                        return (
+                          <button
+                            key={hour}
+                            type="button"
+                            className={cn('time-field-sheet__option', active && 'is-active')}
+                            aria-selected={active}
+                            role="option"
+                            tabIndex={active ? 0 : -1}
+                            data-time-part="hour"
+                            data-time-value={hour}
+                            onClick={() => setDraftPart('hour', hour)}
+                            onKeyDown={(event) => handleOptionKeyDown(event, 'hour')}
+                          >
+                            {padTimePart(hour)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="time-field-sheet__divider" aria-hidden>
+                    :
+                  </div>
+
+                  <div className="time-field-sheet__column">
+                    <span className="time-field-sheet__column-label">Минуты</span>
+                    <div className="time-field-sheet__options" role="listbox" aria-label="Минуты">
+                      {minuteOptions.map((minute) => {
+                        const active = minute === draft.minute;
+
+                        return (
+                          <button
+                            key={minute}
+                            type="button"
+                            className={cn('time-field-sheet__option', active && 'is-active')}
+                            aria-selected={active}
+                            role="option"
+                            tabIndex={active ? 0 : -1}
+                            data-time-part="minute"
+                            data-time-value={minute}
+                            onClick={() => setDraftPart('minute', minute)}
+                            onKeyDown={(event) => handleOptionKeyDown(event, 'minute')}
+                          >
+                            {padTimePart(minute)}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
-
-                <div className="time-field-sheet__divider" aria-hidden>
-                  :
-                </div>
-
-                <div className="time-field-sheet__column">
-                  <span className="time-field-sheet__column-label">Минуты</span>
-                  <div className="time-field-sheet__options" role="listbox" aria-label="Минуты">
-                    {minuteOptions.map((minute) => {
-                      const active = minute === draft.minute;
-
-                      return (
-                        <button
-                          key={minute}
-                          type="button"
-                          className={cn('time-field-sheet__option', active && 'is-active')}
-                          aria-selected={active}
-                          role="option"
-                          tabIndex={active ? 0 : -1}
-                          data-time-part="minute"
-                          data-time-value={minute}
-                          onClick={() => setDraftPart('minute', minute)}
-                          onKeyDown={(event) => handleOptionKeyDown(event, 'minute')}
-                        >
-                          {padTimePart(minute)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              )}
 
               <div
                 className={cn(
@@ -424,6 +457,7 @@ export function TimeField({
                 <button
                   type="button"
                   className="time-field-sheet__button time-field-sheet__button--apply"
+                  disabled={!draftValid || disabled}
                   onClick={apply}
                 >
                   Применить

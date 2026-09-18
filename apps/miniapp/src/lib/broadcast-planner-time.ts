@@ -266,14 +266,16 @@ export function snapMinutesToStep(minutes: number): number {
   return Math.ceil(minutes / BROADCAST_SCHEDULE_STEP_MINUTES) * BROADCAST_SCHEDULE_STEP_MINUTES;
 }
 
-export function normalizeBroadcastPlannerTimeMinutes(value: number): number {
+export function normalizeBroadcastPlannerTimeMinutes(
+  value: number,
+  minuteStep: 1 | 30 = BROADCAST_SCHEDULE_STEP_MINUTES,
+): number {
   if (!Number.isFinite(value)) {
     return 0;
   }
 
-  const lastSlot = 24 * 60 - BROADCAST_SCHEDULE_STEP_MINUTES;
-  const snapped =
-    Math.round(value / BROADCAST_SCHEDULE_STEP_MINUTES) * BROADCAST_SCHEDULE_STEP_MINUTES;
+  const lastSlot = 24 * 60 - minuteStep;
+  const snapped = Math.round(value / minuteStep) * minuteStep;
   return Math.min(lastSlot, Math.max(0, snapped));
 }
 
@@ -416,7 +418,7 @@ export function buildBroadcastDailyScheduleSlots({
 }: BroadcastDailySlotsOptions): string[] {
   const normalizedDayKeys = sortDayKeys([...dayKeys]);
   const normalizedMinutes = Array.from(
-    new Set(minutes.map(normalizeBroadcastPlannerTimeMinutes)),
+    new Set(minutes.map((minute) => normalizeBroadcastPlannerTimeMinutes(minute))),
   ).sort((left, right) => left - right);
 
   return sortAndUniqueBroadcastSlots(
@@ -438,17 +440,22 @@ export function filterBroadcastSlotsByDayKeys(
   );
 }
 
-export function getSelectedMinutesForDay(dayKey: string, slots: readonly string[]): number[] {
+export function getSelectedMinutesForDay(
+  dayKey: string,
+  slots: readonly string[],
+  minuteStep: 1 | 30 = BROADCAST_SCHEDULE_STEP_MINUTES,
+): number[] {
   return getSelectedDaySlots(dayKey, [...slots])
     .map((slot) => getSlotMinutes(slot))
     .filter((value): value is number => value !== null)
-    .map(normalizeBroadcastPlannerTimeMinutes)
+    .map((minute) => normalizeBroadcastPlannerTimeMinutes(minute, minuteStep))
     .sort((left, right) => left - right);
 }
 
 export function getCommonSelectedMinutesForDays(
   dayKeys: readonly string[],
   slots: readonly string[],
+  minuteStep: 1 | 30 = BROADCAST_SCHEDULE_STEP_MINUTES,
 ): number[] {
   const normalizedDayKeys = sortDayKeys([...dayKeys]);
   if (normalizedDayKeys.length === 0) {
@@ -456,10 +463,10 @@ export function getCommonSelectedMinutesForDays(
   }
 
   const [firstDayKey, ...restDayKeys] = normalizedDayKeys;
-  const common = new Set(getSelectedMinutesForDay(firstDayKey, slots));
+  const common = new Set(getSelectedMinutesForDay(firstDayKey, slots, minuteStep));
 
   for (const dayKey of restDayKeys) {
-    const dayMinutes = new Set(getSelectedMinutesForDay(dayKey, slots));
+    const dayMinutes = new Set(getSelectedMinutesForDay(dayKey, slots, minuteStep));
     for (const minute of Array.from(common)) {
       if (!dayMinutes.has(minute)) {
         common.delete(minute);

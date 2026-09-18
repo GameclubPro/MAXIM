@@ -2325,6 +2325,7 @@ export function PublicationsPage({
             ) : (
               <Suspense fallback={null}>
                 <LazyBroadcastSchedulePlanner
+                  preciseTime
                   value={draft.scheduledSlots}
                   occupiedSlots={
                     calendarAvailabilityQuery.data?.slots.map((slot) => slot.scheduledAt) ?? []
