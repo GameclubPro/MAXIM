@@ -42,7 +42,9 @@ export class ReportViewService {
     });
   }
 
-  async list(chatId: string, cursor?: string) {
+  async list(chatId: string, cursor?: unknown) {
+    if (cursor !== undefined && typeof cursor !== 'string')
+      throw new BadRequestException('Некорректный курсор.');
     if (cursor && cursor.length > 200) throw new BadRequestException('Некорректный курсор.');
     const anchor = cursor
       ? await this.prisma.chatReportCase.findFirst({ where: { id: cursor, chatId } })

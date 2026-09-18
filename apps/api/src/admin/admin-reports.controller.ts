@@ -15,7 +15,7 @@ export class AdminReportsController {
   async list(
     @Param('chatId') chatId: string,
     @CurrentUser() user: AuthUser,
-    @Query('cursor') cursor?: string,
+    @Query('cursor') cursor?: unknown,
   ) {
     await this.access.assertChatAdminAccess(chatId, user);
     return this.reports.list(chatId, cursor);
