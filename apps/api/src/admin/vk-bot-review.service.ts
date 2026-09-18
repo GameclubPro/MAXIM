@@ -27,7 +27,6 @@ import { BackgroundRuntimeGovernorService } from '../system/background-runtime-g
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import { VkPublishService } from './vk-publish.service';
-import { resolveNextAllowedVkAutoPublishAt } from './vk-autopublish-timing';
 import {
   isVkMaxSendAmbiguous,
   isVkMaxSendConfirmedPersistencePending,
@@ -48,10 +47,19 @@ type ReviewRow = Prisma.VkBotReviewGetPayload<{
 const includePost = { post: { include: { source: true, chat: true } } } as const;
 const LATER = new Date('9999-01-01T00:00:00Z');
 const LEASE_MS = 10 * 60_000;
+const CONTINUATION_STATES = new Set([
+  'CONTENT_SENT',
+  'CONTENT_SENDING',
+  'CONTROL_SENDING',
+  'PREPARING',
+]);
+const DRAIN_STATES = [...CONTINUATION_STATES, 'DELIVERED', 'QUEUED', 'ERROR'] as const;
 
 @Injectable()
 export class VkBotReviewService {
   private readonly logger = new Logger(VkBotReviewService.name);
+  private readonly startedAt = new Date();
+  private legacyCalendarDeferralsChecked = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -392,18 +400,11 @@ export class VkBotReviewService {
 
   private async drain(): Promise<void> {
     const now = new Date();
+    await this.releaseLegacyCalendarDeferrals(now);
     const rows: ReviewRow[] = [];
     // FLAG: Finish existing message pairs before admitting new previews. Each literal state
     // gets its own bounded index walk so a large unsent backlog cannot hide its controls.
-    for (const deliveryState of [
-      'CONTENT_SENT',
-      'CONTENT_SENDING',
-      'CONTROL_SENDING',
-      'PREPARING',
-      'DELIVERED',
-      'QUEUED',
-      'ERROR',
-    ]) {
+    for (const deliveryState of DRAIN_STATES) {
       rows.push(
         ...(await this.prisma.vkBotReview.findMany({
           where: {
@@ -417,6 +418,18 @@ export class VkBotReviewService {
         })),
       );
     }
+    // FLAG: Recurring card refreshes must not monopolize the recipient's single step.
+    // Finish in-flight pairs first, then serve deadlines with new deliveries winning ties.
+    rows.sort((left, right) => {
+      const leftPriority = CONTINUATION_STATES.has(left.deliveryState) ? 0 : 1;
+      const rightPriority = CONTINUATION_STATES.has(right.deliveryState) ? 0 : 1;
+      return (
+        leftPriority - rightPriority ||
+        left.nextAttemptAt.getTime() - right.nextAttemptAt.getTime() ||
+        Number(left.deliveryState === 'DELIVERED') - Number(right.deliveryState === 'DELIVERED') ||
+        left.id.localeCompare(right.id)
+      );
+    });
     const recipients = new Set<string>();
     for (const row of rows) {
       const fresh = row.status === 'PENDING' && ['QUEUED', 'ERROR'].includes(row.deliveryState);
@@ -440,7 +453,73 @@ export class VkBotReviewService {
       }
       if (recipients.size >= 5) break;
     }
-    if (rows.length) await this.queue.enqueueTick(5000);
+    if (rows.length) {
+      await this.queue.enqueueTick(5000);
+    } else {
+      await this.scheduleDeferredTick();
+    }
+  }
+
+  private async scheduleDeferredTick(): Promise<void> {
+    let nextAttemptMs = Number.POSITIVE_INFINITY;
+    // FLAG: An empty due batch does not mean an empty inbox. Keep a wake-up for deferred
+    // rows so delivered-card maintenance cannot repeatedly postpone unsent reviews.
+    for (const deliveryState of DRAIN_STATES) {
+      const next = await this.prisma.vkBotReview.findFirst({
+        where: {
+          post: this.ownership.getPublisherScope(),
+          deliveryState,
+          nextAttemptAt: { lt: LATER },
+        },
+        select: { nextAttemptAt: true },
+        orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
+      });
+      if (next) nextAttemptMs = Math.min(nextAttemptMs, next.nextAttemptAt.getTime());
+    }
+    if (Number.isFinite(nextAttemptMs)) {
+      await this.queue.enqueueTick(Math.max(5000, nextAttemptMs - Date.now()));
+    }
+  }
+
+  private async releaseLegacyCalendarDeferrals(now: Date): Promise<void> {
+    if (this.legacyCalendarDeferralsChecked) return;
+    const retryBoundMs = Math.max(
+      5 * 60_000,
+      this.config.get<number>('BACKGROUND_GOVERNOR_PAUSE_RETRY_AFTER_MS') ?? 120_000,
+    );
+    let exhausted = true;
+    // FLAG: Release only pre-start calendar-sized delays, never send leases, ambiguous
+    // outcomes, terminal sentinels or ordinary retries. Every send still rechecks admission.
+    for (const deliveryState of ['QUEUED', 'ERROR', 'CONTENT_SENT']) {
+      const rows = await this.prisma.vkBotReview.findMany({
+        where: {
+          post: this.ownership.getPublisherScope(),
+          status: 'PENDING',
+          deliveryState,
+          nextAttemptAt: { gt: new Date(now.getTime() + retryBoundMs), lt: LATER },
+          updatedAt: { lt: this.startedAt },
+        },
+        select: { id: true, revision: true, nextAttemptAt: true },
+        orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
+        take: 10,
+      });
+      if (rows.length === 10) exhausted = false;
+      for (const row of rows) {
+        await this.prisma.vkBotReview.updateMany({
+          where: {
+            id: row.id,
+            revision: row.revision,
+            post: this.ownership.getPublisherScope(),
+            status: 'PENDING',
+            deliveryState,
+            nextAttemptAt: row.nextAttemptAt,
+            updatedAt: { lt: this.startedAt },
+          },
+          data: { nextAttemptAt: now },
+        });
+      }
+    }
+    this.legacyCalendarDeferralsChecked = exhausted;
   }
 
   private async advance(row: ReviewRow): Promise<void> {
@@ -560,17 +639,8 @@ export class VkBotReviewService {
       await this.syncCard(row);
       return;
     }
-    const allowedAt = resolveNextAllowedVkAutoPublishAt(now, settings, row.post.source);
-    if (
-      settings.botReviewPaused ||
-      !row.post.source.importEnabled ||
-      !allowedAt ||
-      allowedAt > now
-    ) {
-      await this.defer(
-        row,
-        allowedAt && allowedAt > now ? allowedAt : new Date(now.getTime() + 60_000),
-      );
+    if (settings.botReviewPaused || !row.post.source.importEnabled) {
+      await this.defer(row, new Date(now.getTime() + 60_000));
       return;
     }
     const decision = await this.governor.decide({

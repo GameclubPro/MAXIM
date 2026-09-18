@@ -84,6 +84,7 @@ function fixture() {
     snapshot,
     presentationKey: null,
     lastError: null,
+    nextAttemptAt: new Date(),
     post,
   };
   const prisma = {
@@ -94,7 +95,7 @@ function fixture() {
     vkBotReview: {
       findFirst: jest.fn().mockResolvedValue(row),
       findUnique: jest.fn().mockResolvedValue(row),
-      findMany: jest.fn().mockResolvedValue([row]),
+      findMany: jest.fn().mockImplementation(async ({ select }) => (select ? [] : [row])),
       count: jest.fn().mockResolvedValue(0),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       upsert: jest.fn().mockResolvedValue(row),
@@ -165,6 +166,7 @@ function fixture() {
   );
   const internals = service as unknown as {
     drain(): Promise<void>;
+    releaseLegacyCalendarDeferrals(now: Date): Promise<void>;
     advance(row: unknown): Promise<void>;
     decide(data: unknown): Promise<void>;
   };
@@ -329,14 +331,16 @@ describe('VkBotReviewService', () => {
   it('finishes an existing preview/control pair ahead of new previews', async () => {
     const { internals, row, prisma } = fixture();
     const control = { ...row, deliveryState: 'CONTENT_SENT' };
-    const fresh = { ...row, id: 'review-2', deliveryState: 'QUEUED' };
+    const fresh = { ...row, id: 'review-2', deliveryState: 'QUEUED', nextAttemptAt: new Date(0) };
     prisma.vkBotReview.findMany.mockImplementation(
-      async ({ where }: { where: { deliveryState: string } }) =>
-        where.deliveryState === 'CONTENT_SENT'
-          ? [control]
-          : where.deliveryState === 'QUEUED'
-            ? [fresh]
-            : [],
+      async ({ where, select }: { where: { deliveryState: string }; select?: unknown }) =>
+        select
+          ? []
+          : where.deliveryState === 'CONTENT_SENT'
+            ? [control]
+            : where.deliveryState === 'QUEUED'
+              ? [fresh]
+              : [],
     );
     const advance = jest.spyOn(internals, 'advance').mockResolvedValue(undefined);
     await internals.drain();
@@ -360,14 +364,174 @@ describe('VkBotReviewService', () => {
       post: { ...row.post, chatId: '-2' },
     };
     prisma.vkBotReview.findMany.mockImplementation(
-      async ({ where }: { where: { deliveryState: string } }) =>
-        where.deliveryState === 'QUEUED' ? [blocked, next] : [],
+      async ({ where, select }: { where: { deliveryState: string }; select?: unknown }) =>
+        !select && where.deliveryState === 'QUEUED' ? [blocked, next] : [],
     );
     prisma.vkBotReview.count.mockResolvedValueOnce(5).mockResolvedValueOnce(5).mockResolvedValue(0);
     const advance = jest.spyOn(internals, 'advance').mockResolvedValue(undefined);
     await internals.drain();
     expect(advance).toHaveBeenCalledTimes(1);
     expect(advance).toHaveBeenCalledWith(next);
+  });
+
+  it('delivers the next review without a decision on the first after an idle tick', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-18T10:00:00Z'));
+    try {
+      const { internals, row, prisma, queue, max } = fixture();
+      const delivered = { ...row, nextAttemptAt: new Date(Date.now() - 1_000) };
+      const queued = {
+        ...row,
+        id: 'review-2',
+        postId: 'post-2',
+        post: { ...row.post, id: 'post-2' },
+        deliveryState: 'QUEUED',
+        contentMessageId: null as string | null,
+        controlMessageId: null as string | null,
+        nextAttemptAt: new Date(),
+      };
+      const stored = [delivered, queued];
+      prisma.vkBotReview.findMany.mockImplementation(async ({ where, select }) =>
+        select
+          ? []
+          : stored.filter(
+              (item) =>
+                item.deliveryState === where.deliveryState &&
+                item.nextAttemptAt <= where.nextAttemptAt.lte,
+            ),
+      );
+      prisma.vkBotReview.findFirst.mockImplementation(
+        async ({ where }) =>
+          stored
+            .filter(
+              (item) =>
+                item.deliveryState === where.deliveryState &&
+                item.nextAttemptAt < where.nextAttemptAt.lt,
+            )
+            .sort((a, b) => a.nextAttemptAt.getTime() - b.nextAttemptAt.getTime())[0] ?? null,
+      );
+      prisma.vkBotReview.updateMany.mockImplementation(async ({ where, data }) => {
+        const item = stored.find((item) => item.id === where.id);
+        if (
+          !item ||
+          (where.deliveryState &&
+            typeof where.deliveryState === 'string' &&
+            item.deliveryState !== where.deliveryState)
+        )
+          return { count: 0 };
+        Object.assign(item, data);
+        return { count: 1 };
+      });
+      prisma.vkBotReview.count.mockResolvedValue(1);
+
+      await internals.drain();
+      expect(queued.nextAttemptAt.toISOString()).toBe('2026-09-18T10:00:30.000Z');
+      expect(max.sendMessageImmediateWithId).not.toHaveBeenCalled();
+
+      jest.setSystemTime(new Date('2026-09-18T10:00:05Z'));
+      queue.enqueueTick.mockClear();
+      await internals.drain();
+      expect(queue.enqueueTick).toHaveBeenCalledWith(25_000);
+
+      jest.setSystemTime(new Date('2026-09-18T10:00:30Z'));
+      await internals.drain();
+      expect(queued.deliveryState).toBe('CONTENT_SENT');
+      jest.setSystemTime(new Date('2026-09-18T10:00:35Z'));
+      await internals.drain();
+      expect(queued.deliveryState).toBe('DELIVERED');
+      expect(delivered.status).toBe('PENDING');
+      expect(max.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    'QUEUED',
+    'ERROR',
+    'CONTENT_SENT',
+    'CONTENT_SENDING',
+    'CONTROL_SENDING',
+    'PREPARING',
+    'DELIVERED',
+  ])(
+    'keeps a timed wake-up for deferred %s work without reading message payloads',
+    async (state) => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-09-18T00:00:00Z'));
+      try {
+        const { internals, prisma, queue } = fixture();
+        prisma.vkBotReview.findMany.mockResolvedValue([]);
+        prisma.vkBotReview.findFirst.mockImplementation(async ({ where }) =>
+          where.deliveryState === state
+            ? { nextAttemptAt: new Date('2026-09-18T09:00:00Z') }
+            : null,
+        );
+        await internals.drain();
+        expect(queue.enqueueTick).toHaveBeenCalledWith(9 * 60 * 60_000);
+        expect(prisma.vkBotReview.findFirst).toHaveBeenCalledTimes(7);
+        for (const [query] of prisma.vkBotReview.findFirst.mock.calls) {
+          expect(query).toMatchObject({
+            where: {
+              post: { ownerProfile: 'PUBLISHER', ownerBotId: 'publik_bot' },
+              nextAttemptAt: { lt: new Date('9999-01-01T00:00:00Z') },
+            },
+            select: { nextAttemptAt: true },
+            orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
+          });
+          expect(query.where.deliveryState).not.toBe('AMBIGUOUS');
+        }
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('admits an equally due review before recurring updates of multiple open cards', async () => {
+    const { internals, row, prisma } = fixture();
+    const fresh = { ...row, id: 'review-new', deliveryState: 'QUEUED' };
+    const openCards = Array.from({ length: 4 }, (_, index) => ({ ...row, id: `open-${index}` }));
+    prisma.vkBotReview.findMany.mockImplementation(async ({ where, select }) =>
+      select
+        ? []
+        : where.deliveryState === 'DELIVERED'
+          ? openCards
+          : where.deliveryState === 'QUEUED'
+            ? [fresh]
+            : [],
+    );
+    prisma.vkBotReview.count.mockResolvedValue(4);
+    const advance = jest.spyOn(internals, 'advance').mockResolvedValue(undefined);
+    await internals.drain();
+    expect(advance).toHaveBeenCalledTimes(1);
+    expect(advance).toHaveBeenCalledWith(fresh);
+  });
+
+  it('does not starve overdue approval recovery behind newer incoming reviews', async () => {
+    const { internals, row, prisma } = fixture();
+    const approval = { ...row, status: 'APPROVED', nextAttemptAt: new Date(0) };
+    const fresh = { ...row, id: 'review-new', deliveryState: 'QUEUED' };
+    prisma.vkBotReview.findMany.mockImplementation(async ({ where, select }) =>
+      select
+        ? []
+        : where.deliveryState === 'DELIVERED'
+          ? [approval]
+          : where.deliveryState === 'QUEUED'
+            ? [fresh]
+            : [],
+    );
+    const advance = jest.spyOn(internals, 'advance').mockResolvedValue(undefined);
+    await internals.drain();
+    expect(advance).toHaveBeenCalledTimes(1);
+    expect(advance).toHaveBeenCalledWith(approval);
+  });
+
+  it('stops ticking when no schedulable review remains', async () => {
+    const { internals, prisma, queue } = fixture();
+    prisma.vkBotReview.findMany.mockResolvedValue([]);
+    prisma.vkBotReview.findFirst.mockResolvedValue(null);
+    await internals.drain();
+    expect(queue.enqueueTick).not.toHaveBeenCalled();
   });
 
   it('returns an unattempted stale approval to review without dispatching', async () => {
@@ -439,6 +603,156 @@ describe('VkBotReviewService', () => {
       expect(publish.prepareBotReviewSnapshot).not.toHaveBeenCalled();
     },
   );
+  it.each(['QUEUED', 'CONTENT_SENT'])(
+    'delivers %s at night regardless of publication hours',
+    async (deliveryState) => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-09-18T00:15:00Z'));
+      try {
+        const { internals, row, settings, prisma, max } = fixture();
+        prisma.vkParsingSettings.findUnique.mockResolvedValue({
+          ...settings,
+          schedulerTimezone: 'Europe/Moscow',
+          workHoursStart: '09:00',
+          workHoursEnd: '22:00',
+          quietHoursStart: '22:00',
+          quietHoursEnd: '09:00',
+        });
+        await internals.advance({
+          ...row,
+          deliveryState,
+          contentMessageId: deliveryState === 'CONTENT_SENT' ? row.contentMessageId : null,
+          controlMessageId: null,
+          post: {
+            ...row.post,
+            source: { ...row.post.source, quietHoursStart: '23:00', quietHoursEnd: '08:00' },
+          },
+        });
+        expect(max.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+        expect(prisma.vkBotReview.updateMany).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              deliveryState: deliveryState === 'QUEUED' ? 'CONTENT_SENT' : 'DELIVERED',
+            }),
+          }),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('releases old calendar delays without resetting retry, lease, receipt or quarantine state', async () => {
+    jest.useFakeTimers();
+    const now = new Date('2026-09-18T00:15:00Z');
+    jest.setSystemTime(now);
+    try {
+      const { internals, prisma } = fixture();
+      const base = {
+        revision: 1,
+        status: 'PENDING',
+        deliveryState: 'QUEUED',
+        nextAttemptAt: new Date('2026-09-18T06:00:00Z'),
+        updatedAt: new Date(now.getTime() - 60_000),
+      };
+      const rows = [
+        { ...base, id: 'calendar' },
+        { ...base, id: 'content-receipt', deliveryState: 'CONTENT_SENT' },
+        { ...base, id: 'error-calendar', deliveryState: 'ERROR' },
+        {
+          ...base,
+          id: 'retry',
+          deliveryState: 'ERROR',
+          nextAttemptAt: new Date(now.getTime() + 5 * 60_000),
+        },
+        { ...base, id: 'new-delay', updatedAt: now },
+        { ...base, id: 'preparing', deliveryState: 'PREPARING' },
+        { ...base, id: 'sending', deliveryState: 'CONTENT_SENDING' },
+        { ...base, id: 'sending-controls', deliveryState: 'CONTROL_SENDING' },
+        { ...base, id: 'ambiguous', deliveryState: 'AMBIGUOUS' },
+        { ...base, id: 'terminal', nextAttemptAt: new Date('9999-01-01T00:00:00Z') },
+        { ...base, id: 'approved', status: 'APPROVED' },
+      ];
+      prisma.vkBotReview.findMany.mockImplementation(async ({ where, take }) =>
+        rows
+          .filter(
+            (row) =>
+              row.deliveryState === where.deliveryState &&
+              row.status === where.status &&
+              row.nextAttemptAt > where.nextAttemptAt.gt &&
+              row.nextAttemptAt < where.nextAttemptAt.lt &&
+              row.updatedAt < where.updatedAt.lt,
+          )
+          .slice(0, take),
+      );
+      await internals.releaseLegacyCalendarDeferrals(now);
+      expect(prisma.vkBotReview.updateMany.mock.calls.map(([query]) => query.where.id)).toEqual([
+        'calendar',
+        'error-calendar',
+        'content-receipt',
+      ]);
+      for (const [query] of prisma.vkBotReview.updateMany.mock.calls) {
+        expect(query).toMatchObject({
+          where: {
+            revision: 1,
+            status: 'PENDING',
+            nextAttemptAt: base.nextAttemptAt,
+            updatedAt: { lt: now },
+            post: { ownerProfile: 'PUBLISHER', ownerBotId: 'publik_bot' },
+          },
+          data: { nextAttemptAt: now },
+        });
+        expect(Object.keys(query.data)).toEqual(['nextAttemptAt']);
+      }
+      for (const [query] of prisma.vkBotReview.findMany.mock.calls) {
+        expect(query.take).toBe(10);
+        expect(query.select).toEqual({ id: true, revision: true, nextAttemptAt: true });
+      }
+      await internals.releaseLegacyCalendarDeferrals(now);
+      expect(prisma.vkBotReview.findMany).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('preserves the configured governor retry horizon during legacy delay recovery', async () => {
+    const { internals, prisma, config } = fixture();
+    config.get.mockImplementation((key) =>
+      key === 'BACKGROUND_GOVERNOR_PAUSE_RETRY_AFTER_MS' ? 20 * 60_000 : true,
+    );
+    prisma.vkBotReview.findMany.mockResolvedValue([]);
+    const now = new Date();
+    await internals.releaseLegacyCalendarDeferrals(now);
+    expect(prisma.vkBotReview.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          nextAttemptAt: {
+            gt: new Date(now.getTime() + 20 * 60_000),
+            lt: new Date('9999-01-01T00:00:00Z'),
+          },
+        }),
+      }),
+    );
+  });
+
+  it('continues bounded legacy recovery when a page is full', async () => {
+    const { internals, prisma } = fixture();
+    const now = new Date();
+    prisma.vkBotReview.findMany.mockImplementation(async ({ where }) =>
+      where.deliveryState === 'QUEUED'
+        ? Array.from({ length: 10 }, (_, i) => ({
+            id: `old-${i}`,
+            revision: 1,
+            nextAttemptAt: new Date(now.getTime() + 60 * 60_000),
+          }))
+        : [],
+    );
+    await internals.releaseLegacyCalendarDeferrals(now);
+    expect(prisma.vkBotReview.updateMany).toHaveBeenCalledTimes(10);
+    await internals.releaseLegacyCalendarDeferrals(now);
+    expect(prisma.vkBotReview.findMany).toHaveBeenCalledTimes(6);
+  });
+
   it('persists the send fence before sending and saves a receipt afterwards', async () => {
     const { internals, row, prisma, max } = fixture();
     await internals.advance({
