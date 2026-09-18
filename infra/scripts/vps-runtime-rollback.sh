@@ -83,6 +83,7 @@ fi
 maxim_topology_require_image_text_stop_list_delete_guard "$TARGET_FULL_SHA"
 maxim_topology_require_stop_words_policy_guard "$TARGET_FULL_SHA"
 maxim_topology_require_traffic_protection_guard "$TARGET_FULL_SHA"
+maxim_topology_require_participant_report_guard "$TARGET_FULL_SHA"
 maxim_topology_require_message_duplicate_delete_guard "$TARGET_FULL_SHA"
 maxim_topology_require_commercial_text_delete_guard "$TARGET_FULL_SHA"
 if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then

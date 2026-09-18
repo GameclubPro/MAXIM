@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { reportSettingsShape, addReportCommandIssues } from './reports.js';
 import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
 import { channelPostSignatureSettingsSchema } from './channel-post-signature.js';
 import { karavanStorefrontTextSettingsShape } from './karavan-storefront-texts.js';
@@ -88,6 +89,7 @@ export const profanitySensitivitySchema = z.enum(['CORE_ONLY', 'BALANCED', 'STRI
 export type ProfanitySensitivity = z.infer<typeof profanitySensitivitySchema>;
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const applySettingsSectionSchema = z.enum([
+  'reports',
   'links',
   'greeting',
   'profanityFilter',
@@ -705,6 +707,7 @@ export const chatSettingsSchema = z
       deleteBotMessagesDelayMinutes: deleteBotMessagesDelayMinutesSchema,
       removeBotsFromGroupEnabled: z.boolean().default(false),
       deleteSpammersEnabled: z.boolean().default(false),
+      ...reportSettingsShape,
       antiSpamEnabled: z.boolean().default(false),
       slowModeEnabled: z.boolean().default(false),
       slowModeIntervalSeconds: z.number().int().min(10).max(86400).default(30),
@@ -1937,6 +1940,7 @@ export const globalSpammerUserDiagnosticsSchema = z.object({
 export type GlobalSpammerUserDiagnostics = z.infer<typeof globalSpammerUserDiagnosticsSchema>;
 
 export const updateSettingsRequestSchema = chatSettingsSchema.superRefine((settings, context) => {
+  addReportCommandIssues(settings, context);
   if (
     settings.nightModeEnabled &&
     (settings.nightModeBotMessageEnabled || settings.nightModeOpenMessageEnabled) &&

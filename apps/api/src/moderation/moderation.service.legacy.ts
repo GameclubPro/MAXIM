@@ -10,6 +10,7 @@ import {
   type Type,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ReportSubmissionService } from './reports/report-submission.service';
 import { isTrafficProtectionViolation } from './traffic-protection';
 import { executeGuardedModerationDelete } from './moderation-delete-execution';
 import { isCommercialMessageDeleteEligible } from './commercial';
@@ -791,6 +792,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly messageDuplicateService?: MessageDuplicateService,
     @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
     @Optional() private readonly commercialDeleteGuard?: CommercialDeleteGuardService,
+    @Optional() private readonly reportSubmission?: ReportSubmissionService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -1527,6 +1529,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const rulesPublishedMessageId = chat.rulesPublishedMessageId;
 
       const updateType = this.readLowerString(update.type);
+      if (settings.reportsEnabled && updateType === 'message_edited')
+        await this.reportSubmission?.observeEdit(update);
       const { duplicateStateEventType, duplicateStateEventTimestampMs } =
         resolveTrustedDuplicateStateRevision(updateType, createdAt, update.eventTimestampSource);
       const senderIsOwnBotInMessage =
@@ -2021,6 +2025,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      const reportCommand = this.reportSubmission?.isCommand(update, settings) === true;
       const effectiveMessageLength = calculateEffectiveMessageLength(update);
       const duplicateEventTimeSkipReason = settings.antiDuplicateEnabled
         ? duplicateSafety.resolveEventTimeSkipReason(settings, duplicateStateEventTimestampMs)
@@ -2086,11 +2091,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasMediaBatch: mediaFlags.hasMediaBatch,
         mediaGroupId: extractDirectMediaBatchId(update),
         skipAntiSpamBurstLimit,
-        skipDuplicateState: duplicateEventTimeSkipReason !== null || fullMessageDuplicates,
+        skipContentFiltersForReport: reportCommand,
+        skipDuplicateState:
+          duplicateEventTimeSkipReason !== null || fullMessageDuplicates || reportCommand,
         skipStatefulMessageLimits: updateType === 'message_edited',
         commercialCampaignContext,
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
+
+      if (
+        detection.violations.length === 0 &&
+        (await this.reportSubmission?.handle(update, settings))
+      ) {
+        await suppressDeferredPhotoAnalysisActions();
+        return;
+      }
 
       const violations = (
         await this.reconcileLinkAllowlistViolations({
@@ -7610,6 +7625,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     raw?: unknown;
   }) {
     const { chatId, userId, messageId, text, createdAt, settings, raw } = params;
+
+    if (
+      settings.reportsEnabled &&
+      settings.deleteBotMessagesEnabled &&
+      (await this.reportSubmission?.ownsCounter(
+        chatId,
+        messageId,
+        text,
+        this.maxBotContextService?.getActiveBotId() ?? '',
+      ))
+    )
+      return;
 
     if (!settings.deleteBotMessagesEnabled) {
       return;
@@ -14358,6 +14385,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     source: ChatAdminCheckSource;
   }): Promise<void> {
     const { update, chatId, chatTitle, senderId, senderName, messageId, settings, source } = params;
+    if (await this.reportSubmission?.handle(update, settings)) return;
 
     if (messageId) {
       const handledAdminCommand = await this.handleAdminForwardedModerationCommand({

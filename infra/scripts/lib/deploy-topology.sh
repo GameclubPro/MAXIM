@@ -211,6 +211,35 @@ maxim_topology_require_message_duplicate_delete_guard() {
   fi
 }
 
+maxim_topology_require_participant_report_guard() {
+  local commit_sha="$1"
+  local guard_source
+  local executor_source
+  # FLAG: Persisted report deletes must retain their policy and identity checks after rollback.
+  if ! guard_source="$(git show "${commit_sha}:apps/api/src/moderation/reports/report-delete-guard.service.ts" 2>/dev/null)" ||
+    ! executor_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)"; then
+    echo "Rollback target predates the participant report guard." >&2
+    return 1
+  fi
+  if ! printf '%s\0%s' "$guard_source" "$executor_source" | node -e '
+    const parts = require("node:fs").readFileSync(0, "utf8").split("\0");
+    if (parts.length !== 2) process.exit(1);
+    const [guard, executor] = parts;
+    const start = executor.indexOf("private async runDeletePreDispatchGuards(");
+    const end = executor.indexOf("\n  private ", start + 1);
+    const boundary = executor.slice(start, end);
+    process.exit(start >= 0 && end > start &&
+      guard.includes("class ReportDeleteGuardService") &&
+      guard.includes("this.state.assertPolicy(report)") &&
+      guard.includes("this.state.assertCase(") &&
+      boundary.includes("await this.reportDeleteGuard.assertIntentStillActionable(") &&
+      boundary.includes("Participant report delete guard unavailable") ? 0 : 1);
+  ' >/dev/null 2>&1; then
+    echo "Rollback target lacks the participant report pre-dispatch guard." >&2
+    return 1
+  fi
+}
+
 maxim_topology_require_traffic_protection_guard() {
   local commit_sha="$1"
   local guard_source

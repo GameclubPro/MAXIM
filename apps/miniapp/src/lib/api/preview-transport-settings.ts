@@ -83,6 +83,7 @@ import {
   resolvePreviewApplyTargetChats,
 } from './preview-transport-system';
 import type { PreviewState } from './preview-transport-state';
+import { handlePreviewReports } from './preview-reports';
 
 function activePreviewDomains(state: PreviewState) {
   const now = readPreviewClock(state.clock).getTime();
@@ -392,6 +393,7 @@ export async function handleChatRequest(
   method: string,
   init?: RequestInit,
 ): Promise<unknown> {
+  if (tail[0] === 'reports') return handlePreviewReports(state, chatId, tail, method);
   if (tail[0] === 'karavan-storefront' && tail[1] === 'allowlist') {
     if (tail.length === 2 && method === 'GET') {
       return cloneJson(buildKaravanStorefrontAllowlistResponse(state, url));

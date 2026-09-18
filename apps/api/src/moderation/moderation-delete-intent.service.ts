@@ -102,6 +102,12 @@ import {
   fingerprintCommercialDeleteReasons,
   readCommercialTextDeleteBinding,
 } from './commercial/commercial-delete-binding';
+import { ReportDeleteGuardService } from './reports/report-delete-guard.service';
+import {
+  REPORT_COUNTER_RULE,
+  REPORT_GUARDED_RULES,
+  ReportRejectedError,
+} from './reports/report.util';
 import {
   CommercialDeleteGuardService,
   CommercialDeleteGuardRejectedError,
@@ -498,6 +504,7 @@ class ModerationDeleteGuardedMessageAbsentError extends Error {
   constructor(
     readonly verificationCode:
       | 'guarded_traffic_protection_absence'
+      | 'guarded_report_absence'
       | 'guarded_stop_words_absence'
       | 'guarded_link_predispatch_exact_absence'
       | 'guarded_commercial_ocr_predispatch_exact_absence'
@@ -592,6 +599,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly stopWordsDeleteGuard?: StopWordsDeleteGuardService,
     @Optional() private readonly trafficProtectionDeleteGuard?: TrafficProtectionDeleteGuardService,
     @Optional() private readonly commercialDeleteGuard?: CommercialDeleteGuardService,
+    @Optional() private readonly reportDeleteGuard?: ReportDeleteGuardService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -711,6 +719,13 @@ export class ModerationDeleteIntentService {
     ruleCodes: readonly string[],
   ): ModerationDeleteIntentRollout {
     const normalizedRuleCodes = ruleCodes.map((ruleCode) => ruleCode.trim());
+    // FLAG: Report policies have their own execution ceiling and never use unguarded deletion.
+    if (
+      normalizedRuleCodes.some(
+        (rule) => REPORT_GUARDED_RULES.has(rule) || rule === REPORT_COUNTER_RULE,
+      )
+    )
+      return 'execute';
     // FLAG: Opt-in traffic policies never fall back to an unguarded legacy delete.
     if (normalizedRuleCodes.some((rule) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(rule)))
       return 'execute';
@@ -2784,6 +2799,27 @@ export class ModerationDeleteIntentService {
             throw new Error('Commercial delete guard unavailable');
         }
       }
+      // FLAG: Participant votes never authorize an unguarded retry after settings or author access change.
+      if (finalDispatchLeaseToken) {
+        if (this.reportDeleteGuard) {
+          const result = await this.reportDeleteGuard.assertIntentStillActionable({
+            intentId: intent.id,
+            chatId: intent.chatId,
+            messageId: intent.messageId,
+            subjectUserId: intent.subjectUserId,
+            botId,
+          });
+          if (result === 'absent')
+            throw new ModerationDeleteGuardedMessageAbsentError('guarded_report_absence');
+        } else {
+          const reportReasons = await this.prisma.moderationDeleteIntentReason.findMany({
+            where: { intentId: intent.id },
+            select: { ruleCode: true },
+          });
+          if (reportReasons.some((reason) => REPORT_GUARDED_RULES.has(reason.ruleCode)))
+            throw new Error('Participant report delete guard unavailable');
+        }
+      }
       if (imageTextStopListGuard === 'allowed' && finalDispatchLeaseToken) {
         await this.assertImageTextStopListDispatchDeadline(
           intent.id,
@@ -2846,6 +2882,7 @@ export class ModerationDeleteIntentService {
       error instanceof CommercialDeleteGuardRejectedError ||
       error instanceof StopWordsDeleteGuardRejectedError ||
       error instanceof TrafficProtectionGuardRejectedError ||
+      error instanceof ReportRejectedError ||
       error instanceof MessageDuplicateGuardRejectedError
     ) {
       return true;
@@ -5605,6 +5642,7 @@ export class ModerationDeleteIntentService {
     botId: string,
     verificationCode:
       | 'guarded_traffic_protection_absence'
+      | 'guarded_report_absence'
       | 'guarded_stop_words_absence'
       | 'retry_predelete_exact_presence'
       | 'postdelete_exact_presence'

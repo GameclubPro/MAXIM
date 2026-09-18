@@ -3,6 +3,7 @@ import type { BotSpeechMediaFieldKey } from '@maxim/contracts/bot-speech';
 import { normalizeDuplicateFlowSettings } from './settings/settings-duplicate-flow';
 
 export type ApplySectionKey =
+  | 'reports'
   | 'links'
   | 'greeting'
   | 'profanityFilter'
@@ -197,6 +198,14 @@ export const NIGHT_SECTION_SETTING_KEYS = [
 ] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
 export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings)[]> = {
+  reports: [
+    'reportsEnabled',
+    'reportsThreshold',
+    'reportsAliases',
+    'reportsDeleteMode',
+    'reportsMuteEnabled',
+    'reportsMuteDurationHours',
+  ],
   links: [
     'linkPolicy',
     'linkEscalationWindowHours',

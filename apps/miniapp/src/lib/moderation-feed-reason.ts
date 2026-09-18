@@ -295,6 +295,10 @@ function normalizeRawModerationReason(reason: string | null): string | null {
 function resolveFallbackReason(ruleCode: string): string {
   const labels: Record<string, string> = {
     ...trafficModerationLabels,
+    PARTICIPANT_REPORT: 'Достигнут порог жалоб участников на сообщение.',
+    PARTICIPANT_REPORT_DELETE: 'Удаление по жалобам участников.',
+    PARTICIPANT_REPORT_COMMAND_CLEANUP: 'Удаление принятой команды жалобы.',
+    PARTICIPANT_REPORT_COUNTER_CLEANUP: 'Удаление завершённого счётчика жалоб.',
     LINK_BLOCKED: 'Ссылка запрещена настройками чата.',
     PROFANITY: 'Грубая лексика запрещена правилами чата.',
     COMMERCIAL_AD: 'Коммерческая реклама запрещена в этом чате.',

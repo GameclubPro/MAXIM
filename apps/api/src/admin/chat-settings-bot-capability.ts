@@ -7,6 +7,7 @@ export type ChatSettingsBotCapabilityRequirement = {
 };
 
 const WRITE_ENABLE_KEYS = [
+  'reportsEnabled',
   'antiDuplicateEnabled',
   'duplicatePhotoEnabled',
   'greetingEnabled',
@@ -145,6 +146,12 @@ const MESSAGE_LIMITS_PARENT_FEATURE_KEYS = [
 ] as const satisfies readonly (keyof ChatSettings)[];
 
 export const CHAT_SETTINGS_BOT_CAPABILITY_SELECT = {
+  reportsEnabled: true,
+  reportsThreshold: true,
+  reportsAliases: true,
+  reportsDeleteMode: true,
+  reportsMuteEnabled: true,
+  reportsMuteDurationHours: true,
   antiDuplicateEnabled: true,
   duplicatePhotoEnabled: true,
   greetingEnabled: true,

@@ -625,6 +625,14 @@ export const CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY = {
   keyof ChannelSettings
 >;
 export const SETTINGS_SECTION_KEYS = {
+  reports: [
+    'reportsEnabled',
+    'reportsThreshold',
+    'reportsAliases',
+    'reportsDeleteMode',
+    'reportsMuteEnabled',
+    'reportsMuteDurationHours',
+  ],
   links: [
     'linkPolicy',
     'linkEscalationWindowHours',
@@ -840,6 +848,7 @@ export const SETTINGS_SECTION_KEYS = {
   ],
 } as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
 export const SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS = {
+  reports: [],
   links: ['linkBotMessageText', 'linkWarnMessageText'],
   greeting: ['greetingBotMessageText'],
   profanityFilter: [],

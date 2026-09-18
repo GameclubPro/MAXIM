@@ -479,6 +479,7 @@ model Chat {
   updatedAt      DateTime         @updatedAt @map("updated_at")
 
   settings                          ChatSettings?
+  reportCases                       ChatReportCase[]
   rules                             ChatRules?
   channelSettings                   ChannelSettings?
   admins                            ChatAdminAllowlist[]
@@ -1018,9 +1019,85 @@ model KaravanStorefrontAllowlistEntry {
   @@map("karavan_storefront_allowlist")
 }
 
+model ChatReportCase {
+  id                    String   @id @default(cuid())
+  chatId                String   @map("chat_id")
+  messageId             String   @map("message_id")
+  authorId              String   @map("author_id")
+  originBotId           String   @map("origin_bot_id")
+  contentHash           String   @map("content_hash")
+  contentVersion        Int      @default(1) @map("content_version")
+  policyRevision        Int      @map("policy_revision")
+  messageCreatedAt      DateTime @map("message_created_at")
+  expiresAt             DateTime @map("expires_at")
+  threshold             Int
+  deleteMode            String   @map("delete_mode")
+  muteHours             Int?     @map("mute_hours")
+  status                String   @default("COLLECTING")
+  decidedAt             DateTime? @map("decided_at")
+  muteProcessed         Boolean  @default(false) @map("mute_processed")
+  muteEventId           String?  @map("mute_event_id")
+  scanCursorCreatedAt   DateTime? @map("scan_cursor_created_at")
+  scanCursorId          String?  @map("scan_cursor_id")
+  scanComplete          Boolean  @default(false) @map("scan_complete")
+  counterMessageId      String?  @map("counter_message_id")
+  counterSendStartedAt  DateTime? @map("counter_send_started_at")
+  counterText           String?  @map("counter_text")
+  dueAt                 DateTime @default(now()) @map("due_at")
+  leaseToken            String?  @map("lease_token")
+  leaseExpiresAt        DateTime? @map("lease_expires_at")
+  lastError             String?  @map("last_error")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  chat                  Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  votes                 ChatReportVote[]
+  actions               ChatReportAction[]
+
+  @@unique([chatId, messageId])
+  @@index([chatId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([dueAt, id])
+  @@map("chat_report_cases")
+}
+
+model ChatReportVote {
+  id               String @id @default(cuid())
+  caseId           String @map("case_id")
+  contentVersion   Int @map("content_version")
+  chatId           String @map("chat_id")
+  reporterId       String @map("reporter_id")
+  commandMessageId String @map("command_message_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  reportCase       ChatReportCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, contentVersion, reporterId])
+  @@unique([chatId, commandMessageId])
+  @@index([chatId, reporterId, createdAt])
+  @@map("chat_report_votes")
+}
+
+model ChatReportAction {
+  id          String @id @default(cuid())
+  caseId      String @map("case_id")
+  messageId   String @map("message_id")
+  intentId    String? @map("intent_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  reportCase  ChatReportCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, messageId])
+  @@index([intentId])
+  @@map("chat_report_actions")
+}
+
 model ChatSettings {
   id                                            String                    @id @default(cuid())
   chatId                                        String                    @unique @map("chat_id")
+  reportsEnabled                                Boolean                   @default(false) @map("reports_enabled")
+  reportsThreshold                              Int                       @default(3) @map("reports_threshold")
+  reportsAliases                                String[]                  @default([]) @map("reports_aliases")
+  reportsDeleteMode                              String                    @default("MESSAGE") @map("reports_delete_mode")
+  reportsMuteEnabled                             Boolean                   @default(false) @map("reports_mute_enabled")
+  reportsMuteDurationHours                       Int                       @default(1) @map("reports_mute_duration_hours")
+  reportsRevision                               Int                       @default(0) @map("reports_revision")
   duplicateWarnEnabled                          Boolean                   @default(false) @map("duplicate_warn_enabled")
   duplicateMuteEnabled                          Boolean                   @default(false) @map("duplicate_mute_enabled")
   duplicateBanEnabled                           Boolean                   @default(false) @map("duplicate_ban_enabled")

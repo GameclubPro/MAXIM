@@ -119,6 +119,8 @@ jobs:
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
         run: npm test --workspace @maxim/api -- traffic-protection.migration-integration.spec.ts
+      - name: Participant report PostgreSQL races and recovery
+        run: npm test --workspace @maxim/api -- reports-postgres.spec.ts
 
   commercial-benchmark:
     name: Commercial Benchmark

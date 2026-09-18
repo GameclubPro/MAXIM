@@ -1,10 +1,15 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260918180000_add_publisher_comment_replacement_mode",
-  "baselineNamesSha256": "3a8b9e99858a617ab0024a0f01aae9446e10211e4f07127246ec6caf279e8419",
-  "baselineContentsSha256": "020d62c1930a6d898bedadf5a72394b2a13e18410c37788f44224e0c7250b8fe",
+  "baselineThrough": "20260919090100_add_report_history_lookup_index",
+  "baselineNamesSha256": "ec73e6ac6dffcc81d6e0f9223e8b3aea5813ba5ddbe1e3c58a4a521de133002a",
+  "baselineContentsSha256": "b597495598fab03c197956f0bcbf377333ed9c277488716c8a2bff477fd13e8e",
   "approvedDestructive": {
+    "20260919090000_add_participant_reports": {
+      "reason": "Reviewed static additive policy revision trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL or destructive change is present.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "New columns have disabled, legacy-compatible defaults. Existing writers preserve the revision automatically. Pending report deletions require the report-aware rollback source floor."
+    },
     "20260916230000_add_chat_traffic_protection": {
       "reason": "Manual review of one static additive revision trigger. The parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic/destructive; this migration has no dynamic SQL, DROP, DELETE, table rewrite, or existing-data backfill.",
       "twoPhaseRelease": true,
@@ -89,6 +94,9 @@
     }
   },
   "nonConcurrentIndexExceptions": {
+    "20260919090000_add_participant_reports": {
+      "reason": "All indexes are created on new empty report tables; the existing webhook history index is isolated in the following concurrent migration."
+    },
     "20260915120000_add_vk_bot_review": {
       "reason": "The review indexes are created on a new empty table in the same additive transaction. Existing sources and settings gain only nullable or constant-default columns."
     },

@@ -5,6 +5,8 @@ import {
   applySectionToAllRequestSchema,
   applySectionToAllResponseSchema,
   updateSettingsRequestSchema,
+  reportSettingsSchema,
+  addReportCommandIssues,
   type ApplySectionTargetPreviewResponse,
   type ApplySectionToAllResponse,
   type ApplySettingsTarget,
@@ -416,6 +418,22 @@ export async function applySettingsToAllChats(params: {
         };
         try {
           await params.prisma.$transaction(async (tx) => {
+            if (
+              Object.keys(majorSettingsUpdatePayload).some(
+                (key) => key.startsWith('reports') || /^admin.*Command/.test(key),
+              )
+            ) {
+              const current = await tx.chatSettings.findUnique({ where: { chatId } });
+              const merged = {
+                ...DEFAULT_CHAT_SETTINGS,
+                ...current,
+                ...majorSettingsUpdatePayload,
+              };
+              const checked = reportSettingsSchema
+                .superRefine((policy, ctx) => addReportCommandIssues({ ...merged, ...policy }, ctx))
+                .safeParse(merged);
+              if (!checked.success) throw new BadRequestException(checked.error.format());
+            }
             await tx.chat.upsert({
               where: { id: chatId },
               create: {

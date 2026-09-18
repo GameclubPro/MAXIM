@@ -207,6 +207,7 @@ import {
   resolveLegacyPublicationReturnPath,
 } from '../features/publications/legacy-autoposts';
 import { SettingsCommercialFilterSection } from './settings/settings-commercial-filter-section';
+import { SettingsReportsSection } from './settings/settings-reports-entry';
 import {
   formatDuplicateSettingsSummary,
   resolveDuplicatePhotoPolicyForDraft,
@@ -6783,6 +6784,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               toggleSection={toggleSection}
               toggleWarnMessageEditor={toggleWarnMessageEditor}
               updateDraftButtonGroup={updateDraftButtonGroup}
+            />
+
+            <SettingsReportsSection
+              api={api}
+              fieldErrors={fieldErrors}
+              chatId={chatId!}
+              draft={draft}
+              setFieldValue={setFieldValue}
+              expanded={expandedSections.reports}
+              toggleSection={toggleSection}
+              isSectionDirty={isSectionDirty}
+              discardSectionChanges={discardSectionChanges}
+              renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
+              renderSectionSaveFooter={renderSectionSaveFooter}
             />
 
             <SettingsDuplicatesSection

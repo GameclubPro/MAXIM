@@ -603,6 +603,7 @@ export type SettingsSectionKey =
   | 'mailing';
 
 export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
+  reports: false,
   links: false,
   rules: false,
   giveaway: false,
@@ -625,6 +626,7 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
 };
 
 export const SECTION_LABELS: Record<ApplySectionKey, string> = {
+  reports: 'Жалобы',
   links: 'Ссылки',
   greeting: 'Приветствие',
   profanityFilter: 'Мат и оскорбления',

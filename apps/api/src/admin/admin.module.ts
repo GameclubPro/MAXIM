@@ -1,5 +1,7 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import { ReportsModule } from '../moderation/reports/reports.module';
+import { AdminReportsController } from './admin-reports.controller';
 import { AuthModule } from '../auth/auth.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
@@ -130,6 +132,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_ADMIN_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_PUBLICATION_WAKEUP_QUEUE }),
     AuthModule,
+    ReportsModule,
     MaxModule,
     ChatContextModule,
     SystemModule,
@@ -140,6 +143,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherModule,
   ],
   controllers: [
+    AdminReportsController,
     AdvertisingPlacementController,
     AdminManagedEntitiesController,
     AdminSettingsController,

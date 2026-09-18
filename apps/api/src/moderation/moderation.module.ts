@@ -2,6 +2,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AdminModule } from '../admin/admin.module';
+import { ReportsModule } from './reports/reports.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration, roleRunsPublisher } from '../runtime/app-role';
@@ -249,6 +250,7 @@ const moderationProviders = [
     KaravanStorefrontRelayModule,
     ModerationDeleteIntentModule,
     MessageDuplicateStateModule,
+    ReportsModule,
   ],
   controllers: [PrivateControlController],
   providers: moderationProviders,

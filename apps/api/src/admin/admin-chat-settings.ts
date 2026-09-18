@@ -933,8 +933,23 @@ export async function saveChatSettings(params: {
         parsed.data.messageLimitsImageTextScanEnabled),
   };
   assertLegacyStopWordsWrite(currentSettings ?? {}, params.body);
+  // FLAG: Older clients must not reset a report policy they do not yet understand.
+  for (const key of [
+    'reportsEnabled',
+    'reportsThreshold',
+    'reportsAliases',
+    'reportsDeleteMode',
+    'reportsMuteEnabled',
+    'reportsMuteDurationHours',
+  ] as const) {
+    if (currentSettings && !hasOwnSetting(params.body, key))
+      Object.assign(settingsInput, { [key]: currentSettings[key] });
+  }
+  const reportCompatibleInput = updateSettingsRequestSchema.safeParse(settingsInput);
+  if (!reportCompatibleInput.success)
+    throw new BadRequestException(reportCompatibleInput.error.format());
   let normalizedSettings = normalizeChatSettings(
-    settingsInput,
+    reportCompatibleInput.data,
     {
       nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
       nightModeForceCloseForever: currentSettings?.nightModeForceCloseForever ?? false,
@@ -950,6 +965,8 @@ export async function saveChatSettings(params: {
     current: {
       ...DEFAULT_CHAT_SETTINGS,
       ...(currentSettings ?? {}),
+      reportsDeleteMode:
+        currentSettings?.reportsDeleteMode === 'HISTORY_24H' ? 'HISTORY_24H' : 'MESSAGE',
       stopWordsPolicy: currentSettings
         ? (readStopWordsPolicy(currentSettings) ?? undefined)
         : undefined,

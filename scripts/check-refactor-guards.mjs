@@ -42,10 +42,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/moderation/moderation.service.legacy.ts',
-    maxLines: 18820,
+    maxLines: 18845,
     targetLines: 17000,
     reason:
-      'ModerationService remains a legacy hotspot; this ceiling includes crash-fenced webhook timeout settlement, the actor/forwarded-owner Karavan storefront policy handoff, and ordered predecessor deferral at existing processor boundaries, while unrelated helpers should keep moving to focused modules.',
+      'ModerationService remains a legacy hotspot; this ceiling includes crash-fenced webhook timeout settlement, the Karavan policy handoff, ordered predecessor deferral, and thin participant-report admission/counter hooks. Report state and execution remain in focused services.',
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',

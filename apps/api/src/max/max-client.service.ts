@@ -180,6 +180,8 @@ export type MaxChatMemberProfile = {
 
 export type MaxChatMemberAccess = {
   userId: string | null;
+  /** Absent in old cache rows; report eligibility requires a fresh join_time. */
+  joinedAtMs?: number | null;
   /** Optional only for cache compatibility with rows written before bot-type propagation. */
   isBot?: boolean | null;
   isAdmin: boolean;
@@ -4116,6 +4118,11 @@ export class MaxClientService implements OnModuleDestroy {
 
     return {
       userId: this.readMemberUserId(value),
+      ...(typeof row?.join_time === 'number' &&
+      Number.isSafeInteger(row.join_time) &&
+      row.join_time > 0
+        ? { joinedAtMs: row.join_time }
+        : {}),
       isBot: this.readExplicitChatMemberBotState(value),
       isAdmin: isOwner || (row ? this.isChatAdminMemberRow(row) : false),
       isOwner,

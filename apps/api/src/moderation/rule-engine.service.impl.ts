@@ -1056,6 +1056,7 @@ export class RuleEngineService {
     skipAntiSpamBurstLimit?: boolean;
     skipDuplicateState?: boolean;
     skipStatefulMessageLimits?: boolean;
+    skipContentFiltersForReport?: boolean;
     commercialCampaignContext?: CommercialCampaignContext | null;
   }): Promise<DetectionResult> {
     const {
@@ -1097,7 +1098,10 @@ export class RuleEngineService {
     });
     markRuleEngineDetectStage(profile, 'normalize');
 
-    const profanityDecision = this.detectProfanityForSettings(text, settings);
+    // FLAG: A recognized report command still passes all rate, length and attachment limits.
+    const profanityDecision = params.skipContentFiltersForReport
+      ? null
+      : this.detectProfanityForSettings(text, settings);
     if (profanityDecision) {
       violations.push({
         ruleCode: 'PROFANITY',
@@ -1117,7 +1121,7 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'profanity');
 
-    if (settings.commercialAdsFilterEnabled) {
+    if (settings.commercialAdsFilterEnabled && !params.skipContentFiltersForReport) {
       const commercial = this.commercialAdDetector.detect({
         normalizedText: detectionContext.normalizedText,
         rawLoweredText: detectionContext.rawLoweredText,
@@ -1223,7 +1227,7 @@ export class RuleEngineService {
     markRuleEngineDetectStage(profile, 'message-count-limit');
 
     const blockedWordViolation =
-      settings.stopWordsPolicy == null
+      settings.stopWordsPolicy == null && !params.skipContentFiltersForReport
         ? this.messageLimitsDetector.detectBlockedWordLimit({
             text,
             settings,
@@ -1235,7 +1239,7 @@ export class RuleEngineService {
     markRuleEngineDetectStage(profile, 'blocked-words');
 
     const blockedDomainViolation =
-      settings.stopWordsPolicy == null
+      settings.stopWordsPolicy == null && !params.skipContentFiltersForReport
         ? this.messageLimitsDetector.detectBlockedDomainLimit({
             text,
             settings,
@@ -1246,7 +1250,7 @@ export class RuleEngineService {
       violations.push(blockedDomainViolation);
     }
     markRuleEngineDetectStage(profile, 'blocked-domains');
-    if (settings.stopWordsPolicy != null) {
+    if (settings.stopWordsPolicy != null && !params.skipContentFiltersForReport) {
       violations.push(
         ...detectStopWordsViolations({
           text,
@@ -1258,10 +1262,12 @@ export class RuleEngineService {
       );
     }
 
-    const phoneNumberViolation = this.messageLimitsDetector.detectPhoneNumberLimit({
-      text,
-      settings,
-    });
+    const phoneNumberViolation = params.skipContentFiltersForReport
+      ? null
+      : this.messageLimitsDetector.detectPhoneNumberLimit({
+          text,
+          settings,
+        });
     if (phoneNumberViolation) {
       violations.push(phoneNumberViolation);
     }
