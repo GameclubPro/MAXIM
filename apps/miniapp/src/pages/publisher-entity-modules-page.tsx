@@ -68,6 +68,11 @@ const LazyVkParsingCard = lazy(async () => {
   const module = await import('../components/vk-parsing-card');
   return { default: module.VkParsingCard };
 });
+const LazyVkWorkspaceShell = lazy(() =>
+  import('../components/vk-parsing/workspace-shell').then((module) => ({
+    default: module.VkWorkspaceShell,
+  })),
+);
 
 function ModuleSwitch({
   checked,
@@ -530,45 +535,51 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             </button>
           </div>
           {vkOpen ? (
-            <div
-              id="publisher-vk-workspace"
-              className="publisher-entity-vk-module__workspace vk-parsing-surface"
-            >
-              {vkCapabilityQuery.isPending ? (
-                <div className="publisher-entity-vk-module__state" role="status">
-                  <Refresh className="is-refreshing" aria-hidden />
-                  <span>Проверяю доступ к VK</span>
-                </div>
-              ) : vkCapabilityQuery.isError ? (
-                <div className="publisher-entity-vk-module__state has-error" role="alert">
-                  <span>Не удалось проверить VK</span>
-                  <button type="button" onClick={() => void vkCapabilityQuery.refetch()}>
-                    Повторить
-                  </button>
-                </div>
-              ) : !vkAvailable ? (
-                <div className="publisher-entity-vk-module__state" role="status">
-                  <span>{vkCapability?.reason ?? 'VK недоступен для этого чата'}</span>
-                </div>
-              ) : (
-                <Suspense
-                  fallback={
-                    <div className="publisher-entity-vk-module__state" role="status">
-                      <Refresh className="is-refreshing" aria-hidden />
-                      <span>Открываю VK</span>
-                    </div>
-                  }
-                >
-                  <LazyVkParsingCard
-                    api={api}
-                    chatId={entity.id}
-                    entityType={entity.entityType}
-                    active
-                    channelLinkUrl={entity.entityUrl ?? undefined}
-                  />
-                </Suspense>
-              )}
-            </div>
+            <Suspense fallback={<span role="status">Открываем посты из VK...</span>}>
+              <LazyVkWorkspaceShell title={entity.title} onClose={() => setVkOpen(false)}>
+                {vkCapabilityQuery.isPending ? (
+                  <div className="publisher-entity-vk-module__state" role="status">
+                    <Refresh className="is-refreshing" aria-hidden />
+                    <span>Проверяю доступ к VK</span>
+                  </div>
+                ) : vkCapabilityQuery.isError ? (
+                  <div className="publisher-entity-vk-module__state has-error" role="alert">
+                    <span>Не удалось проверить VK</span>
+                    <button type="button" onClick={() => void vkCapabilityQuery.refetch()}>
+                      Повторить
+                    </button>
+                  </div>
+                ) : !vkAvailable ? (
+                  <div className="publisher-entity-vk-module__state" role="status">
+                    <span>
+                      {vkCapability?.reasonCode === 'NOT_CONFIGURED'
+                        ? 'Подключение VK временно недоступно. Попробуйте позже.'
+                        : vkCapability?.reasonCode === 'ACCESS_DENIED'
+                          ? 'Не удалось подтвердить доступ к этому чату или каналу.'
+                          : 'Посты из VK пока недоступны.'}
+                    </span>
+                  </div>
+                ) : (
+                  <Suspense
+                    fallback={
+                      <div className="publisher-entity-vk-module__state" role="status">
+                        <Refresh className="is-refreshing" aria-hidden />
+                        <span>Открываю VK</span>
+                      </div>
+                    }
+                  >
+                    <LazyVkParsingCard
+                      key={`${entity.entityType}:${entity.id}`}
+                      api={api}
+                      chatId={entity.id}
+                      entityType={entity.entityType}
+                      active
+                      channelLinkUrl={entity.entityUrl ?? undefined}
+                    />
+                  </Suspense>
+                )}
+              </LazyVkWorkspaceShell>
+            </Suspense>
           ) : null}
         </section>
       </div>

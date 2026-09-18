@@ -50,7 +50,8 @@ test('VK module is capability-gated, lazy, and inactive while its workspace is c
     pageSource,
     /aria-label=\{vkOpen \? 'Закрыть посты из VK' : 'Открыть посты из VK'\}/u,
   );
-  assert.match(pageSource, /publisher-entity-vk-module__workspace vk-parsing-surface/u);
+  assert.match(pageSource, /<LazyVkWorkspaceShell/u);
+  assert.match(pageSource, /onClose=\{\(\) => setVkOpen\(false\)\}/u);
 });
 
 test('comment child settings follow the master switch and module rows avoid duplicate statuses', () => {

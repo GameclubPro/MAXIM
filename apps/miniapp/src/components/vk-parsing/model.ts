@@ -219,12 +219,12 @@ export function buildVkParsingSourceConnectionToast(
         : 'Ручной режим';
   if (alreadyConnected) {
     return {
-      title: 'Источник уже подключён',
+      title: 'Группа уже подключена',
       ...(modeLabel ? { description: modeLabel } : {}),
     };
   }
   return {
-    title: 'Источник подключён',
+    title: 'Группа подключена',
     description: modeLabel ? `${modeLabel} · обновление запущено` : 'Обновление запущено',
   };
 }

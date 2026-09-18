@@ -781,7 +781,7 @@ const scenarioBehaviors = [
         .first()
         .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
-      await page.locator('.publisher-entity-vk-module .vk-parsing-card').waitFor({
+      await page.locator('.vk-parsing-workspace').waitFor({
         state: 'visible',
       });
       await page.waitForTimeout(500);
@@ -795,12 +795,13 @@ const scenarioBehaviors = [
         .first()
         .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
-      const card = page.locator('.publisher-entity-vk-module .vk-parsing-card');
+      const card = page.locator('.vk-parsing-workspace');
       await card.waitFor({ state: 'visible' });
       await card.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
-      await card.locator('.vk-parsing-editor__composer').waitFor({ state: 'visible' });
-      await card.getByRole('button', { name: 'Форматирование', exact: true }).click();
-      await card.locator('.vk-parsing-editor__format-tools').waitFor({ state: 'visible' });
+      const editor = page.locator('.vk-editor-dialog');
+      await editor.locator('.vk-parsing-editor__composer').waitFor({ state: 'visible' });
+      await editor.getByRole('button', { name: 'Форматирование', exact: true }).click();
+      await editor.locator('.vk-parsing-editor__format-tools').waitFor({ state: 'visible' });
       await page.waitForTimeout(350);
     },
   },
@@ -812,14 +813,17 @@ const scenarioBehaviors = [
         .first()
         .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page.getByRole('tab', { name: 'Автоматизация', exact: true }).click();
       const panel = page.locator('.vk-bot-review-panel');
-      await panel.getByRole('button', { name: 'Получать мне', exact: true }).click();
+      await panel.getByRole('button', { name: 'Получать посты мне', exact: true }).click();
       await panel.getByText('Получатель: вы', { exact: true }).waitFor();
+      await page.getByRole('tab', { name: /Группы/u }).click();
       const source = page.locator('.vk-source-card').first();
-      await source.getByRole('button', { name: 'Настройки источника', exact: true }).click();
-      await source.getByRole('button', { name: 'Личка', exact: true }).click();
-      await source.getByRole('radio', { name: 'Сбор', exact: true }).waitFor();
-      await panel.scrollIntoViewIfNeeded();
+      await source.getByRole('button', { name: /Настройки группы/u }).click();
+      await page
+        .getByRole('combobox', { name: 'Способ доставки постов группы' })
+        .selectOption('BOT_REVIEW');
+      await page.getByText('Круглосуточно', { exact: true }).waitFor();
       await page.waitForTimeout(350);
     },
   },
@@ -832,9 +836,8 @@ const scenarioBehaviors = [
         .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
       const panel = page.locator('.vk-autopost-panel');
-      await panel.waitFor({ state: 'visible' });
       if (section === 'queue') {
-        await page.locator('.vk-parsing-fold--secondary > summary').click();
+        await page.getByRole('button', { name: 'Очередь', exact: true }).click();
         const queue = page.locator('.vk-queue-timeline');
         await queue.locator('input[type="date"]').first().fill('');
         await queue
@@ -842,29 +845,23 @@ const scenarioBehaviors = [
           .first()
           .waitFor({ state: 'visible' });
         await queue.evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      } else if (section === 'preset') {
+        await page.getByRole('tab', { name: /Группы/u }).click();
+        await page.locator('.vk-source-card').first().getByRole('checkbox').check();
+        await page
+          .getByRole('combobox', { name: 'Применить настройки к выбранным группам' })
+          .selectOption('CLEAN');
+        await page.getByRole('dialog', { name: 'Изменить настройки групп?' }).waitFor();
       } else {
+        await page.getByRole('tab', { name: 'Автоматизация', exact: true }).click();
+        await panel.waitFor({ state: 'visible' });
         await panel.locator('summary').click();
         if (section === 'time' || section === 'safety') {
           await panel
-            .getByRole('button', { name: section === 'time' ? 'Время' : 'Защита', exact: true })
+            .getByRole('button', { name: section === 'time' ? 'Время' : 'Фильтры', exact: true })
             .click();
         }
-        if (section === 'preset') {
-          const originalMode = await panel.locator('.vk-autopost-mode .is-active').textContent();
-          await panel.getByRole('button', { name: 'Безопасно', exact: true }).click();
-          await page
-            .getByRole('dialog', { name: 'Применить пресет?' })
-            .waitFor({ state: 'visible' });
-          await page.keyboard.press('Escape');
-          if (
-            (await panel.locator('.vk-autopost-mode .is-active').textContent()) !== originalMode
-          ) {
-            throw new Error('Preset confirmation changed Auto before approval.');
-          }
-          await panel.getByRole('button', { name: 'Безопасно', exact: true }).click();
-        } else {
-          await panel.evaluate((element) => element.scrollIntoView({ block: 'start' }));
-        }
+        await panel.evaluate((element) => element.scrollIntoView({ block: 'start' }));
       }
       await page.waitForTimeout(150);
     },
@@ -3805,80 +3802,101 @@ async function assertVkSourceSummariesSeparated(page, scenario) {
       inner.right <= outer.right + tolerance &&
       inner.bottom <= outer.bottom + tolerance;
 
-    return Array.from(
-      document.querySelectorAll('.publisher-entity-vk-module .vk-source-card'),
-    ).flatMap((card, cardIndex) => {
-      if (!(card instanceof HTMLElement)) {
-        return [];
-      }
-
-      const summary = card.querySelector('.vk-source-card__summary-row');
-      const mode = summary?.querySelector('.vk-source-mode-control');
-      const metrics = summary?.querySelector('.vk-source-card__metrics');
-      if (
-        !(summary instanceof HTMLElement) ||
-        !(mode instanceof HTMLElement) ||
-        !(metrics instanceof HTMLElement)
-      ) {
-        return [{ cardIndex, reason: 'summary controls are missing' }];
-      }
-
-      const summaryRect = summary.getBoundingClientRect();
-      const modeRect = mode.getBoundingClientRect();
-      const metricsRect = metrics.getBoundingClientRect();
-      const controls = [...mode.children, ...metrics.children].filter(
-        (element) => element instanceof HTMLElement,
-      );
-      const textNodes = [
-        ...mode.querySelectorAll('button'),
-        ...metrics.querySelectorAll('b, small'),
-      ];
-      const title = card.querySelector('.vk-source-card__title strong')?.textContent?.trim() ?? '';
-
-      if (!isContained(modeRect, summaryRect) || !isContained(metricsRect, summaryRect)) {
-        return [{ cardIndex, title, reason: 'summary group leaves its row' }];
-      }
-
-      if (overlaps(modeRect, metricsRect)) {
-        return [{ cardIndex, title, reason: 'mode and metrics overlap' }];
-      }
-
-      for (let leftIndex = 0; leftIndex < controls.length; leftIndex += 1) {
-        const left = controls[leftIndex];
-        if (!(left instanceof HTMLElement)) {
-          continue;
+    return Array.from(document.querySelectorAll('.vk-parsing-workspace .vk-source-card')).flatMap(
+      (card, cardIndex) => {
+        if (!(card instanceof HTMLElement)) {
+          return [];
         }
-        for (let rightIndex = leftIndex + 1; rightIndex < controls.length; rightIndex += 1) {
-          const right = controls[rightIndex];
-          if (
-            right instanceof HTMLElement &&
-            overlaps(left.getBoundingClientRect(), right.getBoundingClientRect())
-          ) {
-            return [{ cardIndex, title, reason: 'summary controls overlap' }];
+
+        const summary = card.querySelector('.vk-source-card__summary-row');
+        if (summary instanceof HTMLElement && summary.querySelector('.vk-workflow-status')) {
+          const parts = [...summary.children].filter((element) => element instanceof HTMLElement);
+          for (let index = 0; index < parts.length; index += 1) {
+            const part = parts[index];
+            if (
+              !isContained(part.getBoundingClientRect(), summary.getBoundingClientRect()) ||
+              part.scrollWidth > part.clientWidth + 1
+            )
+              return [{ cardIndex, reason: 'source summary text is clipped' }];
+            if (
+              parts
+                .slice(index + 1)
+                .some((other) =>
+                  overlaps(part.getBoundingClientRect(), other.getBoundingClientRect()),
+                )
+            )
+              return [{ cardIndex, reason: 'summary controls overlap' }];
+          }
+          return [];
+        }
+        const mode = summary?.querySelector('.vk-source-mode-control');
+        const metrics = summary?.querySelector('.vk-source-card__metrics');
+        if (
+          !(summary instanceof HTMLElement) ||
+          !(mode instanceof HTMLElement) ||
+          !(metrics instanceof HTMLElement)
+        ) {
+          return [{ cardIndex, reason: 'summary controls are missing' }];
+        }
+
+        const summaryRect = summary.getBoundingClientRect();
+        const modeRect = mode.getBoundingClientRect();
+        const metricsRect = metrics.getBoundingClientRect();
+        const controls = [...mode.children, ...metrics.children].filter(
+          (element) => element instanceof HTMLElement,
+        );
+        const textNodes = [
+          ...mode.querySelectorAll('button'),
+          ...metrics.querySelectorAll('b, small'),
+        ];
+        const title =
+          card.querySelector('.vk-source-card__title strong')?.textContent?.trim() ?? '';
+
+        if (!isContained(modeRect, summaryRect) || !isContained(metricsRect, summaryRect)) {
+          return [{ cardIndex, title, reason: 'summary group leaves its row' }];
+        }
+
+        if (overlaps(modeRect, metricsRect)) {
+          return [{ cardIndex, title, reason: 'mode and metrics overlap' }];
+        }
+
+        for (let leftIndex = 0; leftIndex < controls.length; leftIndex += 1) {
+          const left = controls[leftIndex];
+          if (!(left instanceof HTMLElement)) {
+            continue;
+          }
+          for (let rightIndex = leftIndex + 1; rightIndex < controls.length; rightIndex += 1) {
+            const right = controls[rightIndex];
+            if (
+              right instanceof HTMLElement &&
+              overlaps(left.getBoundingClientRect(), right.getBoundingClientRect())
+            ) {
+              return [{ cardIndex, title, reason: 'summary controls overlap' }];
+            }
           }
         }
-      }
 
-      const clippedText = textNodes.find(
-        (element) =>
-          element instanceof HTMLElement && element.scrollWidth > element.clientWidth + 1,
-      );
-      if (clippedText instanceof HTMLElement) {
-        return [
-          {
-            cardIndex,
-            title,
-            reason: `summary text is clipped: ${clippedText.textContent?.trim() ?? ''}`,
-          },
-        ];
-      }
+        const clippedText = textNodes.find(
+          (element) =>
+            element instanceof HTMLElement && element.scrollWidth > element.clientWidth + 1,
+        );
+        if (clippedText instanceof HTMLElement) {
+          return [
+            {
+              cardIndex,
+              title,
+              reason: `summary text is clipped: ${clippedText.textContent?.trim() ?? ''}`,
+            },
+          ];
+        }
 
-      if (card.clientWidth <= 432 && modeRect.bottom > metricsRect.top + tolerance) {
-        return [{ cardIndex, title, reason: 'narrow summary is not vertically separated' }];
-      }
+        if (card.clientWidth <= 432 && modeRect.bottom > metricsRect.top + tolerance) {
+          return [{ cardIndex, title, reason: 'narrow summary is not vertically separated' }];
+        }
 
-      return [];
-    });
+        return [];
+      },
+    );
   });
 
   if (issues.length > 0) {

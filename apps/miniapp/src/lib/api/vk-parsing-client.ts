@@ -39,9 +39,9 @@ function buildVkParsingPath(entityType: VkParsingEntityType, chatId: string): st
   return `/publisher/entities/${entityType}/${encodeURIComponent(chatId)}/vk-parsing`;
 }
 
-export async function getVkBotReviewState(api: ApiTransport, chatId: string) {
+export async function getVkBotReviewState(api: ApiTransport, chatId: string, signal?: AbortSignal) {
   return vkBotReviewStateSchema.parse(
-    await api.request(`${buildVkParsingPath('channel', chatId)}/bot-review`),
+    await api.request(`${buildVkParsingPath('channel', chatId)}/bot-review`, { signal }),
   );
 }
 

@@ -19,13 +19,14 @@ export const VK_PARSING_STATUS_FILTERS: Array<{
   value: VkParsingPostFilterStatus;
   label: string;
 }> = [
-  { value: 'ALL', label: 'Все' },
   { value: 'NEW', label: 'Входящие' },
   { value: 'QUEUED', label: 'Очередь' },
-  { value: 'FAILED', label: 'Ошибки' },
   { value: 'PUBLISHED', label: 'Опубликовано' },
+  { value: 'ALL', label: 'Все посты' },
+  { value: 'FAILED', label: 'Нужна проверка' },
   { value: 'SKIPPED', label: 'Пропущено' },
   { value: 'CHANGED_AFTER_PUBLISH', label: 'Изменено' },
+  { value: 'UNAVAILABLE', label: 'Недоступно' },
 ];
 
 export const VK_PARSING_SETTING_TOGGLES: Array<{

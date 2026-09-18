@@ -33,14 +33,19 @@ describe('VkSyncService availability confirmation', () => {
     },
   );
 
-  it.each([{}, null, { items: null }, { items: [null] }, { items: [{ id: 1 }] }])(
-    'does not infer deletion from malformed responses: %j',
-    async (response) => {
-      const { client, internals } = fixture();
-      client.request.mockResolvedValue(response);
-      await expect(internals.spotCheckMissingPosts([post])).resolves.toBeNull();
-    },
-  );
+  it.each([
+    {},
+    null,
+    { items: null },
+    { items: [null] },
+    { items: [{ id: 1 }] },
+    { items: [{ id: 1, owner_id: -999 }] },
+    { items: [{ id: 2, owner_id: -123 }] },
+  ])('does not infer deletion from malformed responses: %j', async (response) => {
+    const { client, internals } = fixture();
+    client.request.mockResolvedValue(response);
+    await expect(internals.spotCheckMissingPosts([post])).resolves.toBeNull();
+  });
 
   it('splits more than 100 IDs and combines only successful confirmations', async () => {
     const { client, internals } = fixture();

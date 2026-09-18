@@ -2,26 +2,35 @@ import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   type ChannelPostSignatureSettings,
 } from '@maxim/contracts/channel-post-signature';
-import { lazy, Suspense, useEffect, useState } from 'react';
-import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
+import { lazy, Suspense, useEffect, useId, useState } from 'react';
+import { Post, RefreshCircle, WarningCircle } from 'iconoir-react';
 import type { ApiTransport } from '../lib/api/transport';
+import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
+import { ActionConfirmSheet } from './ui/action-confirm-sheet';
+import { SettingsDrilldownPanel } from './ui/settings-drilldown-panel';
+import { SkeletonCard } from './ui/skeleton';
+import { StatusState } from './ui/status-state';
+import { buildAutopostStatus } from './vk-parsing/autopost-status';
+import { BotReviewPanel, useVkBotReviewState } from './vk-parsing/bot-review-panel';
+import { normalizeApiError } from './vk-parsing/format';
+import { VkInfoButton } from './vk-parsing/info-button';
+import { resolveVkParsingFallbackLink } from './vk-parsing/link-selection';
 import { Pagination } from './vk-parsing/pagination';
 import { PostList } from './vk-parsing/post-list';
 import { SchedulerPanel } from './vk-parsing/scheduler-panel';
-import { buildAutopostStatus } from './vk-parsing/autopost-status';
-import { ActionConfirmSheet } from './ui/action-confirm-sheet';
 import { SourceDashboard } from './vk-parsing/source-dashboard';
 import { StatusFilterBar } from './vk-parsing/status-filter-bar';
-import { normalizeApiError } from './vk-parsing/format';
 import { useVkParsingCard } from './vk-parsing/use-vk-parsing-card';
-import { SkeletonCard } from './ui/skeleton';
-import { BotReviewPanel, useVkBotReviewState } from './vk-parsing/bot-review-panel';
-import { StatusState } from './ui/status-state';
 import '../styles/vk-parsing.css';
+import '../styles/vk-parsing-workspace.css';
 
 const LazyQueueTimeline = lazy(() =>
   import('./vk-parsing/queue-timeline').then((module) => ({ default: module.QueueTimeline })),
 );
+const LazyPostEditor = lazy(() =>
+  import('./vk-parsing/post-editor').then((module) => ({ default: module.PostEditor })),
+);
+type WorkspaceView = 'posts' | 'sources' | 'automation';
 
 type VkParsingCardProps = {
   api: ApiTransport;
@@ -42,179 +51,374 @@ export function VkParsingCard({
 }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const botReview = useVkBotReviewState(api, chatId, active && entityType === 'channel');
-  const { feed, feedQuery, settings, posts, sources } = state;
+  const { feed, feedQuery, sources, settings, posts, editingPost } = state;
+  const [view, setView] = useState<WorkspaceView>('posts');
+  const [discardEditor, setDiscardEditor] = useState(false);
   const [now, setNow] = useState(() => new Date());
-  const [queueOpen, setQueueOpen] = useState(false);
+  const tabsId = useId();
   useEffect(() => {
     if (!active) return;
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
     return () => window.clearInterval(timer);
   }, [active]);
-  const publishedCount =
-    sources.length > 0
-      ? sources.reduce((sum, source) => sum + source.publishedPostCount, 0)
-      : posts.filter((post) => post.status === 'PUBLISHED').length;
-  const autopostStatus = feed ? buildAutopostStatus(settings, sources, now) : null;
-  const preset = state.presetConfirmation?.preset;
-  const presetDetails =
-    preset === 'NEWS'
-      ? 'Очередь · 20 мин · до 12 постов в день · высокий приоритет'
-      : preset === 'SLOW'
-        ? 'Очередь · 180 мин · до 3 постов в день'
-        : preset === 'REVIEW'
-          ? 'Ручная проверка · автопубликация источников выключена'
-          : 'Очередь · 90 мин · до 4 постов в день. Ссылки удаляются, реклама пропускается во всех источниках этого чата или канала.';
-  const effectivePostSignature = postSignature ?? {
+  const status = buildAutopostStatus(settings, sources, now);
+  const queueCount = sources.reduce((sum, source) => sum + source.queuedPostCount, 0);
+  const isSyncing = sources.some(
+    (source) => source.syncStatus === 'QUEUED' || source.syncStatus === 'SYNCING',
+  );
+  const activeSources = sources.filter((source) => source.importEnabled);
+  const syncWarning = activeSources.some(
+    (source) =>
+      source.syncStatus === 'ERROR' || source.syncStatus === 'BACKOFF' || source.circuitOpenedAt,
+  );
+  const importLabel = !sources.length
+    ? 'Нет подключённых групп'
+    : !activeSources.length
+      ? 'Сбор постов на паузе'
+      : isSyncing
+        ? 'Обновляем посты'
+        : syncWarning
+          ? 'Есть задержки обновления'
+          : 'Группы подключены';
+  const importTone =
+    syncWarning || isSyncing ? 'warning' : activeSources.length ? 'success' : 'muted';
+  const effectiveSignature = postSignature ?? {
     enabled: settings.appendChannelLinkEnabled,
     presentation: 'signature' as const,
     text: settings.channelLinkText || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
     url: '',
   };
+  const editorIsReview =
+    editingPost?.sourcePublishMode === 'REVIEW' || editingPost?.sourcePublishMode === 'BOT_REVIEW';
+  const fallbackLink = editingPost ? resolveVkParsingFallbackLink(editingPost) : null;
+  const publishing = Boolean(state.publishingPostId);
+  function closeEditor() {
+    if (publishing) return;
+    if (state.isEditorDirty) setDiscardEditor(true);
+    else state.cancelEditing();
+  }
+  const sourceControls = (
+    <SourceDashboard
+      settings={settings}
+      botReviewSupported={entityType === 'channel' && botReview.data?.available !== false}
+      botReviewEnabled={Boolean(botReview.data?.available && botReview.data.recipientConfigured)}
+      sourceUrl={state.sourceUrl}
+      sources={sources}
+      selectedBulkSourceIds={state.selectedBulkSourceIds}
+      isAdding={state.isAddingSource}
+      isRefreshing={state.isRefreshing}
+      isRemoving={state.isRemovingSource}
+      isSavingSource={state.isSavingSource}
+      isApplyingPreset={state.isApplyingPreset}
+      refreshingSourceId={state.refreshingSourceId}
+      onSourceUrlChange={state.setSourceUrl}
+      onSubmitSource={state.submitSource}
+      onRefresh={state.refreshSources}
+      onRefreshSource={state.refreshSource}
+      onToggleBulkSource={state.toggleBulkSource}
+      onSelectAllBulkSources={state.selectAllBulkSources}
+      onApplyPreset={state.applySourcePreset}
+      onUpdateSource={state.updateSource}
+      onRemoveSource={state.removeSource}
+      onOpenAutomation={() => setView('automation')}
+    />
+  );
 
   return (
-    <div className="vk-parsing-card">
-      {feed && autopostStatus ? (
-        <SchedulerPanel
-          botReviewEnabled={Boolean(
-            botReview.data?.available && botReview.data.recipientConfigured,
-          )}
-          settings={settings}
-          sources={sources}
-          status={autopostStatus}
-          queueCount={sources.reduce((sum, source) => sum + source.queuedPostCount, 0)}
-          publishedCount={publishedCount}
-          isSaving={state.isSavingSettings}
-          isSavingSource={state.isSavingSource}
-          settingsSaved={state.settingsSaved}
-          onUpdateSetting={state.updateSetting}
-          onUpdateSources={state.updateSources}
-          onApplyPreset={state.applyPresetToAllSources}
-        />
-      ) : null}
-
-      {entityType === 'channel' && feed ? (
-        <BotReviewPanel api={api} chatId={chatId} active={active} />
-      ) : null}
-
-      <SourceDashboard
-        botReviewEnabled={Boolean(botReview.data?.available && botReview.data.recipientConfigured)}
-        sourceUrl={state.sourceUrl}
-        sources={sources}
-        selectedSourceId={state.selectedSourceId}
-        selectedBulkSourceIds={state.selectedBulkSourceIds}
-        isAdding={state.isAddingSource}
-        isRefreshing={state.isRefreshing}
-        isRemoving={state.isRemovingSource}
-        isSavingSource={state.isSavingSource}
-        isApplyingPreset={state.isApplyingPreset}
-        refreshingSourceId={state.refreshingSourceId}
-        onSourceUrlChange={state.setSourceUrl}
-        onSubmitSource={state.submitSource}
-        onRefresh={state.refreshSources}
-        onRefreshSource={state.refreshSource}
-        onSelectSource={state.selectSource}
-        onToggleBulkSource={state.toggleBulkSource}
-        onSelectAllBulkSources={state.selectAllBulkSources}
-        onApplyPreset={state.applySourcePreset}
-        onUpdateSource={state.updateSource}
-        onRemoveSource={state.removeSource}
-      />
-
-      <section className="vk-feed-section" aria-label="Посты VK">
+    <div className="vk-parsing-card vk-parsing-workspace">
+      <div className="vk-workspace-toolbar">
         {feed ? (
-          <StatusFilterBar
-            statusFilter={state.statusFilter}
-            onSelectStatusFilter={state.selectStatusFilter}
+          <span className={`vk-workflow-status is-${importTone}`}>
+            <i aria-hidden />
+            {importLabel}
+          </span>
+        ) : (
+          <span>Посты из VK</span>
+        )}
+        <VkInfoButton title="О постах из VK">
+          <p>
+            Посты сохраняются в приложении. Для каждой группы доступны ручная публикация,
+            автоматическая отправка и согласование в личке.
+          </p>
+          <p>
+            Авто работает только с новыми записями. Первое подключение не публикует историю.
+            Согласование в личке доступно круглосуточно.
+          </p>
+        </VkInfoButton>
+        <button
+          type="button"
+          className="vk-parsing-icon-button"
+          aria-label="Обновить посты"
+          title="Обновить посты"
+          disabled={state.isRefreshing || feedQuery.isFetching}
+          onClick={() => {
+            if (sources.length) state.refreshSources();
+            else void feedQuery.refetch();
+          }}
+        >
+          <RefreshCircle
+            className={state.isRefreshing || isSyncing ? 'is-refreshing' : undefined}
+            aria-hidden
           />
-        ) : null}
-
-        {feedQuery.isLoading ? <SkeletonCard lines={5} /> : null}
-
-        {feedQuery.error ? (
+        </button>
+      </div>
+      <div className="vk-workspace-tabs" role="tablist" aria-label="Раздел VK">
+        {(
+          [
+            { id: 'posts', label: 'Посты' },
+            { id: 'sources', label: 'Группы' },
+            { id: 'automation', label: 'Автоматизация' },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            id={`${tabsId}-${tab.id}`}
+            role="tab"
+            aria-selected={view === tab.id}
+            aria-controls={`${tabsId}-panel`}
+            tabIndex={view === tab.id ? 0 : -1}
+            onClick={() => setView(tab.id)}
+            onKeyDown={(event) => {
+              const values: WorkspaceView[] = ['posts', 'sources', 'automation'];
+              if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+                event.preventDefault();
+                const next =
+                  values[(values.indexOf(view) + (event.key === 'ArrowRight' ? 1 : 2)) % 3]!;
+                setView(next);
+                document.getElementById(`${tabsId}-${next}`)?.focus();
+              }
+            }}
+          >
+            {tab.label}
+            {tab.id === 'sources' && sources.length ? <span>{sources.length}</span> : null}
+          </button>
+        ))}
+      </div>
+      {feedQuery.error ? (
+        feed ? (
+          <div className="vk-inline-warning" role="status">
+            <WarningCircle aria-hidden />
+            <span>Не удалось обновить посты</span>
+            <button type="button" onClick={() => void feedQuery.refetch()}>
+              Повторить
+            </button>
+          </div>
+        ) : (
           <StatusState
             tone="danger"
-            title="Не удалось загрузить VK-посты"
+            title="Посты пока недоступны"
             description={normalizeApiError(feedQuery.error)}
             action={
-              <button
-                type="button"
-                className="button button--danger"
-                onClick={() => void feedQuery.refetch()}
-              >
+              <button type="button" className="button" onClick={() => void feedQuery.refetch()}>
                 Повторить
               </button>
             }
           />
-        ) : null}
-
-        {!feedQuery.isLoading && !feedQuery.error && posts.length === 0 ? (
-          <div className="vk-parsing-card__empty">Постов пока нет</div>
-        ) : null}
-
-        <PostList
-          onSendForBotReview={state.submitBotReview}
-          submittingBotReviewPostId={state.submittingBotReviewPostId}
-          posts={posts}
-          settings={settings}
-          postSignature={effectivePostSignature}
-          channelLinkUrl={channelLinkUrl}
-          editingPostId={state.editingPostId}
-          publishingPostId={state.publishingPostId}
-          retryingPostId={state.retryingPostId}
-          draftText={state.draftText}
-          draftTextFormat={state.draftTextFormat}
-          selectedPhotoUrls={state.selectedPhotoUrls}
-          selectedVideoUrls={state.selectedVideoUrls}
-          selectedLinkUrls={state.selectedLinkUrls}
-          onStartEditing={state.startEditing}
-          onCancelEditing={state.cancelEditing}
-          onPublishEditingPost={state.publishEditingPost}
-          onRetryPost={state.retryPost}
-          onDraftTextChange={state.updateDraftText}
-          onTogglePhoto={state.togglePhoto}
-          onToggleVideo={state.toggleVideo}
-          onToggleLink={state.toggleLink}
-        />
-
-        <Pagination
-          pagination={feed?.pagination}
-          postsLength={posts.length}
-          pageOffset={state.pageOffset}
-          isFetching={feedQuery.isFetching}
-          onPageOffsetChange={state.setPageOffset}
-        />
-      </section>
-
-      {feed && feed.queue.length > 0 ? (
-        <section className="vk-parsing-service-section" aria-label="Запланированные публикации">
-          <details
-            className="vk-parsing-fold vk-parsing-fold--secondary"
-            onToggle={(event) => setQueueOpen(event.currentTarget.open)}
-          >
-            <summary>Ближайшие публикации · {feed.queue.length}</summary>
-            {queueOpen ? (
-              <Suspense fallback={<SkeletonCard lines={3} />}>
-                <LazyQueueTimeline
-                  posts={feed.queue}
-                  schedulingPostId={state.schedulingPostId}
-                  cancelingPostId={state.cancelingPostId}
-                  publishingNowPostId={state.publishingNowPostId}
-                  onSchedulePost={state.schedulePost}
-                  onCancelPost={state.cancelScheduledPost}
-                  onPublishNow={state.publishPostNow}
-                />
-              </Suspense>
-            ) : null}
-          </details>
-        </section>
+        )
       ) : null}
+      {!feed && feedQuery.isLoading ? <SkeletonCard lines={5} /> : null}
+      {feed ? (
+        <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${view}`}>
+          {view === 'posts' ? (
+            <>
+              {!sources.length ? (
+                sourceControls
+              ) : (
+                <>
+                  <div className="vk-feed-toolbar">
+                    <StatusFilterBar
+                      statusFilter={state.statusFilter}
+                      onSelectStatusFilter={state.selectStatusFilter}
+                    />
+                    {sources.length > 1 ? (
+                      <select
+                        aria-label="Группа в ленте"
+                        value={state.selectedSourceId ?? ''}
+                        onChange={(event) => state.selectSource(event.target.value || null)}
+                      >
+                        <option value="">Все группы</option>
+                        {sources.map((source) => (
+                          <option key={source.id} value={source.id}>
+                            {source.title}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
+                  </div>
+                  <div className="vk-feed-caption">
+                    <span>
+                      {state.statusFilter === 'QUEUED' ? 'Ожидают публикации' : 'Записи из VK'}
+                    </span>
+                    <span>{feed.pagination.total}</span>
+                  </div>
+                </>
+              )}
+              {posts.length === 0 ? (
+                <div className="vk-workspace-empty">
+                  <Post aria-hidden />
+                  <strong>
+                    {isSyncing
+                      ? 'Загружаем посты'
+                      : state.statusFilter === 'QUEUED'
+                        ? 'Очередь пуста'
+                        : state.statusFilter === 'NEW'
+                          ? 'Новых постов пока нет'
+                          : 'Постов с таким статусом нет'}
+                  </strong>
+                  {sources.length > 0 && state.statusFilter !== 'ALL' ? (
+                    <button
+                      type="button"
+                      className="vk-text-link"
+                      onClick={() => state.selectStatusFilter('ALL')}
+                    >
+                      Все посты
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              {state.statusFilter === 'QUEUED' ? (
+                <Suspense fallback={<SkeletonCard lines={3} />}>
+                  <LazyQueueTimeline
+                    posts={posts}
+                    timezone={settings.schedulerTimezone}
+                    schedulingPostId={state.schedulingPostId}
+                    cancelingPostId={state.cancelingPostId}
+                    publishingNowPostId={state.publishingNowPostId}
+                    onSchedulePost={state.schedulePost}
+                    onCancelPost={state.cancelScheduledPost}
+                    onPublishNow={state.publishPostNow}
+                  />
+                </Suspense>
+              ) : (
+                <PostList
+                  posts={posts}
+                  settings={settings}
+                  postSignature={effectiveSignature}
+                  channelLinkUrl={channelLinkUrl}
+                  onSendForBotReview={
+                    botReview.data?.isRecipient ? state.submitBotReview : undefined
+                  }
+                  submittingBotReviewPostId={state.submittingBotReviewPostId}
+                  editingPostId={null}
+                  publishingPostId={state.publishingPostId}
+                  retryingPostId={state.retryingPostId}
+                  draftText={state.draftText}
+                  draftTextFormat={state.draftTextFormat}
+                  selectedPhotoUrls={state.selectedPhotoUrls}
+                  selectedVideoUrls={state.selectedVideoUrls}
+                  selectedLinkUrls={state.selectedLinkUrls}
+                  onStartEditing={state.startEditing}
+                  onCancelEditing={state.cancelEditing}
+                  onPublishEditingPost={state.publishEditingPost}
+                  onRetryPost={state.retryPost}
+                  onDraftTextChange={state.updateDraftText}
+                  onTogglePhoto={state.togglePhoto}
+                  onToggleVideo={state.toggleVideo}
+                  onToggleLink={state.toggleLink}
+                />
+              )}
+              <Pagination
+                pagination={feed.pagination}
+                postsLength={posts.length}
+                pageOffset={state.pageOffset}
+                isFetching={feedQuery.isFetching}
+                onPageOffsetChange={state.setPageOffset}
+              />
+            </>
+          ) : view === 'sources' ? (
+            sourceControls
+          ) : (
+            <div className="vk-automation-view">
+              <SchedulerPanel
+                settings={settings}
+                sources={sources}
+                status={status}
+                queueCount={queueCount}
+                publishedCount={sources.reduce((sum, source) => sum + source.publishedPostCount, 0)}
+                isSaving={state.isSavingSettings}
+                isSavingSource={state.isSavingSource}
+                settingsSaved={state.settingsSaved}
+                onUpdateSetting={state.updateSetting}
+                onUpdateSources={state.updateSources}
+              />
+              {entityType === 'channel' ? (
+                <BotReviewPanel api={api} chatId={chatId} active={active} />
+              ) : null}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      <SettingsDrilldownPanel
+        id="vk-post-editor"
+        open={Boolean(editingPost)}
+        title={editorIsReview ? 'Пост на согласование' : 'Публикация поста'}
+        variant="screen"
+        overlayClassName="vk-dialog-overlay"
+        className="vk-parsing-surface vk-workspace-dialog vk-editor-dialog"
+        onClose={closeEditor}
+      >
+        {editingPost ? (
+          <Suspense fallback={<SkeletonCard lines={5} />}>
+            <div className="vk-editor-origin">
+              <strong>{editingPost.sourceTitle}</strong>
+            </div>
+            <LazyPostEditor
+              post={editingPost}
+              draftText={state.draftText}
+              draftTextFormat={state.draftTextFormat}
+              selectedPhotoUrls={state.selectedPhotoUrls}
+              selectedVideoUrls={state.selectedVideoUrls}
+              selectedLinkUrls={state.selectedLinkUrls}
+              stripLinksEnabled={settings.stripLinksEnabled}
+              appendChannelLinkEnabled={
+                effectiveSignature.enabled && effectiveSignature.presentation === 'signature'
+              }
+              channelLinkText={effectiveSignature.text}
+              channelLinkUrl={channelLinkUrl}
+              customChannelLinkUrl={effectiveSignature.url}
+              preserveLinkUrls={fallbackLink ? [fallbackLink] : undefined}
+              isPublishing={publishing}
+              onDraftTextChange={state.updateDraftText}
+              onTogglePhoto={state.togglePhoto}
+              onToggleVideo={state.toggleVideo}
+              onToggleLink={state.toggleLink}
+              onCancel={closeEditor}
+              onPublish={state.publishEditingPost}
+              submitLabel={editorIsReview ? 'Сохранить' : 'Опубликовать'}
+              pendingLabel={editorIsReview ? 'Сохраняем...' : 'Отправляем...'}
+            />
+          </Suspense>
+        ) : null}
+      </SettingsDrilldownPanel>
+      <ActionConfirmSheet
+        id="vk-editor-discard"
+        open={discardEditor}
+        title="Не сохранять изменения?"
+        summary="Несохранённые изменения этого поста будут потеряны."
+        confirmLabel="Не сохранять"
+        cancelLabel="Продолжить редактирование"
+        onClose={() => setDiscardEditor(false)}
+        onConfirm={() => {
+          setDiscardEditor(false);
+          state.cancelEditing();
+        }}
+      />
       <ActionConfirmSheet
         id="vk-preset-confirm"
         open={state.presetConfirmation !== null}
-        title="Применить пресет?"
+        title="Изменить настройки групп?"
         tone="accent"
-        summary={`Источников: ${state.presetConfirmation?.sourceIds.length ?? 0}. ${settings.autoPublishEnabled && !settings.autoPublishKillSwitchEnabled ? 'Автопостинг включен; новые параметры вступят в силу сразу.' : 'Общий режим автопостинга останется без изменений.'}`}
-        previewTitle={presetDetails}
+        summary={
+          state.presetConfirmation?.preset === 'CLEAN'
+            ? 'Выбранные группы перейдут на публикацию по очереди. Фильтры рекламы и ссылок будут включены для всех групп.'
+            : 'Выбранные группы перейдут на публикацию по очереди с новой частотой. Общий режим автопубликации не изменится.'
+        }
+        previewTitle={sources
+          .filter((source) => state.presetConfirmation?.sourceIds.includes(source.id))
+          .map((source) => source.title)
+          .join(', ')}
         confirmLabel="Применить"
         isBusy={state.isApplyingPreset}
         onClose={state.closePresetConfirmation}

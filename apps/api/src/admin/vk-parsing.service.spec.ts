@@ -752,6 +752,55 @@ describe('VkParsingService', () => {
     expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
   });
 
+  it('keeps queued and cancelled posts out of the incoming view', async () => {
+    const { service, prisma } = createFixture();
+    await service.listVkParsing('channel-1', { userId: 'channel-admin' } as never, {
+      status: 'NEW',
+    });
+    expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'NEW',
+          publishQueuedAt: null,
+          publishCancelledAt: null,
+          ownerProfile: 'PUBLISHER',
+          ownerBotId: 'publisher-bot',
+        }),
+      }),
+    );
+  });
+
+  it('orders the paginated publication queue by send time, not VK creation time', async () => {
+    const { service, prisma } = createFixture();
+    await service.listVkParsing('channel-1', { userId: 'channel-admin' } as never, {
+      status: 'QUEUED',
+      sourceId: 'source-1',
+    });
+    expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          sourceId: 'source-1',
+          publishQueuedAt: { not: null },
+          status: { in: ['NEW', 'FAILED'] },
+        }),
+        orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }, { id: 'asc' }],
+        take: 50,
+      }),
+    );
+  });
+
+  it('keeps posts changed in VK visible in published history', async () => {
+    const { service, prisma } = createFixture();
+    await service.listVkParsing('channel-1', { userId: 'channel-admin' } as never, {
+      status: 'PUBLISHED',
+    });
+    expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { in: ['PUBLISHED', 'CHANGED_AFTER_PUBLISH'] } }),
+      }),
+    );
+  });
+
   it('rejects invalid feed filters without reading posts or operational diagnostics', async () => {
     const { service, prisma, vkRateLimitService } = createFixture();
     await expect(

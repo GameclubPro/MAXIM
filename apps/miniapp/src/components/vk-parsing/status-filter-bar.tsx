@@ -9,8 +9,8 @@ type StatusFilterBarProps = {
 };
 
 export function StatusFilterBar({ statusFilter, onSelectStatusFilter }: StatusFilterBarProps) {
-  const primaryFilters = VK_PARSING_STATUS_FILTERS.slice(0, 4);
-  const secondaryFilters = VK_PARSING_STATUS_FILTERS.slice(4);
+  const primaryFilters = VK_PARSING_STATUS_FILTERS.slice(0, 3);
+  const secondaryFilters = VK_PARSING_STATUS_FILTERS.slice(3);
   const secondaryActive = secondaryFilters.some((item) => item.value === statusFilter);
 
   return (

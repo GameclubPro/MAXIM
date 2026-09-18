@@ -14,7 +14,7 @@ import type {
   VkParsingPost,
   VkParsingSettings,
 } from '@maxim/contracts';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { cn } from '../../lib/cn';
 import { MaxMarkdownPreview } from '../max-markdown-preview';
 import {
@@ -23,11 +23,17 @@ import {
   formatVkPostIssue,
   formatVkPostStatus,
   formatVkPublishState,
+  normalizeApiError,
 } from './format';
 import { resolveVkParsingFallbackLink } from './link-selection';
 import { PostVideoPreview } from './post-video-preview';
+import { VkInfoButton } from './info-button';
+import { vkPostBlockedReason, vkReviewLabel } from './workflow';
 
 const loadPostEditor = () => import('./post-editor');
+const LazyPhotoViewer = lazy(() =>
+  import('./photo-viewer').then((module) => ({ default: module.VkPhotoViewer })),
+);
 const LazyPostEditor = lazy(async () => {
   const module = await loadPostEditor();
   return { default: module.PostEditor };
@@ -99,6 +105,10 @@ export function PostCard({
   onToggleVideo,
   onToggleLink,
 }: PostCardProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [failedPhotos, setFailedPhotos] = useState<string[]>([]);
+  const [photoPreview, setPhotoPreview] = useState<{ urls: string[]; index: number } | null>(null);
+  const blockedReason = vkPostBlockedReason(post);
   const dateLabel = formatVkPostDate(post.vkPublishedAt);
   const statusLabel = formatVkPostStatus(post);
   const publishState = formatVkPublishState(post);
@@ -117,22 +127,9 @@ export function PostCard({
   const isReviewMode =
     (post.sourcePublishMode === 'REVIEW' || post.sourcePublishMode === 'BOT_REVIEW') &&
     (post.status === 'NEW' || post.status === 'FAILED');
-  const botReviewLabel =
-    post.botReview?.status === 'REJECTED'
-      ? 'Отклонён в боте'
-      : post.botReview?.status === 'APPROVED'
-        ? 'Принят в публикацию'
-        : post.botReview?.status === 'CANCELLED'
-          ? 'Согласование отменено'
-          : post.botReview?.deliveryState === 'AMBIGUOUS'
-            ? 'Доставка требует проверки'
-            : post.botReview?.deliveryState === 'DELIVERED'
-              ? 'На согласовании в личке'
-              : post.botReview
-                ? 'В очереди согласования'
-                : 'Без задания согласования';
-  const visibleStatusLabel = isReviewMode ? null : statusLabel;
-  const visiblePostIssue = isReviewMode ? null : postIssue;
+  const botReviewLabel = vkReviewLabel(post);
+  const visibleStatusLabel = isReviewMode ? null : (publishState?.label ?? statusLabel);
+  const visiblePostIssue = blockedReason ? null : postIssue;
 
   return (
     <article
@@ -158,12 +155,22 @@ export function PostCard({
               className={cn(
                 'vk-parsing-status-pill',
                 post.status === 'PUBLISHED' && 'is-success',
-                post.status === 'FAILED' && 'is-danger',
+                post.status === 'FAILED' && !publishState && 'is-danger',
+                publishState?.tone === 'warning' && 'is-warning',
+                publishState?.tone === 'danger' && 'is-danger',
                 post.status === 'SKIPPED' && 'is-muted',
                 post.status === 'CHANGED_AFTER_PUBLISH' && 'is-warning',
               )}
             >
-              {renderStatusIcon(post)}
+              {publishState ? (
+                publishState.tone === 'danger' ? (
+                  <WarningCircle aria-hidden />
+                ) : (
+                  <RefreshCircle aria-hidden />
+                )
+              ) : (
+                renderStatusIcon(post)
+              )}
               {visibleStatusLabel}
             </span>
           ) : null}
@@ -179,6 +186,13 @@ export function PostCard({
           </a>
         </div>
       </div>
+
+      {blockedReason && !['Пост уже в очереди.', 'Пост отправляется.'].includes(blockedReason) ? (
+        <div className="vk-parsing-post-card__issue" role="status">
+          <WarningCircle aria-hidden />
+          <span>{blockedReason}</span>
+        </div>
+      ) : null}
 
       {visiblePostIssue ? (
         <div className="vk-parsing-post-card__issue" role="status">
@@ -237,7 +251,10 @@ export function PostCard({
           <MaxMarkdownPreview
             value={post.text}
             sourceFormat={post.textFormat}
-            className="vk-parsing-post-card__text max-markdown-preview--clamp-3"
+            className={cn(
+              'vk-parsing-post-card__text',
+              !expanded && 'max-markdown-preview--clamp-3',
+            )}
             fallback={
               post.photoUrls.length > 0
                 ? 'Фото без текста'
@@ -246,6 +263,16 @@ export function PostCard({
                   : 'Без текста'
             }
           />
+          {post.text.length > 160 || post.text.split('\n').length > 3 ? (
+            <button
+              type="button"
+              className="vk-text-expand"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? 'Свернуть' : 'Читать полностью'}
+            </button>
+          ) : null}
 
           {post.photoUrls.length > 0 ? (
             <div
@@ -256,12 +283,34 @@ export function PostCard({
               )}
             >
               {visiblePhotoUrls.map((url, index) => (
-                <span key={url} className="vk-parsing-post-card__photo">
-                  <img src={url} alt="" loading="lazy" />
+                <button
+                  key={url}
+                  type="button"
+                  className="vk-parsing-post-card__photo"
+                  aria-label={`Открыть фото ${index + 1}`}
+                  onClick={() => setPhotoPreview({ urls: [...post.photoUrls], index })}
+                >
+                  {failedPhotos.includes(url) ? (
+                    <span className="vk-photo-unavailable">
+                      <Camera aria-hidden />
+                      <span>Фото недоступно</span>
+                    </span>
+                  ) : (
+                    <img
+                      src={url}
+                      alt="Фото из поста VK"
+                      loading="lazy"
+                      onError={() =>
+                        setFailedPhotos((current) =>
+                          current.includes(url) ? current : [...current, url],
+                        )
+                      }
+                    />
+                  )}
                   {index === visiblePhotoUrls.length - 1 && extraPhotoCount > 0 ? (
                     <em>+{extraPhotoCount}</em>
                   ) : null}
-                </span>
+                </button>
               ))}
             </div>
           ) : null}
@@ -288,11 +337,13 @@ export function PostCard({
                   ? 'Видео будет опубликовано ссылкой'
                   : 'Видео недоступно'}
               </strong>
-              <small>
-                {unsupportedVideoFallbackUrl
-                  ? 'В публикации останется ссылка на оригинал.'
-                  : 'Это видео нельзя перенести автоматически.'}
-              </small>
+              <VkInfoButton title="О видео в этом посте">
+                <p>
+                  {unsupportedVideoFallbackUrl
+                    ? 'VK не предоставил файл видео. Вместо него доступна ссылка на исходный пост.'
+                    : 'VK не предоставил доступный файл видео. Остальные вложения и текст сохраняются.'}
+                </p>
+              </VkInfoButton>
               {unsupportedVideoFallbackUrl ? (
                 <a
                   href={unsupportedVideoFallbackUrl}
@@ -313,7 +364,7 @@ export function PostCard({
                 <ShieldCheck aria-hidden />
               </span>
               <strong>
-                {post.sourcePublishMode === 'BOT_REVIEW' ? botReviewLabel : 'На модерации'}
+                {post.sourcePublishMode === 'BOT_REVIEW' ? botReviewLabel : 'Ручная проверка'}
               </strong>
             </div>
           ) : (
@@ -351,33 +402,17 @@ export function PostCard({
                   {unsupportedSummary}
                 </span>
               ) : null}
-              {publishState ? (
-                <span
-                  className={cn(
-                    'vk-parsing-status-pill',
-                    publishState.tone === 'warning' && 'is-warning',
-                    publishState.tone === 'danger' && 'is-danger',
-                  )}
-                  title={publishState.title}
-                >
-                  {publishState.tone === 'danger' ? (
-                    <WarningCircle aria-hidden />
-                  ) : (
-                    <RefreshCircle aria-hidden />
-                  )}
-                  {publishState.label}
-                </span>
-              ) : null}
             </div>
           )}
 
           {post.botReview?.lastError ? (
             <p className="vk-parsing-post-card__issue" role="status">
-              {post.botReview.lastError}
+              {normalizeApiError(new Error(post.botReview.lastError))}
             </p>
           ) : null}
 
-          {post.status === 'PUBLISHED' && post.publishedUrl ? (
+          {(post.status === 'PUBLISHED' || post.status === 'CHANGED_AFTER_PUBLISH') &&
+          post.publishedUrl ? (
             <div className="vk-parsing-post-card__actions">
               <a
                 className="button button--ghost vk-parsing-action-button"
@@ -396,7 +431,11 @@ export function PostCard({
           post.status !== 'UNAVAILABLE' ? (
             <div className="vk-parsing-post-card__actions">
               {post.sourcePublishMode === 'BOT_REVIEW' &&
-              (!post.botReview || post.botReview.deliveryState === 'ERROR') &&
+              post.status === 'NEW' &&
+              !blockedReason &&
+              (!post.botReview ||
+                (post.botReview.status === 'PENDING' &&
+                  post.botReview.deliveryState === 'ERROR')) &&
               onSendForBotReview ? (
                 <button
                   type="button"
@@ -405,10 +444,10 @@ export function PostCard({
                   onClick={() => onSendForBotReview(post.id)}
                 >
                   <ShieldCheck aria-hidden />
-                  {isSubmittingBotReview ? 'Отправляем...' : 'В личку на согласование'}
+                  {isSubmittingBotReview ? 'Отправляем...' : 'На согласование'}
                 </button>
               ) : null}
-              {post.status === 'FAILED' && !isReviewMode ? (
+              {post.status === 'FAILED' && !isReviewMode && !blockedReason ? (
                 <button
                   type="button"
                   className="button button--ghost vk-parsing-action-button"
@@ -423,21 +462,33 @@ export function PostCard({
                 type="button"
                 className="button button--ghost vk-parsing-action-button vk-parsing-action-button--primary"
                 disabled={
-                  post.sourcePublishMode === 'BOT_REVIEW' &&
-                  (post.botReview?.status !== 'PENDING' ||
-                    post.botReview.deliveryState === 'AMBIGUOUS')
+                  Boolean(blockedReason) ||
+                  (post.sourcePublishMode === 'BOT_REVIEW' &&
+                    (post.botReview?.status !== 'PENDING' ||
+                      post.botReview.deliveryState === 'AMBIGUOUS'))
                 }
                 onPointerDown={() => void loadPostEditor()}
                 onFocus={() => void loadPostEditor()}
                 onClick={() => onStartEditing(post)}
               >
                 <EditPencil aria-hidden />
-                Редактировать
+                {post.status === 'CHANGED_AFTER_PUBLISH'
+                  ? 'Подготовить новый пост'
+                  : 'Редактировать'}
               </button>
             </div>
           ) : null}
         </>
       )}
+      {photoPreview ? (
+        <Suspense fallback={null}>
+          <LazyPhotoViewer
+            urls={photoPreview.urls}
+            initialIndex={photoPreview.index}
+            onClose={() => setPhotoPreview(null)}
+          />
+        </Suspense>
+      ) : null}
     </article>
   );
 }

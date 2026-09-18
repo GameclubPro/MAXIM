@@ -12,11 +12,13 @@ const captureSource = readFileSync(
   'utf8',
 );
 
-test('VK source summary keeps run mode and operational metrics in separate groups', () => {
+test('VK source settings are separate from feed filtering and the compact source summary', () => {
   assert.match(dashboardSource, /className="vk-source-card__summary-row"/u);
-  assert.match(dashboardSource, /<SourceModeControl[\s\S]*?className="vk-source-card__metrics"/u);
-  assert.match(dashboardSource, /aria-label="Сводка источника"/u);
-  assert.equal(dashboardSource.match(/<small>(Входящие|Очередь|Ошибки)<\/small>/gu)?.length, 3);
+  assert.match(dashboardSource, /setConfiguredId\(source\.id\)/u);
+  assert.match(dashboardSource, /id="vk-source-settings"/u);
+  assert.match(dashboardSource, /describeVkSource\(source, settings\)/u);
+  assert.doesNotMatch(dashboardSource, /onSelectSource|selectedSourceId|<SourceModeControl/u);
+  assert.match(dashboardSource, /<ActionConfirmSheet[\s\S]*?Отключить группу\?/u);
 });
 
 test('VK source cards stack their summary by card width with a mobile fallback', () => {

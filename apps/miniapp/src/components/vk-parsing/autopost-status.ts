@@ -29,14 +29,18 @@ export function buildAutopostStatus(
   }
   const active = sources.filter((source) => source.status === 'ACTIVE' && source.importEnabled);
   if (!active.length) {
-    return { title: 'Нет источников', reason: 'Нет активных источников импорта', tone: 'warning' };
+    return {
+      title: 'Нет источников',
+      reason: 'Нет групп с включённым сбором постов',
+      tone: 'warning',
+    };
   }
   if (
     active.every((source) => source.publishMode === 'REVIEW' || source.publishMode === 'BOT_REVIEW')
   ) {
     return {
       title: 'На проверке',
-      reason: 'Все источники требуют ручной публикации',
+      reason: 'Все группы требуют подтверждения',
       tone: 'muted',
     };
   }
@@ -49,7 +53,7 @@ export function buildAutopostStatus(
   if (!automatic.length) {
     return {
       title: 'Авто не настроено',
-      reason: 'Автопубликация выключена у источников',
+      reason: 'У групп выбрана ручная отправка',
       tone: 'warning',
     };
   }
@@ -92,7 +96,7 @@ export function buildAutopostStatus(
   if (blocked.length === automatic.length) {
     return {
       title: 'Сработала защита',
-      reason: 'Автопубликация источников приостановлена',
+      reason: 'Автопубликация групп приостановлена',
       tone: 'danger',
     };
   }
@@ -104,7 +108,7 @@ export function buildAutopostStatus(
   if (!available.length) {
     return {
       title: 'Источники на паузе',
-      reason: 'Тихие часы или защита источников',
+      reason: 'Перерыв в публикациях или защита групп',
       tone: 'warning',
     };
   }
@@ -114,13 +118,13 @@ export function buildAutopostStatus(
   if (errors.length || blocked.length) {
     return {
       title: 'Требует внимания',
-      reason: 'У источников есть ошибки или ограничения',
+      reason: 'У групп есть ошибки или ограничения',
       tone: 'warning',
     };
   }
   return {
     title: 'Авто включено',
-    reason: `Источников в рабочем окне: ${available.length} из ${active.length}`,
+    reason: `Групп, готовых к публикации: ${available.length} из ${active.length}`,
     tone: 'success',
   };
 }

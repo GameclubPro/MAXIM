@@ -226,8 +226,16 @@ export class VkSourceService {
       }
 
       const now = new Date();
-      const autoPublishEnabledAt =
-        typeof parsed.data.autoPublishEnabled === 'boolean'
+      const nextAutoPublishEnabled = parsed.data.autoPublishEnabled ?? source.autoPublishEnabled;
+      const nextPublishMode = parsed.data.publishMode ?? source.publishMode;
+      // FLAG: Leaving manual review starts a new auto baseline even with a legacy true flag.
+      const activatesAutomaticDelivery =
+        nextAutoPublishEnabled &&
+        !isVkManualReviewMode(nextPublishMode) &&
+        (!source.autoPublishEnabled || isVkManualReviewMode(source.publishMode));
+      const autoPublishEnabledAt = activatesAutomaticDelivery
+        ? now
+        : typeof parsed.data.autoPublishEnabled === 'boolean'
           ? parsed.data.autoPublishEnabled
             ? source.autoPublishEnabled
               ? (source.autoPublishEnabledAt ?? now)
@@ -242,8 +250,6 @@ export class VkSourceService {
         source.minPublishIntervalMinutes > parsed.data.publishIntervalMinutes
           ? { minPublishIntervalMinutes: parsed.data.publishIntervalMinutes }
           : {};
-      const nextAutoPublishEnabled = parsed.data.autoPublishEnabled ?? source.autoPublishEnabled;
-      const nextPublishMode = parsed.data.publishMode ?? source.publishMode;
       if (nextPublishMode === VK_BOT_REVIEW_MODE) {
         if (this.configService.get<boolean>('VK_BOT_REVIEW_ENABLED') === false) {
           throw new BadRequestException('Согласование в боте временно отключено.');
@@ -303,7 +309,9 @@ export class VkSourceService {
         });
       }
       const nextAutoPublishPausedAt =
-        parsed.data.autoPublishEnabled === true ? null : source.autoPublishPausedAt;
+        parsed.data.autoPublishEnabled === true || activatesAutomaticDelivery
+          ? null
+          : source.autoPublishPausedAt;
       if (
         importEnabled &&
         nextAutoPublishEnabled &&
@@ -349,7 +357,7 @@ export class VkSourceService {
           status: VK_SOURCE_STATUS_ACTIVE,
           importEnabled,
           ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
-          ...(parsed.data.autoPublishEnabled === true
+          ...(parsed.data.autoPublishEnabled === true || activatesAutomaticDelivery
             ? { autoPublishPausedAt: null, autoPublishPausedReason: null }
             : {}),
           ...(parsed.data.autoPublishEnabled === false
@@ -465,11 +473,25 @@ export class VkSourceService {
           };
       if (preset.autoPublishEnabled) {
         await tx.vkParsingSource.updateMany({
-          where: { ...sourceWhere, autoPublishEnabled: true },
+          where: {
+            ...sourceWhere,
+            autoPublishEnabled: true,
+            publishMode: { notIn: ['REVIEW', VK_BOT_REVIEW_MODE] },
+          },
           data: { ...preset, ...syncUpdate },
         });
         await tx.vkParsingSource.updateMany({
           where: { ...sourceWhere, autoPublishEnabled: false },
+          data: {
+            ...preset,
+            ...syncUpdate,
+            autoPublishEnabledAt: now,
+            autoPublishPausedAt: null,
+            autoPublishPausedReason: null,
+          },
+        });
+        await tx.vkParsingSource.updateMany({
+          where: { ...sourceWhere, autoPublishEnabled: true, publishMode: 'REVIEW' },
           data: {
             ...preset,
             ...syncUpdate,

@@ -6,8 +6,10 @@ import { TimeField } from '../ui/time-field';
 import { ActionConfirmSheet } from '../ui/action-confirm-sheet';
 import { parseVkQueueDate, resolveVkQueueQuickSlot } from './queue-time';
 import { formatTimezoneLabel } from '../../lib/timezone-label';
+import { vkPostBlockedReason } from './workflow';
 
 type QueueTimelineProps = {
+  timezone?: string;
   posts: VkParsingPost[];
   schedulingPostId: string | null;
   cancelingPostId: string | null;
@@ -30,6 +32,12 @@ function QueueItem({
   onSchedule: (at: string) => void;
   onAction: (action: 'publish' | 'cancel') => void;
 }) {
+  const quarantined = vkPostBlockedReason({
+    ...post,
+    publishQueuedAt: null,
+    publishLockedAt: null,
+  });
+  const unavailable = busy || Boolean(post.publishLockedAt) || Boolean(quarantined);
   const at = post.publishScheduledAt ?? post.publishQueuedAt;
   const server = at ? DateTime.fromISO(at, { zone: timezone }).toFormat("yyyy-MM-dd'T'HH:mm") : '';
   const [draft, setDraft] = useState(server);
@@ -53,7 +61,14 @@ function QueueItem({
             : 'Время не задано'}
         </span>
       </div>
-      <div className="vk-queue-item__preview">{post.text || 'Медиапубликация'}</div>
+      <div className="vk-queue-item__preview">
+        {post.text ||
+          (post.photoUrls.length
+            ? 'Пост с фото'
+            : post.videoUrls.length
+              ? 'Пост с видео'
+              : 'Пост без текста')}
+      </div>
       <div className="vk-queue-item__schedule">
         <label>
           <span>Дата</span>
@@ -61,7 +76,7 @@ function QueueItem({
             type="date"
             aria-label={`Дата публикации: ${post.sourceTitle}`}
             value={date}
-            disabled={busy}
+            disabled={unavailable}
             onChange={(event) => {
               setEditing(true);
               setDraft(`${event.target.value}T${time}`);
@@ -75,7 +90,7 @@ function QueueItem({
             variant="compact"
             value={time}
             allowEmpty
-            disabled={busy}
+            disabled={unavailable}
             onChange={(value) => {
               setEditing(true);
               setDraft(`${date}T${value}`);
@@ -90,7 +105,7 @@ function QueueItem({
             type="button"
             title="Отменить изменение времени"
             aria-label="Отменить изменение времени"
-            disabled={busy}
+            disabled={unavailable}
             onClick={() => {
               setEditing(false);
               setDraft(server);
@@ -100,7 +115,7 @@ function QueueItem({
           </button>
           <button
             type="button"
-            disabled={busy || !parsed}
+            disabled={unavailable || !parsed}
             onClick={() => {
               if (parsed) onSchedule(parsed);
             }}
@@ -122,7 +137,7 @@ function QueueItem({
             key={slot.label}
             type="button"
             className="vk-source-preset"
-            disabled={busy}
+            disabled={unavailable}
             onClick={() => {
               setEditing(false);
               onSchedule(resolveVkQueueQuickSlot(slot.minutes, timezone));
@@ -136,7 +151,7 @@ function QueueItem({
           className="vk-source-preset"
           title="Опубликовать сейчас"
           aria-label={`Опубликовать сейчас: ${post.sourceTitle}`}
-          disabled={busy}
+          disabled={unavailable}
           onClick={() => onAction('publish')}
         >
           <Send aria-hidden />
@@ -146,17 +161,23 @@ function QueueItem({
           className="vk-source-preset"
           title="Снять с очереди"
           aria-label={`Снять с очереди: ${post.sourceTitle}`}
-          disabled={busy}
+          disabled={unavailable}
           onClick={() => onAction('cancel')}
         >
           <Xmark aria-hidden />
         </button>
       </div>
+      {quarantined || post.publishLockedAt ? (
+        <p className="vk-inline-warning" role="status">
+          {quarantined ?? 'Пост отправляется.'}
+        </p>
+      ) : null}
     </article>
   );
 }
 
 export function QueueTimeline({
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
   posts,
   schedulingPostId,
   cancelingPostId,
@@ -169,7 +190,6 @@ export function QueueTimeline({
     post: VkParsingPost;
     action: 'publish' | 'cancel';
   } | null>(null);
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const busy = Boolean(schedulingPostId || cancelingPostId || publishingNowPostId);
   if (!posts.length) return null;
   return (

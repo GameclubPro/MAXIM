@@ -157,11 +157,11 @@ test('VK source summary keeps incoming posts separate from the publication queue
 test('VK source connection copy does not claim an idempotent refresh', () => {
   const source = { importEnabled: true, autoPublishEnabled: true };
   assert.deepEqual(buildVkParsingSourceConnectionToast(source, true), {
-    title: 'Источник уже подключён',
+    title: 'Группа уже подключена',
     description: 'Авто',
   });
   assert.deepEqual(buildVkParsingSourceConnectionToast(source, false), {
-    title: 'Источник подключён',
+    title: 'Группа подключена',
     description: 'Авто · обновление запущено',
   });
 });

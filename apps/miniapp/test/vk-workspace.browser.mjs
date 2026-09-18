@@ -1,0 +1,221 @@
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { chromium, devices } from 'playwright';
+import {
+  ensureMiniappDevServer,
+  stopChildProcess,
+} from '../../../scripts/miniapp-local-server.mjs';
+import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+import {
+  applyNativeVisualMode,
+  installNativeVisualModeInitScript,
+} from '../../../scripts/miniapp-native-visual-mode.mjs';
+
+const baseUrl = process.env.MINIAPP_VK_TEST_BASE_URL ?? 'http://127.0.0.1:4175/app/';
+assert.ok(
+  ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(baseUrl).hostname),
+  'Preview tests must stay local',
+);
+const server = await ensureMiniappDevServer(baseUrl);
+const screenshots = await mkdtemp(path.join(tmpdir(), 'maxim-vk-workspace-'));
+const browser = await chromium.launch({ headless: true });
+try {
+  for (const [name, device, colorScheme] of [
+    ['desktop-light', { viewport: { width: 1440, height: 1000 } }, 'light'],
+    ['iphone-light', devices['iPhone 15'], 'light'],
+    ['android-dark', devices['Pixel 7'], 'dark'],
+    ['iphone-se-light', devices['iPhone SE'], 'light'],
+  ]) {
+    const context = await browser.newContext({ ...device, colorScheme });
+    try {
+      await context.route('**/*', (route) =>
+        new URL(route.request().url()).origin === new URL(baseUrl).origin
+          ? route.continue()
+          : route.abort(),
+      );
+      await installMaxBridgeShimInitScript(context, {}, { colorScheme });
+      await installNativeVisualModeInitScript(context);
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      await page.goto(`${baseUrl}?preview=1&profile=publisher&view=channel`);
+      await page
+        .getByRole('link', { name: /разделы/iu })
+        .first()
+        .click();
+      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page.locator('.vk-parsing-workspace').waitFor();
+      await applyNativeVisualMode(page, {
+        safeTop: 0,
+        safeBottom: name.startsWith('iphone') ? 20 : 0,
+      });
+      await page.locator('.vk-parsing-post-card').first().waitFor();
+      await page.screenshot({ path: path.join(screenshots, `${name}-posts.png`) });
+      const clipped = await page.locator('.vk-parsing-filter-bar button').evaluateAll((buttons) =>
+        buttons
+          .filter((button) => {
+            const range = document.createRange();
+            range.selectNodeContents(button);
+            const text = range.getBoundingClientRect();
+            const box = button.getBoundingClientRect();
+            return text.left < box.left - 1 || text.right > box.right + 1;
+          })
+          .map((button) => button.textContent),
+      );
+      assert.deepEqual(clipped, [], 'Filter text must fit its control');
+
+      await page.getByRole('button', { name: 'Открыть фото 1', exact: true }).first().click();
+      const photo = page.getByRole('dialog', { name: 'Фото из поста', exact: true });
+      await photo.getByRole('img', { name: 'Фото 1 из 2', exact: true }).waitFor();
+      await page.waitForFunction(
+        () => document.querySelector('.vk-photo-viewer img')?.naturalWidth > 0,
+      );
+      await photo.getByRole('button', { name: 'Следующее фото', exact: true }).click();
+      await photo.getByRole('img', { name: 'Фото 2 из 2', exact: true }).waitFor();
+      await photo.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+
+      const filter = page.getByRole('combobox', { name: 'Группа в ленте' });
+      const sourceId = await filter.locator('option').nth(2).getAttribute('value');
+      await filter.selectOption(sourceId);
+      await page.getByRole('tab', { name: /Группы/u }).click();
+      await page
+        .locator('.vk-source-card')
+        .first()
+        .getByRole('button', { name: /Настройки группы/u })
+        .click();
+      const sourceDialog = page
+        .getByRole('dialog')
+        .filter({ has: page.getByRole('combobox', { name: 'Способ доставки постов группы' }) });
+      await sourceDialog.waitFor();
+      await page.screenshot({ path: path.join(screenshots, `${name}-source.png`) });
+      await sourceDialog.getByRole('button', { name: 'Отключить группу', exact: true }).click();
+      await page
+        .getByRole('dialog', { name: 'Отключить группу?', exact: true })
+        .getByRole('button', { name: 'Отмена', exact: true })
+        .click();
+      await sourceDialog.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      await page.getByRole('tab', { name: 'Посты', exact: true }).click();
+      assert.equal(
+        await filter.inputValue(),
+        sourceId,
+        'Source settings must not change the feed filter',
+      );
+      await filter.selectOption('');
+
+      await page.getByRole('tab', { name: 'Автоматизация', exact: true }).click();
+      await page.getByRole('radio', { name: 'Пауза', exact: true }).click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.vk-autopost-mode [aria-checked="true"]')?.textContent ===
+          'Пауза',
+      );
+      await page.getByRole('radio', { name: 'Авто', exact: true }).click();
+      await page
+        .getByRole('dialog', { name: 'Включить автопубликацию?', exact: true })
+        .getByRole('button', { name: 'Отмена', exact: true })
+        .click();
+      assert.equal(
+        await page.getByRole('radio', { name: 'Пауза', exact: true }).getAttribute('aria-checked'),
+        'true',
+      );
+      await page.getByRole('radio', { name: 'Авто', exact: true }).click();
+      await page
+        .getByRole('dialog', { name: 'Включить автопубликацию?', exact: true })
+        .getByRole('button', { name: 'Включить', exact: true })
+        .click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.vk-autopost-mode [aria-checked="true"]')?.textContent === 'Авто',
+      );
+      await page.locator('.vk-autopost-advanced > summary').click();
+      await page.getByRole('button', { name: 'Время', exact: true }).click();
+      const allDay = page.getByRole('switch', { name: 'Круглосуточно', exact: true });
+      await allDay.check();
+      await page.getByText('Нет перерыва', { exact: true }).waitFor();
+      assert.equal(await allDay.isChecked(), true);
+      await allDay.uncheck();
+      await page.getByRole('button', { name: /^Время публикаций: с/u }).waitFor();
+      await page.getByRole('button', { name: 'Об автоматической публикации', exact: true }).click();
+      const info = page.getByRole('dialog', { name: 'Об автоматической публикации', exact: true });
+      await info.waitFor();
+      await page.keyboard.press('Escape');
+      await info.waitFor({ state: 'hidden' });
+
+      await page.getByRole('tab', { name: 'Посты', exact: true }).click();
+      await page.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
+      const editor = page.locator('.vk-editor-dialog');
+      await editor.waitFor();
+      await editor.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      await editor.waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
+      const input = editor.getByRole('textbox', { name: 'Текст VK-поста', exact: true });
+      await input.fill('Несохранённый текст для проверки');
+      if (!name.startsWith('desktop')) {
+        const viewport = page.viewportSize();
+        const reducedHeight = Math.max(viewport.width + 1, viewport.height - 260);
+        await page.setViewportSize({ width: viewport.width, height: reducedHeight });
+        await editor
+          .getByRole('button', { name: 'Опубликовать', exact: true })
+          .scrollIntoViewIfNeeded();
+        const action = await editor
+          .getByRole('button', { name: 'Опубликовать', exact: true })
+          .boundingBox();
+        assert.ok(
+          action.y >= 0 && action.y + action.height <= reducedHeight + 1,
+          'Publish action must stay reachable above the keyboard',
+        );
+        await page.screenshot({ path: path.join(screenshots, `${name}-keyboard.png`) });
+        await page.setViewportSize(viewport);
+      }
+      await page.evaluate(() => document.querySelector('[aria-label="Обновить посты"]')?.click());
+      await page.waitForTimeout(500);
+      assert.match(await input.innerText(), /Несохранённый текст/u);
+      await editor.getByRole('button', { name: 'Отмена', exact: true }).click();
+      const discard = page.getByRole('dialog', { name: 'Не сохранять изменения?', exact: true });
+      await discard.getByRole('button', { name: 'Продолжить редактирование', exact: true }).click();
+      assert.match(await input.innerText(), /Несохранённый текст/u);
+      await editor.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      await discard.getByRole('button', { name: 'Не сохранять', exact: true }).click();
+      await editor.waitFor({ state: 'hidden' });
+      assert.equal(await page.locator('.vk-parsing-workspace').isVisible(), true);
+      if (name === 'desktop-light') {
+        await page.getByRole('tab', { name: /Группы/u }).click();
+        for (let count = 2; count > 0; count -= 1) {
+          await page
+            .locator('.vk-source-card')
+            .first()
+            .getByRole('button', { name: /Настройки группы/u })
+            .click();
+          const group = page
+            .getByRole('dialog')
+            .filter({ has: page.getByRole('combobox', { name: 'Способ доставки постов группы' }) });
+          await group.getByRole('button', { name: 'Отключить группу', exact: true }).click();
+          await page
+            .getByRole('dialog', { name: 'Отключить группу?', exact: true })
+            .getByRole('button', { name: 'Отключить', exact: true })
+            .click();
+          await page.waitForFunction(
+            (remaining) => document.querySelectorAll('.vk-source-card').length === remaining,
+            count - 1,
+          );
+        }
+        await page.getByRole('tab', { name: 'Посты', exact: true }).click();
+        await page.getByText('Новых постов пока нет', { exact: true }).waitFor();
+        await page.getByRole('textbox', { name: 'Ссылка на группу VK' }).fill('vk.com/urban_news');
+        await page.getByRole('button', { name: 'Добавить группу', exact: true }).click();
+        await page.getByRole('tab', { name: /Группы/u }).click();
+        await page.waitForFunction(() => document.querySelectorAll('.vk-source-card').length === 1);
+      }
+      assert.deepEqual(errors, []);
+      console.log(`${name}: passed`);
+    } finally {
+      await context.close();
+    }
+  }
+  console.log(`Screenshots: ${screenshots}`);
+} finally {
+  await browser.close();
+  await stopChildProcess(server);
+}

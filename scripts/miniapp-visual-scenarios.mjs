@@ -114,7 +114,8 @@ const FEATURE_SOURCE_GLOBS = {
   ],
   'vk-parsing': [
     'apps/miniapp/src/components/vk-parsing-card.tsx',
-    'apps/miniapp/src/styles/vk-parsing.css',
+    'apps/miniapp/src/components/vk-parsing/*',
+    'apps/miniapp/src/styles/vk-parsing*.css',
     'apps/miniapp/src/lib/api/vk-parsing-client.ts',
   ],
 };

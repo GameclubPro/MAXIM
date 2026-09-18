@@ -109,7 +109,11 @@ export class VkParsingFeedService {
               publishQueuedAt: { not: null },
               status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
             }
-          : { status: query.status };
+          : query.status === 'NEW'
+            ? { status: VK_POST_STATUS_NEW, publishQueuedAt: null, publishCancelledAt: null }
+            : query.status === 'PUBLISHED'
+              ? { status: { in: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_CHANGED_AFTER_PUBLISH] } }
+              : { status: query.status };
     const postWhere: Prisma.VkParsingPostWhereInput = {
       chatId,
       ...ownerScope,
@@ -138,11 +142,14 @@ export class VkParsingFeedService {
           source: true,
           botReview: { select: { status: true, deliveryState: true, lastError: true } },
         },
-        orderBy: [
-          { vkPublishedAt: { sort: 'desc', nulls: 'last' } },
-          { createdAt: 'desc' },
-          { id: 'desc' },
-        ],
+        orderBy:
+          query.status === 'QUEUED'
+            ? [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }, { id: 'asc' }]
+            : [
+                { vkPublishedAt: { sort: 'desc', nulls: 'last' } },
+                { createdAt: 'desc' },
+                { id: 'desc' },
+              ],
         skip: query.offset,
         take: query.limit,
       }),
@@ -329,7 +336,7 @@ export class VkParsingFeedService {
           where publish_queued_at is not null
             and status in (${VK_POST_STATUS_NEW}, ${VK_POST_STATUS_FAILED})
         )::int as "queuedPostCount",
-        count(*) filter (where status = ${VK_POST_STATUS_PUBLISHED})::int as "publishedPostCount",
+        count(*) filter (where status in (${VK_POST_STATUS_PUBLISHED}, ${VK_POST_STATUS_CHANGED_AFTER_PUBLISH}))::int as "publishedPostCount",
         count(*) filter (where status = ${VK_POST_STATUS_SKIPPED})::int as "skippedPostCount",
         count(*) filter (where status = ${VK_POST_STATUS_FAILED})::int as "failedPostCount"
       from vk_parsing_posts

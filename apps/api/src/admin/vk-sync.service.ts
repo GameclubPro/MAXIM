@@ -930,11 +930,11 @@ export class VkSyncService {
     }
     const found = new Set<string>();
     for (let offset = 0; offset < posts.length; offset += 100) {
+      const requestedKeys = new Set(
+        posts.slice(offset, offset + 100).map((post) => `${post.vkOwnerId}_${post.vkPostId}`),
+      );
       const response = await this.vkApiClient.request('wall.getById', {
-        posts: posts
-          .slice(offset, offset + 100)
-          .map((post) => `${post.vkOwnerId}_${post.vkPostId}`)
-          .join(','),
+        posts: [...requestedKeys].join(','),
         extended: '0',
       });
       const record = this.asRecord(response);
@@ -951,7 +951,8 @@ export class VkSyncService {
           !ownerId ||
           !Number.isSafeInteger(postId) ||
           !postId ||
-          postId < 0
+          postId < 0 ||
+          !requestedKeys.has(`${ownerId}_${postId}`)
         ) {
           throw new VkApiRequestError('VK вернул неполный пост.', 'invalid_response', true);
         }

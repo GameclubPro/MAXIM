@@ -5,14 +5,16 @@ import { getVkBotReviewState, updateVkBotReviewState } from '../../lib/api/vk-pa
 import type { VkBotReviewSettingsRequest } from '@maxim/contracts/vk-parsing';
 import { openLink } from '../../lib/max-bridge';
 import { normalizeApiError } from './format';
+import { VkInfoButton } from './info-button';
+import { VkSettingSwitch } from './setting-switch';
 
 export function useVkBotReviewState(api: ApiTransport, chatId: string, enabled: boolean) {
   return useQuery({
     queryKey: ['vk-bot-review', chatId],
-    queryFn: () => getVkBotReviewState(api, chatId),
+    queryFn: ({ signal }) => getVkBotReviewState(api, chatId, signal),
     enabled,
     staleTime: 5000,
-    refetchInterval: enabled ? 15_000 : false,
+    refetchInterval: enabled ? 30_000 : false,
   });
 }
 
@@ -39,6 +41,16 @@ export function BotReviewPanel({
       <div className="vk-bot-review-panel__heading">
         <ChatBubble aria-hidden />
         <h3>Согласование в личке</h3>
+        <VkInfoButton title="О согласовании">
+          <p>
+            Новые записи приходят в личку Публика. В канал отправляются только одобренные посты.
+            Доставка в личку круглосуточная.
+          </p>
+          <p>
+            У канала один согласующий. Одновременно открыты до пяти карточек на канал и десяти на
+            получателя; остальные остаются в очереди.
+          </p>
+        </VkInfoButton>
         {state ? <span>{state.pendingCount} ожидают</span> : null}
       </div>
       {state ? (
@@ -50,7 +62,7 @@ export function BotReviewPanel({
               onClick={() => openLink(state.botUrl)}
             >
               <OpenNewWindow aria-hidden />
-              {state.inboxConnected ? 'Открыть бота' : 'Подключить личку'}
+              {state.inboxConnected ? 'Открыть Публика' : 'Подключить личку'}
             </button>
             {!state.recipientConfigured ? (
               <button
@@ -60,19 +72,24 @@ export function BotReviewPanel({
                 onClick={() => mutation.mutate('CONNECT')}
               >
                 <ChatBubble aria-hidden />
-                Получать мне
+                Получать посты мне
               </button>
             ) : null}
             {state.isRecipient ? (
-              <label className="vk-bot-review-panel__toggle">
-                <input
-                  type="checkbox"
-                  checked={!state.paused}
-                  disabled={!state.available || mutation.isPending}
-                  onChange={(event) => mutation.mutate(event.target.checked ? 'RESUME' : 'PAUSE')}
-                />
-                Доставка включена
-              </label>
+              <VkSettingSwitch
+                className="vk-setting-row vk-bot-review-panel__toggle"
+                label="Присылать посты"
+                checked={!state.paused}
+                disabled={!state.available || mutation.isPending}
+                onChange={async (checked) => {
+                  try {
+                    await mutation.mutateAsync(checked ? 'RESUME' : 'PAUSE');
+                    return true;
+                  } catch {
+                    return false;
+                  }
+                }}
+              />
             ) : null}
             <button
               type="button"

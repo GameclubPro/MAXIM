@@ -234,6 +234,51 @@ describe('VkSourceService autopublish cleanup', () => {
     expect(prisma.vkParsingSource.update).not.toHaveBeenCalled();
   });
 
+  it('starts a fresh auto baseline when leaving legacy review with its old auto flag still true', async () => {
+    const { prisma, service } = createFixture();
+    const oldBaseline = new Date('2020-01-01T00:00:00Z');
+    prisma.vkParsingSource.findFirst.mockResolvedValue(
+      createSource({
+        publishMode: 'REVIEW',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: oldBaseline,
+        autoPublishPausedAt: oldBaseline,
+        autoPublishPausedReason: 'manual',
+      }),
+    );
+    await service.updateSource('channel-1', 'source-1', { userId: '17' }, { publishMode: 'QUEUE' });
+    const patch = prisma.vkParsingSource.update.mock.calls[0]?.[0]?.data;
+    expect(patch.autoPublishEnabledAt).toBeInstanceOf(Date);
+    expect(patch.autoPublishEnabledAt.getTime()).toBeGreaterThan(oldBaseline.getTime());
+    expect(patch.autoPublishPausedAt).toBeNull();
+  });
+
+  it('does not preserve a legacy review baseline when applying an automatic preset', async () => {
+    const { prisma, service } = createFixture();
+    await service.applyBulkPreset(
+      'channel-1',
+      { userId: '17' },
+      { sourceIds: ['source-1'], preset: 'SLOW' },
+    );
+    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ publishMode: 'REVIEW', autoPublishEnabled: true }),
+        data: expect.objectContaining({
+          autoPublishEnabledAt: expect.any(Date),
+          autoPublishPausedAt: null,
+        }),
+      }),
+    );
+    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          autoPublishEnabled: true,
+          publishMode: { notIn: ['REVIEW', 'BOT_REVIEW'] },
+        }),
+      }),
+    );
+  });
+
   it('enters bot review with a new baseline and clears unattempted publication intents', async () => {
     const { prisma, service } = createFixture();
     prisma.vkParsingSettings.findUnique.mockResolvedValue({

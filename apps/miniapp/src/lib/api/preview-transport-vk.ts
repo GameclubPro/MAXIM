@@ -392,9 +392,45 @@ export function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsing
       recentErrors: [{ code: 'vk_6', count: 3 }],
     },
   });
+  feed.posts.unshift({
+    ...feed.posts[0]!,
+    id: 'preview-vk-post-4280',
+    vkPostId: 4280,
+    text: 'У набережной открыли обновлённый парк. Появились прогулочные дорожки, освещение и места для отдыха.\n\nВ субботу здесь начнётся городская программа: музыка, мастерские и экскурсии. Вход свободный.',
+    url: `${sourceOne.url}?w=wall${sourceOne.wallOwnerId}_4280`,
+    vkPublishedAt: addHours(now, -3).toISOString(),
+    publishQueuedAt: null,
+    publishScheduledAt: null,
+    contentHash: 'preview-vk-4280',
+    linkUrls: [],
+  });
+  return normalizePreviewVkFeed(feed);
+}
+
+function normalizePreviewVkFeed(feed: VkParsingFeed): VkParsingFeed {
   return vkParsingFeedSchema.parse({
     ...feed,
-    queue: feed.posts.filter((post) => post.publishQueuedAt),
+    queue: feed.posts.filter(
+      (post) => post.publishQueuedAt && ['NEW', 'FAILED'].includes(post.status),
+    ),
+    sources: feed.sources.map((source) => {
+      const posts = feed.posts.filter((post) => post.sourceId === source.id);
+      return {
+        ...source,
+        newPostCount: posts.filter(
+          (post) => post.status === 'NEW' && !post.publishQueuedAt && !post.publishCancelledAt,
+        ).length,
+        queuedPostCount: posts.filter(
+          (post) => post.publishQueuedAt && ['NEW', 'FAILED'].includes(post.status),
+        ).length,
+        publishedPostCount: posts.filter((post) =>
+          ['PUBLISHED', 'CHANGED_AFTER_PUBLISH'].includes(post.status),
+        ).length,
+        skippedPostCount: posts.filter((post) => post.status === 'SKIPPED').length,
+        failedPostCount: posts.filter((post) => post.status === 'FAILED').length,
+      };
+    }),
+    pagination: { ...feed.pagination, total: feed.posts.length },
   });
 }
 
@@ -405,9 +441,13 @@ export function buildPreviewVkParsingPage(
   const query = vkParsingFeedQuerySchema.parse(Object.fromEntries(searchParams.entries()));
   const filteredPosts = feed.posts.filter((post) => {
     if (query.status === 'QUEUED') {
-      if (!post.publishQueuedAt) {
+      if (!post.publishQueuedAt || !['NEW', 'FAILED'].includes(post.status)) {
         return false;
       }
+    } else if (query.status === 'PUBLISHED') {
+      if (!['PUBLISHED', 'CHANGED_AFTER_PUBLISH'].includes(post.status)) return false;
+    } else if (query.status === 'NEW' && (post.publishQueuedAt || post.publishCancelledAt)) {
+      return false;
     } else if (query.status !== 'ALL' && post.status !== query.status) {
       return false;
     }
@@ -417,6 +457,21 @@ export function buildPreviewVkParsingPage(
 
     return true;
   });
+  if (query.status === 'QUEUED') {
+    filteredPosts.sort((left, right) => {
+      const leftAt = left.publishScheduledAt
+        ? Date.parse(left.publishScheduledAt)
+        : Number.POSITIVE_INFINITY;
+      const rightAt = right.publishScheduledAt
+        ? Date.parse(right.publishScheduledAt)
+        : Number.POSITIVE_INFINITY;
+      return (
+        leftAt - rightAt ||
+        Date.parse(left.publishQueuedAt!) - Date.parse(right.publishQueuedAt!) ||
+        left.id.localeCompare(right.id)
+      );
+    });
+  }
   const posts = filteredPosts.slice(query.offset, query.offset + query.limit);
   const nextOffset = query.offset + query.limit;
 
@@ -474,10 +529,7 @@ export function handleVkParsingPreviewRequest(
 
   const readFeed = () => (entityType === 'channel' ? state.channelVkParsing : state.chatVkParsing);
   const writeFeed = (feed: VkParsingFeed) => {
-    const normalizedFeed = vkParsingFeedSchema.parse({
-      ...feed,
-      queue: feed.posts.filter((post) => post.publishQueuedAt),
-    });
+    const normalizedFeed = normalizePreviewVkFeed(feed);
     if (entityType === 'channel') {
       state.channelVkParsing = normalizedFeed;
     } else {

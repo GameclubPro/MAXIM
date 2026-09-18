@@ -6,6 +6,9 @@ import type {
 } from '@maxim/contracts/vk-parsing';
 import { TimeField } from '../ui/time-field';
 import { formatTimezoneLabel } from '../../lib/timezone-label';
+import { VkInfoButton } from './info-button';
+import { vkAllDayScheduleUpdate } from './workflow';
+import { VkSettingSwitch } from './setting-switch';
 
 const TIMEZONES = [
   ['Europe/Kaliningrad', 'Калининград'],
@@ -22,7 +25,7 @@ const TIMEZONES = [
   ['UTC', 'Всемирное время'],
 ] as const;
 
-function TimeRange({
+export function VkTimeRange({
   label,
   start,
   end,
@@ -88,9 +91,11 @@ function TimeRange({
           {incomplete
             ? 'Укажите начало и конец'
             : !draft.start && !draft.end
-              ? 'Выключены'
+              ? 'Нет перерыва'
               : draft.start === draft.end
-                ? 'Круглосуточно'
+                ? optional
+                  ? 'Публикации остановлены на весь день'
+                  : 'Круглосуточно'
                 : draft.start > draft.end
                   ? 'Через полночь'
                   : `${draft.start} - ${draft.end}`}
@@ -134,8 +139,52 @@ export function ScheduleTimePanel({
   disabled: boolean;
   onUpdate: (payload: UpdateVkParsingSettingsRequest) => Promise<boolean>;
 }) {
+  const allDay =
+    settings.workHoursStart === settings.workHoursEnd &&
+    !settings.quietHoursStart &&
+    !settings.quietHoursEnd;
+  const [lastWindow, setLastWindow] = useState({
+    workHoursStart: allDay ? '09:00' : settings.workHoursStart,
+    workHoursEnd: allDay ? '22:00' : settings.workHoursEnd,
+    quietHoursStart: settings.quietHoursStart,
+    quietHoursEnd: settings.quietHoursEnd,
+  });
+  useEffect(() => {
+    if (!allDay)
+      setLastWindow({
+        workHoursStart: settings.workHoursStart,
+        workHoursEnd: settings.workHoursEnd,
+        quietHoursStart: settings.quietHoursStart,
+        quietHoursEnd: settings.quietHoursEnd,
+      });
+  }, [
+    allDay,
+    settings.workHoursStart,
+    settings.workHoursEnd,
+    settings.quietHoursStart,
+    settings.quietHoursEnd,
+  ]);
   return (
     <div className="vk-schedule-time-panel">
+      <div className="vk-section-heading">
+        <h3>Когда публиковать</h3>
+        <VkInfoButton title="О времени публикаций">
+          <p>
+            Часы относятся только к автоматической публикации в чат или канал. Согласование в личке
+            работает круглосуточно.
+          </p>
+          <p>
+            Перерыв запрещает отправку внутри выбранного промежутка. Его начало и конец сохраняются
+            вместе.
+          </p>
+        </VkInfoButton>
+      </div>
+      <VkSettingSwitch
+        label="Круглосуточно"
+        checked={allDay}
+        disabled={disabled}
+        onChange={(checked) => onUpdate(checked ? vkAllDayScheduleUpdate() : lastWindow)}
+      />
       <label className="vk-timezone-field">
         <span>Часовой пояс</span>
         <select
@@ -156,17 +205,19 @@ export function ScheduleTimePanel({
           ))}
         </select>
       </label>
-      <TimeRange
-        label="Рабочее время"
-        start={settings.workHoursStart}
-        end={settings.workHoursEnd}
-        disabled={disabled}
-        onSave={(workHoursStart, workHoursEnd) =>
-          onUpdate({ workHoursStart: workHoursStart!, workHoursEnd: workHoursEnd! })
-        }
-      />
-      <TimeRange
-        label="Тихие часы"
+      {!allDay ? (
+        <VkTimeRange
+          label="Время публикаций"
+          start={settings.workHoursStart}
+          end={settings.workHoursEnd}
+          disabled={disabled}
+          onSave={(workHoursStart, workHoursEnd) =>
+            onUpdate({ workHoursStart: workHoursStart!, workHoursEnd: workHoursEnd! })
+          }
+        />
+      ) : null}
+      <VkTimeRange
+        label="Перерыв в публикациях"
         start={settings.quietHoursStart}
         end={settings.quietHoursEnd}
         optional
