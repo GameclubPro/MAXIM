@@ -1658,6 +1658,251 @@ describe('ManagedGiveawayService', () => {
     },
   );
 
+  it('loads every giveaway condition through its own bot read route', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const botByChatId: Record<string, string> = {
+      'source-1': 'bot-source',
+      'extra-1': 'bot-extra',
+      'extra-2': 'bot-other',
+    };
+    const maxBotLinkService = {
+      ...createMaxBotLinkMock(),
+      resolveBotRoute: jest.fn(async ({ chatId }: { chatId: string }) => ({
+        purpose: 'read',
+        chatId,
+        primaryBotId: botByChatId[chatId],
+        botId: botByChatId[chatId],
+        candidateBotIds: [botByChatId[chatId]],
+        reason: 'primary_confirmed',
+      })),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+    prisma.managedGiveaway.findUnique.mockResolvedValue(
+      createGiveaway({
+        publicationMessageId: 'publication-1',
+        requiredChannelIds: ['extra-1', 'source-1', 'extra-2', 'extra-1'],
+      }),
+    );
+    maxClient.getChatSnapshot.mockImplementation(
+      async (chatId: string, options: { botId?: string }) => {
+        if (options.botId !== botByChatId[chatId]) {
+          throw createMaxApiError(403, 'Bot has no access to this chat', 'access.denied');
+        }
+        return { title: chatId, link: `https://max.ru/join/${chatId}`, avatarUrl: null };
+      },
+    );
+
+    const result = await service.getPublicGiveaway('giveaway-1', user);
+
+    expect(result.sourceLink).toBe('https://max.ru/join/source-1');
+    expect(result.requiredChannels).toEqual([
+      { id: 'extra-1', title: 'Основной канал', link: 'https://max.ru/join/extra-1' },
+      { id: 'extra-2', title: 'Основной канал', link: 'https://max.ru/join/extra-2' },
+    ]);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(3);
+    for (const [chatId, botId] of Object.entries(botByChatId)) {
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+        chatId,
+        expect.objectContaining({
+          botId,
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_GIVEAWAY,
+          timeoutMs: 2500,
+        }),
+      );
+    }
+    expect(maxClient.getChatTitle).not.toHaveBeenCalled();
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+  });
+
+  it('reuses condition snapshots for missing local titles without extra MAX reads', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock({ resolvedBotId: 'bot-extra' });
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) =>
+      where.id === 'source-1' ? { title: 'Основной канал' } : null,
+    );
+    prisma.managedGiveaway.findUnique.mockResolvedValue(
+      createGiveaway({ publicationMessageId: 'publication-1' }),
+    );
+    maxClient.getChatSnapshot.mockImplementation(async (chatId: string) => ({
+      title: ' Дополнительная группа ',
+      link: ` https://max.ru/join/${chatId} `,
+      avatarUrl: null,
+    }));
+
+    const result = await service.getPublicGiveaway('giveaway-1', user);
+
+    expect(result.requiredChannels).toEqual([
+      { id: 'extra-1', title: 'Дополнительная группа', link: 'https://max.ru/join/extra-1' },
+    ]);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'extra-1',
+      expect.objectContaining({ botId: 'bot-extra' }),
+    );
+    expect(maxClient.getChatTitle).not.toHaveBeenCalled();
+  });
+
+  it('does not use a launch or persisted bot when a condition has no safe read route', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = {
+      ...createMaxBotLinkMock(),
+      resolveBotRoute: jest.fn(async ({ chatId }: { chatId: string }) => ({
+        purpose: 'read',
+        chatId,
+        primaryBotId: null,
+        botId: chatId === 'source-1' ? 'bot-source' : null,
+        candidateBotIds: chatId === 'source-1' ? ['bot-source'] : [],
+        reason: null,
+      })),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Сохранённое название',
+      primaryBotId: 'dormant-bot',
+      botId: 'dormant-bot',
+    });
+    prisma.managedGiveaway.findUnique.mockResolvedValue(
+      createGiveaway({ publicationMessageId: 'publication-1' }),
+    );
+    maxClient.getChatSnapshot.mockResolvedValue({
+      title: 'Источник',
+      link: 'https://max.ru/source',
+      avatarUrl: null,
+    });
+
+    const result = await service.getPublicGiveaway('giveaway-1', user);
+
+    expect(result.requiredChannels).toEqual([
+      { id: 'extra-1', title: 'Сохранённое название', link: null },
+    ]);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'source-1',
+      expect.objectContaining({ botId: 'bot-source' }),
+    );
+    expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+  });
+
+  it.each(['snapshot-unavailable', 'route-unavailable', 'no-link'])(
+    'isolates a %s condition without losing other links or checking membership',
+    async (mode) => {
+      const prisma = createPrismaMock();
+      const maxClient = createMaxClientMock();
+      const maxBotLinkService = createMaxBotLinkMock();
+      maxBotLinkService.resolveBotIdForRead.mockImplementation(async ({ chatId }) => {
+        if (chatId === 'extra-1' && mode === 'route-unavailable') {
+          throw new Error('Route unavailable');
+        }
+        return 'bot-source';
+      });
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        maxClient as never,
+        { invalidate: jest.fn() } as never,
+        {} as never,
+        createConfigMock() as never,
+        undefined,
+        maxBotLinkService as never,
+      );
+      prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) =>
+        where.id === 'extra-1' ? null : { title: 'Название' },
+      );
+      prisma.managedGiveaway.findUnique.mockResolvedValue(
+        createGiveaway({
+          publicationMessageId: 'publication-1',
+          requiredChannelIds: ['extra-1', 'extra-2'],
+        }),
+      );
+      maxClient.getChatSnapshot.mockImplementation(async (chatId: string) => {
+        if (chatId === 'extra-1' && mode === 'snapshot-unavailable') {
+          throw createMaxApiError(503, 'Unavailable');
+        }
+        return {
+          title: null,
+          link: chatId === 'extra-1' ? null : `https://max.ru/join/${chatId}`,
+          avatarUrl: null,
+        };
+      });
+
+      const result = await service.getPublicGiveaway('giveaway-1', user);
+
+      expect(result.sourceLink).toBe('https://max.ru/join/source-1');
+      expect(result.requiredChannels).toEqual([
+        { id: 'extra-1', title: 'Chat extra-1', link: null },
+        { id: 'extra-2', title: 'Название', link: 'https://max.ru/join/extra-2' },
+      ]);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(mode === 'route-unavailable' ? 2 : 3);
+      expect(maxClient.getChatTitle).not.toHaveBeenCalled();
+      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+      expect(prisma.managedGiveawayEntry.upsert).not.toHaveBeenCalled();
+    },
+  );
+
+  it('bounds metadata concurrency across the source and required groups while preserving order', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      createMaxBotLinkMock() as never,
+    );
+    const requiredChannelIds = Array.from({ length: 11 }, (_, index) => `extra-${index + 1}`);
+    prisma.managedGiveaway.findUnique.mockResolvedValue(
+      createGiveaway({ publicationMessageId: 'publication-1', requiredChannelIds }),
+    );
+    let active = 0;
+    let peakActive = 0;
+    maxClient.getChatSnapshot.mockImplementation(async (chatId: string) => {
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      active -= 1;
+      return { title: chatId, link: `https://max.ru/join/${chatId}`, avatarUrl: null };
+    });
+
+    const result = await service.getPublicGiveaway('giveaway-1', user);
+
+    expect(peakActive).toBe(4);
+    expect(active).toBe(0);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(12);
+    expect(result.requiredChannels.map(({ id }) => id)).toEqual(requiredChannelIds);
+    expect(result.requiredChannels.every(({ link }) => Boolean(link))).toBe(true);
+  });
+
   it.each(['no-photo', 'unavailable'])(
     'keeps a %s source usable without an avatar',
     async (mode) => {

@@ -97,7 +97,7 @@ import {
 import { AdminService } from './admin.service';
 import { shouldRecreateEditableMessage } from './admin-editable-message';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
-import { isPrismaKnownError } from './admin-legacy-utils';
+import { isPrismaKnownError, mapWithConcurrencyLimit } from './admin-legacy-utils';
 import { MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS } from './admin.service.support';
 
 type GiveawayActionSource = 'miniapp' | 'private_bot' | 'runner' | 'private_claim';
@@ -124,6 +124,7 @@ const GIVEAWAY_RUNNER_THROTTLE_LOG_INTERVAL_MS = 60_000;
 const GIVEAWAY_RESULTS_REPLACEMENT_DIGEST_HEX_LENGTH = 24;
 const GIVEAWAY_RESULTS_REPLACEMENT_DIGEST_PATTERN = /^[0-9a-f]{24}$/u;
 const MANAGED_GIVEAWAY_METADATA_TIMEOUT_MS = 2_500;
+const MANAGED_GIVEAWAY_METADATA_CONCURRENCY = 4;
 const MANAGED_GIVEAWAY_SEND_TIMEOUT_MS = 12_000;
 const MANAGED_GIVEAWAY_UPLOAD_TIMEOUT_MS = 30_000;
 const MANAGED_GIVEAWAY_MEMBERSHIP_TIMEOUT_MS = 3_000;
@@ -2081,24 +2082,25 @@ export class ManagedGiveawayService {
     const requiredChannelIds = this.readRequiredChannelIds(row.requiredChannelIds).filter(
       (channelId) => channelId !== row.sourceChatId,
     );
-    const [sourceTitle, sourcePresentation, requiredChannels] = await Promise.all([
-      this.resolveSourceTitle(row.sourceChatId),
-      this.resolveChatPresentation(row.sourceChatId),
-      Promise.all(
-        requiredChannelIds.map(async (channelId) => ({
-          id: channelId,
-          title: await this.resolveSourceTitle(channelId),
-          link: (await this.resolveChatPresentation(channelId)).link,
-        })),
-      ),
-    ]);
+    const [sourcePresentation, ...requiredPresentations] = await mapWithConcurrencyLimit(
+      [row.sourceChatId, ...requiredChannelIds],
+      MANAGED_GIVEAWAY_METADATA_CONCURRENCY,
+      async (chatId) => {
+        const presentation = await this.resolveChatPresentation(chatId);
+        return {
+          ...presentation,
+          id: chatId,
+          title: await this.resolveSourceTitle(chatId, presentation.title),
+        };
+      },
+    );
     const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(row.prizes);
 
     return {
       id: row.id,
       sourceChatId: row.sourceChatId,
       serverTime: new Date().toISOString(),
-      sourceTitle,
+      sourceTitle: sourcePresentation.title,
       sourceLink: sourcePresentation.link,
       sourceAvatarUrl: sourcePresentation.avatarUrl,
       entityType: this.fromPrismaEntityType(row.entityType),
@@ -2113,7 +2115,7 @@ export class ManagedGiveawayService {
       endsAt: row.endsAt.toISOString(),
       claimHours: row.claimHours,
       requiredChannelIds,
-      requiredChannels,
+      requiredChannels: requiredPresentations.map(({ id, title, link }) => ({ id, title, link })),
       entriesCount: this.countPublicGiveawayEntries(row.entries),
       winnersCount: row.winners.filter(
         (winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED,
@@ -4928,7 +4930,7 @@ export class ManagedGiveawayService {
     });
   }
 
-  private async resolveSourceTitle(chatId: string): Promise<string> {
+  private async resolveSourceTitle(chatId: string, remoteTitle?: string | null): Promise<string> {
     const local = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: { title: true },
@@ -4937,39 +4939,36 @@ export class ManagedGiveawayService {
       return local.title.trim();
     }
 
-    try {
-      const remote = await this.maxClient.getChatTitle(
-        chatId,
-        buildManagedGiveawayMaxApiOptions('miniapp', 'metadata'),
-      );
-      if (remote?.trim()) {
-        return remote.trim();
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        { chatId, err: error instanceof Error ? error.message : String(error) },
-        'Failed to resolve giveaway source title',
-      );
-    }
-
-    return `Chat ${chatId}`;
+    const title =
+      remoteTitle === undefined ? (await this.resolveChatPresentation(chatId)).title : remoteTitle;
+    return title?.trim() || `Chat ${chatId}`;
   }
 
   private async resolveChatPresentation(
     chatId: string,
-  ): Promise<{ link: string | null; avatarUrl: string | null }> {
+  ): Promise<{ title: string | null; link: string | null; avatarUrl: string | null }> {
+    const unavailable = { title: null, link: null, avatarUrl: null };
     try {
+      const route = await this.resolveReadBotAssignmentRouteAware(chatId);
+      // FLAG: An explicitly unavailable route must not fall back to the launch/default bot.
+      if (route.routeResolved && !route.botId) {
+        return unavailable;
+      }
       const snapshot = await this.maxClient.getChatSnapshot(
         chatId,
-        buildManagedGiveawayMaxApiOptions('miniapp', 'metadata'),
+        buildManagedGiveawayMaxApiOptions('miniapp', 'metadata', route.botId),
       );
-      return { link: snapshot.link ?? null, avatarUrl: snapshot.avatarUrl ?? null };
+      return {
+        title: snapshot.title?.trim() || null,
+        link: snapshot.link?.trim() || null,
+        avatarUrl: snapshot.avatarUrl ?? null,
+      };
     } catch (error: unknown) {
       this.logger.warn(
         { chatId, err: error instanceof Error ? error.message : String(error) },
         'Failed to resolve giveaway source presentation',
       );
-      return { link: null, avatarUrl: null };
+      return unavailable;
     }
   }
 
