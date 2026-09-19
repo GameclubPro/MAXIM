@@ -6788,6 +6788,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <SettingsReportsSection
               api={api}
+              reportsAvailable={settingsScreenQuery.data?.reportsAvailable ?? false}
               fieldErrors={fieldErrors}
               chatId={chatId!}
               draft={draft}

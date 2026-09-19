@@ -97,6 +97,7 @@ export type PreviewState = {
   channelDialogThreads: PreviewDialogThreadBuckets;
   chatHeaderParticipantsCount: number;
   chatSettings: ChatSettings;
+  reportsAvailable: boolean;
   chatRules: ChatRules;
   rulesPublicationSequence?: number;
   chatDomains: DomainAllowlistEntry[];
@@ -170,6 +171,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       ? publisherPostImportState
       : 'none';
   const chatSettings = chatSettingsSchema.parse({
+    reportsEnabled: searchParams.get('reportsOptIn') === '1',
     greetingEnabled: false,
     greetingBotMessageEnabled: false,
     greetingDeleteBotMessageEnabled: false,
@@ -926,6 +928,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     chatDialogs,
     chatDialogThreads: {},
     chatSettings,
+    reportsAvailable: searchParams.get('reportsAvailability') !== 'paused',
     chatRules,
     chatDomains,
     chatKaravanStorefrontAllowlist,

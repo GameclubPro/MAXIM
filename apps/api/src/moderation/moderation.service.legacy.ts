@@ -7628,12 +7628,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (
       settings.reportsEnabled &&
-      settings.deleteBotMessagesEnabled &&
       (await this.reportSubmission?.ownsCounter(
         chatId,
         messageId,
         text,
         this.maxBotContextService?.getActiveBotId() ?? '',
+        raw,
       ))
     )
       return;

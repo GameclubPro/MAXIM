@@ -7,7 +7,11 @@ export const REPORT_RULE = 'PARTICIPANT_REPORT';
 export const REPORT_DELETE_RULE = 'PARTICIPANT_REPORT_DELETE';
 export const REPORT_COMMAND_RULE = 'PARTICIPANT_REPORT_COMMAND_CLEANUP';
 export const REPORT_COUNTER_RULE = 'PARTICIPANT_REPORT_COUNTER_CLEANUP';
-export const REPORT_GUARDED_RULES = new Set([REPORT_DELETE_RULE, REPORT_COMMAND_RULE]);
+export const REPORT_GUARDED_RULES = new Set([
+  REPORT_DELETE_RULE,
+  REPORT_COMMAND_RULE,
+  REPORT_COUNTER_RULE,
+]);
 export const REPORT_TERMINAL = [
   'COMPLETED',
   'PARTIAL',
@@ -19,6 +23,23 @@ export const REPORT_TERMINAL = [
 
 export class ReportRejectedError extends Error {
   readonly code = 'participant_report_no_longer_authorized';
+}
+
+export class ReportStaleStateError extends Error {
+  readonly code = 'participant_report_state_changed';
+}
+
+export function reportLinkedMessageId(
+  node: Record<string, unknown>,
+  chatId: string,
+): string | null {
+  const link = record(node.link);
+  if (link.type !== 'reply') return null;
+  const linked = record(link.message);
+  const linkedChatId = record(linked.recipient).chat_id ?? link.chat_id;
+  if (linkedChatId !== undefined && String(linkedChatId) !== chatId) return null;
+  const mid = record(linked.body).mid ?? linked.mid;
+  return typeof mid === 'string' && mid.length > 0 ? mid : null;
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -42,13 +63,8 @@ export function reportReplyTarget(
     (Array.isArray(node.attachments) && node.attachments.length > 0)
   )
     return null;
-  const link = record(node.link);
-  if (link.type !== 'reply') return null;
-  const linked = record(link.message);
-  const chatId = record(linked.recipient).chat_id ?? link.chat_id;
-  if (chatId !== undefined && String(chatId) !== update.message.chatId) return null;
-  const mid = record(linked.body).mid ?? linked.mid;
-  return typeof mid === 'string' && mid.length > 0 && mid !== update.message.messageId ? mid : null;
+  const mid = reportLinkedMessageId(node, update.message.chatId);
+  return mid && mid !== update.message.messageId ? mid : null;
 }
 
 export function reportContentHash(row: Record<string, unknown>): string {

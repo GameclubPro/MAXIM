@@ -219,6 +219,7 @@ function createService(
     resolvedRequiredSubscriptionChannel?: Record<string, unknown>;
     resolvedRulesUrl?: string | null;
     nightModeTransitionScheduler?: { reconcileChats: jest.Mock };
+    reportsAvailable?: boolean;
   } = {},
 ) {
   const legacyAdminService = {
@@ -479,6 +480,9 @@ function createService(
     options.manualMessageCleanupService as never,
     channelPostSignatureService as never,
     accessObservability as never,
+    undefined,
+    undefined,
+    { available: () => options.reportsAvailable ?? false } as never,
   );
 
   return {
@@ -500,6 +504,34 @@ function createService(
 }
 
 describe('AdminSettingsService chat rules', () => {
+  it.each([false, true])(
+    'exposes server report availability %s without changing stored opt-in',
+    async (available) => {
+      const { service } = createService({ reportsAvailable: available });
+      expect(await service.getChatSettingsScreen('chat-1', user as never)).toMatchObject({
+        reportsAvailable: available,
+      });
+    },
+  );
+
+  it('rejects a paused report activation before any settings write', async () => {
+    const { service, prisma } = createService({
+      currentSettings: createPersistedChatSettings(),
+      reportsAvailable: false,
+    });
+    await expect(
+      service.updateSettings(
+        'chat-1',
+        user as never,
+        chatSettingsSchema.parse({ reportsEnabled: true }),
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'REPORTS_UNAVAILABLE' }),
+    });
+    expect(prisma.chatSettings.updateMany).not.toHaveBeenCalled();
+    expect(prisma.chatSettings.create).not.toHaveBeenCalled();
+  });
+
   it('authorizes the exact chat before reading or rechecking duplicate diagnostics', async () => {
     const { service, legacyAdminService } = createService();
     const diagnostics = { read: jest.fn().mockResolvedValue({ mode: 'FULL' }) };

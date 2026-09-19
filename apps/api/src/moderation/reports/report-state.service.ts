@@ -10,6 +10,7 @@ import {
   record,
   REPORT_DAY_MS,
   ReportRejectedError,
+  ReportStaleStateError,
   reportContentHash,
 } from './report.util';
 
@@ -42,7 +43,20 @@ export class ReportStateService {
     });
   }
 
+  botIdFromSender(userId: unknown): string | null {
+    return typeof userId === 'string' || typeof userId === 'number'
+      ? this.bots.resolveBotIdFromUserId(userId)
+      : null;
+  }
+
+  async executionBotId(chatId: string): Promise<string> {
+    const botId = await this.bots.resolveBotIdForMemberAccess({ chatId });
+    if (!botId) throw new Error('No available bot can verify the report in this chat');
+    return botId;
+  }
+
   async source(chatId: string, messageId: string, botId: string) {
+    const readStartedAt = new Date();
     const row = await this.max.getExactMessageRow(chatId, messageId, {
       botId,
       bypassCache: true,
@@ -62,24 +76,11 @@ export class ReportStateService {
     const createdAt = new Date(message.createdAt);
     if (!Number.isFinite(createdAt.getTime()))
       throw new ReportRejectedError('Неизвестно время сообщения.');
-    return { authorId: message.senderId, createdAt, hash: reportContentHash(row) };
+    return { authorId: message.senderId, createdAt, hash: reportContentHash(row), readStartedAt };
   }
 
   async assertAuthor(chatId: string, userId: string, botId: string): Promise<void> {
-    if (this.bots.isKnownBotUserId(userId))
-      throw new ReportRejectedError('Жалобы на ботов не принимаются.');
-    const settings = await this.settings(chatId);
-    if (
-      !settings ||
-      settings.chat.entityType !== 'CHAT' ||
-      settings.chat.admins.some((a) => a.userId === userId)
-    )
-      throw new ReportRejectedError('Участник защищён от жалоб.');
-    const immunity = await this.prisma.chatParticipantModerationImmunity.findFirst({
-      where: { chatId, userId, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-      select: { id: true },
-    });
-    if (immunity) throw new ReportRejectedError('Участник защищён от жалоб.');
+    await this.assertLocalAuthor(chatId, userId);
     const member = await this.max.getChatMemberAccess(chatId, userId, {
       botId,
       bypassCache: true,
@@ -94,6 +95,31 @@ export class ReportStateService {
       member.isOwner
     )
       throw new ReportRejectedError('Не удалось подтвердить возможность модерации участника.');
+    await this.assertLocalAuthor(chatId, userId);
+  }
+
+  async assertLocalAuthor(
+    chatId: string,
+    userId: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    if (this.bots.isKnownBotUserId(userId))
+      throw new ReportRejectedError('Жалобы на ботов не принимаются.');
+    const settings = await db.chatSettings.findUnique({
+      where: { chatId },
+      select: { chat: { select: { entityType: true, admins: { select: { userId: true } } } } },
+    });
+    if (
+      !settings ||
+      settings.chat.entityType !== 'CHAT' ||
+      settings.chat.admins.some((a) => a.userId === userId)
+    )
+      throw new ReportRejectedError('Участник защищён от жалоб.');
+    const immunity = await db.chatParticipantModerationImmunity.findFirst({
+      where: { chatId, userId, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+      select: { id: true },
+    });
+    if (immunity) throw new ReportRejectedError('Участник защищён от жалоб.');
   }
 
   async hasActiveSanction(
@@ -141,13 +167,41 @@ export class ReportStateService {
       if (!source || source.hash !== report.contentHash || source.authorId !== report.authorId)
         throw new ReportRejectedError('Исходное сообщение удалено или изменено.');
     }
-    // FLAG: Recheck the policy after remote calls; queued work cannot outlive a settings revision.
-    await this.assertPolicy(report);
-    return report;
+    // FLAG: Remote checks cannot authorize a cancelled case or another content revision.
+    const current = await this.assertCurrent(report, ['PENDING', 'RUNNING']);
+    await this.assertPolicy(current);
+    return current;
+  }
+
+  async assertCurrent(
+    report: ChatReportCase,
+    statuses: readonly string[] = [report.status],
+  ): Promise<ChatReportCase> {
+    const current = await this.prisma.chatReportCase.findUnique({ where: { id: report.id } });
+    if (
+      !current ||
+      !statuses.includes(current.status) ||
+      current.contentVersion !== report.contentVersion ||
+      current.contentHash !== report.contentHash ||
+      current.policyRevision !== report.policyRevision ||
+      current.authorId !== report.authorId ||
+      current.messageId !== report.messageId ||
+      current.decidedAt?.getTime() !== report.decidedAt?.getTime()
+    ) {
+      throw new ReportStaleStateError('Состояние жалобы изменилось; требуется повторная проверка.');
+    }
+    return current;
   }
 
   async assertPolicy(report: ChatReportCase): Promise<void> {
-    const settings = await this.settings(report.chatId);
+    const settings = await this.prisma.chatSettings.findUnique({
+      where: { chatId: report.chatId },
+      select: {
+        reportsEnabled: true,
+        reportsRevision: true,
+        chat: { select: { entityType: true } },
+      },
+    });
     if (
       !this.enabled(report.chatId) ||
       !settings?.reportsEnabled ||

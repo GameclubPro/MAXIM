@@ -9,7 +9,7 @@ import { ReportDeleteGuardService } from './report-delete-guard.service';
 import { ModerationSanctionStateLockService } from '../moderation-sanction-state-lock.service';
 import { ModerationSanctionStateFenceService } from '../moderation-sanction-state-fence.service';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
-import { REPORT_DAY_MS } from './report.util';
+import { REPORT_DAY_MS, ReportStaleStateError } from './report.util';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgres = databaseUrl ? describe : describe.skip;
@@ -36,7 +36,9 @@ describePostgres('PostgreSQL participant reports', () => {
   });
   const max = {
     getExactMessageRow: jest.fn(async (_chatId: string, id: string) => rows.get(id) ?? null),
-    getChatMemberAccess: jest.fn(async (_chatId: string, userId: string) => member(userId)),
+    getChatMemberAccess: jest.fn(
+      async (_chatId: string, userId: string, _options?: { botId?: string }) => member(userId),
+    ),
     getChatMembersAccess: jest.fn(
       async (_chatId: string, ids: string[]) => new Map(ids.map((id) => [id, member(id)])),
     ),
@@ -159,7 +161,11 @@ describePostgres('PostgreSQL participant reports', () => {
     state = new ReportStateService(
       prisma as never,
       max as never,
-      { isKnownBotUserId: () => false } as never,
+      {
+        isKnownBotUserId: () => false,
+        resolveBotIdFromUserId: (id: string) => (id === 'bot-user-a' ? 'bot-a' : null),
+        resolveBotIdForMemberAccess: async () => 'bot-a',
+      } as never,
       { get: (key: string) => (key === 'PARTICIPANT_REPORTS_MODE' ? 'on' : '') } as never,
     );
     submissions = new ReportSubmissionService(
@@ -327,7 +333,7 @@ describePostgres('PostgreSQL participant reports', () => {
       });
     }
     const before = await views.summary(report);
-    expect(before).toMatchObject({ candidates: 3, deleted: 2, failed: 1, pending: 0 });
+    expect(before).toMatchObject({ candidates: 3, deleted: 1, absent: 1, failed: 1, pending: 0 });
     const retention = Object.assign(Object.create(ModerationDeleteIntentService.prototype), {
       prisma,
       retentionDays: 90,
@@ -366,7 +372,7 @@ describePostgres('PostgreSQL participant reports', () => {
       await options.beforeSend();
       throw new Error('ambiguous send timeout');
     });
-    await expect(process(report.id)).rejects.toThrow('ambiguous send timeout');
+    await process(report.id);
     await process(report.id);
     expect(max.sendMessageImmediateWithId.mock.calls.length).toBe(calls + 1);
     const current = await prisma.chatReportCase.findUniqueOrThrow({ where: { id: report.id } });
@@ -383,6 +389,328 @@ describePostgres('PostgreSQL participant reports', () => {
     expect(
       (await prisma.chatReportCase.findUniqueOrThrow({ where: { id: report.id } })).muteEventId,
     ).toBeNull();
+  });
+
+  it('recovers a history action whose intent creation failed before its receipt was linked', async () => {
+    const report = await pending('history-gap', { history: true, author: 'history-gap-author' });
+    await process(report.id);
+    const targetAction = await prisma.chatReportAction.findUniqueOrThrow({
+      where: { caseId_messageId: { caseId: report.id, messageId: report.messageId } },
+    });
+    await prisma.moderationDeleteIntent.update({
+      where: { id: targetAction.intentId! },
+      data: {
+        status: 'SUCCEEDED',
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-a',
+      },
+    });
+    const at = new Date(report.decidedAt!.getTime() - 1000);
+    await prisma.webhookEvent.create({
+      data: {
+        dedupKey: `${prefix}-history-gap`,
+        createdAt: at,
+        rawPayload: {},
+        normalizedPayload: {
+          type: 'message_created',
+          message: {
+            chatId,
+            senderId: report.authorId,
+            messageId: 'gap-message',
+            createdAt: at.toISOString(),
+          },
+        },
+      },
+    });
+    deletes.ensureIntent.mockRejectedValueOnce(
+      new Error('storage unavailable after action insert'),
+    );
+    await expect(process(report.id)).rejects.toThrow('storage unavailable');
+    expect(
+      await prisma.chatReportAction.count({ where: { caseId: report.id, intentId: null } }),
+    ).toBe(1);
+    await process(report.id);
+    expect(
+      await prisma.chatReportAction.count({ where: { caseId: report.id, intentId: null } }),
+    ).toBe(0);
+    const recovered = await prisma.chatReportAction.findUniqueOrThrow({
+      where: { caseId_messageId: { caseId: report.id, messageId: 'gap-message' } },
+    });
+    await prisma.moderationDeleteIntent.update({
+      where: { id: recovered.intentId! },
+      data: {
+        status: 'SUCCEEDED',
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-a',
+      },
+    });
+    await process(report.id);
+    expect((await views.detail(chatId, report.id)).status).toBe('COMPLETED');
+    expect(await prisma.chatReportAction.count({ where: { caseId: report.id } })).toBe(2);
+  });
+
+  it('keeps a committed mute in the partial outcome when target deletion fails', async () => {
+    const report = await pending('mute-partial', { mute: true, author: 'partial-author' });
+    await process(report.id);
+    const action = await prisma.chatReportAction.findUniqueOrThrow({
+      where: { caseId_messageId: { caseId: report.id, messageId: report.messageId } },
+    });
+    await prisma.moderationDeleteIntent.update({
+      where: { id: action.intentId! },
+      data: { status: 'FAILED_TERMINAL' },
+    });
+    await process(report.id);
+    expect(await views.detail(chatId, report.id)).toMatchObject({
+      status: 'PARTIAL',
+      muteApplied: true,
+      failed: 1,
+    });
+  });
+
+  it('restarts only an untouched collection after report settings change', async () => {
+    const report = (await vote(target('restart-policy'), 'restart-reporter'))!;
+    await prisma.chatSettings.update({ where: { chatId }, data: { reportsThreshold: 6 } });
+    const restarted = (await vote(report.messageId, 'restart-new-reporter'))!;
+    expect(restarted.id).toBe(report.id);
+    expect(restarted.contentVersion).toBe(report.contentVersion + 1);
+    expect(await views.summary(restarted)).toMatchObject({
+      status: 'COLLECTING',
+      votes: 1,
+      threshold: 6,
+    });
+    await views.dismiss(chatId, report.id, 'admin');
+    await prisma.chatSettings.update({ where: { chatId }, data: { reportsThreshold: 2 } });
+    await vote(report.messageId, 'restart-after-dismiss');
+    expect((await views.detail(chatId, report.id)).status).toBe('DISMISSED');
+  });
+
+  it('detects a dismissal that occurs while the exact MAX message is being checked', async () => {
+    const report = await pending('dismiss-in-flight');
+    max.getExactMessageRow.mockImplementationOnce(async (_chat, id) => {
+      await views.dismiss(chatId, report.id, 'admin');
+      return rows.get(id) ?? null;
+    });
+    await expect(state.assertCase(report.id, 'bot-a')).rejects.toBeInstanceOf(
+      ReportStaleStateError,
+    );
+    expect((await views.detail(chatId, report.id)).status).toBe('DISMISSED');
+  });
+
+  it('rechecks the case after voter lookups at the final deletion boundary', async () => {
+    const report = await pending('guard-state-race');
+    await process(report.id);
+    const action = await prisma.chatReportAction.findUniqueOrThrow({
+      where: { caseId_messageId: { caseId: report.id, messageId: report.messageId } },
+    });
+    max.getChatMembersAccess.mockImplementationOnce(async (_chat, ids) => {
+      await prisma.chatReportCase.update({
+        where: { id: report.id },
+        data: { status: 'CANCELLED' },
+      });
+      return new Map(ids.map((id) => [id, member(id)]));
+    });
+    await expect(
+      guard.assertIntentStillActionable({
+        intentId: action.intentId!,
+        chatId,
+        messageId: report.messageId,
+        subjectUserId: report.authorId,
+        botId: 'bot-a',
+      }),
+    ).rejects.toBeInstanceOf(ReportStaleStateError);
+  });
+
+  it('reconciles an ambiguous public counter only from its exact bot and reply target', async () => {
+    const report = await pending('counter-receipt');
+    const calls = max.sendMessageImmediateWithId.mock.calls.length;
+    max.sendMessageImmediateWithId.mockImplementationOnce(async (_chat, _text, options) => {
+      await options.beforeSend();
+      throw new Error('send timeout');
+    });
+    await process(report.id);
+    const current = await prisma.chatReportCase.findUniqueOrThrow({ where: { id: report.id } });
+    const raw = {
+      message: {
+        sender: { user_id: 'bot-user-a', is_bot: true },
+        link: { type: 'reply', chat_id: chatId, message: { mid: report.messageId } },
+      },
+    };
+    expect(
+      await submissions.ownsCounter(chatId, 'counter-recovered', current.counterText!, 'bot-b', {
+        message: { ...raw.message, sender: { user_id: 'unknown-bot', is_bot: true } },
+      }),
+    ).toBe(false);
+    expect(
+      await submissions.ownsCounter(chatId, 'counter-recovered', current.counterText!, 'bot-a', {
+        message: { link: { type: 'reply', message: { mid: 'other-target' } } },
+      }),
+    ).toBe(false);
+    expect(
+      await submissions.ownsCounter(
+        chatId,
+        'counter-recovered',
+        current.counterText!,
+        'bot-b',
+        raw,
+      ),
+    ).toBe(true);
+    await process(report.id);
+    expect(max.sendMessageImmediateWithId.mock.calls.length).toBe(calls + 1);
+    expect(
+      (await prisma.chatReportCase.findUniqueOrThrow({ where: { id: report.id } }))
+        .counterMessageId,
+    ).toBe('counter-recovered');
+  });
+
+  it('does not rewind the current content for an out-of-order edit webhook', async () => {
+    const report = (await vote(target('stale-edit'), 'edit-order-reporter'))!;
+    const update = new WebhookParser().parse({
+      update_type: 'message_edited',
+      timestamp: Date.now(),
+      message: {
+        ...rows.get(report.messageId),
+        body: { mid: report.messageId, text: 'older text from delayed webhook' },
+      },
+    });
+    update.botId = 'bot-a';
+    await submissions.observeEdit(update);
+    const after = await prisma.chatReportCase.findUniqueOrThrow({ where: { id: report.id } });
+    expect(after.contentVersion).toBe(report.contentVersion);
+    expect(after.contentHash).toBe(report.contentHash);
+  });
+
+  it('keeps an old cleanup intent from deleting a reopened public counter', async () => {
+    const report = (await vote(target('counter-reopen'), 'counter-reopen-voter'))!;
+    await prisma.chatSettings.update({
+      where: { chatId },
+      data: { deleteBotMessagesEnabled: true, reportsThreshold: 6 },
+    });
+    await prisma.chatReportCase.update({
+      where: { id: report.id },
+      data: { status: 'CANCELLED', counterMessageId: 'reopened-counter' },
+    });
+    const intent = await deletes.ensureIntent({
+      chatId,
+      messageId: 'reopened-counter',
+      reasonKey: `report-counter:${report.id}`,
+      ruleCode: 'PARTICIPANT_REPORT_COUNTER_CLEANUP',
+      event: { metadata: { reportCaseId: report.id } },
+    });
+    const input = {
+      intentId: intent.intentId,
+      chatId,
+      messageId: 'reopened-counter',
+      subjectUserId: null,
+      botId: 'bot-a',
+    };
+    expect(await guard.assertIntentStillActionable(input)).toBe('allowed');
+    await vote(report.messageId, 'counter-reopen-voter-2');
+    await expect(guard.assertIntentStillActionable(input)).rejects.toBeInstanceOf(
+      ReportStaleStateError,
+    );
+    await views.dismiss(chatId, report.id, 'admin');
+    expect(await guard.assertIntentStillActionable(input)).toBe('allowed');
+  });
+
+  it('uses another eligible bot when the origin cannot serve execution reads or the public counter', async () => {
+    const report = await pending('origin-unavailable', { mute: true, author: 'failover-author' });
+    const route = jest.spyOn(state, 'executionBotId').mockResolvedValue('bot-b');
+    const originalMemberLookup = max.getChatMemberAccess.getMockImplementation()!;
+    max.getChatMemberAccess.mockImplementation(async (_chat, userId, options) => {
+      if (options?.botId !== 'bot-b') throw new Error('origin bot unavailable');
+      return member(userId);
+    });
+    max.sendMessageImmediateWithId.mockRejectedValueOnce(new Error('origin counter unavailable'));
+    try {
+      await process(report.id);
+      const current = await prisma.chatReportCase.findUniqueOrThrow({ where: { id: report.id } });
+      expect(current.status).toBe('RUNNING');
+      expect(current.originBotId).toBe('bot-a');
+      expect(current.muteEventId).not.toBeNull();
+      expect(
+        await prisma.moderationEvent.findUnique({
+          where: { id: current.muteEventId! },
+          select: { botId: true },
+        }),
+      ).toEqual({ botId: 'bot-b' });
+    } finally {
+      route.mockRestore();
+      max.getChatMemberAccess.mockImplementation(originalMemberLookup);
+    }
+  });
+
+  it('honors local immunity granted while the final voter lookup is in flight', async () => {
+    const report = await pending('immunity-in-flight', { author: 'newly-immune-author' });
+    await process(report.id);
+    const action = await prisma.chatReportAction.findUniqueOrThrow({
+      where: { caseId_messageId: { caseId: report.id, messageId: report.messageId } },
+    });
+    max.getChatMembersAccess.mockImplementationOnce(async (_chat, ids) => {
+      await prisma.chatParticipantModerationImmunity.create({
+        data: { chatId, userId: report.authorId, createdByUserId: 'admin' },
+      });
+      return new Map(ids.map((id) => [id, member(id)]));
+    });
+    await expect(
+      guard.assertIntentStillActionable({
+        intentId: action.intentId!,
+        chatId,
+        messageId: report.messageId,
+        subjectUserId: report.authorId,
+        botId: 'bot-a',
+      }),
+    ).rejects.toThrow('защищён');
+  });
+
+  it('does not let ten leased cases starve a due unleased case', async () => {
+    const report = await pending('unleased-case');
+    const future = new Date(Date.now() + REPORT_DAY_MS);
+    await prisma.chatReportCase.updateMany({ where: { chatId }, data: { dueAt: future } });
+    await prisma.chatReportCase.createMany({
+      data: Array.from({ length: 10 }, (_, n) => ({
+        ...report,
+        id: `${prefix}-held-${n}`,
+        messageId: `held-message-${n}`,
+        dueAt: new Date(1),
+        leaseToken: 'another-worker',
+        leaseExpiresAt: future,
+      })),
+    });
+    await prisma.chatReportCase.update({ where: { id: report.id }, data: { dueAt: new Date(2) } });
+    const processSpy = jest.spyOn(executor, 'process').mockImplementation(async (id) => {
+      await prisma.chatReportCase.update({ where: { id }, data: { status: 'EXPIRED' } });
+    });
+    try {
+      await executor.tick();
+      expect(processSpy.mock.calls.map(([id]) => id)).toEqual([report.id]);
+    } finally {
+      processSpy.mockRestore();
+    }
+  });
+
+  it('preserves a new wakeup written while a worker is rendering the counter', async () => {
+    const report = await pending('counter-wakeup');
+    await prisma.chatReportCase.updateMany({
+      where: { chatId },
+      data: { dueAt: new Date(Date.now() + REPORT_DAY_MS) },
+    });
+    await prisma.chatReportCase.update({
+      where: { id: report.id },
+      data: { dueAt: new Date(1), counterMessageId: 'wakeup-counter', counterText: 'old counter' },
+    });
+    const newDueAt = new Date(Date.now() + 1234);
+    max.replaceOwnMessage.mockImplementationOnce(async () => {
+      await prisma.chatReportCase.update({ where: { id: report.id }, data: { dueAt: newDueAt } });
+    });
+    const processSpy = jest.spyOn(executor, 'process').mockResolvedValue(undefined);
+    try {
+      await executor.tick();
+      const current = await prisma.chatReportCase.findUniqueOrThrow({ where: { id: report.id } });
+      expect(current.dueAt).toEqual(newDueAt);
+      expect(current.leaseToken).toBeNull();
+    } finally {
+      processSpy.mockRestore();
+    }
   });
   it('revalidates edited content, disabled settings and promoted authors at delete dispatch', async () => {
     const report = await pending('guarded');

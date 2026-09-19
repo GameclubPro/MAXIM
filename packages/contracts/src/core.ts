@@ -2658,6 +2658,7 @@ export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRul
 
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,
+  reportsAvailable: z.boolean().default(false),
   duplicatePhotoModerationMode: dupe.duplicatePhotoModerationModeSchema.default('OBSERVE'),
   duplicateMessageModerationMode: z.enum(['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL']).default('OFF'),
   duplicatePhotoPolicyMatrix: dupe.duplicatePhotoPolicyMatrixSchema.optional(),

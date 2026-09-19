@@ -20,4 +20,57 @@ describe('report journal cursor validation', () => {
       expect.objectContaining({ where: { chatId: 'chat' }, take: 21 }),
     );
   });
+
+  it('aggregates a whole page in two bounded queries and separates absence from deletion', async () => {
+    const createdAt = new Date();
+    const row = {
+      id: 'case',
+      messageId: 'message',
+      authorId: 'author',
+      status: 'PARTIAL',
+      contentVersion: 2,
+      threshold: 3,
+      deleteMode: 'MESSAGE',
+      muteHours: null,
+      muteEventId: null,
+      createdAt,
+      expiresAt: createdAt,
+      lastError: null,
+    };
+    const prisma = {
+      chatReportCase: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(Array.from({ length: 20 }, (_, n) => ({ ...row, id: `case-${n}` }))),
+      },
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValue([{ case_id: 'case-0', total: 4n, deleted: 1n, absent: 1n, failed: 1n }]),
+      chatReportVote: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([{ caseId: 'case-0', contentVersion: 2, _count: { _all: 3 } }]),
+      },
+    };
+    const page = await new ReportViewService(prisma as never, {} as never).list('chat');
+    expect(page.items).toHaveLength(20);
+    expect(page.items[0]).toMatchObject({
+      candidates: 4,
+      deleted: 1,
+      absent: 1,
+      failed: 1,
+      pending: 1,
+      votes: 3,
+    });
+    expect(page.items[1]).toMatchObject({
+      candidates: 0,
+      deleted: 0,
+      absent: 0,
+      pending: 0,
+      votes: 0,
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.chatReportVote.groupBy).toHaveBeenCalledTimes(1);
+    expect(prisma.chatReportVote.groupBy.mock.calls[0]![0].where.OR).toHaveLength(20);
+  });
 });

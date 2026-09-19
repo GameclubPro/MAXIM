@@ -4,11 +4,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+import {
+  applyNativeVisualMode,
+  installNativeVisualModeInitScript,
+} from '../../../scripts/miniapp-native-visual-mode.mjs';
+import {
+  allocateMiniappBaseUrl,
+  ensureMiniappDevServer,
+  stopChildProcess,
+} from '../../../scripts/miniapp-local-server.mjs';
 
-const base = process.env.MINIAPP_TEST_BASE_URL ?? 'http://127.0.0.1:5175/app/';
+const base =
+  process.env.MINIAPP_TEST_BASE_URL ?? (await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/'));
 const screenshots = mkdtempSync(join(tmpdir(), 'maxim-reports-ui-'));
-const browser = await chromium.launch({ headless: true });
+const server = await ensureMiniappDevServer(base, {
+  reuseServer: process.env.MINIAPP_TEST_REUSE_SERVER === '1',
+});
+let browser;
 try {
+  browser = await chromium.launch({ headless: true });
   for (const [name, width, height, theme, platform] of [
     ['iphone-se-light', 320, 568, 'light', 'ios'],
     ['iphone-dark', 390, 844, 'dark', 'ios'],
@@ -16,6 +30,7 @@ try {
     ['desktop-dark', 1280, 900, 'dark', 'android'],
   ]) {
     const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
+    await installNativeVisualModeInitScript(context);
     await installMaxBridgeShimInitScript(context, { platform }, { colorScheme: theme });
     await context.route('https://st.max.ru/js/max-web-app.js', (route) =>
       route.fulfill({ contentType: 'application/javascript', body: '/* local bridge */' }),
@@ -24,6 +39,11 @@ try {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(new URL('chat/preview-chat/settings?preview=1', base).href);
+    await page.getByRole('button', { name: 'Жалобы', exact: true }).waitFor();
+    await applyNativeVisualMode(page, {
+      safeTop: platform === 'ios' ? 47 : 24,
+      safeBottom: platform === 'ios' ? 34 : 0,
+    });
     await page.getByRole('button', { name: 'Жалобы', exact: true }).click();
     const panel = page
       .locator('.settings-drilldown__panel')
@@ -59,6 +79,7 @@ try {
     await panel.getByText('Частично', { exact: true }).click();
     await panel.getByText('Не все сообщения удалось удалить.', { exact: true }).waitFor();
     await panel.getByRole('heading', { name: 'Участники', exact: true }).waitFor();
+    await panel.getByText('Уже отсутствуют', { exact: true }).waitFor();
     await page.screenshot({ path: join(screenshots, `${name}-journal.png`) });
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -77,10 +98,46 @@ try {
       [],
     );
     assert.deepEqual(errors, []);
+    await page.goto(
+      new URL('chat/preview-chat/settings?preview=1&reportsAvailability=paused', base).href,
+    );
+    await page.getByRole('button', { name: 'Жалобы', exact: true }).waitFor();
+    await applyNativeVisualMode(page, {
+      safeTop: platform === 'ios' ? 47 : 24,
+      safeBottom: platform === 'ios' ? 34 : 0,
+    });
+    await page.getByRole('button', { name: 'Жалобы', exact: true }).click();
+    await panel.getByText('Приём жалоб приостановлен оператором.', { exact: true }).waitFor();
+    assert.equal(
+      await panel.getByRole('switch', { name: 'Жалобы участников', exact: true }).isDisabled(),
+      true,
+    );
+    await page.screenshot({ path: join(screenshots, `${name}-paused.png`) });
+    await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
+    await panel.getByText('Сбор голосов', { exact: true }).waitFor();
+    await page.goto(
+      new URL(
+        'chat/preview-chat/settings?preview=1&reportsAvailability=paused&reportsOptIn=1',
+        base,
+      ).href,
+    );
+    await page.getByRole('button', { name: 'Жалобы', exact: true }).waitFor();
+    await applyNativeVisualMode(page, {
+      safeTop: platform === 'ios' ? 47 : 24,
+      safeBottom: platform === 'ios' ? 34 : 0,
+    });
+    await page.getByRole('button', { name: 'Жалобы', exact: true }).click();
+    const pausedSwitch = panel.getByRole('switch', { name: 'Жалобы участников', exact: true });
+    assert.equal(await pausedSwitch.isChecked(), true);
+    assert.equal(await pausedSwitch.isDisabled(), false);
+    await pausedSwitch.uncheck();
+    assert.equal(await pausedSwitch.isDisabled(), true);
+    await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
     await context.close();
     console.log(`PASS ${name}: report controls, save, journal and layout`);
   }
   console.log(`Screenshots: ${screenshots}`);
 } finally {
-  await browser.close();
+  await browser?.close();
+  await stopChildProcess(server);
 }

@@ -18,6 +18,7 @@ export type SettingsReportsSectionProps = SettingsSectionShellProps &
     api: ApiTransport;
     chatId: string;
     fieldErrors: FieldErrors;
+    reportsAvailable: boolean;
   };
 
 const statuses: Record<ReportSummary['status'], string> = {
@@ -54,7 +55,9 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
         <SettingsSectionToggle
           title="Жалобы"
           summary={draft.reportsEnabled ? `Порог: ${draft.reportsThreshold}` : ''}
-          status={draft.reportsEnabled ? 'Вкл' : 'Выкл'}
+          status={
+            draft.reportsEnabled ? (props.reportsAvailable ? 'Вкл' : 'Приостановлен') : 'Выкл'
+          }
           icon="warning"
           tone="rose"
           open={expanded}
@@ -101,6 +104,7 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
                 id="reports-settings-tab"
                 aria-controls="reports-settings-pane"
                 aria-selected={tab === 'settings'}
+                tabIndex={tab === 'settings' ? 0 : -1}
                 onClick={() => setTab('settings')}
               >
                 Настройки
@@ -111,6 +115,7 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
                 id="reports-journal-tab"
                 aria-controls="reports-journal-pane"
                 aria-selected={tab === 'journal'}
+                tabIndex={tab === 'journal' ? 0 : -1}
                 onClick={() => setTab('journal')}
               >
                 Журнал
@@ -124,6 +129,11 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
                 id="reports-settings-pane"
                 aria-labelledby="reports-settings-tab"
               >
+                {!props.reportsAvailable && (
+                  <p className="reports-availability" role="status">
+                    Приём жалоб приостановлен оператором.
+                  </p>
+                )}
                 {Object.entries(props.fieldErrors)
                   .filter(([key]) => key.startsWith('reports'))
                   .map(([key, error]) => (
@@ -137,6 +147,7 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
                     type="checkbox"
                     role="switch"
                     checked={draft.reportsEnabled}
+                    disabled={!props.reportsAvailable && !draft.reportsEnabled}
                     onChange={(e) => setFieldValue('reportsEnabled', e.target.checked)}
                   />
                 </label>
@@ -224,6 +235,7 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
 export function ReportJournal({ api, chatId }: { api: ApiTransport; chatId: string }) {
   const client = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
+  useEffect(() => setSelected(null), [chatId]);
   const key = ['chat-reports', chatId];
   const list = useInfiniteQuery({
     queryKey: key,
@@ -242,13 +254,17 @@ export function ReportJournal({ api, chatId }: { api: ApiTransport; chatId: stri
     mutationFn: (id: string) => dismissReport(api, chatId, id),
     onSuccess: () => client.invalidateQueries({ queryKey: key }),
   });
-  const items = list.data?.pages.flatMap((page) => page.items) ?? [];
+  const items = [
+    ...new Map(
+      (list.data?.pages.flatMap((page) => page.items) ?? []).map((item) => [item.id, item]),
+    ).values(),
+  ];
   return (
     <div
       className="reports-journal"
       role="tabpanel"
       id="reports-journal-pane"
-      aria-label="Журнал жалоб"
+      aria-labelledby="reports-journal-tab"
     >
       <div className="reports-journal__head">
         <h3>Жалобы участников</h3>
@@ -266,69 +282,77 @@ export function ReportJournal({ api, chatId }: { api: ApiTransport; chatId: stri
       {list.isPending && <p role="status">Загрузка…</p>}
       {list.isError && <p role="alert">Не удалось загрузить жалобы.</p>}
       {!list.isPending && !list.isError && items.length === 0 && <p>Жалоб пока нет.</p>}
-      {items.map((item) => (
-        <article className="reports-journal__item" key={item.id}>
-          <button
-            type="button"
-            className="reports-journal__summary"
-            aria-expanded={selected === item.id}
-            onClick={() => setSelected(selected === item.id ? null : item.id)}
-          >
-            <span>
-              <strong>{statuses[item.status]}</strong>
-              <small>{new Date(item.createdAt).toLocaleString('ru-RU')}</small>
-            </span>
-            <span>
-              {item.votes}/{item.threshold}
-              <NavArrowDown aria-hidden />
-            </span>
-          </button>
-          {selected === item.id && (
-            <div className="reports-journal__detail">
-              <dl>
-                <dt>Автор</dt>
-                <dd>{detail.data?.authorName ?? item.authorId}</dd>
-                <dt>Сообщение</dt>
-                <dd>{item.messageId}</dd>
-                <dt>Удалено</dt>
-                <dd>
-                  {item.deleted} из {item.candidates}
-                </dd>
-                <dt>В очереди</dt>
-                <dd>{item.pending}</dd>
-                <dt>Ошибок</dt>
-                <dd>{item.failed}</dd>
-                <dt>Мут</dt>
-                <dd>{item.muteApplied ? `${item.muteHours} ч` : 'Не применён'}</dd>
-              </dl>
-              {item.lastError && <p role="status">{item.lastError}</p>}
-              {detail.isPending && <p role="status">Загрузка участников…</p>}
-              {detail.isError && <p role="alert">Не удалось загрузить участников.</p>}
-              {detail.data && (
-                <>
-                  <h4>Участники</h4>
-                  <ul>
-                    {detail.data.reporters.map((r) => (
-                      <li key={r.userId}>{r.displayName ?? r.userId}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {['COLLECTING', 'PENDING'].includes(item.status) && (
-                <button
-                  type="button"
-                  className="button button--secondary"
-                  disabled={dismiss.isPending}
-                  onClick={() => dismiss.mutate(item.id)}
-                >
-                  Отклонить жалобы
-                </button>
-              )}
-              {dismiss.isError && <p role="alert">Не удалось отклонить жалобы.</p>}
-            </div>
-          )}
-        </article>
-      ))}
+      {items.map((listed) => {
+        const item = selected === listed.id && detail.data?.id === listed.id ? detail.data : listed;
+        return (
+          <article className="reports-journal__item" key={item.id}>
+            <button
+              type="button"
+              className="reports-journal__summary"
+              aria-expanded={selected === item.id}
+              onClick={() => {
+                dismiss.reset();
+                setSelected(selected === item.id ? null : item.id);
+              }}
+            >
+              <span>
+                <strong>{statuses[item.status]}</strong>
+                <small>{new Date(item.createdAt).toLocaleString('ru-RU')}</small>
+              </span>
+              <span>
+                {item.votes}/{item.threshold}
+                <NavArrowDown aria-hidden />
+              </span>
+            </button>
+            {selected === item.id && (
+              <div className="reports-journal__detail">
+                <dl>
+                  <dt>Автор</dt>
+                  <dd>{detail.data?.authorName ?? item.authorId}</dd>
+                  <dt>Сообщение</dt>
+                  <dd>{item.messageId}</dd>
+                  <dt>Удалено</dt>
+                  <dd>
+                    {item.deleted} из {item.candidates}
+                  </dd>
+                  <dt>В очереди</dt>
+                  <dd>{item.pending}</dd>
+                  <dt>Уже отсутствуют</dt>
+                  <dd>{item.absent}</dd>
+                  <dt>Ошибок</dt>
+                  <dd>{item.failed}</dd>
+                  <dt>Мут</dt>
+                  <dd>{item.muteApplied ? `${item.muteHours} ч` : 'Не применён'}</dd>
+                </dl>
+                {item.lastError && <p role="status">{item.lastError}</p>}
+                {detail.isPending && <p role="status">Загрузка участников…</p>}
+                {detail.isError && <p role="alert">Не удалось загрузить участников.</p>}
+                {detail.data && (
+                  <>
+                    <h4>Участники</h4>
+                    <ul>
+                      {detail.data.reporters.map((r) => (
+                        <li key={r.userId}>{r.displayName ?? r.userId}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {['COLLECTING', 'PENDING'].includes(item.status) && (
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    disabled={dismiss.isPending}
+                    onClick={() => dismiss.mutate(item.id)}
+                  >
+                    Отклонить жалобы
+                  </button>
+                )}
+                {dismiss.isError && <p role="alert">Не удалось отклонить жалобы.</p>}
+              </div>
+            )}
+          </article>
+        );
+      })}
       {list.hasNextPage && (
         <button
           type="button"

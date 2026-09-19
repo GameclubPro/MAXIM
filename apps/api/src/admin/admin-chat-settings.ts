@@ -48,6 +48,7 @@ import {
   resolveChatSettingsBotCapabilityRequirements,
   type ChatSettingsBotCapabilityRequirement,
 } from './chat-settings-bot-capability';
+import { assertReportsActivationAvailable } from './report-settings-availability';
 
 function readLegacyPrimaryAdminCommandName(value: unknown, fallback: string): string {
   if (typeof value !== 'string') {
@@ -804,6 +805,7 @@ export async function saveChatSettings(params: {
   source: AdminActionSource;
   resolveBotAssignmentData: () => Promise<ResolvedBotAssignmentData> | ResolvedBotAssignmentData;
   assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<ChatSettings | void>;
+  reportsAvailable?: (chatId: string) => boolean;
   assertBotCapabilities: (
     requirements: readonly ChatSettingsBotCapabilityRequirement[],
   ) => Promise<void>;
@@ -961,6 +963,11 @@ export async function saveChatSettings(params: {
   );
   normalizedSettings =
     (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
+  assertReportsActivationAvailable(
+    currentSettings,
+    normalizedSettings,
+    params.reportsAvailable?.(params.chatId) ?? false,
+  );
   const capabilityRequirements = resolveChatSettingsBotCapabilityRequirements({
     current: {
       ...DEFAULT_CHAT_SETTINGS,

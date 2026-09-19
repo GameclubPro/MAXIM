@@ -19,7 +19,9 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
         <SettingsSectionToggle
           title="Жалобы"
           summary={props.draft.reportsEnabled ? `Порог: ${props.draft.reportsThreshold}` : ''}
-          status={props.draft.reportsEnabled ? 'Вкл' : 'Выкл'}
+          status={
+            props.draft.reportsEnabled ? (props.reportsAvailable ? 'Вкл' : 'Приостановлен') : 'Выкл'
+          }
           icon="warning"
           tone="rose"
           open={props.expanded}

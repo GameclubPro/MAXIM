@@ -71,6 +71,7 @@ import { ManagedEntitiesService } from './managed-entities.service';
 import { ManualModerationService } from './manual-moderation.service';
 import { classifySettingsScreenAccessError } from './settings-screen-access.error';
 import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
+import { ReportViewService } from '../moderation/reports/report-view.service';
 
 const NIGHT_MODE_TRANSITION_SETTING_KEYS = new Set<keyof ChatSettings>([
   'nightModeEnabled',
@@ -104,6 +105,7 @@ export class AdminSettingsService {
     private readonly accessObservability?: MiniappAccessObservabilityService,
     @Optional() private readonly messageDuplicatePolicy?: MessageDuplicatePolicyService,
     @Optional() private readonly duplicateDiagnostics?: AdminDuplicateDiagnosticsService,
+    @Optional() private readonly reports?: ReportViewService,
   ) {}
 
   async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false) {
@@ -173,6 +175,7 @@ export class AdminSettingsService {
 
     return chatSettingsScreenResponseSchema.parse({
       settings,
+      reportsAvailable: this.reports?.available(chatId) ?? false,
       duplicatePhotoModerationMode: duplicatePhotoPolicy.moderationMode,
       duplicateMessageModerationMode,
       duplicatePhotoPolicyMatrix,
@@ -227,6 +230,7 @@ export class AdminSettingsService {
         this.legacyAdminService.resolveChatSettingsWriteBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      reportsAvailable: (id) => this.reports?.available(id) ?? false,
       assertBotCapabilities: (requirements) =>
         options.forceLiveBotCapabilityCheck
           ? this.settingsBotCapabilities.assertChatSettingsBotCapabilities(chatId, requirements, {
@@ -626,6 +630,7 @@ export class AdminSettingsService {
         this.legacyAdminService.resolveSettingsApplyBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      reportsAvailable: (id) => this.reports?.available(id) ?? false,
       assertBotCapabilities: (chatId, requirements) =>
         this.settingsBotCapabilities.assertChatSettingsBotCapabilities(chatId, requirements),
       recordConcurrentWriteConflict: (params) =>

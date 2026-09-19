@@ -46,6 +46,7 @@ import {
   omitLegacyStopWordsSettings,
 } from './stop-words-settings-ownership';
 import { stopWordsPolicyStorage } from '../moderation/stop-words/stop-words.policy';
+import { assertReportsActivationAvailable } from './report-settings-availability';
 
 type SettingsApplyReadinessRefresh = {
   chatIds: readonly string[];
@@ -119,6 +120,7 @@ export async function applySettingsToAllChats(params: {
     chatId: string,
   ) => Promise<ResolvedBotAssignmentData> | ResolvedBotAssignmentData;
   assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<ChatSettings | void>;
+  reportsAvailable?: (chatId: string) => boolean;
   assertBotCapabilities: (
     chatId: string,
     requirements: readonly ChatSettingsBotCapabilityRequirement[],
@@ -283,6 +285,7 @@ export async function applySettingsToAllChats(params: {
           ...(currentByChatId.get(chatId) ?? {}),
         } as ChatSettings;
         const next = { ...current, ...majorSettingsUpdatePayload } as ChatSettings;
+        assertReportsActivationAvailable(current, next, params.reportsAvailable?.(chatId) ?? false);
         const requirements = resolveChatSettingsBotCapabilityRequirements({
           current,
           next,
@@ -429,6 +432,11 @@ export async function applySettingsToAllChats(params: {
                 ...current,
                 ...majorSettingsUpdatePayload,
               };
+              assertReportsActivationAvailable(
+                current,
+                merged,
+                params.reportsAvailable?.(chatId) ?? false,
+              );
               const checked = reportSettingsSchema
                 .superRefine((policy, ctx) => addReportCommandIssues({ ...merged, ...policy }, ctx))
                 .safeParse(merged);

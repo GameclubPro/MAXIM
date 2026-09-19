@@ -3,7 +3,9 @@ import {
   chatSettingsSchema,
   applySettingsSectionSchema,
   updateSettingsRequestSchema,
+  chatSettingsScreenResponseSchema,
 } from '../src/core.js';
+import { reportSummarySchema } from '../src/reports.js';
 
 describe('participant report settings', () => {
   it('defaults to disabled, three votes, one message and no mute', () => {
@@ -39,5 +41,13 @@ describe('participant report settings', () => {
     expect(
       chatSettingsSchema.parse({ reportsAliases: ['  СПАМ '], muteDurationHours: 6 }),
     ).toMatchObject({ reportsAliases: ['спам'], reportsMuteDurationHours: 1 });
+  });
+  it('defaults unknown server availability to unavailable', () => {
+    expect(chatSettingsScreenResponseSchema.shape.reportsAvailable.parse(undefined)).toBe(false);
+    expect(chatSettingsScreenResponseSchema.shape.reportsAvailable.parse(true)).toBe(true);
+  });
+  it('preserves compatibility for old reports and rejects negative absent counts', () => {
+    expect(reportSummarySchema.shape.absent.parse(undefined)).toBe(0);
+    expect(reportSummarySchema.shape.absent.safeParse(-1).success).toBe(false);
   });
 });

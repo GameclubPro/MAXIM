@@ -103,6 +103,7 @@ import {
   type PrismaPoolConfig,
 } from '../prisma/prisma-client';
 import { ConfigService } from '@nestjs/config';
+import { ReportViewService } from '../moderation/reports/report-view.service';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import {
   BadRequestException,
@@ -877,6 +878,7 @@ export class AdminService implements OnModuleDestroy {
     private readonly publisherDialogLinkService?: PublisherDialogLinkService,
     @Optional()
     private readonly publisherSuggestionAdminQueueService?: PublisherSuggestionAdminQueueService,
+    @Optional() private readonly reports?: ReportViewService,
   ) {
     this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(
       this.maxBotRegistry,
@@ -6673,6 +6675,7 @@ export class AdminService implements OnModuleDestroy {
 
     return chatSettingsScreenResponseSchema.parse({
       settings,
+      reportsAvailable: this.reports?.available(chatId) ?? false,
       rules,
       header,
       requiredSubscriptionChannels,
@@ -6721,6 +6724,7 @@ export class AdminService implements OnModuleDestroy {
       resolveBotAssignmentData: () => this.resolveChatSettingsWriteBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.assertRequiredSubscriptionSettings(settings),
+      reportsAvailable: (id) => this.reports?.available(id) ?? false,
       assertBotCapabilities: (requirements) =>
         this.assertChatSettingsBotCapabilities(chatId, requirements),
       refreshExecutionReadiness: (settings) =>
@@ -8041,6 +8045,7 @@ export class AdminService implements OnModuleDestroy {
       resolveBotAssignmentData: (chatId) => this.resolveSettingsApplyBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
         this.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      reportsAvailable: (id) => this.reports?.available(id) ?? false,
       assertBotCapabilities: (chatId, requirements) =>
         this.assertChatSettingsBotCapabilities(chatId, requirements),
       recordConcurrentWriteConflict: (params) =>

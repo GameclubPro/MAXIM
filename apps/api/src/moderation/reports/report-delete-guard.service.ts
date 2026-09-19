@@ -5,12 +5,18 @@ import { ReportStateService } from './report-state.service';
 import {
   record,
   REPORT_COMMAND_RULE,
+  REPORT_COUNTER_RULE,
   REPORT_GUARDED_RULES,
+  REPORT_TERMINAL,
   ReportRejectedError,
+  ReportStaleStateError,
+  reportLinkedMessageId,
 } from './report.util';
 
 @Injectable()
 export class ReportDeleteGuardService {
+  // FLAG: Persisted counter cleanup must remain guarded when a collection is reopened.
+  static readonly BINDING_VERSION = 2;
   constructor(
     private readonly state: ReportStateService,
     private readonly prisma: PrismaService,
@@ -33,6 +39,22 @@ export class ReportDeleteGuardService {
       return 'not_applicable';
     const id = record(reasons[0].metadata).reportCaseId;
     if (typeof id !== 'string') throw new ReportRejectedError('Report binding missing');
+    if (reasons.every((reason) => reason.ruleCode === REPORT_COUNTER_RULE)) {
+      const report = await this.prisma.chatReportCase.findUniqueOrThrow({ where: { id } });
+      const settings = await this.state.settings(params.chatId);
+      if (
+        report.chatId !== params.chatId ||
+        report.counterMessageId !== params.messageId ||
+        report.originBotId !== params.botId ||
+        !settings?.deleteBotMessagesEnabled
+      ) {
+        throw new ReportRejectedError('Report counter cleanup no longer authorized');
+      }
+      if (!REPORT_TERMINAL.includes(report.status))
+        throw new ReportStaleStateError('Активный счётчик жалоб защищён от очистки.');
+      await this.state.assertCurrent(report);
+      return 'allowed';
+    }
     if (reasons.every((r) => r.ruleCode === REPORT_COMMAND_RULE)) {
       const report = await this.prisma.chatReportCase.findUniqueOrThrow({ where: { id } });
       if (
@@ -58,7 +80,7 @@ export class ReportDeleteGuardService {
       if (
         body.text !== record(reasons[0].metadata).commandText ||
         (Array.isArray(body.attachments) && body.attachments.length > 0) ||
-        record(command.link).type !== 'reply'
+        reportLinkedMessageId(command, params.chatId) !== report.messageId
       )
         throw new ReportRejectedError('Report command changed');
       await this.state.assertPolicy(report);
@@ -76,6 +98,15 @@ export class ReportDeleteGuardService {
       },
     });
     if (!action) throw new ReportRejectedError('Report action missing');
+    if (
+      reasons.some(
+        (reason) =>
+          record(reason.metadata).reportCaseId === report.id &&
+          record(reason.metadata).contentVersion !== report.contentVersion,
+      )
+    ) {
+      throw new ReportRejectedError('Report action version changed');
+    }
     if (params.messageId === report.messageId) {
       const source = await this.state.source(params.chatId, params.messageId, params.botId);
       if (!source) return 'absent';
@@ -117,7 +148,9 @@ export class ReportDeleteGuardService {
       )
         throw new ReportRejectedError('Report history binding mismatch');
     }
-    await this.state.assertPolicy(report);
+    await this.state.assertLocalAuthor(report.chatId, report.authorId);
+    const current = await this.state.assertCurrent(report, ['PENDING', 'RUNNING']);
+    await this.state.assertPolicy(current);
     return 'allowed';
   }
 }

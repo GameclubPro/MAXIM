@@ -168,6 +168,7 @@ export function buildChatSettingsScreen(
   );
   return chatSettingsScreenResponseSchema.parse({
     settings: state.chatSettings,
+    reportsAvailable: state.reportsAvailable,
     duplicatePhotoModerationMode: 'DELETE_ONLY',
     duplicateMessageModerationMode: 'FULL',
     duplicatePhotoPolicyMatrix: {

@@ -17447,6 +17447,7 @@ describe('AdminService settings screen endpoints', () => {
 
     expect(result).toEqual({
       settings,
+      reportsAvailable: false,
       duplicatePhotoModerationMode: 'OBSERVE',
       duplicateMessageModerationMode: 'OFF',
       rules,

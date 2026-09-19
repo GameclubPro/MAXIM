@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { reportSummarySchema, type ReportSummary } from '@maxim/contracts';
 import { z } from 'zod';
-import type { ChatReportCase } from '../../prisma/prisma-client';
+import { Prisma, type ChatReportCase } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReportStateService } from './report-state.service';
 
@@ -14,34 +14,55 @@ export class ReportViewService {
     private readonly state: ReportStateService,
   ) {}
 
+  available(chatId: string): boolean {
+    return this.state.enabled(chatId);
+  }
+
   async summary(report: ChatReportCase): Promise<ReportSummary> {
+    return (await this.summaries([report]))[0]!;
+  }
+
+  private async summaries(reports: readonly ChatReportCase[]): Promise<ReportSummary[]> {
+    if (reports.length === 0) return [];
     const counts = await this.prisma.$queryRaw<
-      Array<{ total: bigint; deleted: bigint; failed: bigint }>
-    >`
-      SELECT COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE COALESCE(intent.status::text, action.receipt_status) IN ('SUCCEEDED', 'ALREADY_ABSENT')) AS deleted,
+      Array<{ case_id: string; total: bigint; deleted: bigint; absent: bigint; failed: bigint }>
+    >(Prisma.sql`
+      SELECT action.case_id, COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE COALESCE(intent.status::text, action.receipt_status) = 'SUCCEEDED') AS deleted,
+        COUNT(*) FILTER (WHERE COALESCE(intent.status::text, action.receipt_status) = 'ALREADY_ABSENT') AS absent,
         COUNT(*) FILTER (WHERE COALESCE(intent.status::text, action.receipt_status) IN ('EXPIRED', 'FAILED_TERMINAL')) AS failed
       FROM chat_report_actions action
       LEFT JOIN moderation_delete_intents intent ON intent.id = action.intent_id
-      WHERE action.case_id = ${report.id}
-    `;
-    const count = counts[0];
-    const candidates = Number(count?.total ?? 0);
-    const deleted = Number(count?.deleted ?? 0);
-    const failed = Number(count?.failed ?? 0);
-    const votes = await this.prisma.chatReportVote.count({
-      where: { caseId: report.id, contentVersion: report.contentVersion },
+      WHERE action.case_id IN (${Prisma.join(reports.map((report) => report.id))})
+      GROUP BY action.case_id
+    `);
+    const voteCounts = await this.prisma.chatReportVote.groupBy({
+      by: ['caseId', 'contentVersion'],
+      where: {
+        OR: reports.map((report) => ({ caseId: report.id, contentVersion: report.contentVersion })),
+      },
+      _count: { _all: true },
     });
-    return reportSummarySchema.parse({
-      ...report,
-      votes,
-      candidates,
-      deleted,
-      failed,
-      pending: candidates - deleted - failed,
-      muteApplied: Boolean(report.muteEventId),
-      createdAt: report.createdAt.toISOString(),
-      expiresAt: report.expiresAt.toISOString(),
+    const actionsByCase = new Map(counts.map((count) => [count.case_id, count]));
+    const votesByCase = new Map(voteCounts.map((count) => [count.caseId, count._count._all]));
+    return reports.map((report) => {
+      const count = actionsByCase.get(report.id);
+      const candidates = Number(count?.total ?? 0);
+      const deleted = Number(count?.deleted ?? 0);
+      const absent = Number(count?.absent ?? 0);
+      const failed = Number(count?.failed ?? 0);
+      return reportSummarySchema.parse({
+        ...report,
+        votes: votesByCase.get(report.id) ?? 0,
+        candidates,
+        deleted,
+        absent,
+        failed,
+        pending: candidates - deleted - absent - failed,
+        muteApplied: Boolean(report.muteEventId),
+        createdAt: report.createdAt.toISOString(),
+        expiresAt: report.expiresAt.toISOString(),
+      });
     });
   }
 
@@ -70,7 +91,7 @@ export class ReportViewService {
     });
     const page = rows.slice(0, 20);
     return {
-      items: await Promise.all(page.map((row) => this.summary(row))),
+      items: await this.summaries(page),
       nextCursor: rows.length > 20 ? page.at(-1)!.id : null,
     };
   }

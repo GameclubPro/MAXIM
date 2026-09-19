@@ -230,12 +230,15 @@ maxim_topology_require_participant_report_guard() {
     const boundary = executor.slice(start, end);
     process.exit(start >= 0 && end > start &&
       guard.includes("class ReportDeleteGuardService") &&
+      guard.includes("BINDING_VERSION = 2") &&
+      guard.includes("REPORT_COUNTER_RULE") &&
+      guard.includes("this.state.assertCurrent(") &&
       guard.includes("this.state.assertPolicy(report)") &&
       guard.includes("this.state.assertCase(") &&
       boundary.includes("await this.reportDeleteGuard.assertIntentStillActionable(") &&
       boundary.includes("Participant report delete guard unavailable") ? 0 : 1);
   ' >/dev/null 2>&1; then
-    echo "Rollback target lacks the participant report pre-dispatch guard." >&2
+    echo "Rollback target lacks the participant report v2 pre-dispatch guard." >&2
     return 1
   fi
 }

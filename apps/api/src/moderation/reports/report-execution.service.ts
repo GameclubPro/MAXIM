@@ -17,6 +17,7 @@ import {
   REPORT_RULE,
   REPORT_TERMINAL,
   ReportRejectedError,
+  ReportStaleStateError,
 } from './report.util';
 
 const FINISHED_DUE_AT = new Date('9999-01-01T00:00:00Z');
@@ -58,7 +59,10 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
 
   async tick(): Promise<void> {
     const reports = await this.prisma.chatReportCase.findMany({
-      where: { dueAt: { lte: new Date() } },
+      where: {
+        dueAt: { lte: new Date() },
+        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: new Date() } }],
+      },
       orderBy: [{ dueAt: 'asc' }, { id: 'asc' }],
       take: 10,
     });
@@ -68,6 +72,7 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
       const claimed = await this.prisma.chatReportCase.updateMany({
         where: {
           id: report.id,
+          dueAt: { lte: new Date() },
           OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: new Date() } }],
         },
         data: { leaseToken: token, leaseExpiresAt: new Date(Date.now() + 60_000) },
@@ -81,7 +86,7 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
             where: { id: report.id, leaseToken: token, status: { notIn: REPORT_TERMINAL } },
             data: { status: 'CANCELLED', lastError: error.message },
           });
-        } else {
+        } else if (!(error instanceof ReportStaleStateError)) {
           this.logger.warn(
             { reportId: report.id, error: error instanceof Error ? error.message : 'Unknown' },
             'Report execution deferred',
@@ -95,23 +100,32 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
         const current = await this.prisma.chatReportCase.findUniqueOrThrow({
           where: { id: report.id },
         });
-        let rendered = false;
-        try {
-          rendered = await this.render(current, token);
-        } catch {
-          this.logger.warn({ reportId: report.id }, 'Report counter update deferred');
+        if (current.leaseToken === token) {
+          let rendered = false;
+          try {
+            rendered = await this.render(current, token);
+          } catch {
+            this.logger.warn({ reportId: report.id }, 'Report counter update deferred');
+          }
+          const nextDueAt =
+            REPORT_TERMINAL.includes(current.status) && rendered
+              ? FINISHED_DUE_AT
+              : new Date(
+                  Date.now() +
+                    (REPORT_TERMINAL.includes(current.status)
+                      ? 60_000
+                      : current.status === 'COLLECTING'
+                        ? 30_000
+                        : 5000),
+                );
+          // FLAG: A vote, dismissal or recovered receipt arriving during execution owns its new wakeup.
+          await this.prisma.$executeRaw`
+            UPDATE chat_report_cases SET lease_token = NULL, lease_expires_at = NULL,
+              due_at = CASE WHEN due_at = ${report.dueAt} THEN ${nextDueAt} ELSE due_at END,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ${report.id} AND lease_token = ${token}
+          `;
         }
-        await this.prisma.chatReportCase.updateMany({
-          where: { id: report.id, leaseToken: token },
-          data: {
-            leaseToken: null,
-            leaseExpiresAt: null,
-            dueAt:
-              REPORT_TERMINAL.includes(current.status) && rendered
-                ? FINISHED_DUE_AT
-                : new Date(Date.now() + (current.status === 'COLLECTING' ? 30_000 : 5000)),
-          },
-        });
       }
     }
   }
@@ -121,12 +135,25 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
     if (REPORT_TERMINAL.includes(report.status)) return;
     await this.assertLease(id, token);
     await this.state.assertPolicy(report);
-    if (!report.counterMessageId && !report.counterSendStartedAt) await this.render(report, token);
+    await this.state.assertCurrent(report);
+    if (!report.counterMessageId && !report.counterSendStartedAt) {
+      try {
+        await this.render(report, token);
+      } catch (error) {
+        if (error instanceof ReportStaleStateError || error instanceof ReportRejectedError)
+          throw error;
+        this.logger.warn(
+          { reportId: id },
+          'Report counter unavailable; durable execution continues',
+        );
+      }
+    }
     if (report.status === 'COLLECTING') {
       if (report.expiresAt <= new Date())
-        await this.prisma.chatReportCase.update({ where: { id }, data: { status: 'EXPIRED' } });
+        await this.updateOwned(report, token, { status: 'EXPIRED' });
       return;
     }
+    const executionBotId = await this.state.executionBotId(report.chatId);
     const targetAction = await this.prisma.chatReportAction.findUnique({
       where: { caseId_messageId: { caseId: id, messageId: report.messageId } },
     });
@@ -136,9 +163,9 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
         })
       : null;
     const targetConfirmed = Boolean(receipt?.remoteDeleteSucceededAt);
-    await this.state.assertCase(id, report.originBotId, !targetConfirmed);
+    report = await this.state.assertCase(id, executionBotId, !targetConfirmed);
     if (report.status === 'PENDING') {
-      await this.state.assertVoters(report, report.originBotId);
+      await this.state.assertVoters(report, executionBotId);
       report = await this.state.transaction(report.chatId, async (tx) => {
         const current = await tx.chatReportCase.findUniqueOrThrow({ where: { id } });
         if (
@@ -146,65 +173,66 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
           current.contentVersion !== report.contentVersion ||
           current.leaseToken !== token
         )
-          throw new ReportRejectedError('Состояние жалобы изменилось.');
+          throw new ReportStaleStateError('Состояние жалобы изменилось.');
         return tx.chatReportCase.update({ where: { id }, data: { status: 'RUNNING' } });
       });
     }
-    if (!report.muteProcessed) await this.applyMute(report, token);
+    if (!report.muteProcessed) await this.applyMute(report, token, executionBotId);
+    report = await this.state.assertCurrent(report, ['RUNNING']);
     await this.materialize(report, report.messageId, token);
     if (!targetConfirmed) {
       if (receipt && ['FAILED_TERMINAL', 'EXPIRED', 'ALREADY_ABSENT'].includes(receipt.status)) {
-        await this.prisma.chatReportCase.update({
-          where: { id },
-          data: {
-            status: report.muteEventId ? 'PARTIAL' : 'FAILED',
-            lastError: 'Удаление исходного сообщения не подтверждено; очистка истории отменена.',
-          },
+        await this.updateOwned(report, token, {
+          status: report.muteEventId ? 'PARTIAL' : 'FAILED',
+          lastError: 'Удаление исходного сообщения не подтверждено; очистка истории отменена.',
         });
       }
       return;
     }
     if (report.deleteMode === 'HISTORY_24H' && !report.scanComplete) {
+      // FLAG: Recover the action -> intent gap before the pending-page gate can block the scan.
+      const unlinked = await this.prisma.chatReportAction.findMany({
+        where: { caseId: report.id, intentId: null, receiptStatus: null },
+        orderBy: { id: 'asc' },
+        take: 200,
+      });
+      for (const action of unlinked) await this.materialize(report, action.messageId, token);
       // Drain a page before admitting another; a large history cannot flood the shared queue.
       if ((await this.views.summary(report)).pending > 0) return;
       await this.scanHistory(report, token);
     } else if (report.deleteMode === 'MESSAGE' && !report.scanComplete)
-      await this.prisma.chatReportCase.update({ where: { id }, data: { scanComplete: true } });
+      await this.updateOwned(report, token, { scanComplete: true });
     report = await this.prisma.chatReportCase.findUniqueOrThrow({ where: { id } });
     const summary = await this.views.summary(report);
     if (report.scanComplete && summary.pending === 0)
-      await this.prisma.chatReportCase.update({
-        where: { id },
-        data: {
-          status:
-            summary.failed > 0
-              ? summary.deleted > 0 || summary.muteApplied
-                ? 'PARTIAL'
-                : 'FAILED'
-              : 'COMPLETED',
-          lastError: summary.failed > 0 ? 'Не все сообщения удалось удалить.' : null,
-        },
+      await this.updateOwned(report, token, {
+        status:
+          summary.failed > 0
+            ? summary.deleted > 0 || summary.muteApplied
+              ? 'PARTIAL'
+              : 'FAILED'
+            : 'COMPLETED',
+        lastError: summary.failed > 0 ? 'Не все сообщения удалось удалить.' : null,
       });
   }
 
-  private async applyMute(report: ChatReportCase, token: string): Promise<void> {
+  private async applyMute(report: ChatReportCase, token: string, botId: string): Promise<void> {
     await this.locks.runExclusive(
       { chatId: report.chatId, userId: report.authorId },
       async (guard) => {
         await guard.assertOwned();
-        const current = await this.state.assertCase(report.id, report.originBotId);
+        const current = await this.state.assertCase(report.id, botId);
         if (current.muteProcessed) return;
         if (
           !current.muteHours ||
           (await this.state.hasActiveSanction(current.chatId, current.authorId))
         ) {
-          await this.prisma.chatReportCase.update({
-            where: { id: current.id },
-            data: { muteProcessed: true },
-          });
+          await this.updateOwned(current, token, { muteProcessed: true });
           return;
         }
-        await this.state.assertVoters(current, current.originBotId);
+        await this.state.assertVoters(current, botId);
+        await this.state.assertCurrent(current, ['RUNNING']);
+        await this.state.assertPolicy(current);
         const fence = await this.fences.prepare({
           chatId: current.chatId,
           userId: current.authorId,
@@ -228,16 +256,29 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
               policy.reportsRevision !== current.policyRevision ||
               latest.status !== 'RUNNING' ||
               latest.leaseToken !== token ||
+              latest.contentVersion !== current.contentVersion ||
+              latest.contentHash !== current.contentHash ||
+              latest.decidedAt?.getTime() !== current.decidedAt?.getTime() ||
+              !latest.leaseExpiresAt ||
+              latest.leaseExpiresAt <= new Date() ||
               !this.state.enabled(current.chatId)
             )
               throw new ReportRejectedError('Жалоба больше не разрешает мут.');
             if (latest.muteProcessed) return;
+            await this.state.assertLocalAuthor(current.chatId, current.authorId, tx);
+            if (await this.state.hasActiveSanction(current.chatId, current.authorId, tx)) {
+              await tx.chatReportCase.update({
+                where: { id: current.id },
+                data: { muteProcessed: true },
+              });
+              return;
+            }
             await tx.moderationEvent.create({
               data: {
                 id: eventId,
                 chatId: current.chatId,
                 userId: current.authorId,
-                botId: current.originBotId,
+                botId,
                 messageId: current.messageId,
                 eventType: 'MEMBER_ACTION',
                 ruleCode: REPORT_RULE,
@@ -278,6 +319,8 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
     token: string,
   ): Promise<void> {
     await this.assertLease(report.id, token);
+    await this.state.assertCurrent(report, ['RUNNING']);
+    await this.state.assertPolicy(report);
     const action = await this.prisma.chatReportAction.upsert({
       where: { caseId_messageId: { caseId: report.id, messageId } },
       create: { caseId: report.id, messageId },
@@ -288,6 +331,7 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
         await this.deletes.enqueueCurrentIntentWakeupStrict(action.intentId);
       return;
     }
+    if (action.receiptStatus) return;
     const intent = await this.deletes.ensureIntent({
       chatId: report.chatId,
       messageId,
@@ -305,6 +349,7 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
           reportCaseId: report.id,
           source: 'participant_report',
           contentVersion: report.contentVersion,
+          reportTargetMessageId: report.messageId,
         },
       },
     });
@@ -346,12 +391,9 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
     }
     await this.assertLease(report.id, token);
     const last = rows.at(-1);
-    await this.prisma.chatReportCase.update({
-      where: { id: report.id },
-      data: {
-        scanComplete: rows.length < 200,
-        ...(last ? { scanCursorCreatedAt: last.created_at, scanCursorId: last.id } : {}),
-      },
+    await this.updateOwned(report, token, {
+      scanComplete: rows.length < 200,
+      ...(last ? { scanCursorCreatedAt: last.created_at, scanCursorId: last.id } : {}),
     });
   }
 
@@ -373,7 +415,11 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
       EXPIRED: 'Срок сбора жалоб истёк.',
       CANCELLED: 'Сбор жалоб отменён.',
     };
-    const text = `${labels[summary.status]}${summary.muteApplied ? ` Мут: ${summary.muteHours} ч.` : ''}`;
+    const cancelledResult =
+      ['CANCELLED', 'EXPIRED', 'DISMISSED'].includes(summary.status) && summary.deleted > 0
+        ? ` Удалено сообщений: ${summary.deleted}.`
+        : '';
+    const text = `${labels[summary.status]}${cancelledResult}${summary.absent > 0 ? ` Уже отсутствуют: ${summary.absent}.` : ''}${summary.muteApplied ? ` Мут: ${summary.muteHours} ч.` : ''}`;
     if (report.counterMessageId) {
       if (report.counterText !== text) {
         try {
@@ -417,12 +463,13 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
             routingPolicy: 'origin_only',
             reasonKey: `report-counter:${report.id}`,
             ruleCode: 'PARTICIPANT_REPORT_COUNTER_CLEANUP',
+            event: { userId: report.authorId, metadata: { reportCaseId: report.id } },
             executeAt: new Date(Date.now() + settings.deleteBotMessagesDelayMinutes * 60_000),
           });
       }
       return true;
     }
-    // FLAG: An attempted send without a receipt is ambiguous. Never create a second counter on retry.
+    // FLAG: An attempted send without a receipt is ambiguous. An exact webhook can recover it; never resend.
     if (report.counterSendStartedAt) return true;
     if (REPORT_TERMINAL.includes(report.status)) return true;
     const sent = await this.max.sendMessageImmediateWithId(
@@ -432,13 +479,22 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
         messageLink: { type: 'reply', mid: report.messageId },
         beforeSend: async () => {
           await this.assertLease(report.id, token);
-          await this.prisma.chatReportCase.update({
-            where: { id: report.id },
+          await this.state.assertCurrent(report);
+          await this.state.assertPolicy(report);
+          const started = await this.prisma.chatReportCase.updateMany({
+            where: {
+              id: report.id,
+              leaseToken: token,
+              counterSendStartedAt: null,
+              counterMessageId: null,
+            },
             data: {
               counterSendStartedAt: new Date(),
               counterText: text,
             },
           });
+          if (!started.count)
+            throw new ReportStaleStateError('Счётчик жалобы уже создан или состояние изменилось.');
         },
       },
       { botId: report.originBotId, trafficClass: 'background', timeoutMs: 5000 },
@@ -456,5 +512,24 @@ export class ReportExecutionService implements OnModuleInit, OnModuleDestroy {
       data: { leaseExpiresAt: new Date(Date.now() + 60_000) },
     });
     if (!updated.count) throw new Error('Report execution lease lost');
+  }
+
+  private async updateOwned(
+    report: ChatReportCase,
+    token: string,
+    data: Prisma.ChatReportCaseUpdateManyMutationInput,
+  ): Promise<void> {
+    const updated = await this.prisma.chatReportCase.updateMany({
+      where: {
+        id: report.id,
+        leaseToken: token,
+        leaseExpiresAt: { gt: new Date() },
+        status: report.status,
+        contentVersion: report.contentVersion,
+        policyRevision: report.policyRevision,
+      },
+      data,
+    });
+    if (!updated.count) throw new ReportStaleStateError('Состояние жалобы изменилось.');
   }
 }

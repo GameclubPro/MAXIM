@@ -73,6 +73,7 @@ export const reportSummarySchema = z.object({
   muteApplied: z.boolean(),
   candidates: z.number().int(),
   deleted: z.number().int(),
+  absent: z.number().int().nonnegative().default(0),
   pending: z.number().int(),
   failed: z.number().int(),
   createdAt: z.string().datetime(),

@@ -14,6 +14,8 @@ import {
   ReportRejectedError,
   reportReplyTarget,
   reportContentHash,
+  reportLinkedMessageId,
+  ReportStaleStateError,
 } from './report.util';
 
 @Injectable()
@@ -30,11 +32,7 @@ export class ReportSubmissionService {
     update: MaxUpdate,
     settings: Pick<ReportSettings, 'reportsEnabled' | 'reportsAliases'>,
   ): boolean {
-    return Boolean(
-      update.message &&
-      this.state.enabled(update.message.chatId) &&
-      reportReplyTarget(update, settings),
-    );
+    return Boolean(update.message && reportReplyTarget(update, settings));
   }
 
   async handle(
@@ -58,7 +56,7 @@ export class ReportSubmissionService {
     if (!botId) return false;
     try {
       if (!this.state.enabled(message.chatId))
-        throw new ReportRejectedError('Модуль жалоб временно недоступен.');
+        throw new ReportRejectedError('Приём жалоб приостановлен. Жалоба не учтена.');
       const targetId = reportReplyTarget(update, settings);
       if (!targetId) {
         await this.feedback(
@@ -95,15 +93,54 @@ export class ReportSubmissionService {
         });
         if (!policy.reportsEnabled || !this.state.enabled(message.chatId))
           throw new ReportRejectedError('Модуль жалоб выключен.');
+        if (!reportReplyTarget(update, policy))
+          throw new ReportRejectedError('Команды жалоб изменились. Жалоба не учтена.');
         const where = { chatId_messageId: { chatId: message.chatId, messageId: targetId } };
         let current = await tx.chatReportCase.findUnique({ where });
+        if (
+          current &&
+          current.contentHash !== source.hash &&
+          current.updatedAt >= source.readStartedAt
+        )
+          throw new ReportStaleStateError('Сообщение изменилось во время проверки жалобы.');
+        if (
+          current &&
+          current.policyRevision !== policy.reportsRevision &&
+          ['COLLECTING', 'PENDING', 'CANCELLED'].includes(current.status)
+        ) {
+          const action = await tx.chatReportAction.findFirst({
+            where: { caseId: current.id },
+            select: { id: true },
+          });
+          if (current.muteProcessed || current.muteEventId || action) {
+            await tx.chatReportCase.update({
+              where,
+              data: { status: 'CANCELLED', dueAt: acceptedAt },
+            });
+            return null;
+          }
+          // FLAG: Only untouched collections may restart. Dismissals and executed actions stay closed.
+          current = await tx.chatReportCase.update({
+            where,
+            data: {
+              contentHash: source.hash,
+              contentVersion: { increment: 1 },
+              policyRevision: policy.reportsRevision,
+              threshold: policy.reportsThreshold,
+              deleteMode: policy.reportsDeleteMode,
+              muteHours: policy.reportsMuteEnabled ? policy.reportsMuteDurationHours : null,
+              status: 'COLLECTING',
+              decidedAt: null,
+              dueAt: acceptedAt,
+              lastError: null,
+              leaseToken: null,
+              leaseExpiresAt: null,
+            },
+          });
+        }
         if (current && !['COLLECTING', 'PENDING'].includes(current.status))
           throw new ReportRejectedError('Сбор жалоб по этому сообщению уже закрыт.');
-        if (current && current.policyRevision !== policy.reportsRevision) {
-          await tx.chatReportCase.update({ where, data: { status: 'CANCELLED', dueAt: now } });
-          return null;
-        }
-        if (current && current.contentHash !== source.hash)
+        if (current && current.contentHash !== source.hash) {
           current = await tx.chatReportCase.update({
             where,
             data: {
@@ -112,8 +149,11 @@ export class ReportSubmissionService {
               status: 'COLLECTING',
               decidedAt: null,
               dueAt: now,
+              leaseToken: null,
+              leaseExpiresAt: null,
             },
           });
+        }
         if (!current)
           current = await tx.chatReportCase.create({
             data: {
@@ -206,10 +246,28 @@ export class ReportSubmissionService {
   }
 
   async observeEdit(update: MaxUpdate): Promise<void> {
-    if (!update.message) return;
+    if (!update.message || !update.botId) return;
     const node = extractRawMessageNode(record(update.raw));
     if (!node) return;
-    const hash = reportContentHash(node);
+    const observed = await this.prisma.chatReportCase.findUnique({
+      where: {
+        chatId_messageId: { chatId: update.message.chatId, messageId: update.message.messageId },
+      },
+    });
+    if (
+      !observed ||
+      !['COLLECTING', 'PENDING'].includes(observed.status) ||
+      observed.contentHash === reportContentHash(node)
+    )
+      return;
+    // FLAG: Edit webhooks can arrive out of order. Confirm the current message before resetting votes.
+    const source = await this.state.source(
+      update.message.chatId,
+      update.message.messageId,
+      update.botId,
+    );
+    if (!source || source.authorId !== observed.authorId) return;
+    const hash = source.hash;
     await this.state.transaction(update.message.chatId, async (tx) => {
       const report = await tx.chatReportCase.findUnique({
         where: {
@@ -225,6 +283,8 @@ export class ReportSubmissionService {
         !['COLLECTING', 'PENDING'].includes(report.status)
       )
         return;
+      if (report.updatedAt >= source.readStartedAt)
+        throw new ReportStaleStateError('Версия сообщения изменилась во время проверки правки.');
       await tx.chatReportCase.update({
         where: { id: report.id },
         data: {
@@ -233,6 +293,8 @@ export class ReportSubmissionService {
           status: 'COLLECTING',
           decidedAt: null,
           dueAt: new Date(),
+          leaseToken: null,
+          leaseExpiresAt: null,
         },
       });
     });
@@ -242,21 +304,32 @@ export class ReportSubmissionService {
     chatId: string,
     messageId: string,
     text: string,
-    botId: string,
+    _botId: string,
+    raw?: unknown,
   ): Promise<boolean> {
-    return Boolean(
-      await this.prisma.chatReportCase.findFirst({
-        where: {
-          chatId,
-          originBotId: botId,
-          OR: [
-            { counterMessageId: messageId },
-            { counterMessageId: null, counterSendStartedAt: { not: null }, counterText: text },
-          ],
-        },
-        select: { id: true },
-      }),
-    );
+    const existing = await this.prisma.chatReportCase.findFirst({
+      where: { chatId, counterMessageId: messageId },
+      select: { id: true },
+    });
+    if (existing) return true;
+    const node = extractRawMessageNode(record(raw));
+    const targetId = node ? reportLinkedMessageId(node, chatId) : null;
+    if (!targetId) return false;
+    const sender = record(node?.sender);
+    const originBotId = this.state.botIdFromSender(sender.user_id);
+    if (sender.is_bot !== true || !originBotId) return false;
+    const recovered = await this.prisma.chatReportCase.updateMany({
+      where: {
+        chatId,
+        messageId: targetId,
+        originBotId,
+        counterMessageId: null,
+        counterSendStartedAt: { not: null },
+        counterText: text,
+      },
+      data: { counterMessageId: messageId, dueAt: new Date() },
+    });
+    return recovered.count === 1;
   }
 
   private async feedback(update: MaxUpdate, text: string): Promise<void> {
