@@ -1080,6 +1080,7 @@ model ChatReportAction {
   caseId      String @map("case_id")
   messageId   String @map("message_id")
   intentId    String? @map("intent_id")
+  receiptStatus String? @map("receipt_status")
   createdAt   DateTime @default(now()) @map("created_at")
   reportCase  ChatReportCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
 

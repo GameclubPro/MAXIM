@@ -21,6 +21,8 @@ MAX-confirmed human membership for 24 hours. Shared-chat bots use one PostgreSQL
 
 The action role processes due cases in bounded batches. History scans use 200-row keyset pages
 over `webhook_events_report_history_idx`, a fixed decision-time day, and durable delete intents.
+The intent retention transaction snapshots each linked report action's final status before
+removing its queue ledger, so completed journal counts do not become pending again after retention.
 All message operations share the existing target-wide MAX limiter. History materialization
 does not execute synchronous deletes or bypass higher-priority moderation work.
 

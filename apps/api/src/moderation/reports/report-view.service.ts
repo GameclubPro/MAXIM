@@ -19,8 +19,8 @@ export class ReportViewService {
       Array<{ total: bigint; deleted: bigint; failed: bigint }>
     >`
       SELECT COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE intent.status::text IN ('SUCCEEDED', 'ALREADY_ABSENT')) AS deleted,
-        COUNT(*) FILTER (WHERE intent.status::text IN ('EXPIRED', 'FAILED_TERMINAL')) AS failed
+        COUNT(*) FILTER (WHERE COALESCE(intent.status::text, action.receipt_status) IN ('SUCCEEDED', 'ALREADY_ABSENT')) AS deleted,
+        COUNT(*) FILTER (WHERE COALESCE(intent.status::text, action.receipt_status) IN ('EXPIRED', 'FAILED_TERMINAL')) AS failed
       FROM chat_report_actions action
       LEFT JOIN moderation_delete_intents intent ON intent.id = action.intent_id
       WHERE action.case_id = ${report.id}

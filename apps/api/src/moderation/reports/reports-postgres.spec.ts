@@ -8,6 +8,7 @@ import { ReportViewService } from './report-view.service';
 import { ReportDeleteGuardService } from './report-delete-guard.service';
 import { ModerationSanctionStateLockService } from '../moderation-sanction-state-lock.service';
 import { ModerationSanctionStateFenceService } from '../moderation-sanction-state-fence.service';
+import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import { REPORT_DAY_MS } from './report.util';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
@@ -297,6 +298,54 @@ describePostgres('PostgreSQL participant reports', () => {
     expect(
       (await prisma.chatReportCase.findUniqueOrThrow({ where: { id: second.id } })).muteEventId,
     ).toBeNull();
+  });
+
+  it('preserves confirmed journal results when the deletion ledger is purged', async () => {
+    const report = await pending('retained-journal');
+    const old = new Date(Date.now() - 100 * REPORT_DAY_MS);
+    const statuses = ['SUCCEEDED', 'ALREADY_ABSENT', 'FAILED_TERMINAL'] as const;
+    for (const [n, status] of statuses.entries()) {
+      const id = `${prefix}-retained-${n}`;
+      await prisma.moderationDeleteIntent.create({
+        data: {
+          id,
+          chatId,
+          messageId: id,
+          status,
+          createdAt: old,
+          updatedAt: old,
+          executeAt: old,
+          nextAttemptAt: old,
+          retryUntilAt: new Date(old.getTime() + REPORT_DAY_MS),
+          ...(status === 'SUCCEEDED'
+            ? { remoteDeleteSucceededAt: old, remoteDeleteSucceededBotId: 'bot-a' }
+            : {}),
+        },
+      });
+      await prisma.chatReportAction.create({
+        data: { caseId: report.id, messageId: id, intentId: id },
+      });
+    }
+    const before = await views.summary(report);
+    expect(before).toMatchObject({ candidates: 3, deleted: 2, failed: 1, pending: 0 });
+    const retention = Object.assign(Object.create(ModerationDeleteIntentService.prototype), {
+      prisma,
+      retentionDays: 90,
+      purgeMaxBatches: 1,
+      sweepBatchSize: 200,
+    }) as Pick<ModerationDeleteIntentService, 'purgeRetainedIntents'>;
+    await retention.purgeRetainedIntents();
+    expect(
+      await prisma.moderationDeleteIntent.count({
+        where: { id: { startsWith: `${prefix}-retained-` } },
+      }),
+    ).toBe(0);
+    expect(
+      (await prisma.chatReportAction.findMany({ where: { caseId: report.id } }))
+        .map((a) => a.receiptStatus)
+        .sort(),
+    ).toEqual([...statuses].sort());
+    expect(await views.summary(report)).toEqual(before);
   });
 
   it('retries an unavailable MAX membership lookup without recording an optimistic vote', async () => {

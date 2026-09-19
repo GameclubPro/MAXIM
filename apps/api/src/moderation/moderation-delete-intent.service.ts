@@ -2576,7 +2576,7 @@ export class ModerationDeleteIntentService {
     for (let batch = 0; batch < this.purgeMaxBatches; batch += 1) {
       const purged = await this.prisma.$executeRaw(Prisma.sql`
         WITH retained AS (
-          SELECT intent."id"
+          SELECT intent."id", intent."status"
           FROM "moderation_delete_intents" intent
           WHERE intent."updated_at" < ${cutoff}
             AND intent."status" IN (
@@ -2621,6 +2621,13 @@ export class ModerationDeleteIntentService {
           ORDER BY intent."updated_at" ASC
           LIMIT ${this.sweepBatchSize}
           FOR UPDATE SKIP LOCKED
+        ), report_receipts AS (
+          -- FLAG: Journal receipts survive queue-ledger retention in the same transaction.
+          UPDATE "chat_report_actions" action
+          SET "receipt_status" = retained."status"::text
+          FROM retained
+          WHERE action."intent_id" = retained."id"
+          RETURNING action."id"
         )
         DELETE FROM "moderation_delete_intents" intent
         USING retained
