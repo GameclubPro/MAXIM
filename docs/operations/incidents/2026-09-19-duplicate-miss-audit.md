@@ -56,11 +56,12 @@ response, and during registration, plus a concurrent restrictive replay that mus
    deletion. Transient download, governor, lease and database failures are unchanged.
 4. Completed: targeted unit and real Redis/BullMQ regression coverage, including immutable job
    data, restrictive races, no duplicate action and no additional downloads on retry.
-5. Release gate: run the full API/static/docs checks and exact-SHA CI/CodeQL; deploy only the shared
-   API component with the normal queue fence and all role/OCR smokes. No migration, contract/UI
-   change, new dependency, fleet scan, larger timeout or runtime-policy promotion is needed.
-6. Release verification: confirm readiness, unchanged runtime controls and bounded observations.
-   Do not replay old failed jobs or reset action claims; the repair applies to normal new work.
+5. Completed: full API/static/docs checks and exact-SHA CI/CodeQL, followed by guarded deployment.
+   The repair itself selects only shared API; the production manifest also required the static
+   consumers of previously committed, unreleased contract changes. See Delivery below. No migration,
+   new dependency, fleet scan, larger timeout or runtime-policy promotion was introduced.
+6. Completed: release smokes and runtime-control recheck. Do not replay old failed jobs or reset
+   action claims; the repair applies to normal new work. Post-release observations are below.
 
 The steady-state path adds no network requests or Redis operations. Error recovery uses the
 existing bounded registration call. Terminal format failures avoid repeated download/type checks
@@ -100,3 +101,62 @@ and allow subsequent verifiable content to progress.
 
 These follow-ups are not silently enabled by a reliability repair. They require measurements or
 explicit product decisions; the implemented fixes retain existing authority and resource limits.
+
+## Validation
+
+- Focused local Redis run: 33 suites and 484 tests passed. Two PostgreSQL-dependent tests were
+  skipped in that run; PostgreSQL races subsequently passed in exact-SHA CI.
+- Full API validation: typecheck, build, 577 suites and 12,893 tests passed. The standard run
+  skipped 23 environment-dependent suites/152 tests; it is not a claim that those ran locally.
+- Repository lint, refactor guards, documentation checks and 534 tooling tests passed.
+- Exact-SHA CI and CodeQL passed for `bcb256b694bd4874b1e6fff5a0e046bd73ba8562`. Its mandatory
+  duplicate/interval Redis lane passed all 14 suites/165 tests. All three image builds, PostgreSQL
+  race tests, native OCR smoke, benchmark and frontend checks also passed.
+- Production dependency audit passed its required high-severity threshold. The preceding main
+  CI failure was an npm registry maintenance 503, not a reason to bypass the audit or force a
+  breaking dependency upgrade. The audit still reports two moderate Fastify-related advisories.
+
+## Delivery
+
+Runtime commit: `bcb256b694bd4874b1e6fff5a0e046bd73ba8562`.
+Release: `release-20260919T192804Z-bcb256b694bd`.
+
+The first attempt stopped before runtime mutation on a VPS-to-GitHub port-22 timeout after the
+deploy-tooling re-exec. The documented caller-only `MAXIM_DEPLOY_GIT_SSH_PORT=443` transport
+completed synchronization without changing persistent SSH configuration.
+
+The next preflight detected unreleased contract impact in the existing component manifests and
+therefore selected both active static consumers as well as shared API. Its disk-percentage guard
+refused on-host builds before changing containers. All three green exact-SHA images were then
+preloaded through checksum, image-identity and archive-plus-reserve validation. Normal deploy
+reused them; no disk guard was weakened, no host-wide cleanup was run and no fallback build ran.
+
+All 13 API roles, the OCR sandbox, `miniapp-major-static` and `admin-static` were updated. The
+static changes came from earlier commits already on main, not new UI edits in this repair.
+PostgreSQL and Redis were not recreated; no migration was pending. The normal queue fence covered
+the mixed-version interval. Readiness briefly returned 503 while the accumulated queue drained,
+then ingress/admin live/ready, public live, canonical `/app/`, Safety Desk and isolated OCR/UDS
+smokes passed before the manifest was committed. No participant was used for a live sanction test.
+
+## Post-Release Observation
+
+The completed 19:32:04Z-19:37:04Z capacity window contains 20 samples with complete coverage.
+Readiness, queue metrics/fence and exact API fleet topology had no failing or unknown samples.
+No restarts were observed. Sampled oldest-queue lag was 0-1.686 seconds (p95 0.736); these are
+queue-age samples, not request latencies. Eighteen samples were still in automatic stabilization,
+so the entire window is not described as normal. The last sample was `normal / healthy` with
+zero queue lag; the separate 19:37:40Z health check confirmed the same state and healthy DB/Redis.
+
+Message runtime control remained permanent `full`, revision 2, `all_enabled_chats`. The standalone
+photo control remained missing. A later fixed-catalog audit completed within its original limits:
+its one-hour event window contained 53 duplicate deletions, and its bounded intent sample included
+38 successful, 41 retryable, 32 waiting-capability, five expired and five terminal duplicate
+intents. Several status samples were saturated and the windows overlap the previous image. These
+figures neither measure improvement nor prove that every missed deletion is fixed. Missing rights,
+temporary MAX failures, unsupported evidence and configured exclusions still require case-specific
+diagnosis; no historical jobs, author protections or action claims were reset.
+
+The disposable local Redis and downloaded test binaries were removed. The read-only monitor
+finished normally and removed its transient full log, retaining only its ordinary privacy-safe
+capacity archive. Pre-existing user changes in agent notes and an unrelated incident document
+were preserved and excluded from both commits.
