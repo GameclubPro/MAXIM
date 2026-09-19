@@ -9,6 +9,7 @@ import {
 } from './miniapp-stop-words-flow.mjs';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
 import {
+  allocateMiniappBaseUrl,
   ensureMiniappDevServer,
   isLocalMiniappBaseUrl,
   stopChildProcess,
@@ -2189,15 +2190,17 @@ const scenarioBehaviors = [
   },
   {
     name: 'chat-settings',
-    beforeShot: async (page) => {
+    beforeShot: async (page, profile) => {
       await assertAdvertisingSoonModule(page);
       const originalUrl = page.url();
       const pilotUrl = new URL(originalUrl);
       pilotUrl.searchParams.set('advertisingPilot', '1');
       await page.goto(pilotUrl.href);
       await assertAdvertisingPilotModule(page);
+      await applyNativeScreenshotMode(page, profile);
       await page.goto(originalUrl);
       await assertAdvertisingSoonModule(page);
+      await applyNativeScreenshotMode(page, profile);
       await page
         .locator('[data-managed-entity-workspace="chat-settings"]')
         .evaluate((element) => element.scrollIntoView({ block: 'start', behavior: 'instant' }));
@@ -5164,9 +5167,11 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
       );
 
       if (scenario.beforeShot) {
-        await scenario.beforeShot(page);
+        await scenario.beforeShot(page, profile);
       }
 
+      // Scenario flows can reload the document and restore the preview scaffold.
+      await applyNativeScreenshotMode(page, profile);
       const keyboardGeometry = await simulateKeyboardViewport(page, scenario);
       if (keyboardGeometry) {
         reportEntry.keyboard = keyboardGeometry;
@@ -5188,6 +5193,9 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
       }
 
       const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
+      if (screenshotTarget === 'native' && (await page.locator('.design-preview').count())) {
+        throw new Error('Native screenshot cannot include restored design-preview geometry.');
+      }
       const locator = resolveScreenshotLocator(page);
 
       if (locator) {
@@ -5225,7 +5233,14 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
 async function main() {
   const requestedDevice =
     process.env.MINIAPP_SCREENSHOT_DEVICE?.trim().toLowerCase() ?? visualPreset?.device ?? 'all';
-  const baseUrl = resolveMiniappScreenshotBaseUrl();
+  let baseUrl = resolveMiniappScreenshotBaseUrl();
+  if (
+    isLocalMiniappBaseUrl(baseUrl) &&
+    !reuseServer &&
+    !process.env.MINIAPP_SCREENSHOT_BASE_URL?.trim()
+  ) {
+    baseUrl = await allocateMiniappBaseUrl(baseUrl);
+  }
   const outputDir = path.join(OUTPUT_ROOT, timestamp);
   const reportPath = process.env.MINIAPP_SCREENSHOT_REPORT_PATH?.trim()
     ? path.resolve(process.cwd(), process.env.MINIAPP_SCREENSHOT_REPORT_PATH.trim())

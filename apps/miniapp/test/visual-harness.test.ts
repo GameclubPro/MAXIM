@@ -814,6 +814,26 @@ test('native visual mode removes preview wrapper geometry without styling app co
   }
 });
 
+test('native capture restores its geometry after scenario reloads and checks it before saving', () => {
+  const source = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const flow = source.slice(source.indexOf('if (scenario.beforeShot)'));
+  assert.ok(
+    flow.indexOf('await scenario.beforeShot(page, profile)') <
+      flow.indexOf('await applyNativeScreenshotMode(page, profile)'),
+  );
+  assert.ok(
+    flow.indexOf('await applyNativeScreenshotMode(page, profile)') <
+      flow.indexOf('await simulateKeyboardViewport(page, scenario)'),
+  );
+  assert.ok(
+    flow.indexOf('Native screenshot cannot include restored design-preview geometry') <
+      flow.indexOf('await page.screenshot'),
+  );
+});
+
 test('strict layout checks use the framed device screen as their viewport', () => {
   const script = readFileSync(
     new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),

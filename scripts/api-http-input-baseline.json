@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "policy": "Legacy signatures only. New or changed handlers must accept unknown and validate at runtime. Remove exceptions when migrated; do not expand this baseline.",
+  "exceptions": [
+    {
+      "key": "apps/api/src/admin/admin-dialog.controller.ts:AdminDialogController.getChannelDialog:token",
+      "handlerSha256": "f42133953f2b4ac4c805d20d35697abc756d38813fd8864f7b6caf121942b7c1"
+    },
+    {
+      "key": "apps/api/src/admin/admin-dialog.controller.ts:AdminDialogController.getChannelSuggestionRedirect:token",
+      "handlerSha256": "4f8f3aef4cf45f6ff6536f58f923ab2c6cb4716e64933cf02b65c588a05cad87"
+    },
+    {
+      "key": "apps/api/src/admin/admin-dialog.controller.ts:AdminDialogController.getChatDialog:token",
+      "handlerSha256": "51b8248fc81efd423c3df93ae70348b01d32f311f155eacc79e737920b024cc2"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChannelBotExecutionPlan:refresh",
+      "handlerSha256": "59f149ea9012db7b00704c9c300aed24d540002edd98b6b4d674f048ec04ffe2"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChannels:bypassCache",
+      "handlerSha256": "8f588157bb29925718f9c64995b2f68ef26d7e2d7bf04f13c37fb1195b567166"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChannels:fresh",
+      "handlerSha256": "8f588157bb29925718f9c64995b2f68ef26d7e2d7bf04f13c37fb1195b567166"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChannels:includeRefreshState",
+      "handlerSha256": "8f588157bb29925718f9c64995b2f68ef26d7e2d7bf04f13c37fb1195b567166"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChannels:refresh",
+      "handlerSha256": "8f588157bb29925718f9c64995b2f68ef26d7e2d7bf04f13c37fb1195b567166"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChannels:resetCursor",
+      "handlerSha256": "8f588157bb29925718f9c64995b2f68ef26d7e2d7bf04f13c37fb1195b567166"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChannels:sinceVersion",
+      "handlerSha256": "8f588157bb29925718f9c64995b2f68ef26d7e2d7bf04f13c37fb1195b567166"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChatBotExecutionPlan:refresh",
+      "handlerSha256": "d39ee782a2f6381816d64d2f0600c2b5a9831a8f50d87b7e6ab7257b8833da0d"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChats:bypassCache",
+      "handlerSha256": "b7e60487bb34bf5f3b964b69ea0477ef8c7fed04bbf8b0b7429b62c647dd0d6a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChats:fresh",
+      "handlerSha256": "b7e60487bb34bf5f3b964b69ea0477ef8c7fed04bbf8b0b7429b62c647dd0d6a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChats:includeRefreshState",
+      "handlerSha256": "b7e60487bb34bf5f3b964b69ea0477ef8c7fed04bbf8b0b7429b62c647dd0d6a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChats:refresh",
+      "handlerSha256": "b7e60487bb34bf5f3b964b69ea0477ef8c7fed04bbf8b0b7429b62c647dd0d6a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChats:resetCursor",
+      "handlerSha256": "b7e60487bb34bf5f3b964b69ea0477ef8c7fed04bbf8b0b7429b62c647dd0d6a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.getChats:sinceVersion",
+      "handlerSha256": "b7e60487bb34bf5f3b964b69ea0477ef8c7fed04bbf8b0b7429b62c647dd0d6a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.me:chatId",
+      "handlerSha256": "f7dff9dec66b74bd19e275cd9a691019d3a1d279f559eda7616d1bdcf24f61b9"
+    },
+    {
+      "key": "apps/api/src/admin/admin-managed-entities.controller.ts:AdminManagedEntitiesController.me:entityType",
+      "handlerSha256": "f7dff9dec66b74bd19e275cd9a691019d3a1d279f559eda7616d1bdcf24f61b9"
+    },
+    {
+      "key": "apps/api/src/admin/admin-manual-moderation.controller.ts:AdminManualModerationController.removeDomain:domainQuery",
+      "handlerSha256": "4d9c8fd155925f6fe4a809a7852ce03099c0cbf915db9f393b7c6a93cc5b6690"
+    },
+    {
+      "key": "apps/api/src/admin/admin-manual-moderation.controller.ts:AdminManualModerationController.removeDomainByQuery:domainQuery",
+      "handlerSha256": "9b679b9148f8bbd1dea308ccd854dd531368456c57310caede3498f7327a300a"
+    },
+    {
+      "key": "apps/api/src/admin/admin-manual-moderation.controller.ts:AdminManualModerationController.scheduleDomainRemoval:domainQuery",
+      "handlerSha256": "0288d69fb1b031149263251ccee969499b0c9151ddd67f2ebb60491b55e318dd"
+    },
+    {
+      "key": "apps/api/src/admin/admin-manual-moderation.controller.ts:AdminManualModerationController.scheduleDomainRemovalByQuery:domainQuery",
+      "handlerSha256": "7b9fe68a087f929c18f665a6e15a4329ab9bccabddb0a0e5e5b80f2b1db8b003"
+    },
+    {
+      "key": "apps/api/src/admin/admin-settings.controller.ts:AdminSettingsController.updateSettings:recheckBotCapabilities",
+      "handlerSha256": "269e444ce792441928abe33068ce3b1c584a21610c6637f8b042f9dcaa4c1613"
+    },
+    {
+      "key": "apps/api/src/admin/publication-drafts.controller.ts:PublicationDraftsController.list:query",
+      "handlerSha256": "0d8efa8e660c417305dab84267bd2b426e48ef2f3244f218f4aec263f0900190"
+    },
+    {
+      "key": "apps/api/src/admin/publisher.controller.ts:PublisherController.createAutoReply:contractVersion",
+      "handlerSha256": "6a51170f83e7eaf9c98351b0b45fb7a3834a135a505c34f5e0e6b1f47e9774ae"
+    },
+    {
+      "key": "apps/api/src/admin/publisher.controller.ts:PublisherController.getAutoReply:contractVersion",
+      "handlerSha256": "3197977f0f7dc13f1cc248875eb668664a3c2eee304f4944ed954f85908c86b1"
+    },
+    {
+      "key": "apps/api/src/admin/publisher.controller.ts:PublisherController.listAutoReplies:contractVersion",
+      "handlerSha256": "c160778bf41061cdfdf2d20cfb96b4d4a06044083c0e746613211096f9d8a7a6"
+    },
+    {
+      "key": "apps/api/src/admin/publisher.controller.ts:PublisherController.previewAutoReplyMatch:contractVersion",
+      "handlerSha256": "588a94bf1f440a0d24ce55623145eb6813d214e94c4fc3a632a74fc4816bbd7f"
+    },
+    {
+      "key": "apps/api/src/admin/publisher.controller.ts:PublisherController.updateAutoReply:contractVersion",
+      "handlerSha256": "dc645150e482380e266d7bba7bbdb1f43cde3a608eafb11a47b2333ba720f081"
+    },
+    {
+      "key": "apps/api/src/admin/safety-desk.controller.ts:SafetyDeskController.getNightModeTransitionRuntime:offset",
+      "handlerSha256": "44ea92b6f8db66447dca60080538524053fad62db88d01c865f19db083c88083"
+    },
+    {
+      "key": "apps/api/src/health/health.controller.ts:HealthController.botLoad:bots",
+      "handlerSha256": "bc858d39e7757029362027b9b58ad0ff454f49b667ec1fece41fd70fd263f89c"
+    },
+    {
+      "key": "apps/api/src/health/health.controller.ts:HealthController.ready:scope",
+      "handlerSha256": "67b8cc67508d7e4c737c92e3bfec61a7785340bd9b5bc8537e1f1264885453d0"
+    },
+    {
+      "key": "apps/api/src/integrations/karavan-storefront/karavan-storefront-allowlist.controller.ts:KaravanStorefrontAllowlistController.list:cursor",
+      "handlerSha256": "28ba77de36afb12992c698223cb927aa69fc8f4ffd55d73d5b6f4138eb29e56d"
+    },
+    {
+      "key": "apps/api/src/integrations/karavan-storefront/karavan-storefront-allowlist.controller.ts:KaravanStorefrontAllowlistController.list:includeExpired",
+      "handlerSha256": "28ba77de36afb12992c698223cb927aa69fc8f4ffd55d73d5b6f4138eb29e56d"
+    },
+    {
+      "key": "apps/api/src/system/miniapp-mutation-tunnel.controller.ts:MiniappMutationTunnelController.tunnel:query",
+      "handlerSha256": "0824eeae751676c736412c15ad0190d6e23156b4e976e8f4dc450fd9ab7accdc"
+    },
+    {
+      "key": "apps/api/src/webhook/webhook.controller.ts:WebhookController.receive:payload",
+      "handlerSha256": "31e45ec7e974adb6cc0630da4af2361a6856f784dfe9d10b2ccd58ec2967f523"
+    }
+  ]
+}

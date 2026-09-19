@@ -164,6 +164,18 @@ test('maps Safety Desk runtime changes only to admin-static', () => {
   assert.ok(plan.checks.includes('admin'));
 });
 
+test('shared Vite resolution selects both frontend builds and visuals, not the API', () => {
+  const plan = planFor([{ status: 'M', path: 'scripts/vite-contracts-source.mjs' }]);
+  assert.deepEqual(plan.deploy.components, ['miniapp-major-static', 'admin-static']);
+  for (const check of ['miniapp', 'miniapp-production-build', 'miniapp-visual-local', 'admin']) {
+    assert.ok(plan.checks.includes(check), check);
+  }
+  assert.deepEqual(plan.unknownPaths, []);
+  const tooling = planFor([{ status: 'A', path: '.prettierignore' }]);
+  assert.deepEqual(tooling.deploy.components, []);
+  assert.deepEqual(tooling.unknownPaths, []);
+});
+
 test('maps nginx files to explicit manual operations without container deploy targets', () => {
   const plan = planFor([
     { status: 'M', path: 'infra/nginx/major-maksimov.ru.conf' },

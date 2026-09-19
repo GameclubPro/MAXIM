@@ -10,6 +10,11 @@ import { createImpactPlan, renderImpactPlanHuman } from './impact-plan.mjs';
 import { DEFAULT_CONFIG_PATH, loadImpactConfig } from './impact-config.mjs';
 import { parseImpactPlanArgs } from './plan.mjs';
 import { assessPrismaSchemaImpact } from './prisma-impact.mjs';
+import { runPreflight } from './preflight.mjs';
+import {
+  assertStagedWorktreeMatches,
+  assertStagedSnapshotUnchanged,
+} from './verification-snapshot.mjs';
 
 export function parseVerifyArgs(argv) {
   let full = false;
@@ -37,7 +42,13 @@ export function parseVerifyArgs(argv) {
 export function selectVerificationScripts({ config, plan, full = false }) {
   let checkIds = full ? ['full'] : [...plan.checks];
   if (checkIds.includes('full')) {
-    checkIds = ['full'];
+    // The root check script covers builds/tests, but not the browser smoke.
+    checkIds = ['full', 'miniapp-visual-local'];
+  } else {
+    const covered = new Set();
+    if (checkIds.includes('repo-static')) covered.add('agent-tools');
+    if (checkIds.includes('miniapp')) covered.add('miniapp-css');
+    checkIds = checkIds.filter((id) => !covered.has(id));
   }
 
   return checkIds.map((id) => {
@@ -82,9 +93,12 @@ export async function runVerifyCli(argv = process.argv.slice(2), io = defaultIo(
     return 0;
   }
 
+  const stagedTree = options.mode === 'staged' ? assertStagedWorktreeMatches(options.repo) : null;
+  runPreflight(options.repo, (line) => io.stdout(`${line}\n`));
   for (const { id, script } of scripts) {
     io.stdout(`\n[agent:verify] ${id} -> npm run ${script}\n`);
     await runNpmScript(options.repo, script);
+    if (stagedTree) assertStagedSnapshotUnchanged(options.repo, stagedTree);
   }
   return 0;
 }

@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=infra/scripts/lib/deploy-git-transport.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-git-transport.sh"
+
 export YC_CLI_INITIALIZATION_SILENCE="${YC_CLI_INITIALIZATION_SILENCE:-true}"
 
 ENV_FILE="${MAXIM_VPS_ENV_FILE:-$ROOT_DIR/.env.vps}"
@@ -628,6 +631,7 @@ deploy_main() {
   local remote_command
   shift || true
 
+  maxim_validate_git_ssh_port "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"
   if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
     echo "Cannot resolve local deploy branch to an exact commit: ${branch}" >&2
     exit 2
@@ -660,6 +664,7 @@ deploy_main() {
   fi
   prepend_webhook_rollout_recovery_env remote_command
 
+  maxim_prepend_git_ssh_transport remote_command "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"
   remote_exec "$remote_command"
 }
 

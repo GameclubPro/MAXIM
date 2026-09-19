@@ -16,7 +16,8 @@
   - `npm run emulator:miniapp:android -- --reuse-server`
   - `npm run emulator:miniapp -- --device iphone-se --reuse-server`
   - add `--theme dark` and `--route '<path>'` for the exact screen
-- `npm run screenshots:miniapp` and `npm run audit:miniapp:visual` are local-first and start/reuse the local mini app server. They validate the current working tree, not a previously deployed build.
+- `npm run screenshots:miniapp` and `npm run audit:miniapp:visual` are local-first and start an owned server on an unused port. Explicit base URLs keep their port and fail if occupied; reuse requires `MINIAPP_SCREENSHOT_REUSE_SERVER=1` or `MINIAPP_VISUAL_AUDIT_REUSE_SERVER=1`. Only owned process groups are stopped.
+- Vite dev resolves public contract exports to TypeScript sources, so concurrent contracts builds cannot remove its inputs; production builds still use package exports.
 - Use `MINIAPP_SCREENSHOT_MODE=production npm run screenshots:miniapp` or `MINIAPP_VISUAL_AUDIT_MODE=production npm run audit:miniapp:visual` only for an explicit production-origin audit.
 - Narrow screenshots with `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and an explicit base URL when necessary. Output lives under `artifacts/miniapp-screenshots/`.
 - Native emulator/screenshots install the safe MAX Bridge shim by default. Use `--no-max-bridge` or `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only for a deliberate bridge-free check.

@@ -1,0 +1,11 @@
+# Generator-owned files must retain their byte-exact generator output.
+**/*.generated.*
+apps/api/src/generated/
+**/node_modules/
+**/dist/
+**/build/
+**/coverage/
+**/.vite/
+.codex/
+artifacts/
+infra/data/

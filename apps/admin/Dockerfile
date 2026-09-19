@@ -21,6 +21,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --include-workspace-root
 
 COPY tsconfig.base.json ./
+COPY scripts/vite-contracts-source.mjs scripts/vite-contracts-source.mjs
 COPY packages/contracts packages/contracts
 COPY apps/admin apps/admin
 

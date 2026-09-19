@@ -38,6 +38,7 @@
   - `npm run typecheck:admin && npm run test:admin`
   - `npm run check:refactor-guards`
   - `npm run check` for broad or risky work
+- Run `node scripts/agent/preflight.mjs` for early read-only generator, contract-export, and HTTP-input checks; it also runs before `agent:verify` and in CI. It is not a replacement for impact checks or exact-SHA CI. See `docs/development-reliability-plan.md` for the release checklist.
 - Public API validation scripts now serialize generated-contract and Prisma work. Do not bypass them with `*:unlocked` or `*:source` commands unless a repo script intentionally owns the lock.
 - Use Node 24 LTS. Root `.nvmrc` pins `24`; Docker dependency layers must remain lockfile-based with `npm ci`.
 - Local start:
@@ -66,6 +67,7 @@
   - immutable component rollback: `./infra/scripts/vps-connect.sh rollback-release <release-id> [components...]`
   - API ref-based fallback rollback: `./infra/scripts/vps-connect.sh rollback-runtime <git-ref> [services...]`
 - `local-commit-push.sh` is staged-only by default, validates only the staged impact, commits, and pushes the exact resulting `HEAD`. Use `--all` only when broad staging is intentional.
+- Staged verification refuses unstaged/untracked non-Markdown inputs, partially staged selected files, or index changes during checks. Unrelated Markdown notes may remain; submit concurrent runtime work from a separate worktree instead of validating different code than the staged commit.
 - Every `AGENTS.md` is excluded from `--all` unless `--include-agents` is present. The helper also refuses already-staged agent notes without that flag.
 - Local production deploy requires successful `Required` and `Analyze JavaScript and TypeScript` checks from GitHub Actions for the exact selected commit, then verifies that the synchronized VPS `HEAD` is the same SHA. Emergency bypass requires an explicit reason.
 - Active release components use full-SHA image refs and component manifests under `/var/lib/maxim-deploy`. The deploy records a new current manifest only after strict smokes; static-only deploys do not run Prisma migrations.

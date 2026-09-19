@@ -27,6 +27,8 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: Fast source and generated-input preflight
+        run: node scripts/agent/preflight.mjs
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
       - run: npm run check:static

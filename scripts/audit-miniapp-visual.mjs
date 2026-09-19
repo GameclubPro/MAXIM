@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import {
+  allocateMiniappBaseUrl,
   ensureMiniappDevServer,
   isLocalMiniappBaseUrl,
   stopChildProcess,
@@ -167,10 +168,15 @@ async function main() {
   process.once('SIGTERM', handleSignal);
 
   try {
-    for (const baseUrl of baseUrls) {
+    for (const requestedBaseUrl of baseUrls) {
+      let baseUrl = requestedBaseUrl;
       const localBaseUrl = isLocalMiniappBaseUrl(baseUrl);
+      const reuseServer = process.env.MINIAPP_VISUAL_AUDIT_REUSE_SERVER === '1';
+      if (localBaseUrl && !reuseServer && !process.env.MINIAPP_VISUAL_AUDIT_BASE_URLS?.trim()) {
+        baseUrl = await allocateMiniappBaseUrl(baseUrl);
+      }
       activeDevServerProcess = localBaseUrl
-        ? await ensureMiniappDevServer(baseUrl, { log: console.log })
+        ? await ensureMiniappDevServer(baseUrl, { log: console.log, reuseServer })
         : null;
 
       try {

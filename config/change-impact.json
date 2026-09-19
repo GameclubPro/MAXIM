@@ -85,6 +85,7 @@
         ".gitattributes",
         ".gitignore",
         ".prettierrc.json",
+        ".prettierignore",
         "eslint.config.mjs",
         ".github/**",
         ".husky/**",
@@ -364,6 +365,18 @@
       ],
       "checks": ["repo-static", "infra"],
       "deployComponents": []
+    },
+    {
+      "id": "frontend-dev-contract-resolution",
+      "include": ["scripts/vite-contracts-source.mjs"],
+      "checks": [
+        "repo-static",
+        "miniapp",
+        "miniapp-production-build",
+        "miniapp-visual-local",
+        "admin"
+      ],
+      "deployComponents": ["miniapp-major-static", "admin-static"]
     }
   ],
   "fallback": {
