@@ -2350,6 +2350,7 @@ describe('AdminSettingsService chat rules', () => {
 
   it('preserves newer source settings for a stale full apply-to-all body', async () => {
     const { prisma, service } = createService({
+      reportsAvailable: true,
       botAssignmentData: {
         botId: 'bot-1',
         primaryBotId: 'bot-1',
@@ -2361,6 +2362,12 @@ describe('AdminSettingsService chat rules', () => {
     });
     const sourceSettings = chatSettingsSchema.parse({
       profanitySensitivity: 'STRICT',
+      reportsEnabled: true,
+      reportsThreshold: 6,
+      reportsAliases: ['спам'],
+      reportsDeleteMode: 'HISTORY_24H',
+      reportsMuteEnabled: true,
+      reportsMuteDurationHours: 24,
       forwardedMessagesEnabled: false,
       messageLimitsImageTextScanEnabled: true,
       slowModeEnabled: true,
@@ -2375,6 +2382,15 @@ describe('AdminSettingsService chat rules', () => {
       unknown
     >;
     delete legacyBody.profanitySensitivity;
+    for (const key of [
+      'reportsEnabled',
+      'reportsThreshold',
+      'reportsAliases',
+      'reportsDeleteMode',
+      'reportsMuteEnabled',
+      'reportsMuteDurationHours',
+    ])
+      delete legacyBody[key];
     delete legacyBody.forwardedMessagesEnabled;
     delete legacyBody.messageLimitsImageTextScanEnabled;
     for (const key of [
@@ -2392,6 +2408,12 @@ describe('AdminSettingsService chat rules', () => {
       expect.objectContaining({
         antiSpamEnabled: false,
         profanitySensitivity: 'STRICT',
+        reportsEnabled: true,
+        reportsThreshold: 6,
+        reportsAliases: ['спам'],
+        reportsDeleteMode: 'HISTORY_24H',
+        reportsMuteEnabled: true,
+        reportsMuteDurationHours: 24,
         forwardedMessagesEnabled: false,
         slowModeEnabled: true,
         slowModeIntervalSeconds: 90,

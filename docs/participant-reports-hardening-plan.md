@@ -21,6 +21,8 @@ Confirmed implementation gaps:
 - A cancelled collection's old counter cleanup can delete a reopened counter; mirrored webhooks
   must bind the actual sender, not the receiving bot. Execution also needs an eligible read route
   when the original bot becomes unavailable, without duplicating its public message.
+- Bulk apply from a legacy client must preserve omitted report fields from the authoritative source
+  settings, like other newly introduced settings, instead of silently copying schema defaults.
 
 ## Implementation Sequence
 

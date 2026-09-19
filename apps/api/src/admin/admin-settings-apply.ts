@@ -11,6 +11,7 @@ import {
   type ApplySectionToAllResponse,
   type ApplySettingsTarget,
   type ChatSettings,
+  type ReportSettings,
   type ChatSummary,
 } from '@maxim/contracts';
 import { BadRequestException, ConflictException } from '@nestjs/common';
@@ -47,6 +48,8 @@ import {
 } from './stop-words-settings-ownership';
 import { stopWordsPolicyStorage } from '../moderation/stop-words/stop-words.policy';
 import { assertReportsActivationAvailable } from './report-settings-availability';
+
+const REPORT_SETTINGS_KEYS = Object.keys(reportSettingsSchema.shape) as Array<keyof ReportSettings>;
 
 type SettingsApplyReadinessRefresh = {
   chatIds: readonly string[];
@@ -140,6 +143,7 @@ export async function applySettingsToAllChats(params: {
     | 'forwardedMessagesEnabled'
     | 'messageLimitsImageTextScanEnabled'
     | (typeof TRAFFIC_PROTECTION_SETTINGS_KEYS)[number]
+    | keyof ReportSettings
   > | null>;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
@@ -151,6 +155,8 @@ export async function applySettingsToAllChats(params: {
   const omittedTrafficKeys = TRAFFIC_PROTECTION_SETTINGS_KEYS.filter(
     (key) => !hasOwnSetting(params.body, key),
   );
+  // FLAG: Legacy clients must not reset report policies through defaults during bulk apply.
+  const omittedReportKeys = REPORT_SETTINGS_KEYS.filter((key) => !hasOwnSetting(params.body, key));
   const hasOwnForwardedMessagesEnabled = hasOwnSetting(params.body, 'forwardedMessagesEnabled');
   const hasOwnMessageLimitsImageTextScanEnabled = hasOwnSetting(
     params.body,
@@ -160,7 +166,8 @@ export async function applySettingsToAllChats(params: {
     (!hasOwnProfanitySensitivity ||
       !hasOwnForwardedMessagesEnabled ||
       !hasOwnMessageLimitsImageTextScanEnabled ||
-      omittedTrafficKeys.length > 0) &&
+      omittedTrafficKeys.length > 0 ||
+      omittedReportKeys.length > 0) &&
     params.getCurrentSourceSettings
       ? await params.getCurrentSourceSettings()
       : null;
@@ -168,6 +175,7 @@ export async function applySettingsToAllChats(params: {
     ? {
         ...parsed.data,
         ...Object.fromEntries(omittedTrafficKeys.map((key) => [key, currentSourceSettings[key]])),
+        ...Object.fromEntries(omittedReportKeys.map((key) => [key, currentSourceSettings[key]])),
         ...(!hasOwnProfanitySensitivity
           ? { profanitySensitivity: currentSourceSettings.profanitySensitivity }
           : {}),
