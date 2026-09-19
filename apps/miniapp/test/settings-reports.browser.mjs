@@ -73,14 +73,34 @@ try {
     );
     await panel.getByRole('tab', { name: 'Журнал', exact: true }).click();
     await panel.getByText('Сбор голосов', { exact: true }).click();
-    await panel.getByText('100200301', { exact: true }).waitFor();
+    await panel
+      .getByRole('link', { name: 'Открыть профиль: Мария Волкова', exact: true })
+      .waitFor();
+    await panel
+      .getByRole('link', { name: 'Открыть профиль: Александр Соколов', exact: true })
+      .waitFor();
     await panel.getByRole('button', { name: 'Отклонить жалобы', exact: true }).click();
     await panel.getByText('Отклонено', { exact: true }).waitFor();
     await panel.getByText('Частично', { exact: true }).click();
     await panel.getByText('Не все сообщения удалось удалить.', { exact: true }).waitFor();
     await panel.getByRole('heading', { name: 'Участники', exact: true }).waitFor();
+    for (const name of ['Андрей Николаев', 'Мария Волкова', 'Дмитрий Орлов', 'Елена Миронова']) {
+      const link = panel.getByRole('link', { name: `Открыть профиль: ${name}`, exact: true });
+      await link.waitFor();
+      assert.match(await link.getAttribute('href'), /^https:\/\/max\.ru\//u);
+    }
+    assert.doesNotMatch(
+      await panel.locator('.reports-journal__detail').innerText(),
+      /10020030[0-9]/u,
+    );
     await panel.getByText('Уже отсутствуют', { exact: true }).waitFor();
+    await page.locator('.toast').waitFor({ state: 'hidden', timeout: 10_000 });
     await page.screenshot({ path: join(screenshots, `${name}-journal.png`) });
+    await panel.getByRole('link', { name: 'Открыть профиль: Мария Волкова', exact: true }).click();
+    await page.waitForFunction(() =>
+      window.__MAXIM_VISUAL_BRIDGE_EVENTS__?.some((event) => event.type === 'openMaxLink'),
+    );
+    assert.equal(await panel.getByText('Не удалось открыть профиль.', { exact: true }).count(), 0);
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,

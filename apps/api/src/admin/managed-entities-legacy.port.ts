@@ -10,5 +10,6 @@ export type ManagedEntitiesLegacyPort = Pick<
   | 'createIdleManagedEntitiesRefreshStateForManagedEntities'
   | 'listManagedEntitiesDetailedForManagedEntities'
   | 'resolveManagedEntityHeaderReadBotId'
+  | 'resolveUserProfilesForAdminSurface'
   | 'runManagedEntitiesBoundedRefreshForManagedEntities'
 >;

@@ -12,6 +12,7 @@ import type {
 } from './settings-section-shared';
 import type { FieldErrors } from './settings-page-helpers';
 import './settings-reports.css';
+import { ReportProfileLink } from './report-profile-link';
 
 export type SettingsReportsSectionProps = SettingsSectionShellProps &
   Pick<SettingsSectionMutationProps, 'draft' | 'setFieldValue'> & {
@@ -308,7 +309,20 @@ export function ReportJournal({ api, chatId }: { api: ApiTransport; chatId: stri
               <div className="reports-journal__detail">
                 <dl>
                   <dt>Автор</dt>
-                  <dd>{detail.data?.authorName ?? item.authorId}</dd>
+                  <dd>
+                    {detail.isPending ? (
+                      'Загрузка имени…'
+                    ) : (
+                      <ReportProfileLink
+                        api={api}
+                        chatId={chatId}
+                        userId={item.authorId}
+                        displayName={detail.data?.authorName}
+                        profileUrl={detail.data?.authorProfileUrl}
+                        profileHandoffUrl={detail.data?.authorProfileHandoffUrl}
+                      />
+                    )}
+                  </dd>
                   <dt>Сообщение</dt>
                   <dd>{item.messageId}</dd>
                   <dt>Удалено</dt>
@@ -332,7 +346,16 @@ export function ReportJournal({ api, chatId }: { api: ApiTransport; chatId: stri
                     <h4>Участники</h4>
                     <ul>
                       {detail.data.reporters.map((r) => (
-                        <li key={r.userId}>{r.displayName ?? r.userId}</li>
+                        <li key={r.userId}>
+                          <ReportProfileLink
+                            api={api}
+                            chatId={chatId}
+                            userId={r.userId}
+                            displayName={r.displayName}
+                            profileUrl={r.profileUrl}
+                            profileHandoffUrl={r.profileHandoffUrl}
+                          />
+                        </li>
                       ))}
                     </ul>
                   </>

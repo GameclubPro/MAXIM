@@ -640,6 +640,12 @@ export class ManagedEntitiesService {
     return this.assertManagedEntityAdminAccess(chatId, user, 'chat');
   }
 
+  resolveChatUserProfiles(chatId: string, userIds: readonly string[]) {
+    return this.legacyAdminService.resolveUserProfilesForAdminSurface(chatId, 'chat', userIds, {
+      allowRemoteLookup: true,
+    });
+  }
+
   resolveManagedEntityReadBotId(chatId: string): Promise<string | undefined> {
     return this.legacyAdminService.resolveManagedEntityHeaderReadBotId(chatId);
   }

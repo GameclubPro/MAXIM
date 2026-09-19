@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
-import { ReportViewService } from '../moderation/reports/report-view.service';
+import { AdminReportsService } from './admin-reports.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 
 @Controller('v1/chats/:chatId/reports')
@@ -9,7 +9,7 @@ import { ManagedEntitiesService } from './managed-entities.service';
 export class AdminReportsController {
   constructor(
     private readonly access: ManagedEntitiesService,
-    private readonly reports: ReportViewService,
+    private readonly reports: AdminReportsService,
   ) {}
   @Get()
   async list(

@@ -86,10 +86,14 @@ export const reportsPageSchema = z.object({
 });
 export const reportDetailSchema = reportSummarySchema.extend({
   authorName: z.string().nullable().optional(),
+  authorProfileUrl: z.string().url().nullable().optional(),
+  authorProfileHandoffUrl: z.string().url().nullable().optional(),
   reporters: z.array(
     z.object({
       userId: z.string(),
       displayName: z.string().nullable().optional(),
+      profileUrl: z.string().url().nullable().optional(),
+      profileHandoffUrl: z.string().url().nullable().optional(),
       createdAt: z.string().datetime(),
     }),
   ),

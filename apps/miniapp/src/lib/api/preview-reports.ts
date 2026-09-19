@@ -1,5 +1,6 @@
 import type { ReportDetail } from '@maxim/contracts/settings';
 import type { PreviewState } from './preview-transport-state';
+import { buildPreviewProfileHandoffUrl, buildPreviewProfileUrl } from './preview-transport-shared';
 
 const reports = new WeakMap<PreviewState, Map<string, ReportDetail[]>>();
 
@@ -23,6 +24,9 @@ export function handlePreviewReports(
         id: 'preview-open',
         messageId: 'preview-message-1',
         authorId: '100200300',
+        authorName: 'Александр Соколов',
+        authorProfileUrl: buildPreviewProfileUrl('alexander-preview'),
+        authorProfileHandoffUrl: buildPreviewProfileHandoffUrl('alexander-preview'),
         status: 'COLLECTING',
         votes: 1,
         threshold: 3,
@@ -37,12 +41,23 @@ export function handlePreviewReports(
         createdAt,
         expiresAt,
         lastError: null,
-        reporters: [{ userId: '100200301', createdAt }],
+        reporters: [
+          {
+            userId: '100200301',
+            displayName: 'Мария Волкова',
+            profileUrl: buildPreviewProfileUrl('maria-preview'),
+            profileHandoffUrl: buildPreviewProfileHandoffUrl('maria-preview'),
+            createdAt,
+          },
+        ],
       },
       {
         id: 'preview-partial',
         messageId: 'preview-message-2',
-        authorId: '100200302',
+        authorId: '100200305',
+        authorName: 'Андрей Николаев',
+        authorProfileUrl: buildPreviewProfileUrl('andrey-preview'),
+        authorProfileHandoffUrl: buildPreviewProfileHandoffUrl('andrey-preview'),
         status: 'PARTIAL',
         votes: 3,
         threshold: 3,
@@ -57,7 +72,15 @@ export function handlePreviewReports(
         createdAt,
         expiresAt,
         lastError: 'Не все сообщения удалось удалить.',
-        reporters: [301, 302, 303].map((n) => ({ userId: `100200${n}`, createdAt })),
+        reporters: ['Мария Волкова', 'Дмитрий Орлов', 'Елена Миронова'].map(
+          (displayName, index) => ({
+            userId: `100200${301 + index}`,
+            displayName,
+            profileUrl: buildPreviewProfileUrl(`reporter-${index}`),
+            profileHandoffUrl: buildPreviewProfileHandoffUrl(`reporter-${index}`),
+            createdAt,
+          }),
+        ),
       },
     ];
     chats.set(chatId, items);

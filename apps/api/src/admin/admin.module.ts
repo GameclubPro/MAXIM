@@ -2,6 +2,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ReportsModule } from '../moderation/reports/reports.module';
 import { AdminReportsController } from './admin-reports.controller';
+import { AdminReportsService } from './admin-reports.service';
 import { AuthModule } from '../auth/auth.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
@@ -165,6 +166,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SupportRequestsController,
   ],
   providers: [
+    AdminReportsService,
     AdvertisingPlacementService,
     AdminService,
     {

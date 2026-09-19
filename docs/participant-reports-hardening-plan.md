@@ -35,6 +35,8 @@ Confirmed implementation gaps:
    activation while the ceiling is closed. Keep settings disable and journal access available.
 5. Batch journal aggregates, expose already-absent outcomes separately, and deduplicate paginated UI
    rows. Exercise error, loading, paused and active states on mobile light/dark viewports.
+   Show author/reporter names as profile links, using the existing scoped profile resolver and MAX
+   handoff only on the expanded case; never expose raw user IDs as fallback labels.
 6. Run focused unit/PostgreSQL race tests, full impact verification, exact-SHA CI/CodeQL and the
    ordinary shared-API/static deploy wrappers. No production database repair or arbitrary SQL.
 

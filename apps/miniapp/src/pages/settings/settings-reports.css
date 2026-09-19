@@ -135,4 +135,31 @@
   .reports-journal dd {
     margin: 0;
   }
+  .reports-journal dt {
+    align-self: center;
+  }
+  .report-profile {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .report-profile__link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    max-width: 100%;
+    color: var(--text-primary);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    overflow-wrap: anywhere;
+  }
+  .report-profile__link[aria-disabled='true'] {
+    opacity: 0.65;
+  }
+  .report-profile__error {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
 }
