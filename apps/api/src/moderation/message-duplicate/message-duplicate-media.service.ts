@@ -508,7 +508,9 @@ export class MessageDuplicateMediaService {
       (kind === 'video' && !format.mime.startsWith('video/')) ||
       (kind === 'audio' && !format.mime.startsWith('audio/') && format.ext !== 'mp4')
     ) {
-      throw new Error('Message media format could not be verified');
+      // FLAG: Retrying these same bytes cannot prove their format. A rejected baseline must not
+      // prevent the current verifiable message from becoming the next candidate.
+      throw new UnrecoverableError('Message media format could not be verified');
     }
   }
 }

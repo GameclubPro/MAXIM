@@ -298,14 +298,14 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     }
     return { update, receipt, id, time };
   };
-  const ingest = async (item: ReturnType<typeof prepare>) => {
+  const ingest = async (item: ReturnType<typeof prepare>, actionEligible = true) => {
     await service.observe({
       update: item.update,
       webhookEventId: item.receipt,
       eventTimestampMs: item.time,
       settings,
       botId: 'bot',
-      actionEligible: true,
+      actionEligible,
       track: true,
       executeFullAction: execute,
     });
@@ -330,6 +330,8 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     immunity,
     governor,
     history,
+    queue,
+    ordering,
     async close() {
       await queue.obliterate();
       await queue.close();
@@ -373,6 +375,55 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(await flow.ingest(first)).toBeUndefined();
       expect(await flow.ingest(second)).toBeUndefined();
       expect(flow.deleted).toEqual([second.id]);
+    });
+
+    it.each(['before-add', 'lost-response', 'unavailable-registration'] as const)(
+      'preserves photo enforcement after a transient %s failure',
+      async (failure) => {
+        flow = await createFlow();
+        await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+        const repeat = flow.prepare({ photo: 'webp' });
+        if (failure === 'unavailable-registration') {
+          jest.spyOn(flow.ordering, 'announce').mockResolvedValueOnce({ kind: 'unavailable' });
+        } else {
+          const add = flow.queue.add.bind(flow.queue);
+          jest.spyOn(flow.queue, 'add').mockImplementationOnce(async (...args) => {
+            if (failure === 'lost-response') await add(...args);
+            throw new Error('temporary queue add failure');
+          });
+        }
+        await expect(flow.ingest(repeat)).rejects.toThrow();
+        const job = (await flow.ingest(repeat))!;
+        await flow.processor.process(job);
+        expect(flow.deleted).toEqual([repeat.id]);
+        expect(flow.downloads).toHaveBeenCalledTimes(2);
+        await flow.processor.process(job);
+        expect(flow.deleted).toEqual([repeat.id]);
+      },
+    );
+
+    it('keeps a concurrent restrictive replay after a lost queue acknowledgement', async () => {
+      flow = await createFlow();
+      await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+      const repeat = flow.prepare({ photo: 'webp' });
+      const add = flow.queue.add.bind(flow.queue);
+      jest.spyOn(flow.queue, 'add').mockImplementationOnce(async (...args) => {
+        const job = await add(...args);
+        await flow.ordering.announce(
+          {
+            chatId: job.data.chatId,
+            jobId: job.data.idempotencyKey,
+            sourceCreatedAt: job.data.sourceCreatedAt,
+          },
+          false,
+        );
+        throw new Error('lost queue acknowledgement');
+      });
+      await expect(flow.ingest(repeat)).rejects.toThrow('lost queue acknowledgement');
+      await flow.processor.process((await flow.ingest(repeat))!);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      expect(flow.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
     });
 
     it('retains both originals when repeated pictures are interleaved', async () => {

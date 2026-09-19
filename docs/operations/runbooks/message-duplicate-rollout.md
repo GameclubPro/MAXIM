@@ -43,6 +43,12 @@ Jobs carry durable receipt references, not message text or media URLs. First med
 do not download; potential repeats trigger bounded verification. Ordering/source/pressure
 deferrals expire after ten minutes. Failed source handling must retry rather than acknowledge
 unfinished history work. Monitor queue backlog and failures through the read-only monitor.
+Unavailable ordering registration retries before job submission. Ambiguous queue-add recovery
+preserves incoming eligibility through the absorbing Redis latch; infrastructure failure alone
+must not become a permanent prohibition. Unsupported downloaded binary formats are terminal
+evidence failures, so one unsupported baseline cannot block subsequent verifiable candidates.
+See [Duplicate Miss Audit](../incidents/2026-09-19-duplicate-miss-audit.md) for regression coverage
+and the limits of attributing a reported miss.
 
 ## Runtime Control
 

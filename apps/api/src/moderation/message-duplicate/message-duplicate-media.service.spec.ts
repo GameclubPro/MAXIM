@@ -8,6 +8,7 @@ import { messageDuplicateSettingsDigest } from './message-duplicate-state';
 import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import { PhotoDownloadHttpError } from '../photo-duplicate/secure-photo-downloader';
+import { UnrecoverableError } from 'bullmq';
 
 function setup() {
   const settings = { ...duplicateSettings(), chat: { entityType: 'CHAT', admins: [] } };
@@ -56,12 +57,11 @@ function setup() {
     bytes: Buffer.from(url.endsWith('b') ? 'different' : 'same'),
   }));
   Object.defineProperty(service, 'binary', { value: { downloadBinary: downloads } });
-  jest
-    .spyOn(
-      service as unknown as { verifyBinary: (bytes: Buffer, kind: string) => Promise<void> },
-      'verifyBinary',
-    )
-    .mockResolvedValue();
+  const binaryVerifier = service as unknown as {
+    verifyBinary: (bytes: Buffer, kind: string) => Promise<void>;
+  };
+  const actualVerifyBinary = binaryVerifier.verifyBinary.bind(service);
+  const verifyBinary = jest.spyOn(binaryVerifier, 'verifyBinary').mockResolvedValue();
   const lease = {
     assertOwned: jest.fn(),
     resolveActionEligibility: jest.fn().mockResolvedValue(true),
@@ -117,10 +117,45 @@ function setup() {
     policy,
     photos,
     max,
+    verifyBinary,
+    actualVerifyBinary,
   };
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it('classifies unsupported binary contents as terminal, without retrying the same bytes', async () => {
+    const s = setup();
+    const verify = s.actualVerifyBinary;
+    await expect(verify(Buffer.from('unsupported plain text file'), 'file')).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    await expect(verify(Buffer.from('%PDF-1.7\n'), 'video')).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    await expect(verify(Buffer.from('%PDF-1.7\n'), 'file')).resolves.toBeUndefined();
+  });
+
+  it('does not let an unsupported first binary poison the following valid pair', async () => {
+    const s = setup();
+    s.verifyBinary.mockImplementationOnce(s.actualVerifyBinary);
+    await s.service.process(s.job('unsupported', 0), s.lease);
+    await s.service.process(s.job('valid-first', 100), s.lease);
+    expect(s.history.observe).toHaveBeenCalledTimes(1);
+    expect(s.history.observe).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'valid-first' }),
+    );
+    s.history.observe.mockResolvedValue({ hit: {}, binding: {} });
+    await s.service.process(s.job('valid-repeat', 200), s.lease);
+    expect(s.enforcement.enqueue).toHaveBeenCalledTimes(1);
+    expect(s.enforcement.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          message: expect.objectContaining({ messageId: 'valid-repeat' }),
+        }),
+      }),
+    );
+  });
+
   function photoSetup() {
     const s = setup();
     s.policy.resolve.mockResolvedValue({ mode: 'full', revision: 1 });

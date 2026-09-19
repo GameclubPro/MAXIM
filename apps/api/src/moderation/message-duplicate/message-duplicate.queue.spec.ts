@@ -45,8 +45,44 @@ describe('message duplicate queue', () => {
     expect(queue.add.mock.calls[1]![1].idempotencyKey).toBe(first);
     queue.add.mockRejectedValueOnce(new Error('ambiguous enqueue'));
     await expect(service.enqueue(jobData())).rejects.toThrow('ambiguous enqueue');
-    expect(ordering.announce).toHaveBeenLastCalledWith(expect.anything(), false);
+    expect(ordering.announce).toHaveBeenLastCalledWith(expect.anything(), true);
   });
+  it('retries unavailable registration without submitting a permanently ineligible job', async () => {
+    const queue = { add: jest.fn() };
+    const ordering = {
+      announce: jest.fn().mockResolvedValue({ kind: 'unavailable' }),
+    };
+    const service = new MessageDuplicateEnqueueService(queue as never, ordering as never);
+    await expect(service.enqueue(jobData())).rejects.toThrow('ordering storage is unavailable');
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(ordering.announce.mock.calls.every(([, eligible]) => eligible === true)).toBe(true);
+    ordering.announce.mockResolvedValue({ kind: 'registered', actionEligible: true });
+    await service.enqueue(jobData());
+    expect(queue.add).toHaveBeenCalledWith(
+      'message-duplicate-analysis',
+      expect.objectContaining({ actionEligible: true }),
+      expect.anything(),
+    );
+  });
+  it.each([true, false])(
+    'preserves eligibility %s after an ambiguous queue add',
+    async (eligible) => {
+      const queue = { add: jest.fn().mockRejectedValueOnce(new Error('lost queue response')) };
+      let stored = true;
+      const ordering = {
+        announce: jest.fn(async (_identity: unknown, incoming: boolean) => {
+          stored = stored && incoming;
+          return { kind: 'registered', actionEligible: stored };
+        }),
+      };
+      const service = new MessageDuplicateEnqueueService(queue as never, ordering as never);
+      const input = { ...jobData(), actionEligible: eligible };
+      await expect(service.enqueue(input)).rejects.toThrow('lost queue response');
+      await service.enqueue({ ...input, actionEligible: true });
+      expect(stored).toBe(eligible);
+      expect(queue.add.mock.calls[1]![1].actionEligible).toBe(eligible);
+    },
+  );
   it('isolates media ordering from the existing photo queue', async () => {
     const store = Object.create(
       MessageDuplicateOrderingStore.prototype,

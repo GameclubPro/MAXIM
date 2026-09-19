@@ -2,7 +2,10 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
-import { PhotoDuplicateOrderingStore } from '../photo-duplicate/photo-duplicate-ordering.store';
+import {
+  PhotoDuplicateOrderingStore,
+  PhotoDuplicateOrderingUnavailableError,
+} from '../photo-duplicate/photo-duplicate-ordering.store';
 import { digestDuplicateContent } from './message-duplicate-content';
 
 export const MESSAGE_DUPLICATE_QUEUE = 'message-duplicates';
@@ -47,6 +50,7 @@ export class MessageDuplicateEnqueueService {
     try {
       const registration = await this.ordering.announce(identity, input.actionEligible === true);
       if (registration.kind === 'completed') return;
+      if (registration.kind === 'unavailable') throw new PhotoDuplicateOrderingUnavailableError();
       await this.queue.add(
         'message-duplicate-analysis',
         {
@@ -54,7 +58,7 @@ export class MessageDuplicateEnqueueService {
           version: 1,
           createdAt: new Date().toISOString(),
           idempotencyKey: id,
-          actionEligible: registration.kind === 'registered' && registration.actionEligible,
+          actionEligible: registration.actionEligible,
         },
         {
           jobId: id,
@@ -66,8 +70,9 @@ export class MessageDuplicateEnqueueService {
         },
       );
     } catch (error) {
-      // FLAG: A timed-out add may have succeeded. A stricter replay can never upgrade that job.
-      await this.ordering.announce(identity, false).catch(() => undefined);
+      // FLAG: Retry the same eligibility after a lost response. The absorbing Redis latch preserves
+      // any concurrent false; a transport failure alone must not permanently suppress enforcement.
+      await this.ordering.announce(identity, input.actionEligible === true).catch(() => undefined);
       throw error;
     }
   }
