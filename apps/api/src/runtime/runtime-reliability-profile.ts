@@ -48,6 +48,7 @@ export function buildSystemRuntimeProfile(
   if (service.queueProfile === 'commercial-image-ocr') {
     enabledQueues.add(COMMERCIAL_OCR_QUEUE);
   }
+  if (service.queueProfile === 'message-retention') enabledQueues.add('message-retention');
 
   return {
     appRole: service.appRole,

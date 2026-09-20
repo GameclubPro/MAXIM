@@ -665,6 +665,44 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  it('never lets a retention worker execute ordinary moderation after ownership changes', () => {
+    const previous = process.env.APP_ROLE;
+    try {
+      process.env.APP_ROLE = 'message-retention';
+      const { service } = createService({ MESSAGE_RETENTION_MODE: 'on' });
+      const internal = service as unknown as {
+        isExecutionEnabledForIntent(intent: unknown): boolean;
+      };
+      expect(internal.isExecutionEnabledForIntent({ ...baseIntent, retentionOwned: true })).toBe(
+        true,
+      );
+      expect(internal.isExecutionEnabledForIntent({ ...baseIntent, retentionOwned: false })).toBe(
+        false,
+      );
+      process.env.APP_ROLE = 'action';
+      expect(internal.isExecutionEnabledForIntent({ ...baseIntent, retentionOwned: true })).toBe(
+        false,
+      );
+      expect(internal.isExecutionEnabledForIntent({ ...baseIntent, retentionOwned: false })).toBe(
+        true,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = previous;
+    }
+  });
+
+  it('keeps retention out of the critical sweeper and critical wakeup queue', async () => {
+    const { service, prisma, queue } = createService();
+    const internal = service as unknown as ServiceInternals;
+    await internal.selectDueIntentIds();
+    expect(prisma.$queryRaw.mock.calls[0]?.[0]?.strings?.join('?')).toContain(
+      'intent."retention_owned" = FALSE',
+    );
+    await internal.enqueueWakeup({ ...baseIntent, retentionOwned: true });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
   it.each(['SLOW_MODE_DELETE', 'MEDIA_RATE_LIMIT_DELETE', 'STICKER_BLOCKED_DELETE'])(
     'keeps %s on guarded durable execution when the legacy rollout is off',
     (ruleCode) => {

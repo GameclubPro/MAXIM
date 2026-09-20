@@ -33,6 +33,9 @@ import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminStopWordsService } from './admin-stop-words.service';
 import { AdminStopWordsController } from './admin-stop-words.controller';
+import { AdminMessageRetentionController } from './admin-message-retention.controller';
+import { AdminMessageRetentionService } from './admin-message-retention.service';
+import { MessageRetentionStateModule } from '../message-retention/message-retention-state.module';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
@@ -123,6 +126,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
 
 @Module({
   imports: [
+    MessageRetentionStateModule,
     BullModule.registerQueue({ name: ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_MANUAL_FANOUT_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_SUPER_BAN_QUEUE }),
@@ -144,6 +148,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherModule,
   ],
   controllers: [
+    AdminMessageRetentionController,
     AdminReportsController,
     AdvertisingPlacementController,
     AdminManagedEntitiesController,
@@ -166,6 +171,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SupportRequestsController,
   ],
   providers: [
+    AdminMessageRetentionService,
     AdminReportsService,
     AdvertisingPlacementService,
     AdminService,

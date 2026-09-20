@@ -29,7 +29,7 @@ IDENTITY_PROBE_TIMEOUT_SEC="${MAXIM_PUBLISHER_IDENTITY_PROBE_TIMEOUT_SEC:-20}"
 DOCKER_MUTATION_TIMEOUT_SEC=60
 READINESS_DIAGNOSTIC_MAX_BYTES=262144
 
-ACTION_AND_PUBLISHER_WAVE=("api-action" "api-publisher")
+ACTION_AND_PUBLISHER_WAVE=("api-action" "api-publisher" "api-message-retention")
 ADMIN_WAVE=("api-admin")
 INGRESS_WAVE=("api-ingress")
 MEDIA_WAVE=("api-media-analysis")
@@ -216,6 +216,7 @@ require_topology() {
     "api-media-analysis"
     "api-action"
     "api-publisher"
+    "api-message-retention"
   )
   local waves=(
     "${ACTION_AND_PUBLISHER_WAVE[@]}"
@@ -225,11 +226,11 @@ require_topology() {
     "${MODERATION_WAVE[@]}"
     "${ENQUEUE_WAVE[@]}"
   )
-  [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -eq 13 ]] ||
-    fail "Publisher rollout requires the reviewed 13-role API topology."
+  [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -eq 14 ]] ||
+    fail "Publisher rollout requires the reviewed 14-role API topology."
   [[ "${MAXIM_PRODUCTION_API_SERVICES[*]}" == "${expected[*]}" ]] ||
     fail "Publisher rollout production API topology is not the reviewed topology."
-  [[ "${#waves[@]}" -eq 13 ]] || fail "Publisher rollout wave topology is incomplete."
+  [[ "${#waves[@]}" -eq 14 ]] || fail "Publisher rollout wave topology is incomplete."
   local service seen=()
   for service in "${waves[@]}"; do
     maxim_topology_contains "$service" "${MAXIM_PRODUCTION_API_SERVICES[@]}" ||
@@ -302,7 +303,7 @@ verify_compose_config() {
   local expected_state="$1"
   if ! docker compose "${COMPOSE_FILES[@]}" config --format json 2>/dev/null |
     node "$STATE_HELPER" verify-compose "$expected_state" "$MANIFEST_IMAGE_REF"; then
-    fail "Compose does not define the exact reviewed 13-role publisher runtime on the active image."
+    fail "Compose does not define the exact reviewed 14-role publisher runtime on the active image."
   fi
 }
 
@@ -318,7 +319,7 @@ verify_preview_compose_config() {
     docker compose --env-file "$PREVIEW_ENV_FILE" -p infra -f "infra/docker-compose.yml" \
       config --format json 2>/dev/null |
     node "$STATE_HELPER" verify-compose "$expected_state" "$MANIFEST_IMAGE_REF"; then
-    fail "Compose cannot render the requested publisher dispatch target across all 13 API roles."
+    fail "Compose cannot render the requested publisher dispatch target across all 14 API roles."
   fi
   rm -f -- "$PREVIEW_ENV_FILE"
   PREVIEW_ENV_FILE=""
@@ -659,7 +660,7 @@ api_runtime_signature() {
       "${MAXIM_PRODUCTION_API_SERVICES[@]}" 2>/dev/null
   )" || return 1
   [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
-  [[ "${#container_ids[@]}" -eq 13 ]] || return 1
+  [[ "${#container_ids[@]}" -eq 14 ]] || return 1
   inspect_raw="$(
     timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
       docker inspect --format \
@@ -908,7 +909,7 @@ wait_for_api_readiness() {
   if [[ "${POST_CLEAR_REARM_REQUIRED:-0}" -ne 1 ]]; then
     emit_api_readiness_timeout_diagnostics "$last_signature"
   fi
-  fail "All 13 API roles did not pass continuous readiness and restart stability."
+  fail "All 14 API roles did not pass continuous readiness and restart stability."
 }
 
 run_health_smokes() {
@@ -1082,7 +1083,7 @@ apply_rollout() {
     fi
   fi
   ROLLOUT_COMPLETE=1
-  printf 'Publik dispatch rollout complete: enabled=%s roles=13 image=%s reconcile_only=%s\n' \
+  printf 'Publik dispatch rollout complete: enabled=%s roles=14 image=%s reconcile_only=%s\n' \
     "$DESIRED_STATE" "$MANIFEST_SOURCE_SHA" \
     "$([[ "$RECONCILE_ONLY" -eq 1 ]] && printf '%s' true || printf '%s' false)"
 }

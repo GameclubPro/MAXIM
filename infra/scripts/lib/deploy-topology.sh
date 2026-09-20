@@ -14,6 +14,7 @@ MAXIM_PRODUCTION_API_SERVICES=(
   "api-media-analysis"
   "api-action"
   "api-publisher"
+  "api-message-retention"
 )
 
 MAXIM_MEDIA_ANALYSIS_SERVICE="api-media-analysis"
@@ -243,6 +244,25 @@ maxim_topology_require_participant_report_guard() {
   fi
 }
 
+maxim_topology_require_message_retention_guard() {
+  local commit_sha="$1"
+  local executor_source
+  # FLAG: Old critical sweepers do not understand background-only retention intents.
+  if ! executor_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)"; then
+    echo "Rollback target has no message retention guard." >&2
+    return 1
+  fi
+  if ! printf '%s' "$executor_source" | node -e '
+    const source = require("node:fs").readFileSync(0, "utf8");
+    process.exit(source.includes("await this.messageRetentionGuard.assertAllowed(") &&
+      source.includes("intent.\"retention_owned\" = FALSE") &&
+      source.includes("Retention delete guard unavailable") ? 0 : 1);
+  '; then
+    echo "Rollback target predates isolated message retention deletion." >&2
+    return 1
+  fi
+}
+
 maxim_topology_require_traffic_protection_guard() {
   local commit_sha="$1"
   local guard_source
@@ -423,7 +443,7 @@ maxim_topology_require_api_commercial_ocr_version_config() {
       const configuredServices = services.filter((service) => config?.services?.[service]);
       const missingServices = services.filter((service) => !config?.services?.[service]);
       const valid =
-        services.length === 13 &&
+        services.length === 14 &&
         new Set(services).size === services.length &&
         (missingServices.length === 0 ||
           (publisherPolicy === "allow-absent" &&
@@ -516,8 +536,8 @@ maxim_topology_verify_api_commercial_ocr_version() {
   local actual_version
   local matches
 
-  if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 13 ]]; then
-    echo "Commercial OCR version verification requires the reviewed 13-role API topology." >&2
+  if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 14 ]]; then
+    echo "Commercial OCR version verification requires the reviewed 14-role API topology." >&2
     return 1
   fi
   for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do

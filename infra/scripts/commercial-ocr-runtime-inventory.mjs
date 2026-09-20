@@ -40,6 +40,7 @@ const API_ROLES = new Set([
   'moderation',
   'action',
   'publisher',
+  'message-retention',
 ]);
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/u;
 const expectedAppRoleByService = Object.freeze({
@@ -56,6 +57,7 @@ const expectedAppRoleByService = Object.freeze({
   'api-media-analysis': 'moderation',
   'api-action': 'action',
   'api-publisher': 'publisher',
+  'api-message-retention': 'message-retention',
 });
 
 export function classifyCommercialOcrApiContainerInventory(
@@ -69,8 +71,8 @@ export function classifyCommercialOcrApiContainerInventory(
     throw new Error('Docker inspection must be an array.');
   }
   const expected = new Set(expectedServices);
-  if (expected.size !== expectedServices.length || expected.size !== 13) {
-    throw new Error('Commercial OCR inventory requires 13 unique expected services.');
+  if (expected.size !== expectedServices.length || ![13, 14].includes(expected.size)) {
+    throw new Error('Commercial OCR inventory requires 13 or 14 unique expected services.');
   }
   if (expectedImageId !== null && !imageIdPattern.test(expectedImageId)) {
     throw new Error('Commercial OCR inventory expected image id is invalid.');
@@ -372,11 +374,11 @@ function main(argv) {
   const [expectedImageIdRaw, expectedAuxiliaryRaw, ...expectedServices] = argv;
   if (
     !['none', OCR_NATIVE_SANDBOX_SERVICE].includes(expectedAuxiliaryRaw) ||
-    expectedServices.length !== 13 ||
-    new Set(expectedServices).size !== 13
+    ![13, 14].includes(expectedServices.length) ||
+    new Set(expectedServices).size !== expectedServices.length
   ) {
     throw new Error(
-      'Usage: commercial-ocr-runtime-inventory.mjs <none|expected-image-id> <none|ocr-native-sandbox> <13 expected services>',
+      'Usage: commercial-ocr-runtime-inventory.mjs <none|expected-image-id> <none|ocr-native-sandbox> <13 or 14 expected services>',
     );
   }
   const expectedImageId = expectedImageIdRaw === 'none' ? null : expectedImageIdRaw;

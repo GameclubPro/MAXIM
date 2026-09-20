@@ -29,6 +29,7 @@ const productionServices = [
   'api-media-analysis',
   'api-action',
   'api-publisher',
+  'api-message-retention',
 ];
 
 function functionBlock(script, name) {
@@ -93,7 +94,7 @@ test('serializes through the shared deploy lock and fences the exact active 13-r
   assert.ok(rollout.indexOf('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"') >= 0);
   assert.ok(rollout.indexOf('source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"') >= 0);
   assert.ok(rollout.indexOf('acquire_deploy_lock', entrypoint) > entrypoint);
-  assert.match(rollout, /MAXIM_PRODUCTION_API_SERVICES\[@\][\s\S]*-eq 13/u);
+  assert.match(rollout, /MAXIM_PRODUCTION_API_SERVICES\[@\][\s\S]*-eq 14/u);
   assert.match(rollout, /MANIFEST_IMAGE_ID/u);
   assert.match(rollout, /org\.opencontainers\.image\.revision/u);
   assert.match(rollout, /com\.maxim\.release-protected/u);

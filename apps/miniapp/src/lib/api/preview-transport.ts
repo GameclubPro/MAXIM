@@ -17,10 +17,12 @@ import { handleSettingsPreviewRequest } from './preview-transport-settings';
 import { createPreviewState } from './preview-transport-state';
 import { handleSystemPreviewRequest } from './preview-transport-system';
 import { handleVkPreviewRequest } from './preview-transport-vk';
+import { handlePreviewMessageRetention } from './preview-message-retention';
 
 export type { PreviewApiTransportOptions, PreviewClock } from './preview-transport-runtime';
 
 export const PREVIEW_REQUEST_HANDLERS: readonly PreviewRequestHandler[] = [
+  handlePreviewMessageRetention,
   async (context) => {
     if (context.segments[2] !== 'advertising-placement') return PREVIEW_NOT_HANDLED;
     const { handleAdvertisingPreviewRequest } = await import('./preview-transport-advertising');

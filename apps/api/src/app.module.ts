@@ -13,6 +13,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { PublisherModule } from './publisher/publisher.module';
 import { SystemModule } from './system/system.module';
 import { WebhookModule } from './webhook/webhook.module';
+import { MessageRetentionModule } from './message-retention/message-retention.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { WebhookModule } from './webhook/webhook.module';
     MaxModule,
     ModerationModule,
     WebhookModule,
+    MessageRetentionModule,
     AdminModule,
     SystemModule,
     HealthModule,

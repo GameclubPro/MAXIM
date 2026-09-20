@@ -104,6 +104,16 @@ import {
 } from './commercial/commercial-delete-binding';
 import { ReportDeleteGuardService } from './reports/report-delete-guard.service';
 import {
+  MessageRetentionDeleteGuard,
+  MessageRetentionGuardError,
+} from '../message-retention/message-retention-delete-guard.service';
+import {
+  MESSAGE_RETENTION_RULE,
+  retentionModeAllows,
+} from '../message-retention/message-retention.policy';
+import { getAppRole } from '../runtime/app-role';
+import type { MessageRetentionCandidate } from '../prisma/prisma-client';
+import {
   REPORT_COUNTER_RULE,
   REPORT_GUARDED_RULES,
   ReportRejectedError,
@@ -218,6 +228,7 @@ type IntentRow = {
   messageAuthorKind: string | null;
   originBotId: string | null;
   routingPolicy: string;
+  retentionOwned?: boolean;
   commercialOcrGuardRequired: boolean;
   commercialOcrDeadlineAt: Date | null;
   status: ModerationDeleteIntentStatus;
@@ -600,6 +611,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly trafficProtectionDeleteGuard?: TrafficProtectionDeleteGuardService,
     @Optional() private readonly commercialDeleteGuard?: CommercialDeleteGuardService,
     @Optional() private readonly reportDeleteGuard?: ReportDeleteGuardService,
+    @Optional() private readonly messageRetentionGuard?: MessageRetentionDeleteGuard,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -782,6 +794,47 @@ export class ModerationDeleteIntentService {
     input: EnsureModerationDeleteIntentInput,
   ): Promise<EnsureModerationDeleteIntentResult> {
     return this.persistIntent(input, true);
+  }
+
+  async ensureRetentionIntent(candidate: MessageRetentionCandidate): Promise<string> {
+    // FLAG: Never append a retention reason to another module's intent: several guards
+    // intentionally yield to independent reasons. Normal writers atomically take ownership.
+    return this.prisma.$transaction(async (tx) => {
+      const id = randomUUID();
+      const created = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        INSERT INTO "moderation_delete_intents" (
+          "id", "chat_id", "message_id", "subject_user_id", "source_message_at",
+          "entity_type", "message_author_kind", "origin_bot_id", "routing_policy", "retention_owned",
+          "status", "execute_at", "next_attempt_at", "retry_until_at", "created_at", "updated_at"
+        ) VALUES (${id}, ${candidate.chatId}, ${candidate.messageId}, ${candidate.authorId}, ${candidate.sourceAt},
+          'CHAT', 'user', ${candidate.originBotId}, 'origin_first', TRUE, 'PENDING',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, TIMESTAMP '9999-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT ("chat_id", "message_id") DO NOTHING RETURNING "id"
+      `);
+      const intent =
+        created[0] ??
+        (await tx.moderationDeleteIntent.findUniqueOrThrow({
+          where: { chatId_messageId: { chatId: candidate.chatId, messageId: candidate.messageId } },
+          select: { id: true },
+        }));
+      if (created.length)
+        await tx.moderationDeleteIntentReason.create({
+          data: {
+            id: randomUUID(),
+            intentId: intent.id,
+            reasonKey: MESSAGE_RETENTION_RULE,
+            ruleCode: MESSAGE_RETENTION_RULE,
+            userId: candidate.authorId,
+          },
+        });
+      await tx.messageRetentionCandidate.update({
+        where: {
+          chatId_messageId: { chatId: candidate.chatId, messageId: candidate.messageId },
+        },
+        data: { intentId: intent.id },
+      });
+      return intent.id;
+    });
   }
 
   async ensureBotMessageAutoDeleteRepairIntentWithAudit(
@@ -1902,9 +1955,11 @@ export class ModerationDeleteIntentService {
             beforeImmediateDeleteMutation,
             botId,
             timeoutMs: this.deleteTimeoutMs,
-            trafficClass: 'critical',
-            actionHealthLane: 'critical',
-            sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+            trafficClass: intent.retentionOwned ? 'background' : 'critical',
+            actionHealthLane: intent.retentionOwned ? 'background' : 'critical',
+            sourceTag: intent.retentionOwned
+              ? MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
+              : MAX_API_SOURCE_TAGS.MODERATION_DELETE,
             ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
             idempotencyKey: `moderation-delete-intent-${intent.id}-attempt-${intent.attemptCount}`,
           });
@@ -2579,6 +2634,7 @@ export class ModerationDeleteIntentService {
           SELECT intent."id", intent."status"
           FROM "moderation_delete_intents" intent
           WHERE intent."updated_at" < ${cutoff}
+            AND intent."retention_owned" = FALSE
             AND intent."status" IN (
               CAST('OBSERVED' AS "ModerationDeleteIntentStatus"),
               CAST('SUCCEEDED' AS "ModerationDeleteIntentStatus"),
@@ -2650,6 +2706,11 @@ export class ModerationDeleteIntentService {
     try {
       let profanityVerified = false;
       let commercialVerifiedReasonKeys: string[] = [];
+      if (intent.retentionOwned) {
+        if (!this.messageRetentionGuard) throw new Error('Retention delete guard unavailable');
+        await this.messageRetentionGuard.assertAllowed(intent.id, botId);
+        return { profanityVerified, commercialVerifiedReasonKeys };
+      }
       // FLAG: A remote DELETE must always have a durable reason at the exact dispatch boundary.
       // Derived rule classifiers cannot represent a reasonless intent and therefore cannot fence it.
       // FLAG: A channel replacement cleanup must never cross an entity reclassification boundary.
@@ -2884,6 +2945,7 @@ export class ModerationDeleteIntentService {
   }
 
   private isTerminalDeleteGuardRejection(error: unknown): boolean {
+    if (error instanceof MessageRetentionGuardError) return error.disposition === 'skip';
     if (
       error instanceof ProfanityDeleteGuardRejectedError ||
       error instanceof CommercialDeleteGuardRejectedError ||
@@ -3645,7 +3707,13 @@ export class ModerationDeleteIntentService {
           ${initialStatus === 'EXPIRED' ? new Date() : null}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
         ON CONFLICT ("chat_id", "message_id") DO UPDATE SET
+          "retention_owned" = FALSE,
           "status" = CASE
+            WHEN "moderation_delete_intents"."retention_owned"
+              AND "moderation_delete_intents"."status" IN ('FAILED_TERMINAL', 'EXPIRED', 'OBSERVED')
+              AND "moderation_delete_intents"."delete_dispatch_started_at" IS NULL
+              AND "moderation_delete_intents"."remote_delete_succeeded_at" IS NULL
+            THEN EXCLUDED."status"
             WHEN ${shouldPromoteObserved}
             THEN EXCLUDED."status"
             ELSE "moderation_delete_intents"."status"
@@ -3722,11 +3790,13 @@ export class ModerationDeleteIntentService {
             ELSE "moderation_delete_intents"."execute_at"
           END,
           "next_attempt_at" = CASE
+            WHEN "moderation_delete_intents"."retention_owned" THEN EXCLUDED."next_attempt_at"
             WHEN ${shouldPromoteObserved}
             THEN EXCLUDED."next_attempt_at"
             ELSE "moderation_delete_intents"."next_attempt_at"
           END,
           "retry_until_at" = CASE
+            WHEN "moderation_delete_intents"."retention_owned" THEN EXCLUDED."retry_until_at"
             WHEN ${resultingHasCommercialOcrReason} AND ${shouldPromoteObserved}
             THEN GREATEST(
               "moderation_delete_intents"."retry_until_at",
@@ -3797,6 +3867,9 @@ export class ModerationDeleteIntentService {
               ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
             ])})
           RETURNING 1
+        ), retired_retention_reason AS (
+          DELETE FROM "moderation_delete_intent_reasons"
+          WHERE "intent_id" = ${intent.id} AND "rule_code" = ${MESSAGE_RETENTION_RULE}
         )
         UPDATE "moderation_delete_intents" schedule
         SET
@@ -4370,6 +4443,7 @@ export class ModerationDeleteIntentService {
         "updated_at" = CURRENT_TIMESTAMP
       WHERE "id" = ${intentId}
         AND "execute_at" <= ${now}
+        AND (${getAppRole() === 'all'} OR "retention_owned" = ${getAppRole() === 'message-retention'})
         AND "next_attempt_at" <= ${now}
         AND (
           "retry_until_at" > ${now}
@@ -4403,6 +4477,7 @@ export class ModerationDeleteIntentService {
         SELECT intent."id"
         FROM "moderation_delete_intents" intent
         WHERE intent."execute_at" <= ${now}
+          AND intent."retention_owned" = FALSE
           AND intent."next_attempt_at" <= ${now}
           AND (
             intent."retry_until_at" > ${now}
@@ -5124,6 +5199,7 @@ export class ModerationDeleteIntentService {
         SELECT intent."id"
         FROM "moderation_delete_intents" intent
         WHERE intent."retry_until_at" <= CURRENT_TIMESTAMP
+          AND intent."retention_owned" = FALSE
           AND intent."remote_delete_succeeded_at" IS NULL
           AND intent."remote_delete_succeeded_bot_id" IS NULL
           AND intent."delete_dispatch_started_at" IS NULL
@@ -5169,6 +5245,7 @@ export class ModerationDeleteIntentService {
         "updated_at" = CURRENT_TIMESTAMP
       WHERE "id" = ${intentId}
         AND "retry_until_at" <= CURRENT_TIMESTAMP
+        AND "retention_owned" = FALSE
         AND "remote_delete_succeeded_at" IS NULL
         AND "remote_delete_succeeded_bot_id" IS NULL
         AND "delete_dispatch_started_at" IS NULL
@@ -5196,6 +5273,7 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     priority = DELETE_QUEUE_PRIORITY_BACKGROUND,
   ): Promise<void> {
+    if (intent.retentionOwned) return;
     if (this.classifyIntentWakeupEligibility(intent) !== 'eligible') {
       return;
     }
@@ -5524,9 +5602,11 @@ export class ModerationDeleteIntentService {
       const access = await this.maxClient.getCurrentChatMemberAccess(intent.chatId, {
         botId,
         bypassCache: true,
-        trafficClass: 'critical',
-        actionHealthLane: 'critical',
-        sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+        trafficClass: intent.retentionOwned ? 'background' : 'critical',
+        actionHealthLane: intent.retentionOwned ? 'background' : 'critical',
+        sourceTag: intent.retentionOwned
+          ? MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
+          : MAX_API_SOURCE_TAGS.MODERATION_DELETE,
         timeoutMs: this.deleteTimeoutMs,
         ignoreFailureMetricStatuses: [403, 404],
       });
@@ -5603,9 +5683,11 @@ export class ModerationDeleteIntentService {
     return this.maxClient.getExactMessagePresence(intent.chatId, intent.messageId, {
       botId,
       bypassCache: true,
-      trafficClass: 'critical',
-      actionHealthLane: 'critical',
-      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      trafficClass: intent.retentionOwned ? 'background' : 'critical',
+      actionHealthLane: intent.retentionOwned ? 'background' : 'critical',
+      sourceTag: intent.retentionOwned
+        ? MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
+        : MAX_API_SOURCE_TAGS.MODERATION_DELETE,
       timeoutMs: this.deleteTimeoutMs,
       ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
     });
@@ -6002,6 +6084,7 @@ export class ModerationDeleteIntentService {
     intent: Pick<
       IntentRow,
       | 'chatId'
+      | 'retentionOwned'
       | 'replacementCleanup'
       | 'nonChannelReplacementCleanup'
       | 'channelAutoPostCleanupReason'
@@ -6017,6 +6100,18 @@ export class ModerationDeleteIntentService {
       | 'messageDuplicateOwned'
     >,
   ): boolean {
+    if (intent.retentionOwned) {
+      return (
+        (getAppRole() === 'message-retention' || getAppRole() === 'all') &&
+        retentionModeAllows(
+          this.configService.get('MESSAGE_RETENTION_MODE'),
+          this.configService.get('MESSAGE_RETENTION_CANARY_CHAT_IDS'),
+          intent.chatId,
+          true,
+        )
+      );
+    }
+    if (getAppRole() === 'message-retention') return false;
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
       return true;
     }
@@ -7001,6 +7096,7 @@ export class ModerationDeleteIntentService {
       ${column('message_author_kind')} AS "messageAuthorKind",
       ${column('origin_bot_id')} AS "originBotId",
       ${column('routing_policy')} AS "routingPolicy",
+      ${column('retention_owned')} AS "retentionOwned",
       ${column('commercial_ocr_guard_required')} AS "commercialOcrGuardRequired",
       ${column('commercial_ocr_deadline_at')} AS "commercialOcrDeadlineAt",
       ${column('status')} AS "status",

@@ -41,6 +41,7 @@ export type RuntimeServiceName =
   | 'api-moderation-background'
   | 'api-media-analysis'
   | 'api-action'
+  | 'api-message-retention'
   | 'api-publisher';
 
 export type RuntimeQueueProfile =
@@ -53,6 +54,7 @@ export type RuntimeQueueProfile =
   | 'webhook-background'
   | 'commercial-image-ocr'
   | 'max-action-dispatch'
+  | 'message-retention'
   | 'publisher-dispatch';
 
 export type RuntimeQueuePriority =
@@ -92,6 +94,15 @@ export type RuntimeServiceProfileResolution = {
 };
 
 export const RUNTIME_ROLE_CAPABILITIES = Object.freeze({
+  'message-retention': {
+    httpEnabled: false,
+    ingressEnabled: false,
+    adminEnabled: false,
+    enqueueEnabled: false,
+    moderationEnabled: false,
+    actionEnabled: false,
+    publisherEnabled: false,
+  },
   all: {
     httpEnabled: true,
     ingressEnabled: true,
@@ -191,6 +202,7 @@ export const WEBHOOK_DYNAMIC_LEASES_MODES = Object.freeze([
 ] as const satisfies readonly WebhookDynamicLeasesMode[]);
 
 export const RUNTIME_SERVICE_NAMES = Object.freeze([
+  'api-message-retention',
   'api-all',
   'api-ingress',
   'api-admin',
@@ -213,6 +225,19 @@ const DEFAULT_CANARY_SHARDS = Object.freeze([
 ] as const satisfies readonly DefaultWebhookQueueName[]);
 
 export const RUNTIME_SERVICE_PROFILES = Object.freeze({
+  'api-message-retention': {
+    serviceName: 'api-message-retention',
+    serviceTitle: 'Isolated message retention worker',
+    appRole: 'message-retention',
+    capabilities: RUNTIME_ROLE_CAPABILITIES['message-retention'],
+    queueProfile: 'message-retention',
+    queuePriority: 'background',
+    moderationQueues: [],
+    dynamicLeasesMode: 'off',
+    dynamicLeasesWorkerGroup: null,
+    canaryShardIds: [],
+    backgroundTasksEnabled: true,
+  },
   'api-all': {
     serviceName: 'api-all',
     serviceTitle: 'All-in-one API runtime',
@@ -480,6 +505,8 @@ export function normalizeDefaultWorkerGroupName(
 
 function serviceNameByRole(role: AppRole): RuntimeServiceName {
   switch (role) {
+    case 'message-retention':
+      return 'api-message-retention';
     case 'ingress':
       return 'api-ingress';
     case 'admin':

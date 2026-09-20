@@ -77,6 +77,7 @@ if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVIC
     "api-media-analysis"
     "api-action"
     "api-publisher"
+    "api-message-retention"
     "miniapp-major-static"
     "admin-static"
   )
@@ -1361,7 +1362,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   fi
 
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
-  recreate_service_wave "action and publisher" "api-action" "api-publisher"
+  recreate_service_wave "action, publisher and retention" "api-action" "api-publisher" "api-message-retention"
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service_wave "admin" "api-admin"
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES

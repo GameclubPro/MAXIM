@@ -114,7 +114,7 @@ test('verifies exact service identity and dispatch parity', () => {
   );
 });
 
-test('requires the exact 13-service Compose topology on one immutable image', () => {
+test('requires the exact 14-service Compose topology on one immutable image', () => {
   const image = `maxim-api:${'a'.repeat(40)}`;
   const roleByService = {
     'api-ingress': 'ingress',
@@ -130,6 +130,7 @@ test('requires the exact 13-service Compose topology on one immutable image', ()
     'api-media-analysis': 'moderation',
     'api-action': 'action',
     'api-publisher': 'publisher',
+    'api-message-retention': 'message-retention',
   };
   const services = Object.fromEntries(
     Object.entries(roleByService).map(([service, role]) => [

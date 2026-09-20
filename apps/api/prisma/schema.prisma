@@ -2111,6 +2111,7 @@ model ModerationDeleteIntent {
   messageAuthorKind          String?                       @map("message_author_kind")
   originBotId                String?                       @map("origin_bot_id")
   routingPolicy              String                        @default("origin_only") @map("routing_policy")
+  retentionOwned             Boolean                       @default(false) @map("retention_owned")
   commercialOcrGuardRequired Boolean                       @default(false) @map("commercial_ocr_guard_required")
   commercialOcrDeadlineAt    DateTime?                     @map("commercial_ocr_deadline_at")
   status                     ModerationDeleteIntentStatus  @default(PENDING)
@@ -3542,4 +3543,62 @@ model ChannelStatsSyncState {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("channel_stats_sync_states")
+}
+
+model MessageRetentionPolicy {
+  chatId       String    @id @map("chat_id")
+  enabled      Boolean   @default(false)
+  hours        Int       @default(48)
+  revision     Int       @default(0)
+  activationId String    @map("activation_id")
+  enabledAt    DateTime? @map("enabled_at")
+  captureAfter DateTime? @map("capture_after")
+  pausedAt     DateTime? @map("paused_at")
+  healthySince DateTime? @map("healthy_since")
+  quotaShard   Int       @map("quota_shard")
+  pendingCount Int       @default(0) @map("pending_count")
+  deletedCount Int       @default(0) @map("deleted_count")
+  skippedCount Int       @default(0) @map("skipped_count")
+  nextRunAt    DateTime? @map("next_run_at")
+  lastStatus   String    @default("off") @map("last_status")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @map("updated_at")
+
+  candidates MessageRetentionCandidate[]
+
+  @@index([nextRunAt, chatId], map: "message_retention_policies_due_idx")
+  @@map("message_retention_policies")
+}
+
+model MessageRetentionCandidate {
+  chatId        String    @map("chat_id")
+  messageId     String    @map("message_id")
+  authorId      String    @map("author_id")
+  originBotId   String    @map("origin_bot_id")
+  sourceAt      DateTime  @map("source_at")
+  activationId  String    @map("activation_id")
+  shadowOnly    Boolean   @default(false) @map("shadow_only")
+  status        String    @default("pending")
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
+  intentId      String?   @map("intent_id")
+  completedAt   DateTime? @map("completed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  policy MessageRetentionPolicy @relation(fields: [chatId], references: [chatId], onDelete: Restrict)
+
+  @@id([chatId, messageId])
+  @@index([chatId, status, sourceAt, messageId], map: "message_retention_candidates_source_idx")
+  @@index([chatId, status, activationId, messageId], map: "message_retention_candidates_activation_idx")
+  @@index([chatId, status, nextAttemptAt, messageId], map: "message_retention_candidates_retry_idx")
+  @@index([completedAt, chatId, messageId], map: "message_retention_candidates_completed_idx")
+  @@map("message_retention_candidates")
+}
+
+model MessageRetentionQuota {
+  shard        Int       @id
+  pendingCount Int       @default(0) @map("pending_count")
+  pausedAt     DateTime? @map("paused_at")
+  healthySince DateTime? @map("healthy_since")
+
+  @@map("message_retention_quotas")
 }

@@ -2,6 +2,9 @@ import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 
 import { MaxModule } from '../max/max.module';
+import { SystemModule } from '../system/system.module';
+import { MessageRetentionStateModule } from '../message-retention/message-retention-state.module';
+import { MessageRetentionDeleteGuard } from '../message-retention/message-retention-delete-guard.service';
 import { ReportStateModule } from './reports/report-state.module';
 import { ReportDeleteGuardService } from './reports/report-delete-guard.service';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
@@ -28,6 +31,8 @@ const actionRoleProviders = roleRunsAction(getAppRole())
 
 @Module({
   imports: [
+    SystemModule,
+    MessageRetentionStateModule,
     BullModule.registerQueue({ name: MODERATION_DELETE_INTENT_QUEUE }),
     MaxModule,
     ReportStateModule,
@@ -35,6 +40,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     MessageDuplicateStateModule,
   ],
   providers: [
+    MessageRetentionDeleteGuard,
     ReportDeleteGuardService,
     LinkHistoryDeleteGuardService,
     ParticipantModerationImmunityService,
@@ -50,6 +56,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     ...actionRoleProviders,
   ],
   exports: [
+    MessageRetentionDeleteGuard,
     StopWordsDeleteGuardService,
     ModerationDeleteIntentService,
     ParticipantModerationImmunityService,

@@ -36,6 +36,7 @@ describe('runtime-topology', () => {
       'enqueue',
       'moderation',
       'action',
+      'message-retention',
       'publisher',
     ]);
     expect(normalizeAppRole(' MODERATION ')).toBe('moderation');
@@ -159,6 +160,8 @@ describe('runtime-topology', () => {
           expect(getEnabledModerationProcessorQueues(rawEnabledQueues)).toEqual(
             new Set(profile.moderationQueues),
           );
+        } else if (serviceName === 'api-message-retention') {
+          expect(environment.MODERATION_ENABLED_QUEUES).toBe('none');
         } else {
           expect(environment.MODERATION_ENABLED_QUEUES).toBeUndefined();
         }

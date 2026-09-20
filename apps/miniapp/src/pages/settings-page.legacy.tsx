@@ -216,6 +216,7 @@ import { SettingsDuplicatesSection } from './settings/settings-duplicates-sectio
 import { SettingsExtraSection } from './settings/settings-extra-section';
 import { SettingsLimitsSection } from './settings/settings-limits-section';
 import { SettingsNightSection } from './settings/settings-night-section';
+import { SettingsMessageRetentionSection } from './settings/settings-message-retention-section';
 import { SettingsStopWordsSection } from './settings/settings-stop-words-section';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
@@ -6903,6 +6904,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 setMessageLimitsBlockedDomainsInput('');
               }}
             />
+
+            <SettingsMessageRetentionSection key={chatId} api={api} chatId={chatId!} />
 
             <SettingsNightSection
               api={api}

@@ -637,6 +637,7 @@ queues=(
   max-actions-background
   night-mode-transitions
   moderation-delete-intents
+  message-retention
   global-spammer-denorm
   photo-duplicates
   message-duplicates

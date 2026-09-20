@@ -74,6 +74,7 @@ const expectedAppRoleByService = Object.freeze({
   'api-media-analysis': 'moderation',
   'api-action': 'action',
   'api-publisher': 'publisher',
+  'api-message-retention': 'message-retention',
 });
 
 function inspectedContainer(index, options = {}) {
@@ -285,12 +286,12 @@ function sample(observedAt, overrides = {}) {
     },
     apiFleet: {
       available: true,
-      expectedRoleCount: 13,
-      observedRoleCount: 13,
-      singletonRoleCount: 13,
-      runningRoleCount: 13,
-      identityRoleCount: 13,
-      exactImageRoleCount: 13,
+      expectedRoleCount: 14,
+      observedRoleCount: 14,
+      singletonRoleCount: 14,
+      runningRoleCount: 14,
+      identityRoleCount: 14,
+      exactImageRoleCount: 14,
       duplicateContainerCount: 0,
       unexpectedApiContainerCount: 0,
       unexpectedMainContainerCount: 0,
@@ -638,12 +639,12 @@ test('API fleet census checks runtime identity and exact-image roles without exp
   });
   assert.deepEqual(healthy, {
     available: true,
-    expectedRoleCount: 13,
-    observedRoleCount: 13,
-    singletonRoleCount: 13,
-    runningRoleCount: 13,
-    identityRoleCount: 13,
-    exactImageRoleCount: 13,
+    expectedRoleCount: 14,
+    observedRoleCount: 14,
+    singletonRoleCount: 14,
+    runningRoleCount: 14,
+    identityRoleCount: 14,
+    exactImageRoleCount: 14,
     duplicateContainerCount: 0,
     unexpectedApiContainerCount: 0,
     unexpectedMainContainerCount: 0,
@@ -669,7 +670,7 @@ test('API fleet census checks runtime identity and exact-image roles without exp
       inspection[0],
       inspectedContainer(1, { appRole: 'moderation' }),
       ...inspection.slice(2, -2),
-      inspectedContainer(12, { running: false, restartCount: 2 }),
+      inspectedContainer(13, { running: false, restartCount: 2 }),
       inspectedContainer(20, { service: DEFAULT_EXPECTED_API_SERVICES[0] }),
       inspectedContainer(21, {
         service: 'api-unexpected',
@@ -719,12 +720,12 @@ test('API fleet census checks runtime identity and exact-image roles without exp
   assert.doesNotMatch(JSON.stringify(containers), /must-not-survive|PRIVATE_TOKEN/u);
   assert.deepEqual(summarizeApiFleet(DEFAULT_EXPECTED_API_SERVICES, expectedApiImage, containers), {
     available: true,
-    expectedRoleCount: 13,
-    observedRoleCount: 13,
-    singletonRoleCount: 12,
-    runningRoleCount: 11,
-    identityRoleCount: 11,
-    exactImageRoleCount: 12,
+    expectedRoleCount: 14,
+    observedRoleCount: 14,
+    singletonRoleCount: 13,
+    runningRoleCount: 12,
+    identityRoleCount: 12,
+    exactImageRoleCount: 13,
     duplicateContainerCount: 1,
     unexpectedApiContainerCount: 4,
     unexpectedMainContainerCount: 1,
@@ -732,7 +733,7 @@ test('API fleet census checks runtime identity and exact-image roles without exp
     unexpectedManualContainerCount: 2,
     totalRestartCount: 2,
   });
-  assert.equal(normalizeApiFleet({ ...healthy, runningRoleCount: 14 }).available, null);
+  assert.equal(normalizeApiFleet({ ...healthy, runningRoleCount: 15 }).available, null);
   assert.equal(
     normalizeApiFleet({ ...healthy, unexpectedManualContainerCount: 1 }).available,
     null,
@@ -775,11 +776,11 @@ test('API fleet expected roles fail closed on env, protected-label, and owned-na
       expectedApiImage,
       parseApiFleetInspection(JSON.stringify(inspection)),
     );
-    assert.equal(fleet.observedRoleCount, 13, label);
-    assert.equal(fleet.singletonRoleCount, 13, label);
-    assert.equal(fleet.runningRoleCount, 13, label);
-    assert.equal(fleet.exactImageRoleCount, 13, label);
-    assert.equal(fleet.identityRoleCount, 12, label);
+    assert.equal(fleet.observedRoleCount, 14, label);
+    assert.equal(fleet.singletonRoleCount, 14, label);
+    assert.equal(fleet.runningRoleCount, 14, label);
+    assert.equal(fleet.exactImageRoleCount, 14, label);
+    assert.equal(fleet.identityRoleCount, 13, label);
     assert.equal(
       evaluateAlerts([], normalizeSnapshot(sample('2026-09-02T12:00:00.000Z', { apiFleet: fleet })))
         .alerts.api_fleet_topology.outcome,
@@ -789,7 +790,7 @@ test('API fleet expected roles fail closed on env, protected-label, and owned-na
   }
 });
 
-test('API fleet keeps 13 role metrics while strictly attesting the source-expected OCR sandbox', () => {
+test('API fleet keeps 14 role metrics while strictly attesting the source-expected OCR sandbox', () => {
   const roles = DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index));
   const validSandbox = inspectedSandbox(80, { restartCount: 2 });
   const healthy = summarizeApiFleet(
@@ -800,12 +801,12 @@ test('API fleet keeps 13 role metrics while strictly attesting the source-expect
   );
   assert.deepEqual(healthy, {
     available: true,
-    expectedRoleCount: 13,
-    observedRoleCount: 13,
-    singletonRoleCount: 13,
-    runningRoleCount: 13,
-    identityRoleCount: 13,
-    exactImageRoleCount: 13,
+    expectedRoleCount: 14,
+    observedRoleCount: 14,
+    singletonRoleCount: 14,
+    runningRoleCount: 14,
+    identityRoleCount: 14,
+    exactImageRoleCount: 14,
     duplicateContainerCount: 0,
     unexpectedApiContainerCount: 0,
     unexpectedMainContainerCount: 0,
@@ -825,7 +826,7 @@ test('API fleet keeps 13 role metrics while strictly attesting the source-expect
     parseApiFleetInspection(JSON.stringify(roles)),
     'ocr-native-sandbox',
   );
-  assert.equal(missing.expectedRoleCount, 13);
+  assert.equal(missing.expectedRoleCount, 14);
   assert.equal(missing.unexpectedApiContainerCount, 1);
   assert.equal(missing.unexpectedMainContainerCount, 1);
 
@@ -841,7 +842,7 @@ test('API fleet keeps 13 role metrics while strictly attesting the source-expect
     ),
     'ocr-native-sandbox',
   );
-  assert.equal(duplicate.expectedRoleCount, 13);
+  assert.equal(duplicate.expectedRoleCount, 14);
   assert.equal(duplicate.duplicateContainerCount, 0);
   assert.equal(duplicate.unexpectedApiContainerCount, 2);
   assert.equal(duplicate.unexpectedMainContainerCount, 2);
@@ -874,7 +875,7 @@ test('API fleet keeps 13 role metrics while strictly attesting the source-expect
     parseApiFleetInspection(JSON.stringify([mislabeledRole, ...roles.slice(1), validSandbox])),
     'ocr-native-sandbox',
   );
-  assert.equal(mislabeled.observedRoleCount, 12);
+  assert.equal(mislabeled.observedRoleCount, 13);
   assert.equal(mislabeled.unexpectedApiContainerCount, 2);
   assert.equal(mislabeled.unexpectedMainContainerCount, 2);
 });
@@ -940,7 +941,7 @@ test('API fleet rejects every security-relevant OCR sandbox drift without exposi
       parsed,
       'ocr-native-sandbox',
     );
-    assert.equal(fleet.expectedRoleCount, 13, JSON.stringify(defect));
+    assert.equal(fleet.expectedRoleCount, 14, JSON.stringify(defect));
     assert.equal(fleet.unexpectedApiContainerCount, 1, JSON.stringify(defect));
     assert.equal(fleet.unexpectedMainContainerCount, 1, JSON.stringify(defect));
   });
@@ -959,7 +960,10 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
   );
   assert.deepEqual(DEFAULT_EXPECTED_API_SERVICES, topologyServices);
   const baseServices = DEFAULT_EXPECTED_API_SERVICES.filter(
-    (service) => service !== 'api-media-analysis' && service !== 'api-publisher',
+    (service) =>
+      service !== 'api-media-analysis' &&
+      service !== 'api-publisher' &&
+      service !== 'api-message-retention',
   );
   const legacyCompose = `services:\n${baseServices.map((service) => `  ${service}:`).join('\n')}`;
   assert.deepEqual(
@@ -982,7 +986,9 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
       DEFAULT_EXPECTED_API_SERVICES,
       `${legacyCompose}\n  api-media-analysis:`,
     ),
-    DEFAULT_EXPECTED_API_SERVICES.filter((service) => service !== 'api-publisher'),
+    DEFAULT_EXPECTED_API_SERVICES.filter(
+      (service) => service !== 'api-publisher' && service !== 'api-message-retention',
+    ),
   );
   assert.deepEqual(
     resolveExpectedApiServicesFromCompose(
@@ -1220,7 +1226,7 @@ test('immediate readiness, queue, fallback, mode, fence, and disk alerts fail cl
   assert.equal(evaluateAlerts([], unavailableFleet).alerts.api_fleet_topology.outcome, 'firing');
   assert.equal(evaluateAlerts([], unavailableFleet).alerts.api_fleet_restarts.outcome, 'unknown');
 
-  for (const expectedRoleCount of [11, 12]) {
+  for (const expectedRoleCount of [11, 12, 13]) {
     const historicalFleet = normalizeSnapshot(
       sample('2026-09-02T12:00:00.000Z', {
         apiFleet: {
@@ -1296,7 +1302,7 @@ test('archive rejects a symlink directory and CLI prints explicit alert outcomes
   assert.match(result.stdout, /capacity-action available=true windowSec=60 total=1659/u);
   assert.match(
     result.stdout,
-    /capacity-api-fleet available=true expected=13 observed=13 singleton=13 running=13 identity=13 exactImage=13 duplicates=0 unexpected=0 unexpectedMain=0 unexpectedScale=0 unexpectedManual=0 restarts=0/u,
+    /capacity-api-fleet available=true expected=14 observed=14 singleton=14 running=14 identity=14 exactImage=14 duplicates=0 unexpected=0 unexpectedMain=0 unexpectedScale=0 unexpectedManual=0 restarts=0/u,
   );
   assert.match(result.stdout, /capacity-alert id=load_per_cpu_warning_5m outcome=clear/u);
   assert.match(result.stdout, /capacity-alert id=iowait_warning_5m outcome=clear/u);

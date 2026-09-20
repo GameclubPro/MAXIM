@@ -357,7 +357,7 @@ function evaluateAlerts(history, current) {
   const fleet = current.apiFleet;
   const fleetTopologyHealthy =
     fleet.available === true &&
-    [11, 12, 13].includes(fleet.expectedRoleCount) &&
+    [11, 12, 13, 14].includes(fleet.expectedRoleCount) &&
     fleet.observedRoleCount === fleet.expectedRoleCount &&
     fleet.singletonRoleCount === fleet.expectedRoleCount &&
     fleet.runningRoleCount === fleet.expectedRoleCount &&

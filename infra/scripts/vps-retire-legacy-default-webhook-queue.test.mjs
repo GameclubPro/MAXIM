@@ -108,11 +108,11 @@ run_readiness_smokes() {
   printf '%s\n' health >>"$MOCK_LIFECYCLE_LOG"
 }
 read_api_fleet() {
-  local running_count=13
+  local running_count=14
   if [[ "$(cat "$MOCK_RUNTIME_STATE")" == "stopped" ]]; then
-    running_count=12
+    running_count=13
   fi
-  printf '{"available":true,"expectedRoleCount":13,"observedRoleCount":13,"singletonRoleCount":13,"runningRoleCount":%s,"identityRoleCount":13,"exactImageRoleCount":13,"duplicateContainerCount":0,"unexpectedApiContainerCount":0,"unexpectedMainContainerCount":0,"unexpectedScaleContainerCount":0,"unexpectedManualContainerCount":0,"totalRestartCount":%s}\n' \
+  printf '{"available":true,"expectedRoleCount":14,"observedRoleCount":14,"singletonRoleCount":14,"runningRoleCount":%s,"identityRoleCount":14,"exactImageRoleCount":14,"duplicateContainerCount":0,"unexpectedApiContainerCount":0,"unexpectedMainContainerCount":0,"unexpectedScaleContainerCount":0,"unexpectedManualContainerCount":0,"totalRestartCount":%s}\n' \
     "$running_count" "$(cat "$MOCK_RESTART_COUNT")"
 }
 create_private_snapshot() {

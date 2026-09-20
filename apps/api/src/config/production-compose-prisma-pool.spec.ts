@@ -15,6 +15,7 @@ const API_SERVICE_POOL_CAPS = {
   'api-media-analysis': 2,
   'api-action': 4,
   'api-publisher': 2,
+  'api-message-retention': 2,
 } as const;
 
 const API_SERVICE_POOL_CONNECTION_TIMEOUT_MS = {
@@ -47,7 +48,7 @@ describe('production compose Prisma pool caps', () => {
         total += cap;
       }
 
-      expect(total).toBe(50);
+      expect(total).toBe(52);
     });
 
     it('caps the dedicated managed-entities read client separately', () => {
@@ -61,7 +62,7 @@ describe('production compose Prisma pool caps', () => {
         const block = readServiceBlock(compose, service);
 
         expect(readOptionalEnvNumber(block, 'PRISMA_PG_STATEMENT_TIMEOUT_MS')).toBe(
-          service === 'api-ingress' ? 15_000 : null,
+          service === 'api-ingress' ? 15_000 : service === 'api-message-retention' ? 2_000 : null,
         );
       }
     });
@@ -81,6 +82,7 @@ describe('production compose Prisma pool caps', () => {
         'api-moderation-background',
         'api-action',
         'api-publisher',
+        'api-message-retention',
       ] as const) {
         const block = readServiceBlock(compose, service);
 

@@ -8661,6 +8661,28 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('reads verified pin identity and rejects unknown pin responses', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { message: null } }))
+        .mockReturnValueOnce(
+          of({ data: { message: { body: { mid: 'm1' }, recipient: { chat_id: -1 } } } }),
+        )
+        .mockReturnValueOnce(of({ data: {} })),
+    };
+    const service = createService(httpService);
+    try {
+      expect(await service.getPinnedMessageId('-1', { trafficClass: 'background' })).toBeNull();
+      expect(await service.getPinnedMessageId('-1', { trafficClass: 'background' })).toBe('m1');
+      await expect(
+        service.getPinnedMessageId('-1', { trafficClass: 'background' }),
+      ).rejects.toThrow('not verifiable');
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
   it('pins with explicit notification and executes the durable fence before HTTP', async () => {
     const beforeMutation = jest.fn().mockResolvedValue(undefined);
     const httpService = {
@@ -11971,6 +11993,40 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(limits.at(-1)).toBe('2');
 
     await service.onModuleDestroy();
+  });
+
+  it('adds a fleet-wide retention budget without sharing the normal token budget', async () => {
+    const service = createService({ request: jest.fn() });
+    const internal = service as unknown as {
+      tryReserveRateLimitSlot(
+        bot: string,
+        chat: string,
+        traffic: string,
+        source: string,
+        mutation: { operation: string; entityId: string },
+      ): Promise<unknown>;
+      limiterRedis: { eval: jest.Mock };
+    };
+    try {
+      await internal.tryReserveRateLimitSlot(
+        'bot',
+        '-1',
+        'background',
+        MAX_API_SOURCE_TAGS.MESSAGE_RETENTION,
+        { operation: 'delete', entityId: '-1' },
+      );
+      const call = internal.limiterRedis.eval.mock.calls.at(-1) as unknown[];
+      const count = Number(call[1]);
+      const keys = call.slice(2, 2 + count);
+      const limits = call.slice(2 + count, 2 + count * 2).map(Number);
+      expect(limits[keys.indexOf('maxapi:gcra:v1:source:message-retention:all')]).toBe(2);
+      expect(limits[keys.indexOf('maxapi:gcra:v1:source:message-retention:chat:target:-1')]).toBe(
+        1,
+      );
+      expect(keys).toContain('maxapi:gcra:v1:bot:bot:all');
+    } finally {
+      await service.onModuleDestroy();
+    }
   });
 
   it('applies the managed_refresh source budget before background reads consume the shared pool', async () => {

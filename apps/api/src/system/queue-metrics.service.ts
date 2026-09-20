@@ -61,6 +61,7 @@ export type QueueCounters = {
 };
 
 export const AUXILIARY_QUEUE_NAMES = [
+  'message-retention',
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
   VK_PARSING_SYNC_QUEUE,
   VK_PARSING_PUBLISHER_QUEUE,

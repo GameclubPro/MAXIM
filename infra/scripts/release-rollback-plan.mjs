@@ -21,6 +21,7 @@ export const PRODUCTION_API_SERVICES = Object.freeze([
   'api-media-analysis',
   'api-action',
   'api-publisher',
+  'api-message-retention',
 ]);
 export const API_SHARED_SERVICES = Object.freeze([
   ...PRODUCTION_API_SERVICES,

@@ -38,6 +38,7 @@ import {
   MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
 } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import { WebhookIngressMetricsService } from '../system/webhook-ingress-metrics.service';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { PublisherEntityBindingLifecycleService } from '../publisher/publisher-entity-binding-lifecycle.service';
@@ -310,6 +311,7 @@ export class WebhookService implements OnModuleDestroy {
     @Optional()
     private readonly publisherAutoReplyProducer?: PublisherAutoReplyProducerService,
     @Optional() private readonly webhookIngressMetricsService?: WebhookIngressMetricsService,
+    @Optional() private readonly messageRetention?: MessageRetentionStore,
   ) {
     const configuredPublisherBotId = configService.get<unknown>('MAX_PUBLISHER_BOT_ID');
     this.publisherBotId = buildPublisherBotDescriptor({
@@ -853,6 +855,20 @@ export class WebhookService implements OnModuleDestroy {
       normalizedPayload: storageNormalizedPayload,
       status: WebhookStatus.RECEIVED,
     };
+    const retentionInput = this.messageRetention?.captureInput(update);
+    if (retentionInput && this.messageRetention) {
+      const retention = this.messageRetention;
+      return this.prisma.$transaction(
+        async (tx) => {
+          const result = await tx.webhookEvent.createMany({ data: [data], skipDuplicates: true });
+          if (!result.count)
+            throw Object.assign(new Error('Duplicate webhook receipt'), { code: 'P2002' });
+          await retention.capture(tx, retentionInput);
+          return webhookEventId;
+        },
+        { timeout: 2_000, maxWait: 500 },
+      );
+    }
     const createMany = (
       this.prisma.webhookEvent as unknown as {
         createMany?: (args: {

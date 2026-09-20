@@ -31,6 +31,7 @@ export const PUBLISHER_PRODUCTION_ROLE_BY_SERVICE = Object.freeze({
   'api-media-analysis': 'moderation',
   'api-action': 'action',
   'api-publisher': 'publisher',
+  'api-message-retention': 'message-retention',
 });
 
 function decodeDotenv(contents) {

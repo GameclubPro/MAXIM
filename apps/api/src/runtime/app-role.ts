@@ -5,6 +5,7 @@ export type AppRole =
   | 'enqueue'
   | 'moderation'
   | 'action'
+  | 'message-retention'
   | 'publisher';
 
 export const APP_ROLES = [
@@ -14,6 +15,7 @@ export const APP_ROLES = [
   'enqueue',
   'moderation',
   'action',
+  'message-retention',
   'publisher',
 ] as const satisfies readonly AppRole[];
 

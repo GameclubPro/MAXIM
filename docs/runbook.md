@@ -5,7 +5,7 @@ This is the active production entrypoint. Historical delivery/cloud experiments 
 
 ## Production Shape
 
-- Main stack: `infra/docker-compose.yml` with Postgres, Redis, thirteen shared-image API roles,
+- Main stack: `infra/docker-compose.yml` with Postgres, Redis, fourteen shared-image API roles,
   `miniapp-major-static`, legacy support `miniapp-static`, and `admin-static`.
 - Canonical mini app: `https://major-maksimov.ru/app/`, served by `miniapp-major-static`.
 - Closed Safety Desk: `https://admin.major-maksimov.ru/`, served by `admin-static` behind Basic Auth.
@@ -17,6 +17,10 @@ Publisher private greetings use the `publisher-start` queue on `api-publisher`. 
 enabled dispatch, attested Publisher identity, and healthy dispatch. Events older than one day are
 discarded; retained jobs carry a pre-send marker that prevents replay after an ambiguous send or
 worker restart. Do not remove that marker or manually retry a greeting that already attempted send.
+
+Old-message cleanup uses the isolated `api-message-retention` role and `message-retention`
+queue. It defaults off; follow [the retention rollout gates](operations/runbooks/message-retention-rollout.md)
+before enabling capture or deletion. It never shares the critical moderation deletion lane.
 
 ## First Deployment
 
@@ -84,7 +88,7 @@ memory, filesystem, swap, CPU, block-device, aggregate action-health, and API fl
 Action-health counts are retained only when `total = success + failure`, `critical <= failure`, and
 both rates match their counts; malformed or old snapshots use `null` rather than plausible zeroes.
 Fleet records contain only counts for the source release's expected singleton/running roles (normally
-13; supported pre-Publisher/OCR rollback releases have 11 or 12), exact `APP_SERVICE_NAME`/`APP_ROLE`
+14; supported pre-Publisher/OCR rollback releases have 11, 12, or 13), exact `APP_SERVICE_NAME`/`APP_ROLE`
 identity plus protected-image/owned-Compose-name matches, exact-image matches, duplicates, restarts,
 and unexpected API containers split into main, scale, and manual/foreign counts. They never contain
 role names, container names or IDs, env values, image refs, or SHA values. The archive never stores
@@ -235,7 +239,7 @@ After the sharded `moderation-default-0..15` release is active, preview the reti
 ```
 
 The preview is read-only and reports aggregate counters only. It requires the exact clean active
-post-sharding API release, the complete 13-role fleet, a released webhook queue fence, healthy
+post-sharding API release, the complete 14-role fleet, a released webhook queue fence, healthy
 ingress/admin endpoints, no legacy worker, an allowlisted bounded historical job cohort, unpaused
 active shards, and primary-key-bounded PostgreSQL proof that every referenced webhook event is
 `PROCESSED`, `DUPLICATE`, or absent. Review that result before applying:
@@ -305,7 +309,7 @@ the rollout if its post-sync `HEAD` differs. An emergency bypass is not routine:
 Contract changes normally require all API roles plus affected public/admin clients. Do not deploy
 `miniapp-static` for ordinary Major work.
 
-Any API role expands to all thirteen roles. Static-only `miniapp-major-static` or `admin-static`
+Any API role expands to all fourteen roles. Static-only `miniapp-major-static` or `admin-static`
 deploys do not start the API build or run Prisma migrations. The deploy compares each active
 component's recorded source SHA with the target and adds unreleased affected components, so an
 explicit service list cannot silently leave known component impact behind.
@@ -376,7 +380,7 @@ API role. A version transition intentionally rejects older queued jobs and inval
 delete bindings instead of evaluating them under different recognition behavior.
 
 Deploy and both rollback paths read that behavior identity from the target API source, export it
-over any `.env` value, and verify it on all 13 effective and running API roles. They stop the old
+over any `.env` value, and verify it on all 14 effective and running API roles. They stop the old
 `api-media-analysis` before its sandbox, recreate and attest the target no-network sandbox, and run
 the real UDS Sharp/Tesseract raster smoke from a one-off media client before starting media analysis
 or producer roles. A target that predates
@@ -545,7 +549,7 @@ their content in process arguments or logs. The verifier runs from the exact act
 image and rejects an expired, failed, unsigned, untrusted, reprofiled, source/image-mismatched,
 behavior-mismatched, malformed, settings-set-mismatched, or digest-mismatched certification before
 any rollout mutation. The wrapper then takes the shared deploy lock and checks the active release
-manifest/image/SHA/version across all 13 API roles.
+manifest/image/SHA/version across all 14 API roles.
 Promotion additionally requires an empty OCR queue across waiting, active, delayed, prioritized,
 paused, and waiting-children states, plus zero admission units and no held reservations. The
 read-only preflight checks that state once. An applied promotion checks it again only after all seven
@@ -589,14 +593,14 @@ atomically patches the production environment file with the OCR mode and canary 
 recreates and verifies every role; the OCR-specific delete-intent lane derives its authority from
 those same two OCR variables. It recreates the 12 non-media roles in the reviewed order, attests the
 unchanged sandbox, starts `api-media-analysis` last, and verifies readiness and identity/mode/image
-parity for all 13 roles plus the auxiliary. The HTTP-serving `api-ingress`, `api-admin`, and `api-media-analysis` roles must answer
+parity for all 14 roles plus the auxiliary. The HTTP-serving `api-ingress`, `api-admin`, and `api-media-analysis` roles must answer
 their internal ready endpoint twice across a five-second stability window. Every role, including
 the ten headless queue workers, must keep exactly one running container with the same container ID
 and restart count across that window. Every readiness `docker compose ps`, `docker exec`, and
 `docker inspect` call has a host-side timeout
 clamped to the same absolute readiness deadline, including its kill grace. Promotion
 then stops the exact seven OCR producer roles, proves the queue and admission state drained again,
-performs the runtime-control CAS, restarts those producers, and repeats the 13-role
+performs the runtime-control CAS, restarts those producers, and repeats the 14-role
 readiness/parity/stability check. A CAS conflict means another operator changed the control; stop
 and review status instead of retrying blindly. The wrapper also re-reads the control after producer
 restart and refuses to complete if its revision, cohort, logical expiry, or minimum remaining
@@ -628,15 +632,15 @@ environment mutation. Recovery is armed before a clear can be dispatched, so a R
 that boundary conservatively patches the environment back to shadow and may recreate API roles even
 when the clear outcome is unknown. The wrapper never restarts or recreates Redis. If a later
 promotion step fails after `.env` mutation, it attempts the same full shadow recovery and reports a
-critical error unless all 13 roles are proven ready and shadowed.
+critical error unless all 14 roles are proven ready and shadowed.
 
 Recovery is armed before either set or clear can be dispatched to Redis. If a mutation outcome is
-ambiguous, the wrapper restores and verifies shadow ceilings across all 13 roles before returning an
+ambiguous, the wrapper restores and verifies shadow ceilings across all 14 roles before returning an
 error. Recovery first quiesces `api-action`, all seven OCR producers, and only detected unreviewed API
 containers with proven `infra` ownership. Foreign or ambiguous API-like containers remain untouched
 and prevent quiescence from being proven. Recovery must prove that stopped inventory before patching
 `.env` or recreating anything; after that boundary, it attempts every role even when one recreation
-fails. It reports success only after all 13 roles pass readiness, restart stability, image, identity,
+fails. It reports success only after all 14 roles pass readiness, restart stability, image, identity,
 version, and shadow parity; otherwise it proves the enforcement-capable roles stopped again or
 reports that quiescence could not be established.
 
@@ -753,7 +757,7 @@ The wrapper requires green `Required` and `Analyze JavaScript and TypeScript` ch
 local SHA, then runs the existing host finalizer without pulling or synchronizing the VPS checkout.
 The finalizer fails closed unless the clean VPS `HEAD` and `origin/main` already equal that exact SHA,
 exactly one complete typed recovery journal exists, and the current manifest is absent. It verifies
-the target refs and image IDs for all 13 API roles, `miniapp-major-static`, and `admin-static`; rejects
+the target refs and image IDs for all 14 API roles, `miniapp-major-static`, and `admin-static`; rejects
 duplicate or ambiguous API containers; proves all 24 webhook queues are unpaused with no rollout
 owner; runs strict local/public live and ready, Major/Safety Desk static, and Commercial OCR
 shadow/language/raster/internal-readiness smokes; and rechecks runtime identity, restart stability,

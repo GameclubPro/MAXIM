@@ -252,7 +252,7 @@ validate_api_fleet() {
   printf '%s' "$fleet" | node -e '
     const { readFileSync } = require("node:fs");
     const value = JSON.parse(readFileSync(0, "utf8"));
-    const expected = 13;
+    const expected = 14;
     const expectedRunning = Number(process.argv[1]);
     const countFields = [
       "expectedRoleCount",
@@ -293,8 +293,8 @@ verify_exact_api_fleet() {
   local fleet
   local restart_count
   fleet="$(read_api_fleet)" || return 1
-  restart_count="$(validate_api_fleet "$fleet" 13)" ||
-    fail "Production API fleet is not the exact current 13-role release."
+  restart_count="$(validate_api_fleet "$fleet" 14)" ||
+    fail "Production API fleet is not the exact current 14-role release."
   if [[ -z "$API_FLEET_RESTART_BASELINE" ]]; then
     API_FLEET_RESTART_BASELINE="$restart_count"
   elif [[ "$restart_count" != "$API_FLEET_RESTART_BASELINE" ]]; then
@@ -310,7 +310,7 @@ verify_api_fleet_with_enqueue_stopped() {
     fail "Could not verify that api-enqueue stopped."
   [[ -z "$running_ids" ]] || fail "api-enqueue is still running."
   fleet="$(read_api_fleet)" || return 1
-  restart_count="$(validate_api_fleet "$fleet" 12)" ||
+  restart_count="$(validate_api_fleet "$fleet" 13)" ||
     fail "API fleet is not exact with only api-enqueue stopped."
   [[ -n "$API_FLEET_RESTART_BASELINE" && "$restart_count" == "$API_FLEET_RESTART_BASELINE" ]] ||
     fail "API fleet restart count changed while api-enqueue was stopped."
@@ -327,7 +327,7 @@ verify_webhook_producer_topology() {
     const { readFileSync } = require("node:fs");
     const value = JSON.parse(readFileSync(0, "utf8"));
     const expectedCounts = {
-      productionServiceCount: 13,
+      productionServiceCount: 14,
       productionEnqueueProducerCount: 1,
       enqueueRoleCount: 2,
       activeWebhookQueueCount: 22,

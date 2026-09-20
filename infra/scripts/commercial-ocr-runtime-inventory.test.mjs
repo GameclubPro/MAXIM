@@ -492,7 +492,7 @@ test('ignores stopped orphan containers and rejects malformed topology or inspec
   );
   assert.throws(
     () => classifyCommercialOcrApiContainerInventory([], services.slice(1)),
-    /13 unique expected services/u,
+    /13 or 14 unique expected services/u,
   );
   assert.throws(
     () => classifyCommercialOcrApiContainerInventory({}, services),

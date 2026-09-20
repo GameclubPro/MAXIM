@@ -36,6 +36,7 @@ NON_MEDIA_SERVICES=(
   "api-enqueue"
   "api-action"
   "api-publisher"
+  "api-message-retention"
   "api-moderation"
   "api-moderation-critical"
   "api-moderation-join"
@@ -263,6 +264,7 @@ expected_app_role_for_service() {
     api-enqueue) printf '%s' "enqueue" ;;
     api-action) printf '%s' "action" ;;
     api-publisher) printf '%s' "publisher" ;;
+    api-message-retention) printf '%s' "message-retention" ;;
     api-moderation | api-moderation-critical | api-moderation-join | \
       api-moderation-realtime-b | api-moderation-realtime-c | \
       api-moderation-realtime-d | api-moderation-background | api-media-analysis)
@@ -273,11 +275,11 @@ expected_app_role_for_service() {
 }
 
 require_topology() {
-  if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 13 ]]; then
-    fail "Commercial OCR rollout requires the reviewed 13-role API topology."
+  if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 14 ]]; then
+    fail "Commercial OCR rollout requires the reviewed 14-role API topology."
   fi
-  if [[ "${#NON_MEDIA_SERVICES[@]}" -ne 12 ]]; then
-    fail "Commercial OCR rollout requires exactly 12 non-media API roles."
+  if [[ "${#NON_MEDIA_SERVICES[@]}" -ne 13 ]]; then
+    fail "Commercial OCR rollout requires exactly 13 non-media API roles."
   fi
   if [[ "${#OCR_PRODUCER_SERVICES[@]}" -ne 7 ]]; then
     fail "Commercial OCR rollout requires exactly seven moderation producer roles."

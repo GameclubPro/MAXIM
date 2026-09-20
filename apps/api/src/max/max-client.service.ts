@@ -572,6 +572,7 @@ type MaxCallbackAnswerRequestOptions = MaxApiRequestOptions & {
 };
 
 export const MAX_API_SOURCE_TAGS = {
+  MESSAGE_RETENTION: 'message_retention',
   MANAGED_REFRESH: 'managed_refresh',
   MODERATION_DELETE: 'moderation_delete',
   MODERATION_SANCTION: 'moderation_sanction',
@@ -1084,6 +1085,23 @@ export class MaxClientService implements OnModuleDestroy {
       },
       options,
     );
+  }
+
+  async getPinnedMessageId(chatId: string, options: MaxApiRequestOptions): Promise<string | null> {
+    const response = await this.executeGlobalRequest(
+      () =>
+        this.request<Record<string, unknown>>('get', `/chats/${encodeURIComponent(chatId)}/pin`, {
+          ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
+        }),
+      options,
+    );
+    if (response.message === null) return null;
+    const message = this.asRecord(response.message);
+    const body = this.asRecord(message?.body);
+    const recipient = this.asRecord(message?.recipient);
+    if (typeof body?.mid !== 'string' || !body.mid || String(recipient?.chat_id) !== chatId)
+      throw new Error('MAX pinned-message response is not verifiable');
+    return body.mid;
   }
 
   async sendMessage(
@@ -7331,6 +7349,22 @@ export class MaxClientService implements OnModuleDestroy {
           ]
         : []),
     ];
+    if (this.normalizeMetricSourceTag(sourceTag) === MAX_API_SOURCE_TAGS.MESSAGE_RETENTION) {
+      const slow = await this.limiterRedis.get('maxapi:message-retention:slow:v1');
+      dimensions.push({
+        key: 'maxapi:gcra:v1:source:message-retention:all',
+        limit: slow === '1' ? 1 : 2,
+        reason: 'MAX message retention fleet budget exceeded',
+        burstToleranceSlots: 0,
+      });
+      if (messageMutation?.operation === 'delete')
+        dimensions.push({
+          key: `maxapi:gcra:v1:source:message-retention:chat:${messageMutationScope}`,
+          limit: 1,
+          reason: 'MAX message retention chat budget exceeded',
+          burstToleranceSlots: 0,
+        });
+    }
     if (this.shouldApplyManagedRefreshSourceLimit(trafficClass, sourceTag)) {
       if (this.managedRefreshRpsLimit > 0) {
         dimensions.push({

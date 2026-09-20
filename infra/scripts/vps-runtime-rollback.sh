@@ -84,6 +84,7 @@ maxim_topology_require_image_text_stop_list_delete_guard "$TARGET_FULL_SHA"
 maxim_topology_require_stop_words_policy_guard "$TARGET_FULL_SHA"
 maxim_topology_require_traffic_protection_guard "$TARGET_FULL_SHA"
 maxim_topology_require_participant_report_guard "$TARGET_FULL_SHA"
+maxim_topology_require_message_retention_guard "$TARGET_FULL_SHA"
 maxim_topology_require_message_duplicate_delete_guard "$TARGET_FULL_SHA"
 maxim_topology_require_commercial_text_delete_guard "$TARGET_FULL_SHA"
 if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
@@ -564,6 +565,7 @@ recreate_runtime_api_wave() {
 non_webhook_services=(api-action)
 if [[ "$TARGET_HAS_PUBLISHER" -eq 1 ]]; then
   non_webhook_services+=(api-publisher)
+  non_webhook_services+=(api-message-retention)
 fi
 non_webhook_services+=(api-admin api-ingress)
 recreate_runtime_api_wave non-webhook "${non_webhook_services[@]}"

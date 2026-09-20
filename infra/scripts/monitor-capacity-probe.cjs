@@ -38,8 +38,13 @@ const DEFAULT_EXPECTED_API_SERVICES = Object.freeze([
   'api-media-analysis',
   'api-action',
   'api-publisher',
+  'api-message-retention',
 ]);
-const HISTORICALLY_OPTIONAL_API_SERVICES = new Set(['api-media-analysis', 'api-publisher']);
+const HISTORICALLY_OPTIONAL_API_SERVICES = new Set([
+  'api-media-analysis',
+  'api-publisher',
+  'api-message-retention',
+]);
 const OCR_NATIVE_SANDBOX_SERVICE = 'ocr-native-sandbox';
 const OCR_NATIVE_SANDBOX_COMMAND = Object.freeze([
   'node',
@@ -92,8 +97,10 @@ const EXPECTED_APP_ROLE_BY_SERVICE = Object.freeze({
   'api-media-analysis': 'moderation',
   'api-action': 'action',
   'api-publisher': 'publisher',
+  'api-message-retention': 'message-retention',
 });
 const API_ROLES = new Set([
+  'message-retention',
   'all',
   'ingress',
   'admin',

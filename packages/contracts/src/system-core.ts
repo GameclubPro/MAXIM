@@ -1786,6 +1786,7 @@ export const systemDashboardActionLatencySchema = z
 export type SystemDashboardActionLatency = z.infer<typeof systemDashboardActionLatencySchema>;
 
 export const systemRuntimeRoleSchema = z.enum([
+  'message-retention',
   'all',
   'ingress',
   'admin',

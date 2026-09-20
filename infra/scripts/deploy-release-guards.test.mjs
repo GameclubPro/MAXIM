@@ -19,6 +19,7 @@ const apiServices = [
   'api-media-analysis',
   'api-action',
   'api-publisher',
+  'api-message-retention',
 ];
 
 function read(path) {

@@ -374,6 +374,8 @@ const envSchema = z.object({
   MODERATION_DELETE_INTENT_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
   MODERATION_DELETE_INTENT_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(2),
   MODERATION_DELETE_INTENT_RETENTION_DAYS: z.coerce.number().int().min(7).max(365).default(90),
+  MESSAGE_RETENTION_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('off'),
+  MESSAGE_RETENTION_CANARY_CHAT_IDS: z.string().default(''),
   MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES: z.coerce.number().int().min(1).max(100).default(40),
   MODERATION_DELETE_INTENT_CLEANUP_INTERVAL_MS: z.coerce
     .number()

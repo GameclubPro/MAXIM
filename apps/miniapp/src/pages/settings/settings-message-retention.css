@@ -1,0 +1,42 @@
+@layer components {
+  body[data-miniapp-profile='moderation'] .message-retention-settings {
+    display: grid;
+    gap: 20px;
+    min-width: 0;
+  }
+  .message-retention-settings__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .message-retention-settings fieldset {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+  }
+  .message-retention-settings legend {
+    margin-bottom: 12px;
+  }
+  .message-retention-settings .segmented-control {
+    width: 100%;
+  }
+  .message-retention-settings__facts {
+    display: grid;
+    gap: 14px;
+    margin: 0;
+  }
+  .message-retention-settings__facts > div {
+    display: grid;
+    gap: 4px;
+  }
+  .message-retention-settings__facts dt {
+    font-size: 13px;
+    opacity: 0.75;
+  }
+  .message-retention-settings__facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}
