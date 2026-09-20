@@ -291,8 +291,16 @@ export class MessageRetentionStore {
       ), deleted_intents AS (
         DELETE FROM "moderation_delete_intents" intent USING expired e
         WHERE intent."id" = e."intent_id" AND intent."retention_owned" = TRUE
-          AND intent."status" IN ('SUCCEEDED', 'ALREADY_ABSENT', 'FAILED_TERMINAL', 'EXPIRED')
-          AND (intent."status" IN ('SUCCEEDED', 'ALREADY_ABSENT') OR intent."delete_dispatch_started_at" IS NULL)
+          AND (
+            intent."status" IN ('SUCCEEDED', 'ALREADY_ABSENT')
+            OR (
+              intent."delete_dispatch_started_at" IS NULL
+              AND intent."delete_dispatch_started_bot_id" IS NULL
+              AND intent."remote_delete_succeeded_at" IS NULL
+              AND intent."remote_delete_succeeded_bot_id" IS NULL
+              AND (intent."status" <> 'IN_PROGRESS' OR intent."lease_expires_at" < CURRENT_TIMESTAMP)
+            )
+          )
         RETURNING intent."id"
       ) DELETE FROM "message_retention_candidates" c USING expired e
       WHERE c."chat_id" = e."chat_id" AND c."message_id" = e."message_id"

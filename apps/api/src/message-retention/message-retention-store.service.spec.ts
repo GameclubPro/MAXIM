@@ -39,6 +39,7 @@ function setup() {
     managedEntityAdminMember: { findFirst: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn() },
     $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
   };
   prisma.$transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
@@ -57,6 +58,19 @@ function setup() {
 }
 
 describe('retention admission and settlement', () => {
+  it('purges ended unattempted intents but preserves other owners, live leases and ambiguous receipts', async () => {
+    const { store, prisma } = setup();
+    await store.purge();
+    const query = prisma.$executeRaw.mock.calls[0][0].text as string;
+    expect(query).toContain('"completed_at" <');
+    expect(query).toContain('intent."retention_owned" = TRUE');
+    expect(query).toContain('intent."delete_dispatch_started_at" IS NULL');
+    expect(query).toContain('intent."delete_dispatch_started_bot_id" IS NULL');
+    expect(query).toContain('intent."remote_delete_succeeded_at" IS NULL');
+    expect(query).toContain('intent."remote_delete_succeeded_bot_id" IS NULL');
+    expect(query).toContain('intent."lease_expires_at" < CURRENT_TIMESTAMP');
+    expect(query).toContain('LIMIT 500 FOR UPDATE SKIP LOCKED');
+  });
   it('does not restart the recovery window on new arrivals while paused', async () => {
     const { store, prisma, input, policy } = setup();
     policy.pausedAt = new Date(Date.now() - 700_000);
