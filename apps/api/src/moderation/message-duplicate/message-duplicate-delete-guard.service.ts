@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.service';
@@ -13,6 +13,7 @@ import {
 } from './message-duplicate-content';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 import {
   MESSAGE_DUPLICATE_SOURCE,
   messageDuplicateSettingsDigest,
@@ -28,6 +29,15 @@ export class MessageDuplicateGuardRejectedError extends Error {
   }
 }
 
+type MessageDuplicateGuardInput = {
+  chatId: string;
+  messageId: string;
+  subjectUserId: string | null;
+  botId: string;
+  binding: MessageDuplicateBinding;
+  sanctionIntentId?: string;
+};
+
 @Injectable()
 export class MessageDuplicateDeleteGuardService {
   private readonly parser = new WebhookParser();
@@ -42,6 +52,7 @@ export class MessageDuplicateDeleteGuardService {
     private readonly policy: MessageDuplicatePolicyService,
     private readonly history: MessageDuplicateHistoryService,
     config: ConfigService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {
     this.timeoutMs = config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000;
   }
@@ -59,10 +70,14 @@ export class MessageDuplicateDeleteGuardService {
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 65,
     });
-    if (reasons.length === 0)
+    if (reasons.length === 0) {
+      this.metrics?.recordGuardRejection('message_duplicate_reason_missing');
       throw new MessageDuplicateGuardRejectedError('message_duplicate_reason_missing');
-    if (reasons.length > 64)
+    }
+    if (reasons.length > 64) {
+      this.metrics?.recordGuardRejection('message_duplicate_reason_limit');
       throw new MessageDuplicateGuardRejectedError('message_duplicate_reason_limit');
+    }
     const owned = reasons.filter(
       (reason) =>
         reason.reasonKey.startsWith('MESSAGE_DUPLICATE:') ||
@@ -74,22 +89,32 @@ export class MessageDuplicateDeleteGuardService {
     const bindings = owned.map((reason) =>
       reason.ruleCode === 'DUPLICATE_DELETE' ? parseMessageDuplicateBinding(reason.metadata) : null,
     );
-    if (bindings.some((binding) => !binding))
+    if (bindings.some((binding) => !binding)) {
+      this.metrics?.recordGuardRejection('message_duplicate_binding_invalid');
       throw new MessageDuplicateGuardRejectedError('message_duplicate_binding_invalid');
+    }
     const binding = (bindings as MessageDuplicateBinding[]).sort(
       (a, b) => b.eventTimestampMs - a.eventTimestampMs,
     )[0]!;
     return this.assertMessageStillActionable({ ...params, binding });
   }
 
-  async assertMessageStillActionable(params: {
-    chatId: string;
-    messageId: string;
-    subjectUserId: string | null;
-    botId: string;
-    binding: MessageDuplicateBinding;
-    sanctionIntentId?: string;
-  }): Promise<'allowed' | 'absent'> {
+  async assertMessageStillActionable(
+    params: MessageDuplicateGuardInput,
+  ): Promise<'allowed' | 'absent'> {
+    try {
+      const result = await this.checkMessage(params);
+      this.metrics?.record(result === 'allowed' ? 'guard.allowed' : 'guard.absent');
+      return result;
+    } catch (error) {
+      if (error instanceof MessageDuplicateGuardRejectedError)
+        this.metrics?.recordGuardRejection(error.code);
+      else this.metrics?.record('guard.unavailable');
+      throw error;
+    }
+  }
+
+  private async checkMessage(params: MessageDuplicateGuardInput): Promise<'allowed' | 'absent'> {
     const { binding } = params;
     if (
       params.subjectUserId !== binding.senderId ||

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
@@ -7,6 +7,7 @@ import { PhotoDuplicateRuntimePolicyService } from '../photo-duplicate/photo-dup
 import { maskText } from '../text-mask.util';
 import type { DuplicateHit } from '../rule-engine.contract';
 import { digestDuplicateContent } from './message-duplicate-content';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { messageDuplicateActionsEnabled } from './message-duplicate-policy.service';
 import {
@@ -30,6 +31,7 @@ export class MessageDuplicateEnforcementService {
     private readonly policy: MessageDuplicatePolicyService,
     private readonly photoPolicy: PhotoDuplicateRuntimePolicyService,
     private readonly guard: MessageDuplicateDeleteGuardService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
 
   async enqueue(params: {
@@ -49,8 +51,10 @@ export class MessageDuplicateEnforcementService {
       !messageDuplicateActionsEnabled(policy.mode) ||
       policy.revision !== params.binding.controlRevision ||
       params.binding.eventTimestampMs < policy.effectiveAtMs
-    )
+    ) {
+      this.metrics?.record('enforcement.policy_changed');
       return false;
+    }
     const full = policy.mode === 'full';
     const binding: MessageDuplicateBinding = { ...params.binding, ...(full ? { version: 2 } : {}) };
     const decision = full
@@ -80,8 +84,10 @@ export class MessageDuplicateEnforcementService {
         !photo.enforce ||
         !photo.allowedMatchKinds.includes('canonical_sha256') ||
         !photo.controlRevision
-      )
+      ) {
+        this.metrics?.record('enforcement.photo_policy');
         return false;
+      }
       binding.photoControlRevision = photo.controlRevision;
     }
     if (full && (!params.update || !params.executeFullAction))
@@ -129,6 +135,9 @@ export class MessageDuplicateEnforcementService {
       },
     };
     const result = await this.intents.ensureIntentWithMessageActionClaim({ claim, intent });
+    this.metrics?.record(
+      result.claim === 'blocked' ? 'enforcement.claim_blocked' : 'enforcement.intent_handoff',
+    );
     params.assertLease?.();
     if (
       full &&

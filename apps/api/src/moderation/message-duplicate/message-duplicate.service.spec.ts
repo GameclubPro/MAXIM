@@ -19,11 +19,13 @@ describe('message duplicate main-path admission', () => {
     const history = { observe: jest.fn().mockResolvedValue({ hit: {}, binding: {} }) };
     const enforcement = { enqueue: jest.fn() };
     const queue = { enqueue: jest.fn() };
+    const metrics = { record: jest.fn(), recordContentRejection: jest.fn() };
     const service = new MessageDuplicateService(
       policy as never,
       history as never,
       enforcement as never,
       queue as never,
+      metrics as never,
     );
     const update = duplicateUpdate();
     const params = {
@@ -35,7 +37,7 @@ describe('message duplicate main-path admission', () => {
       actionEligible: true,
       track: true,
     };
-    return { service, params, policy, history, enforcement, queue };
+    return { service, params, policy, history, enforcement, queue, metrics };
   }
   it('admits short messages inline and never silently acknowledges state failures', async () => {
     const s = setup();
@@ -55,6 +57,7 @@ describe('message duplicate main-path admission', () => {
       expect.objectContaining({ webhookEventId: 'receipt', actionEligible: true }),
     );
     expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    expect(s.metrics.record).toHaveBeenCalledWith('admission.media_queued');
     s.params.settings.duplicateCompareMode = 'TEXT';
     await s.service.observe(s.params);
     expect(s.queue.enqueue).toHaveBeenCalledTimes(1);
@@ -83,5 +86,7 @@ describe('message duplicate main-path admission', () => {
     s.policy.resolve.mockResolvedValue({ mode: 'off' });
     await s.service.observe(s.params);
     expect(s.history.observe).not.toHaveBeenCalled();
+    expect(s.metrics.record).toHaveBeenCalledWith('admission.event_time_rejected');
+    expect(s.metrics.record).toHaveBeenCalledWith('admission.off');
   });
 });

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { raceWithTimeout } from '../../common/promise-timeout.util';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
@@ -9,6 +9,7 @@ import {
   type DuplicateFingerprint,
 } from '../rule-engine-duplicate-detector';
 import type { DuplicateHit } from '../rule-engine.contract';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 import {
   buildMessageDuplicateIdentity,
   digestDuplicateContent,
@@ -32,18 +33,45 @@ export type MessageDuplicateObservation = {
   mediaHashes?: readonly string[];
 };
 
+export const MESSAGE_DUPLICATE_FINGERPRINT_LIMIT = 16;
+
+export function selectMessageDuplicateFingerprints(
+  fingerprints: readonly DuplicateFingerprint[],
+): DuplicateFingerprint[] {
+  if (fingerprints.length <= MESSAGE_DUPLICATE_FINGERPRINT_LIMIT) return [...fingerprints];
+  const groups = new Map<DuplicateFingerprint['type'], DuplicateFingerprint[]>();
+  for (const fingerprint of fingerprints) {
+    const group = groups.get(fingerprint.type) ?? [];
+    group.push(fingerprint);
+    groups.set(fingerprint.type, group);
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
+  }
+  // FLAG: A large link list must not evict enabled phone/content/near matching. Both candidate
+  // lookup and verified membership use this deterministic, type-balanced bounded selection.
+  const selected: DuplicateFingerprint[] = [];
+  for (let index = 0; selected.length < MESSAGE_DUPLICATE_FINGERPRINT_LIMIT; index += 1) {
+    for (const group of groups.values()) {
+      if (group[index]) selected.push(group[index]);
+      if (selected.length === MESSAGE_DUPLICATE_FINGERPRINT_LIMIT) break;
+    }
+  }
+  return selected;
+}
+
 @Injectable()
 export class MessageDuplicateHistoryService {
   private readonly fingerprints: RuleEngineDuplicateDetector;
-  constructor(private readonly redis: RedisCounterService) {
+  constructor(
+    private readonly redis: RedisCounterService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
+  ) {
     this.fingerprints = new RuleEngineDuplicateDetector(redis);
   }
 
   candidateKeys(content: DuplicateMessageContent, settings: ChatSettings): string[] {
-    const parts = this.fingerprints
-      .buildFingerprints(content.text, settings, content.navigationTargets)
-      .slice(0, 16);
-    if (parts.length === 0) parts.push({ type: 'exact', value: '' });
+    const parts = this.buildFingerprints(content, settings);
     return parts.map((part) =>
       digestDuplicateContent({
         version: 1,
@@ -65,19 +93,15 @@ export class MessageDuplicateHistoryService {
     const flow = resolveDuplicateFlowConfig(input.settings);
     const keys = messageDuplicateKeys(input.chatId, input.userId, input.messageId, '');
     const deadlineAtMs = Date.now() + 250;
-    const parts = identity
-      ? this.fingerprints
-          .buildFingerprints(input.content.text, input.settings, input.content.navigationTargets)
-          .slice(0, 16)
-      : [];
-    if (identity && parts.length === 0) parts.push({ type: 'exact', value: '' });
+    const parts = identity ? this.buildFingerprints(input.content, input.settings) : [];
+    const settingsDigest = messageDuplicateSettingsDigest(input.settings);
     const patterns = parts.map((part) => ({
       part,
       hash: digestDuplicateContent({
         version: 1,
         mode,
         controlRevision: input.controlRevision,
-        settingsDigest: messageDuplicateSettingsDigest(input.settings),
+        settingsDigest,
         type: part.type,
         textPresent: input.content.text.length > 0,
         value: part.value,
@@ -110,17 +134,30 @@ export class MessageDuplicateHistoryService {
       onTimeout: () => {
         throw new Error('Message duplicate history deadline exceeded');
       },
+    }).catch((error: unknown) => {
+      this.metrics?.record('history.unavailable');
+      throw error;
     });
-    if (mutation.kind === 'deadline_exceeded')
+    if (mutation.kind === 'deadline_exceeded') {
+      this.metrics?.record('history.unavailable');
       throw new Error('Message duplicate history deadline exceeded');
-    if (!identity || mutation.kind === 'stale') return null;
+    }
+    if (mutation.kind === 'replayed') this.metrics?.record('history.replayed');
+    if (!identity || mutation.kind === 'stale') {
+      this.metrics?.record(identity ? 'history.stale' : 'history.unverified');
+      return null;
+    }
     let selected: { part: DuplicateFingerprint; hash: string; count: number } | null = null;
     patterns.forEach((pattern, index) => {
       const count = mutation.counts[index] ?? 0;
       if (count > flow.allowedCount + 1 && (!selected || count > selected.count))
         selected = { ...pattern, count };
     });
-    if (!selected) return null;
+    if (!selected) {
+      this.metrics?.record('history.no_match_or_allowed');
+      return null;
+    }
+    this.metrics?.record('history.matched');
     const match = selected as { part: DuplicateFingerprint; hash: string; count: number };
     const binding: MessageDuplicateBinding = {
       version: 1,
@@ -129,7 +166,7 @@ export class MessageDuplicateHistoryService {
       eventTimestampMs: input.eventTimestampMs,
       controlRevision: input.controlRevision,
       compareMode: mode,
-      settingsDigest: messageDuplicateSettingsDigest(input.settings),
+      settingsDigest,
       sourceDigest: input.content.sourceDigest,
       contentDigest: identity,
       fingerprint: match.hash,
@@ -173,5 +210,18 @@ export class MessageDuplicateHistoryService {
       },
     });
     return count !== null && count >= binding.requiredCount;
+  }
+
+  private buildFingerprints(content: DuplicateMessageContent, settings: ChatSettings) {
+    const all = this.fingerprints.buildFingerprints(
+      content.text,
+      settings,
+      content.navigationTargets,
+    );
+    if (all.length > MESSAGE_DUPLICATE_FINGERPRINT_LIMIT)
+      this.metrics?.record('history.fingerprint_budget');
+    const parts = selectMessageDuplicateFingerprints(all);
+    if (parts.length === 0) parts.push({ type: 'exact', value: '' });
+    return parts;
   }
 }

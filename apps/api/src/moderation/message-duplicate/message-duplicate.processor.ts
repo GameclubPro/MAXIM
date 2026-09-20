@@ -1,9 +1,11 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Optional } from '@nestjs/common';
 import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
 import { z } from 'zod';
 import { ModerationExecutionService } from '../moderation-execution.service';
 import { PhotoDuplicateSourceNotReadyError } from '../photo-duplicate/photo-duplicate.queue';
 import { MessageDuplicateMediaDeferredError } from './message-duplicate-media.service';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 import {
   MESSAGE_DUPLICATE_QUEUE,
   MessageDuplicateOrderingStore,
@@ -36,6 +38,7 @@ export class MessageDuplicateProcessor extends WorkerHost {
   constructor(
     private readonly execution: ModerationExecutionService,
     private readonly ordering: MessageDuplicateOrderingStore,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {
     super();
   }
@@ -43,9 +46,19 @@ export class MessageDuplicateProcessor extends WorkerHost {
   async process(job: Job<MessageDuplicateJob>, token?: string): Promise<void> {
     const parsed = messageDuplicateJobSchema.safeParse(job.data);
     if (!parsed.success || job.id !== parsed.data.idempotencyKey) {
+      this.metrics?.record('worker.invalid');
       throw new UnrecoverableError('Invalid message duplicate job');
     }
     const data = Object.freeze(parsed.data);
+    this.metrics?.record('worker.started');
+    const ageMs = Date.now() - Date.parse(data.createdAt);
+    this.metrics?.record(
+      ageMs < 10_000
+        ? 'worker.age_under_10s'
+        : ageMs < 60_000
+          ? 'worker.age_10s_to_60s'
+          : 'worker.age_over_60s',
+    );
     const identity = {
       jobId: data.idempotencyKey,
       chatId: data.chatId,
@@ -57,6 +70,7 @@ export class MessageDuplicateProcessor extends WorkerHost {
       Date.parse(data.createdAt) > Date.now() + 60_000
     ) {
       await this.ordering.abandon(identity);
+      this.metrics?.record('worker.expired');
       return;
     }
     try {
@@ -69,16 +83,30 @@ export class MessageDuplicateProcessor extends WorkerHost {
             lease,
           ),
       );
-      if (result.kind !== 'defer') return;
+      if (result.kind !== 'defer') {
+        this.metrics?.record('worker.completed');
+        return;
+      }
+      this.metrics?.record('worker.defer_ordering');
     } catch (error) {
       if (
         !(error instanceof PhotoDuplicateSourceNotReadyError) &&
         !(error instanceof MessageDuplicateMediaDeferredError)
       ) {
-        if (error instanceof UnrecoverableError || job.attemptsMade + 1 >= (job.opts.attempts ?? 1))
+        if (
+          error instanceof UnrecoverableError ||
+          job.attemptsMade + 1 >= (job.opts.attempts ?? 1)
+        ) {
           await this.ordering.abandon(identity);
+          this.metrics?.record('worker.terminal');
+        } else this.metrics?.record('worker.retry');
         throw error;
       }
+      this.metrics?.record(
+        error instanceof PhotoDuplicateSourceNotReadyError
+          ? 'worker.defer_source'
+          : 'worker.defer_media',
+      );
     }
     try {
       if (!token) throw new Error('Missing message duplicate worker lock');

@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
 import { raceWithTimeout } from '../../common/promise-timeout.util';
 import { RedisCounterService } from '../redis-counter.service';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 
 export const MESSAGE_DUPLICATE_CONTROL_KEY = 'message-duplicate:runtime-control:v1';
 const messageDuplicateControlV1Schema = z
@@ -74,6 +75,7 @@ export class MessageDuplicatePolicyService {
   constructor(
     private readonly redis: RedisCounterService,
     private readonly config: ConfigService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
 
   async resolve(chatId: string, fresh = false): Promise<MessageDuplicatePolicy> {
@@ -97,6 +99,7 @@ export class MessageDuplicatePolicyService {
         effectiveAtMs: Date.parse(control.effectiveAt),
       };
     } catch {
+      this.metrics?.record('policy.unavailable');
       if (fresh) throw new Error('Message duplicate control could not be verified');
       if (Date.now() - this.warnedAt > 60_000) {
         this.warnedAt = Date.now();

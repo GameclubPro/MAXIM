@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { classifyDuplicateEventTime } from '../duplicate-enforcement-safety';
@@ -11,6 +11,7 @@ import { messageDuplicateActionsEnabled } from './message-duplicate-policy.servi
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
 import { MessageDuplicateEnqueueService } from './message-duplicate.queue';
 import { messageDuplicateSettingsDigest } from './message-duplicate-state';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 
 @Injectable()
 export class MessageDuplicateService {
@@ -20,6 +21,7 @@ export class MessageDuplicateService {
     private readonly history: MessageDuplicateHistoryService,
     private readonly enforcement: MessageDuplicateEnforcementService,
     private readonly queue: MessageDuplicateEnqueueService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
 
   async isAuthoritative(chatId: string): Promise<boolean> {
@@ -44,7 +46,10 @@ export class MessageDuplicateService {
     )
       return;
     const policy = await this.policy.resolve(message.chatId);
-    if (policy.mode === 'off') return;
+    if (policy.mode === 'off') {
+      this.metrics?.record('admission.off');
+      return;
+    }
     const eventTimestampMs = params.eventTimestampMs;
     if (
       !Number.isSafeInteger(eventTimestampMs) ||
@@ -55,6 +60,7 @@ export class MessageDuplicateService {
         windowSec: resolveDuplicateFlowConfig(params.settings).windowSec,
       })
     ) {
+      this.metrics?.record('admission.event_time_rejected');
       this.logger.debug(
         { chatId: message.chatId },
         'Message duplicate skipped: untrusted event time',
@@ -62,6 +68,7 @@ export class MessageDuplicateService {
       return;
     }
     const content = extractDuplicateMessageContent(params.update.raw);
+    if (!content.complete) this.metrics?.recordContentRejection(content.reason);
     const observedContent = params.track
       ? content
       : { ...content, complete: false, reason: 'invalid_content' as const };
@@ -74,13 +81,17 @@ export class MessageDuplicateService {
       controlRevision: policy.revision,
       settings: params.settings,
     });
-    if (!params.track) return;
+    if (!params.track) {
+      this.metrics?.record('admission.untracked');
+      return;
+    }
     if (
       params.settings.duplicateCompareMode !== 'TEXT' &&
       content.complete &&
       content.media.length > 0
     ) {
       if (!params.webhookEventId) {
+        this.metrics?.record('admission.missing_receipt');
         this.logger.debug(
           { chatId: message.chatId },
           'Message duplicate media skipped: missing durable receipt',
@@ -97,6 +108,7 @@ export class MessageDuplicateService {
         settingsDigest: messageDuplicateSettingsDigest(params.settings),
         actionEligible: params.actionEligible && messageDuplicateActionsEnabled(policy.mode),
       });
+      this.metrics?.record('admission.media_queued');
       return;
     }
     if (!content.complete && !result)
@@ -115,6 +127,10 @@ export class MessageDuplicateService {
         update: params.update,
         executeFullAction: params.executeFullAction,
       });
+    } else if (result) {
+      this.metrics?.record(
+        params.actionEligible ? 'admission.shadow' : 'admission.action_ineligible',
+      );
     }
   }
 }

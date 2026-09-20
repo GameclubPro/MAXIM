@@ -50,6 +50,32 @@ evidence failures, so one unsupported baseline cannot block subsequent verifiabl
 See [Duplicate Miss Audit](../incidents/2026-09-19-duplicate-miss-audit.md) for regression coverage
 and the limits of attributing a reported miss.
 
+Fingerprint admission stays capped at 16, with representation for every enabled kind and stable
+value selection under truncation. Media comparison materializes all distinct candidate receipts
+before recording the current occurrence. One attempt admits at most 20 uncached media items under
+the existing 30-second verification deadline; additional work defers with revision-scoped proof
+reuse and the same ten-minute job lifetime. Terminal baseline rejection is cached separately and
+never acts as equality evidence. See [Reliability Plan](../../duplicate-reliability-plan-2026-09-20.md).
+
+## Operational Diagnostics
+
+API processes emit `message_duplicate_diagnostics` structured summaries with `schemaVersion: 1`,
+`windowStartedAt`, `windowEndedAt` and fixed numeric `counters`. Emission is at most once per
+30 seconds while active, plus a final shutdown flush. Summaries have no message contents,
+identifiers, URLs or free-form errors and introduce no Redis/DB writes. They are best-effort
+process-local attempt counts; retries and baseline verification are included, and a crash can
+lose the unflushed interval. Absence of a log record is not proof of zero activity.
+
+Use bounded service-log reads to inspect these summaries, especially in
+`api-moderation-background` (media/ordering) and `api-action` (final delete guards).
+`history.no_match_or_allowed` includes originals and explicitly permitted repeats;
+`history.matched` is detection, not deletion. `enforcement.intent_handoff` is durable handoff,
+not a MAX receipt, and `worker.completed` does not imply any action. `worker.age_*` describes age
+since original enqueue including retries, not individual request latency. Guard counters separate
+changed content/history/settings, immunity, manual release, policy rejection and unavailable
+verification. `media.budget_deferred` distinguishes bounded resource deferral from a non-match.
+Continue using persisted delete receipts and authenticated per-chat diagnostics for actual outcomes.
+
 ## Runtime Control
 
 Run the built operator inside the exact released `api-admin` container through the normal VPS

@@ -105,7 +105,12 @@ describe('message duplicate queue', () => {
       runInOrder: jest.fn().mockRejectedValue(new MessageDuplicateMediaDeferredError()),
       abandon: jest.fn(),
     };
-    const processor = new MessageDuplicateProcessor(execution as never, ordering as never);
+    const metrics = { record: jest.fn() };
+    const processor = new MessageDuplicateProcessor(
+      execution as never,
+      ordering as never,
+      metrics as never,
+    );
     const data = jobData();
     const moveToDelayed = jest.fn();
     const job = {
@@ -118,9 +123,12 @@ describe('message duplicate queue', () => {
     await expect(processor.process(job, 'token')).rejects.toBeInstanceOf(DelayedError);
     expect(moveToDelayed).toHaveBeenCalledTimes(1);
     expect(ordering.abandon).not.toHaveBeenCalled();
+    expect(metrics.record).toHaveBeenCalledWith('worker.defer_media');
+    expect(metrics.record).not.toHaveBeenCalledWith('worker.completed');
     data.createdAt = new Date(Date.now() - 600001).toISOString();
     await processor.process(job, 'token');
     expect(ordering.abandon).toHaveBeenCalledTimes(1);
+    expect(metrics.record).toHaveBeenCalledWith('worker.expired');
   });
   it('abandons a final processing failure and rejects malformed envelopes', async () => {
     const ordering = {

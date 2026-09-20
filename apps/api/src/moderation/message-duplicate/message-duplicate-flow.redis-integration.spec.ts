@@ -439,6 +439,29 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.downloads).toHaveBeenCalledTimes(4);
     });
 
+    it('verifies every independent candidate before freezing the current occurrence count', async () => {
+      flow = await createFlow({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnoreLinksEnabled: true,
+      });
+      const first = flow.prepare({ photo: 'different', text: 'https://first.example/item' });
+      const second = flow.prepare({ photo: 'png', text: 'https://second.example/item' });
+      const repeat = flow.prepare({
+        photo: 'webp',
+        text: 'https://first.example/item https://second.example/item',
+      });
+      await flow.processor.process((await flow.ingest(first))!);
+      await flow.processor.process((await flow.ingest(second))!);
+      expect(flow.downloads).not.toHaveBeenCalled();
+      const job = (await flow.ingest(repeat))!;
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([repeat.id]);
+      expect(flow.downloads).toHaveBeenCalledTimes(3);
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([repeat.id]);
+      expect(flow.downloads).toHaveBeenCalledTimes(3);
+    });
+
     it('preserves different pictures, changed captions, other authors and the original', async () => {
       flow = await createFlow();
       for (const item of [

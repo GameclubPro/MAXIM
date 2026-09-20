@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -38,8 +38,10 @@ import {
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
 import { PhotoDuplicateRuntimePolicyService } from '../photo-duplicate/photo-duplicate-runtime-policy.service';
+import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 
 const requireFromHere = createRequire(__filename);
+const MAX_UNCACHED_MEDIA_PER_ATTEMPT = 20;
 const pointerSchema = z
   .object({
     webhookEventId: z.string().min(1).max(200),
@@ -73,6 +75,7 @@ export class MessageDuplicateMediaService {
     config: ConfigService,
     private readonly photoPolicy: PhotoDuplicateRuntimePolicyService,
     private readonly max: MaxClientService,
+    @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {
     const maxBytes = config.get<number>('MESSAGE_DUPLICATE_MAX_BYTES') ?? 8_388_608;
     this.binary = new SecurePhotoDownloader(
@@ -101,19 +104,26 @@ export class MessageDuplicateMediaService {
       policy.mode === 'off' ||
       policy.revision !== job.controlRevision ||
       job.eventTimestampMs < policy.effectiveAtMs
-    )
+    ) {
+      this.metrics?.record('media.policy_changed');
       return;
+    }
     lease.assertOwned();
     const source = await this.loadSource(job.webhookEventId);
-    if (!source) return;
+    if (!source) {
+      this.metrics?.record('media.source_missing');
+      return;
+    }
     const message = source.update.message!;
     if (
       message.chatId !== job.chatId ||
       message.messageId !== job.messageId ||
       source.eventTimestampMs !== job.eventTimestampMs ||
       this.bots.isKnownBotUserId(message.senderId)
-    )
+    ) {
+      this.metrics?.record('media.identity_rejected');
       return;
+    }
     const settings = await this.prisma.chatSettings.findUnique({
       where: { chatId: job.chatId },
       include: {
@@ -132,18 +142,25 @@ export class MessageDuplicateMediaService {
       settings.chat.entityType !== 'CHAT' ||
       settings.chat.admins.some((admin) => admin.userId === message.senderId) ||
       messageDuplicateSettingsDigest(settings) !== job.settingsDigest
-    )
+    ) {
+      this.metrics?.record('media.settings_rejected');
       return;
+    }
     const flow = resolveDuplicateFlowConfig(settings);
     if (
       classifyDuplicateEventTime({
         eventTimestampMs: job.eventTimestampMs,
         windowSec: flow.windowSec,
       })
-    )
+    ) {
+      this.metrics?.record('media.event_time_rejected');
       return;
+    }
     const content = extractDuplicateMessageContent(source.update.raw);
-    if (!content.complete || content.media.length === 0) return;
+    if (!content.complete || content.media.length === 0) {
+      this.metrics?.record('media.content_unverified');
+      return;
+    }
     const scope = digestDuplicateContent([
       job.chatId,
       message.senderId,
@@ -158,7 +175,7 @@ export class MessageDuplicateMediaService {
       messageId: job.messageId,
       eventTimestampMs: job.eventTimestampMs,
     };
-    let previous: z.infer<typeof pointerSchema> | null = null;
+    const predecessors = new Map<string, z.infer<typeof pointerSchema>>();
     let retryingCurrent = false;
     for (const key of candidateKeys) {
       const raw = await this.redis.getString(key);
@@ -166,10 +183,17 @@ export class MessageDuplicateMediaService {
       if (parsed?.success) {
         const ageMs = job.eventTimestampMs - parsed.data.eventTimestampMs;
         // FLAG: A late older job must not overwrite a newer candidate or create retroactive actions.
-        if (ageMs < 0) return;
+        if (ageMs < 0) {
+          this.metrics?.record('media.late_event');
+          return;
+        }
         if (ageMs < flow.windowSec * 1000) {
           if (ageMs === 0 && parsed.data.messageId === job.messageId) retryingCurrent = true;
-          else previous ??= parsed.data;
+          else {
+            const previous = predecessors.get(parsed.data.messageId);
+            if (!previous || previous.eventTimestampMs < parsed.data.eventTimestampMs)
+              predecessors.set(parsed.data.messageId, parsed.data);
+          }
           lease.assertOwned();
           continue;
         }
@@ -183,14 +207,15 @@ export class MessageDuplicateMediaService {
     const missingCurrentProof = currentCached.some((hash) => hash === null);
     // FLAG: A candidate pointing at this job may be an unfinished action, not a first occurrence.
     // Rebuild evicted proofs on retry; durable intent/ordering claims still fence repeated actions.
-    if (!previous && !retryingCurrent && missingCurrentProof) {
+    if (predecessors.size === 0 && !retryingCurrent && missingCurrentProof) {
       for (const key of candidateKeys) {
         lease.assertOwned();
         await this.redis.setStringIfAbsentWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
       }
+      this.metrics?.record('media.first_candidate');
       return;
     }
-    if (previous || missingCurrentProof) {
+    if (predecessors.size > 0 || missingCurrentProof) {
       const decision = await this.governor.decide({
         component: 'message-duplicate-media',
         sourceTag: 'message-duplicate',
@@ -202,9 +227,25 @@ export class MessageDuplicateMediaService {
         );
     }
     const deadlineAtMs = Date.now() + 30_000;
-    if (previous) {
+    const budget = { remaining: MAX_UNCACHED_MEDIA_PER_ATTEMPT };
+    // FLAG: Materialize every distinct predecessor before freezing the current replay count.
+    // Proof caches retain progress across bounded deferrals; baseline hits never authorize actions.
+    for (const previous of predecessors.values()) {
+      lease.assertOwned();
+      const rejectedKey = `message-duplicate:baseline-rejected:v1:${this.resourceKey}:${digestDuplicateContent(previous.webhookEventId)}`;
+      if ((await this.redis.getString(rejectedKey)) === 'rejected') {
+        this.metrics?.record('media.baseline_rejected_cached');
+        continue;
+      }
       try {
+        if (Date.now() >= deadlineAtMs) {
+          this.metrics?.record('media.budget_deferred');
+          throw new MessageDuplicateMediaDeferredError(
+            'Message media verification budget exhausted',
+          );
+        }
         const baseline = await this.loadSource(previous.webhookEventId);
+        if (!baseline) this.metrics?.record('media.baseline_missing');
         const baselineMessage = baseline?.update.message;
         if (
           baseline &&
@@ -229,6 +270,8 @@ export class MessageDuplicateMediaService {
               flow.windowSec,
               deadlineAtMs,
               baseline.botId,
+              undefined,
+              budget,
             );
             lease.assertOwned();
             await this.history.observe({
@@ -241,6 +284,7 @@ export class MessageDuplicateMediaService {
               settings,
               mediaHashes: verified.hashes,
             });
+            this.metrics?.record('media.baseline_verified');
           }
         }
       } catch (error) {
@@ -251,6 +295,11 @@ export class MessageDuplicateMediaService {
           !(error instanceof PhotoDownloadHttpError && [403, 404, 410].includes(error.statusCode))
         )
           throw error;
+        // FLAG: Negative cache entries cannot prove equality. They only prevent a terminal,
+        // receipt-scoped baseline from spending every resumed attempt's verification budget.
+        lease.assertOwned();
+        await this.redis.setStringWithTtl(rejectedKey, 'rejected', flow.windowSec);
+        this.metrics?.record('media.baseline_rejected');
         this.logger.debug(
           { chatId: job.chatId },
           'Message duplicate baseline media could not be verified',
@@ -265,6 +314,7 @@ export class MessageDuplicateMediaService {
       deadlineAtMs,
       source.botId,
       currentCached,
+      budget,
     );
     if (Date.now() >= deadlineAtMs) throw new Error('Message media verification deadline exceeded');
     lease.assertOwned();
@@ -294,12 +344,15 @@ export class MessageDuplicateMediaService {
           scope: settings.duplicatePhotoScope,
         })
       ).enforce;
-    if (
-      result &&
-      !photoOwned &&
-      job.actionEligible === true &&
-      (await lease.resolveActionEligibility())
-    ) {
+    if (result) {
+      if (photoOwned) {
+        this.metrics?.record('media.photo_owned');
+        return;
+      }
+      if (job.actionEligible !== true || !(await lease.resolveActionEligibility())) {
+        this.metrics?.record('media.action_ineligible');
+        return;
+      }
       await this.enforcement.enqueue({
         ...result,
         chatId: job.chatId,
@@ -386,9 +439,16 @@ export class MessageDuplicateMediaService {
     deadlineAtMs: number,
     botId: string,
     cachedHashes?: readonly (string | null)[],
+    budget = { remaining: MAX_UNCACHED_MEDIA_PER_ATTEMPT },
   ): Promise<{ content: DuplicateMessageContent; hashes: string[] }> {
     const originalMedia = content.media;
     const hashes = cachedHashes ? [...cachedHashes] : await this.readHashes(content, update);
+    const missing = hashes.filter((hash) => hash === null).length;
+    if (missing > budget.remaining || Date.now() >= deadlineAtMs) {
+      this.metrics?.record('media.budget_deferred');
+      throw new MessageDuplicateMediaDeferredError('Message media verification budget exhausted');
+    }
+    budget.remaining -= missing;
     const photoIndexes = content.media
       .map((media, index) => (media.kind === 'photo' && !hashes[index] ? index : -1))
       .filter((index) => index >= 0);

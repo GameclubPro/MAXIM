@@ -78,6 +78,7 @@ function setup() {
     }),
   };
   const history = { stillMatches: jest.fn().mockResolvedValue(true) };
+  const metrics = { record: jest.fn(), recordGuardRejection: jest.fn() };
   const service = new MessageDuplicateDeleteGuardService(
     prisma as never,
     max as never,
@@ -87,6 +88,7 @@ function setup() {
     policy as never,
     history as never,
     new ConfigService(),
+    metrics as never,
   );
   const params = {
     intentId: 'intent',
@@ -107,6 +109,7 @@ function setup() {
     immunity,
     photos,
     history,
+    metrics,
   };
 }
 
@@ -125,6 +128,9 @@ describe('message duplicate final delete guard', () => {
     );
     expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
     expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(s.metrics.recordGuardRejection).toHaveBeenCalledWith(
+      'message_duplicate_author_not_member',
+    );
   });
 
   it.each(['transport', 'malformed', 'mismatched'])(
@@ -144,6 +150,8 @@ describe('message duplicate final delete guard', () => {
       expect(failure).toBeInstanceOf(Error);
       expect(failure).not.toBeInstanceOf(MessageDuplicateGuardRejectedError);
       expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith('guard.unavailable');
+      expect(s.metrics.recordGuardRejection).not.toHaveBeenCalled();
     },
   );
 

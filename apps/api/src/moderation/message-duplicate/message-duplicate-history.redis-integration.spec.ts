@@ -65,6 +65,23 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await observe('c', 50)).toBeNull();
   });
 
+  it('does not let many links starve an enabled phone fingerprint', async () => {
+    const override = {
+      settings: duplicateSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnoreLinksEnabled: true,
+        duplicateIgnorePhonesEnabled: true,
+      }),
+    };
+    const text = (prefix: string) =>
+      `${prefix} +7 (999) 123-45-67 ${Array.from({ length: 24 }, (_, index) => `https://${prefix}.example/item-${index}`).join(' ')}`;
+    await observe('original', 0, text('first'), override);
+    const result = await observe('repeat', 100, text('second'), override);
+    expect(result?.hit.fingerprintType).toBe('phone');
+    expect(result?.hit.count).toBe(1);
+    expect(await history.stillMatches(chatId, result!.binding)).toBe(true);
+  });
+
   it('does not reuse observations from a prior rollout revision for new sanctions', async () => {
     await observe('a', 0);
     expect(await observe('b', 100, 'a', { controlRevision: 2 })).toBeNull();

@@ -40,6 +40,7 @@ function setup() {
   const bots = { isKnownBotUserId: jest.fn().mockReturnValue(false), getDefaultBotId: () => 'bot' };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'allow' }) };
   const max = { getExactMessageRow: jest.fn() };
+  const metrics = { record: jest.fn() };
   const service = new MessageDuplicateMediaService(
     prisma as never,
     redis as never,
@@ -52,6 +53,7 @@ function setup() {
     new ConfigService(),
     { resolveEffectivePolicy: jest.fn().mockResolvedValue({ enforce: false }) } as never,
     max as never,
+    metrics as never,
   );
   const downloads = jest.fn(async (url: string) => ({
     bytes: Buffer.from(url.endsWith('b') ? 'different' : 'same'),
@@ -119,10 +121,70 @@ function setup() {
     max,
     verifyBinary,
     actualVerifyBinary,
+    metrics,
   };
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it.each([false, true])(
+    'resumes all candidates within the media budget (terminal baseline: %s)',
+    async (terminal) => {
+      const s = setup();
+      s.history.candidateKeys.mockImplementation((content) => content.text.split(' '));
+      const album = (id: string, timestamp: number, text: string) => {
+        const job = s.job(id, timestamp);
+        s.rows.set(id, {
+          status: 'PROCESSED',
+          botId: 'bot',
+          normalizedPayload: duplicateUpdate(
+            id,
+            job.eventTimestampMs,
+            text,
+            Array.from({ length: 10 }, (_, index) => ({
+              type: 'file',
+              payload: { url: `https://fd.oneme.ru/${id}-${index}` },
+            })),
+          ),
+        });
+        return job;
+      };
+      for (const [index, id] of ['first', 'second', 'third'].entries())
+        await s.service.process(album(id, index * 100, id), s.lease);
+      expect(s.downloads).not.toHaveBeenCalled();
+      if (terminal) s.verifyBinary.mockRejectedValueOnce(new UnrecoverableError('invalid bytes'));
+      const repeat = album('repeat', 400, 'first second third');
+      await expect(s.service.process(repeat, s.lease)).rejects.toBeInstanceOf(
+        MessageDuplicateMediaDeferredError,
+      );
+      expect(s.downloads.mock.calls.length).toBeLessThanOrEqual(20);
+      expect(s.history.observe).not.toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'repeat' }),
+      );
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith('media.budget_deferred');
+      const before = s.downloads.mock.calls.length;
+      await s.service.process(repeat, s.lease);
+      expect(s.downloads.mock.calls.length - before).toBe(20);
+      expect(s.history.observe).toHaveBeenLastCalledWith(
+        expect.objectContaining({ messageId: 'repeat' }),
+      );
+      const total = s.downloads.mock.calls.length;
+      await s.service.process(repeat, s.lease);
+      expect(s.downloads).toHaveBeenCalledTimes(total);
+      expect(s.downloads.mock.calls.filter(([url]) => url.includes('/first-0'))).toHaveLength(1);
+      if (terminal) expect(s.metrics.record).toHaveBeenCalledWith('media.baseline_rejected_cached');
+    },
+  );
+
+  it('verifies a shared predecessor only once across candidate keys', async () => {
+    const s = setup();
+    s.history.candidateKeys.mockReturnValue(['one', 'two', 'three']);
+    await s.service.process(s.job('original', 0), s.lease);
+    await s.service.process(s.job('repeat', 100), s.lease);
+    expect(s.downloads).toHaveBeenCalledTimes(2);
+    expect(s.history.observe).toHaveBeenCalledTimes(2);
+  });
+
   it('classifies unsupported binary contents as terminal, without retrying the same bytes', async () => {
     const s = setup();
     const verify = s.actualVerifyBinary;
