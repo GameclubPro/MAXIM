@@ -86,6 +86,7 @@ export class PhotoFingerprintService implements OnModuleInit {
   private readonly maxAlbumInputBytes: number;
   private readonly maxAlbumInputPixels: number;
   private readonly decodeGate: PhotoDecodePipelineGate;
+  private readonly canonicalOnly: boolean;
 
   constructor(
     limits: {
@@ -95,8 +96,10 @@ export class PhotoFingerprintService implements OnModuleInit {
       maxAlbumInputPixels?: number;
       maxConcurrentPipelines?: number;
       maxQueuedPipelines?: number;
+      canonicalOnly?: boolean;
     } = {},
   ) {
+    this.canonicalOnly = limits.canonicalOnly ?? false;
     this.maxInputBytes = normalizePositiveInteger(
       limits.maxInputBytes,
       MAX_INPUT_BYTES,
@@ -134,7 +137,7 @@ export class PhotoFingerprintService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    await initializePhotoFingerprintRuntime();
+    if (!this.canonicalOnly) await initializePhotoFingerprintRuntime();
   }
 
   createAlbumDecodeBudget(): PhotoDecodeBudget {
@@ -235,17 +238,17 @@ export class PhotoFingerprintService implements OnModuleInit {
       throw new Error('Photo normalization returned an unexpected pixel layout');
     }
 
-    await initializePhotoFingerprintRuntime();
-    const pixels = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    const pdq = PDQ.hash({
-      data: pixels,
-      width: info.width,
-      height: info.height,
-      channels: 3,
-    });
-    const pdqHash = PDQ.toHex(pdq.hash).toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(pdqHash)) {
-      throw new Error('PDQ returned an invalid fingerprint');
+    // FLAG: Production exact-image comparison never initializes or computes perceptual hashes.
+    // Zero-quality placeholders preserve the retained cache envelope without granting similarity.
+    let pdqHash = '0'.repeat(64);
+    let pdqQuality = 0;
+    if (!this.canonicalOnly) {
+      await initializePhotoFingerprintRuntime();
+      const pixels = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      const pdq = PDQ.hash({ data: pixels, width: info.width, height: info.height, channels: 3 });
+      pdqHash = PDQ.toHex(pdq.hash).toLowerCase();
+      pdqQuality = pdq.quality;
+      if (!/^[0-9a-f]{64}$/.test(pdqHash)) throw new Error('PDQ returned an invalid fingerprint');
     }
 
     const canonicalHash = createHash('sha256')
@@ -262,7 +265,7 @@ export class PhotoFingerprintService implements OnModuleInit {
       algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
       canonicalHash,
       pdqHash,
-      pdqQuality: pdq.quality,
+      pdqQuality,
     };
   }
 }

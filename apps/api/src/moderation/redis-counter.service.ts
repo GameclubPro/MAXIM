@@ -111,7 +111,11 @@ local window_ms = tonumber(ARGV[3]) * 1000
 local full_ttl_ms = tonumber(ARGV[4]) * 1000
 local count_limit = tonumber(ARGV[#ARGV])
 local member_timestamp_ms = tonumber(ARGV[2])
-if #ARGV == #KEYS + 7 then
+local baseline_policy = nil
+if #ARGV == #KEYS + 8 then
+  member_timestamp_ms = tonumber(ARGV[#ARGV - 2])
+  baseline_policy = cjson.decode(ARGV[#ARGV - 1])
+elseif #ARGV == #KEYS + 7 then
   member_timestamp_ms = tonumber(ARGV[#ARGV - 1])
 end
 local cutoff_ms = member_timestamp_ms - window_ms
@@ -125,17 +129,29 @@ for key_index = 2, #KEYS do
   if desired == '1' then
     redis.call('ZADD', KEYS[key_index], member_timestamp_ms, ARGV[6])
     redis.call('PEXPIRE', KEYS[key_index], full_ttl_ms)
+  else
+    redis.call('ZREM', KEYS[key_index], ARGV[6])
+  end
+end
+for key_index = 2, #KEYS do
+  if ARGV[5 + key_index] == '1' then
     local membership_count = redis.call(
       'ZCOUNT',
       KEYS[key_index],
       logical_lower_bound,
       member_timestamp_ms
     )
+    -- FLAG: Shared matching never inherits another author's escalation. The first chronological
+    -- image is the shared baseline; each other author starts their own repeat ladder at one.
+    if baseline_policy and key_index == baseline_policy[2] then
+      local first = redis.call('ZRANGEBYSCORE', KEYS[baseline_policy[1]], logical_lower_bound, member_timestamp_ms, 'WITHSCORES', 'LIMIT', 0, 1)
+      if first[2] and redis.call('ZCOUNT', KEYS[key_index], first[2], first[2]) == 0 then
+        membership_count = membership_count + 1
+      end
+    end
     membership_count = math.min(membership_count, count_limit)
     table.insert(stored_memberships, {key = KEYS[key_index], count = membership_count})
     table.insert(response, membership_count)
-  else
-    redis.call('ZREM', KEYS[key_index], ARGV[6])
   end
 end
 
@@ -165,16 +181,26 @@ if tonumber(state.revision) ~= tonumber(ARGV[1]) then return {0, 0} end
 if tonumber(state.scoreTimestampMs) ~= tonumber(ARGV[3]) then return {0, 0} end
 if type(state.memberships) ~= 'table' then return {-1, 0} end
 local member_of_set = false
+local shared_member_of_set = #KEYS == 2
 for _, entry in pairs(state.memberships) do
   if type(entry) == 'table' and entry.key == KEYS[2] then member_of_set = true end
+  if #KEYS == 3 and type(entry) == 'table' and entry.key == KEYS[3] then shared_member_of_set = true end
 end
-if not member_of_set then return {0, 0} end
+if not member_of_set or not shared_member_of_set then return {0, 0} end
 local score = redis.call('ZSCORE', KEYS[2], ARGV[2])
 if not score or tonumber(score) ~= tonumber(ARGV[3]) then return {0, 0} end
 -- FLAG: Revalidate the same event-time window used at detection. Dispatch authority has its
 -- own absolute deadline; queue delay must not move the comparison past a valid predecessor.
 local cutoff = tonumber(ARGV[3]) - tonumber(ARGV[4]) * 1000
-return {1, math.min(tonumber(ARGV[5]), redis.call('ZCOUNT', KEYS[2], '(' .. tostring(cutoff), ARGV[3]))}
+local lower = '(' .. tostring(cutoff)
+local count = redis.call('ZCOUNT', KEYS[2], lower, ARGV[3])
+if #KEYS == 3 then
+  local shared_score = redis.call('ZSCORE', KEYS[3], ARGV[2])
+  if not shared_score or tonumber(shared_score) ~= tonumber(ARGV[3]) or redis.call('ZCOUNT', KEYS[3], lower, ARGV[3]) < 2 then return {0, 0} end
+  local first = redis.call('ZRANGEBYSCORE', KEYS[3], lower, ARGV[3], 'WITHSCORES', 'LIMIT', 0, 1)
+  if first[2] and redis.call('ZCOUNT', KEYS[2], first[2], first[2]) == 0 then count = count + 1 end
+end
+return {1, math.min(tonumber(ARGV[5]), count)}
 `;
 
 const COMPARE_REVISIONED_CONTROL_SCRIPT = `
@@ -384,6 +410,7 @@ export class RedisCounterService implements OnModuleDestroy {
     ttlSeconds: number;
     countLimit?: number;
     deadlineAtMs: number;
+    sharedBaseline?: { sharedKey: string; authorKey: string };
   }): Promise<RevisionedSetMembershipResult> {
     const stateKey = params.stateKey.trim();
     const member = params.member.trim();
@@ -394,6 +421,15 @@ export class RedisCounterService implements OnModuleDestroy {
     const countLimit = Math.trunc(params.countLimit ?? 21);
     const deadlineAtMs = Math.trunc(params.deadlineAtMs);
     const membershipKeys = params.membershipKeys.map((key) => key.trim());
+    if (
+      params.sharedBaseline &&
+      (params.scoreTimestampMs === undefined ||
+        params.sharedBaseline.sharedKey === params.sharedBaseline.authorKey ||
+        !membershipKeys.includes(params.sharedBaseline.sharedKey) ||
+        !membershipKeys.includes(params.sharedBaseline.authorKey))
+    ) {
+      throw new Error('Shared baseline requires distinct declared memberships and event time');
+    }
     if (
       !stateKey ||
       !member ||
@@ -474,6 +510,14 @@ export class RedisCounterService implements OnModuleDestroy {
         member,
         ...allMembershipKeys.map((key) => (desiredKeySet.has(key) ? '1' : '0')),
         ...(params.scoreTimestampMs === undefined ? [] : [String(scoreTimestampMs)]),
+        ...(params.sharedBaseline
+          ? [
+              JSON.stringify([
+                allMembershipKeys.indexOf(params.sharedBaseline.sharedKey) + 2,
+                allMembershipKeys.indexOf(params.sharedBaseline.authorKey) + 2,
+              ]),
+            ]
+          : []),
         String(countLimit),
       )) as Array<number | string>;
       const appliedStatus = Number(appliedResult?.[0]);
@@ -527,6 +571,7 @@ export class RedisCounterService implements OnModuleDestroy {
     revision: number;
     scoreTimestampMs: number;
     windowSeconds: number;
+    sharedBaselineKey?: string;
   }): Promise<number | null> {
     if (
       ![params.revision, params.scoreTimestampMs, params.windowSeconds].every(
@@ -537,9 +582,10 @@ export class RedisCounterService implements OnModuleDestroy {
     }
     const result = (await this.redis.eval(
       READ_REVISIONED_MEMBERSHIP_COUNT_SCRIPT,
-      2,
+      params.sharedBaselineKey ? 3 : 2,
       params.stateKey,
       params.membershipKey,
+      ...(params.sharedBaselineKey ? [params.sharedBaselineKey] : []),
       String(params.revision),
       params.member,
       String(params.scoreTimestampMs),

@@ -10,9 +10,7 @@ import {
   resolvePhotoDuplicateAllowedMatchKinds,
   resolvePhotoDuplicateMaxAction,
   resolvePhotoDuplicateRolloutMode,
-  resolvePhotoDuplicateRuntimePolicy,
   restrictPhotoDuplicateMaxAction,
-  type PhotoDuplicateMatchKind,
   type PhotoDuplicateMatchPreset,
   type PhotoDuplicateRuntimePolicy,
   type PhotoDuplicateScope,
@@ -303,72 +301,21 @@ export class PhotoDuplicateRuntimePolicyService implements OnModuleDestroy {
     this.redis.disconnect();
   }
 
-  async resolveEffectivePolicy(params: {
+  async resolveEffectivePolicy(_params: {
     chatId: string;
     preset: PhotoDuplicateMatchPreset;
     scope: PhotoDuplicateScope;
   }): Promise<EffectivePhotoDuplicateRuntimePolicy> {
-    const envPolicy = resolvePhotoDuplicateRuntimePolicy({
-      ...params,
-      configService: this.configService,
-    });
-    if (!envPolicy.enforce) {
-      return { ...envPolicy, controlRevision: null, controlExpiresAt: null };
-    }
-
-    // FLAG: Redis is the shared, execution-time downgrade switch. A potentially enforcing env
-    // policy is never enough by itself; a missing, expired, malformed or unreadable control must
-    // collapse to shadow before any action can be authorized.
-    const control = await this.readFreshControl();
-    if (!control) {
-      return this.toFailClosedShadow(envPolicy);
-    }
-
-    const effectiveMode =
-      MODE_RANK[control.mode] < MODE_RANK[envPolicy.mode] ? control.mode : envPolicy.mode;
-    const controlMetadata = {
-      controlRevision: control.revision,
-      controlExpiresAt: control.expiresAt,
-    } as const;
-    if (effectiveMode === 'off') {
-      return {
-        ...envPolicy,
-        mode: 'off',
-        enforce: false,
-        advancedCanary: false,
-        ...controlMetadata,
-      };
-    }
-    if (effectiveMode === 'shadow' || !control.enforcementChatIds.includes(params.chatId)) {
-      return {
-        ...envPolicy,
-        mode: 'shadow',
-        enforce: false,
-        advancedCanary: false,
-        ...controlMetadata,
-      };
-    }
-
-    const advancedCanary =
-      envPolicy.advancedCanary && control.advancedCanaryChatIds.includes(params.chatId);
-    if ((params.preset === 'MINOR_EDITS' || params.scope === 'CHAT') && !advancedCanary) {
-      return {
-        ...envPolicy,
-        mode: 'shadow',
-        enforce: false,
-        advancedCanary: false,
-        ...controlMetadata,
-      };
-    }
-
-    const controlMatchKinds = new Set<PhotoDuplicateMatchKind>(control.allowedMatchKinds);
+    // FLAG: Retired photo-filter controls never authorize historical intents. Exact IMAGE jobs
+    // use the guarded message-duplicate path and the administrator's current per-chat selection.
     return {
-      mode: effectiveMode,
-      enforce: true,
-      advancedCanary,
-      allowedMatchKinds: envPolicy.allowedMatchKinds.filter((kind) => controlMatchKinds.has(kind)),
-      maxAction: restrictPhotoDuplicateMaxAction(envPolicy.maxAction, control.maxAction),
-      ...controlMetadata,
+      mode: 'off',
+      enforce: false,
+      advancedCanary: false,
+      allowedMatchKinds: [],
+      maxAction: 'DELETE_MESSAGE',
+      controlRevision: null,
+      controlExpiresAt: null,
     };
   }
 
@@ -421,6 +368,11 @@ export class PhotoDuplicateRuntimePolicyService implements OnModuleDestroy {
       );
     }
     const control = parsed.data;
+    if (control.mode !== 'off') {
+      throw new PhotoDuplicateRuntimeControlValidationError(
+        'Photo filters are retired; configure exact images in chat settings',
+      );
+    }
     const expectedRevision = params.expectedRevision;
     if (
       expectedRevision !== null &&

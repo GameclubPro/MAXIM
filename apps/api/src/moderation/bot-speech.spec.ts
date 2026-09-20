@@ -170,20 +170,20 @@ describe('bot speech styles', () => {
     ).toBe('**Алексей**, сообщение удалено: длина сообщения 187 символов при лимите 100.');
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение распознано как повтор. Повтор удалён, дополнительной санкции нет.',
+      '**Алексей**, сообщение распознано как повтор. Повтор удалён.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, false, '', 'ROBOT')).toBe(
-      '**Алексей**, сообщение распознано как повтор. Повтор отмечен, дополнительной санкции нет.',
+      '**Алексей**, сообщение распознано как повтор. Повтор обнаружен.',
     );
 
     expect(
       (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT', 'image'),
-    ).toBe('**Алексей**, фото распознано как повтор. Повтор удалён, дополнительной санкции нет.');
+    ).toBe('**Алексей**, фото распознано как повтор. Повтор удалён.');
 
     expect(
       (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY', 'image_set'),
-    ).toBe('**Алексей**, альбом повторился. Повтор удалён, дополнительной санкции нет.');
+    ).toBe('**Алексей**, альбом повторился. Повтор удалён.');
 
     expect(
       (service as any).buildDuplicateExplanation(
@@ -217,7 +217,7 @@ describe('bot speech styles', () => {
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'POLICE')).toBe(
-      '**Алексей**, повтор зафиксирован. Повтор удалён. Профилактика сработала.',
+      '**Алексей**, повтор зафиксирован. Повтор удалён.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'FRIENDLY')).toBe(
@@ -270,11 +270,11 @@ describe('bot speech styles', () => {
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
-      '**Алексей**, сообщение повторилось. Повтор удалён, дополнительной санкции нет.',
+      '**Алексей**, сообщение повторилось. Повтор удалён.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, false, '', 'FRIENDLY')).toBe(
-      '**Алексей**, сообщение повторилось. Повтор отмечен, пока без санкции.',
+      '**Алексей**, сообщение повторилось. Повтор обнаружен.',
     );
 
     expect(

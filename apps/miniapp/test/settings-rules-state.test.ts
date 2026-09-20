@@ -289,19 +289,19 @@ test('buildRulesTextFromSettingsScreen mentions photos only for enforcing rollou
     duplicatePhotoEnabled: true,
   });
 
-  for (const mode of ['OFF', 'OBSERVE'] as const) {
+  for (const mode of ['OFF', 'OBSERVE', 'DELETE_ONLY'] as const) {
     const text = buildRulesTextFromSettingsScreen(
       createScreen({ settings, duplicatePhotoModerationMode: mode }),
     );
     assert.match(text, /Не отправляйте одинаковые и похожие сообщения/);
-    assert.doesNotMatch(text, /одинаковые фото/);
+    assert.doesNotMatch(text, /[Оо]динаковые картинки/u);
   }
 
-  for (const mode of ['DELETE_ONLY', 'FULL'] as const) {
+  for (const mode of ['FULL'] as const) {
     const text = buildRulesTextFromSettingsScreen(
       createScreen({ settings, duplicatePhotoModerationMode: mode }),
     );
-    assert.match(text, /одинаковые фото/);
+    assert.match(text, /[Оо]динаковые картинки/u);
   }
 });
 

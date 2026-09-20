@@ -5,11 +5,11 @@ import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.serv
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
-import { PhotoDuplicateRuntimePolicyService } from '../photo-duplicate/photo-duplicate-runtime-policy.service';
 import { resolveDuplicateFlowConfig, resolveDuplicateFlowOutcome } from '../duplicate-flow-policy';
 import {
   buildMessageDuplicateIdentity,
   extractDuplicateMessageContent,
+  exactImageSourceDigest,
 } from './message-duplicate-content';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
@@ -17,6 +17,7 @@ import { MessageDuplicateMetricsService } from './message-duplicate-metrics.serv
 import {
   MESSAGE_DUPLICATE_SOURCE,
   messageDuplicateSettingsDigest,
+  exactImageSettingsDigest,
   messageDuplicateSanctionSettingsDigest,
   parseMessageDuplicateBinding,
   type MessageDuplicateBinding,
@@ -48,7 +49,6 @@ export class MessageDuplicateDeleteGuardService {
     private readonly max: MaxClientService,
     private readonly bots: MaxBotLinkService,
     private readonly immunity: ParticipantModerationImmunityService,
-    private readonly photoPolicy: PhotoDuplicateRuntimePolicyService,
     private readonly policy: MessageDuplicatePolicyService,
     private readonly history: MessageDuplicateHistoryService,
     config: ConfigService,
@@ -195,6 +195,8 @@ export class MessageDuplicateDeleteGuardService {
       const content = extractDuplicateMessageContent(raw, false);
       if (
         (binding.compareMode === 'MESSAGE' && content.sourceDigest !== binding.sourceDigest) ||
+        (binding.compareMode === 'IMAGE' &&
+          exactImageSourceDigest(content) !== binding.sourceDigest) ||
         buildMessageDuplicateIdentity(content, binding.compareMode, binding.mediaHashes) !==
           binding.contentDigest
       ) {
@@ -236,19 +238,16 @@ export class MessageDuplicateDeleteGuardService {
     ) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_policy_changed');
     }
-    if (binding.hasPhotos && binding.version === 1) {
-      const photo = await this.photoPolicy.resolveEffectivePolicy({
-        chatId,
-        preset: 'SAME_IMAGE',
-        scope: 'SAME_AUTHOR',
-      });
-      if (
-        !photo.enforce ||
-        !photo.allowedMatchKinds.includes('canonical_sha256') ||
-        photo.controlRevision !== binding.photoControlRevision
-      ) {
-        throw new MessageDuplicateGuardRejectedError('message_duplicate_photo_policy_changed');
-      }
+    // FLAG: Retired whole-message photo bindings must not inherit new image-only authority.
+    if (
+      (binding.hasPhotos && binding.compareMode !== 'IMAGE') ||
+      (binding.compareMode === 'IMAGE' &&
+        (binding.version !== 2 ||
+          !binding.imageScope ||
+          !binding.hasPhotos ||
+          binding.photoControlRevision !== null))
+    ) {
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_photo_policy_changed');
     }
   }
 
@@ -260,7 +259,12 @@ export class MessageDuplicateDeleteGuardService {
     if (
       !settings?.antiDuplicateEnabled ||
       settings.chat.entityType !== 'CHAT' ||
-      messageDuplicateSettingsDigest(settings) !== binding.settingsDigest ||
+      (binding.compareMode === 'IMAGE'
+        ? exactImageSettingsDigest(settings)
+        : messageDuplicateSettingsDigest(settings)) !== binding.settingsDigest ||
+      (binding.compareMode === 'IMAGE' &&
+        (settings.duplicateCompareMode === 'TEXT' ||
+          settings.duplicatePhotoScope !== binding.imageScope)) ||
       Math.max(
         resolveDuplicateFlowConfig(settings).allowedCount + 2,
         (binding.sanction?.threshold ?? 0) + 1,
@@ -276,7 +280,8 @@ export class MessageDuplicateDeleteGuardService {
         fingerprintType: 'exact',
       }).decision;
       if (
-        messageDuplicateSanctionSettingsDigest(settings) !== binding.sanction.settingsDigest ||
+        messageDuplicateSanctionSettingsDigest(settings, binding.compareMode === 'IMAGE') !==
+          binding.sanction.settingsDigest ||
         decision?.action !== binding.sanction.action ||
         decision.threshold !== binding.sanction.threshold
       ) {

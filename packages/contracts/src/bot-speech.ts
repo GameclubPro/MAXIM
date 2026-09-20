@@ -156,8 +156,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       duplicateWarn: 'Предупреждение за повтор зафиксировано.',
       duplicateMute: 'Включён мут на {mute_duration} за повторные сообщения.',
       duplicateBan: 'Включён бан до ручного снятия за повторные сообщения.',
-      duplicatePassiveDeleted: 'Повтор удалён, дополнительной санкции нет.',
-      duplicatePassiveKept: 'Повтор отмечен, дополнительной санкции нет.',
+      duplicatePassiveDeleted: 'Повтор удалён.',
+      duplicatePassiveKept: 'Повтор обнаружен.',
     },
   },
   FRIENDLY: {
@@ -216,8 +216,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       duplicateWarn: 'Это предупреждение за повтор.',
       duplicateMute: 'За повторы включён мут на {mute_duration}.',
       duplicateBan: 'За повторы включён бан до ручного снятия.',
-      duplicatePassiveDeleted: 'Повтор удалён, дополнительной санкции нет.',
-      duplicatePassiveKept: 'Повтор отмечен, пока без санкции.',
+      duplicatePassiveDeleted: 'Повтор удалён.',
+      duplicatePassiveKept: 'Повтор обнаружен.',
     },
   },
   POLICE: {
@@ -273,8 +273,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       duplicateWarn: 'Предупреждение за повтор зафиксировано.',
       duplicateMute: 'За повторные сообщения включён мут на {mute_duration}.',
       duplicateBan: 'За повторные сообщения включён бан до ручного снятия.',
-      duplicatePassiveDeleted: 'Повтор удалён. Профилактика сработала.',
-      duplicatePassiveKept: 'Повтор отмечен, пока без санкции.',
+      duplicatePassiveDeleted: 'Повтор удалён.',
+      duplicatePassiveKept: 'Повтор обнаружен.',
     },
   },
   IRONIC: {
@@ -340,7 +340,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       duplicateMute: 'За повторы включён мут на {mute_duration}.',
       duplicateBan: 'За повторные сообщения включён бан до ручного снятия.',
       duplicatePassiveDeleted: 'Повтор удалён.',
-      duplicatePassiveKept: 'Повтор отмечен, пока без санкции.',
+      duplicatePassiveKept: 'Повтор обнаружен.',
     },
   },
 };

@@ -111,9 +111,10 @@ test('settings help is labelled and describes its trigger only while visible', (
 });
 
 test('lazy settings help does not import the full settings helper module at runtime', () => {
-  for (const source of [commandSource, duplicatePhotoSource]) {
+  for (const source of [commandSource]) {
     assert.match(source, /import \{ SettingsHintAnchor \} from '\.\/settings-hint-anchor'/u);
     assert.match(source, /import type \{[^}]*HintKey[^}]*\} from '\.\/settings-page-helpers'/u);
   }
+  assert.doesNotMatch(duplicatePhotoSource, /settings-page-helpers/u);
   assert.doesNotMatch(hintSource, /@maxim\/contracts|settings-page-helpers/u);
 });

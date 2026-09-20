@@ -19,18 +19,18 @@ export default function SettingsDuplicateMessageControls({
           disabled={mode === 'OFF'}
           onChange={(event) => onChange(event.target.value === 'TEXT' ? 'TEXT' : 'MESSAGE')}
         >
-          <option value="MESSAGE">Сообщение целиком</option>
-          <option value="TEXT">Текст и подпись</option>
+          <option value="MESSAGE">Текст и картинки</option>
+          <option value="TEXT">Только текст</option>
         </select>
       </label>
       <span className="field__hint" role="status">
         {mode === 'FULL'
-          ? 'Полная проверка: действия по настройкам чата'
+          ? 'Включено'
           : mode === 'DELETE_ONLY'
-            ? 'Расширенная проверка: только удаление'
+            ? 'Только удаление'
             : mode === 'OBSERVE'
-              ? 'Расширенная проверка: наблюдение'
-              : 'Расширенная проверка не подключена'}
+              ? 'Наблюдение'
+              : 'Проверка недоступна'}
       </span>
     </div>
   );

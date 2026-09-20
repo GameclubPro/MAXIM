@@ -13,12 +13,15 @@ import { MessageDuplicateMetricsService } from './message-duplicate-metrics.serv
 import {
   buildMessageDuplicateIdentity,
   digestDuplicateContent,
+  exactImageSourceDigest,
   type DuplicateMessageContent,
 } from './message-duplicate-content';
 import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   messageDuplicateKeys,
   messageDuplicateSettingsDigest,
+  exactImageSettingsDigest,
+  exactImageKeys,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 
@@ -31,6 +34,7 @@ export type MessageDuplicateObservation = {
   controlRevision: number;
   settings: ChatSettings;
   mediaHashes?: readonly string[];
+  imageScope?: 'SAME_AUTHOR' | 'CHAT';
 };
 
 export const MESSAGE_DUPLICATE_FINGERPRINT_LIMIT = 16;
@@ -70,7 +74,12 @@ export class MessageDuplicateHistoryService {
     this.fingerprints = new RuleEngineDuplicateDetector(redis);
   }
 
-  candidateKeys(content: DuplicateMessageContent, settings: ChatSettings): string[] {
+  candidateKeys(
+    content: DuplicateMessageContent,
+    settings: ChatSettings,
+    imageOnly = false,
+  ): string[] {
+    if (imageOnly) return [digestDuplicateContent(['exact-image-v1', content.media.length])];
     const parts = this.buildFingerprints(content, settings);
     return parts.map((part) =>
       digestDuplicateContent({
@@ -87,14 +96,27 @@ export class MessageDuplicateHistoryService {
   async observe(
     input: MessageDuplicateObservation,
   ): Promise<{ hit: DuplicateHit; binding: MessageDuplicateBinding } | null> {
-    const mode = input.settings.duplicateCompareMode === 'TEXT' ? 'TEXT' : 'MESSAGE';
+    const mode = input.imageScope
+      ? 'IMAGE'
+      : input.settings.duplicateCompareMode === 'TEXT'
+        ? 'TEXT'
+        : 'MESSAGE';
     const mediaHashes = [...(input.mediaHashes ?? [])];
     const identity = buildMessageDuplicateIdentity(input.content, mode, mediaHashes);
     const flow = resolveDuplicateFlowConfig(input.settings);
-    const keys = messageDuplicateKeys(input.chatId, input.userId, input.messageId, '');
+    const keys = input.imageScope
+      ? exactImageKeys(input.chatId, input.userId, input.messageId, '', input.imageScope)
+      : messageDuplicateKeys(input.chatId, input.userId, input.messageId, '');
     const deadlineAtMs = Date.now() + 250;
-    const parts = identity ? this.buildFingerprints(input.content, input.settings) : [];
-    const settingsDigest = messageDuplicateSettingsDigest(input.settings);
+    const parts: DuplicateFingerprint[] = identity
+      ? mode === 'IMAGE'
+        ? [{ type: input.content.media.length === 1 ? 'image' : 'image_set', value: identity }]
+        : this.buildFingerprints(input.content, input.settings)
+      : [];
+    const settingsDigest =
+      mode === 'IMAGE'
+        ? exactImageSettingsDigest(input.settings)
+        : messageDuplicateSettingsDigest(input.settings);
     const patterns = parts.map((part) => ({
       part,
       hash: digestDuplicateContent({
@@ -103,15 +125,30 @@ export class MessageDuplicateHistoryService {
         controlRevision: input.controlRevision,
         settingsDigest,
         type: part.type,
-        textPresent: input.content.text.length > 0,
+        textPresent: mode === 'IMAGE' ? false : input.content.text.length > 0,
         value: part.value,
-        actions: input.content.actions,
+        actions: mode === 'IMAGE' ? [] : input.content.actions,
         media:
           mode === 'MESSAGE'
             ? input.content.media.map((media, index) => [media.kind, mediaHashes[index]])
             : [],
       }),
     }));
+    const memberships = patterns.map((pattern) =>
+      input.imageScope
+        ? exactImageKeys(
+            input.chatId,
+            input.userId,
+            input.messageId,
+            pattern.hash,
+            input.imageScope,
+          )
+        : messageDuplicateKeys(input.chatId, input.userId, input.messageId, pattern.hash),
+    );
+    const sharedImageKeys =
+      input.imageScope === 'CHAT' && patterns[0]
+        ? exactImageKeys(input.chatId, input.userId, input.messageId, patterns[0].hash, 'CHAT')
+        : null;
     const revision = input.eventTimestampMs * 2 + (identity ? 1 : 0);
     const mutation = await raceWithTimeout({
       operation: () =>
@@ -120,11 +157,17 @@ export class MessageDuplicateHistoryService {
           member: keys.member,
           revision,
           scoreTimestampMs: input.eventTimestampMs,
-          membershipKeys: patterns.map(
-            (pattern) =>
-              messageDuplicateKeys(input.chatId, input.userId, input.messageId, pattern.hash)
-                .membershipKey,
-          ),
+          membershipKeys: sharedImageKeys
+            ? [sharedImageKeys.membershipKey, sharedImageKeys.authorMembershipKey]
+            : memberships.map((entry) => entry.membershipKey),
+          ...(sharedImageKeys
+            ? {
+                sharedBaseline: {
+                  sharedKey: sharedImageKeys.membershipKey,
+                  authorKey: sharedImageKeys.authorMembershipKey,
+                },
+              }
+            : {}),
           windowSeconds: flow.windowSec,
           ttlSeconds: resolveDuplicateHistoryRetentionSeconds(flow.windowSec),
           countLimit: 21,
@@ -149,7 +192,11 @@ export class MessageDuplicateHistoryService {
     }
     let selected: { part: DuplicateFingerprint; hash: string; count: number } | null = null;
     patterns.forEach((pattern, index) => {
-      const count = mutation.counts[index] ?? 0;
+      const count = sharedImageKeys
+        ? (mutation.counts[0] ?? 0) >= 2
+          ? (mutation.counts[1] ?? 0)
+          : 0
+        : (mutation.counts[index] ?? 0);
       if (count > flow.allowedCount + 1 && (!selected || count > selected.count))
         selected = { ...pattern, count };
     });
@@ -160,19 +207,21 @@ export class MessageDuplicateHistoryService {
     this.metrics?.record('history.matched');
     const match = selected as { part: DuplicateFingerprint; hash: string; count: number };
     const binding: MessageDuplicateBinding = {
-      version: 1,
+      version: mode === 'IMAGE' ? 2 : 1,
       senderId: input.userId,
       messageId: input.messageId,
       eventTimestampMs: input.eventTimestampMs,
       controlRevision: input.controlRevision,
       compareMode: mode,
+      ...(input.imageScope ? { imageScope: input.imageScope } : {}),
       settingsDigest,
-      sourceDigest: input.content.sourceDigest,
+      sourceDigest:
+        mode === 'IMAGE' ? exactImageSourceDigest(input.content) : input.content.sourceDigest,
       contentDigest: identity,
       fingerprint: match.hash,
       mediaHashes,
       mediaVersion: MESSAGE_DUPLICATE_MEDIA_VERSION,
-      hasPhotos: mode === 'MESSAGE' && input.content.media.some((media) => media.kind === 'photo'),
+      hasPhotos: mode !== 'TEXT' && input.content.media.some((media) => media.kind === 'photo'),
       photoControlRevision: null,
       windowSeconds: flow.windowSec,
       requiredCount: flow.allowedCount + 2,
@@ -190,16 +239,32 @@ export class MessageDuplicateHistoryService {
   }
 
   async stillMatches(chatId: string, binding: MessageDuplicateBinding): Promise<boolean> {
-    const keys = messageDuplicateKeys(
-      chatId,
-      binding.senderId,
-      binding.messageId,
-      binding.fingerprint,
-    );
+    const keys =
+      binding.compareMode === 'IMAGE' && binding.imageScope
+        ? exactImageKeys(
+            chatId,
+            binding.senderId,
+            binding.messageId,
+            binding.fingerprint,
+            binding.imageScope,
+          )
+        : messageDuplicateKeys(chatId, binding.senderId, binding.messageId, binding.fingerprint);
     const count = await raceWithTimeout({
       operation: () =>
         this.redis.readRevisionedMembershipCount({
           ...keys,
+          ...(binding.compareMode === 'IMAGE' && binding.imageScope === 'CHAT'
+            ? {
+                membershipKey: exactImageKeys(
+                  chatId,
+                  binding.senderId,
+                  binding.messageId,
+                  binding.fingerprint,
+                  'CHAT',
+                ).authorMembershipKey,
+                sharedBaselineKey: keys.membershipKey,
+              }
+            : {}),
           revision: binding.eventTimestampMs * 2 + 1,
           scoreTimestampMs: binding.eventTimestampMs,
           windowSeconds: binding.windowSeconds,

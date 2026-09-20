@@ -75,16 +75,12 @@ import { MessageDuplicateService } from './message-duplicate/message-duplicate.s
 import { MessageDuplicateEnforcementService } from './message-duplicate/message-duplicate-enforcement.service';
 import { MessageDuplicateMediaService } from './message-duplicate/message-duplicate-media.service';
 import { MessageDuplicateProcessor } from './message-duplicate/message-duplicate.processor';
-import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
 import { PhotoDuplicateProcessor } from './photo-duplicate/photo-duplicate.processor';
+import { PhotoDuplicateOrderingStore } from './photo-duplicate/photo-duplicate-ordering.store';
 import { PhotoDuplicateAnalysisService } from './photo-duplicate/photo-duplicate-analysis.service';
 import { PhotoDuplicateHistoryStore } from './photo-duplicate/photo-duplicate-history.store';
 import { PhotoFingerprintService } from './photo-duplicate/photo-fingerprint';
 import { SecurePhotoDownloader } from './photo-duplicate/secure-photo-downloader';
-import { PhotoDuplicateOrderingStore } from './photo-duplicate/photo-duplicate-ordering.store';
-import { PHOTO_DUPLICATE_MODERATION_ACTIONS } from './photo-duplicate/photo-duplicate-moderation.actions';
-import { PhotoDuplicateModerationActionsService } from './photo-duplicate/photo-duplicate-moderation-actions.service';
-import { PhotoDuplicateModerationService } from './photo-duplicate/photo-duplicate-moderation.service';
 import { LinkHistoryRecoveryService } from './link-history-recovery.service';
 import { CommercialOcrAdmissionStore } from './commercial-ocr/commercial-ocr-admission.store';
 import { CommercialOcrAnalysisService } from './commercial-ocr/commercial-ocr-analysis.service';
@@ -118,11 +114,6 @@ const moderationProviders = [
     provide: MODERATION_EXECUTION_LEGACY,
     useExisting: ModerationService,
   },
-  {
-    provide: PHOTO_DUPLICATE_MODERATION_ACTIONS,
-    useExisting: PhotoDuplicateModerationActionsService,
-  },
-  PhotoDuplicateModerationActionsService,
   ModerationExecutionService,
   ModerationAccessService,
   KaravanStorefrontAuthorizationService,
@@ -140,11 +131,10 @@ const moderationProviders = [
   LinkHistoryRecoveryService,
   PublisherChatCommentQueueService,
   PublisherAutoReplyQueueService,
-  PhotoDuplicateEnqueueService,
   MessageDuplicateEnqueueService,
   MessageDuplicateEnforcementService,
   MessageDuplicateService,
-  ...(moderationRoleEnabled ? [PhotoDuplicateOrderingStore, MessageDuplicateOrderingStore] : []),
+  ...(moderationRoleEnabled ? [MessageDuplicateOrderingStore] : []),
   ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
     ? [CommercialOcrAdmissionStore, CommercialOcrMetricsService]
     : []),
@@ -185,12 +175,15 @@ const moderationProviders = [
         ...(spammerDenormProcessorEnabled() ? [GlobalSpammerDenormProcessor] : []),
         ...(photoDuplicateProcessorEnabled
           ? [
+              PhotoDuplicateOrderingStore,
+              PhotoDuplicateProcessor,
               PhotoDuplicateHistoryStore,
               {
                 provide: PhotoFingerprintService,
                 inject: [ConfigService],
                 useFactory: (configService: ConfigService) =>
                   new PhotoFingerprintService({
+                    canonicalOnly: true,
                     maxInputBytes:
                       configService.get<number>('PHOTO_DUPLICATE_MAX_BYTES') ?? 16_777_216,
                     maxInputPixels:
@@ -198,8 +191,6 @@ const moderationProviders = [
                   }),
               },
               PhotoDuplicateAnalysisService,
-              PhotoDuplicateModerationService,
-              PhotoDuplicateProcessor,
               MessageDuplicateMediaService,
               MessageDuplicateProcessor,
             ]

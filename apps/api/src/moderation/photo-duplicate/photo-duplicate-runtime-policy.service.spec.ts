@@ -17,7 +17,7 @@ function buildControl(
   return {
     version: 1,
     revision: 7,
-    mode: 'full',
+    mode: 'off',
     enforcementChatIds: ['chat-1'],
     advancedCanaryChatIds: ['chat-1'],
     allowedMatchKinds: ['canonical_sha256', 'pdq'],
@@ -100,7 +100,7 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
     });
   });
 
-  it('intersects the shared control with every env upper bound', async () => {
+  it('keeps the retired photo filter off even with every legacy ceiling enabled', async () => {
     const { service } = createService({
       control: buildControl({
         mode: 'full',
@@ -115,34 +115,34 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
     });
 
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toEqual({
-      mode: 'delete_only',
-      enforce: true,
-      advancedCanary: true,
-      allowedMatchKinds: ['canonical_sha256'],
-      maxAction: 'WARN',
-      controlRevision: 7,
-      controlExpiresAt: expect.any(String),
+      mode: 'off',
+      enforce: false,
+      advancedCanary: false,
+      allowedMatchKinds: [],
+      maxAction: 'DELETE_MESSAGE',
+      controlRevision: null,
+      controlExpiresAt: null,
     });
   });
 
   it.each([
     { label: 'missing', control: null },
     { label: 'malformed', control: '{broken-json' },
-  ])('fails closed to shadow when the Redis control is $label', async ({ control }) => {
+  ])('keeps legacy actions off when the Redis control is $label', async ({ control }) => {
     const { service } = createService({ control });
 
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
-      mode: 'shadow',
+      mode: 'off',
       enforce: false,
       controlRevision: null,
     });
   });
 
-  it('fails closed to shadow when Redis cannot be read', async () => {
+  it('keeps legacy actions off when Redis cannot be read', async () => {
     const { service } = createService({ readError: new Error('redis unavailable') });
 
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
-      mode: 'shadow',
+      mode: 'off',
       enforce: false,
       controlRevision: null,
     });
@@ -154,11 +154,11 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
       mode: 'off',
       enforce: false,
-      controlRevision: 7,
+      controlRevision: null,
     });
   });
 
-  it('re-reads Redis on every policy resolution', async () => {
+  it('cannot be reactivated by a legacy Redis control update', async () => {
     const { redis, service } = createService({ control: buildControl() });
     redis.mget
       .mockResolvedValueOnce([
@@ -168,16 +168,16 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
       .mockResolvedValueOnce([JSON.stringify(buildControl({ revision: 9, mode: 'off' })), '9']);
 
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
-      mode: 'delete_only',
-      enforce: true,
-      controlRevision: 8,
+      mode: 'off',
+      enforce: false,
+      controlRevision: null,
     });
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
       mode: 'off',
       enforce: false,
-      controlRevision: 9,
+      controlRevision: null,
     });
-    expect(redis.mget).toHaveBeenCalledTimes(2);
+    expect(redis.mget).not.toHaveBeenCalled();
   });
 
   it('does not consult Redis when the env upper bound is already shadow', async () => {
@@ -187,7 +187,7 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
     });
 
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
-      mode: 'shadow',
+      mode: 'off',
       enforce: false,
     });
     expect(redis.mget).not.toHaveBeenCalled();
@@ -204,7 +204,7 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
 
     const { service } = createService({ control: wildcardControl });
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
-      mode: 'shadow',
+      mode: 'off',
       enforce: false,
       controlRevision: null,
     });
@@ -216,7 +216,7 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
     expect(parsePhotoDuplicateRuntimeControl(JSON.stringify(control))).toBeNull();
   });
 
-  it('requires an exact shared advanced canary for perceptual or chat-wide matching', async () => {
+  it('does not authorize the retired perceptual path', async () => {
     const { service } = createService({
       control: buildControl({ advancedCanaryChatIds: [] }),
     });
@@ -227,7 +227,7 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
         preset: 'MINOR_EDITS',
         scope: 'SAME_AUTHOR',
       }),
-    ).resolves.toMatchObject({ mode: 'shadow', enforce: false });
+    ).resolves.toMatchObject({ mode: 'off', enforce: false });
   });
 
   it('writes a schema-validated first revision with an expiry-bound Redis TTL', async () => {
@@ -377,7 +377,7 @@ describe('PhotoDuplicateRuntimePolicyService', () => {
       revision: 7,
     });
     await expect(service.resolveEffectivePolicy(basicPolicyInput)).resolves.toMatchObject({
-      mode: 'shadow',
+      mode: 'off',
       enforce: false,
       controlRevision: null,
     });

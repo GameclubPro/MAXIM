@@ -99,9 +99,6 @@ const LazySettingsDuplicateDiagnostics = lazy(() => import('./settings-duplicate
 export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps) {
   const photoPresentationPolicy = resolveDuplicatePhotoPresentationPolicy(
     props.duplicatePhotoModerationPolicy,
-    props.duplicateMessageModerationMode ?? 'OFF',
-    props.draft.duplicateCompareMode,
-    props.draft.duplicatePhotoEnabled,
   );
   const {
     adjustDuplicateAllowedCount,
@@ -187,9 +184,9 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       onToggleHint={toggleHint}
                       label="Пояснение для антидубля"
                     >
-                      Повторы ищутся у одного участника в этом чате. Первое сообщение не является
-                      дублем. Проверяются также короткие сообщения, пересылки и подписи. Действия
-                      зависят от настроек ниже и текущего режима проверки.
+                      Повторы текста ищутся у одного участника в этом чате. Первое сообщение не
+                      является дублем. Проверяются также короткие сообщения, пересылки и подписи.
+                      Действия зависят от настроек ниже и текущего режима проверки.
                     </SettingsHintAnchor>
                   </div>
                   <label className="settings-native-switch" aria-label="Включить антидубль">
@@ -209,7 +206,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
 
               <dl className="duplicate-diagnostics__facts duplicate-scope">
                 <div>
-                  <dt>Повторы</dt>
+                  <dt>Повторы текста</dt>
                   <dd>У одного участника в этом чате</dd>
                 </div>
                 <div>
@@ -282,18 +279,12 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                 </Suspense>
               ) : null}
 
-              {draft.antiDuplicateEnabled ? (
+              {draft.antiDuplicateEnabled && draft.duplicateCompareMode !== 'TEXT' ? (
                 <Suspense fallback={null}>
                   <LazySettingsDuplicatePhotoControls
-                    actionSettings={draft}
-                    enabled={draft.duplicatePhotoEnabled}
-                    matchPreset={draft.duplicatePhotoMatchPreset}
                     moderationPolicy={photoPresentationPolicy}
                     scope={draft.duplicatePhotoScope}
-                    onEnabledChange={(value) => setFieldValue('duplicatePhotoEnabled', value)}
-                    onMatchPresetChange={(value) =>
-                      setFieldValue('duplicatePhotoMatchPreset', value)
-                    }
+                    windowHours={duplicateSharedWindowHours}
                     onScopeChange={(value) => setFieldValue('duplicatePhotoScope', value)}
                   />
                 </Suspense>
@@ -312,7 +303,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                   >
                     <div className="duplicate-stage__top">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="duplicate-stage__title">Условия удаления</span>
+                        <span className="duplicate-stage__title">Условия срабатывания</span>
                         <SettingsHintAnchor
                           hintKey="duplicateModerationStart"
                           openHintKey={openHintKey}
@@ -320,7 +311,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           label="Пояснение для условий удаления дублей"
                         >
                           Период отсчитывается назад от каждого сообщения, а не с начала дня. Лимит
-                          относится к повторам одного текста от одного участника.
+                          относится к повторам каждого участника отдельно.
                         </SettingsHintAnchor>
                       </div>
                     </div>

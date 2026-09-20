@@ -3,14 +3,17 @@ import type { MaxUpdate } from '@maxim/contracts';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { classifyDuplicateEventTime } from '../duplicate-enforcement-safety';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
-import { extractDuplicateMessageContent } from './message-duplicate-content';
+import { extractDuplicateMessageContent, isExactImageContent } from './message-duplicate-content';
 import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { messageDuplicateActionsEnabled } from './message-duplicate-policy.service';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
 import { MessageDuplicateEnqueueService } from './message-duplicate.queue';
-import { messageDuplicateSettingsDigest } from './message-duplicate-state';
+import {
+  messageDuplicateSettingsDigest,
+  exactImageSettingsDigest,
+} from './message-duplicate-state';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 
 @Injectable()
@@ -69,9 +72,11 @@ export class MessageDuplicateService {
     }
     const content = extractDuplicateMessageContent(params.update.raw);
     if (!content.complete) this.metrics?.recordContentRejection(content.reason);
-    const observedContent = params.track
-      ? content
-      : { ...content, complete: false, reason: 'invalid_content' as const };
+    const hasPhotos = content.media.some((media) => media.kind === 'photo');
+    const invalidContent = { ...content, complete: false, reason: 'invalid_content' as const };
+    const imageMode = params.settings.duplicateCompareMode !== 'TEXT' && hasPhotos;
+    const imageOnly = imageMode && isExactImageContent(content);
+    const observedContent = params.track && !imageMode ? content : invalidContent;
     const result = await this.history.observe({
       content: observedContent,
       chatId: message.chatId,
@@ -81,12 +86,27 @@ export class MessageDuplicateService {
       controlRevision: policy.revision,
       settings: params.settings,
     });
+    // FLAG: One revision invalidates both histories when an edit changes the attachment kind.
+    // Old message/photo jobs are never promoted into the new explicit IMAGE job authority.
+    if (hasPhotos || params.update.type === 'message_edited') {
+      await this.history.observe({
+        content: params.track && imageOnly ? content : invalidContent,
+        imageScope: params.settings.duplicatePhotoScope,
+        chatId: message.chatId,
+        userId: message.senderId,
+        messageId: message.messageId,
+        eventTimestampMs,
+        controlRevision: policy.revision,
+        settings: params.settings,
+      });
+    }
     if (!params.track) {
       this.metrics?.record('admission.untracked');
       return;
     }
+    if (imageMode && !imageOnly) return;
     if (
-      params.settings.duplicateCompareMode !== 'TEXT' &&
+      (imageOnly || params.settings.duplicateCompareMode !== 'TEXT') &&
       content.complete &&
       content.media.length > 0
     ) {
@@ -105,8 +125,13 @@ export class MessageDuplicateService {
         eventTimestampMs,
         sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
         controlRevision: policy.revision,
-        settingsDigest: messageDuplicateSettingsDigest(params.settings),
-        actionEligible: params.actionEligible && messageDuplicateActionsEnabled(policy.mode),
+        settingsDigest: imageOnly
+          ? exactImageSettingsDigest(params.settings)
+          : messageDuplicateSettingsDigest(params.settings),
+        ...(imageOnly ? { comparison: 'IMAGE' as const } : {}),
+        actionEligible:
+          params.actionEligible &&
+          (imageOnly ? policy.mode === 'full' : messageDuplicateActionsEnabled(policy.mode)),
       });
       this.metrics?.record('admission.media_queued');
       return;

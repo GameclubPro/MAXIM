@@ -31,7 +31,8 @@ export const messageDuplicateBindingSchema = z
     sourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
     contentDigest: z.string().regex(/^[a-f0-9]{64}$/),
     fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    compareMode: z.enum(['MESSAGE', 'TEXT']),
+    compareMode: z.enum(['MESSAGE', 'TEXT', 'IMAGE']),
+    imageScope: z.enum(['SAME_AUTHOR', 'CHAT']).optional(),
     mediaHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10),
     mediaVersion: z.literal(MESSAGE_DUPLICATE_MEDIA_VERSION),
     hasPhotos: z.boolean(),
@@ -40,7 +41,17 @@ export const messageDuplicateBindingSchema = z
     requiredCount: z.number().int().min(2).max(21),
   })
   .strict()
-  .refine((value) => value.version === 2 || value.sanction === undefined);
+  .refine((value) => value.version === 2 || value.sanction === undefined)
+  .refine((value) =>
+    value.compareMode === 'IMAGE'
+      ? value.version === 2 &&
+        value.imageScope !== undefined &&
+        value.hasPhotos &&
+        value.mediaHashes.length > 0 &&
+        value.photoControlRevision === null &&
+        value.requiredCount >= 2
+      : value.imageScope === undefined,
+  );
 export type MessageDuplicateBinding = z.infer<typeof messageDuplicateBindingSchema>;
 
 export function parseMessageDuplicateBinding(value: unknown): MessageDuplicateBinding | null {
@@ -80,12 +91,45 @@ export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   });
 }
 
-export function messageDuplicateSanctionSettingsDigest(settings: ChatSettings): string {
+export function messageDuplicateSanctionSettingsDigest(
+  settings: ChatSettings,
+  imageOnly = false,
+): string {
   return digestDuplicateContent({
-    settings: messageDuplicateSettingsDigest(settings),
+    settings: imageOnly
+      ? exactImageSettingsDigest(settings)
+      : messageDuplicateSettingsDigest(settings),
     reactions: resolveDuplicateFlowConfig(settings).reactions,
     muteHours: settings.duplicateMuteDurationHours,
   });
+}
+
+export function exactImageSettingsDigest(settings: ChatSettings): string {
+  return digestDuplicateContent({
+    version: 'exact-image-v1',
+    enabled: settings.antiDuplicateEnabled && settings.duplicateCompareMode !== 'TEXT',
+    scope: settings.duplicatePhotoScope,
+    window: resolveDuplicateFlowConfig(settings).windowSec,
+    allowed: resolveDuplicateFlowConfig(settings).allowedCount,
+  });
+}
+
+export function exactImageKeys(
+  chatId: string,
+  userId: string,
+  messageId: string,
+  fingerprint: string,
+  scope: 'SAME_AUTHOR' | 'CHAT',
+) {
+  const namespace = `dup:image:v1:${digestDuplicateContent(chatId)}`;
+  const member = digestDuplicateContent(messageId);
+  const owner = digestDuplicateContent([scope, scope === 'CHAT' ? null : userId]);
+  return {
+    member,
+    stateKey: `${namespace}:message:${member}`,
+    membershipKey: `${namespace}:fingerprint:${owner}:${fingerprint}`,
+    authorMembershipKey: `${namespace}:author:${digestDuplicateContent(userId)}:${fingerprint}`,
+  };
 }
 
 export function messageDuplicateKeys(

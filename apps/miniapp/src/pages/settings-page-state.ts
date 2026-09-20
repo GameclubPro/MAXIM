@@ -272,8 +272,6 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'antiDuplicateEnabled',
     'duplicateDetectionPreset',
     'duplicateCompareMode',
-    'duplicatePhotoEnabled',
-    'duplicatePhotoMatchPreset',
     'duplicatePhotoScope',
     'duplicateIgnoreLinksEnabled',
     'duplicateIgnorePhonesEnabled',

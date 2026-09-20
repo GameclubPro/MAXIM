@@ -88,6 +88,55 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect((await observe('c', 200, 'a', { controlRevision: 2 }))?.hit.count).toBe(1);
   });
 
+  const imageInput = () => ({
+    imageScope: 'CHAT' as const,
+    content: extractDuplicateMessageContent({
+      message: {
+        body: {
+          text: 'caption',
+          attachments: [
+            { type: 'image', payload: { photo_id: 'photo', url: 'https://i.oneme.ru/a' } },
+          ],
+        },
+      },
+    }),
+    mediaHashes: ['a'.repeat(64)],
+  });
+
+  it('isolates author escalation while sharing exact-image matching and replay snapshots', async () => {
+    const input = imageInput();
+    expect(await observe('a1', 0, '', input)).toBeNull();
+    expect((await observe('a2', 100, '', input))?.hit.count).toBe(1);
+    expect((await observe('a3', 200, '', input))?.hit.count).toBe(2);
+    const b = await observe('b1', 300, '', { ...input, userId: '456' });
+    expect(b?.hit.count).toBe(1);
+    expect(await history.stillMatches(chatId, b!.binding)).toBe(true);
+    expect(await history.stillMatches(chatId, { ...b!.binding, requiredCount: 3 })).toBe(false);
+    expect((await observe('a4', 400, '', input))?.hit.count).toBe(3);
+    expect((await observe('b2', 500, '', { ...input, userId: '456' }))?.hit.count).toBe(2);
+    expect((await observe('b1', 300, '', { ...input, userId: '456' }))?.hit.count).toBe(1);
+  });
+
+  it('atomically invalidates shared and author memberships when the original is edited', async () => {
+    const input = imageInput();
+    await observe('a1', 0, '', input);
+    const b = await observe('b1', 100, '', { ...input, userId: '456' });
+    await observe('a1', 200, '', {
+      ...input,
+      content: { ...input.content, complete: false, reason: 'invalid_content' },
+    });
+    expect(await history.stillMatches(chatId, b!.binding)).toBe(false);
+    expect(await observe('a1', 0, '', input)).toBeNull();
+  });
+
+  it('does not assign an arbitrary shared original to one author when timestamps tie', async () => {
+    const input = imageInput();
+    await observe('a1', 0, '', input);
+    expect(await observe('b1', 0, '', { ...input, userId: '456' })).toBeNull();
+    expect((await observe('a2', 100, '', input))?.hit.count).toBe(1);
+    expect((await observe('b2', 200, '', { ...input, userId: '456' }))?.hit.count).toBe(1);
+  });
+
   it.each([59_999, 60_000, 60_001])(
     'uses an exclusive lower window bound at %ims',
     async (gapMs) => {

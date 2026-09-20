@@ -1,155 +1,67 @@
-import { useState } from 'react';
 import { SegmentedControl } from '../../components/ui/segmented-control';
-import { useHintPopoverAutoPosition } from '../../lib/hint-popover';
-import { SettingsHintAnchor } from './settings-hint-anchor';
-import type { HintKey } from './settings-page-helpers';
 import {
-  DUPLICATE_PHOTO_MATCH_OPTIONS,
   DUPLICATE_PHOTO_SCOPE_OPTIONS,
-  formatDuplicatePhotoMatchPresetHint,
-  type DuplicatePhotoMatchPreset,
   type DuplicatePhotoScope,
 } from './settings-duplicate-photo-options';
-import {
-  formatDuplicatePhotoModerationHint,
-  type DuplicatePhotoPresentationPolicy,
-  type DuplicatePhotoSanctionSettings,
-} from './settings-duplicate-photo-status';
-
-type SettingsDuplicatePhotoControlsProps = {
-  actionSettings: DuplicatePhotoSanctionSettings;
-  enabled: boolean;
-  matchPreset: DuplicatePhotoMatchPreset;
-  moderationPolicy: DuplicatePhotoPresentationPolicy;
-  scope: DuplicatePhotoScope;
-  onEnabledChange: (value: boolean) => void;
-  onMatchPresetChange: (value: DuplicatePhotoMatchPreset) => void;
-  onScopeChange: (value: DuplicatePhotoScope) => void;
-};
+import type { DuplicatePhotoPresentationPolicy } from './settings-duplicate-photo-status';
 
 export default function SettingsDuplicatePhotoControls({
-  actionSettings,
-  enabled,
-  matchPreset,
   moderationPolicy,
   scope,
-  onEnabledChange,
-  onMatchPresetChange,
+  windowHours,
   onScopeChange,
-}: SettingsDuplicatePhotoControlsProps) {
-  const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
-  const toggleHint = (key: HintKey) => setOpenHintKey((current) => (current === key ? null : key));
-  useHintPopoverAutoPosition(openHintKey !== null, openHintKey, () => setOpenHintKey(null));
-
-  if (moderationPolicy.comparison === 'MESSAGE') {
-    return (
-      <div className="settings-native-toggle duplicate-photo-toggle">
-        <div className="settings-native-toggle__row">
-          <div className="settings-native-toggle__title-wrap">
-            <span className="settings-native-toggle__title">Изображения</span>
-            <SettingsHintAnchor
-              hintKey="duplicatePhoto"
-              openHintKey={openHintKey}
-              onToggleHint={toggleHint}
-              label="Проверка изображений в сообщении"
-            >
-              {formatDuplicatePhotoModerationHint(moderationPolicy, actionSettings)}
-            </SettingsHintAnchor>
-          </div>
-          <span className="field__hint" role="status">
-            Активно
-          </span>
-        </div>
-      </div>
-    );
-  }
-
+}: {
+  moderationPolicy: DuplicatePhotoPresentationPolicy;
+  scope: DuplicatePhotoScope;
+  windowHours: number;
+  onScopeChange: (value: DuplicatePhotoScope) => void;
+}) {
   return (
     <>
       <div className="settings-native-toggle duplicate-photo-toggle">
         <div className="settings-native-toggle__row">
-          <div className="settings-native-toggle__title-wrap">
-            <span className="settings-native-toggle__title">Изображения</span>
-            <SettingsHintAnchor
-              hintKey="duplicatePhoto"
-              openHintKey={openHintKey}
-              onToggleHint={toggleHint}
-              label="Как проверяются повторные фото"
-            >
-              Бот сравнивает фото с предыдущими изображениями за выбранный период. Количество
-              разрешённых повторов настраивается ниже. Лица и содержание фотографий не распознаются.
-            </SettingsHintAnchor>
-          </div>
-
-          <label className="settings-native-switch" aria-label="Включить проверку повторных фото">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(event) => onEnabledChange(event.target.checked)}
-            />
-            <span className="toggle-switch" aria-hidden>
-              <span className="toggle-switch__thumb" />
-            </span>
-          </label>
+          <span className="settings-native-toggle__title">Одинаковые картинки</span>
         </div>
-        {enabled ? (
-          <p className="policy-mode-hint">
-            {formatDuplicatePhotoModerationHint(moderationPolicy, actionSettings)}
+        {moderationPolicy.moderationMode !== 'FULL' ? (
+          <p className="policy-mode-hint" role="status">
+            Проверка картинок сейчас недоступна
           </p>
         ) : null}
       </div>
-
-      {enabled ? (
-        <div
-          className="duplicate-photo-settings"
-          role="group"
-          aria-label="Настройки повторных фото"
-        >
-          <div className="settings-policy duplicate-photo-settings__policy">
-            <div className="settings-policy__label-row">
-              <span className="field__label">Какие фото считать повтором</span>
-              <SettingsHintAnchor
-                hintKey="duplicatePhotoMatch"
-                openHintKey={openHintKey}
-                onToggleHint={toggleHint}
-                label="Какие изменения фото учитываются"
-              >
-                {formatDuplicatePhotoMatchPresetHint(matchPreset, moderationPolicy)}
-              </SettingsHintAnchor>
-            </div>
-            <SegmentedControl
-              value={matchPreset}
-              options={DUPLICATE_PHOTO_MATCH_OPTIONS}
-              onChange={onMatchPresetChange}
-              className="settings-mode-segments duplicate-photo-settings__segments"
-              ariaLabel="Какие фото считать повтором"
-            />
-          </div>
-
-          <div className="settings-policy duplicate-photo-settings__policy">
-            <div className="settings-policy__label-row">
-              <span className="field__label">Где искать повтор</span>
-              <SettingsHintAnchor
-                hintKey="duplicatePhotoScope"
-                openHintKey={openHintKey}
-                onToggleHint={toggleHint}
-                label="С чьими фото сравнивать"
-              >
-                {scope === 'CHAT'
-                  ? 'Сравниваем с фото всех участников этого чата. При повторе правило применяется только к тому, кто сейчас отправил фото.'
-                  : 'Сравниваем только с предыдущими фото этого же участника. Такое же фото от другого человека не считается его повтором.'}
-              </SettingsHintAnchor>
-            </div>
-            <SegmentedControl
-              value={scope}
-              options={DUPLICATE_PHOTO_SCOPE_OPTIONS}
-              onChange={onScopeChange}
-              className="settings-mode-segments duplicate-photo-settings__segments"
-              ariaLabel="Где искать повторное фото"
-            />
-          </div>
+      <div
+        className="duplicate-photo-settings"
+        role="group"
+        aria-label="Удаление одинаковых картинок"
+      >
+        <div className="settings-policy duplicate-photo-settings__policy">
+          <span className="field__label">Чьи картинки сравнивать</span>
+          <SegmentedControl
+            value={scope}
+            options={DUPLICATE_PHOTO_SCOPE_OPTIONS}
+            onChange={onScopeChange}
+            className="settings-mode-segments duplicate-photo-settings__segments"
+            ariaLabel="Чьи картинки сравнивать"
+          />
         </div>
-      ) : null}
+        <dl className="duplicate-diagnostics__facts">
+          <div>
+            <dt>Период проверки</dt>
+            <dd>{windowHours} ч</dd>
+          </div>
+          <div>
+            <dt>Подпись</dt>
+            <dd>Не учитывается</dd>
+          </div>
+          <div>
+            <dt>Действия</dt>
+            <dd>Как для текста</dd>
+          </div>
+          <div>
+            <dt>Счётчик повторов</dt>
+            <dd>Отдельно для каждого участника</dd>
+          </div>
+        </dl>
+      </div>
     </>
   );
 }

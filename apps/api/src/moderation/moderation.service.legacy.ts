@@ -1636,22 +1636,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             mediaFlags.hasVoiceAttachment ||
             mediaFlags.hasMediaBatch),
       });
-      const photoDuplicateEnqueueBase =
-        webhookEventId &&
-        messageId &&
-        updateType === 'message_created' &&
-        settings.antiDuplicateEnabled &&
-        settings.duplicatePhotoEnabled &&
-        mediaFlags.hasPhotoAttachment
-          ? { webhookEventId, chatId, messageId, sourceCreatedAt: createdAt }
-          : null;
-      const enqueuePhotoDuplicate = async (actionEligible: boolean): Promise<void> => {
-        if (!photoDuplicateEnqueueBase) return;
-        await this.photoDuplicateEnqueueService?.enqueue({
-          ...photoDuplicateEnqueueBase,
-          actionEligible,
-        });
-      };
       const commercialOcrEnqueueBase = resolveCommercialOcrEnqueueCandidate({
         update,
         webhookEventId,
@@ -1679,7 +1663,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
       };
       const suppressDeferredPhotoAnalysisActions = async (): Promise<void> => {
-        await enqueuePhotoDuplicate(false);
         await enqueueCommercialOcr(false);
       };
 
@@ -1709,7 +1692,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
         }))
       ) {
-        if (photoDuplicateEnqueueBase || commercialOcrEnqueueBase) {
+        if (commercialOcrEnqueueBase) {
           const photoSenderAdminCheck = await this.resolveSenderChatAdminCheck(
             chatId,
             chat.adminUserIds,
@@ -2093,7 +2076,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         skipAntiSpamBurstLimit,
         skipContentFiltersForReport: reportCommand,
         skipDuplicateState:
-          duplicateEventTimeSkipReason !== null || fullMessageDuplicates || reportCommand,
+          duplicateEventTimeSkipReason !== null ||
+          fullMessageDuplicates ||
+          reportCommand ||
+          mediaFlags.hasPhotoAttachment,
         skipStatefulMessageLimits: updateType === 'message_edited',
         commercialCampaignContext,
       });
@@ -2234,9 +2220,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await suppressDeferredPhotoAnalysisActions();
         return;
       }
-      await enqueuePhotoDuplicate(
-        !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
-      );
       const messageDuplicateBotId = this.messageDuplicateService
         ? (update.botId ?? this.maxBotLinkService?.getDefaultBotId?.())
         : null;

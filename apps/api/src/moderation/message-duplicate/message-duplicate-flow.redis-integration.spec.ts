@@ -72,7 +72,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     keys.add(`message-duplicate:ordering:v1:${shortHash(chatId)}:${part}`);
   }
   const settings = {
-    ...duplicateSettings(overrides),
+    ...duplicateSettings({ duplicatePhotoEnabled: true, ...overrides }),
     chat: { entityType: 'CHAT', admins: [] as { userId: string }[], rules: null },
   };
   const start = Date.now() - 10000;
@@ -83,7 +83,6 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     expiresAtMs: Number.MAX_SAFE_INTEGER,
   };
   const policy = { resolve: jest.fn(async () => policyValue) };
-  const photoPolicy = { resolveEffectivePolicy: jest.fn(async () => ({ enforce: false })) };
   const rows = new Map<string, MaxUpdate>();
   const remote = new Map<string, Record<string, unknown>>();
   const images = new Map<string, Buffer>();
@@ -168,7 +167,6 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     max as never,
     bots as never,
     immunity as never,
-    photoPolicy as never,
     policy as never,
     history,
     config,
@@ -176,17 +174,16 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   const enforcement = new MessageDuplicateEnforcementService(
     intents as never,
     policy as never,
-    photoPolicy as never,
     guard,
   );
   const downloads = jest.fn(async (url: string) => {
     const bytes = images.get(url);
     if (!bytes) throw new Error('Synthetic photo source unavailable');
-    return { bytes, format: url.endsWith('.webp') ? 'webp' : 'png' };
+    return { bytes, format: new URL(url).pathname.endsWith('.webp') ? 'webp' : 'png' };
   });
   const photos = new PhotoDuplicateAnalysisService(
     { download: downloads } as never,
-    new PhotoFingerprintService(),
+    new PhotoFingerprintService({ canonicalOnly: true }),
     photoStore,
   );
   const media = new MessageDuplicateMediaService(
@@ -199,7 +196,6 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     bots as never,
     governor as never,
     config,
-    photoPolicy as never,
     max as never,
   );
   const execute = jest.fn(async (request: DuplicateModerationActionRequest) => {
@@ -248,12 +244,28 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     .toBuffer();
   const webp = await sharp(png).webp({ lossless: true }).toBuffer();
   const different = await sharp(png).negate().png().toBuffer();
+  const variants = await Promise.all(
+    [0, 1, 2, 3].map(async (index) => {
+      const image = await sharp(png)
+        .rotate(index * 90)
+        .png()
+        .toBuffer();
+      return {
+        png: image,
+        webp: await sharp(image).webp({ lossless: true }).toBuffer(),
+        different: await sharp(image).negate().png().toBuffer(),
+      };
+    }),
+  );
   let next = 0;
   const prepare = (
     options: {
       id?: string;
       text?: string;
       photo?: 'png' | 'webp' | 'different';
+      photoCount?: number;
+      reversePhotos?: boolean;
+      changedPhotoIndex?: number;
       missingUrl?: boolean;
       userId?: number;
       time?: number;
@@ -265,7 +277,13 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     const photoId = `${suffix}:${id}`;
     const url = `https://i.oneme.ru/${photoId}.${options.photo === 'webp' ? 'webp' : 'png'}`;
     const attachments = options.photo
-      ? [{ type: 'image', payload: { photo_id: photoId, ...(options.missingUrl ? {} : { url }) } }]
+      ? Array.from({ length: options.photoCount ?? 1 }, (_, index) => ({
+          type: 'image',
+          payload: {
+            photo_id: `${photoId}:${index}`,
+            ...(options.missingUrl ? {} : { url: `${url}?item=${index}` }),
+          },
+        }))
       : [];
     const raw = {
       update_type: options.editedFrom === undefined ? 'message_created' : 'message_edited',
@@ -284,7 +302,12 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       ...raw.message,
       body: {
         ...raw.message.body,
-        attachments: options.photo ? [{ type: 'image', payload: { photo_id: photoId, url } }] : [],
+        attachments: options.photo
+          ? Array.from({ length: options.photoCount ?? 1 }, (_, index) => ({
+              type: 'image',
+              payload: { photo_id: `${photoId}:${index}`, url: `${url}?item=${index}` },
+            }))
+          : [],
       },
     });
     if (options.photo) {
@@ -292,9 +315,20 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
         url,
         options.photo === 'different' ? different : options.photo === 'webp' ? webp : png,
       );
-      keys.add(
-        `photo-duplicate:history:v2:fingerprint-cache:${shortHash(PHOTO_FINGERPRINT_ALGORITHM_VERSION)}:${shortHash(photoId)}`,
-      );
+      for (let index = 0; index < (options.photoCount ?? 1); index += 1) {
+        const variant =
+          variants[
+            (options.reversePhotos ? (options.photoCount ?? 1) - index - 1 : index) %
+              variants.length
+          ]!;
+        images.set(
+          `${url}?item=${index}`,
+          variant[options.changedPhotoIndex === index ? 'different' : options.photo!],
+        );
+        keys.add(
+          `photo-duplicate:history:v2:fingerprint-cache:${shortHash(PHOTO_FINGERPRINT_ALGORITHM_VERSION)}:${shortHash(`${photoId}:${index}`)}`,
+        );
+      }
     }
     return { update, receipt, id, time };
   };
@@ -439,7 +473,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.downloads).toHaveBeenCalledTimes(4);
     });
 
-    it('verifies every independent candidate before freezing the current occurrence count', async () => {
+    it('matches exact pictures independently of different captions and links', async () => {
       flow = await createFlow({
         duplicateDetectionPreset: 'CUSTOM',
         duplicateIgnoreLinksEnabled: true,
@@ -452,7 +486,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       });
       await flow.processor.process((await flow.ingest(first))!);
       await flow.processor.process((await flow.ingest(second))!);
-      expect(flow.downloads).not.toHaveBeenCalled();
+      expect(flow.downloads).toHaveBeenCalledTimes(2);
       const job = (await flow.ingest(repeat))!;
       await flow.processor.process(job);
       expect(flow.deleted).toEqual([repeat.id]);
@@ -462,7 +496,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.downloads).toHaveBeenCalledTimes(3);
     });
 
-    it('preserves different pictures, changed captions, other authors and the original', async () => {
+    it('preserves different pictures, other authors and the original while ignoring captions', async () => {
       flow = await createFlow();
       for (const item of [
         flow.prepare({ photo: 'png' }),
@@ -471,7 +505,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
         flow.prepare({ photo: 'png', userId: 456 }),
       ])
         await flow.processor.process((await flow.ingest(item))!);
-      expect(flow.deleted).toEqual([]);
+      expect(flow.deleted).toEqual(['message-3']);
     });
 
     it('resumes a photo deletion after URL recovery and a transient intent persistence failure', async () => {
@@ -565,6 +599,80 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.sanctions.map((entry) => entry.action)).toEqual(['WARN', 'MUTE', 'BAN']);
     });
 
+    it('handles four distinct pictures with text as one logical occurrence', async () => {
+      flow = await createFlow({ duplicatePhotoEnabled: false });
+      const first = flow.prepare({
+        photo: 'png',
+        photoCount: 4,
+        text: 'Selling a complete aquarium. Contact in private.',
+      });
+      const repeat = flow.prepare({
+        photo: 'webp',
+        photoCount: 4,
+        reversePhotos: true,
+        text: 'Selling a complete aquarium. Contact in private.',
+      });
+      await flow.processor.process((await flow.ingest(first))!);
+      const job = (await flow.ingest(repeat))!;
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([repeat.id]);
+      expect(flow.downloads).toHaveBeenCalledTimes(8);
+      await flow.processor.process(job);
+      expect(flow.deleted).toEqual([repeat.id]);
+    });
+
+    it('retains an album if one of its four pictures is different', async () => {
+      flow = await createFlow();
+      await flow.processor.process(
+        (await flow.ingest(flow.prepare({ photo: 'png', photoCount: 4, text: 'same caption' })))!,
+      );
+      await flow.processor.process(
+        (await flow.ingest(
+          flow.prepare({ photo: 'png', photoCount: 4, changedPhotoIndex: 2, text: 'same caption' }),
+        ))!,
+      );
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+    });
+
+    it('honors an explicitly allowed first repeat for a four-picture post', async () => {
+      flow = await createFlow({ duplicateWarnMaxCount: 2 });
+      const items = Array.from({ length: 3 }, () =>
+        flow.prepare({ photo: 'png', photoCount: 4, text: 'same caption' }),
+      );
+      for (const item of items) await flow.processor.process((await flow.ingest(item))!);
+      expect(flow.deleted).toEqual([items[2]!.id]);
+    });
+
+    it('keeps each author on their own sanction ladder in chat-wide image comparison', async () => {
+      flow = await createFlow({
+        duplicatePhotoScope: 'CHAT',
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateBanEnabled: true,
+        duplicateWarnMaxCount: 1,
+        duplicateMuteMaxCount: 2,
+        duplicateBanMaxCount: 3,
+      });
+      const items = [
+        flow.prepare({ photo: 'png', userId: 123 }),
+        flow.prepare({ photo: 'png', userId: 123 }),
+        flow.prepare({ photo: 'png', userId: 123 }),
+        flow.prepare({ photo: 'png', userId: 456, text: 'Different caption' }),
+        flow.prepare({ photo: 'png', userId: 123 }),
+        flow.prepare({ photo: 'png', userId: 456 }),
+      ];
+      for (const item of items) await flow.processor.process((await flow.ingest(item))!);
+      expect(flow.sanctions.map((entry) => entry.action)).toEqual([
+        'WARN',
+        'MUTE',
+        'WARN',
+        'BAN',
+        'MUTE',
+      ]);
+      expect(flow.deleted).toEqual(items.slice(1).map((item) => item.id));
+    });
+
     it('does not turn an edit of one photo message into a second publication', async () => {
       flow = await createFlow();
       const first = flow.prepare({ photo: 'png' });
@@ -606,7 +714,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
         if (reason === 'edited')
           flow.prepare({
             id: second.id,
-            photo: 'png',
+            photo: 'different',
             text: 'Changed after ingestion',
             time: second.time + 1,
             editedFrom: second.time,

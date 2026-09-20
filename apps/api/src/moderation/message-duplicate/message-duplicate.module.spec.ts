@@ -33,6 +33,12 @@ describe('message duplicate runtime ownership', () => {
       expect(providers.some((provider) => provider.name === 'MessageDuplicateMediaService')).toBe(
         serviceName === 'api-moderation-background',
       );
+      expect(
+        providers.some((provider) => provider.name === 'PhotoDuplicateModerationService'),
+      ).toBe(false);
+      expect(providers.some((provider) => provider.name === 'PhotoDuplicateEnqueueService')).toBe(
+        false,
+      );
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[key];

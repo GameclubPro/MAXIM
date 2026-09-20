@@ -346,34 +346,15 @@ export class AdminSettingsService {
 
   private async resolveDuplicatePhotoEffectivePolicy(
     chatId: string,
-    preset: ChatSettings['duplicatePhotoMatchPreset'],
-    scope: ChatSettings['duplicatePhotoScope'],
+    _preset: ChatSettings['duplicatePhotoMatchPreset'],
+    _scope: ChatSettings['duplicatePhotoScope'],
   ): Promise<DuplicatePhotoEffectivePolicy> {
-    const policy = await this.photoDuplicateRuntimePolicy.resolveEffectivePolicy({
-      chatId,
-      preset,
-      scope,
-    });
-    const common = {
-      actionCeiling: policy.maxAction,
-      allowedMatchKinds: [...policy.allowedMatchKinds],
-    };
-    if (policy.mode === 'off') {
-      return { moderationMode: 'OFF', ...common };
-    }
-    if (
-      !policy.enforce ||
-      policy.allowedMatchKinds.length === 0 ||
-      this.moderationDeleteIntents.getRolloutForRule(chatId, 'DUPLICATE_DELETE') !== 'execute'
-    ) {
-      return { moderationMode: 'OBSERVE', ...common };
-    }
+    const policy = await this.messageDuplicatePolicy?.resolve(chatId);
     return {
       moderationMode:
-        policy.mode === 'delete_only' || policy.maxAction === 'DELETE_MESSAGE'
-          ? 'DELETE_ONLY'
-          : 'FULL',
-      ...common,
+        policy?.mode === 'full' ? 'FULL' : policy?.mode === 'shadow' ? 'OBSERVE' : 'OFF',
+      actionCeiling: 'BAN',
+      allowedMatchKinds: ['canonical_sha256'],
     };
   }
 

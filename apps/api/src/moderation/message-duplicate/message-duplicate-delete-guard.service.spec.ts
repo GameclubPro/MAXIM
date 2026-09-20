@@ -6,10 +6,12 @@ import {
 import {
   buildMessageDuplicateIdentity,
   extractDuplicateMessageContent,
+  exactImageSourceDigest,
 } from './message-duplicate-content';
 import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   messageDuplicateSettingsDigest,
+  exactImageSettingsDigest,
   messageDuplicateSanctionSettingsDigest,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
@@ -84,7 +86,6 @@ function setup() {
     max as never,
     bots as never,
     immunity as never,
-    photos as never,
     policy as never,
     history as never,
     new ConfigService(),
@@ -167,6 +168,9 @@ describe('message duplicate final delete guard', () => {
     const s = setup();
     s.binding.version = 2;
     s.binding.hasPhotos = true;
+    s.binding.compareMode = 'IMAGE';
+    s.binding.imageScope = 'SAME_AUTHOR';
+    s.binding.settingsDigest = exactImageSettingsDigest(s.settings);
     s.binding.mediaHashes = ['c'.repeat(64)];
     s.policy.resolve.mockResolvedValue({
       mode: 'full',
@@ -179,10 +183,10 @@ describe('message duplicate final delete guard', () => {
       ]);
     const original = image('photo', 'https://i.oneme.ru/old');
     const content = extractDuplicateMessageContent(original.raw);
-    s.binding.sourceDigest = content.sourceDigest;
+    s.binding.sourceDigest = exactImageSourceDigest(content);
     s.binding.contentDigest = buildMessageDuplicateIdentity(
       content,
-      'MESSAGE',
+      'IMAGE',
       s.binding.mediaHashes,
     )!;
     const renewed = image('photo', 'https://i.oneme.ru/new');

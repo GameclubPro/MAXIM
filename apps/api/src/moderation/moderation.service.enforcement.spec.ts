@@ -5342,7 +5342,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Повтор удалён. Профилактика сработала.'),
+      duplicateExplanation('Алексей', 'Повтор удалён.'),
     );
   });
 
@@ -5848,7 +5848,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Повтор удалён. Профилактика сработала.'),
+      duplicateExplanation('Алексей', 'Повтор удалён.'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();

@@ -29,15 +29,16 @@ import {
   digestDuplicateContent,
   canRefreshDuplicatePhotoSources,
   extractDuplicateMessageContent,
+  isExactImageContent,
   type DuplicateMessageContent,
 } from './message-duplicate-content';
 import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   messageDuplicateSettingsDigest,
+  exactImageSettingsDigest,
 } from './message-duplicate-state';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
-import { PhotoDuplicateRuntimePolicyService } from '../photo-duplicate/photo-duplicate-runtime-policy.service';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 
 const requireFromHere = createRequire(__filename);
@@ -73,7 +74,6 @@ export class MessageDuplicateMediaService {
     private readonly bots: MaxBotLinkService,
     private readonly governor: BackgroundRuntimeGovernorService,
     config: ConfigService,
-    private readonly photoPolicy: PhotoDuplicateRuntimePolicyService,
     private readonly max: MaxClientService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {
@@ -99,6 +99,7 @@ export class MessageDuplicateMediaService {
     lease: PhotoDuplicateOrderingLease,
     executeFullAction?: ExecuteDuplicateModerationAction,
   ): Promise<void> {
+    const imageOnly = job.comparison === 'IMAGE';
     const policy = await this.policy.resolve(job.chatId, true);
     if (
       policy.mode === 'off' ||
@@ -141,7 +142,9 @@ export class MessageDuplicateMediaService {
       settings.duplicateCompareMode === 'TEXT' ||
       settings.chat.entityType !== 'CHAT' ||
       settings.chat.admins.some((admin) => admin.userId === message.senderId) ||
-      messageDuplicateSettingsDigest(settings) !== job.settingsDigest
+      (imageOnly
+        ? exactImageSettingsDigest(settings)
+        : messageDuplicateSettingsDigest(settings)) !== job.settingsDigest
     ) {
       this.metrics?.record('media.settings_rejected');
       return;
@@ -157,18 +160,24 @@ export class MessageDuplicateMediaService {
       return;
     }
     const content = extractDuplicateMessageContent(source.update.raw);
-    if (!content.complete || content.media.length === 0) {
+    if (
+      !content.complete ||
+      content.media.length === 0 ||
+      (imageOnly
+        ? !isExactImageContent(content)
+        : content.media.some((media) => media.kind === 'photo'))
+    ) {
       this.metrics?.record('media.content_unverified');
       return;
     }
     const scope = digestDuplicateContent([
       job.chatId,
-      message.senderId,
+      imageOnly && settings.duplicatePhotoScope === 'CHAT' ? null : message.senderId,
       job.controlRevision,
       job.settingsDigest,
     ]);
     const candidateKeys = this.history
-      .candidateKeys(content, settings)
+      .candidateKeys(content, settings, imageOnly)
       .map((key) => `message-duplicate:candidate:v1:${scope}:${key}`);
     const ownPointer = {
       webhookEventId: job.webhookEventId,
@@ -251,15 +260,16 @@ export class MessageDuplicateMediaService {
           baseline &&
           baselineMessage &&
           baselineMessage.chatId === job.chatId &&
-          baselineMessage.senderId === message.senderId &&
+          (baselineMessage.senderId === message.senderId ||
+            (imageOnly && settings.duplicatePhotoScope === 'CHAT')) &&
           baselineMessage.messageId === previous.messageId &&
           baseline.eventTimestampMs === previous.eventTimestampMs
         ) {
           const baselineContent = extractDuplicateMessageContent(baseline.update.raw);
           if (
-            baselineContent.complete &&
+            (imageOnly ? isExactImageContent(baselineContent) : baselineContent.complete) &&
             this.history
-              .candidateKeys(baselineContent, settings)
+              .candidateKeys(baselineContent, settings, imageOnly)
               .some((key) =>
                 candidateKeys.includes(`message-duplicate:candidate:v1:${scope}:${key}`),
               )
@@ -277,12 +287,13 @@ export class MessageDuplicateMediaService {
             await this.history.observe({
               content: verified.content,
               chatId: job.chatId,
-              userId: message.senderId,
+              userId: baselineMessage.senderId,
               messageId: baselineMessage.messageId,
               eventTimestampMs: baseline.eventTimestampMs,
               controlRevision: policy.revision,
               settings,
               mediaHashes: verified.hashes,
+              ...(imageOnly ? { imageScope: settings.duplicatePhotoScope } : {}),
             });
             this.metrics?.record('media.baseline_verified');
           }
@@ -327,28 +338,13 @@ export class MessageDuplicateMediaService {
       controlRevision: policy.revision,
       settings,
       mediaHashes: verified.hashes,
+      ...(imageOnly ? { imageScope: settings.duplicatePhotoScope } : {}),
     });
     for (const key of candidateKeys) {
       lease.assertOwned();
       await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
     }
-    // Existing photo-only policy owns its subset, including its established sanction settings.
-    const photoOwned =
-      source.update.type === 'message_created' &&
-      settings.duplicatePhotoEnabled &&
-      content.media.every((media) => media.kind === 'photo') &&
-      (
-        await this.photoPolicy.resolveEffectivePolicy({
-          chatId: job.chatId,
-          preset: settings.duplicatePhotoMatchPreset,
-          scope: settings.duplicatePhotoScope,
-        })
-      ).enforce;
     if (result) {
-      if (photoOwned) {
-        this.metrics?.record('media.photo_owned');
-        return;
-      }
       if (job.actionEligible !== true || !(await lease.resolveActionEligibility())) {
         this.metrics?.record('media.action_ineligible');
         return;
@@ -551,7 +547,7 @@ export class MessageDuplicateMediaService {
       current.messageId !== message.messageId ||
       current.senderId !== message.senderId ||
       current.entityType === 'channel' ||
-      !canRefreshDuplicatePhotoSources(content, fresh)
+      !canRefreshDuplicatePhotoSources(content, fresh, true)
     ) {
       throw new UnrecoverableError('Photo message source changed or unavailable');
     }

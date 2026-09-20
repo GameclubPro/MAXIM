@@ -7,7 +7,7 @@ import { extractClientClickableTextEvidence } from '../navigation/client-clickab
 import { extractNavigationEvidence } from '../navigation/navigation-evidence.extractor';
 import type { NavigationTargetEvidence } from '../navigation/navigation-evidence.types';
 
-export type MessageDuplicateCompareMode = 'MESSAGE' | 'TEXT';
+export type MessageDuplicateCompareMode = 'MESSAGE' | 'TEXT' | 'IMAGE';
 export type DuplicateMediaKind = 'photo' | 'video' | 'audio' | 'file';
 export type DuplicateMediaSource = {
   kind: DuplicateMediaKind;
@@ -296,6 +296,15 @@ export function buildMessageDuplicateIdentity(
   mode: MessageDuplicateCompareMode,
   mediaHashes: readonly string[] = [],
 ): string | null {
+  if (mode === 'IMAGE') {
+    if (
+      !isExactImageContent(content) ||
+      mediaHashes.length !== content.media.length ||
+      mediaHashes.some((hash) => !/^[a-f0-9]{64}$/.test(hash))
+    )
+      return null;
+    return digestDuplicateContent({ version: 1, mode, images: [...mediaHashes].sort() });
+  }
   if (!content.complete && !(mode === 'TEXT' && content.reason === 'unsupported_attachment'))
     return null;
   if (
@@ -322,17 +331,42 @@ export function buildMessageDuplicateIdentity(
   });
 }
 
+export function isExactImageContent(content: DuplicateMessageContent): boolean {
+  // FLAG: Deleting a mixed or partial album could discard new content. Require the complete
+  // photo set; captions do not define image equality, and every photo still needs verified bytes.
+  return (
+    content.complete &&
+    content.media.length > 0 &&
+    content.media.every((item) => item.kind === 'photo')
+  );
+}
+
+export function exactImageSourceDigest(content: DuplicateMessageContent): string {
+  return digestDuplicateContent(
+    content.media
+      .map((item) =>
+        item.kind === 'photo' && item.photoId
+          ? digestDuplicateContent(['photo', item.photoId])
+          : item.identity,
+      )
+      .sort(),
+  );
+}
+
 export function canRefreshDuplicatePhotoSources(
   original: DuplicateMessageContent,
   current: DuplicateMessageContent,
+  imageOnly = false,
 ): boolean {
   // FLAG: A stable photo ID permits refreshing only this exact message's download source.
   // It is never equality evidence across messages; the refreshed bytes must still be hashed.
   return (
     original.complete &&
     current.complete &&
-    digestDuplicateContent([original.text, original.navigation, original.actions]) ===
-      digestDuplicateContent([current.text, current.navigation, current.actions]) &&
+    (imageOnly
+      ? isExactImageContent(original) && isExactImageContent(current)
+      : digestDuplicateContent([original.text, original.navigation, original.actions]) ===
+        digestDuplicateContent([current.text, current.navigation, current.actions])) &&
     original.media.length === current.media.length &&
     original.media.every((media, index) => {
       const fresh = current.media[index]!;

@@ -108,48 +108,7 @@ export function buildLegacyDuplicatePassiveSanctionLabel(params: {
   persona: BotSpeechPersona;
   messageDeleted: boolean;
 }): string {
-  const { style, persona, messageDeleted } = params;
-  if (style === 'POLICE' || style === null) {
-    if (!messageDeleted) {
-      return selectPersonaText(persona, {
-        male: 'Повтор взял на карандаш, пока без санкций.',
-        female: 'Повтор взяла на карандаш, пока без санкций.',
-        neutral: 'Повтор зафиксирован, пока без санкций.',
-      });
-    }
-    return selectPersonaText(persona, {
-      male: 'Этот экземпляр прикрыл.',
-      female: 'Этот экземпляр прикрыла.',
-      neutral: 'Этот экземпляр снят с линии.',
-    });
-  }
-  if (style === 'ROBOT') {
-    return messageDeleted ? '🧹 Дубль убран.' : '🧾 Дубль отмечен без санкции.';
-  }
-  if (style === 'FRIENDLY') {
-    return messageDeleted
-      ? selectPersonaText(persona, {
-          male: '🧹 Повтор убрал.',
-          female: '🧹 Повтор убрала.',
-          neutral: '🧹 Повтор убран.',
-        })
-      : selectPersonaText(persona, {
-          male: '👀 Повтор заметил, пока без санкций.',
-          female: '👀 Повтор заметила, пока без санкций.',
-          neutral: '👀 Повтор отмечен, пока без санкций.',
-        });
-  }
-  return messageDeleted
-    ? selectPersonaText(persona, {
-        male: '♻️ Повтор убрал. Второй дубль тут был лишним.',
-        female: '♻️ Повтор убрала. Второй дубль тут был лишним.',
-        neutral: '♻️ Повтор убран. Второй дубль тут был лишним.',
-      })
-    : selectPersonaText(persona, {
-        male: '👀 Повтор заметил. Пока без санкций, но мысль уже учтена.',
-        female: '👀 Повтор заметила. Пока без санкций, но мысль уже учтена.',
-        neutral: '👀 Повтор отмечен. Пока без санкций, но мысль уже учтена.',
-      });
+  return params.messageDeleted ? 'Повтор удалён.' : 'Повтор обнаружен.';
 }
 
 function selectPersonaText(

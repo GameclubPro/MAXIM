@@ -62,13 +62,13 @@ describe('bot speech custom override compatibility', () => {
   );
 
   it.each([
-    ['POLICE', false, 'Повтор зафиксирован, пока без санкций.'],
-    ['POLICE', true, 'Этот экземпляр снят с линии.'],
-    [null, false, 'Повтор зафиксирован, пока без санкций.'],
-    ['FRIENDLY', false, '👀 Повтор отмечен, пока без санкций.'],
-    ['FRIENDLY', true, '🧹 Повтор убран.'],
-    ['IRONIC', false, '👀 Повтор отмечен. Пока без санкций, но мысль уже учтена.'],
-    ['IRONIC', true, '♻️ Повтор убран. Второй дубль тут был лишним.'],
+    ['POLICE', false, 'Повтор обнаружен.'],
+    ['POLICE', true, 'Повтор удалён.'],
+    [null, false, 'Повтор обнаружен.'],
+    ['FRIENDLY', false, 'Повтор обнаружен.'],
+    ['FRIENDLY', true, 'Повтор удалён.'],
+    ['IRONIC', false, 'Повтор обнаружен.'],
+    ['IRONIC', true, 'Повтор удалён.'],
   ] as const)(
     'uses neutral duplicate placeholder copy for Rex in %s style when deleted=%s',
     (style, messageDeleted, expected) => {
@@ -83,10 +83,10 @@ describe('bot speech custom override compatibility', () => {
   );
 
   it.each([
-    ['FRIENDLY', 'male', '🧹 Повтор убрал.'],
-    ['FRIENDLY', 'female', '🧹 Повтор убрала.'],
-    ['IRONIC', 'male', '♻️ Повтор убрал. Второй дубль тут был лишним.'],
-    ['IRONIC', 'female', '♻️ Повтор убрала. Второй дубль тут был лишним.'],
+    ['FRIENDLY', 'male', 'Повтор удалён.'],
+    ['FRIENDLY', 'female', 'Повтор удалён.'],
+    ['IRONIC', 'male', 'Повтор удалён.'],
+    ['IRONIC', 'female', 'Повтор удалён.'],
   ] as const)(
     'keeps passive duplicate copy consistent for the %s style and %s persona',
     (style, persona, expected) => {

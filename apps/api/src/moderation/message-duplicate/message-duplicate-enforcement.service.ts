@@ -3,7 +3,6 @@ import type { MaxUpdate } from '@maxim/contracts';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
-import { PhotoDuplicateRuntimePolicyService } from '../photo-duplicate/photo-duplicate-runtime-policy.service';
 import { maskText } from '../text-mask.util';
 import type { DuplicateHit } from '../rule-engine.contract';
 import { digestDuplicateContent } from './message-duplicate-content';
@@ -29,7 +28,6 @@ export class MessageDuplicateEnforcementService {
   constructor(
     private readonly intents: ModerationDeleteIntentService,
     private readonly policy: MessageDuplicatePolicyService,
-    private readonly photoPolicy: PhotoDuplicateRuntimePolicyService,
     private readonly guard: MessageDuplicateDeleteGuardService,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
@@ -47,8 +45,11 @@ export class MessageDuplicateEnforcementService {
     executeFullAction?: ExecuteDuplicateModerationAction;
   }): Promise<boolean> {
     const policy = await this.policy.resolve(params.chatId, true);
+    const imageOnly = params.binding.compareMode === 'IMAGE';
     if (
       !messageDuplicateActionsEnabled(policy.mode) ||
+      (imageOnly && policy.mode !== 'full') ||
+      (params.binding.hasPhotos && !imageOnly) ||
       policy.revision !== params.binding.controlRevision ||
       params.binding.eventTimestampMs < policy.effectiveAtMs
     ) {
@@ -70,25 +71,9 @@ export class MessageDuplicateEnforcementService {
         action: decision.action,
         repeatCount: decision.count,
         threshold: decision.threshold,
-        settingsDigest: messageDuplicateSanctionSettingsDigest(params.settings),
+        settingsDigest: messageDuplicateSanctionSettingsDigest(params.settings, imageOnly),
       };
       binding.requiredCount = Math.max(binding.requiredCount, decision.threshold + 1);
-    }
-    if (binding.hasPhotos && !full) {
-      const photo = await this.photoPolicy.resolveEffectivePolicy({
-        chatId: params.chatId,
-        preset: 'SAME_IMAGE',
-        scope: 'SAME_AUTHOR',
-      });
-      if (
-        !photo.enforce ||
-        !photo.allowedMatchKinds.includes('canonical_sha256') ||
-        !photo.controlRevision
-      ) {
-        this.metrics?.record('enforcement.photo_policy');
-        return false;
-      }
-      binding.photoControlRevision = photo.controlRevision;
     }
     if (full && (!params.update || !params.executeFullAction))
       throw new Error('Full message duplicate action executor unavailable');

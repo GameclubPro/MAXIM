@@ -28,6 +28,7 @@ export const messageDuplicateJobSchema = z
     sourceCreatedAt: z.iso.datetime(),
     createdAt: z.iso.datetime(),
     actionEligible: z.boolean(),
+    comparison: z.literal('IMAGE').optional(),
     idempotencyKey: z.string().regex(/^message-duplicate__[a-f0-9]{64}$/),
   })
   .strict()

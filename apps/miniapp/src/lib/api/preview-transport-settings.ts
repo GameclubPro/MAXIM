@@ -169,18 +169,18 @@ export function buildChatSettingsScreen(
   return chatSettingsScreenResponseSchema.parse({
     settings: state.chatSettings,
     reportsAvailable: state.reportsAvailable,
-    duplicatePhotoModerationMode: 'DELETE_ONLY',
+    duplicatePhotoModerationMode: 'FULL',
     duplicateMessageModerationMode: 'FULL',
     duplicatePhotoPolicyMatrix: {
       base: {
-        moderationMode: 'DELETE_ONLY',
-        actionCeiling: 'DELETE_MESSAGE',
+        moderationMode: 'FULL',
+        actionCeiling: 'BAN',
         allowedMatchKinds: ['canonical_sha256'],
       },
       advanced: {
         moderationMode: 'FULL',
         actionCeiling: 'BAN',
-        allowedMatchKinds: ['canonical_sha256', 'pdq'],
+        allowedMatchKinds: ['canonical_sha256'],
       },
     },
     rules: state.chatRules,

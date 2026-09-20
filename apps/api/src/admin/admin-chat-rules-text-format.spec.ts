@@ -187,7 +187,7 @@ describe('admin chat rules text format helpers', () => {
         duplicatePhotoModerationMode: 'FULL',
       }),
     ).toContain(
-      'Не отправляйте одинаковые и похожие сообщения и одинаковые фото: бот среагирует после 1 дубля.',
+      'Одинаковые картинки одного участника считаются повтором независимо от подписи. Действует общая цепочка антидубля.',
     );
     expect(
       buildRulesTextItemsFromSettings({

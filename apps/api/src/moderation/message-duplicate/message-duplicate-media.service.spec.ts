@@ -4,7 +4,10 @@ import {
   MessageDuplicateMediaService,
   MessageDuplicateMediaDeferredError,
 } from './message-duplicate-media.service';
-import { messageDuplicateSettingsDigest } from './message-duplicate-state';
+import {
+  messageDuplicateSettingsDigest,
+  exactImageSettingsDigest,
+} from './message-duplicate-state';
 import { duplicateSettings, duplicateUpdate } from './message-duplicate-test-fixtures';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import { PhotoDownloadHttpError } from '../photo-duplicate/secure-photo-downloader';
@@ -51,7 +54,6 @@ function setup() {
     bots as never,
     governor as never,
     new ConfigService(),
-    { resolveEffectivePolicy: jest.fn().mockResolvedValue({ enforce: false }) } as never,
     max as never,
     metrics as never,
   );
@@ -220,9 +222,12 @@ describe('bounded message duplicate media analysis', () => {
 
   function photoSetup() {
     const s = setup();
+    s.settings.duplicatePhotoEnabled = true;
     s.policy.resolve.mockResolvedValue({ mode: 'full', revision: 1 });
     const photoJob = (id: string, timestamp: number, url: string | null = null) => {
       const job = s.job(id, timestamp);
+      job.comparison = 'IMAGE';
+      job.settingsDigest = exactImageSettingsDigest(s.settings);
       const update = duplicateUpdate(id, job.eventTimestampMs, '', [
         { type: 'image', payload: { photo_id: id, ...(url ? { url } : {}) } },
       ]);
@@ -381,7 +386,7 @@ describe('bounded message duplicate media analysis', () => {
     },
   );
 
-  it.each(['photo', 'caption', 'author', 'message'] as const)(
+  it.each(['photo', 'author', 'message'] as const)(
     'rejects a changed %s during photo source refresh',
     async (change) => {
       const s = photoSetup();
@@ -393,7 +398,7 @@ describe('bounded message duplicate media analysis', () => {
       const fresh = duplicateUpdate(
         change === 'message' ? 'other' : 'b',
         current.eventTimestampMs,
-        change === 'caption' ? 'edited' : '',
+        '',
         [
           {
             type: 'image',

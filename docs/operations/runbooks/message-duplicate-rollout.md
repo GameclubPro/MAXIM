@@ -15,15 +15,18 @@ final dispatch must agree on this distinction. Do not widen the base delete roll
 message duplicates: that would also promote unrelated historical moderation work.
 
 `duplicateCompareMode=MESSAGE` compares text, navigation/actions and independently verified
-media content. `TEXT` compares text/captions and navigation/actions without media. Known media
+non-photo media. Complete photo messages use the explicit IMAGE path: exact canonical image
+sets, independent of captions, with administrator-selected SAME_AUTHOR or CHAT scope and the
+same configured reaction ladder. CHAT counts escalation per author, never across participants.
+`TEXT` compares text/captions and navigation/actions without media. Known media
 without a retrievable original remain unverified in MESSAGE mode; filenames, sizes, previews,
 platform IDs and download URLs are not equality evidence. Unsupported attachments and split
 albums are skipped when the whole message cannot be verified. Complete attachment arrays are
-one logical occurrence. Full mode v2 bindings authorize verified whole-message media, including
-canonical photo hashes. This does not promote the separate perceptual/photo-only filter or its
-cross-author scope. When that separate filter is enforcing a photo create, it owns the action;
-otherwise verified whole-message comparison may act. Legacy v1 delete-only bindings retain the
-photo runtime ceiling. Never infer equality from media IDs or bypass content verification.
+one logical occurrence. Full mode v2 IMAGE bindings carry imageScope and exact media/source
+proof. Old message bindings with photos are rejected; they cannot acquire the new policy.
+The separate perceptual/photo-only filter is retired, its authority is permanently OFF and its
+queue consumer only abandons old ordering entries. Never infer equality from media IDs or
+bypass content verification. Legacy storage fields remain for rollback-safe schema compatibility.
 
 ## Validation And Delivery
 

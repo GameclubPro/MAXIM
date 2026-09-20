@@ -129,7 +129,8 @@ describe('RedisCounterService revisioned set memberships', () => {
     expect(script).toContain('logical_lower_bound,\n      member_timestamp_ms');
     expect(script).toContain('membership_count = math.min(membership_count, count_limit)');
     expect(script).not.toContain('future_cutoff_ms');
-    expect(script).not.toContain("'ZRANGEBYSCORE'");
+    expect(script).toContain('if baseline_policy and key_index == baseline_policy[2] then');
+    expect(script).toContain("'WITHSCORES', 'LIMIT', 0, 1");
     expect(script).toContain("redis.call('PEXPIRE', KEYS[key_index], full_ttl_ms)");
     expect(script).not.toContain("redis.call('ZCARD', KEYS[key_index])");
     expect(script).not.toContain("redis.call('PTTL', KEYS[key_index])");

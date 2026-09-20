@@ -2075,26 +2075,26 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       const panel = page.locator('.settings-drilldown__panel--duplicates');
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
-      await panel
-        .locator('.duplicate-photo-toggle')
-        .getByText('Активно', { exact: true })
-        .waitFor();
-      await panel.getByLabel('Сравнение сообщений', { exact: true }).selectOption('TEXT');
-      await panel.getByLabel('Включить проверку повторных фото').check();
-      await panel.getByRole('radiogroup', { name: 'Где искать повторное фото' }).waitFor({
-        state: 'visible',
-      });
-      await panel.getByRole('radio', { name: 'С изменениями' }).click();
-      await panel.getByRole('radio', { name: 'Во всём чате' }).click();
-      await panel.getByLabel('Включить проверку повторных фото').uncheck();
-      await panel.getByLabel('Сравнение сообщений', { exact: true }).selectOption('MESSAGE');
-      await panel
-        .locator('.duplicate-photo-toggle')
-        .getByText('Активно', { exact: true })
-        .waitFor();
-      if (await panel.getByText(/Фото не удаляются|Фото: только наблюдение/).count()) {
-        throw new Error('Whole-message photo coverage is masked by the experimental photo status');
+      const scope = panel.getByRole('radiogroup', { name: 'Чьи картинки сравнивать' });
+      await scope.waitFor({ state: 'visible' });
+      await scope.getByRole('radio', { name: 'Всех участников', exact: true }).click();
+      const save = panel.getByRole('button', { name: 'Сохранить', exact: true });
+      await save.click();
+      await save.waitFor({ state: 'hidden' });
+      if (await panel.isVisible())
+        await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      if (!(await scope.getByRole('radio', { name: 'Всех участников', exact: true }).isChecked())) {
+        throw new Error('Image author scope did not persist');
       }
+      await panel.getByLabel('Сравнение сообщений', { exact: true }).selectOption('TEXT');
+      await scope.waitFor({ state: 'hidden' });
+      await panel.getByLabel('Сравнение сообщений', { exact: true }).selectOption('MESSAGE');
+      await scope.waitFor({ state: 'visible' });
+      if (await panel.getByText(/С изменениями|дополнительной санкции/).count()) {
+        throw new Error('Retired image filter controls are still visible');
+      }
+      await scope.scrollIntoViewIfNeeded();
       await page.waitForTimeout(250);
     },
   },

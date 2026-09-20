@@ -265,8 +265,8 @@ test('SECTION_SETTING_KEYS includes advanced tuning for links and duplicates plu
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkMuteMaxCount'));
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkBanMaxCount'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateDetectionPreset'));
-  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoEnabled'));
-  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoMatchPreset'));
+  assert.ok(!SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoEnabled'));
+  assert.ok(!SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoMatchPreset'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoScope'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnoreLinksEnabled'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnorePhonesEnabled'));
@@ -535,8 +535,8 @@ test('mergeSectionSettings preserves advanced tuning and syncs limit allow toggl
 
   const duplicateMerged = mergeSectionSettings(current, saved, 'duplicates');
   assert.equal(duplicateMerged.duplicateDetectionPreset, 'CUSTOM');
-  assert.equal(duplicateMerged.duplicatePhotoEnabled, true);
-  assert.equal(duplicateMerged.duplicatePhotoMatchPreset, 'MINOR_EDITS');
+  assert.equal(duplicateMerged.duplicatePhotoEnabled, false);
+  assert.equal(duplicateMerged.duplicatePhotoMatchPreset, 'SAME_IMAGE');
   assert.equal(duplicateMerged.duplicatePhotoScope, 'CHAT');
   assert.equal(duplicateMerged.duplicateIgnoreLinksEnabled, true);
   assert.equal(duplicateMerged.duplicateIgnorePhonesEnabled, true);

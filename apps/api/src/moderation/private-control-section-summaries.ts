@@ -51,7 +51,7 @@ export function buildPrivateSectionSummaryLines(
       const duplicateAllowedCount = resolvePrivateDuplicateAllowedCount(settings);
       return [
         `Антидубли: ${format.boolean(settings.antiDuplicateEnabled)} • ${duplicateAllowedCount === 0 ? 'с первого дубля' : `после ${duplicateAllowedCount} дубл.`} • окно ${duplicateWindowSec}с`,
-        `Фото: ${format.boolean(settings.duplicatePhotoEnabled)} • совпадение ${formatPrivateControlEnumValue(settings.duplicatePhotoMatchPreset)} • область ${formatPrivateControlEnumValue(settings.duplicatePhotoScope)}`,
+        `Одинаковые картинки: ${format.boolean(settings.duplicateCompareMode !== 'TEXT')} • ${formatPrivateControlEnumValue(settings.duplicatePhotoScope)} • общая цепочка действий`,
         `Этапы: объяснение ${format.boolean(settings.duplicateBotMessageEnabled)} • WARN ${format.boolean(settings.duplicateWarnEnabled)} • MUTE ${format.boolean(settings.duplicateMuteEnabled)} (${settings.duplicateMuteDurationHours}ч) • BAN ${format.boolean(settings.duplicateBanEnabled)}`,
         `Кнопка: ${format.boolean(settings.duplicateBotButtonEnabled)}`,
       ];

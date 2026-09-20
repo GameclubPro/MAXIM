@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { PDQ } from 'pdq-wasm';
 import {
   PHOTO_FINGERPRINT_ALGORITHM_VERSION,
   PhotoFingerprintRejectedError,
@@ -63,6 +64,22 @@ async function patternedPhoto(): Promise<Buffer> {
 }
 
 describe('PhotoFingerprintService', () => {
+  it('does not initialize or compute perceptual hashes in production canonical-only mode', async () => {
+    const init = jest.spyOn(PDQ, 'init');
+    const hash = jest.spyOn(PDQ, 'hash');
+    try {
+      const service = new PhotoFingerprintService({ canonicalOnly: true });
+      await service.onModuleInit();
+      const result = await service.fingerprint(await patternedPhoto());
+      expect(result.canonicalHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(result.pdqQuality).toBe(0);
+      expect(init).not.toHaveBeenCalled();
+      expect(hash).not.toHaveBeenCalled();
+    } finally {
+      init.mockRestore();
+      hash.mockRestore();
+    }
+  });
   it('proves exact pixels across PNG and lossless WebP but distinguishes different images', async () => {
     const png = await patternedPhoto();
     const webp = await sharp(png).webp({ lossless: true }).toBuffer();

@@ -51,10 +51,7 @@ export default function SettingsDuplicateActionPreview({
       <div className="duplicate-stage__top">
         <div>
           <h3 className="duplicate-stage__title">По настройкам</h3>
-          <span className="field__hint">
-            Одинаковые {photoPolicy.comparison === 'MESSAGE' ? 'сообщения' : 'тексты'} за{' '}
-            {windowHours} ч
-          </span>
+          <span className="field__hint">Повторы за {windowHours} ч</span>
         </div>
         <SettingsHintAnchor
           hintKey="duplicateActionSummary"

@@ -19,7 +19,10 @@ test('settings summary uses the same message numbering as the controls and keeps
     duplicateMuteEnabled: false,
     duplicateBanEnabled: false,
   });
-  assert.equal(formatDuplicateSettingsSummary(settings, 12), 'удаление с сообщения №3 • 12 ч');
+  assert.equal(
+    formatDuplicateSettingsSummary(settings, 12),
+    'удаление с сообщения №3 • 12 ч • картинки',
+  );
   assert.equal(formatDuplicateSettingsSummary(null, 12), 'Выключено');
 });
 function render(

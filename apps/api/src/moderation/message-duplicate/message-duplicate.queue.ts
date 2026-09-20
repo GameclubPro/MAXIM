@@ -21,6 +21,7 @@ export type MessageDuplicateJob = {
   sourceCreatedAt: string;
   createdAt: string;
   actionEligible: boolean;
+  comparison?: 'IMAGE';
   idempotencyKey: string;
 };
 
@@ -45,7 +46,7 @@ export class MessageDuplicateEnqueueService {
     input: Omit<MessageDuplicateJob, 'version' | 'createdAt' | 'idempotencyKey'>,
   ): Promise<void> {
     if (!this.queue || !this.ordering) throw new Error('Message duplicate queue unavailable');
-    const id = `message-duplicate__${digestDuplicateContent([input.chatId, input.messageId, input.eventTimestampMs, 1])}`;
+    const id = `message-duplicate__${digestDuplicateContent([input.chatId, input.messageId, input.eventTimestampMs, 1, ...(input.comparison === 'IMAGE' ? ['image-v1'] : [])])}`;
     const identity = { jobId: id, chatId: input.chatId, sourceCreatedAt: input.sourceCreatedAt };
     try {
       const registration = await this.ordering.announce(identity, input.actionEligible === true);

@@ -1042,13 +1042,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicatePhotoModerationPolicy = resolveDuplicatePhotoPolicyForDraft(
     settingsScreenQuery.data?.duplicatePhotoPolicyMatrix,
     settingsScreenQuery.data?.duplicatePhotoModerationMode ?? 'OBSERVE',
-    draft?.duplicatePhotoMatchPreset ??
-      settingsScreenQuery.data?.settings.duplicatePhotoMatchPreset ??
-      'SAME_IMAGE',
-    draft?.duplicatePhotoScope ??
-      settingsScreenQuery.data?.settings.duplicatePhotoScope ??
-      'SAME_AUTHOR',
-    settingsScreenQuery.data?.settings,
   );
   const duplicatePhotoModerationMode = duplicatePhotoModerationPolicy.moderationMode;
   const currentRulesTextSource = useMemo(() => {

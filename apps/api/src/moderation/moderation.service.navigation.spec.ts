@@ -3804,22 +3804,16 @@ describe('ModerationService', () => {
       };
     }
 
-    it('enqueues an eligible photo message before the no-violation return', async () => {
+    it('does not enqueue an eligible message into the retired photo filter', async () => {
       const harness = createHarness();
       const update = createPhotoAttachmentUpdate(91);
 
       await harness.service.handleUpdate(update, undefined, 'webhook-photo-91');
 
-      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
-        webhookEventId: 'webhook-photo-91',
-        chatId: 'chat-1',
-        messageId: 'msg-photo-91',
-        sourceCreatedAt: update.message!.createdAt,
-        actionEligible: true,
-      });
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
     });
 
-    it('latches a photo job observation-only when rule detection found a competing violation', async () => {
+    it('does not revive the retired photo filter for competing violations', async () => {
       const harness = createHarness({
         violations: [
           {
@@ -3836,17 +3830,11 @@ describe('ModerationService', () => {
 
       await harness.service.handleUpdate(update, undefined, 'webhook-photo-92');
 
-      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
-        webhookEventId: 'webhook-photo-92',
-        chatId: 'chat-1',
-        messageId: 'msg-photo-92',
-        sourceCreatedAt: update.message!.createdAt,
-        actionEligible: false,
-      });
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
     });
 
     it.each(['decision', 'hit'] as const)(
-      'latches a photo job observation-only when text duplicate detection returned a %s',
+      'does not revive retired photo jobs when text detection returned a %s',
       async (duplicateOutcome) => {
         const harness = createHarness({ duplicateOutcome });
         jest
@@ -3857,17 +3845,11 @@ describe('ModerationService', () => {
 
         await harness.service.handleUpdate(update, undefined, `webhook-photo-${suffix}`);
 
-        expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
-          webhookEventId: `webhook-photo-${suffix}`,
-          chatId: 'chat-1',
-          messageId: `msg-photo-${suffix}`,
-          sourceCreatedAt: update.message!.createdAt,
-          actionEligible: false,
-        });
+        expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
       },
     );
 
-    it('lowers the duplicate action latch for a handled Karavan photo relay', async () => {
+    it('does not send a handled Karavan relay into the retired photo filter', async () => {
       const harness = createHarness({ karavanResult: 'handled' });
       const update = createPhotoAttachmentUpdate(97);
       update.message!.text = '$ storefront item';
@@ -3885,13 +3867,7 @@ describe('ModerationService', () => {
       await harness.service.handleUpdate(update, undefined, 'webhook-photo-97');
 
       expect(harness.karavanStorefrontRelayService.handleMessageCreated).toHaveBeenCalled();
-      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
-        webhookEventId: 'webhook-photo-97',
-        chatId: 'chat-1',
-        messageId: 'msg-photo-97',
-        sourceCreatedAt: update.message!.createdAt,
-        actionEligible: false,
-      });
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -3997,13 +3973,7 @@ describe('ModerationService', () => {
 
         await harness.service.handleUpdate(update, undefined, 'webhook-photo-98');
 
-        expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
-          webhookEventId: 'webhook-photo-98',
-          chatId: 'chat-1',
-          messageId: 'msg-photo-98',
-          sourceCreatedAt: update.message!.createdAt,
-          actionEligible: false,
-        });
+        expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
         expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
       },
     );
@@ -4038,13 +4008,7 @@ describe('ModerationService', () => {
       await harness.service.handleUpdate(update, undefined, 'webhook-photo-93');
 
       expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
-      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
-        webhookEventId: 'webhook-photo-93',
-        chatId: 'chat-1',
-        messageId: 'msg-photo-93',
-        sourceCreatedAt: update.message!.createdAt,
-        actionEligible: false,
-      });
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
     });
 
     it('does not enqueue bot-authored photo messages', async () => {

@@ -206,19 +206,21 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
   if (settings.antiDuplicateEnabled) {
     const allowedCount = resolveDuplicateAllowedCount(settings);
     const photoModerationEnforced =
-      settings.duplicatePhotoEnabled &&
-      (screen.duplicatePhotoModerationMode === 'DELETE_ONLY' ||
-        screen.duplicatePhotoModerationMode === 'FULL');
+      settings.duplicateCompareMode !== 'TEXT' && screen.duplicatePhotoModerationMode === 'FULL';
     const subjects = resolveDuplicateTextRuleSubjects(settings);
-    if (photoModerationEnforced) {
-      subjects.push('одинаковые фото');
-    }
     const subject = formatConjunctionList(subjects);
     items.push(
       allowedCount === 0
         ? `Не отправляйте ${subject}.`
         : `Не отправляйте ${subject}: бот среагирует ${formatDuplicateAllowanceLabel(allowedCount)}.`,
     );
+    if (photoModerationEnforced) {
+      items.push(
+        settings.duplicatePhotoScope === 'CHAT'
+          ? 'Одинаковые картинки считаются повтором независимо от автора и подписи. Действует общая цепочка антидубля; счётчик отдельный для каждого участника.'
+          : 'Одинаковые картинки одного участника считаются повтором независимо от подписи. Действует общая цепочка антидубля.',
+      );
+    }
   }
 
   if (settings.antiSpamEnabled) {

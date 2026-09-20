@@ -22,6 +22,7 @@ describe('message duplicate delete-only action claims', () => {
     'uses the configured full reaction ladder at repeat $repeatCount for $kind',
     async ({ repeatCount, expected, kind }) => {
       const settings = duplicateSettings({
+        duplicatePhotoEnabled: true,
         duplicateBotMessageEnabled: true,
         duplicateWarnEnabled: true,
         duplicateMuteEnabled: true,
@@ -53,6 +54,7 @@ describe('message duplicate delete-only action claims', () => {
         settings,
         content: extractDuplicateMessageContent(update.raw),
         mediaHashes: kind === 'photo' ? ['a'.repeat(64)] : [],
+        ...(kind === 'photo' ? { imageScope: 'SAME_AUTHOR' as const } : {}),
       });
       const intents = {
         ensureIntentWithMessageActionClaim: jest.fn().mockResolvedValue({
@@ -73,7 +75,6 @@ describe('message duplicate delete-only action claims', () => {
       const service = new MessageDuplicateEnforcementService(
         intents as never,
         policy as never,
-        {} as never,
         guard as never,
       );
       await service.enqueue({
@@ -174,11 +175,9 @@ describe('message duplicate delete-only action claims', () => {
         expiresAtMs: Date.now() + 3600000,
       }),
     };
-    const photos = { resolveEffectivePolicy: jest.fn().mockResolvedValue({ enforce: false }) };
     const enforcement = new MessageDuplicateEnforcementService(
       intents as never,
       policy as never,
-      photos as never,
       {} as never,
     );
     const params = {

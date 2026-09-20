@@ -1,459 +1,90 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { DUPLICATE_PHOTO_SCOPE_OPTIONS } from '../src/pages/settings/settings-duplicate-photo-options';
 import {
   formatDuplicateActionSummary,
-  formatDuplicatePhotoCoverageLabel,
-  formatDuplicatePhotoModerationHint,
-  resolveDuplicatePhotoPolicyForDraft,
   resolveDuplicatePhotoPresentationPolicy,
+  resolveDuplicatePhotoPolicyForDraft,
 } from '../src/pages/settings/settings-duplicate-photo-status';
-import { formatDuplicatePhotoMatchPresetHint } from '../src/pages/settings/settings-duplicate-photo-options';
 import { buildChatSettingsScreen } from '../src/lib/api/preview-transport-settings';
 import { createPreviewState } from '../src/lib/api/preview-transport-state';
 
-const deleteOnlyPolicy = {
-  moderationMode: 'DELETE_ONLY' as const,
-  actionCeiling: 'DELETE_MESSAGE' as const,
-  allowedMatchKinds: ['canonical_sha256' as const],
-};
-const mutePolicy = {
+const source = (name: string) =>
+  readFileSync(new URL(`../src/pages/${name}`, import.meta.url), 'utf8');
+const section = source('settings/settings-duplicates-section.tsx');
+const photo = source('settings/settings-duplicate-photo-controls.tsx');
+const state = source('settings-page-state.ts');
+const full = {
   moderationMode: 'FULL' as const,
-  actionCeiling: 'MUTE' as const,
+  actionCeiling: 'BAN' as const,
   allowedMatchKinds: ['canonical_sha256' as const],
 };
-const disabledSanctions = {
-  duplicateWarnEnabled: false,
-  duplicateMuteEnabled: false,
-  duplicateBanEnabled: false,
-};
-const muteAndBanSanctions = {
-  duplicateWarnEnabled: false,
-  duplicateMuteEnabled: true,
-  duplicateBanEnabled: true,
-};
 
-test('full message comparison exposes active photos independently of the experimental photo toggle', () => {
-  for (const photoEnabled of [true, false]) {
-    const policy = resolveDuplicatePhotoPresentationPolicy(
-      { ...deleteOnlyPolicy, moderationMode: 'OBSERVE' },
-      'FULL',
-      'MESSAGE',
-      photoEnabled,
-    );
-    assert.equal(policy.comparison, 'MESSAGE');
-    assert.match(
-      formatDuplicatePhotoCoverageLabel('Одинаковый', photoEnabled, policy),
-      /вложения: включены/u,
-    );
-    assert.doesNotMatch(
-      formatDuplicatePhotoModerationHint(policy),
-      /не удал|наблюдени|не получают/u,
-    );
-    assert.match(
-      formatDuplicateActionSummary(
-        {
-          duplicatePhotoEnabled: photoEnabled,
-          duplicateBotMessageEnabled: false,
-          duplicateWarnEnabled: true,
-          duplicateMuteEnabled: true,
-          duplicateBanEnabled: true,
-          duplicateMuteDurationHours: 12,
-        },
-        0,
-        policy,
-      ),
-      /Сообщение с текстом и вложениями удаляется.*предупреждение.*ограничение на 12 ч.*блокировка/u,
-    );
-  }
-});
-
-test('photo presentation does not promote disabled, caption-only or independently enforcing policies', () => {
-  const observed = { ...deleteOnlyPolicy, moderationMode: 'OBSERVE' as const };
-  for (const mode of ['OFF', 'OBSERVE', 'DELETE_ONLY'] as const) {
-    assert.equal(
-      resolveDuplicatePhotoPresentationPolicy(observed, mode, 'MESSAGE', true),
-      observed,
-    );
-  }
-  assert.equal(resolveDuplicatePhotoPresentationPolicy(observed, 'FULL', 'TEXT', true), observed);
-  assert.equal(
-    resolveDuplicatePhotoPresentationPolicy(deleteOnlyPolicy, 'FULL', 'MESSAGE', true),
-    deleteOnlyPolicy,
-  );
-  assert.equal(
-    resolveDuplicatePhotoPresentationPolicy(mutePolicy, 'FULL', 'MESSAGE', true),
-    mutePolicy,
-  );
-  assert.equal(
-    resolveDuplicatePhotoPresentationPolicy(deleteOnlyPolicy, 'FULL', 'MESSAGE', false).comparison,
-    'MESSAGE',
-  );
-});
-
-const duplicatesSectionSource = readFileSync(
-  new URL('../src/pages/settings/settings-duplicates-section.tsx', import.meta.url),
-  'utf8',
-);
-const photoControlsSource = readFileSync(
-  new URL('../src/pages/settings/settings-duplicate-photo-controls.tsx', import.meta.url),
-  'utf8',
-);
-const customControlsSource = readFileSync(
-  new URL('../src/pages/settings/settings-duplicate-custom-controls.tsx', import.meta.url),
-  'utf8',
-);
-const settingsPageSource = readFileSync(
-  new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
-  'utf8',
-);
-const settingsSectionToggleSource = readFileSync(
-  new URL('../src/components/ui/settings-section-toggle.tsx', import.meta.url),
-  'utf8',
-);
-const duplicateStageStyles = readFileSync(
-  new URL('../src/pages/settings/settings-duplicate-stage.css', import.meta.url),
-  'utf8',
-);
-const duplicatePhotoStyles = readFileSync(
-  new URL('../src/pages/settings/settings-duplicate-photo.css', import.meta.url),
-  'utf8',
-);
-
-test('anti-duplicate master toggle preserves configured child actions', () => {
-  const masterStart = duplicatesSectionSource.indexOf('>Включить антидубль</span>');
-  const nextGroupStart = duplicatesSectionSource.indexOf('>Что проверять</h3>');
-  const masterSource = duplicatesSectionSource.slice(masterStart, nextGroupStart);
-
-  assert.ok(masterStart >= 0);
-  assert.ok(nextGroupStart > masterStart);
-  assert.match(masterSource, /setFieldValue\('antiDuplicateEnabled', event\.target\.checked\)/u);
-  assert.doesNotMatch(masterSource, /applyDuplicateFlowConfig/u);
-  assert.doesNotMatch(masterSource, /duplicate(BotMessage|Warn|Mute|Ban)Enabled/u);
-});
-
-test('anti-duplicate screen keeps the requested task order and effective photo status boundary', () => {
-  const contentOrder = ['Что проверять', 'Когда срабатывать', 'Что делать'].map((label) =>
-    duplicatesSectionSource.indexOf(`>${label}<`),
-  );
-
-  assert.ok(contentOrder.every((position) => position >= 0));
+test('image comparison offers only the administrator-selected author scope', () => {
   assert.deepEqual(
-    contentOrder,
-    [...contentOrder].sort((left, right) => left - right),
+    DUPLICATE_PHOTO_SCOPE_OPTIONS.map((option) => option.value),
+    ['SAME_AUTHOR', 'CHAT'],
   );
-  assert.match(
-    duplicatesSectionSource,
-    /<h3 className="duplicate-settings-group__title">Что проверять<\/h3>/u,
-  );
-  assert.match(photoControlsSource, /\{enabled \? \(\s*<p className="policy-mode-hint">/u);
-  assert.match(duplicatesSectionSource, /title="Антидубль"/u);
-  assert.match(duplicatesSectionSource, /Повторы ищутся у одного участника в этом чате/u);
-  assert.match(duplicatesSectionSource, /import\('\.\/settings-duplicate-message-controls'\)/u);
-  const messageControlsSource = readFileSync(
-    new URL('../src/pages/settings/settings-duplicate-message-controls.tsx', import.meta.url),
-    'utf8',
-  );
-  assert.match(messageControlsSource, /mode === 'DELETE_ONLY'/u);
-  assert.match(messageControlsSource, /mode === 'FULL'/u);
-  assert.match(messageControlsSource, /Полная проверка: действия по настройкам чата/u);
-  assert.match(messageControlsSource, /disabled=\{mode === 'OFF'\}/u);
-  assert.match(duplicatesSectionSource, /value=\{draft\.duplicateCompareMode\}/u);
-  assert.match(duplicatesSectionSource, /<LazySettingsDuplicateActionPreview/u);
-  assert.match(
-    duplicatesSectionSource,
-    /duplicateWindowInputValue \?\? String\(duplicateSharedWindowHours\)/u,
-  );
-  assert.doesNotMatch(duplicatesSectionSource, /DUPLICATE_DETECTION_HINTS/u);
-  assert.equal(
-    customControlsSource.replace(/\s+/gu, ' ').match(/Остальной текст может отличаться\./gu)
-      ?.length,
-    2,
-  );
-  assert.match(
-    customControlsSource.replace(/\s+/gu, ' '),
-    /Сравнивает длинные сообщения с изменённой пунктуацией/u,
-  );
-  assert.match(duplicatesSectionSource, /aria-invalid=\{Boolean\(fieldErrors\.duplicateWarn/u);
-  assert.match(settingsSectionToggleSource, /Антидубль: '.*фото'/u);
-  assert.match(settingsPageSource, /formatDuplicateSettingsSummary\(/u);
-  assert.match(
-    settingsPageSource,
-    /return expandedSections\.duplicates\s*\? Math\.min\(60_000, expiryInterval \|\| Infinity\)\s*: expiryInterval/u,
-  );
-  assert.match(
-    settingsPageSource,
-    /const expiryInterval = expandedSections\.links\s*\? getNavigationAllowlistRefreshInterval\(query\.state\.data\?\.domains\)\s*: false/u,
-  );
-  assert.match(settingsPageSource, /shouldHydrateSettingsDraftFromServer\(\s*draftRef\.current/u);
-  assert.match(settingsPageSource, /if \(!shouldHydrate\) \{\s*return;\s*\}/u);
-  assert.match(
-    settingsPageSource,
-    /if \(section === 'duplicates' && !expandedSections\.duplicates\)\s*void settingsScreenQuery\.refetch\(\);/u,
-  );
-  assert.match(
-    settingsPageSource,
-    /if \(section === 'duplicates'\) \{\s*setDuplicateWindowInputValue\(null\);\s*\}/u,
-  );
-  assert.doesNotMatch(duplicateStageStyles, /duplicate-settings-group__title/u);
-  assert.match(
-    duplicatePhotoStyles,
-    /settings-drilldown__panel--duplicates \.duplicate-settings-group__title/u,
-  );
+  assert.match(section, /setFieldValue\('duplicatePhotoScope', value\)/u);
+  assert.doesNotMatch(photo, /onEnabledChange|matchPreset|MINOR_EDITS|pdq|onMatchPresetChange/u);
+  assert.doesNotMatch(state, /'duplicatePhotoEnabled'|'duplicatePhotoMatchPreset'/u);
+  assert.doesNotMatch(section, /draft\.duplicatePhotoEnabled|draft\.duplicatePhotoMatchPreset/u);
 });
 
-test('photo duplicate presentation shows rollout only when photo checking is enabled', () => {
-  for (const moderationMode of ['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL'] as const) {
-    assert.equal(
-      formatDuplicatePhotoCoverageLabel('Похожие', false, {
-        moderationMode,
-        actionCeiling: 'BAN',
-        allowedMatchKinds: [],
-      }),
-      'Текст: Похожие',
-    );
-  }
-
-  assert.equal(
-    formatDuplicatePhotoCoverageLabel('Похожие', true, {
-      ...deleteOnlyPolicy,
-      moderationMode: 'OFF',
-    }),
-    'Текст: Похожие • фото неактивно',
-  );
-  assert.equal(
-    formatDuplicatePhotoCoverageLabel('Похожие', true, {
-      ...deleteOnlyPolicy,
-      moderationMode: 'OBSERVE',
-    }),
-    'Текст: Похожие • фото: наблюдение',
-  );
-  assert.equal(
-    formatDuplicatePhotoCoverageLabel('Похожие', true, deleteOnlyPolicy, disabledSanctions),
-    'Текст: Похожие • фото: только точные, удаление',
-  );
-  assert.equal(
-    formatDuplicatePhotoCoverageLabel('Похожие', true, mutePolicy, muteAndBanSanctions),
-    'Текст: Похожие • фото: только точные, до ограничения',
-  );
+test('the main comparison mode owns images without an independent hidden toggle', () => {
+  assert.match(section, /draft\.antiDuplicateEnabled && draft\.duplicateCompareMode !== 'TEXT'/u);
+  assert.match(section, /value=\{draft\.duplicateCompareMode\}/u);
+  const message = source('settings/settings-duplicate-message-controls.tsx');
+  assert.match(message, /value="MESSAGE"/u);
+  assert.match(message, /value="TEXT"/u);
 });
 
-test('photo status follows enabled sanctions as well as the server action ceiling', () => {
+test('exact images share full reactions and never promote a perceptual-only response', () => {
+  assert.deepEqual(resolveDuplicatePhotoPresentationPolicy(full), full);
   assert.equal(
-    formatDuplicatePhotoCoverageLabel('Одинаковый', true, mutePolicy, {
-      duplicateWarnEnabled: false,
-      duplicateMuteEnabled: false,
-      duplicateBanEnabled: true,
-    }),
-    'Текст: Одинаковый • фото: только точные, удаление',
+    resolveDuplicatePhotoPresentationPolicy({ ...full, allowedMatchKinds: ['pdq'] }).moderationMode,
+    'OFF',
   );
   assert.equal(
-    formatDuplicatePhotoCoverageLabel('Одинаковый', true, mutePolicy, {
-      duplicateWarnEnabled: true,
-      duplicateMuteEnabled: false,
-      duplicateBanEnabled: true,
-    }),
-    'Текст: Одинаковый • фото: только точные, до предупреждения',
+    resolveDuplicatePhotoPresentationPolicy({ ...full, moderationMode: 'OBSERVE' }).moderationMode,
+    'OFF',
   );
-  assert.equal(
-    formatDuplicatePhotoCoverageLabel(
-      'Одинаковый',
-      true,
-      { ...mutePolicy, actionCeiling: 'BAN', allowedMatchKinds: ['canonical_sha256', 'pdq'] },
-      { duplicateWarnEnabled: false, duplicateMuteEnabled: false, duplicateBanEnabled: true },
-    ),
-    'Текст: Одинаковый • фото: до блокировки',
-  );
-});
-
-test('duplicate action summary follows enabled stages and effective photo mode', () => {
-  const settings = {
-    duplicatePhotoEnabled: true,
-    duplicateBotMessageEnabled: true,
-    duplicateWarnEnabled: false,
-    duplicateMuteEnabled: true,
-    duplicateBanEnabled: true,
-    duplicateMuteDurationHours: 24,
-  };
-
-  assert.equal(
-    formatDuplicateActionSummary(settings, 1, deleteOnlyPolicy),
-    'Текст удаляется с сообщения №3. Бот объясняет первое удаление. Дальнейшие действия: ограничение на 24 ч с №4; блокировка с №5. Точные дубли фото удаляются с сообщения №3. Объяснение удаления включено. Предупреждения и ограничения для фото выключены.',
-  );
-  assert.match(
-    formatDuplicateActionSummary(settings, 0, mutePolicy),
-    /Действия для фото: ограничение отправки\./u,
-  );
-  assert.doesNotMatch(formatDuplicateActionSummary(settings, 0, mutePolicy), /для фото:.*блок/u);
-  assert.match(
-    formatDuplicateActionSummary(settings, 0, { ...deleteOnlyPolicy, actionCeiling: 'BAN' }),
-    /Точные дубли фото удаляются с сообщения №2\..*Предупреждения и ограничения для фото выключены\./u,
-  );
-});
-
-test('duplicate action summary keeps deletion visible when optional stages are off', () => {
-  assert.equal(
-    formatDuplicateActionSummary(
-      {
-        duplicatePhotoEnabled: false,
-        duplicateBotMessageEnabled: false,
-        duplicateWarnEnabled: false,
-        duplicateMuteEnabled: false,
-        duplicateBanEnabled: false,
-        duplicateMuteDurationHours: 24,
-      },
-      0,
-      {
-        moderationMode: 'OBSERVE',
-        actionCeiling: 'DELETE_MESSAGE',
-        allowedMatchKinds: [],
-      },
-    ),
-    'Текст удаляется с сообщения №2. Предупреждения и ограничения выключены.',
-  );
-});
-
-test('photo duplicate rollout hints do not promise unavailable actions', () => {
-  assert.match(
-    formatDuplicatePhotoModerationHint({ ...deleteOnlyPolicy, moderationMode: 'OFF' }),
-    /фото не проверяются/u,
-  );
-  assert.match(
-    formatDuplicatePhotoModerationHint({ ...deleteOnlyPolicy, moderationMode: 'OBSERVE' }),
-    /Фото не удаляются/u,
-  );
-  assert.match(formatDuplicatePhotoModerationHint(deleteOnlyPolicy), /для фото выключены/u);
-  assert.match(
-    formatDuplicatePhotoModerationHint(mutePolicy, muteAndBanSanctions),
-    /ограничение отправки/u,
-  );
-  assert.doesNotMatch(
-    formatDuplicatePhotoModerationHint(mutePolicy, muteAndBanSanctions),
-    /блокировка/u,
-  );
-  assert.match(
-    formatDuplicatePhotoModerationHint(mutePolicy, muteAndBanSanctions),
-    /Точные дубли фото удаляются/u,
-  );
-  assert.match(
-    formatDuplicatePhotoModerationHint(mutePolicy, muteAndBanSanctions),
-    /Изменённые варианты остаются в наблюдении без действий/u,
-  );
-  assert.match(
-    formatDuplicatePhotoModerationHint({
-      ...mutePolicy,
-      allowedMatchKinds: ['platform_id', 'canonical_sha256'],
-    }),
-    /Изменённые варианты остаются в наблюдении без действий/u,
-  );
-  assert.match(
-    formatDuplicatePhotoModerationHint({
-      ...mutePolicy,
-      allowedMatchKinds: ['platform_id'],
-    }),
-    /Изменённые варианты остаются в наблюдении без действий/u,
-  );
-});
-
-test('photo match hint does not promise actions for edited images without PDQ', () => {
-  assert.match(
-    formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', {
-      moderationMode: 'OFF',
-      actionCeiling: 'BAN',
-      allowedMatchKinds: ['pdq'],
-    }),
-    /Проверка фото пока недоступна/u,
-  );
-  assert.match(
-    formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', mutePolicy),
-    /удаляются только точные копии фото/u,
-  );
-  assert.match(
-    formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', mutePolicy),
-    /Изменённые версии бот отмечает, но не удаляет/u,
-  );
-  assert.match(
-    formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', {
-      ...mutePolicy,
-      allowedMatchKinds: ['canonical_sha256', 'pdq'],
-    }),
-    /обрезка и изменение цвета/u,
-  );
-});
-
-test('photo help keeps unavailable actions factual without internal terminology', () => {
-  for (const moderationMode of ['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL'] as const) {
-    const policy = { ...deleteOnlyPolicy, moderationMode };
-    assert.doesNotMatch(
-      formatDuplicatePhotoModerationHint(policy, disabledSanctions),
-      /сервер|санкци|цифров|PDQ/iu,
-    );
-    assert.doesNotMatch(
-      formatDuplicatePhotoMatchPresetHint('MINOR_EDITS', policy),
-      /сервер|санкци|цифров|PDQ/iu,
-    );
-  }
-  assert.match(photoControlsSource, /hintKey="duplicatePhotoMatch"/u);
-  assert.match(photoControlsSource, /hintKey="duplicatePhotoScope"/u);
-});
-
-test('draft photo preset and scope select the matching server policy', () => {
-  const matrix = {
-    base: deleteOnlyPolicy,
-    advanced: {
-      moderationMode: 'OBSERVE' as const,
-      actionCeiling: 'BAN' as const,
-      allowedMatchKinds: ['canonical_sha256' as const, 'pdq' as const],
-    },
-  };
-
-  assert.equal(
-    resolveDuplicatePhotoPolicyForDraft(matrix, 'OBSERVE', 'SAME_IMAGE', 'SAME_AUTHOR'),
-    matrix.base,
-  );
-  assert.equal(
-    resolveDuplicatePhotoPolicyForDraft(matrix, 'DELETE_ONLY', 'MINOR_EDITS', 'SAME_AUTHOR'),
-    matrix.advanced,
-  );
-  assert.equal(
-    resolveDuplicatePhotoPolicyForDraft(matrix, 'DELETE_ONLY', 'SAME_IMAGE', 'CHAT'),
-    matrix.advanced,
-  );
-  assert.equal(
-    resolveDuplicatePhotoPolicyForDraft(matrix, 'DELETE_ONLY', 'MINOR_EDITS', 'CHAT'),
-    matrix.advanced,
-  );
-  assert.deepEqual(resolveDuplicatePhotoPolicyForDraft(undefined, 'FULL', 'MINOR_EDITS', 'CHAT'), {
-    moderationMode: 'FULL',
-    actionCeiling: 'BAN',
-    allowedMatchKinds: ['canonical_sha256'],
-  });
   assert.deepEqual(
-    resolveDuplicatePhotoPolicyForDraft(undefined, 'FULL', 'MINOR_EDITS', 'CHAT', {
-      duplicatePhotoMatchPreset: 'SAME_IMAGE',
-      duplicatePhotoScope: 'SAME_AUTHOR',
-    }),
+    resolveDuplicatePhotoPolicyForDraft({ base: full, advanced: full }, 'OFF'),
+    full,
+  );
+});
+
+test('the action summary retains warnings, mute and ban for shared image moderation', () => {
+  const summary = formatDuplicateActionSummary(
     {
-      moderationMode: 'OBSERVE',
-      actionCeiling: 'DELETE_MESSAGE',
-      allowedMatchKinds: [],
+      duplicateCompareMode: 'MESSAGE',
+      duplicateBotMessageEnabled: true,
+      duplicateWarnEnabled: true,
+      duplicateMuteEnabled: true,
+      duplicateBanEnabled: true,
+      duplicateMuteDurationHours: 12,
     },
+    1,
+    full,
   );
+  assert.match(summary, /№3/u);
+  assert.match(summary, /12/u);
+  assert.doesNotMatch(summary, /дополнительн.*санкц|Без предупреждений и блокировок/u);
 });
 
-test('photo duplicate visual preview exposes deletion and full sanction policies', () => {
-  const screen = buildChatSettingsScreen(
-    createPreviewState({ clock: { now: () => new Date('2026-01-15T09:00:00.000Z') } }),
-    'chat-preview',
-  );
+test('the preview uses the same exact full policy for both author scopes', () => {
+  const preview = buildChatSettingsScreen(createPreviewState({}), '-123');
+  assert.deepEqual(preview.duplicatePhotoPolicyMatrix, { base: full, advanced: full });
+});
 
-  assert.equal(screen.duplicatePhotoModerationMode, 'DELETE_ONLY');
-  assert.deepEqual(screen.duplicatePhotoPolicyMatrix, {
-    base: deleteOnlyPolicy,
-    advanced: {
-      moderationMode: 'FULL',
-      actionCeiling: 'BAN',
-      allowedMatchKinds: ['canonical_sha256', 'pdq'],
-    },
-  });
+test('disabling the master switch does not rewrite the configured reaction ladder', () => {
+  const start = section.indexOf('>Включить антидубль</span>');
+  const end = section.indexOf('>Что проверять</h3>');
+  const master = section.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(master, /setFieldValue\('antiDuplicateEnabled', event\.target\.checked\)/u);
+  assert.doesNotMatch(master, /applyDuplicateFlowConfig/u);
+  assert.match(section, /<LazySettingsDuplicateActionPreview/u);
 });

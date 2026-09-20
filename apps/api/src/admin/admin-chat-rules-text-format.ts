@@ -84,19 +84,21 @@ export function buildRulesTextItemsFromSettings(input: {
 
   if (settings.antiDuplicateEnabled) {
     const allowedCount = resolveRulesDuplicateAllowedCount(settings);
-    const photoModerationEnforced =
-      input.duplicatePhotoModerationMode === 'DELETE_ONLY' ||
-      input.duplicatePhotoModerationMode === 'FULL';
+    const photoModerationEnforced = input.duplicatePhotoModerationMode === 'FULL';
     const subjects = resolveDuplicateTextRuleSubjects(settings);
-    if (settings.duplicatePhotoEnabled && photoModerationEnforced) {
-      subjects.push('одинаковые фото');
-    }
     const subject = formatRulesConjunctionList(subjects);
     items.push(
       allowedCount === 0
         ? `Не отправляйте ${subject}.`
         : `Не отправляйте ${subject}: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
     );
+    if (settings.duplicateCompareMode !== 'TEXT' && photoModerationEnforced) {
+      items.push(
+        settings.duplicatePhotoScope === 'CHAT'
+          ? 'Одинаковые картинки считаются повтором независимо от автора и подписи. Действует общая цепочка антидубля; счётчик отдельный для каждого участника.'
+          : 'Одинаковые картинки одного участника считаются повтором независимо от подписи. Действует общая цепочка антидубля.',
+      );
+    }
   }
 
   if (settings.antiSpamEnabled) {
