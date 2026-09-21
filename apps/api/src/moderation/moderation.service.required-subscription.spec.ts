@@ -5665,6 +5665,8 @@ describe('ModerationService', () => {
         commentsEnabled: true,
         postSuggestionsEnabled: false,
         postSuggestionsButtonText: '',
+        postSignatureEnabled: true,
+        postSignaturePresentation: 'SIGNATURE',
       },
       adminUserIds: ['admin-1'],
     });

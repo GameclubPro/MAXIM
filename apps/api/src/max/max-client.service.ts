@@ -1534,7 +1534,9 @@ export class MaxClientService implements OnModuleDestroy {
         options = { ...options, buttons };
       }
       this.assertExpectedEditableMessageText(message, options);
-      const attachments = this.buildEditableMessageAttachments(message, options);
+      // FLAG: PUT keeps the forward link. Its nested media and keyboard belong to the
+      // linked message, not to this post; only a copy may flatten those attachments.
+      const attachments = this.buildEditableMessageAttachments(message, options, false);
       const sourceBody = this.asRecord(message?.body);
       const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
       const shouldForceReplacementText =
@@ -5757,9 +5759,10 @@ export class MaxClientService implements OnModuleDestroy {
   private buildEditableMessageAttachments(
     message: Record<string, unknown> | null,
     options?: MaxEditableMessageOptions,
+    includeForwarded = true,
   ): Record<string, unknown>[] {
     if (options?.requireAllAttachmentsPreserved) {
-      const sourceAttachments = readStrictEditableAttachments(message);
+      const sourceAttachments = readStrictEditableAttachments(message, includeForwarded);
       if (
         options.expectedSourceAttachmentTypes !== undefined &&
         !isDeepStrictEqual(
@@ -5778,7 +5781,7 @@ export class MaxClientService implements OnModuleDestroy {
       assertEditableAttachmentsPreserved(sourceAttachments, result, options.buttons ?? []);
       return result;
     }
-    const editableAttachments = this.extractEditableAttachments(message);
+    const editableAttachments = this.extractEditableAttachments(message, includeForwarded);
     const existingAttachmentsWithoutKeyboard = editableAttachments.filter(
       (attachment) => this.readLowerString(attachment.type) !== 'inline_keyboard',
     );
@@ -6068,7 +6071,7 @@ export class MaxClientService implements OnModuleDestroy {
     const link = this.asRecord(message?.link);
     const bodyText = typeof body?.text === 'string' ? body.text : null;
 
-    return bodyText === '' && this.readLowerString(link?.type) === 'forward';
+    return !bodyText && this.readLowerString(link?.type) === 'forward';
   }
 
   private extractMessageTextFormat(message: Record<string, unknown> | null): MaxTextFormat | null {
@@ -6277,6 +6280,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   private extractEditableAttachments(
     message: Record<string, unknown> | null,
+    includeForwarded = true,
   ): Record<string, unknown>[] {
     const body = this.asRecord(message?.body);
     const link = this.asRecord(message?.link);
@@ -6287,6 +6291,7 @@ export class MaxClientService implements OnModuleDestroy {
       : [];
     const attachments =
       bodyAttachments.length > 0 ||
+      !includeForwarded ||
       this.readLowerString(link?.type) !== 'forward' ||
       linkedAttachments.length === 0
         ? bodyAttachments

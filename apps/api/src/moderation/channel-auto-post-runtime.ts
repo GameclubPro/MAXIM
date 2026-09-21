@@ -420,6 +420,16 @@ export function resolveChannelAutoPostButtonVisibility(settings: {
   };
 }
 
+export function isChannelAutoPostKeyboardOnly(
+  settings: Pick<PersistedChannelSettings, 'postSignatureEnabled' | 'postSignaturePresentation'>,
+  quickButtons: ChannelQuickButtons | undefined,
+): boolean {
+  return (
+    !quickButtons &&
+    (!settings.postSignatureEnabled || settings.postSignaturePresentation === 'BUTTON')
+  );
+}
+
 type ChannelDialogButtonBuilder = (
   type: 'comments' | 'suggest',
   text: string,
@@ -717,11 +727,9 @@ export class ChannelAutoPostScanManager {
         continue;
       }
       sawNewMessages = true;
-      // FLAG: MAX channel posts are admin-only; edit-route capability is the mutation boundary.
-      const senderEligible =
-        normalized.linkType !== 'forward' ||
-        (normalized.senderId !== null && params.adminUserIds.includes(normalized.senderId));
-      if (!senderEligible || normalized.timestampMs < params.settingsUpdatedAtMs) {
+      // FLAG: Admission includes anonymous forwards for keyboard-only edits. The mutation
+      // path still requires a verified admin before any text-replacement send or delete.
+      if (normalized.timestampMs < params.settingsUpdatedAtMs) {
         scanState = this.advance(scanState, normalized);
         this.states.set(params.chatId, scanState);
         continue;

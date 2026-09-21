@@ -331,6 +331,7 @@ import {
   extractChannelAutoPostDialogButtons,
   extractChannelAutoPostMessageLinkType,
   isChannelAutoPostMessage,
+  isChannelAutoPostKeyboardOnly,
   prepareChannelAutoPostDecoration,
   resolveChannelAutoPostButtonVisibility,
   resolveChannelAutoPostEventTimestampMs,
@@ -14920,11 +14921,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const eventTimestampMs = resolveChannelAutoPostEventTimestampMs(update);
     const linkType = extractChannelAutoPostMessageLinkType(update);
+    const raw = this.asRecord(update.raw);
+    const rawMessage = raw ? (extractRawMessageNode(raw) ?? raw) : null;
+    const messageText = resolveChannelAutoPostMessageText(
+      rawMessage,
+      typeof text === 'string' ? text : null,
+      managedChannel.channelSettings.quickButtonsEnabled === true &&
+        eventTimestampMs >= managedChannel.channelSettings.updatedAt.getTime(),
+    );
+    const requiresForwardReplacement =
+      linkType === 'forward' &&
+      !isChannelAutoPostKeyboardOnly(managedChannel.channelSettings, messageText.quickButtons);
     let senderAdminVerified = false;
 
-    if (linkType === 'forward' && senderIsOwnBot) {
+    if (requiresForwardReplacement && senderIsOwnBot) {
       senderAdminVerified = true;
-    } else if (linkType === 'forward' && senderId) {
+    } else if (requiresForwardReplacement && senderId) {
       const mode = await this.resolveSystemModeSnapshot();
       const senderAdminCheck = await this.resolveSenderChatAdminCheck(
         chatId,
@@ -14943,14 +14955,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderAdminVerified = true;
     }
 
-    const raw = this.asRecord(update.raw);
-    const rawMessage = raw ? (extractRawMessageNode(raw) ?? raw) : null;
-    const messageText = resolveChannelAutoPostMessageText(
-      rawMessage,
-      typeof text === 'string' ? text : null,
-      managedChannel.channelSettings.quickButtonsEnabled === true &&
-        eventTimestampMs >= managedChannel.channelSettings.updatedAt.getTime(),
-    );
     const existingDialogButtons = extractChannelAutoPostDialogButtons(rawMessage, chatId);
 
     const outcome = await this.tryAutoAttachChannelMessageButtons({
@@ -15374,9 +15378,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sourceMessageAt,
     } = params;
     const normalizedSenderId = senderId?.trim() || null;
-    // FLAG: Only fresh webhook/poll callers opt senderless ordinary edits into the live channel/edit
-    // guard. Legacy recovery stays out; forwards still require a verified admin sender to delete.
-    if (linkType === 'forward' && (!normalizedSenderId || !senderAdminVerified)) {
+    const editForwardInPlace =
+      linkType === 'forward' &&
+      params.allowSenderlessEngagement === true &&
+      isChannelAutoPostKeyboardOnly(managedChannel.channelSettings, params.quickButtons);
+    const replaceForward = linkType === 'forward' && !editForwardInPlace;
+    // FLAG: Only fresh webhook/poll callers opt anonymous forwards into keyboard-only edits.
+    // Text replacement and legacy recovery still require a verified admin before send/delete.
+    if (replaceForward && (!normalizedSenderId || !senderAdminVerified)) {
       return 'skipped';
     }
     if (linkType === 'forward' && !(await this.isCurrentChannelEntity(chatId))) {
@@ -15386,7 +15395,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       managedChannel.channelSettings,
     );
     const senderlessEngagementAllowed =
-      !normalizedSenderId && linkType !== 'forward' && params.allowSenderlessEngagement;
+      !normalizedSenderId && !replaceForward && params.allowSenderlessEngagement;
     const buttonVisibility =
       normalizedSenderId || senderlessEngagementAllowed
         ? configuredButtonVisibility
@@ -15414,7 +15423,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const autoAttachRoute = await this.resolveAutoAttachMutationBotId({
       chatId,
-      action: linkType === 'forward' ? 'delete_message' : 'edit_message',
+      action: replaceForward ? 'delete_message' : 'edit_message',
     });
     if (!autoAttachRoute.botId || !autoAttachRoute.requiredAuthorVerified) {
       return 'skipped';
@@ -15480,8 +15489,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       : {};
     let deliveryMode: 'edit_message' | 'replace_with_bot_message' = 'edit_message';
     let replacementMessageId: string | null = null;
-    let publishedUrl: string | null =
-      linkType === 'forward' ? null : buildMaxMessageFallbackUrl(chatId, messageId);
+    let publishedUrl: string | null = replaceForward
+      ? null
+      : buildMaxMessageFallbackUrl(chatId, messageId);
     let originalDeleted = false;
     let originalCleanupError: string | null = null;
     let originalCleanupStatusCode: number | null = null;
@@ -15516,7 +15526,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       const preserveExistingInlineKeyboard = buttons.length === 0;
 
-      if (linkType === 'forward') {
+      if (replaceForward) {
         maxMutationAttemptStartedAt = new Date();
         const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(
           chatId,
@@ -15629,7 +15639,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.maxClient.editMessageInlineKeyboard(
             chatId,
             messageId,
-            preparedText.text,
+            editForwardInPlace ? null : preparedText.text,
             {
               buttons,
               ...quickButtonMutationOptions,
@@ -15683,7 +15693,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.maxClient.editMessageInlineKeyboard(
             chatId,
             messageId,
-            preparedText.text,
+            editForwardInPlace ? null : preparedText.text,
             {
               // FLAG: A rejected merge never authorizes dropping Publisher discussions,
               // custom links, or media. Re-read and preserve the source under the edit lock.
@@ -15709,7 +15719,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
-      if (linkType === 'forward' && replacementMessageId) {
+      if (replaceForward && replacementMessageId) {
         this.logger.error(
           {
             chatId,
@@ -15737,7 +15747,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return 'attached';
       }
       if (
-        linkType === 'forward' &&
+        replaceForward &&
         (replacementSendStarted || wasMaxMessageSendAttempted(error)) &&
         isAmbiguousMaxSendError(error)
       ) {
@@ -15773,7 +15783,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId,
           botId: autoAttachBotId,
           source: 'channel_auto_post:poll_attach',
-          operation: linkType === 'forward' ? 'send' : 'edit',
+          operation: replaceForward ? 'send' : 'edit',
           lifecycleEventAt: maxMutationAttemptStartedAt,
           error,
         }))
@@ -15786,7 +15796,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           source,
           botId: autoAttachBotId,
           linkType,
-          deliveryMode: linkType === 'forward' ? 'replace_with_bot_message' : 'edit_message',
+          deliveryMode: replaceForward ? 'replace_with_bot_message' : 'edit_message',
           lastError: this.extractErrorSummary(error),
           lastStatusCode: status,
         });
@@ -15800,12 +15810,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             status,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
-          linkType === 'forward'
+          replaceForward
             ? 'Failed to replace forwarded channel post with bot copy; skipping retry'
             : 'Failed to edit channel post with managed buttons; skipping retry',
         );
-        const failedDeliveryMode =
-          linkType === 'forward' ? 'replace_with_bot_message' : 'edit_message';
+        const failedDeliveryMode = replaceForward ? 'replace_with_bot_message' : 'edit_message';
         const terminalEditAttemptExhausted = failedDeliveryMode === 'edit_message';
         await recordChannelAutoPostTerminalSkip(this.prisma, this.logger, {
           chatId,

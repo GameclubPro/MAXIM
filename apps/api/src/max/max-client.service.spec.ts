@@ -6529,81 +6529,147 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('omits text when editing inline keyboard on forwarded messages with empty body text', async () => {
-    const httpService = {
-      request: jest
-        .fn()
-        .mockReturnValueOnce(
-          of({
-            status: 200,
-            data: {
-              messages: [
-                {
-                  body: {
-                    mid: 'mid-edit-forward-1',
-                    text: '',
-                    attachments: [],
-                  },
-                  link: {
-                    type: 'forward',
-                    message: {
-                      text: 'Пересланный текст',
+  it.each(['', null, undefined])(
+    'omits text when editing a forwarded message with body text %j',
+    async (bodyText) => {
+      const httpService = {
+        request: jest
+          .fn()
+          .mockReturnValueOnce(
+            of({
+              status: 200,
+              data: {
+                messages: [
+                  {
+                    body: {
+                      mid: 'mid-edit-forward-1',
+                      text: bodyText,
+                      attachments: [],
+                    },
+                    link: {
+                      type: 'forward',
+                      message: {
+                        text: 'Пересланный текст',
+                      },
                     },
                   },
-                },
-              ],
-            },
-          }),
-        )
-        .mockReturnValueOnce(
-          of({
-            status: 200,
-            data: {
-              success: true,
-            },
-          }),
-        ),
-    };
-    const service = createService(httpService);
-
-    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-forward-1', 'Пересланный текст', {
-      button: {
-        text: 'Открыть',
-        url: 'https://major-maksimov.ru/app/',
-      },
-    });
-
-    expect(httpService.request).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        method: 'put',
-        url: 'https://platform-api2.max.ru/messages',
-        params: {
-          message_id: 'mid-edit-forward-1',
-        },
-        data: {
-          attachments: [
-            {
-              type: 'inline_keyboard',
-              payload: {
-                buttons: [
-                  [
-                    {
-                      type: 'link',
-                      text: 'Открыть',
-                      url: 'https://major-maksimov.ru/app/',
-                    },
-                  ],
                 ],
               },
+            }),
+          )
+          .mockReturnValueOnce(
+            of({
+              status: 200,
+              data: {
+                success: true,
+              },
+            }),
+          ),
+      };
+      const service = createService(httpService);
+
+      await service.editMessageInlineKeyboard('chat-1', 'mid-edit-forward-1', 'Пересланный текст', {
+        button: {
+          text: 'Открыть',
+          url: 'https://major-maksimov.ru/app/',
+        },
+      });
+
+      expect(httpService.request).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          method: 'put',
+          url: 'https://platform-api2.max.ru/messages',
+          params: {
+            message_id: 'mid-edit-forward-1',
+          },
+          data: {
+            attachments: [
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [
+                    [
+                      {
+                        type: 'link',
+                        text: 'Открыть',
+                        url: 'https://major-maksimov.ru/app/',
+                      },
+                    ],
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      );
+
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each([
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ])(
+    'edits only the forward wrapper without reattaching nested media (strict %s, direct %s)',
+    async (strict, hasDirectAttachments) => {
+      const existing = { type: 'link', text: 'Existing', url: 'https://example.com/existing' };
+      const added = {
+        type: 'link' as const,
+        text: 'Comments',
+        url: 'https://example.com/comments',
+      };
+      const directMedia = { type: 'image', payload: { token: 'direct-image' } };
+      const message = {
+        body: {
+          mid: 'forward-wrapper',
+          text: null,
+          attachments: hasDirectAttachments
+            ? [directMedia, { type: 'inline_keyboard', payload: { buttons: [[existing]] } }]
+            : [],
+        },
+        link: {
+          type: 'forward',
+          message: {
+            text: 'Original',
+            body: { attachments: [{ type: 'video', payload: { token: 'linked-video' } }] },
+            attachments: [{ type: 'image', payload: { token: 'linked-image' } }],
+          },
+        },
+      };
+      const httpService = {
+        request: jest
+          .fn()
+          .mockReturnValueOnce(of({ status: 200, data: { messages: [message] } }))
+          .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+      };
+      const service = createService(httpService);
+      try {
+        await service.editMessageInlineKeyboard('channel-1', 'forward-wrapper', null, {
+          buttons: [[added]],
+          mergeExistingInlineKeyboard: true,
+          requireAllAttachmentsPreserved: strict,
+        });
+        const request = httpService.request.mock.calls[1]![0];
+        expect(request.method).toBe('put');
+        expect(request.data).toEqual({
+          attachments: [
+            ...(hasDirectAttachments ? [directMedia] : []),
+            {
+              type: 'inline_keyboard',
+              payload: { buttons: hasDirectAttachments ? [[added], [existing]] : [[added]] },
             },
           ],
-        },
-      }),
-    );
-
-    await service.onModuleDestroy();
-  });
+        });
+        expect(message.link.message.body.attachments[0]!.payload.token).toBe('linked-video');
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
 
   it('sends attachment-only reply messages with inline keyboard', async () => {
     const httpService = {

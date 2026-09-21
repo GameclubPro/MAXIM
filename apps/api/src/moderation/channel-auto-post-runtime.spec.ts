@@ -3,6 +3,7 @@ import {
   buildChannelAutoPostButtons,
   extractChannelAutoPostMessageLinkType,
   isChannelAutoPostMessage,
+  isChannelAutoPostKeyboardOnly,
   parseChannelAutoPostListedMessage,
   resolveChannelAutoPostButtonVisibility,
   resolveChannelAutoPostEventTimestampMs,
@@ -24,6 +25,25 @@ function createScanManager(now: () => number, states = new Map()) {
     states,
   );
 }
+
+describe('forward keyboard-only decoration', () => {
+  it.each([
+    [false, 'SIGNATURE', false, true],
+    [true, 'BUTTON', false, true],
+    [true, 'SIGNATURE', false, false],
+    [false, 'BUTTON', true, false],
+  ] as const)(
+    'separates signature %s/%s and quick buttons %s from keyboard-only edits',
+    (postSignatureEnabled, postSignaturePresentation, quickButtons, expected) => {
+      expect(
+        isChannelAutoPostKeyboardOnly(
+          { postSignatureEnabled, postSignaturePresentation },
+          quickButtons ? ({} as never) : undefined,
+        ),
+      ).toBe(expected);
+    },
+  );
+});
 
 describe('channel auto-post runtime', () => {
   it('builds comments, suggestion, and channel CTA as full-width rows', () => {
@@ -441,30 +461,43 @@ describe('channel auto-post runtime', () => {
     );
   });
 
-  it('does not filter ordinary channel posts by sender identity during polling', async () => {
-    const manager = createScanManager(() => 10_000);
-    const attach = jest.fn().mockResolvedValue('attached');
+  it.each([null, 'forward'])(
+    'does not filter channel posts with link type %j by sender identity during polling',
+    async (linkType) => {
+      const manager = createScanManager(() => 10_000);
+      const attach = jest.fn().mockResolvedValue('attached');
 
-    await manager.processListedMessages({
-      chatId: 'channel-1',
-      messages: [
-        {
-          id: 'admin-authored-post',
-          timestamp: 103,
-          sender_id: 'admin-1',
-          body: { text: 'Пост администратора' },
-        },
-      ],
-      adminUserIds: [],
-      settingsUpdatedAtMs: 102,
-      maxNewMessagesPerScan: 1,
-      attach,
-    });
+      await manager.processListedMessages({
+        chatId: 'channel-1',
+        messages: [
+          {
+            id: 'admin-authored-post',
+            timestamp: 103,
+            sender_id: 'admin-1',
+            link: { type: linkType },
+            body: { text: 'Пост администратора' },
+          },
+          {
+            id: 'anonymous-post',
+            timestamp: 104,
+            link: { type: linkType },
+            body: { text: '' },
+          },
+        ],
+        adminUserIds: [],
+        settingsUpdatedAtMs: 102,
+        maxNewMessagesPerScan: 2,
+        attach,
+      });
 
-    expect(attach).toHaveBeenCalledWith(
-      expect.objectContaining({ messageId: 'admin-authored-post' }),
-    );
-  });
+      expect(attach).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'admin-authored-post' }),
+      );
+      expect(attach).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'anonymous-post', senderId: null }),
+      );
+    },
+  );
 
   it('leaves in-progress messages unadvanced so a later repair scan can retry them', async () => {
     const manager = createScanManager(() => 10_000);

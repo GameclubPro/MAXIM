@@ -98,6 +98,24 @@ describe('strict editable message preservation', () => {
       }),
     ).toThrow('ambiguous');
   });
+  it('keeps direct and linked attachments separate for in-place forward edits', () => {
+    const direct = [{ type: 'inline_keyboard', payload: { buttons: [] } }];
+    const message = {
+      body: { attachments: direct },
+      link: {
+        type: 'forward',
+        message: { body: { attachments: [{ type: 'video', payload: { token: 'nested' } }] } },
+      },
+    };
+    expect(readStrictEditableAttachments(message, false)).toEqual(direct);
+    expect(readStrictEditableAttachments({ ...message, body: { attachments: [] } }, false)).toEqual(
+      [],
+    );
+    expect(() => readStrictEditableAttachments(message)).toThrow('ambiguous');
+    expect(() =>
+      readStrictEditableAttachments({ ...message, body: { attachments: {} } }, false),
+    ).toThrow('incomplete');
+  });
   it('rejects an unsupported existing keyboard instead of silently dropping it', () => {
     expect(() =>
       assertEditableAttachmentsPreserved(

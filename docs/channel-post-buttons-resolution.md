@@ -128,6 +128,36 @@ link, and whether Reviews is the saved channel CTA or a per-publication link.
 - Do not bulk-rewrite historical posts or hide historical discussions without
   explicit message scope and a choice of the discussion to retain.
 
+## Forwarded Posts
+
+Fresh Major channel forwards previously went directly to copy-and-delete, even
+when only comments, suggestions, or a button-style CTA were needed. That path
+requires a verified administrator sender and both write/delete permissions. MAX
+can omit the channel sender, so those posts were skipped before any keyboard edit.
+The repair scan also excluded anonymous and locally unrecognized forward senders.
+
+Keyboard-only decoration now edits the original forward through the live channel
+edit-permission guard and shared keyboard lock. It does not require sender lookup
+or delete permission, and sends neither text nor a replacement forward link.
+Rejected edits never authorize a copy, reply, or deletion. The normal bounded
+repair scan admits these forwards with the existing settings-time baseline.
+
+The MAX edit transport and Publisher keyboard preparation inspect only the
+forward wrapper's direct attachments. Nested media and buttons remain part of the
+unchanged linked message; resending them as wrapper attachments can fail strict
+preservation or duplicate source content. Copy operations retain their separate
+strict source-flattening checks. Empty, null, and absent forward body text all
+prevent fallback source text from being written during a keyboard edit.
+
+Text-style signatures and quick-button templates still use the guarded replacement
+path when they require rewriting forwarded content. Anonymous forwards do not
+authorize that send/delete path. Legacy recovery does not gain the fresh-post
+opt-in, and historical terminal markers are not reset by this change.
+
+Regression coverage includes hidden and unrecognized senders, edit-only bots,
+webhook and poll admission, text omission, direct versus nested media/keyboards,
+Publisher thread isolation, and edit rejection without destructive fallback.
+
 ## Suggestion Attribution
 
 The Publisher review worker previously copied only raw suggestion text and media

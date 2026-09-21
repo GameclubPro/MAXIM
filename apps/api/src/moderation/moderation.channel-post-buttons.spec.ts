@@ -874,72 +874,102 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it('does not copy or delete a forwarded channel post when its sender is unknown', async () => {
-    const prisma = {
-      ...createChannelMutationGuardPrismaMock(),
-      chat: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'channel-1',
-          title: 'Ищу модель | Ростов',
-          entityType: 'CHANNEL',
-          channelSettings: {
-            postSuggestionsEnabled: true,
-            postSuggestionsButtonText: 'Предложить пост',
-            commentsEnabled: true,
-          },
-          admins: [],
+  it.each(['', 'admin-1', 'source-author-1'])(
+    'attaches forward buttons in place with an edit-only bot and sender %j',
+    async (senderId) => {
+      const prisma = {
+        ...createChannelMutationGuardPrismaMock(),
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            title: 'Ищу модель | Ростов',
+            entityType: 'CHANNEL',
+            channelSettings: {
+              postSuggestionsEnabled: true,
+              postSuggestionsButtonText: 'Предложить пост',
+              commentsEnabled: true,
+            },
+            admins: [],
+          }),
+        },
+        auditLog: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockResolvedValue(undefined),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn(),
+      };
+      const sanctionService = {
+        resolveAction: jest.fn(),
+      };
+      const maxClient = {
+        ...createChannelMutationGuardMaxClientMock(),
+        getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['edit_message'],
         }),
-      },
-      auditLog: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn().mockResolvedValue(undefined),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn(),
-    };
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      ...createChannelMutationGuardMaxClientMock(),
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
-      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
-        messageId: 'mid-forward-copy-1',
-        url: 'https://max.ru/chats/channel-1/message/1001',
-      }),
-      sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue(undefined),
-      deleteMessage: jest.fn().mockResolvedValue(undefined),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-    const adminService = createAdminServiceMock();
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+        sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
+          messageId: 'mid-forward-copy-1',
+          url: 'https://max.ru/chats/channel-1/message/1001',
+        }),
+        sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+        deleteMessage: jest.fn().mockResolvedValue(undefined),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const adminService = createAdminServiceMock();
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        sanctionService as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        adminService as never,
+      );
 
-    await service.handleUpdate(createForwardedChannelPostUpdate());
+      configureDefaultChannelAutoPostEditRoute(service);
+      await service.handleUpdate(createForwardedChannelPostUpdate(senderId));
 
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
-  });
+      expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+        'channel-1',
+        'mid-channel-forward-no-sender-1',
+        null,
+        expect.objectContaining({
+          buttons: [
+            [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+            [expect.objectContaining({ text: 'Предложить пост' })],
+          ],
+          requireAllAttachmentsPreserved: true,
+          mergeExistingInlineKeyboard: true,
+          beforeEditMutation: expect.any(Function),
+        }),
+        expectChannelAutoPostOptions(),
+      );
+      await (maxClient.editMessageInlineKeyboard.mock.calls[0] as any)[3].beforeEditMutation();
+      expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            payload: expect.objectContaining({ deliveryMode: 'edit_message', linkType: 'forward' }),
+          }),
+        }),
+      );
+    },
+  );
 
   it('rechecks the entity immediately before publishing a forwarded post copy', async () => {
     const markerMock = createChannelAutoPostAttachMarkerMock();
@@ -1639,7 +1669,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves MAX markup from forwarded channel post webhooks when publishing the bot copy', async () => {
+  it('leaves forwarded rich text untouched while attaching buttons', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       chat: {
@@ -1696,13 +1726,13 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
-    configureDefaultChannelAutoPostDeleteRoute(service);
+    configureDefaultChannelAutoPostEditRoute(service);
     await service.handleUpdate(createRichForwardedChannelPostUpdate());
 
-    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-forward-rich-no-sender-1',
-      '🔥<strong><u>MAX Docs</u></strong>\n\nВторой абзац',
+      null,
       expect.objectContaining({
         textFormat: 'html',
         buttons: [
@@ -1712,18 +1742,8 @@ describe('ModerationService channel auto post buttons', () => {
       }),
       expectChannelAutoPostOptions(),
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-channel-forward-rich-no-sender-1',
-      expect.objectContaining({
-        immediate: true,
-        trafficClass: 'background',
-        actionHealthLane: 'background',
-        sourceTag: 'channel_auto_post',
-        timeoutMs: 2_000,
-        beforeImmediateDeleteMutation: expect.any(Function),
-      }),
-    );
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('auto-attaches comments and suggestions when both features are enabled', async () => {
@@ -1805,7 +1825,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('skips forwarded channel post buttons when bot copy delivery is terminally rejected', async () => {
+  it('preserves the forward after rejected keyboard edits without publishing a replacement', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       chat: {
@@ -1835,7 +1855,10 @@ describe('ModerationService channel auto post buttons', () => {
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
+        response: { status: 400 },
+        message: 'cannot edit forwarded message',
+      }),
       sendMessageCopyWithInlineKeyboard: jest.fn().mockRejectedValue({
         response: {
           status: 400,
@@ -1865,9 +1888,12 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
-    configureDefaultChannelAutoPostDeleteRoute(service);
+    configureDefaultChannelAutoPostEditRoute(service);
     await service.handleUpdate(createForwardedChannelPostUpdate('admin-1'));
 
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
@@ -1875,7 +1901,7 @@ describe('ModerationService channel auto post buttons', () => {
         data: expect.objectContaining({
           action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
           payload: expect.objectContaining({
-            deliveryMode: 'replace_with_bot_message',
+            deliveryMode: 'edit_message',
             linkType: 'forward',
             reason: 'terminal_delivery_failure',
             status: 400,
@@ -3632,7 +3658,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it('skips and advances past numeric non-admin forwarded posts during polling', async () => {
+  it('edits forwarded posts with numeric unrecognized senders during polling', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
@@ -3707,19 +3733,26 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
+    configureDefaultChannelAutoPostEditRoute(service);
     await (service as any).processChannelAutoPostButtons();
 
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-polled-non-admin-1',
+      null,
+      expect.objectContaining({ requireAllAttachmentsPreserved: true }),
+      expectChannelAutoPostOptions(),
+    );
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
     expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
     expect((service as any).channelAutoPostScanState.get('channel-1')).toMatchObject({
       latestTimestampMs: 1772810100000,
       latestMessageIdsAtTimestamp: ['mid-polled-non-admin-1'],
     });
   });
 
-  it('fails closed and advances past a polled forward with no sender metadata', async () => {
+  it('does not mutate an anonymous polled forward without an edit route', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
@@ -3773,7 +3806,10 @@ describe('ModerationService channel auto post buttons', () => {
 
     await (service as any).processChannelAutoPostButtons();
 
-    expect(resolveMutationBot).not.toHaveBeenCalled();
+    expect(resolveMutationBot).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      action: 'edit_message',
+    });
     expect(claimMarker).not.toHaveBeenCalled();
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
@@ -3786,104 +3822,108 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('auto-attaches configured buttons to senderless posts from the normal poll scan', async () => {
-    const prisma = {
-      ...createChannelMutationGuardPrismaMock(),
-      channelSettings: {
-        findMany: jest.fn().mockResolvedValue([
-          {
-            chatId: 'channel-1',
-            postSuggestionsEnabled: true,
-            postSuggestionsButtonText: '📰 Предложить пост',
-            commentsEnabled: false,
-            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
-            chat: {
-              admins: [
-                {
-                  userId: 'admin-1',
-                },
-              ],
+  it.each([null, 'forward'])(
+    'auto-attaches configured buttons to senderless %j posts from the normal poll scan',
+    async (linkType) => {
+      const prisma = {
+        ...createChannelMutationGuardPrismaMock(),
+        channelSettings: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              chatId: 'channel-1',
+              postSuggestionsEnabled: true,
+              postSuggestionsButtonText: '📰 Предложить пост',
+              commentsEnabled: false,
+              updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+              chat: {
+                admins: [
+                  {
+                    userId: 'admin-1',
+                  },
+                ],
+              },
             },
+          ]),
+        },
+        auditLog: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockResolvedValue(undefined),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn(),
+      };
+      const sanctionService = {
+        resolveAction: jest.fn(),
+      };
+      const maxClient = {
+        ...createChannelMutationGuardMaxClientMock(),
+        listMessages: jest.fn().mockResolvedValue([
+          {
+            timestamp: 1772810100000,
+            body: {
+              mid: 'mid-polled-unknown-author-1',
+              text: 'Пост без sender metadata',
+              attachments: [],
+            },
+            link: { type: linkType },
           },
         ]),
-      },
-      auditLog: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn().mockResolvedValue(undefined),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn(),
-    };
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      ...createChannelMutationGuardMaxClientMock(),
-      listMessages: jest.fn().mockResolvedValue([
-        {
-          timestamp: 1772810100000,
-          body: {
-            mid: 'mid-polled-unknown-author-1',
-            text: 'Пост без sender metadata',
-            attachments: [],
-          },
-        },
-      ]),
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
-      getChatAdminIds: jest.fn(),
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-    const adminService = createAdminServiceMock();
+        editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+        getChatAdminIds: jest.fn(),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const adminService = createAdminServiceMock();
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        sanctionService as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        adminService as never,
+      );
 
-    configureDefaultChannelAutoPostEditRoute(service);
-    await (service as any).processChannelAutoPostButtons();
+      configureDefaultChannelAutoPostEditRoute(service);
+      await (service as any).processChannelAutoPostButtons();
 
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
-      botId: '777000_bot',
-      bypassCache: true,
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      sourceTag: 'channel_auto_post',
-      timeoutMs: 2_000,
-    });
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-polled-unknown-author-1',
-      'Пост без sender metadata',
-      expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '📰 Предложить пост' })]],
-      }),
-      expectChannelAutoPostOptions({ botId: '777000_bot' }),
-    );
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        actorUserId: 'system',
-        payload: expect.objectContaining({
-          includeCommentsButton: false,
-          includeSuggestButton: true,
-          source: 'poll',
+      expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
+        botId: '777000_bot',
+        bypassCache: true,
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
+        timeoutMs: 2_000,
+      });
+      expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+        'channel-1',
+        'mid-polled-unknown-author-1',
+        linkType === 'forward' ? null : 'Пост без sender metadata',
+        expect.objectContaining({
+          buttons: [[expect.objectContaining({ text: '📰 Предложить пост' })]],
         }),
-      }),
-    });
-  });
+        expectChannelAutoPostOptions({ botId: '777000_bot' }),
+      );
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorUserId: 'system',
+          payload: expect.objectContaining({
+            includeCommentsButton: false,
+            includeSuggestButton: true,
+            source: 'poll',
+          }),
+        }),
+      });
+    },
+  );
 
   it('routes forwarded channel replacement and cleanup through a delete-capable bot', async () => {
     const prisma = {

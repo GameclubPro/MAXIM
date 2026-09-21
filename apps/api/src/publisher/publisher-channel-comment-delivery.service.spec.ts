@@ -134,6 +134,51 @@ function fixture() {
 }
 
 describe('Publisher channel keyboard webhook and delivery', () => {
+  it('adds wrapper buttons without adopting a forwarded source keyboard or media', async () => {
+    const h = fixture();
+    Object.assign(h.message, {
+      link: {
+        type: 'forward',
+        message: {
+          attachments: [
+            { type: 'video', payload: { token: 'source-video' } },
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    links.buildChannelDialogButton(
+                      chatId,
+                      'comments',
+                      'source-thread',
+                      'Source',
+                      'MINIAPP',
+                    ),
+                  ],
+                ],
+              },
+            },
+          ],
+        },
+      },
+    });
+    h.message.body.attachments = [
+      {
+        type: 'inline_keyboard',
+        payload: { buttons: [[{ type: 'link', text: 'Keep', url: 'https://example.com' }]] },
+      },
+    ];
+    await h.service.process(h.job);
+    expect(h.mutate).toHaveBeenCalledTimes(1);
+    expect(h.mutate.mock.calls[0]![0]).toHaveLength(2);
+    expect(h.prisma.auditLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          payload: expect.objectContaining({ threadId: h.job.threadId }),
+        }),
+      }),
+    );
+  });
   it.each([
     [true, true, 2],
     [true, false, 1],

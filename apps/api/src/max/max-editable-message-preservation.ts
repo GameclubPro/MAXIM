@@ -14,13 +14,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function readStrictEditableAttachments(message: Record<string, unknown> | null): unknown[] {
+export function readStrictEditableAttachments(
+  message: Record<string, unknown> | null,
+  includeForwarded = true,
+): unknown[] {
   if (!message) {
     throw new BadRequestException('Source message is unavailable; preserving the original post.');
   }
   const body = asRecord(message.body);
   const link = asRecord(message.link);
-  const linked = link?.type === 'forward' ? asRecord(link.message) : null;
+  const linked = includeForwarded && link?.type === 'forward' ? asRecord(link.message) : null;
   const linkedBody = asRecord(linked?.body);
   const direct = body?.attachments ?? message.attachments ?? [];
   const forwarded = linkedBody?.attachments ?? linked?.attachments ?? [];

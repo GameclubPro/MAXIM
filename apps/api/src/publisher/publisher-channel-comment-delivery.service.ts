@@ -294,7 +294,7 @@ export class PublisherChannelCommentDeliveryService {
 }
 
 function readPostButtonRows(message: Record<string, unknown>): MaxMessageButton[][] {
-  return readStrictEditableAttachments(message).flatMap((attachment) => {
+  return readStrictEditableAttachments(message, false).flatMap((attachment) => {
     const row = attachment as { type?: unknown; payload?: { buttons?: unknown } } | null;
     return row?.type === 'inline_keyboard'
       ? (readManagedBroadcastButtonRows(row.payload?.buttons) ?? [])
