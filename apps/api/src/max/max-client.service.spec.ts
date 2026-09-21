@@ -2921,9 +2921,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
     },
   );
 
+  describe.each(['BAN_MEMBER', 'KICK_MEMBER', 'UNBAN_MEMBER'] as const)(
+    '%s response confirmation',
+    (actionType) => {
+      it.each([
+        null,
+        {},
+        [],
+        { success: 'true' },
+        { success: 1 },
+        { message: 'User is already a chat member' },
+      ])('does not confirm a malformed response: %j', async (payload) => {
+        const httpService = {
+          request: jest.fn(() => of({ status: 200, data: payload })),
+        };
+        const actionLedgerService = {
+          clearTerminalBanStateAfterUnban: jest.fn(),
+        };
+        const service = createService(httpService, {}, undefined, actionLedgerService);
+
+        try {
+          const error = await service
+            .executeActionJob({
+              actionType,
+              chatId: 'chat-1',
+              userId: 'user-1',
+              attempt: 1,
+              idempotencyKey: `${actionType}-unconfirmed`,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((caught: unknown) => caught);
+
+          expect(error).toBeInstanceOf(UnrecoverableError);
+          expect(wasMaxMemberMutationAttempted(error)).toBe(true);
+          expect(wasMaxMemberMutationConfirmed(error)).toBe(false);
+          expect(actionLedgerService.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+          expect(httpService.request).toHaveBeenCalledTimes(1);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      });
+
+      it('passes the normalized timeout to a confirmed HTTP mutation', async () => {
+        const httpService = {
+          request: jest.fn(() => of({ status: 200, data: { success: true } })),
+        };
+        const service = createService(httpService);
+        try {
+          await service.executeActionJob({
+            actionType,
+            chatId: 'chat-1',
+            userId: 'user-1',
+            attempt: 1,
+            timeoutMs: 1_234.9,
+            idempotencyKey: `${actionType}-http-timeout`,
+            createdAt: new Date().toISOString(),
+          });
+
+          expect(httpService.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+              method: actionType === 'UNBAN_MEMBER' ? 'post' : 'delete',
+              url: 'https://platform-api2.max.ru/chats/chat-1/members',
+              timeout: 1_234,
+            }),
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      });
+    },
+  );
+
   it('clears terminal ban state only after MAX confirms an unban', async () => {
     const httpService = {
-      request: jest.fn(() => of({ data: {} })),
+      request: jest.fn(() => of({ data: { success: true } })),
     };
     const actionLedgerService = {
       clearTerminalBanStateAfterUnban: jest.fn().mockResolvedValue(undefined),
@@ -2984,7 +3055,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   it('keeps the UNBAN_MEMBER attempt marker when post-mutation ledger cleanup fails', async () => {
     const ledgerError = new Error('terminal ban state cleanup failed');
     const httpService = {
-      request: jest.fn(() => of({ data: {} })),
+      request: jest.fn(() => of({ data: { success: true } })),
     };
     const actionLedgerService = {
       clearTerminalBanStateAfterUnban: jest.fn().mockRejectedValue(ledgerError),
@@ -3107,7 +3178,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
   it('records successful immediate irreversible actions in the durable ledger', async () => {
     const httpService = {
-      request: jest.fn(() => of({ data: {} })),
+      request: jest.fn(() => of({ data: { success: true } })),
     };
     const actionLedgerService = {
       isIrreversibleAction: jest.fn().mockReturnValue(true),
@@ -3176,7 +3247,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   it('checks the immediate member guard after routing and ledger work but before MAX HTTP', async () => {
     const leaseLostError = new Error('photo ordering lease lost');
     const httpService = {
-      request: jest.fn(() => of({ data: {} })),
+      request: jest.fn(() => of({ data: { success: true } })),
     };
     const actionLedgerService = {
       isIrreversibleAction: jest.fn().mockReturnValue(true),

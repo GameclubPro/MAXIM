@@ -19,8 +19,9 @@ const PUBLISHER_DISPATCH_HEALTH_REDIS_STATUSES = new Set([
   'close',
   'end',
 ]);
+// FLAG: Delayed failure writes must not move the pause clock behind a newer observation.
 const PUBLISHER_DISPATCH_RECORD_PAUSE_SCRIPT = `
--- PUBLISHER_DISPATCH_RECORD_PAUSE_V1
+-- PUBLISHER_DISPATCH_RECORD_PAUSE_V2
 local nextRaw = ARGV[1]
 if string.len(nextRaw) > tonumber(ARGV[2]) then
   return redis.error_reply('publisher pause payload exceeds the bounded size')
@@ -51,6 +52,13 @@ if current then
       return redis.call('SET', KEYS[1], cjson.encode(currentDecoded))
     end
     return 0
+  end
+  if currentOk and type(currentDecoded) == 'table' then
+    local currentAtMs = tonumber(currentDecoded['observedAtMs'])
+    local nextAtMs = tonumber(nextDecoded['observedAtMs'])
+    if currentAtMs and nextAtMs and currentAtMs > nextAtMs then
+      return 0
+    end
   end
 end
 

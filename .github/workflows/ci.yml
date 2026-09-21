@@ -77,10 +77,10 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=6144
         run: npm run check:ci --workspace @maxim/api
-      - name: Check duplicate and interval flows with Redis
+      - name: Check duplicate, interval and Publisher pause flows with Redis
         env:
           MAXIM_TEST_REDIS_URL: redis://127.0.0.1:6379
-        run: npm test --workspace @maxim/api -- 'message-duplicate|photo-duplicate-history.redis|rule-engine-media-cooldown.redis|traffic-protection.redis'
+        run: npm test --workspace @maxim/api -- 'message-duplicate|photo-duplicate-history.redis|rule-engine-media-cooldown.redis|traffic-protection.redis|publisher-dispatch-health.redis'
 
   postgres-races:
     name: PostgreSQL Races

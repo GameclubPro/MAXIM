@@ -14,13 +14,14 @@ describe('PublisherDispatchHealthService', () => {
         return 'OK';
       }),
       eval: jest.fn(async (script: string, _keys: number, key: string, firstArg: unknown) => {
-        if (script.includes('PUBLISHER_DISPATCH_RECORD_PAUSE_V1')) {
+        if (script.includes('PUBLISHER_DISPATCH_RECORD_PAUSE_V2')) {
           const nextRaw = String(firstArg);
           const currentRaw = values.get(key);
           if (currentRaw) {
             const current = JSON.parse(currentRaw) as {
               reason?: string;
               preservedPauseRaw?: string;
+              observedAtMs?: number;
               [key: string]: unknown;
             };
             if (current.reason === 'operator_rollout') {
@@ -36,6 +37,14 @@ describe('PublisherDispatchHealthService', () => {
                 values.set(key, JSON.stringify({ ...current, preservedPauseRaw: nextRaw }));
               }
               return 'OK';
+            }
+            const next = JSON.parse(nextRaw) as { observedAtMs?: number };
+            if (
+              typeof current.observedAtMs === 'number' &&
+              typeof next.observedAtMs === 'number' &&
+              current.observedAtMs > next.observedAtMs
+            ) {
+              return 0;
             }
           }
           values.set(key, nextRaw);
@@ -265,6 +274,19 @@ describe('PublisherDispatchHealthService', () => {
     await expect(service.assertDispatchAllowed()).rejects.toMatchObject({
       code: 'PUBLISHER_DISPATCH_PAUSED',
       observedAt: unauthorizedObservedAt.toISOString(),
+    });
+  });
+
+  it('does not let a delayed older failure weaken the latest pause', async () => {
+    const { service } = createHarness();
+    const latestFailure = new Date('2026-08-26T12:00:03.000Z');
+    await service.recordGlobalIdentityAttestationFailure('identity_mismatch', null, latestFailure);
+    await service.recordGlobalAuthorizationFailure(new Date('2026-08-26T12:00:01.000Z'));
+    await service.recordAuthenticatedSuccess(new Date('2026-08-26T12:00:02.000Z'));
+
+    await expect(service.assertDispatchAllowed()).rejects.toMatchObject({
+      code: 'PUBLISHER_DISPATCH_PAUSED',
+      observedAt: latestFailure.toISOString(),
     });
   });
 

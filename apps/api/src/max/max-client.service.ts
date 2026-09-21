@@ -2994,11 +2994,13 @@ export class MaxClientService implements OnModuleDestroy {
                   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
                 );
                 memberMutationAttempted = true;
-                await this.request('post', `/chats/${action.chatId}/members`, {
+                const response = await this.request('post', `/chats/${action.chatId}/members`, {
                   data: {
                     user_ids: [action.userId],
                   },
+                  ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
                 });
+                this.assertSuccessfulMemberMutationResponse(response);
               },
               mutationOptions,
             );
@@ -7058,12 +7060,14 @@ export class MaxClientService implements OnModuleDestroy {
             MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
           );
           memberMutationAttempted = true;
-          await this.request('delete', `/chats/${action.chatId}/members`, {
+          const response = await this.request('delete', `/chats/${action.chatId}/members`, {
             params: {
               user_id: action.userId,
               ...(options.block ? { block: true } : {}),
             },
+            ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
           });
+          this.assertSuccessfulMemberMutationResponse(response);
         },
         mutationOptions,
       );
@@ -8109,6 +8113,15 @@ export class MaxClientService implements OnModuleDestroy {
       payload,
       'MAX API DELETE /messages response must contain success=true',
     );
+  }
+
+  private assertSuccessfulMemberMutationResponse(payload: unknown): void {
+    if (this.asRecord(payload)?.success === true) {
+      return;
+    }
+
+    // FLAG: The mutation was attempted. An unknown result must not replay or clear BAN state.
+    throw new UnrecoverableError('Ambiguous MAX member mutation response: expected success=true');
   }
 
   private isAlreadyOutsideChatError(error: unknown): boolean {

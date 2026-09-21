@@ -52,6 +52,7 @@ const ACTION_COUNTER_FIELDS = [
   'critical',
 ] as const satisfies readonly ActionCounterField[];
 const ACTION_HEALTH_SHARED_BUCKET_TTL_MS = 180_000;
+const ACTION_HEALTH_LOCAL_RETENTION_MS = ACTION_HEALTH_SHARED_BUCKET_TTL_MS;
 
 // FLAG: Advance only bridge -> switch -> contract across separate full API releases. Never skip a
 // phase: adjacent phases are deliberately read/write compatible during rollout and rollback.
@@ -92,11 +93,11 @@ export class ActionHealthService implements OnModuleDestroy {
   }
 
   recordSuccessForLane(lane: ActionHealthLane, botId?: string | null, nowMs = Date.now()) {
-    this.counters.success.push(nowMs);
-    this.getLaneCounters(lane).success.push(nowMs);
+    this.appendLocalCounter(this.counters.success, nowMs);
+    this.appendLocalCounter(this.getLaneCounters(lane).success, nowMs);
     if (botId) {
-      this.getBotCounters(botId).success.push(nowMs);
-      this.getBotLaneCounters(botId, lane).success.push(nowMs);
+      this.appendLocalCounter(this.getBotCounters(botId).success, nowMs);
+      this.appendLocalCounter(this.getBotLaneCounters(botId, lane).success, nowMs);
     }
     this.recordSharedCounter('success', botId, nowMs, lane);
   }
@@ -111,21 +112,21 @@ export class ActionHealthService implements OnModuleDestroy {
     botId?: string | null,
     nowMs = Date.now(),
   ) {
-    this.counters.failure.push(nowMs);
+    this.appendLocalCounter(this.counters.failure, nowMs);
     const laneCounters = this.getLaneCounters(lane);
-    laneCounters.failure.push(nowMs);
+    this.appendLocalCounter(laneCounters.failure, nowMs);
     if (isCritical) {
-      this.counters.critical.push(nowMs);
-      laneCounters.critical.push(nowMs);
+      this.appendLocalCounter(this.counters.critical, nowMs);
+      this.appendLocalCounter(laneCounters.critical, nowMs);
     }
     if (botId) {
       const botCounters = this.getBotCounters(botId);
-      botCounters.failure.push(nowMs);
+      this.appendLocalCounter(botCounters.failure, nowMs);
       const botLaneCounters = this.getBotLaneCounters(botId, lane);
-      botLaneCounters.failure.push(nowMs);
+      this.appendLocalCounter(botLaneCounters.failure, nowMs);
       if (isCritical) {
-        botCounters.critical.push(nowMs);
-        botLaneCounters.critical.push(nowMs);
+        this.appendLocalCounter(botCounters.critical, nowMs);
+        this.appendLocalCounter(botLaneCounters.critical, nowMs);
       }
     }
     this.recordSharedCounter('failure', botId, nowMs, lane);
@@ -328,10 +329,18 @@ export class ActionHealthService implements OnModuleDestroy {
     );
   }
 
+  private appendLocalCounter(values: number[], nowMs: number): void {
+    // FLAG: Writers cannot rely on local reads: healthy roles normally use shared snapshots.
+    this.prune(values, nowMs - ACTION_HEALTH_LOCAL_RETENTION_MS);
+    values.push(nowMs);
+  }
+
   private prune(values: number[], cutoff: number) {
-    while (values.length > 0 && values[0] < cutoff) {
-      values.shift();
+    let expired = 0;
+    while (expired < values.length && values[expired]! < cutoff) {
+      expired += 1;
     }
+    if (expired > 0) values.splice(0, expired);
   }
 
   private getBotCounters(botId: string): TimedCounters {

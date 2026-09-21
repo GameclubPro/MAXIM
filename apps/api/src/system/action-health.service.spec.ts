@@ -88,6 +88,63 @@ describe('ActionHealthService', () => {
     jest.useRealTimers();
   });
 
+  it('bounds all local event buffers even when no local snapshot is read', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T20:00:00.000Z'));
+    const service = new ActionHealthService(createConfigMock() as never);
+    const start = Date.now();
+
+    for (let second = 0; second <= 600; second += 1) {
+      jest.setSystemTime(start + second * 1_000);
+      service.recordSuccessForLane('interactive', 'bot-a');
+      service.recordFailureForLane('background', true, 'bot-b');
+    }
+
+    const local = service as unknown as {
+      counters: { success: number[]; failure: number[]; critical: number[] };
+      countersByBot: Map<string, typeof local.counters>;
+      countersByLane: Map<string, typeof local.counters>;
+      countersByBotLane: Map<string, Map<string, typeof local.counters>>;
+    };
+    const scopes = [
+      local.counters,
+      ...local.countersByBot.values(),
+      ...local.countersByLane.values(),
+      ...[...local.countersByBotLane.values()].flatMap((lanes) => [...lanes.values()]),
+    ];
+    for (const counters of scopes) {
+      for (const values of Object.values(counters)) {
+        expect(values.length).toBeLessThanOrEqual(181);
+        expect(values.every((time) => time >= Date.now() - 180_000)).toBe(true);
+      }
+    }
+    expect(service.getSnapshot(60)).toMatchObject({ success: 61, failure: 61, critical: 61 });
+    expect(service.getLaneSnapshot(60, 'interactive', 'bot-a')).toMatchObject({ success: 61 });
+    expect(service.getLaneSnapshot(60, 'background', 'bot-b')).toMatchObject({
+      failure: 61,
+      critical: 61,
+    });
+    await service.onModuleDestroy();
+  });
+
+  it('expires local events while readers keep using fresh shared snapshots', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T20:00:00.000Z'));
+    const service = new ActionHealthService(createConfigMock() as never);
+    service.recordSuccessForLane('interactive', 'bot-a');
+    await service.refreshSnapshots(60, ['bot-a']);
+    expect(service.getSnapshot(60).success).toBe(1);
+
+    jest.setSystemTime(Date.now() + 181_000);
+    service.recordSuccessForLane('interactive', 'bot-a');
+    await service.refreshSnapshots(60, ['bot-a']);
+    expect(service.getSnapshot(60).success).toBe(1);
+    const local = service as unknown as { counters: { success: number[] } };
+    expect(local.counters.success).toEqual([Date.now()]);
+
+    jest.setSystemTime(Date.now() + 2_001);
+    expect(service.getSnapshot(60, 'bot-a').success).toBe(1);
+    await service.onModuleDestroy();
+  });
+
   it('aggregates shared counters across scopes and refreshes bot-specific snapshots', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T20:00:00.000Z'));
     const service = new ActionHealthService(createConfigMock() as never);
