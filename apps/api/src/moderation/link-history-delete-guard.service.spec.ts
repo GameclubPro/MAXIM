@@ -9,6 +9,25 @@ import {
 import { adaptMaxMessageNavigationView } from './navigation/max-navigation-view.adapter';
 
 describe('LinkHistoryDeleteGuardService', () => {
+  it.each([
+    ['userinfo', 'https://allowed.example@blocked.example/path'],
+    ['long path', `https://blocked.example/${'a'.repeat(3_000)}`],
+    ['encoded Cyrillic path', `https://blocked.example/${'\u044f'.repeat(400)}`],
+  ])('keeps a live %s violation actionable at dispatch', async (_name, text) => {
+    const candidateRow = {
+      ...buildPlainTextMessage(),
+      body: { mid: 'message-1', text },
+    };
+    const harness = buildHarness({
+      reasonKind: 'live',
+      candidateRow,
+      linkPolicy: 'ALLOWLIST_ONLY',
+      allowlist: ['domain:allowed.example'],
+    });
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).resolves.toBe('allowed');
+  });
+
   it('rechecks exact content, policy, allowlist and author access before deletion', async () => {
     const harness = buildHarness();
 

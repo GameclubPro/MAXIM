@@ -1,5 +1,3 @@
-import { MAX_HTTP_BUTTON_URL_LENGTH } from '@maxim/contracts';
-
 import type {
   MaxNavigationAttachmentView,
   MaxNavigationButtonView,
@@ -626,11 +624,8 @@ function normalizeTarget(kind: NavigationEvidenceKind, value: string): string {
 
 function normalizeInboundHttpNavigationUrl(value: string): string | null {
   const candidate = value.trim();
-  if (
-    candidate.length === 0 ||
-    candidate.length > MAX_HTTP_BUTTON_URL_LENGTH ||
-    INBOUND_HTTP_NAVIGATION_WHITESPACE_OR_CONTROL.test(candidate)
-  ) {
+  // FLAG: Outbound button limits must not discard inbound links or percent-encoded paths.
+  if (candidate.length === 0 || INBOUND_HTTP_NAVIGATION_WHITESPACE_OR_CONTROL.test(candidate)) {
     return null;
   }
 
@@ -639,8 +634,7 @@ function normalizeInboundHttpNavigationUrl(value: string): string | null {
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
       return null;
     }
-    const normalized = parsed.toString();
-    return normalized.length <= MAX_HTTP_BUTTON_URL_LENGTH ? normalized : null;
+    return parsed.toString();
   } catch {
     return null;
   }
@@ -648,11 +642,7 @@ function normalizeInboundHttpNavigationUrl(value: string): string | null {
 
 function normalizeInboundMarkupLinkTarget(value: string): string | null {
   const candidate = value.trim();
-  if (
-    candidate.length === 0 ||
-    candidate.length > MAX_HTTP_BUTTON_URL_LENGTH ||
-    INBOUND_HTTP_NAVIGATION_WHITESPACE_OR_CONTROL.test(candidate)
-  ) {
+  if (candidate.length === 0 || INBOUND_HTTP_NAVIGATION_WHITESPACE_OR_CONTROL.test(candidate)) {
     return null;
   }
 

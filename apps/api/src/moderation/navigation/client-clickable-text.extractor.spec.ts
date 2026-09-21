@@ -2,6 +2,27 @@ import { adaptMaxMessageNavigationView } from './max-navigation-view.adapter';
 import { extractClientClickableTextEvidence } from './client-clickable-text.extractor';
 
 describe('extractClientClickableTextEvidence', () => {
+  it.each([
+    ['userinfo', 'https://allowed.example@blocked.example/path'],
+    ['userinfo with password', 'https://user:pass@blocked.example/path'],
+    ['long path', `https://blocked.example/${'a'.repeat(3_000)}`],
+  ])('preserves the full %s URL and its original range', (_name, target) => {
+    const prefix = 'Text '.repeat(500);
+    const text = `${prefix}${target} end`;
+
+    expect(
+      extractClientClickableTextEvidence(adaptMaxMessageNavigationView({ body: { text } })),
+    ).toEqual([
+      {
+        provenance: 'direct',
+        target,
+        from: prefix.length,
+        length: target.length,
+        sourcePath: 'message.body.text',
+      },
+    ]);
+  });
+
   it('extracts client-compatible web links with exact UTF-16 ranges', () => {
     const text = 'emoji \ud83d\ude80 https://example.com/a_(b) and max.ru/join/abc';
     const result = extractClientClickableTextEvidence(

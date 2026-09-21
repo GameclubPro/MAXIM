@@ -8,6 +8,81 @@ import { isEnforceableLinkPolicyTarget } from './link-policy-target.util';
 import { adaptMaxMessageNavigationView } from './max-navigation-view.adapter';
 
 describe('enabled navigation targets', () => {
+  it.each([
+    ['2047 characters', 'https://blocked.example/'.padEnd(2_047, 'a')],
+    ['2048 characters', 'https://blocked.example/'.padEnd(2_048, 'a')],
+    ['2049 characters', 'https://blocked.example/'.padEnd(2_049, 'a')],
+    ['long path', `https://blocked.example/${'a'.repeat(3_000)}`],
+    ['encoded Cyrillic path', `https://blocked.example/${'\u044f'.repeat(400)}`],
+  ])('enforces %s URLs across carriers without changing domain permissions', (_name, url) => {
+    const canonicalUrl = new URL(url).toString();
+    for (const body of [
+      { text: url },
+      { text: 'Link', markup: [{ type: 'link', from: 0, length: 4, url }] },
+      { text: 'Link', attachments: [{ type: 'share', payload: { url } }] },
+      {
+        text: 'Link',
+        attachments: [{ type: 'inline_keyboard', payload: { buttons: [[{ type: 'link', url }]] } }],
+      },
+    ]) {
+      const targets = extractEnabledNavigationTargets(
+        adaptMaxMessageNavigationView({ body }),
+        resolveEnabledNavigationTargetOptions(),
+      );
+      expect(targets).toEqual([
+        expect.objectContaining({ normalizedTarget: canonicalUrl, enforceable: true }),
+      ]);
+      expect(
+        detectBlockedLink('', LinkPolicy.BLOCKLIST_ONLY, [], undefined, targets),
+      ).not.toBeNull();
+      expect(
+        detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, [], undefined, targets),
+      ).not.toBeNull();
+      expect(
+        detectBlockedLink(
+          '',
+          LinkPolicy.ALLOWLIST_ONLY,
+          ['domain:blocked.example'],
+          undefined,
+          targets,
+        ),
+      ).toBeNull();
+      expect(
+        detectBlockedLink(
+          '',
+          LinkPolicy.ALLOWLIST_ONLY,
+          [canonicalUrl.slice(0, 2_000)],
+          undefined,
+          targets,
+        ),
+      ).not.toBeNull();
+      expect(detectBlockedLink('', LinkPolicy.ALERT_ONLY, [], undefined, targets)).toBeNull();
+    }
+  });
+
+  it.each([
+    'https://allowed.example@blocked.example/path',
+    'https://allowed.example:password@blocked.example/path',
+  ])('does not authorize userinfo as the destination host: %s', (url) => {
+    const targets = extractEnabledNavigationTargets(
+      adaptMaxMessageNavigationView({ body: { text: url } }),
+      resolveEnabledNavigationTargetOptions(),
+    );
+
+    expect(targets).toEqual([
+      expect.objectContaining({ normalizedTarget: url, enforceable: true }),
+    ]);
+    expect(
+      detectBlockedLink(
+        '',
+        LinkPolicy.ALLOWLIST_ONLY,
+        ['domain:allowed.example'],
+        undefined,
+        targets,
+      ),
+    ).not.toBeNull();
+  });
+
   it('enforces structured and client-clickable text targets by default', () => {
     expect(resolveEnabledNavigationTargetOptions()).toEqual({
       structuredTargetsEnabled: true,

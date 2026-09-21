@@ -22,7 +22,8 @@ const linkifier = new LinkifyIt({
   fuzzyEmail: false,
   fuzzyIP: false,
   fuzzyLink: true,
-  maxLength: 2_048,
+  // FLAG: Without URL auth parsing, an allowed userinfo prefix can hide the actual host.
+  urlAuth: true,
 })
   .tlds(CURRENT_IANA_TLDS)
   .add('ftp:', null)
@@ -110,7 +111,7 @@ function normalizeClickableTarget(normalizedUrl: string, inferredScheme: boolean
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return null;
     }
-    if (!parsed.hostname || parsed.username || parsed.password) {
+    if (!parsed.hostname) {
       return null;
     }
     if (inferredScheme) {

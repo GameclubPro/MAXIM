@@ -44,6 +44,41 @@ import {
 
 describe('ModerationService', () => {
   describe('live typed navigation moderation', () => {
+    it.each(['message_created', 'message_edited'] as const)(
+      'deletes bypass URLs in direct and forwarded %s messages',
+      async (type) => {
+        for (const text of [
+          'https://allowed.example@blocked.example/path',
+          `https://blocked.example/${'a'.repeat(3_000)}`,
+          `https://blocked.example/${'\u044f'.repeat(400)}`,
+        ]) {
+          for (const forwarded of [false, true]) {
+            const harness = createLiveNavigationHarness({
+              linkPolicy: 'ALLOWLIST_ONLY',
+              cachedAllowlist: ['domain:allowed.example'],
+            });
+            const content = forwarded
+              ? { body: { text: '' }, link: { type: 'forward', message: { text } } }
+              : { body: { text } };
+            const update = createLiveNavigationEnvelopeUpdate(type, content, {
+              messageId: 'bypass-message',
+            });
+
+            await harness.service.handleUpdate(update);
+
+            expectImmediateDeleteMessage(
+              harness.maxClient.deleteMessage,
+              'chat-1',
+              'bypass-message',
+            );
+            expect(harness.prisma.violation.create).toHaveBeenCalledWith({
+              data: expect.objectContaining({ ruleCode: 'LINK_BLOCKED' }),
+            });
+          }
+        }
+      },
+    );
+
     const typedProfileAllowlist = 'max-profile:user-id%3A67123224';
 
     const staleLinkViolation = {
