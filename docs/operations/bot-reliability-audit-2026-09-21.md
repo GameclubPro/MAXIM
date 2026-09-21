@@ -43,6 +43,18 @@ Preserve the pre-existing API agent-note edit and incident document.
 - Official MAX DELETE and POST `/chats/{chatId}/members` documentation was
   retrieved read-only through the VPS because local DNS timed out. Both document
   a boolean `success` result. No real participant mutation was used for this audit.
+- A bounded read of the reconciler snapshot at 20:56-20:57 UTC found all six
+  moderation bots healthy/configured, zero missing update types and zero reported
+  reconciliation errors. The snapshot was 50 seconds old; this does not prove
+  that every individual webhook or user workflow succeeds.
+- `npm audit --omit=dev --audit-level=high` found no high/critical advisories and
+  two moderate vulnerable dependency entries (Fastify and its Nest adapter).
+  `GHSA-w2qp-rph6-63g4` and `GHSA-3m5p-2c4r-xxw2` are patched by Fastify 5.12.1.
+  The current HTTP bootstrap does not enable numeric `trustProxy`, and no
+  Fastify root-primitive body-schema registration was found; handlers use the
+  repository's explicit input validation. This lowers the observed exposure,
+  not the need for a separately validated dependency update. Do not apply the
+  audit CLI's suggested forced Nest major upgrade without compatibility review.
 
 ## Implementation Plan
 
@@ -54,7 +66,7 @@ Preserve the pre-existing API agent-note edit and incident document.
 | P2       | Member-action `timeoutMs` bounds admission but is omitted from HTTP requests.                                             | Forward the existing normalized per-request timeout for BAN/KICK/UNBAN. Do not introduce automatic retry of ambiguous attempts or claim an end-to-end deadline.                                                                                                                  | Implemented; regression tests pass.                                                                      |
 | P2       | Retained failures and repeated inaccessible publication/poll routes need operational triage.                              | Bounded classification by operation and age; verify exact access and durable receipts before any individually reviewed recovery. No queue purge or bulk retry.                                                                                                                   | Follow-up; causes not proven by this sample.                                                             |
 | P2       | Night-mode duplicate events and historical process restarts need causal evidence.                                         | Correlate exact durable intent/ledger outcomes; compare restart deltas, bounded logs and queue trend across a busy period. Preserve OCR shadow and native isolation.                                                                                                             | Follow-up; not permission to resend notices or promote OCR.                                              |
-| P2       | Disk warning reduces release headroom.                                                                                    | Inventory retained MAXIM images and manifests; prefer green exact-SHA CI preload or reviewed manifest-aware reclaim. Preserve sibling workloads and stateful services.                                                                                                           | Release preflight pending.                                                                               |
+| P2       | Disk warning reduces release headroom.                                                                                    | Inventory retained MAXIM images and manifests; prefer green exact-SHA CI preload or reviewed manifest-aware reclaim. Preserve sibling workloads and stateful services.                                                                                                           | Exact-SHA CI preload and reuse-only deploy completed without a build, cleanup or bypass.                 |
 
 ## Verification And Release Gates
 
@@ -99,5 +111,71 @@ evidence of the actual bottleneck.
 - Contracts: 295 tests; mini app: 1,359 tests plus CSS/typecheck; Safety Desk:
   15 tests plus typecheck. Prisma validation/migration checks and 424 infra tests
   passed. These are automated checks, not live dialog/browser acceptance.
-- Final staged validation, exact-SHA CI and production release remain gates;
-  their completion must be recorded after the actual commands finish.
+- Final staged validation passed: lint/refactor guards, 535 tooling tests, docs,
+  API typecheck/build and 594 suites / 13,098 tests with local Redis enabled.
+  Fourteen suites / 71 tests remained skipped, plus the PostgreSQL storage race;
+  these external-service/native gates must be covered by exact-SHA CI.
+- The fixture-only multi-bot route smoke passed 22 assertions. It makes no live
+  MAX mutations and is not a substitute for live participant/publication tests.
+- Runtime changes were submitted as `e4c5e38821249eeb8138c469b1959d616039ac1b`.
+  Both required exact-SHA checks passed before any deployment.
+
+## Delivery
+
+- [CI run](https://github.com/GameclubPro/MAXIM/actions/runs/35654403610)
+  passed the aggregate `Required` check, including the new real-Redis pause test,
+  PostgreSQL races/migrations/storage, commercial benchmark, all images, native
+  OCR smoke and frontend browser smokes.
+- [CodeQL run](https://github.com/GameclubPro/MAXIM/actions/runs/35654403369)
+  passed `Analyze JavaScript and TypeScript` and the high-severity alert gate.
+- The normal preload wrapper verified the immutable API artifact checksum,
+  exact revision/protection labels and disk capacity: 31,570,591,744 bytes free,
+  729,716,736-byte archive, required 4 GiB reserve. The subsequent deploy reused
+  the image; no local VPS build, Docker cleanup or emergency override occurred.
+- The normal deploy wrapper synchronized the VPS to the exact source SHA,
+  found no pending migrations, paused/fenced webhook work, recreated all
+  14 API roles and the OCR auxiliary, verified exact image convergence and
+  resumed the queues. PostgreSQL, Redis and static containers were not recreated.
+- Release `release-20260921T211401Z-e4c5e3882124` was committed only after ingress
+  and admin live/ready, public live, OCR isolation/languages/UDS raster/shadow
+  smokes passed. Readiness briefly returned 503 after resumption, then recovered
+  inside the normal deploy readiness window.
+- The deploy emitted the existing missing `POSTGRES_PASSWORD`/legacy compatibility
+  fallback warning. Before any separately planned PostgreSQL recreation, operators
+  must securely verify/configure the current password. No password was printed,
+  rotated or changed by this task.
+- The initial post-release window, 21:17:12-21:19:12 UTC, contained eight complete
+  capacity samples: queue lag 0-0.345 seconds, p50 0.055, p95 0.345, zero readiness,
+  queue-fence or fleet-identity failures and zero restarts. All samples were still
+  in the configured `stabilizing` recovery window, so the report correctly labels
+  this interval degraded rather than uniformly healthy. A separate fresh webhook
+  snapshot showed all six moderation bots healthy with recent incoming events.
+- The follow-up 21:20:18-21:22:18 UTC window had eight complete samples, queue lag
+  0-0.177 seconds and no readiness/fleet/fence failures or restarts. Its first six
+  samples were still stabilizing; the final snapshot at 21:22:06 UTC was
+  `normal/healthy` with zero queue lag. Both APIs, Publisher heartbeat and OCR
+  readiness passed. Some 60-second action windows still contained 1-4 noncritical
+  failures, so no claim of error-free live MAX operations is made.
+- All local test/monitor processes were closed; the disposable local Redis and
+  downloaded packages were removed. Existing user documentation was preserved.
+
+## Remaining Work
+
+1. Security maintenance: pin a reviewed Fastify 5.12.1-or-newer 5.x release,
+   regenerate the lockfile normally and validate all images/HTTP consumers.
+   Acceptance includes a clean production-dependency advisory scan and unchanged
+   authentication/webhook input checks, not a forced framework major upgrade.
+2. Retention memory: capture identifier-free heap/RSS and restart deltas through
+   a real busy period. Reproduce sustained scheduling/deletion with a disposable
+   database before changing the 512 MiB cap. The metrics-buffer fix has isolated
+   regression evidence, not proof that it eliminates the observed OOM.
+3. Failed deliveries: separate missing permissions, exact-message absence,
+   transient transport, timeout quarantine and ambiguous dispatch. Recovery
+   requires exact entity/intent evidence; missing author permissions need the
+   entity administrator. Preserve all ambiguous send/member-action fences.
+4. Night-mode signals: distinguish repeated audit writes from multiple confirmed
+   remote IDs before proposing cleanup. No historical session catch-up or mass
+   resend is part of this audit.
+5. Capacity: the manifest-aware dry-run found no eligible old MAXIM images.
+   CI preload is the current release option; longer-term disk growth requires
+   retention/storage sizing, not host-wide Docker GC on this shared VPS.
