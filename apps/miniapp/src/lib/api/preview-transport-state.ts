@@ -81,6 +81,7 @@ import {
 import { createPreviewVkParsingFeed } from './preview-transport-vk';
 
 export type PreviewState = {
+  retentionScenario: string;
   stopWordsWriteError: 'network' | 'conflict' | null;
   advertisingPilot: boolean;
   clock: PreviewClock;
@@ -832,6 +833,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   };
 
   const state: PreviewState = {
+    retentionScenario: searchParams.get('retentionScenario') ?? 'normal',
     stopWordsWriteError:
       searchParams.get('stopWordsWriteError') === 'network'
         ? 'network'

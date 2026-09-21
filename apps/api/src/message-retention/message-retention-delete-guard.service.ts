@@ -41,34 +41,54 @@ export class MessageRetentionDeleteGuard {
     const cacheKey = `${botId}:${candidate.chatId}`;
     let author = this.authors.get(`${cacheKey}:${candidate.authorId}`);
     if (!author || Date.now() - author.at >= 30_000) {
-      await this.primeAuthors(candidate.chatId, [candidate.authorId], botId);
+      const nextAuthors = await this.prisma.messageRetentionCandidate.findMany({
+        where: {
+          chatId: candidate.chatId,
+          status: 'pending',
+          sourceAt: { lte: new Date(Date.now() - policy.hours * 3_600_000) },
+        },
+        orderBy: [{ sourceAt: 'asc' }, { messageId: 'asc' }],
+        take: 4,
+        select: { authorId: true },
+      });
+      await this.primeAuthors(
+        candidate.chatId,
+        [candidate.authorId, ...nextAuthors.map((row) => row.authorId)],
+        botId,
+      );
       author = this.authors.get(`${cacheKey}:${candidate.authorId}`);
     }
-    if (!author) this.retry('Author access is unknown');
+    if (!author || Date.now() - author.at >= 30_000) this.retry('Author access is unknown');
     if (!author.allowed) this.skip('Protected author');
     let pin = this.pins.get(cacheKey);
     if (!pin || Date.now() - pin.at >= 5_000) {
+      const startedAt = Date.now();
       const id = await this.max.getPinnedMessageId(candidate.chatId, options);
-      pin = { id, at: Date.now() };
+      pin = { id, at: startedAt };
       if (this.pins.size >= 256) this.pins.clear();
       this.pins.set(cacheKey, pin);
     }
     if (pin.id === candidate.messageId) this.skip('Pinned message');
     // FLAG: Re-read destructive authority after remote checks and limiter waits.
     const latest = await this.loadBinding(intentId);
+    if (Date.now() - author.at >= 30_000 || Date.now() - pin.at >= 5_000)
+      this.retry('Remote verification expired before dispatch');
     if (latest.policy.revision !== policy.revision)
       this.retry('Policy changed during verification');
   }
 
   async primeAuthors(chatId: string, authorIds: string[], botId: string): Promise<void> {
     const authors = [...new Set(authorIds)].slice(0, 5);
+    // FLAG: Unknown refresh results must not revive previously allowed author evidence.
+    for (const authorId of authors) this.authors.delete(`${botId}:${chatId}:${authorId}`);
+    const startedAt = Date.now();
     const access = await this.max.getChatMembersAccess(chatId, authors, this.options(botId));
     if (this.authors.size >= 512) this.authors.clear();
     for (const authorId of authors) {
       const row = access.get(authorId);
       if (!row || row.userId !== authorId) continue;
       this.authors.set(`${botId}:${chatId}:${authorId}`, {
-        at: Date.now(),
+        at: startedAt,
         allowed:
           !row.isAdmin &&
           !row.isOwner &&

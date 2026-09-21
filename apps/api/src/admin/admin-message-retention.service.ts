@@ -14,6 +14,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import { retentionQuotaShard } from '../message-retention/message-retention.policy';
+import { retentionStatus } from '../message-retention/message-retention-status';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
@@ -73,7 +74,7 @@ export class AdminMessageRetentionService {
                 captureAfter: request.enabled ? now : null,
               }
             : {}),
-          nextRunAt: now,
+          nextRunAt: request.enabled || current.pendingCount > 0 ? now : null,
           lastStatus: request.enabled ? 'running' : 'off',
         },
       });
@@ -98,12 +99,14 @@ export class AdminMessageRetentionService {
       id: this.config.get('MAX_PUBLISHER_BOT_ID'),
     }).id;
     if (user.launchBotId === publisherId) throw new ForbiddenException();
+    if (!/^-[1-9]\d*$/.test(chatId))
+      throw new BadRequestException('Некорректный идентификатор чата.');
     await this.access.assertChatAdminAccess(chatId, user);
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: { entityType: true },
     });
-    if (!/^-[1-9]\d*$/.test(chatId) || chat?.entityType !== 'CHAT')
+    if (chat?.entityType !== 'CHAT')
       throw new BadRequestException('Модуль доступен только в групповых чатах.');
   }
 
@@ -139,20 +142,7 @@ export class AdminMessageRetentionService {
       retry?.sourceAt.getTime() ?? Infinity,
     );
     const dueMs = oldest + policy.hours * 3_600_000;
-    let status: MessageRetentionState['status'] = !runtimeAvailable
-      ? 'unavailable'
-      : !policy.enabled
-        ? 'off'
-        : policy.pausedAt
-          ? 'capacity_paused'
-          : this.store.mode === 'shadow'
-            ? 'shadow'
-            : ['paused', 'no_access', 'error'].includes(policy.lastStatus)
-              ? (policy.lastStatus as MessageRetentionState['status'])
-              : dueMs < Date.now() - 3_600_000
-                ? 'delayed'
-                : 'running';
-    if (!policy.enabled && runtimeAvailable) status = 'off';
+    const status = retentionStatus(policy, this.store.mode, runtimeAvailable, dueMs);
     return {
       enabled: policy.enabled,
       hours: policy.hours === 24 ? 24 : 48,

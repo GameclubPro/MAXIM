@@ -84,6 +84,7 @@ import {
 } from './preview-transport-system';
 import type { PreviewState } from './preview-transport-state';
 import { handlePreviewReports } from './preview-reports';
+import { getPreviewMessageRetention } from './preview-message-retention';
 
 function activePreviewDomains(state: PreviewState) {
   const now = readPreviewClock(state.clock).getTime();
@@ -167,6 +168,7 @@ export function buildChatSettingsScreen(
     state.clock,
   );
   return chatSettingsScreenResponseSchema.parse({
+    messageRetention: getPreviewMessageRetention(state, chatId),
     settings: state.chatSettings,
     reportsAvailable: state.reportsAvailable,
     duplicatePhotoModerationMode: 'FULL',

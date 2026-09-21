@@ -10,6 +10,10 @@ export const MESSAGE_RETENTION_QUANTUM = 5;
 export const MESSAGE_RETENTION_SHARD_LIMIT = 62_500;
 export const MESSAGE_RETENTION_CHAT_LIMIT = 50_000;
 export const MESSAGE_RETENTION_RESUME_MS = 10 * 60_000;
+export const MESSAGE_RETENTION_SLOT_IDS = Array.from(
+  { length: MESSAGE_RETENTION_QUEUE_LIMIT },
+  (_, slot) => `retention-slot-${slot}`,
+);
 
 export type RetentionCapture = {
   chatId: string;

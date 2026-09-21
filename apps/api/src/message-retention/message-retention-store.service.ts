@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
+import type { MessageRetentionSummary } from '@maxim/contracts/settings';
 import {
   Prisma,
   type MessageRetentionCandidate,
@@ -8,9 +9,11 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
+import { captureRetentionMessage } from './message-retention-capture';
+import { purgeRetentionPage, type RetentionPurgeCursor } from './message-retention-purge';
+import { retentionStatus } from './message-retention-status';
 import {
   MESSAGE_RETENTION_CHAT_LIMIT,
-  MESSAGE_RETENTION_DAY_MS,
   MESSAGE_RETENTION_RESUME_MS,
   MESSAGE_RETENTION_SHARD_LIMIT,
   readRetentionCapture,
@@ -21,6 +24,7 @@ import {
 @Injectable()
 export class MessageRetentionStore {
   private readonly logger = new Logger(MessageRetentionStore.name);
+  private purgeCursor: RetentionPurgeCursor | null = null;
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -38,6 +42,38 @@ export class MessageRetentionStore {
     );
   }
 
+  schedulingFilter(): Prisma.MessageRetentionPolicyWhereInput {
+    if (this.mode === 'canary') {
+      const ids = this.config
+        .get<string>('MESSAGE_RETENTION_CANARY_CHAT_IDS', '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => /^-[1-9]\d*$/.test(id));
+      return { chatId: { in: [...new Set(ids)] } };
+    }
+    return this.mode === 'off' ? { chatId: { in: [] } } : {};
+  }
+
+  async summary(chatId: string): Promise<MessageRetentionSummary> {
+    const policy = await this.prisma.messageRetentionPolicy.findUnique({
+      where: { chatId },
+      select: {
+        enabled: true,
+        hours: true,
+        revision: true,
+        pausedAt: true,
+        pendingCount: true,
+        lastStatus: true,
+      },
+    });
+    return {
+      enabled: policy?.enabled ?? false,
+      hours: policy?.hours === 24 ? 24 : 48,
+      revision: policy?.revision ?? 0,
+      status: retentionStatus(policy, this.mode, this.allows(chatId)),
+    };
+  }
+
   captureInput(update: MaxUpdate): RetentionCapture | null {
     if (!update.message || !this.allows(update.message.chatId)) return null;
     const publisher = buildPublisherBotDescriptor({
@@ -48,107 +84,40 @@ export class MessageRetentionStore {
   }
 
   async capture(tx: Prisma.TransactionClient, input: RetentionCapture): Promise<void> {
-    const initial = await tx.messageRetentionPolicy.findUnique({ where: { chatId: input.chatId } });
-    if (!initial?.enabled || !initial.captureAfter || input.sourceAt < initial.captureAfter) return;
-    const knownAdmin = await tx.managedEntityAdminMember.findFirst({
-      where: {
-        chatId: input.chatId,
-        userId: input.authorId,
-        entityType: 'CHAT',
-        role: { in: ['ADMIN', 'OWNER'] },
-        expiresAt: { gt: new Date() },
-      },
-      select: { userId: true },
-    });
-    if (knownAdmin) return;
-    // FLAG: Every admission/settlement locks quota before policy. Duplicate receipts consume no credit.
-    await tx.$queryRaw`SELECT "shard" FROM "message_retention_quotas" WHERE "shard" = ${initial.quotaShard} FOR UPDATE`;
-    await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${input.chatId} FOR UPDATE`;
-    const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({
-      where: { chatId: input.chatId },
-    });
-    if (!policy.enabled || !policy.captureAfter || input.sourceAt < policy.captureAfter) return;
-    const existing = await tx.messageRetentionCandidate.findUnique({
-      where: { chatId_messageId: { chatId: input.chatId, messageId: input.messageId } },
-      select: { messageId: true },
-    });
-    if (existing) return;
-    const quota = await tx.messageRetentionQuota.findUniqueOrThrow({
-      where: { shard: policy.quotaShard },
-    });
-    const now = new Date();
-    if (
-      quota.pausedAt ||
-      policy.pausedAt ||
-      quota.pendingCount >= MESSAGE_RETENTION_SHARD_LIMIT * 0.8 ||
-      policy.pendingCount >= MESSAGE_RETENTION_CHAT_LIMIT * 0.8
-    ) {
-      if (!quota.pausedAt && quota.pendingCount >= MESSAGE_RETENTION_SHARD_LIMIT * 0.8)
-        await tx.messageRetentionQuota.update({
-          where: { shard: quota.shard },
-          data: { pausedAt: now, healthySince: null },
-        });
-      await tx.messageRetentionPolicy.update({
-        where: { chatId: input.chatId },
-        data: {
-          pausedAt: policy.pausedAt ?? now,
-          healthySince: policy.pausedAt ? policy.healthySince : null,
-          lastStatus: 'capacity_paused',
-          skippedCount: { increment: 1 },
-          nextRunAt: now,
-        },
-      });
-      if (!policy.pausedAt) {
-        await tx.auditLog.create({
-          data: {
-            chatId: input.chatId,
-            actorUserId: 'system:message-retention',
-            action: 'MESSAGE_RETENTION_INTAKE_PAUSED',
-            payload: { startedAt: now.toISOString() },
-          },
-        });
-        this.logger.warn(
-          { quotaShard: policy.quotaShard },
-          'Message retention intake paused by capacity guard',
-        );
-      }
-      return;
-    }
-    await tx.messageRetentionCandidate.create({
-      data: { ...input, activationId: policy.activationId, shadowOnly: this.mode === 'shadow' },
-    });
-    const dueAt = new Date(input.sourceAt.getTime() + policy.hours * 3_600_000);
-    await tx.messageRetentionPolicy.update({
-      where: { chatId: input.chatId },
-      data: {
-        pendingCount: { increment: 1 },
-        nextRunAt: !policy.nextRunAt || dueAt < policy.nextRunAt ? dueAt : policy.nextRunAt,
-      },
-    });
-    await tx.messageRetentionQuota.update({
-      where: { shard: quota.shard },
-      data: { pendingCount: { increment: 1 } },
-    });
+    if (await captureRetentionMessage(tx, input, this.mode === 'shadow'))
+      this.logger.warn('Message retention intake paused by capacity guard');
   }
 
   async finish(
     candidate: MessageRetentionCandidate,
     status: 'deleted' | 'skipped' | 'cancelled',
-  ): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
       const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({
         where: { chatId: candidate.chatId },
       });
       await tx.$queryRaw`SELECT "shard" FROM "message_retention_quotas" WHERE "shard" = ${policy.quotaShard} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${candidate.chatId} FOR UPDATE`;
+      const current = await tx.messageRetentionPolicy.findUniqueOrThrow({
+        where: { chatId: candidate.chatId },
+      });
+      // FLAG: A stale disabled/old-generation worker cannot cancel the current activation.
+      if (
+        status === 'cancelled' &&
+        current.enabled &&
+        current.activationId === candidate.activationId
+      )
+        return false;
       const changed = await tx.messageRetentionCandidate.updateMany({
         where: {
           chatId: candidate.chatId,
           messageId: candidate.messageId,
+          activationId: candidate.activationId,
           status: { in: ['pending', 'retry'] },
         },
         data: { status, completedAt: new Date() },
       });
-      if (!changed.count) return;
+      if (!changed.count) return false;
       await tx.messageRetentionPolicy.update({
         where: { chatId: candidate.chatId },
         data: {
@@ -162,18 +131,21 @@ export class MessageRetentionStore {
         where: { shard: policy.quotaShard },
         data: { pendingCount: { decrement: 1 } },
       });
+      return true;
     });
   }
 
   async resumeAdmission(chatId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const initial = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      if (!initial.enabled || !initial.pausedAt) return;
       await tx.$queryRaw`SELECT "shard" FROM "message_retention_quotas" WHERE "shard" = ${initial.quotaShard} FOR UPDATE`;
       await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${chatId} FOR UPDATE`;
       const quota = await tx.messageRetentionQuota.findUniqueOrThrow({
         where: { shard: initial.quotaShard },
       });
       const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      if (!policy.enabled) return;
       const now = new Date();
       const shardHealthy = quota.pendingCount < MESSAGE_RETENTION_SHARD_LIMIT * 0.6;
       const resumeShard = Boolean(
@@ -212,6 +184,40 @@ export class MessageRetentionStore {
             payload: { startedAt: policy.pausedAt.toISOString(), endedAt: now.toISOString() },
           },
         });
+    });
+  }
+
+  async cancelInactive(candidates: MessageRetentionCandidate[]): Promise<void> {
+    if (!candidates.length) return;
+    const chatId = candidates[0]!.chatId;
+    if (candidates.length > 100 || candidates.some((candidate) => candidate.chatId !== chatId))
+      throw new Error('Retention cancellation must be a bounded single-chat batch');
+    await this.prisma.$transaction(async (tx) => {
+      const initial = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      await tx.$queryRaw`SELECT "shard" FROM "message_retention_quotas" WHERE "shard" = ${initial.quotaShard} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${chatId} FOR UPDATE`;
+      const current = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      const { count } = await tx.messageRetentionCandidate.updateMany({
+        where: {
+          chatId,
+          status: { in: ['pending', 'retry'] },
+          messageId: { in: candidates.map((candidate) => candidate.messageId) },
+          ...(current.enabled ? { activationId: { not: current.activationId } } : {}),
+        },
+        data: { status: 'cancelled', completedAt: new Date() },
+      });
+      if (!count) return;
+      await tx.messageRetentionPolicy.update({
+        where: { chatId },
+        data: {
+          pendingCount: { decrement: count },
+          skippedCount: { increment: count },
+        },
+      });
+      await tx.messageRetentionQuota.update({
+        where: { shard: current.quotaShard },
+        data: { pendingCount: { decrement: count } },
+      });
     });
   }
 
@@ -282,28 +288,8 @@ export class MessageRetentionStore {
   }
 
   async purge(): Promise<void> {
-    const cutoff = new Date(Date.now() - 7 * MESSAGE_RETENTION_DAY_MS);
-    await this.prisma.$executeRaw(Prisma.sql`
-      WITH expired AS (
-        SELECT "chat_id", "message_id", "intent_id" FROM "message_retention_candidates"
-        WHERE "completed_at" < ${cutoff}
-        ORDER BY "completed_at", "chat_id", "message_id" LIMIT 500 FOR UPDATE SKIP LOCKED
-      ), deleted_intents AS (
-        DELETE FROM "moderation_delete_intents" intent USING expired e
-        WHERE intent."id" = e."intent_id" AND intent."retention_owned" = TRUE
-          AND (
-            intent."status" IN ('SUCCEEDED', 'ALREADY_ABSENT')
-            OR (
-              intent."delete_dispatch_started_at" IS NULL
-              AND intent."delete_dispatch_started_bot_id" IS NULL
-              AND intent."remote_delete_succeeded_at" IS NULL
-              AND intent."remote_delete_succeeded_bot_id" IS NULL
-              AND (intent."status" <> 'IN_PROGRESS' OR intent."lease_expires_at" < CURRENT_TIMESTAMP)
-            )
-          )
-        RETURNING intent."id"
-      ) DELETE FROM "message_retention_candidates" c USING expired e
-      WHERE c."chat_id" = e."chat_id" AND c."message_id" = e."message_id"
-    `);
+    this.purgeCursor = await this.prisma.$transaction((tx) =>
+      purgeRetentionPage(tx, this.purgeCursor),
+    );
   }
 }

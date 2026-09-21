@@ -8,7 +8,11 @@ import { RedisCounterService } from '../moderation/redis-counter.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { MessageRetentionStore } from './message-retention-store.service';
-import { MESSAGE_RETENTION_QUEUE, MESSAGE_RETENTION_QUEUE_LIMIT } from './message-retention.policy';
+import {
+  MESSAGE_RETENTION_QUEUE,
+  MESSAGE_RETENTION_QUEUE_LIMIT,
+  MESSAGE_RETENTION_SLOT_IDS,
+} from './message-retention.policy';
 
 export type MessageRetentionJob = { chatId: string };
 
@@ -16,7 +20,7 @@ export type MessageRetentionJob = { chatId: string };
 export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MessageRetentionRuntime.name);
   private timer: NodeJS.Timeout | null = null;
-  private busy = false;
+  private activeTick: Promise<void> | null = null;
   private stopping = false;
   private nextPurgeAt = Date.now() + 3_600_000;
 
@@ -29,23 +33,41 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
     @InjectQueue(MESSAGE_RETENTION_QUEUE) private readonly queue: Queue<MessageRetentionJob>,
   ) {}
 
-  onModuleInit(): void {
-    if (this.store.mode === 'off') return;
+  async onModuleInit(): Promise<void> {
+    await this.queue.setGlobalConcurrency(1);
     this.timer = setInterval(() => void this.tick(), 30_000);
     this.timer.unref();
   }
-  onModuleDestroy(): void {
+  async onModuleDestroy(): Promise<void> {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
+    // FLAG: Drain scheduling before its clients close; the shared runtime owns the hard deadline.
+    await this.activeTick;
   }
 
-  async tick(): Promise<void> {
-    if (this.busy || this.stopping || this.store.mode === 'off') return;
-    this.busy = true;
+  tick(): Promise<void> {
+    if (
+      this.activeTick ||
+      this.stopping ||
+      (this.store.mode === 'off' && Date.now() < this.nextPurgeAt)
+    )
+      return Promise.resolve();
+    this.activeTick = this.runTick().finally(() => {
+      this.activeTick = null;
+    });
+    return this.activeTick;
+  }
+
+  private async runTick(): Promise<void> {
     let token: string | null = null;
     try {
       token = await this.locks.acquireLock('message-retention:scheduler:v1', 25_000);
       if (!token) return;
+      if (!this.stopping && Date.now() >= this.nextPurgeAt) {
+        await this.store.purge();
+        this.nextPurgeAt = Date.now() + 60_000;
+      }
+      if (this.stopping || this.store.mode === 'off') return;
       const decision = await this.governor.decide({
         component: MESSAGE_RETENTION_QUEUE,
         sourceTag: MAX_API_SOURCE_TAGS.MESSAGE_RETENTION,
@@ -57,21 +79,38 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
         MESSAGE_RETENTION_QUEUE_LIMIT - Object.values(counts).reduce((a, b) => a + b, 0),
       );
       if (available) {
+        const jobs = await this.queue.getJobs(
+          ['wait', 'active', 'delayed', 'prioritized'],
+          0,
+          MESSAGE_RETENTION_QUEUE_LIMIT - 1,
+        );
+        const occupied = new Set(jobs.map((job) => job.id));
+        // FLAG: Fixed job IDs enforce the queue ceiling even if a producer loses its lease.
+        // Drain legacy chat-keyed jobs before switching to slot admission.
+        if (jobs.some((job) => !MESSAGE_RETENTION_SLOT_IDS.includes(job.id ?? ''))) return;
+        const freeSlots = MESSAGE_RETENTION_SLOT_IDS.filter((id) => !occupied.has(id)).slice(
+          0,
+          available,
+        );
         const policies = await this.prisma.messageRetentionPolicy.findMany({
-          where: { nextRunAt: { lte: new Date() } },
+          where: { ...this.store.schedulingFilter(), nextRunAt: { lte: new Date() } },
           orderBy: [{ nextRunAt: 'asc' }, { chatId: 'asc' }],
-          take: available,
+          take: freeSlots.length,
           select: { chatId: true, nextRunAt: true, revision: true },
         });
-        for (const policy of policies) {
-          if (this.stopping) break;
-          if ((await this.locks.getString('message-retention:scheduler:v1')) !== token) break;
+        const deadline = Date.now() + 15_000;
+        for (const [index, policy] of policies.entries()) {
+          const slot = freeSlots[index];
+          if (!slot) break;
+          if (this.stopping || Date.now() >= deadline) break;
+          if (!(await this.locks.renewLock('message-retention:scheduler:v1', token, 25_000))) break;
           if (this.store.allows(policy.chatId))
             await this.queue.add(
               'chat',
               { chatId: policy.chatId },
               {
-                jobId: createHash('sha256').update(policy.chatId).digest('hex'),
+                jobId: slot,
+                deduplication: { id: createHash('sha256').update(policy.chatId).digest('hex') },
                 attempts: 1,
                 removeOnComplete: true,
                 removeOnFail: true,
@@ -87,13 +126,9 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
           });
         }
       }
-      if (Date.now() >= this.nextPurgeAt) {
-        await this.store.purge();
-        this.nextPurgeAt = Date.now() + 60_000;
-      }
     } catch (error: unknown) {
       this.logger.warn(
-        { err: error instanceof Error ? error.message : 'unknown' },
+        { errorType: error instanceof Error ? error.name : 'unknown' },
         'Message retention scheduler deferred',
       );
     } finally {
@@ -104,7 +139,6 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
           /* The bounded lease expires without an unsafe unconditional release. */
         }
       }
-      this.busy = false;
     }
   }
 
@@ -117,8 +151,8 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
       sourceTag: MAX_API_SOURCE_TAGS.MESSAGE_RETENTION,
     });
     if (decision.action === 'pause') {
-      await this.prisma.messageRetentionPolicy.update({
-        where: { chatId },
+      await this.prisma.messageRetentionPolicy.updateMany({
+        where: { chatId, revision: policy.revision },
         data: { lastStatus: 'paused', nextRunAt: new Date(Date.now() + decision.retryAfterMs) },
       });
       return;
@@ -127,12 +161,16 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
       await this.locks.setStringWithTtl('maxapi:message-retention:slow:v1', '1', 60);
     await this.store.resumeAdmission(chatId);
     const candidates = await this.store.dueCandidates(policy);
+    const inactive = candidates.filter(
+      (candidate) => !policy.enabled || candidate.activationId !== policy.activationId,
+    );
+    await this.store.cancelInactive(inactive);
     const limit = decision.action === 'slow' ? 2 : 5;
     let processed = 0;
+    let runStatus = 'running';
     for (const candidate of candidates) {
       if (this.stopping) break;
       if (!policy.enabled || candidate.activationId !== policy.activationId) {
-        await this.store.finish(candidate, 'cancelled');
         continue;
       }
       if (candidate.shadowOnly) {
@@ -145,9 +183,10 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
           where: {
             chatId,
             messageId: candidate.messageId,
+            activationId: candidate.activationId,
             status: { in: ['pending', 'retry'] },
           },
-          data: { status: 'retry', nextAttemptAt: new Date(currentDueAt) },
+          data: { status: 'pending' },
         });
         continue;
       }
@@ -207,15 +246,18 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
         where: {
           chatId,
           messageId: candidate.messageId,
+          activationId: candidate.activationId,
           status: { in: ['pending', 'retry'] },
         },
         data: { status: 'retry', nextAttemptAt: new Date(Date.now() + delayMs) },
       });
-      await this.prisma.messageRetentionPolicy.update({
-        where: { chatId },
-        data: { lastStatus: status },
-      });
+      const severity = ['running', 'delayed', 'no_access', 'error'];
+      if (severity.indexOf(status) > severity.indexOf(runStatus)) runStatus = status;
     }
+    await this.prisma.messageRetentionPolicy.updateMany({
+      where: { chatId, revision: policy.revision },
+      data: { lastStatus: runStatus },
+    });
     await this.store.scheduleNext(chatId);
   }
 }

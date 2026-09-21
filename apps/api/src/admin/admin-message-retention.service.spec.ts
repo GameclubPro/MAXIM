@@ -45,6 +45,12 @@ function setup() {
 }
 
 describe('chat retention settings boundary', () => {
+  it('rejects malformed identifiers before access lookups or database reads', async () => {
+    const { service, prisma, access } = setup();
+    await expect(service.read('not-a-chat', user)).rejects.toMatchObject({ status: 400 });
+    expect(access.assertChatAdminAccess).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+  });
   it('authorizes every read without scanning message history', async () => {
     const { service, access } = setup();
     await expect(service.read('-1', user)).resolves.toMatchObject({

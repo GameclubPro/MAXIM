@@ -22,7 +22,10 @@ function setup() {
   };
   const prisma = {
     moderationDeleteIntent: { findUnique: jest.fn().mockResolvedValue(intent) },
-    messageRetentionCandidate: { findUnique: jest.fn().mockResolvedValue(candidate) },
+    messageRetentionCandidate: {
+      findUnique: jest.fn().mockResolvedValue(candidate),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     chat: { findUnique: jest.fn().mockResolvedValue({ entityType: 'CHAT' }) },
   };
   const max = {
@@ -46,6 +49,37 @@ function setup() {
 }
 
 describe('retention destructive boundary', () => {
+  afterEach(() => jest.useRealTimers());
+  it('does not reuse an expired allowed author after an empty refresh', async () => {
+    jest.useFakeTimers();
+    const { guard, max } = setup();
+    await guard.assertAllowed('i1', 'bot');
+    jest.advanceTimersByTime(30_001);
+    max.getChatMembersAccess.mockResolvedValue(new Map());
+    await expect(guard.assertAllowed('i1', 'bot')).rejects.toMatchObject({ disposition: 'retry' });
+    expect(max.getPinnedMessageId).toHaveBeenCalledTimes(1);
+  });
+  it('rejects a pin response that consumed its freshness window', async () => {
+    jest.useFakeTimers();
+    const { guard, max } = setup();
+    max.getPinnedMessageId.mockImplementation(async () => {
+      jest.advanceTimersByTime(5_001);
+      return null;
+    });
+    await expect(guard.assertAllowed('i1', 'bot')).rejects.toMatchObject({ disposition: 'retry' });
+  });
+  it('batches upcoming author checks using a bounded local lookup', async () => {
+    const { guard, max, prisma } = setup();
+    prisma.messageRetentionCandidate.findMany.mockResolvedValue([
+      { authorId: 'u2' },
+      { authorId: 'u1' },
+    ]);
+    await guard.assertAllowed('i1', 'bot');
+    expect(max.getChatMembersAccess).toHaveBeenCalledWith('-1', ['u1', 'u2'], expect.any(Object));
+    expect(prisma.messageRetentionCandidate.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 4 }),
+    );
+  });
   it('accepts verified old human messages and shares bounded remote snapshots', async () => {
     const { guard, max } = setup();
     await guard.assertAllowed('i1', 'bot');

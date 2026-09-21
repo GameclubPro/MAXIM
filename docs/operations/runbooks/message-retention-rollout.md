@@ -26,10 +26,13 @@ Keep the mode/cohort aligned across ingress, admin and `api-message-retention`.
 
 `api-message-retention` is a headless shared-image role with a two-connection pool,
 0.5 CPU, 512 MiB memory, one worker and a separate `message-retention` queue. The
-30-second scheduler admits at most 100 outstanding chat wakeups. PostgreSQL owns
+30-second scheduler admits at most 100 outstanding chat wakeups using fixed BullMQ
+slot IDs, native per-chat deduplication and global concurrency one. Legacy chat-keyed
+jobs drain before slot admission. PostgreSQL owns
 candidates and schedules; queue loss is recoverable. Each visit processes at most
 five deletions, reduced to two under governor slow pressure. Pause prevents new
-attempts. Scheduler/cleanup do not run immediately at startup.
+attempts. Database housekeeping continues in bounded batches when dispatch is off
+or MAX pressure pauses it. Scheduler/cleanup do not run immediately at startup.
 
 Every retention MAX call uses `background` and source `message_retention`. The
 distributed source budget is two requests/second across all tokens and processes,
@@ -43,7 +46,15 @@ ten-minute window. A full shard can conservatively pause before the fleet total 
 full. Paused intake is visible, counts skipped arrivals and resumes with a new date;
 already accepted candidates remain. Completing/replaying a task releases credit once.
 Terminal compact candidates and retention-only intents are purged after seven days
-in bounded batches; ordinary moderation history is unchanged.
+in bounded keyset batches; unresolved receipts retain their candidate and never block
+later pages. Cleanup locks owned, non-live intents before candidates, never ordinary
+moderation intents. Ordinary moderation history is unchanged.
+
+Opted-in admission uses three SQL statements: indexed eligibility, quota-before-policy
+locking, then atomic candidate/quota/audit changes. Inactive, historical and already
+recorded messages stop at the first statement. Never add MAX calls or remote awaits
+to the receipt transaction. Cached author evidence is discarded before refresh and
+both pin and author TTLs start at request dispatch, not response completion.
 
 Retention never appends a reason to an independently owned moderation intent. A
 normal moderation writer atomically removes the retention reason and takes ownership.
@@ -59,6 +70,9 @@ recovery remain visible and require operator review, not repeated blind deletion
 2. Run `npm run check`, `node --test scripts/message-retention-migration.test.mjs`, and
    `node apps/miniapp/test/message-retention.browser.mjs` with `MINIAPP_TEST_BASE_URL`
    pointing at an owned local mini app server.
+   `npm run test:retention-storage --workspace @maxim/api` executes the production SQL
+   on embedded PostgreSQL. With an explicit localhost `MAXIM_TEST_POSTGRES_URL`, the
+   same suite uses a disposable schema and concurrent clients; CI runs that variant.
 3. Before enabling capture, compare PostgreSQL/Redis load and webhook/moderation
    p95/p99 under matching traffic, including multi-bot mirrors and removal updates.
    Test 10,000/20,000 chats and two million pending records on a representative

@@ -29,6 +29,7 @@ import {
   type ManagedEntityLeaveGuard,
   type ManagedEntityNavigationContextValue,
 } from './managed-entity-navigation-context';
+import { combineManagedEntityLeaveGuards } from './managed-entity-leave-guards';
 
 export { useManagedEntityNavigation } from './managed-entity-navigation-context';
 export type { ManagedEntityLeaveGuard } from './managed-entity-navigation-context';
@@ -69,6 +70,7 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
   const location = useLocation();
   const navigate = useNavigate();
   const guardGetterRef = useRef<ManagedEntityGuardGetter | null>(null);
+  const leaveGuardsRef = useRef(new Set<ManagedEntityGuardGetter>());
   const pendingNavigationRef = useRef<PendingNavigation | null>(null);
   const restorePopDeltaRef = useRef<number | null>(null);
   const bypassNextPopRef = useRef(false);
@@ -157,11 +159,10 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
   }, []);
 
   const registerLeaveGuard = useCallback((getGuard: ManagedEntityGuardGetter) => {
-    guardGetterRef.current = getGuard;
+    leaveGuardsRef.current.add(getGuard);
+    guardGetterRef.current = () => combineManagedEntityLeaveGuards([...leaveGuardsRef.current]);
     return () => {
-      if (guardGetterRef.current === getGuard) {
-        guardGetterRef.current = null;
-      }
+      leaveGuardsRef.current.delete(getGuard);
     };
   }, []);
 
@@ -188,10 +189,7 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
 
   const requestNavigation = useCallback(
     (to: To, options?: NavigateOptions) =>
-      runOrQueueNavigation(
-        () => navigate(to, options),
-        readTargetPathname(to, location.pathname),
-      ),
+      runOrQueueNavigation(() => navigate(to, options), readTargetPathname(to, location.pathname)),
     [location.pathname, navigate, runOrQueueNavigation],
   );
 

@@ -72,6 +72,7 @@ import { ManualModerationService } from './manual-moderation.service';
 import { classifySettingsScreenAccessError } from './settings-screen-access.error';
 import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
 import { ReportViewService } from '../moderation/reports/report-view.service';
+import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 
 const NIGHT_MODE_TRANSITION_SETTING_KEYS = new Set<keyof ChatSettings>([
   'nightModeEnabled',
@@ -106,6 +107,7 @@ export class AdminSettingsService {
     @Optional() private readonly messageDuplicatePolicy?: MessageDuplicatePolicyService,
     @Optional() private readonly duplicateDiagnostics?: AdminDuplicateDiagnosticsService,
     @Optional() private readonly reports?: ReportViewService,
+    @Optional() private readonly retention?: MessageRetentionStore,
   ) {}
 
   async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false) {
@@ -141,7 +143,7 @@ export class AdminSettingsService {
       this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat'),
     );
 
-    const [settings, rules, headerBundle, domains] = await Promise.all([
+    const [settings, rules, headerBundle, domains, messageRetention] = await Promise.all([
       this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.getRules(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.managedEntitiesService.getChatHeaderWithBotSpeechPreviewProfile(chatId, user, {
@@ -150,6 +152,10 @@ export class AdminSettingsService {
       }),
       this.manualModerationService.getDomainAllowlistDetails(chatId, user, {
         skipAdminCheck: true,
+      }),
+      this.retention?.summary(chatId).catch(() => {
+        this.logger.warn('Message retention summary unavailable');
+        return undefined;
       }),
     ]);
     const [requiredSubscriptionChannels, duplicatePhotoPolicyMatrix] = await Promise.all([
@@ -174,6 +180,7 @@ export class AdminSettingsService {
           : 'OBSERVE';
 
     return chatSettingsScreenResponseSchema.parse({
+      ...(messageRetention ? { messageRetention } : {}),
       settings,
       reportsAvailable: this.reports?.available(chatId) ?? false,
       duplicatePhotoModerationMode: duplicatePhotoPolicy.moderationMode,

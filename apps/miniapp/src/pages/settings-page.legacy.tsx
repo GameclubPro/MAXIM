@@ -6905,7 +6905,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               }}
             />
 
-            <SettingsMessageRetentionSection key={chatId} api={api} chatId={chatId!} />
+            <SettingsMessageRetentionSection
+              key={chatId}
+              api={api}
+              chatId={chatId!}
+              initialSummary={settingsScreenQuery.data?.messageRetention}
+            />
 
             <SettingsNightSection
               api={api}

@@ -1,25 +1,32 @@
-import { lazy, Suspense, useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Clock } from 'iconoir-react';
-import type { MessageRetentionState } from '@maxim/contracts/settings';
+import type { MessageRetentionSummary } from '@maxim/contracts/settings';
 import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
 import type { ApiTransport } from '../../lib/api/transport';
 import { messageRetentionStatusLabels } from './settings-message-retention-model';
+import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
+import type { SettingsMessageRetentionEditorProps } from './settings-message-retention-editor';
 
-const Editor = lazy(() =>
-  import('./settings-message-retention-editor').then((module) => ({
-    default: module.SettingsMessageRetentionEditor,
-  })),
+const Editor = recoverableLazyNamedComponent<SettingsMessageRetentionEditorProps>(
+  () => import('./settings-message-retention-editor'),
+  'SettingsMessageRetentionEditor',
 );
 
 export function SettingsMessageRetentionSection({
   api,
   chatId,
+  initialSummary,
 }: {
   api: ApiTransport;
   chatId: string;
+  initialSummary?: MessageRetentionSummary;
 }) {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<MessageRetentionState | null>(null);
+  const [snapshot, setState] = useState<MessageRetentionSummary | null>(null);
+  const state =
+    snapshot && (!initialSummary || snapshot.revision >= initialSummary.revision)
+      ? snapshot
+      : initialSummary;
   return (
     <section
       className="settings-section settings-home-entry settings-home-entry--list"
@@ -39,7 +46,13 @@ export function SettingsMessageRetentionSection({
         />
       </div>
       {open ? (
-        <Suspense fallback={<p role="status">Загрузка настроек</p>}>
+        <Suspense
+          fallback={
+            <p role="status" aria-live="polite">
+              Загрузка настроек
+            </p>
+          }
+        >
           <Editor api={api} chatId={chatId} onClose={() => setOpen(false)} onSnapshot={setState} />
         </Suspense>
       ) : null}

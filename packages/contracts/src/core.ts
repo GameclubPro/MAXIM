@@ -35,6 +35,7 @@ import {
 import { booleanQueryFlagSchema, logsDashboardRangeSchema } from './dashboard-common.js';
 import * as dupe from './duplicate-settings.js';
 import { stopWordsPolicySchema } from './stop-words.js';
+import { messageRetentionSummarySchema } from './message-retention-summary.js';
 import {
   normalizeMessageLimitsBlockedWordCandidate,
   normalizeMessageLimitsBlockedDomainCandidate,
@@ -2657,6 +2658,7 @@ export const managedAutopostHubRuleDetailsSchema = managedAutopostHubRuleSummary
 export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRuleDetailsSchema>;
 
 export const chatSettingsScreenResponseSchema = z.object({
+  messageRetention: messageRetentionSummarySchema.optional(),
   settings: chatSettingsSchema,
   reportsAvailable: z.boolean().default(false),
   duplicatePhotoModerationMode: dupe.duplicatePhotoModerationModeSchema.default('OBSERVE'),
