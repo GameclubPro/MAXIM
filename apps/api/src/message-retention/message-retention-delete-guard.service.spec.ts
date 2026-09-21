@@ -50,6 +50,22 @@ function setup() {
 
 describe('retention destructive boundary', () => {
   afterEach(() => jest.useRealTimers());
+  it('never makes remote reads after the delete transport slot has been reserved', async () => {
+    jest.useFakeTimers();
+    const { guard, max } = setup();
+    await expect(guard.assertAllowed('i1', 'bot', 'dispatch')).rejects.toMatchObject({
+      disposition: 'retry',
+    });
+    expect(max.getChatMembersAccess).not.toHaveBeenCalled();
+    await guard.assertAllowed('i1', 'bot', 'prepare');
+    await guard.assertAllowed('i1', 'bot', 'dispatch');
+    jest.advanceTimersByTime(5_001);
+    await expect(guard.assertAllowed('i1', 'bot', 'dispatch')).rejects.toMatchObject({
+      disposition: 'retry',
+    });
+    expect(max.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(max.getPinnedMessageId).toHaveBeenCalledTimes(1);
+  });
   it('does not reuse an expired allowed author after an empty refresh', async () => {
     jest.useFakeTimers();
     const { guard, max } = setup();

@@ -4,6 +4,9 @@ Scope: the 24/48-hour Major chat module, its shared deletion boundary, and its m
 
 ## Findings And Work
 
+- [x] P1: remote guard reads could occur after reservation of the DELETE transport slot. Prepare remote evidence first; transport-final checks are database/cache-only and defer when evidence expires.
+- [x] CI: the participant-report test double used a read/create upsert under concurrent commands. Use atomic insert-if-absent operations to match the production deletion ledger's behavior; report runtime logic is unchanged.
+
 - [x] P1: expired author-cache entries can survive an inconclusive refresh. Reject unknown or expired evidence, including slow pin/member reads.
 - [x] P1: stale worker policy snapshots can cancel a newly enabled activation. Fence settlement and rescheduling against current database authority.
 - [x] P1: garbage collection can remove the candidate while preserving an ambiguous intent, orphaning its recovery. Retain both together and prevent blocked receipts from starving bounded cleanup.

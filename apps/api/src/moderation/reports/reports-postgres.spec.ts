@@ -57,28 +57,30 @@ describePostgres('PostgreSQL participant reports', () => {
     enqueueCurrentIntentWakeupStrict: jest.fn(),
     ensureIntent: jest.fn(async (input) => {
       const id = `intent:${input.chatId}:${input.messageId}`;
-      await prisma.moderationDeleteIntent.upsert({
-        where: { id },
-        update: {},
-        create: {
-          id,
-          chatId: input.chatId,
-          messageId: input.messageId,
-          subjectUserId: input.subjectUserId,
-          retryUntilAt: input.retryUntilAt ?? new Date(Date.now() + REPORT_DAY_MS),
-        },
+      await prisma.moderationDeleteIntent.createMany({
+        skipDuplicates: true,
+        data: [
+          {
+            id,
+            chatId: input.chatId,
+            messageId: input.messageId,
+            subjectUserId: input.subjectUserId,
+            retryUntilAt: input.retryUntilAt ?? new Date(Date.now() + REPORT_DAY_MS),
+          },
+        ],
       });
-      await prisma.moderationDeleteIntentReason.upsert({
-        where: { intentId_reasonKey: { intentId: id, reasonKey: input.reasonKey } },
-        update: {},
-        create: {
-          id: randomUUID(),
-          intentId: id,
-          reasonKey: input.reasonKey,
-          ruleCode: input.ruleCode,
-          userId: input.subjectUserId,
-          metadata: input.event?.metadata ?? {},
-        },
+      await prisma.moderationDeleteIntentReason.createMany({
+        skipDuplicates: true,
+        data: [
+          {
+            id: randomUUID(),
+            intentId: id,
+            reasonKey: input.reasonKey,
+            ruleCode: input.ruleCode,
+            userId: input.subjectUserId,
+            metadata: input.event?.metadata ?? {},
+          },
+        ],
       });
       return { intentId: id, rollout: 'execute' as const, status: 'PENDING' as const };
     }),

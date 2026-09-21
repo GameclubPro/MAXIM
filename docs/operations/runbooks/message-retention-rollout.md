@@ -55,6 +55,9 @@ locking, then atomic candidate/quota/audit changes. Inactive, historical and alr
 recorded messages stop at the first statement. Never add MAX calls or remote awaits
 to the receipt transaction. Cached author evidence is discarded before refresh and
 both pin and author TTLs start at request dispatch, not response completion.
+Remote guard reads run before the DELETE slot is reserved. The final transport guard
+only rechecks database authority and unexpired cached evidence; expiry defers the
+attempt instead of adding nested MAX requests after reservation.
 
 Retention never appends a reason to an independently owned moderation intent. A
 normal moderation writer atomically removes the retention reason and takes ownership.

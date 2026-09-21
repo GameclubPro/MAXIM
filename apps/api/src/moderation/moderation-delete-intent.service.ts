@@ -1950,6 +1950,10 @@ export class ModerationDeleteIntentService {
             profanityVerified = textProof.profanityVerified;
             commercialVerifiedReasonKeys = textProof.commercialVerifiedReasonKeys;
           };
+          // FLAG: Retention's remote checks must finish before reserving the DELETE
+          // transport slot. Final guards may only revalidate cached evidence and DB authority.
+          if (intent.retentionOwned)
+            await this.runDeletePreDispatchGuards(intent, botId, options, undefined, 'prepare');
           await this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
             immediate: true,
             beforeImmediateDeleteMutation,
@@ -2702,13 +2706,14 @@ export class ModerationDeleteIntentService {
     botId: string,
     options?: ModerationDeleteIntentAttemptOptions,
     finalDispatchLeaseToken?: string,
+    retentionPhase: 'prepare' | 'dispatch' = 'dispatch',
   ): Promise<{ profanityVerified: boolean; commercialVerifiedReasonKeys: string[] }> {
     try {
       let profanityVerified = false;
       let commercialVerifiedReasonKeys: string[] = [];
       if (intent.retentionOwned) {
         if (!this.messageRetentionGuard) throw new Error('Retention delete guard unavailable');
-        await this.messageRetentionGuard.assertAllowed(intent.id, botId);
+        await this.messageRetentionGuard.assertAllowed(intent.id, botId, retentionPhase);
         return { profanityVerified, commercialVerifiedReasonKeys };
       }
       // FLAG: A remote DELETE must always have a durable reason at the exact dispatch boundary.

@@ -8,6 +8,7 @@ import { RedisCounterService } from '../moderation/redis-counter.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { MessageRetentionStore } from './message-retention-store.service';
+import { MessageRetentionGuardError } from './message-retention-delete-guard.service';
 import {
   MESSAGE_RETENTION_QUEUE,
   MESSAGE_RETENTION_QUEUE_LIMIT,
@@ -238,9 +239,11 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
             : outcome === 'FAILED_TERMINAL'
               ? 'error'
               : 'delayed';
-      } catch {
-        status = 'error';
-        delayMs = 5 * 60_000;
+      } catch (error) {
+        const deferred =
+          error instanceof MessageRetentionGuardError && error.disposition === 'retry';
+        status = deferred ? 'delayed' : 'error';
+        delayMs = deferred ? delayMs : 5 * 60_000;
       }
       await this.prisma.messageRetentionCandidate.updateMany({
         where: {

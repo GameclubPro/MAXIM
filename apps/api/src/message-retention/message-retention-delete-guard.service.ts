@@ -29,7 +29,11 @@ export class MessageRetentionDeleteGuard {
     private readonly governor: BackgroundRuntimeGovernorService,
   ) {}
 
-  async assertAllowed(intentId: string, botId: string): Promise<void> {
+  async assertAllowed(
+    intentId: string,
+    botId: string,
+    phase: 'prepare' | 'dispatch' = 'prepare',
+  ): Promise<void> {
     const binding = await this.loadBinding(intentId);
     const { candidate, policy } = binding;
     const decision = await this.governor.decide({
@@ -41,6 +45,8 @@ export class MessageRetentionDeleteGuard {
     const cacheKey = `${botId}:${candidate.chatId}`;
     let author = this.authors.get(`${cacheKey}:${candidate.authorId}`);
     if (!author || Date.now() - author.at >= 30_000) {
+      if (phase === 'dispatch')
+        this.retry('Author verification expired while waiting for dispatch');
       const nextAuthors = await this.prisma.messageRetentionCandidate.findMany({
         where: {
           chatId: candidate.chatId,
@@ -62,6 +68,7 @@ export class MessageRetentionDeleteGuard {
     if (!author.allowed) this.skip('Protected author');
     let pin = this.pins.get(cacheKey);
     if (!pin || Date.now() - pin.at >= 5_000) {
+      if (phase === 'dispatch') this.retry('Pin verification expired while waiting for dispatch');
       const startedAt = Date.now();
       const id = await this.max.getPinnedMessageId(candidate.chatId, options);
       pin = { id, at: startedAt };

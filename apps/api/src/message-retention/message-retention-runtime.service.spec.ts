@@ -1,4 +1,5 @@
 import { MessageRetentionRuntime } from './message-retention-runtime.service';
+import { MessageRetentionGuardError } from './message-retention-delete-guard.service';
 
 function setup() {
   const policy = {
@@ -72,6 +73,17 @@ function setup() {
   return { runtime, prisma, store, deletes, governor, locks, queue, policy, candidate, intent };
 }
 describe('retention runtime isolation', () => {
+  it('presents expected verification deferrals as delayed work, not a broken module', async () => {
+    const { runtime, deletes, prisma } = setup();
+    deletes.attemptIntent.mockRejectedValue(
+      new MessageRetentionGuardError('retry', 'Verification expired'),
+    );
+    await runtime.process('-1');
+    expect(prisma.messageRetentionPolicy.updateMany).toHaveBeenLastCalledWith({
+      where: { chatId: '-1', revision: 2 },
+      data: { lastStatus: 'delayed' },
+    });
+  });
   afterEach(() => jest.useRealTimers());
   it('resets an obsolete error status after a successful run with revision fencing', async () => {
     const { runtime, prisma, store } = setup();
