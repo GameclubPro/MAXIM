@@ -13,14 +13,14 @@ Do not replay old jobs, clear claims, change chat settings or mutate participant
 ## Plan
 
 1. Completed: reproduce evidence loss in resized image hashes, cross-message photo-ID cache
-   reuse and case-sensitive link matching. Extend the existing unit and real-Redis flow tests.
+   reuse, case-sensitive links and STRICT numeric stripping. Extend unit and real-Redis tests.
 2. Completed: hash native-size decoded pixels, isolate cached proofs by message/revision/source,
-   and preserve navigation identity in value matching. Version changed evidence so old cached
+   and preserve navigation/numeric identity in text matching. Version changed evidence so old cached
    hashes and queued bindings cannot authorize deletion under the new policy.
-3. In progress: verify retries, edits, independent albums, author scope, allowed repeats, final
+3. Completed: verify retries, edits, independent albums, author scope, allowed repeats, final
    guards and resource limits. Run full API and staged impact validation.
-4. Pending: exact-SHA CI/CodeQL, guarded shared-API-only release, strict smokes and a bounded
-   read-only observation. No migration or static deployment is anticipated.
+4. Completed: exact-SHA CI/CodeQL, guarded shared-API-only release, strict smokes and a bounded
+   read-only observation. No migration or static deployment was needed.
 
 ## Initial Operational Evidence
 
@@ -72,14 +72,61 @@ The first staged commit was `c41aaa57db79c079850d259f28955ac37d693de9` (13,115 A
 Before any deployment, the additional STRICT numeric-evidence defect above was reproduced and
 added to the release. Its final staged validation and exact-SHA CI must supersede that first commit.
 
+The final runtime commit is `333fa659f3aba398082fe3cf0e8ce53654fbc743`. Its focused numeric/message
+run passed 15 suites / 247 tests. Staged verification passed all 594 API suites / 13,129 tests,
+typecheck, build, 535 tooling tests, lint, refactor guards, documentation and preflight. Local
+environment-dependent skips remain the same; PostgreSQL integration is delegated to exact-SHA CI.
+
 A local maximum-size synthetic 40-million-pixel PNG took 140 ms to fingerprint; peak RSS of the
 isolated process including fixture creation was 265 MiB. This is a resource smoke, not a real-world
 latency benchmark or proof of worst-case decoder performance.
+Two successive 40-million-pixel images under the default 80-million-pixel album limit took
+300 ms with peak RSS 414 MiB in a separate synthetic process. The third image was rejected
+with `album_decode_budget_exceeded`; no configured resource ceiling was raised.
 
 The completed 12:35:34Z-12:37:34Z pre-release window had eight samples with complete coverage,
 healthy readiness/queue/fleet checks and zero restart increases. Oldest-queue lag was
 0.227-1.256 seconds. All samples were in automatic stabilization, so the window is not labelled
 normal. The read-only monitor completed and removed its transient full log.
+
+## Delivery And Post-Release Observation
+
+Release: `release-20260922T131540Z-333fa659f3ab`, exact runtime source
+`333fa659f3aba398082fe3cf0e8ce53654fbc743`. Required and CodeQL passed for this SHA, including
+PostgreSQL races, the separate Redis lane (17 suites / 194 tests), all image builds and native OCR
+smokes. The default API CI lane passed 584 suites / 13,029 tests; its environment-dependent tests
+run in separate lanes, so those totals must not be added together as distinct tests.
+
+The plan selected only `api-shared`. The verified CI image was preloaded through checksum,
+protected image identity and archive-plus-reserve capacity checks because the host disk was
+92% used. Deployment reused it without building, weakening a disk guard or host-wide cleanup.
+All 14 shared API roles and the isolated OCR sandbox were updated. Both static components,
+PostgreSQL and Redis were not recreated; Prisma reported no pending migrations.
+
+The normal queue fence protected active/detached work and the mixed-version interval. Readiness
+temporarily returned 503 while the accumulated queue drained: the recorded peak age was 249
+seconds, then 95 seconds in a bounded readiness read. No readiness timeout was bypassed or
+extended. Local ingress/admin live/ready, public live, OCR isolation/UDS/shadow and internal OCR
+readiness smokes passed before the release manifest was committed. Message authority remains
+permanent full, revision 2, all-enabled-chats; no runtime control or participant setting changed.
+
+The completed 13:21:58Z-13:26:58Z observation has 20 samples and complete coverage. Readiness,
+queue metrics/fence and exact API topology had no failing or unknown samples; all roles had zero
+restarts. Sampled oldest-queue lag was 0-16.814 seconds, median 0.489 and p95 8.796, with one
+warning sample and no critical samples. These describe sampled queue age, not request latency.
+The whole window remains degraded/stabilizing, not uniformly healthy. The 13:28:31Z follow-up
+confirmed healthy DB/Redis and readiness, lag 0.801-1.304 seconds, still in automatic stabilization.
+
+Host load remained elevated (load/core 1.176-1.57), with existing disk/swap warnings. A single
+Docker sample showed background moderation at 55.98% of one CPU and 1.208 GiB, enqueue at 28.67%
+and 459 MiB, and action at 49.50% and 508 MiB. These are point samples without a corresponding
+pre-release per-role baseline; do not claim that the new algorithm caused or resolved host load.
+
+A bounded background/action log sample contained three valid diagnostic summaries, 115 completed
+worker attempts, 75 baseline verifications and one terminal attempt. These are overlapping attempt
+counts, not confirmed deletions or a success rate. The monitor removed its transient full logs;
+the disposable loopback Redis and downloaded local test binaries were removed. No participant
+message was created/deleted for a live smoke and no historical sanctions or claims were replayed.
 
 ## Safety And Remaining Questions
 
@@ -91,3 +138,8 @@ normal. The read-only monitor completed and removed its transient full log.
 - A platform photo ID is a locator, not independent proof of equal content across messages.
 - Identify the reported incident only with the affected chat, message/time and saved rule
   evidence. Avoid unbounded production content searches or exposing personal data in reports.
+- Current administrator diagnostics describe bounded dispatch outcomes, not a linked original
+  message explaining equality. A future evidence view needs an explicit bounded retention/access
+  contract; adding raw contents or broad historical queries to diagnostics is not an acceptable fix.
+- Approximate administrator-selected matching remains heuristic, not semantic understanding.
+  Unsupported high-bit-depth images, partial albums and unverified media remain fail-open.
