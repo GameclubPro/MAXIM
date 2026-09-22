@@ -94,6 +94,46 @@ function createService(cache: Array<PhotoFingerprint | null>) {
 }
 
 describe('PhotoDuplicateAnalysisService', () => {
+  it.each(['message', 'chat', 'revision', 'source'] as const)(
+    'never reuses a photo-ID proof across a different %s',
+    async (change) => {
+      const s = createService([]);
+      const cache = new Map<string, PhotoFingerprint>();
+      s.historyStore.getCachedPhotoFingerprints.mockImplementation(async (ids: string[]) => ({
+        kind: 'available',
+        fingerprints: ids.map((id) => cache.get(id) ?? null),
+      }));
+      s.historyStore.cachePhotoFingerprints.mockImplementation(
+        async (entries: Array<{ photoId: string; fingerprint: PhotoFingerprint }>) => {
+          entries.forEach((entry) => cache.set(entry.photoId, entry.fingerprint));
+          return true;
+        },
+      );
+      const first = album([
+        { source: 'direct', photoId: 'same-platform-id', downloadUrl: 'https://i.oneme.ru/first' },
+      ]);
+      await s.service.fingerprintAlbum(first, 3600);
+      const next = {
+        ...first,
+        ...(change === 'message' ? { messageId: 'message-2' } : {}),
+        ...(change === 'chat' ? { chatId: 'chat-2' } : {}),
+        ...(change === 'revision' ? { createdAtMs: first.createdAtMs + 1 } : {}),
+        images: first.images.map((image) => ({
+          ...image,
+          ...(change === 'source' ? { downloadUrl: 'https://i.oneme.ru/other' } : {}),
+        })),
+      };
+      s.fingerprintService.fingerprint.mockResolvedValue(fingerprint('d'));
+      expect(await s.service.fingerprintAlbum(next, 3600)).toMatchObject({
+        kind: 'complete',
+        fingerprint: { images: [fingerprint('d')] },
+      });
+      expect(s.downloader.download).toHaveBeenCalledTimes(2);
+      await s.service.fingerprintAlbum(next, 3600);
+      expect(s.downloader.download).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('retains cached positions when another album member has no photo ID', async () => {
     const cached = fingerprint('a');
     const s = createService([cached]);
@@ -108,11 +148,13 @@ describe('PhotoDuplicateAnalysisService', () => {
       kind: 'complete',
       fingerprint: { images: [s.generated, cached] },
     });
-    expect(s.historyStore.getCachedPhotoFingerprints).toHaveBeenCalledWith(['cached']);
+    expect(s.historyStore.getCachedPhotoFingerprints).toHaveBeenCalledWith([
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+    ]);
     expect(s.downloader.download).toHaveBeenCalledTimes(1);
     expect(s.downloader.download).toHaveBeenCalledWith('https://i.oneme.ru/new');
   });
-  it('uses the photo-id fingerprint cache without downloading bytes', async () => {
+  it('reuses a message-scoped photo proof without downloading bytes again', async () => {
     const first = fingerprint('a');
     const second = fingerprint('b');
     const { service, downloader, historyStore } = createService([first, second]);
@@ -171,7 +213,7 @@ describe('PhotoDuplicateAnalysisService', () => {
 
     expect(downloader.download).toHaveBeenCalledTimes(1);
     expect(historyStore.cachePhotoFingerprints).toHaveBeenCalledWith(
-      [{ photoId: 'photo-2', fingerprint: generated }],
+      [{ photoId: expect.stringMatching(/^[a-f0-9]{64}$/), fingerprint: generated }],
       7_201,
     );
     expect(JSON.stringify(historyStore.cachePhotoFingerprints.mock.calls[0]?.[0])).not.toContain(

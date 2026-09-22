@@ -195,6 +195,7 @@ export class PhotoFingerprintService implements OnModuleInit {
 
     if (
       !isSupportedPhotoFormat(metadata.format) ||
+      metadata.depth !== 'uchar' ||
       (options.expectedFormat && !formatsAreCompatible(options.expectedFormat, metadata.format))
     ) {
       throw new PhotoFingerprintRejectedError('unsupported_image');
@@ -227,22 +228,23 @@ export class PhotoFingerprintService implements OnModuleInit {
       throw new PhotoFingerprintRejectedError('album_decode_budget_exceeded');
     }
 
-    const normalized = await normalizePhotoImage(image);
-    const { data, info } = normalized;
-
-    if (
-      info.width !== NORMALIZED_IMAGE_SIZE ||
-      info.height !== NORMALIZED_IMAGE_SIZE ||
-      info.channels !== 3
-    ) {
-      throw new Error('Photo normalization returned an unexpected pixel layout');
-    }
+    // FLAG: Thumbnail resizing/white flattening erase real differences. Exact authority needs
+    // native dimensions and alpha; reject higher bit depths above instead of quantizing them.
+    const canonicalHash = await hashExactPhotoImage(image.clone());
 
     // FLAG: Production exact-image comparison never initializes or computes perceptual hashes.
     // Zero-quality placeholders preserve the retained cache envelope without granting similarity.
     let pdqHash = '0'.repeat(64);
     let pdqQuality = 0;
     if (!this.canonicalOnly) {
+      const { data, info } = await normalizePhotoImage(image);
+      if (
+        info.width !== NORMALIZED_IMAGE_SIZE ||
+        info.height !== NORMALIZED_IMAGE_SIZE ||
+        info.channels !== 3
+      ) {
+        throw new Error('Photo normalization returned an unexpected pixel layout');
+      }
       await initializePhotoFingerprintRuntime();
       const pixels = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
       const pdq = PDQ.hash({ data: pixels, width: info.width, height: info.height, channels: 3 });
@@ -251,22 +253,30 @@ export class PhotoFingerprintService implements OnModuleInit {
       if (!/^[0-9a-f]{64}$/.test(pdqHash)) throw new Error('PDQ returned an invalid fingerprint');
     }
 
-    const canonicalHash = createHash('sha256')
-      .update(PHOTO_FINGERPRINT_ALGORITHM_VERSION)
-      .update('\0')
-      .update(String(info.width))
-      .update('x')
-      .update(String(info.height))
-      .update('\0')
-      .update(data)
-      .digest('hex');
-
     return {
       algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
       canonicalHash,
       pdqHash,
       pdqQuality,
     };
+  }
+}
+
+async function hashExactPhotoImage(image: ReturnType<typeof sharp>): Promise<string> {
+  try {
+    const { data, info } = await image
+      .rotate()
+      .toColourspace('srgb')
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    if (info.channels !== 4) throw new Error('Unexpected exact photo pixel layout');
+    return createHash('sha256')
+      .update(`${PHOTO_FINGERPRINT_ALGORITHM_VERSION}\0${info.width}x${info.height}x4\0`)
+      .update(data)
+      .digest('hex');
+  } catch (error: unknown) {
+    throw new PhotoFingerprintRejectedError('unsupported_image', { cause: error });
   }
 }
 

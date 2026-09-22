@@ -82,10 +82,49 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await history.stillMatches(chatId, result!.binding)).toBe(true);
   });
 
+  it.each(['Path', '?id=Token', '#Section'])(
+    'does not merge case-sensitive link destinations (%s) in CUSTOM mode',
+    async (suffix) => {
+      const override = {
+        settings: duplicateSettings({
+          duplicateDetectionPreset: 'CUSTOM',
+          duplicateIgnoreLinksEnabled: true,
+        }),
+      };
+      await observe('original', 0, `First offer https://example.org/${suffix}`, override);
+      expect(
+        await observe(
+          'different',
+          100,
+          `Another offer https://example.org/${suffix.toLowerCase()}`,
+          override,
+        ),
+      ).toBeNull();
+      expect(
+        (await observe('repeat', 200, `Third offer https://example.org/${suffix}`, override))?.hit
+          .fingerprintType,
+      ).toBe('link');
+    },
+  );
+
   it('does not reuse observations from a prior rollout revision for new sanctions', async () => {
     await observe('a', 0);
     expect(await observe('b', 100, 'a', { controlRevision: 2 })).toBeNull();
     expect((await observe('c', 200, 'a', { controlRevision: 2 }))?.hit.count).toBe(1);
+  });
+
+  it('preserves plain-text destinations in CUSTOM near matching', async () => {
+    const override = {
+      settings: duplicateSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateNearMatchEnabled: true,
+      }),
+    };
+    const prefix = 'Comfortable swimming lessons available every weekday for families';
+    await observe('original', 0, `${prefix} https://example.org/Offer?id=Token`, override);
+    expect(
+      await observe('different', 100, `${prefix} https://example.org/offer?id=token`, override),
+    ).toBeNull();
   });
 
   const imageInput = () => ({

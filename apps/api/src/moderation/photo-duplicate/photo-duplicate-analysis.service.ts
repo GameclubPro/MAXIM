@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { LogicalPhotoAlbum } from './photo-attachment-extractor';
 import {
   createPhotoAlbumFingerprint,
@@ -183,7 +184,9 @@ export class PhotoDuplicateAnalysisService {
   private async readCachedFingerprints(
     album: LogicalPhotoAlbum,
   ): Promise<Array<PhotoFingerprint | null>> {
-    const photoIds = album.images.flatMap((image) => (image.photoId ? [image.photoId] : []));
+    const photoIds = album.images.flatMap((image) =>
+      image.photoId ? [this.cacheIdentity(album, image)] : [],
+    );
     if (photoIds.length === 0) {
       return album.images.map(() => null);
     }
@@ -206,7 +209,7 @@ export class PhotoDuplicateAnalysisService {
     const entries = new Map<string, PhotoFingerprint>();
     album.images.forEach((image, index) => {
       if (image.photoId && !cached[index] && fingerprints[index]) {
-        entries.set(image.photoId, fingerprints[index]);
+        entries.set(this.cacheIdentity(album, image), fingerprints[index]);
       }
     });
     if (entries.size === 0) {
@@ -217,5 +220,23 @@ export class PhotoDuplicateAnalysisService {
       Array.from(entries, ([photoId, fingerprint]) => ({ photoId, fingerprint })),
       ttlSeconds,
     );
+  }
+
+  private cacheIdentity(album: LogicalPhotoAlbum, image: LogicalPhotoAlbum['images'][number]) {
+    // FLAG: A platform ID cannot prove equality across messages. Reuse only this verified
+    // message/revision/source; persist the digest, never the source URL or its credentials.
+    return createHash('sha256')
+      .update(
+        JSON.stringify([
+          'photo-proof-v1',
+          album.chatId,
+          album.senderId,
+          album.messageId,
+          album.createdAtMs,
+          image.photoId,
+          image.downloadUrl,
+        ]),
+      )
+      .digest('hex');
   }
 }

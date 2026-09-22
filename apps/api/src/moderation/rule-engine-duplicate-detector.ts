@@ -343,6 +343,13 @@ export class RuleEngineDuplicateDetector {
     };
 
     const navigationIdentityKeys = this.resolveNavigationIdentityKeys(navigationTargets);
+    if (navigationTargets === undefined) {
+      navigationIdentityKeys.push(
+        ...this.extractNormalizedLinks(rawText)
+          .map((link) => `link:${link}`)
+          .sort(),
+      );
+    }
     push(
       'exact',
       this.buildTextFingerprint(normalizeDuplicateText(rawText), navigationIdentityKeys),
@@ -360,6 +367,7 @@ export class RuleEngineDuplicateDetector {
         push('phone', phone);
       }
     }
+    if (!config.ignoreLinks && !config.ignorePhones && !config.nearMatch) return fingerprints;
 
     // FLAG: Approximate text must not erase a structured destination or hidden button action.
     // Value-only CUSTOM matching above is an explicit, separate administrator choice.
@@ -370,18 +378,21 @@ export class RuleEngineDuplicateDetector {
           target.origins.some((origin) => origin.carrier !== 'plain_text'),
       ),
     );
+    const approximateIdentityKeys = config.ignoreLinks
+      ? structuredIdentityKeys
+      : navigationIdentityKeys;
 
     if (config.ignoreLinks || config.ignorePhones) {
       const content = this.normalizeContentFingerprint(rawText, config);
       if (this.hasSufficientApproximateContent(content)) {
-        push('content', this.buildTextFingerprint(content, structuredIdentityKeys));
+        push('content', this.buildTextFingerprint(content, approximateIdentityKeys));
       }
     }
 
     if (config.nearMatch) {
       const near = this.buildNearDuplicateFingerprint(rawText, config);
       if (near) {
-        push('near', this.buildTextFingerprint(near, structuredIdentityKeys));
+        push('near', this.buildTextFingerprint(near, approximateIdentityKeys));
       }
     }
 
@@ -398,7 +409,7 @@ export class RuleEngineDuplicateDetector {
     return this.buildFingerprints(rawText, settings, navigationTargets).map((fingerprint) => {
       // FLAG: Never count old lossy fingerprints under the corrected comparison policy.
       const hash = createHash('sha256')
-        .update('text-v2\0')
+        .update('text-v3\0')
         .update(fingerprint.value)
         .digest('hex')
         .slice(0, 20);

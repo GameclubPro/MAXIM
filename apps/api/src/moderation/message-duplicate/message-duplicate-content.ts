@@ -17,6 +17,7 @@ export type DuplicateMediaSource = {
 };
 
 export type DuplicateMessageContent = {
+  rawText: string;
   text: string;
   navigation: string[];
   navigationTargets: NavigationTargetEvidence[];
@@ -266,9 +267,11 @@ export function extractDuplicateMessageContent(
     }
   };
   if (selected) visit(selected, 0);
-  const text = normalizeMessageDuplicateText(texts.join('\n'));
+  const rawText = texts.join('\n');
+  const text = normalizeMessageDuplicateText(rawText);
   const links = [...navigation].sort();
   return {
+    rawText,
     text,
     navigation: links,
     navigationTargets,

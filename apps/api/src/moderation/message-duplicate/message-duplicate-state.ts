@@ -80,6 +80,7 @@ export function isBoundMessageDuplicateDelete(input: {
 export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const flow = resolveDuplicateFlowConfig(settings);
   return digestDuplicateContent({
+    version: 'navigation-values-v2',
     enabled: settings.antiDuplicateEnabled,
     mode: settings.duplicateCompareMode ?? 'MESSAGE',
     preset: settings.duplicateDetectionPreset,

@@ -64,6 +64,66 @@ async function patternedPhoto(): Promise<Buffer> {
 }
 
 describe('PhotoFingerprintService', () => {
+  it('does not erase a changed native pixel through thumbnail downsampling', async () => {
+    const width = 2048;
+    const input = Buffer.alloc(width * width * 3, 255);
+    const original = await sharp(input, { raw: { width, height: width, channels: 3 } })
+      .png()
+      .toBuffer();
+    input[(1024 * width + 1024) * 3] = 254;
+    const changed = await sharp(input, { raw: { width, height: width, channels: 3 } })
+      .png()
+      .toBuffer();
+    const service = new PhotoFingerprintService({ canonicalOnly: true });
+    expect((await service.fingerprint(changed)).canonicalHash).not.toBe(
+      (await service.fingerprint(original)).canonicalHash,
+    );
+  });
+
+  it('preserves native dimensions and transparency in exact equality', async () => {
+    const service = new PhotoFingerprintService({ canonicalOnly: true });
+    const hash = async (width: number, height: number, alpha: number) =>
+      (
+        await service.fingerprint(
+          await sharp({
+            create: { width, height, channels: 4, background: { r: 255, g: 255, b: 255, alpha } },
+          })
+            .png()
+            .toBuffer(),
+        )
+      ).canonicalHash;
+    const original = await hash(64, 64, 1);
+    expect(await hash(128, 128, 1)).not.toBe(original);
+    expect(await hash(64, 32, 1)).not.toBe(original);
+    expect(await hash(64, 64, 0)).not.toBe(original);
+  });
+
+  it('rejects high-bit-depth pixels instead of silently quantizing exact evidence', async () => {
+    const encoded = await sharp({
+      create: { width: 8, height: 8, channels: 3, background: '#447799' },
+    })
+      .toColourspace('rgb16')
+      .png()
+      .toBuffer();
+    expect((await sharp(encoded).metadata()).depth).toBe('ushort');
+    await expect(
+      new PhotoFingerprintService({ canonicalOnly: true }).fingerprint(encoded),
+    ).rejects.toMatchObject({ reason: 'unsupported_image' });
+  });
+
+  it('preserves exact equality across EXIF orientation and lossless container metadata', async () => {
+    const original = await patternedPhoto();
+    const rotated = await sharp(original)
+      .rotate(90)
+      .withMetadata({ orientation: 8 })
+      .png()
+      .toBuffer();
+    const service = new PhotoFingerprintService({ canonicalOnly: true });
+    expect((await service.fingerprint(rotated)).canonicalHash).toBe(
+      (await service.fingerprint(original)).canonicalHash,
+    );
+  });
+
   it('does not initialize or compute perceptual hashes in production canonical-only mode', async () => {
     const init = jest.spyOn(PDQ, 'init');
     const hash = jest.spyOn(PDQ, 'hash');
@@ -216,7 +276,9 @@ describe('PhotoFingerprintService', () => {
 
     await expect(
       service.fingerprint(encoded, { albumBudget: budget, expectedFormat: 'png' }),
-    ).resolves.toEqual(expect.objectContaining({ algorithmVersion: 'sharp-rgb512-pdq-v2' }));
+    ).resolves.toEqual(
+      expect.objectContaining({ algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION }),
+    );
     await expect(
       service.fingerprint(encoded, { albumBudget: budget, expectedFormat: 'png' }),
     ).rejects.toMatchObject<Partial<PhotoFingerprintRejectedError>>({

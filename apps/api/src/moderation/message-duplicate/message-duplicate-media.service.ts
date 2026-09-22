@@ -405,7 +405,7 @@ export class MessageDuplicateMediaService {
 
   private cacheKey(identity: string, update: MaxUpdate): string {
     // FLAG: Binary proofs are message/revision scoped; an unverified platform id cannot reuse
-    // another message's bytes. Photos additionally reuse the separately validated photo cache.
+    // another message's bytes. The inner photo cache also binds its message/revision/source.
     const source = digestDuplicateContent([
       update.message?.chatId,
       update.message?.messageId,

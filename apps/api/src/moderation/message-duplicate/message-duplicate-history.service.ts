@@ -279,7 +279,9 @@ export class MessageDuplicateHistoryService {
 
   private buildFingerprints(content: DuplicateMessageContent, settings: ChatSettings) {
     const all = this.fingerprints.buildFingerprints(
-      content.text,
+      // FLAG: URL paths, query values and fragments are case-sensitive. Normalize prose inside
+      // the detector, never before extracting navigation value fingerprints.
+      content.rawText,
       settings,
       content.navigationTargets,
     );

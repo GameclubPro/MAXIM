@@ -44,6 +44,15 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     connection: { url: redisUrl },
   });
   const keys = new Set<string>();
+  const cachePhotos = photoStore.cachePhotoFingerprints.bind(photoStore);
+  jest.spyOn(photoStore, 'cachePhotoFingerprints').mockImplementation((entries, ttl) => {
+    entries.forEach(({ photoId }) =>
+      keys.add(
+        `photo-duplicate:history:v2:fingerprint-cache:${shortHash(PHOTO_FINGERPRINT_ALGORITHM_VERSION)}:${shortHash(photoId)}`,
+      ),
+    );
+    return cachePhotos(entries, ttl);
+  });
   const replace = redis.replaceRevisionedSetMembershipsBeforeDeadline.bind(redis);
   jest.spyOn(redis, 'replaceRevisionedSetMembershipsBeforeDeadline').mockImplementation((input) => {
     keys.add(input.stateKey);
@@ -263,6 +272,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       id?: string;
       text?: string;
       photo?: 'png' | 'webp' | 'different';
+      photoId?: string;
       photoCount?: number;
       reversePhotos?: boolean;
       changedPhotoIndex?: number;
@@ -274,8 +284,8 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   ) => {
     const id = options.id ?? `message-${++next}`;
     const time = options.time ?? start + next * 100;
-    const photoId = `${suffix}:${id}`;
-    const url = `https://i.oneme.ru/${photoId}.${options.photo === 'webp' ? 'webp' : 'png'}`;
+    const photoId = `${suffix}:${options.photoId ?? id}`;
+    const url = `https://i.oneme.ru/${suffix}:${id}.${options.photo === 'webp' ? 'webp' : 'png'}`;
     const attachments = options.photo
       ? Array.from({ length: options.photoCount ?? 1 }, (_, index) => ({
           type: 'image',
@@ -324,9 +334,6 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
         images.set(
           `${url}?item=${index}`,
           variant[options.changedPhotoIndex === index ? 'different' : options.photo!],
-        );
-        keys.add(
-          `photo-duplicate:history:v2:fingerprint-cache:${shortHash(PHOTO_FINGERPRINT_ALGORITHM_VERSION)}:${shortHash(`${photoId}:${index}`)}`,
         );
       }
     }
@@ -409,6 +416,21 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(await flow.ingest(first)).toBeUndefined();
       expect(await flow.ingest(second)).toBeUndefined();
       expect(flow.deleted).toEqual([second.id]);
+    });
+
+    it('keeps distinct images with a reused platform ID and independently verifies a later repeat', async () => {
+      flow = await createFlow();
+      const first = flow.prepare({ photo: 'png', photoId: 'shared-id' });
+      await flow.processor.process((await flow.ingest(first))!);
+      const different = flow.prepare({ photo: 'different', photoId: 'shared-id' });
+      await flow.processor.process((await flow.ingest(different))!);
+      expect(flow.downloads).toHaveBeenCalledTimes(2);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      const repeat = flow.prepare({ photo: 'different', photoId: 'shared-id' });
+      await flow.processor.process((await flow.ingest(repeat))!);
+      expect(flow.deleted).toEqual([repeat.id]);
+      expect(flow.downloads).toHaveBeenCalledTimes(3);
     });
 
     it.each(['before-add', 'lost-response', 'unavailable-registration'] as const)(

@@ -139,6 +139,32 @@ describe('RuleEngineDuplicateDetector', () => {
   });
 
   describe.each(['STANDARD', 'STRICT', 'CUSTOM'] as const)('%s text identity', (preset) => {
+    it('preserves case-sensitive URL destinations when navigation evidence is not supplied', () => {
+      const detector = new RuleEngineDuplicateDetector(
+        new InMemoryRevisionedRedisCounter() as never,
+      );
+      const settings = buildSettings({
+        duplicateDetectionPreset: preset,
+        duplicateNearMatchEnabled: true,
+      });
+      const prefix = 'Comfortable swimming lessons available every weekday for families';
+      const first = detector.buildFingerprints(
+        `${prefix} https://example.org/Offer?id=Token`,
+        settings,
+      );
+      const second = detector.buildFingerprints(
+        `${prefix} https://example.org/offer?id=token`,
+        settings,
+      );
+      expect(first.find((part) => part.type === 'exact')?.value).not.toBe(
+        second.find((part) => part.type === 'exact')?.value,
+      );
+      if (preset === 'CUSTOM')
+        expect(first.find((part) => part.type === 'near')?.value).not.toBe(
+          second.find((part) => part.type === 'near')?.value,
+        );
+    });
+
     it.each([
       [
         'price digits',

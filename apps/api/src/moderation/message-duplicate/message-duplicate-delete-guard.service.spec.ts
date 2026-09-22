@@ -115,6 +115,16 @@ function setup() {
 }
 
 describe('message duplicate final delete guard', () => {
+  it('rejects queued thumbnail-era evidence before any MAX lookup', async () => {
+    const s = setup();
+    Object.assign(s.binding, { mediaVersion: 'sha256-v1:sharp-rgb512-pdq-v2' });
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toMatchObject({
+      code: 'message_duplicate_binding_invalid',
+    });
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
   it('ends enforcement for a confirmed departed author without retrying or applying immunity', async () => {
     const s = setup();
     s.max.getChatMemberAccess.mockResolvedValue(null);
