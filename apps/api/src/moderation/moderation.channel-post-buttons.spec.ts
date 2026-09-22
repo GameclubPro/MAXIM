@@ -2364,6 +2364,7 @@ describe('ModerationService channel auto post buttons', () => {
       'channel-1',
       { text: 'Новый пост в канале' },
       {
+        botId: '777000_bot',
         entityType: 'channel',
         trafficClass: 'background',
         sourceTag: 'channel_auto_post',
@@ -2450,6 +2451,7 @@ describe('ModerationService channel auto post buttons', () => {
       'channel-1',
       { text: 'Новый пост в канале' },
       {
+        botId: '777000_bot',
         entityType: 'channel',
         trafficClass: 'background',
         sourceTag: 'channel_auto_post',
@@ -2519,6 +2521,7 @@ describe('ModerationService channel auto post buttons', () => {
       'channel-1',
       { text: 'Новый пост без senderId' },
       {
+        botId: '777000_bot',
         entityType: 'channel',
         trafficClass: 'background',
         sourceTag: 'channel_auto_post',
@@ -2632,6 +2635,11 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
       'preserveExistingInlineKeyboard',
     );
+    await expect(
+      maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3].prepareMessageText({
+        body: { text: 'Updated by the author after the webhook' },
+      }),
+    ).resolves.toBeNull();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
@@ -2655,6 +2663,56 @@ describe('ModerationService channel auto post buttons', () => {
         }),
       }),
     });
+  });
+
+  it('releases the claimed marker when preparing a CTA fails transiently', async () => {
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    const error = new Error('Temporary link lookup failure');
+    (service as any).channelPostSignatureService = {
+      buildPostButton: jest.fn().mockRejectedValue(error),
+    };
+    configureDefaultChannelAutoPostEditRoute(service);
+    const release = jest.spyOn(
+      (service as any).replacementAttachMarkerStore,
+      'releaseChannelAutoPost',
+    );
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'cta-failure',
+        text: 'Post',
+        linkType: null,
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            postSignatureEnabled: true,
+            postSignaturePresentation: 'BUTTON',
+          },
+          adminUserIds: [],
+        },
+        source: 'webhook',
+        senderId: '777000',
+      }),
+    ).rejects.toBe(error);
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'cta-failure' }));
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
   });
 
   it('does not duplicate a signature after an ambiguous successful edit is retried', async () => {
@@ -2722,6 +2780,37 @@ describe('ModerationService channel auto post buttons', () => {
         text: 'Пост',
       }),
     ).rejects.toBe(ambiguousEditError);
+
+    const prepareFreshText =
+      maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3].prepareMessageText;
+    await expect(
+      prepareFreshText({
+        body: {
+          text: 'Updated post',
+          markup: [{ type: 'strong', from: 0, length: 7 }],
+        },
+      }),
+    ).resolves.toMatchObject({
+      text: '<strong>Updated</strong> post\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      textFormat: 'html',
+      signatureApplied: true,
+    });
+    await expect(
+      prepareFreshText({
+        body: {
+          text: 'Post\n\nНаука и Факты',
+          markup: [
+            {
+              type: 'link',
+              from: 6,
+              length: 'Наука и Факты'.length,
+              url: 'https://max.ru/science',
+            },
+          ],
+        },
+      }),
+    ).resolves.toBeNull();
+    await expect(prepareFreshText(null)).rejects.toThrow('snapshot is unavailable');
 
     await expect(
       (service as any).tryAutoAttachChannelMessageButtons({

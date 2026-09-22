@@ -7,11 +7,13 @@ import {
 } from '@maxim/contracts';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import { renderMaxTextMarkupAsHtml } from '../common/max-text-markup.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -41,8 +43,11 @@ export class ChannelPostSignatureService {
     private readonly maxBotLinkService: MaxBotLinkService,
   ) {}
 
-  async getSettings(chatId: string): Promise<ChannelPostSignatureSettings> {
-    const settings = await this.prisma.channelSettings.findUnique({
+  async getSettings(
+    chatId: string,
+    db: Pick<PrismaService, 'channelSettings'> = this.prisma,
+  ): Promise<ChannelPostSignatureSettings> {
+    const settings = await db.channelSettings.findUnique({
       where: { chatId },
       select: {
         postSignatureEnabled: true,
@@ -73,12 +78,39 @@ export class ChannelPostSignatureService {
     }
     await this.assertChannel(chatId);
     const current = await this.getSettings(chatId);
-    const next = channelPostSignatureSettingsSchema.parse({ ...current, ...parsed.data });
-    if (next.enabled && !next.url) {
+    const validateNext = (currentSettings: ChannelPostSignatureSettings) => {
+      const result = channelPostSignatureSettingsSchema.safeParse({
+        ...currentSettings,
+        ...parsed.data,
+      });
+      if (!result.success) {
+        throw new BadRequestException(result.error.format());
+      }
+      return result.data;
+    };
+    const preview = validateNext(current);
+    const channelLinkVerified = preview.enabled && !preview.url;
+    if (channelLinkVerified) {
       await this.resolveChannelLink(chatId, 'interactive');
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
+      // FLAG: Serialize partial updates even before a channel_settings row exists.
+      // MAX preflight stays outside the transaction so network waits never hold this lock.
+      await tx.$queryRaw`SELECT id FROM chats WHERE id = ${chatId} FOR UPDATE`;
+      const lockedCurrent = await this.getSettings(chatId, tx);
+      const next = validateNext(lockedCurrent);
+      if (
+        next.enabled === lockedCurrent.enabled &&
+        next.presentation === lockedCurrent.presentation &&
+        next.text === lockedCurrent.text &&
+        next.url === lockedCurrent.url
+      ) {
+        return lockedCurrent;
+      }
+      if (next.enabled && !next.url && !channelLinkVerified) {
+        throw new ConflictException('Настройки подписи изменились. Повторите сохранение.');
+      }
       await tx.channelSettings.upsert({
         where: { chatId },
         create: {
@@ -109,9 +141,8 @@ export class ChannelPostSignatureService {
           payload: { changed: parsed.data },
         },
       });
+      return next;
     });
-
-    return next;
   }
 
   async preparePostText(
@@ -122,6 +153,7 @@ export class ChannelPostSignatureService {
       trafficClass?: MaxApiTrafficClass;
       sourceTag?: string;
       maxLength?: number;
+      botId?: string;
     } = {},
   ): Promise<ChannelPostText & { signatureApplied: boolean }> {
     if (options.entityType === 'chat') {
@@ -138,6 +170,7 @@ export class ChannelPostSignatureService {
         chatId,
         options.trafficClass ?? 'background',
         options.sourceTag,
+        options.botId,
       ));
     const baseHtml =
       input.textFormat === 'html'
@@ -145,10 +178,10 @@ export class ChannelPostSignatureService {
         : input.textFormat === 'markdown'
           ? renderSupportedMarkdownAsHtml(input.text, { blockMode: 'raw' })
           : escapeMaxHtmlText(input.text);
-    const signatureHtml = `<a href="${escapeMaxHtmlAttribute(signatureUrl)}">${escapeMaxHtmlText(
-      settings.text,
-    )}</a>`;
-    const normalizedBaseHtml = baseHtml.trim();
+    const signatureHtml = renderMaxTextMarkupAsHtml(settings.text, [
+      { type: 'link', from: 0, length: settings.text.length, url: signatureUrl, userLink: null },
+    ])!;
+    const normalizedBaseHtml = baseHtml.trimEnd();
     const signatureAlreadyPresent = normalizedBaseHtml.endsWith(signatureHtml);
     const text = signatureAlreadyPresent
       ? normalizedBaseHtml

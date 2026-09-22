@@ -5631,6 +5631,85 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it.each([false, true])(
+    'uses fresh prepared text instead of stale caller text (omit=%s)',
+    async (omitText) => {
+      const httpService = {
+        request: jest.fn().mockReturnValue(of({ status: 200, data: { success: true } })),
+      };
+      const service = createService(httpService);
+      const media = { type: 'image', payload: { token: 'photo-token' } };
+      const snapshot = { body: { text: 'Fresh author edit', attachments: [media] } };
+      jest.spyOn(service as any, 'getMessageById').mockResolvedValue(snapshot);
+      const prepareMessageText = jest.fn().mockResolvedValue(
+        omitText
+          ? null
+          : {
+              text: '<strong>Fresh author edit</strong>\n\nSignature',
+              textFormat: 'html',
+            },
+      );
+      await service.editMessageInlineKeyboard('channel-1', 'fresh-post', 'Stale webhook', {
+        textFormat: 'markdown',
+        prepareMessageText,
+        requireAllAttachmentsPreserved: true,
+      });
+      expect(prepareMessageText).toHaveBeenCalledWith(snapshot);
+      expect(httpService.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'put',
+          data: {
+            ...(omitText
+              ? {}
+              : { text: '<strong>Fresh author edit</strong>\n\nSignature', format: 'html' }),
+            attachments: [media],
+          },
+        }),
+      );
+      await service.onModuleDestroy();
+    },
+  );
+
+  it('prepares a copied post from the fetched source instead of the stale fallback', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValue(of({ status: 200, data: { message: { body: { mid: 'copy' } } } })),
+    };
+    const service = createService(httpService);
+    const snapshot = { body: { text: 'Fresh source', attachments: [] } };
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue(snapshot);
+    const prepareMessageText = jest.fn().mockResolvedValue({ text: 'Fresh source + signature' });
+    await service.sendMessageCopyWithInlineKeyboard('channel-1', 'source', 'Stale source', {
+      prepareMessageText,
+    });
+    expect(prepareMessageText).toHaveBeenCalledWith(snapshot);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        data: expect.objectContaining({ text: 'Fresh source + signature' }),
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('does not mutate a message when fresh text preparation fails', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    jest
+      .spyOn(service as any, 'getMessageById')
+      .mockResolvedValue({ body: { text: 'Post', attachments: [] } });
+    await expect(
+      service.editMessageInlineKeyboard('channel-1', 'fresh-post', 'Stale', {
+        prepareMessageText: async () => {
+          throw new Error('Failed preparation');
+        },
+      }),
+    ).rejects.toThrow('Failed preparation');
+    expect(httpService.request).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
   it('honors explicit html text format when editing an existing message', async () => {
     const httpService = {
       request: jest

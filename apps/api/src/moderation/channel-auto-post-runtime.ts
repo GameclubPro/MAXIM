@@ -462,7 +462,12 @@ type ChannelPostSignaturePreparer = {
   preparePostText: (
     chatId: string,
     input: { text: string; textFormat?: MaxSendMessageOptions['textFormat'] },
-    options: { entityType: 'channel'; trafficClass: 'background'; sourceTag: string },
+    options: {
+      entityType: 'channel';
+      trafficClass: 'background';
+      sourceTag: string;
+      botId?: string;
+    },
   ) => Promise<{
     text: string;
     textFormat?: MaxSendMessageOptions['textFormat'];
@@ -477,6 +482,7 @@ export async function prepareChannelAutoPostDecoration(params: {
   postSignatureEnabled: boolean;
   signatureService?: ChannelPostSignaturePreparer;
   sourceTag: string;
+  botId?: string;
 }): Promise<{
   text: string | null;
   textFormat?: MaxSendMessageOptions['textFormat'];
@@ -502,8 +508,50 @@ export async function prepareChannelAutoPostDecoration(params: {
       entityType: 'channel',
       trafficClass: 'background',
       sourceTag: params.sourceTag,
+      ...(params.botId ? { botId: params.botId } : {}),
     },
   );
+}
+
+export function buildChannelAutoPostTextMutationOptions(
+  params: Parameters<typeof prepareChannelAutoPostDecoration>[0] & {
+    quickButtons?: ChannelQuickButtons;
+    preserveText: boolean;
+    preparedText: Awaited<ReturnType<typeof prepareChannelAutoPostDecoration>>;
+    onSignatureApplied: (applied: boolean) => void;
+  },
+) {
+  if (params.quickButtons) {
+    return {
+      expectedSourceText: params.quickButtons.sourceText,
+      expectedSourceMarkup: params.quickButtons.sourceMarkup,
+      expectedSourceAttachmentTypes: params.quickButtons.sourceAttachmentTypes,
+      requireAllAttachmentsPreserved: true,
+    };
+  }
+  return {
+    prepareMessageText: async (message: Record<string, unknown> | null) => {
+      if (!message) {
+        throw new Error('Channel post snapshot is unavailable.');
+      }
+      if (!params.postSignatureEnabled || params.preserveText) {
+        return null;
+      }
+      const current = resolveChannelAutoPostMessageText(message, null);
+      // FLAG: Reuse preparation only for the exact text/format fetched under the edit lock.
+      const decorated =
+        current.text === params.text &&
+        (current.textFormat ?? undefined) === (params.textFormat ?? undefined)
+          ? params.preparedText
+          : await prepareChannelAutoPostDecoration({
+              ...params,
+              text: current.text,
+              textFormat: current.textFormat,
+            });
+      params.onSignatureApplied(decorated.signatureApplied);
+      return decorated.signatureApplied ? decorated : null;
+    },
+  };
 }
 
 export async function resolveChannelAutoPostMutationBotRoute(params: {

@@ -149,6 +149,10 @@ import {
 import {
   parseChannelPostSignatureUrl,
   resolveChannelPostSignaturePreviewUrl,
+  normalizePostSignatureSettings,
+  validatePostSignatureSettings,
+  buildPostSignaturePatch,
+  reconcilePostSignatureSave,
 } from '../lib/channel-post-signature';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
@@ -177,18 +181,6 @@ type PendingBroadcastPublishReview = {
   broadcastId: string | null;
   payload: SendBroadcastPayload;
 };
-
-function normalizePostSignatureSettings(
-  value: ChannelPostSignatureSettings,
-): ChannelPostSignatureSettings {
-  const parsedUrl = parseChannelPostSignatureUrl(value.url);
-  return {
-    enabled: value.enabled,
-    presentation: value.presentation,
-    text: value.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
-    url: parsedUrl.error ? value.url.trim() : parsedUrl.url,
-  };
-}
 
 function postSignatureSettingsKey(value: ChannelPostSignatureSettings): string {
   return JSON.stringify(normalizePostSignatureSettings(value));
@@ -919,6 +911,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const latestPostSignatureRef = useRef<ChannelPostSignatureSettings | null>(null);
   const latestPostSignatureKeyRef = useRef('');
   const savedPostSignatureKeyRef = useRef('');
+  const savedPostSignatureRef = useRef<ChannelPostSignatureSettings | null>(null);
   const postSignatureInitializedChatIdRef = useRef('');
   const broadcastSettingsSaveInFlightRef = useRef(false);
   const lastFailedDraftKeyRef = useRef<string | null>(null);
@@ -1260,6 +1253,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     latestPostSignatureRef.current = loadedPostSignature;
     latestPostSignatureKeyRef.current = loadedKey;
     savedPostSignatureKeyRef.current = loadedKey;
+    savedPostSignatureRef.current = loadedPostSignature;
     setPostSignatureDraft(loadedPostSignature);
     setSavedPostSignature(loadedPostSignature);
     setPostSignatureSaveState('idle');
@@ -1653,11 +1647,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         latestPostSignatureRef.current &&
         latestPostSignatureKeyRef.current !== savedPostSignatureKeyRef.current
       ) {
-        const payload = normalizePostSignatureSettings(latestPostSignatureRef.current);
-        const payloadKey = postSignatureSettingsKey(payload);
+        const validated = validatePostSignatureSettings(latestPostSignatureRef.current);
+        if (!validated.success) {
+          setPostSignatureSaveState('error');
+          return;
+        }
+        const payload = validated.data;
         setPostSignatureSaveState('saving');
         try {
-          const saved = await updateChannelPostSignature(api, operationChatId, payload);
+          const saved = await updateChannelPostSignature(
+            api,
+            operationChatId,
+            buildPostSignaturePatch(payload, savedPostSignatureRef.current),
+          );
           const savedKey = postSignatureSettingsKey(saved);
           queryClient.setQueryData<ChannelSettingsScreenResponse>(
             queryKeys.channelSettingsScreen(operationChatId),
@@ -1667,10 +1669,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             return;
           }
           savedPostSignatureKeyRef.current = savedKey;
-          setSavedPostSignature(saved);
-          setPostSignatureDraft((current) =>
-            current && postSignatureSettingsKey(current) === payloadKey ? saved : current,
+          savedPostSignatureRef.current = saved;
+          const reconciled = reconcilePostSignatureSave(
+            payload,
+            latestPostSignatureRef.current,
+            saved,
           );
+          latestPostSignatureRef.current = reconciled;
+          latestPostSignatureKeyRef.current = postSignatureSettingsKey(reconciled);
+          setSavedPostSignature(saved);
+          setPostSignatureDraft(reconciled);
           setPostSignatureSaveState(
             latestPostSignatureKeyRef.current === savedKey ? 'saved' : 'saving',
           );
@@ -2375,11 +2383,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   );
   const fallbackPostSignatureUrl = parseChannelPostSignatureUrl(resolvedChannelLink).url;
   const postSignatureUrlError = resolvedPostSignaturePreviewUrl.error;
-  const postSignatureTextError =
-    postSignature.presentation === 'button' &&
-    postSignature.text.trim().length > CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH
-      ? `До ${CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH} символов для кнопки.`
-      : '';
+  const postSignatureValidation = validatePostSignatureSettings(postSignature);
+  const postSignatureTextError = postSignatureValidation.success
+    ? ''
+    : (postSignatureValidation.error.issues.find((issue) => issue.path[0] === 'text')?.message ??
+      '');
   const effectivePostSignatureUrl = resolvedPostSignaturePreviewUrl.url;
 
   function closePostSignatureSection() {
@@ -3385,13 +3393,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     ]}
                     ariaLabel="Формат действия под публикацией"
                     onChange={(presentation) => {
-                      const next = { ...postSignature, presentation };
-                      latestPostSignatureRef.current = next;
-                      latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
-                      setPostSignatureDraft(next);
-                      if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
-                        setPostSignatureSaveState('idle');
-                      }
+                      savePostSignature({
+                        ...(latestPostSignatureRef.current ?? postSignature),
+                        presentation,
+                      });
                     }}
                   />
                 </div>

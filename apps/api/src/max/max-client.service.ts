@@ -434,6 +434,9 @@ type MaxEditableMessageOptions = Pick<
   prepareInlineKeyboard?: (
     message: Record<string, unknown> | null,
   ) => Promise<MaxMessageButton[][] | null>;
+  prepareMessageText?: (
+    message: Record<string, unknown> | null,
+  ) => Promise<{ text: string | null; textFormat?: MaxTextFormat } | null>;
   expectedSourceText?: string;
   expectedSourceMarkup?: readonly MaxTextMarkup[];
   expectedSourceAttachmentTypes?: readonly string[];
@@ -1372,11 +1375,14 @@ export class MaxClientService implements OnModuleDestroy {
     this.assertExpectedEditableMessageText(sourceMessage, options);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
-    const messageTextPayload = this.buildOutgoingMessageTextPayload(
-      sourceMessage,
-      fallbackText,
-      options?.textFormat ?? null,
-    );
+    const messageTextPayload = options?.prepareMessageText
+      ? ((await options.prepareMessageText(sourceMessage)) ??
+        this.buildOutgoingMessageTextPayload(sourceMessage, null))
+      : this.buildOutgoingMessageTextPayload(
+          sourceMessage,
+          fallbackText,
+          options?.textFormat ?? null,
+        );
     let sendResponse: Record<string, unknown>;
     let sendAttempted = false;
     try {
@@ -1543,8 +1549,15 @@ export class MaxClientService implements OnModuleDestroy {
         typeof text === 'string' &&
         text !== sourceText &&
         !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
-      const messageTextPayload =
-        typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
+      // FLAG: Derived text must use this locked snapshot, never an older webhook payload.
+      const preparedText = options?.prepareMessageText
+        ? await options.prepareMessageText(message)
+        : undefined;
+      const messageTextPayload = options?.prepareMessageText
+        ? this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
+          ? null
+          : preparedText
+        : typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
           ? shouldForceReplacementText
             ? {
                 text,

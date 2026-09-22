@@ -333,6 +333,7 @@ import {
   isChannelAutoPostMessage,
   isChannelAutoPostKeyboardOnly,
   prepareChannelAutoPostDecoration,
+  buildChannelAutoPostTextMutationOptions,
   resolveChannelAutoPostButtonVisibility,
   resolveChannelAutoPostEventTimestampMs,
   resolveChannelAutoPostMessageText,
@@ -15456,37 +15457,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const threadId = params.existingDialogThreadId?.trim() || randomUUID();
-    const ctaButton =
-      postSignatureEnabled && this.channelPostSignatureService
-        ? ((await this.channelPostSignatureService.buildPostButton?.(chatId, {
-            entityType: 'channel',
-            trafficClass: 'background',
-            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-          })) ?? null)
-        : null;
-    const buttons = buildChannelAutoPostButtons(
-      managedChannel.channelSettings,
-      quickButtons ? { includeCommentsButton, includeSuggestButton } : buttonVisibility,
-      (type, buttonText, suggestionEntryMode) =>
-        this.buildChannelDialogButton(
-          chatId,
-          type,
-          threadId,
-          buttonText,
-          autoAttachBotId,
-          suggestionEntryMode,
-        ),
-      ctaButton,
-    );
-    buttons.push(...(quickButtons?.buttons ?? []));
-    const quickButtonMutationOptions = quickButtons
-      ? {
-          expectedSourceText: quickButtons.sourceText,
-          expectedSourceMarkup: quickButtons.sourceMarkup,
-          expectedSourceAttachmentTypes: quickButtons.sourceAttachmentTypes,
-          requireAllAttachmentsPreserved: true,
-        }
-      : {};
+    let ctaButton: MaxMessageButton | null = null;
     let deliveryMode: 'edit_message' | 'replace_with_bot_message' = 'edit_message';
     let replacementMessageId: string | null = null;
     let publishedUrl: string | null = replaceForward
@@ -15500,14 +15471,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let maxMutationAttemptStartedAt: Date | null = null;
 
     try {
-      const preparedText = await prepareChannelAutoPostDecoration({
+      ctaButton =
+        postSignatureEnabled && this.channelPostSignatureService
+          ? ((await this.channelPostSignatureService.buildPostButton?.(chatId, {
+              entityType: 'channel',
+              trafficClass: 'background',
+              sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+              botId: autoAttachBotId,
+            })) ?? null)
+          : null;
+      const buttons = buildChannelAutoPostButtons(
+        managedChannel.channelSettings,
+        quickButtons ? { includeCommentsButton, includeSuggestButton } : buttonVisibility,
+        (type, buttonText, suggestionEntryMode) =>
+          this.buildChannelDialogButton(
+            chatId,
+            type,
+            threadId,
+            buttonText,
+            autoAttachBotId,
+            suggestionEntryMode,
+          ),
+        ctaButton,
+      );
+      buttons.push(...(quickButtons?.buttons ?? []));
+      const decoration = {
         chatId,
         text,
         textFormat,
         postSignatureEnabled,
         signatureService: this.channelPostSignatureService,
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-      });
+        botId: autoAttachBotId,
+      };
+      const preparedText = await prepareChannelAutoPostDecoration(decoration);
       signatureApplied = preparedText.signatureApplied;
       if (buttons.length === 0 && !preparedText.signatureApplied) {
         await this.replacementAttachMarkerStore.completeChannelAutoPost({
@@ -15525,6 +15522,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return 'noop';
       }
       const preserveExistingInlineKeyboard = buttons.length === 0;
+      const mutationTextOptions = buildChannelAutoPostTextMutationOptions({
+        ...decoration,
+        quickButtons,
+        preparedText,
+        preserveText: Boolean(ctaButton) || editForwardInPlace,
+        onSignatureApplied: (applied) => {
+          signatureApplied = applied;
+        },
+      });
 
       if (replaceForward) {
         maxMutationAttemptStartedAt = new Date();
@@ -15534,7 +15540,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           preparedText.text,
           {
             buttons,
-            ...quickButtonMutationOptions,
+            ...mutationTextOptions,
             appendNewInlineKeyboardRows: true,
             mergeExistingInlineKeyboard: true,
             ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
@@ -15642,7 +15648,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             editForwardInPlace ? null : preparedText.text,
             {
               buttons,
-              ...quickButtonMutationOptions,
+              ...mutationTextOptions,
               mergeExistingInlineKeyboard: true,
               preserveExistingChannelDialogButtons: true,
               requireAllAttachmentsPreserved: true,
@@ -15698,6 +15704,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               // FLAG: A rejected merge never authorizes dropping Publisher discussions,
               // custom links, or media. Re-read and preserve the source under the edit lock.
               buttons,
+              ...mutationTextOptions,
               mergeExistingInlineKeyboard: true,
               appendNewInlineKeyboardRows: true,
               preserveExistingChannelDialogButtons: true,

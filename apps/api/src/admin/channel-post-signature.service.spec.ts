@@ -1,4 +1,9 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { resolveChannelAutoPostMessageText } from '../moderation/channel-auto-post-runtime';
 import { ChatEntityType } from '../prisma/prisma-client';
 import {
   CHANNEL_POST_MAX_TEXT_LENGTH,
@@ -34,6 +39,7 @@ function createFixture() {
       findFirst: jest.fn().mockResolvedValue(null),
     },
     $transaction: jest.fn(),
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 'channel-1' }]),
   };
   prisma.$transaction.mockImplementation(async (operation: (tx: typeof prisma) => unknown) =>
     operation(prisma),
@@ -57,6 +63,105 @@ function createFixture() {
 }
 
 describe('ChannelPostSignatureService', () => {
+  it('rejects an invalid merged button label with HTTP 400 before writing', async () => {
+    const { prisma, service } = createFixture();
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSignatureEnabled: true,
+      postSignaturePresentation: 'SIGNATURE',
+      postSignatureText: 'x'.repeat(33),
+      postSignatureUrl: '',
+    });
+    await expect(
+      service.updateSettings('channel-1', 'admin', { presentation: 'button' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
+  });
+
+  it('merges a partial update with the latest locked settings', async () => {
+    const { prisma, service } = createFixture();
+    prisma.channelSettings.findUnique
+      .mockResolvedValueOnce({
+        postSignatureEnabled: true,
+        postSignaturePresentation: 'SIGNATURE',
+        postSignatureText: 'Old',
+        postSignatureUrl: 'https://example.com/old',
+      })
+      .mockResolvedValue({
+        postSignatureEnabled: true,
+        postSignaturePresentation: 'BUTTON',
+        postSignatureText: 'Concurrent',
+        postSignatureUrl: 'https://example.com/new',
+      });
+    await expect(service.updateSettings('channel-1', 'admin', { enabled: false })).resolves.toEqual(
+      {
+        enabled: false,
+        presentation: 'button',
+        text: 'Concurrent',
+        url: 'https://example.com/new',
+      },
+    );
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not advance the post scan baseline or write an audit for an unchanged setting', async () => {
+    const { prisma, service } = createFixture();
+    await service.updateSettings('channel-1', 'admin', { text: 'Читать канал' });
+    expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a concurrent change that needs a new remote preflight outside the lock', async () => {
+    const { prisma, service, maxClient } = createFixture();
+    prisma.channelSettings.findUnique
+      .mockResolvedValueOnce({
+        postSignatureEnabled: false,
+        postSignaturePresentation: 'SIGNATURE',
+        postSignatureText: 'Read',
+        postSignatureUrl: 'https://example.com/',
+      })
+      .mockResolvedValue({
+        postSignatureEnabled: false,
+        postSignaturePresentation: 'SIGNATURE',
+        postSignatureText: 'Read',
+        postSignatureUrl: '',
+      });
+    await expect(
+      service.updateSettings('channel-1', 'admin', { enabled: true }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it.each(['Read "news"', "Today's news", 'Read  news', 'News & updates', 'Read\nnews'])(
+    'does not duplicate a MAX markup round trip for %s',
+    async (label) => {
+      const { prisma, service } = createFixture();
+      const url = "https://example.com/read?x=1&name=it's";
+      prisma.channelSettings.findUnique.mockResolvedValue({
+        postSignatureEnabled: true,
+        postSignaturePresentation: 'SIGNATURE',
+        postSignatureText: label,
+        postSignatureUrl: url,
+      });
+      const original = 'Post\n\n';
+      const fresh = resolveChannelAutoPostMessageText(
+        {
+          body: {
+            text: original + label,
+            markup: [{ type: 'link', from: original.length, length: label.length, url }],
+          },
+        },
+        null,
+      );
+      await expect(
+        service.preparePostText('channel-1', {
+          text: fresh.text!,
+          textFormat: fresh.textFormat ?? undefined,
+        }),
+      ).resolves.toMatchObject({ text: fresh.text, signatureApplied: false });
+    },
+  );
+
   it('leaves chat messages unchanged without reading channel settings', async () => {
     const { prisma, service } = createFixture();
 
@@ -110,6 +215,14 @@ describe('ChannelPostSignatureService', () => {
       '<strong>Важно</strong>\n\n<a href="https://max.ru/channel/news">Читать канал</a>',
     );
     expect(result.textFormat).toBe('html');
+  });
+
+  it('preserves leading whitespace in the authored post', async () => {
+    const { service } = createFixture();
+    const result = await service.preparePostText('channel-1', { text: '\n  Indented post' });
+    expect(result.text).toBe(
+      '\n  Indented post\n\n<a href="https://max.ru/channel/news">Читать канал</a>',
+    );
   });
 
   it('uses an explicit signature URL without resolving the channel link', async () => {
