@@ -404,6 +404,16 @@ export function extractDetectedPhoneNumbers(text: string): string[] {
   return Array.from(new Set(phones));
 }
 
+export function stripDetectedPhoneNumbers(text: string): string {
+  // FLAG: Ignore only recognized phones, not dates, prices or numeric ranges. The regex's
+  // leading boundary belongs to the surrounding text and must survive replacement.
+  return text.replace(PHONE_NUMBER_CANDIDATE_PATTERN, (match, candidate: string, index: number) =>
+    isPhoneNumberCandidate(candidate, text, index)
+      ? `${match.slice(0, match.length - candidate.length)} `
+      : match,
+  );
+}
+
 function isPhoneNumberCandidate(
   candidate: string,
   sourceText: string,

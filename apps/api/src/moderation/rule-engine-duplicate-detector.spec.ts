@@ -167,6 +167,26 @@ describe('RuleEngineDuplicateDetector', () => {
 
     it.each([
       [
+        'calendar date',
+        'Family swimming registration remains available until 22.09.2026 for every participant',
+        'Family swimming registration remains available until 23.09.2026 for every participant',
+      ],
+      [
+        'long price',
+        'The advertised equipment purchase price totals 123456789 rubles including delivery',
+        'The advertised equipment purchase price totals 223456789 rubles including delivery',
+      ],
+      [
+        'numeric range',
+        'Available equipment packages carry identification numbers 100-200-300 for ordering',
+        'Available equipment packages carry identification numbers 100-200-400 for ordering',
+      ],
+      [
+        'phone-adjacent label',
+        'Family swimming registration remains available under code A+7 (999) 123-45-67 today',
+        'Family swimming registration remains available under code B+7 (999) 123-45-67 today',
+      ],
+      [
         'price digits',
         'Стоимость заказа составляет 100 рублей',
         'Стоимость заказа составляет 1000 рублей',

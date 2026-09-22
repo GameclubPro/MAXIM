@@ -113,6 +113,17 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect((await observe('c', 200, 'a', { controlRevision: 2 }))?.hit.count).toBe(1);
   });
 
+  it('preserves a new event date under STRICT while still detecting a real repeat', async () => {
+    const override = { settings: duplicateSettings({ duplicateDetectionPreset: 'STRICT' }) };
+    const text = (date: string) =>
+      `Family swimming registration remains available until ${date} for every participant`;
+    await observe('original', 0, text('22.09.2026'), override);
+    expect(await observe('new-date', 100, text('23.09.2026'), override)).toBeNull();
+    const repeat = await observe('repeat', 200, text('23.09.2026'), override);
+    expect(repeat?.hit.count).toBe(1);
+    expect(await history.stillMatches(chatId, repeat!.binding)).toBe(true);
+  });
+
   it('preserves plain-text destinations in CUSTOM near matching', async () => {
     const override = {
       settings: duplicateSettings({

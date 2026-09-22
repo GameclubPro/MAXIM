@@ -2,6 +2,7 @@ import type { ChatSettings } from '../prisma/prisma-client';
 import {
   RuleEngineMessageLimitsDetector,
   extractDetectedPhoneNumbers,
+  stripDetectedPhoneNumbers,
 } from './rule-engine-message-limits.detector';
 
 class MockRedisCounterService {
@@ -85,6 +86,13 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
 }
 
 describe('RuleEngineMessageLimitsDetector', () => {
+  it('strips recognized phones while preserving adjacent labels and non-phone numbers', () => {
+    const numeric = 'Available 22.09.2026, price 123456789, packages 100-200-300';
+    expect(stripDetectedPhoneNumbers(numeric)).toBe(numeric);
+    expect(stripDetectedPhoneNumbers('code A+7 (999) 123-45-67 today')).toBe('code A  today');
+    expect(stripDetectedPhoneNumbers('whatsapp 4951234567')).toBe('whatsapp  ');
+    expect(stripDetectedPhoneNumbers('8 999 123 45 67')).toBe(' ');
+  });
   it('detects text length, blocked words, and disabled attachment kinds', () => {
     const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
     const settings = buildSettings({

@@ -12,7 +12,10 @@ import {
 import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.util';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { extractUrlsFromText } from './rule-engine-link-detector';
-import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
+import {
+  extractDetectedPhoneNumbers,
+  stripDetectedPhoneNumbers,
+} from './rule-engine-message-limits.detector';
 import { RedisCounterService } from './redis-counter.service';
 import { resolveDuplicateFlowConfig, type DuplicateReactionStage } from './duplicate-flow-policy';
 import type {
@@ -39,7 +42,6 @@ type ResolvedDuplicateFingerprint = DuplicateFingerprint & {
   membershipKey: string;
 };
 
-const PHONE_NUMBER_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
 const NEAR_DUPLICATE_MIN_TOKEN_COUNT = 6;
 const NEAR_DUPLICATE_MIN_UNIQUE_TOKENS = 5;
 const DUPLICATE_APPROXIMATE_MIN_LENGTH = 50;
@@ -409,7 +411,7 @@ export class RuleEngineDuplicateDetector {
     return this.buildFingerprints(rawText, settings, navigationTargets).map((fingerprint) => {
       // FLAG: Never count old lossy fingerprints under the corrected comparison policy.
       const hash = createHash('sha256')
-        .update('text-v3\0')
+        .update('text-v4\0')
         .update(fingerprint.value)
         .digest('hex')
         .slice(0, 20);
@@ -529,7 +531,7 @@ export class RuleEngineDuplicateDetector {
       value = stripUrlsFromText(value);
     }
     if (config.ignorePhones) {
-      value = stripPhoneNumbersFromText(value);
+      value = stripDetectedPhoneNumbers(value);
     }
     return normalizeDuplicateText(value);
   }
@@ -565,7 +567,7 @@ export class RuleEngineDuplicateDetector {
       source = stripUrlsFromText(source);
     }
     if (config.ignorePhones) {
-      source = stripPhoneNumbersFromText(source);
+      source = stripDetectedPhoneNumbers(source);
     }
     return source.match(/[+-]?\d+(?:[.,:]\d+)*/gu) ?? [];
   }
@@ -632,8 +634,4 @@ export class RuleEngineDuplicateDetector {
 function normalizeDuplicateText(value: string): string {
   // FLAG: Spam-obfuscation normalization is lossy and cannot define message equality.
   return value.normalize('NFC').toLowerCase().replace(/\s+/gu, ' ').trim();
-}
-
-function stripPhoneNumbersFromText(value: string): string {
-  return value.replace(PHONE_NUMBER_PATTERN, ' ').replace(/\s+/g, ' ').trim();
 }

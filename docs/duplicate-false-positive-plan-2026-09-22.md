@@ -43,6 +43,11 @@ Legacy photo-toggle aggregates do not describe the current IMAGE path's effectiv
    case-sensitive paths, query values and fragments. Near matching also erased plain navigation
    identity. Preserve raw text for extraction and bind non-ignored navigation in near fingerprints.
    Explicit STRICT link/phone ignoring and CUSTOM value-only matching remain product choices.
+4. High in STRICT: the phone-stripping regex erased ordinary dates, long prices and numeric
+   ranges without checking that they were phones. It also removed the preceding boundary
+   character, merging distinct adjacent labels. Four regressions reproduced false WARN decisions.
+   Reuse the existing validated phone classifier for stripping and preserve the boundary;
+   add a real-Redis changed-date/actual-repeat regression. Advance the text evidence version again.
 
 Six image/cache regressions failed before their fixes; four real-Redis link/near regressions
 failed with the old text path. The first focused fixed run passed 17 suites / 272 tests, including
@@ -62,6 +67,10 @@ environment-dependent suites / 71 tests were skipped. The separate retention-sto
 10 checks with its PostgreSQL race skipped. Repository lint/refactor guards and all 535 tooling
 tests passed, as did documentation checks and preflight. Final staged verification also covers
 the subsequent fallback-detector URL regression tests and hot-path early return.
+
+The first staged commit was `c41aaa57db79c079850d259f28955ac37d693de9` (13,115 API tests).
+Before any deployment, the additional STRICT numeric-evidence defect above was reproduced and
+added to the release. Its final staged validation and exact-SHA CI must supersede that first commit.
 
 A local maximum-size synthetic 40-million-pixel PNG took 140 ms to fingerprint; peak RSS of the
 isolated process including fixture creation was 265 MiB. This is a resource smoke, not a real-world
