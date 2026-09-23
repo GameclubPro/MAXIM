@@ -527,6 +527,7 @@ export const MESSAGE_LIMITS_RULE_CODES = new Set([
 export type GlobalSpammerTrackingResult = {
   handled: boolean;
   skipKnownSpammerCheck: boolean;
+  enforcementReady?: true;
 };
 export const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 export type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';

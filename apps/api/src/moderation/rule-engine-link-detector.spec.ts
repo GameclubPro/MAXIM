@@ -19,6 +19,17 @@ function target(
 }
 
 describe('typed link moderation', () => {
+  it.each(['https://vk.me/123456789', 'vk.me/123456789'])(
+    'detects the reported VK contact link form: %s',
+    (url) => {
+      const text = `Требуются тестировщики. Пиши в личку\n${url}`;
+      expect(detectBlockedLink(text, LinkPolicy.BLOCKLIST_ONLY, [])).not.toBeNull();
+      expect(detectBlockedLink(text, LinkPolicy.ALLOWLIST_ONLY, [])).not.toBeNull();
+      expect(detectBlockedLink(text, LinkPolicy.ALLOWLIST_ONLY, ['domain:vk.me'])).toBeNull();
+      expect(detectBlockedLink(text, LinkPolicy.ALERT_ONLY, [])).toBeNull();
+    },
+  );
+
   it('preserves the entire exact URL in the shared stop-word and legacy matcher', () => {
     const isAllowed = createAllowlistLinkMatcher(['https://example.com/path']);
     expect(isAllowed('https://example.com/path')).toBe(true);

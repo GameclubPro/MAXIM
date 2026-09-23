@@ -1705,7 +1705,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             await suppressDeferredPhotoAnalysisActions();
           }
         }
-        await this.deleteAndKickDetectedGlobalSpammer({
+        const handled = await this.deleteAndKickDetectedGlobalSpammer({
           chatId,
           userId: senderId,
           messageId,
@@ -1713,6 +1713,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           createdAt,
           reason: 'Developer-forced global blacklist',
         });
+        if (!handled) {
+          throw new Error('Developer-forced spammer message deletion was not accepted');
+        }
         return;
       }
 
@@ -8387,6 +8390,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
     await this.ensureModerationDeleteIntent(deleteIntent);
 
+    const deleteAccepted = await this.attemptSpammerMessageDelete(deleteIntent);
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
       userId,
@@ -8394,21 +8398,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ruleCode: 'GLOBAL_SPAMMER_KICK',
     });
     if (!claimed) {
-      return true;
-    }
-
-    try {
-      await this.executeModerationDelete(deleteIntent);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete message from known global spammer',
-      );
+      return deleteAccepted;
     }
 
     await this.kickAndLogKnownSpammerEvent({
@@ -8419,7 +8409,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reason: 'Sender exists in global spammer registry',
       claimAlreadyAcquired: true,
     });
-    return true;
+    return deleteAccepted;
+  }
+
+  private async attemptSpammerMessageDelete(
+    input: EnsureModerationDeleteIntentInput,
+  ): Promise<boolean> {
+    // FLAG: A sanction claim or a successful kick is not proof of message removal.
+    // Retry deletion independently; only confirmed removal or durable acceptance handles it.
+    try {
+      const result = await this.executeModerationDelete(input);
+      return result.accepted;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: input.chatId,
+          userId: input.subjectUserId,
+          messageId: input.messageId,
+          ruleCode: input.ruleCode,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Spammer message deletion failed; continuing independent message moderation',
+      );
+      return false;
+    }
   }
 
   private async handleLocalAdminBlockedSenderMessage(params: {
@@ -8451,6 +8464,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
     await this.ensureModerationDeleteIntent(deleteIntent);
 
+    const deleteAccepted = await this.attemptSpammerMessageDelete(deleteIntent);
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
       userId,
@@ -8458,24 +8472,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ruleCode: 'LOCAL_ADMIN_BLOCK',
     });
     if (!claimed) {
-      return true;
+      return deleteAccepted;
     }
 
-    try {
-      await this.executeModerationDelete(deleteIntent);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete message from locally blocked spammer',
-      );
-    }
-
-    return this.kickAndLogKnownSpammerEvent({
+    await this.kickAndLogKnownSpammerEvent({
       chatId,
       userId,
       messageId,
@@ -8484,6 +8484,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ruleCode: 'LOCAL_ADMIN_BLOCK',
       claimAlreadyAcquired: true,
     });
+    return deleteAccepted;
   }
 
   private async handleServiceKnownSpammerMembersEvent(params: {
@@ -8696,8 +8697,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       userId,
       messageId,
-      text,
-      createdAt,
       deleteSpammersEnabled,
       exemptFromEnforcement,
       allowDestructiveSideEffects,
@@ -8784,21 +8783,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             };
           }
 
-          this.runGlobalSpammerSideEffect(
-            { chatId, userId, messageId, action: 'delete-and-kick-detected' },
-            async () =>
-              this.deleteAndKickDetectedGlobalSpammer({
-                chatId,
-                userId,
-                messageId,
-                text,
-                createdAt,
-                reason: 'Detected in 6 unique chats within 2 minutes',
-              }),
-          );
           return {
-            handled: true,
+            handled: false,
             skipKnownSpammerCheck: true,
+            enforcementReady: true,
           };
         }
 
@@ -8835,7 +8823,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     exemptFromEnforcement: boolean;
   }): Promise<GlobalSpammerTrackingResult> {
     let timedOut = false;
-    const result = await raceWithTimeout({
+    const result = await raceWithTimeout<GlobalSpammerTrackingResult>({
       operation: () =>
         this.trackAndRegisterGlobalSpammer({
           ...params,
@@ -8867,6 +8855,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    // FLAG: Only observation/policy work may outlive the tracking budget. Enforcement
+    // stays awaited by the webhook so persistence failures reach queue recovery.
+    if (result.enforcementReady) {
+      const handled = await this.deleteAndKickDetectedGlobalSpammer({
+        ...params,
+        reason: 'Detected in 6 unique chats within 2 minutes',
+      });
+      return { handled, skipKnownSpammerCheck: true };
+    }
     return result;
   }
 
@@ -8972,10 +8969,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     createdAt: string;
     reason: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const { chatId, userId, messageId, text, createdAt, reason } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
-      return;
+      return false;
     }
 
     const deleteIntent: EnsureModerationDeleteIntentInput = {
@@ -8995,6 +8992,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
     await this.ensureModerationDeleteIntent(deleteIntent);
 
+    const deleteAccepted = await this.attemptSpammerMessageDelete(deleteIntent);
     const claimed = await this.claimMessageScopedModerationAction({
       chatId,
       userId,
@@ -9002,21 +9000,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ruleCode: 'GLOBAL_SPAMMER_KICK',
     });
     if (!claimed) {
-      return;
-    }
-
-    try {
-      await this.executeModerationDelete(deleteIntent);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete message from detected global spammer',
-      );
+      return deleteAccepted;
     }
 
     await this.kickAndLogKnownSpammerEvent({
@@ -9027,6 +9011,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reason,
       claimAlreadyAcquired: true,
     });
+    return deleteAccepted;
   }
 
   private buildGlobalSpammerSignature(params: {

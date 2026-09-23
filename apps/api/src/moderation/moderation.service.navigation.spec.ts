@@ -3923,9 +3923,7 @@ describe('ModerationService', () => {
             isAdmin: false,
             source: 'remote',
           });
-          jest
-            .spyOn(service as any, 'deleteAndKickDetectedGlobalSpammer')
-            .mockResolvedValue(undefined);
+          jest.spyOn(service as any, 'deleteAndKickDetectedGlobalSpammer').mockResolvedValue(true);
         },
       },
       {
@@ -4024,7 +4022,7 @@ describe('ModerationService', () => {
       });
       const deleteSpammer = jest
         .spyOn(harness.service as any, 'deleteAndKickDetectedGlobalSpammer')
-        .mockResolvedValue(undefined);
+        .mockResolvedValue(true);
 
       await harness.service.handleUpdate(
         createPhotoAttachmentUpdate(99),
@@ -4205,7 +4203,7 @@ describe('ModerationService', () => {
         });
         jest
           .spyOn(harness.service as any, 'deleteAndKickDetectedGlobalSpammer')
-          .mockResolvedValue(undefined);
+          .mockResolvedValue(true);
         const update = createPhotoAttachmentUpdate(110);
 
         await harness.service.handleUpdate(update, undefined, 'webhook-photo-110');
