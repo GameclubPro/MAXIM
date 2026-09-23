@@ -172,6 +172,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
       expect.objectContaining({
         status: ChatBotMembershipStatus.ACTIVE,
         botAccessState: ChatBotAccessState.UNKNOWN,
+        botAccessCheckedAt: new Date('2026-08-26T12:00:00.000Z'),
       }),
     );
     expect(transactionClient.chat.upsert).toHaveBeenCalledWith({

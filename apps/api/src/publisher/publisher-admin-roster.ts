@@ -1,6 +1,7 @@
 import type { MaxClientService } from '../max/max-client.service';
 import { ChatBotMembershipStatus, Prisma, type ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { publisherAccessProbeLifecycleSuperseded } from './publisher-access-probe-fence';
 
 const GRANTED_TTL_MS = 3 * 24 * 60 * 60_000;
 const DENIED_TTL_MS = 15 * 60_000;
@@ -50,7 +51,7 @@ export async function syncPublisherAdminRoster(params: {
       !binding ||
       binding.publisherBotId !== publisherBotId ||
       binding.status !== ChatBotMembershipStatus.ACTIVE ||
-      (binding.lifecycleEventAt && binding.lifecycleEventAt > probeStartedAt) ||
+      publisherAccessProbeLifecycleSuperseded(binding, probeStartedAt) ||
       binding.botAccessCheckedAt?.getTime() !== params.botAccessCheckedAt.getTime() ||
       binding.botAccessState !== params.botAccessState
     )

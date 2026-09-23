@@ -27,6 +27,7 @@ describe('PublisherBindingRefreshService', () => {
     botAccessSource: string | null;
     botAccessCheckedAt: Date | null;
     lifecycleEventAt: Date | null;
+    lifecycleEventType?: string | null;
     lastSeenAt?: Date | null;
     lastWebhookAt: Date | null;
   };
@@ -282,6 +283,48 @@ describe('PublisherBindingRefreshService', () => {
     await f.service.refresh({ ...job, reason: 'stale_user_access', candidateUserId: 'installer' });
     expect(f.maxClient.getChatMemberAccess).toHaveBeenCalled();
     expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+  });
+
+  it('renews bot, catalog and user access despite concurrent ordinary messages', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const readBinding = f.tx.publisherEntityBinding.findUnique.getMockImplementation()!;
+    f.tx.publisherEntityBinding.findUnique.mockImplementation(
+      async () =>
+        ({
+          ...(await readBinding()),
+          lifecycleEventType: 'message_created',
+          lifecycleEventAt: new Date(Date.now() + 1_000),
+        }) as HarnessBinding,
+    );
+    await f.service.refresh({ ...job, reason: 'manual_recheck', candidateUserId: 'admin-1' });
+    expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ state: 'GRANTED' }),
+      }),
+    );
+    expect(f.tx.managedBotChatCatalog.upsert).toHaveBeenCalled();
+    expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalled();
+    expect(f.prisma.publisherEntityBinding.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            {
+              OR: expect.arrayContaining([
+                { lifecycleEventType: { in: expect.arrayContaining(['message_created']) } },
+              ]),
+            },
+            {
+              OR: [{ botAccessCheckedAt: null }, { botAccessCheckedAt: { lte: expect.any(Date) } }],
+            },
+          ]),
+        }),
+      }),
+    );
   });
 
   it('probes only the exact publisher bot and persists fresh access behind a lifecycle fence', async () => {

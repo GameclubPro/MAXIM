@@ -19,6 +19,10 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { syncPublisherAdminRoster } from './publisher-admin-roster';
+import {
+  publisherAccessProbeLifecycleSuperseded,
+  publisherAccessProbeLifecycleWhere,
+} from './publisher-access-probe-fence';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import {
@@ -221,9 +225,7 @@ export class PublisherBindingRefreshService {
             publisherBotId: this.publisherBotId,
             status: ChatBotMembershipStatus.ACTIVE,
             AND: [
-              {
-                OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: probeStartedAt } }],
-              },
+              publisherAccessProbeLifecycleWhere(probeStartedAt),
               {
                 OR: [{ botAccessCheckedAt: null }, { botAccessCheckedAt: { lte: probeStartedAt } }],
               },
@@ -679,6 +681,7 @@ export class PublisherBindingRefreshService {
             publisherBotId: true,
             status: true,
             lifecycleEventAt: true,
+            lifecycleEventType: true,
             botAccessCheckedAt: true,
             botAccessState: true,
           },
@@ -687,7 +690,7 @@ export class PublisherBindingRefreshService {
           !binding ||
           binding.publisherBotId !== this.publisherBotId ||
           binding.status !== ChatBotMembershipStatus.ACTIVE ||
-          (binding.lifecycleEventAt && binding.lifecycleEventAt > probeStartedAt) ||
+          publisherAccessProbeLifecycleSuperseded(binding, probeStartedAt) ||
           binding.botAccessCheckedAt?.getTime() !== committedBotAccessCheckedAt.getTime() ||
           binding.botAccessState !== committedBotAccessState
         ) {
@@ -812,6 +815,7 @@ export class PublisherBindingRefreshService {
           publisherBotId: true,
           status: true,
           lifecycleEventAt: true,
+          lifecycleEventType: true,
           botAccessCheckedAt: true,
           botAccessState: true,
         },
@@ -820,7 +824,7 @@ export class PublisherBindingRefreshService {
         !binding ||
         binding.publisherBotId !== this.publisherBotId ||
         binding.status !== ChatBotMembershipStatus.ACTIVE ||
-        (binding.lifecycleEventAt && binding.lifecycleEventAt > params.probeStartedAt) ||
+        publisherAccessProbeLifecycleSuperseded(binding, params.probeStartedAt) ||
         binding.botAccessCheckedAt?.getTime() !== params.committedBotAccessCheckedAt.getTime() ||
         binding.botAccessState !== params.committedBotAccessState
       ) {
@@ -1203,9 +1207,7 @@ export class PublisherBindingRefreshService {
         publisherBotId: this.publisherBotId,
         status: ChatBotMembershipStatus.ACTIVE,
         AND: [
-          {
-            OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: probeStartedAt } }],
-          },
+          publisherAccessProbeLifecycleWhere(probeStartedAt),
           {
             OR: [{ botAccessCheckedAt: null }, { botAccessCheckedAt: { lte: probeStartedAt } }],
           },

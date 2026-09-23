@@ -327,7 +327,7 @@ export class PublisherEntityBindingLifecycleService {
                 : ChatBotMembershipStatus.ACTIVE,
             botAccessState:
               kind === 'bot_removed' ? ChatBotAccessState.LOST : ChatBotAccessState.UNKNOWN,
-            botAccessCheckedAt: kind === 'bot_removed' ? eventAt : null,
+            botAccessCheckedAt: kind === 'bot_removed' || kind === 'bot_added' ? eventAt : null,
             botAccessSource: `webhook_${normalizedType}`,
             botAccessLastErrorCode: kind === 'bot_removed' ? 'BOT_REMOVED' : null,
             ...observation,
@@ -374,7 +374,8 @@ export class PublisherEntityBindingLifecycleService {
             capabilities: [],
             permissionsSnapshot: Prisma.JsonNull,
             botAccessState: ChatBotAccessState.UNKNOWN,
-            botAccessCheckedAt: null,
+            // FLAG: Keep the reset epoch even if later passive messages advance lifecycleEventAt.
+            botAccessCheckedAt: eventAt,
             botAccessExpiresAt: null,
             botAccessSource: 'webhook_bot_added',
             botAccessLastErrorCode: null,

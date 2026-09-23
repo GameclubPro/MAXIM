@@ -20,6 +20,8 @@ production entity. No production rows are repaired manually.
    Publisher activity could suppress a valid moderation grant or cache revocation.
 6. Publisher member-endpoint 403/404 responses became persisted user denials without
    confirming absence from the administrator roster of the same bot.
+7. Ordinary Publisher messages advance webhook ordering. Treating that timestamp
+   as a permissions reset discarded valid in-flight access checks in busy chats.
 
 ## Implementation
 
@@ -47,6 +49,10 @@ production entity. No production rows are repaired manually.
 - Implemented: member-endpoint 403/404 falls back to the exact Publisher admin
   roster after confirmed bot admin access. A failed fallback remains retryable and
   leaves the user's prior verdict intact; confirmed absence still denies access.
+- Implemented: known passive webhook observations do not supersede access probes.
+  Bot-added stores its reset event time in the existing access timestamp, so later
+  traffic cannot erase that fence. Exact bot snapshots, terminal lifecycle changes,
+  unknown event types and per-user membership resets remain protected.
 
 ## Verification And Release
 

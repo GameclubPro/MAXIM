@@ -15,6 +15,7 @@ import { MaxBotLinkService } from './max-bot-link.service';
 import { MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND } from './max-chat-admin-roster-sync.queue';
 import { ModerationDeleteIntentAccessWakeService } from './moderation-delete-intent-access-wake.service';
 import { syncPublisherAdminRoster } from '../publisher/publisher-admin-roster';
+import { publisherAccessProbeLifecycleWhere } from '../publisher/publisher-access-probe-fence';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgresRace = databaseUrl ? describe : describe.skip;
@@ -238,6 +239,46 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
           ]),
         );
         expect(await prisma.chatBotMembership.count({ where: { chatId } })).toBe(0);
+        await prisma.publisherEntityBinding.update({
+          where: { chatId },
+          data: {
+            lifecycleEventType: 'message_created',
+            lifecycleEventAt: new Date(probeStartedAt.getTime() + 1),
+          },
+        });
+        await expect(
+          syncPublisherAdminRoster({
+            ...params,
+            maxClient: {
+              getChatAdminAccesses: async () => [
+                { userId: 'busy-chat-admin', isBot: false, isAdmin: true },
+              ],
+            } as never,
+          }),
+        ).resolves.toBe(true);
+        await prisma.publisherEntityBinding.update({
+          where: { chatId },
+          data: {
+            botAccessState: 'UNKNOWN',
+            botAccessCheckedAt: new Date(probeStartedAt.getTime() + 2),
+            lifecycleEventType: 'message_created',
+            lifecycleEventAt: new Date(probeStartedAt.getTime() + 3),
+          },
+        });
+        const staleProbe = await prisma.publisherEntityBinding.updateMany({
+          where: {
+            chatId,
+            status: 'ACTIVE',
+            AND: [
+              publisherAccessProbeLifecycleWhere(probeStartedAt),
+              {
+                OR: [{ botAccessCheckedAt: null }, { botAccessCheckedAt: { lte: probeStartedAt } }],
+              },
+            ],
+          },
+          data: { botAccessState: 'CONFIRMED_ADMIN' },
+        });
+        expect(staleProbe.count).toBe(0);
         const newer = new Date(probeStartedAt.getTime() + 2);
         await prisma.publisherEntityBinding.update({
           where: { chatId },
