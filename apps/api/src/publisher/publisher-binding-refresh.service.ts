@@ -18,6 +18,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
+import { syncPublisherAdminRoster } from './publisher-admin-roster';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import {
@@ -359,6 +360,26 @@ export class PublisherBindingRefreshService {
         job,
         accessResult.state === ManagedEntityAccessState.GRANTED ? 'granted' : 'user_denied',
       );
+    }
+    if (
+      (!candidateJob ||
+        job.reason === 'bot_added' ||
+        job.reason === 'webhook_observed' ||
+        job.reason === 'manual_recheck') &&
+      (committedBotAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+        committedBotAccessState === ChatBotAccessState.CONFIRMED_OWNER)
+    ) {
+      const committed = await syncPublisherAdminRoster({
+        prisma: this.prisma,
+        maxClient: this.maxClient,
+        chatId,
+        publisherBotId: this.publisherBotId,
+        entityType: catalogRefresh.entityType,
+        probeStartedAt,
+        botAccessCheckedAt: committedBotAccessCheckedAt,
+        botAccessState: committedBotAccessState,
+      });
+      if (!committed) throw new PublisherCandidateRefreshSupersededError();
     }
   }
 
@@ -737,8 +758,19 @@ export class PublisherBindingRefreshService {
       if (statusCode !== 403 && statusCode !== 404) {
         throw error;
       }
-      userAccess = null;
-      terminalStatusCode = statusCode;
+      // FLAG: A member-endpoint 403/404 is not proof of lost admin rights. Confirm the
+      // exact user's absence through the same Publisher token; failed rosters stay unknown.
+      const roster = this.isAdminOrOwner(params.botAccess)
+        ? await this.maxClient.getChatAdminAccesses(params.chatId, {
+            botId: this.publisherBotId,
+            trafficClass: params.interactive ? 'interactive' : 'background',
+            sourceTag: 'publisher_user_access',
+            bypassCache: true,
+            timeoutMs: 5_000,
+          })
+        : [];
+      userAccess = roster.find((member) => member.userId === params.userId) ?? null;
+      terminalStatusCode = userAccess ? null : statusCode;
     }
     const checkedAt = new Date();
     const userIsBot = userAccess?.isBot === true;

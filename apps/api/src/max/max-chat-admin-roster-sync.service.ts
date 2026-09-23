@@ -1,6 +1,6 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
 import {
   ChatBotAccessState,
@@ -132,13 +132,14 @@ export class MaxChatAdminRosterSyncService {
       return false;
     }
 
-    const desiredJobData = this.normalizeJobData(params);
+    let desiredJobData = this.normalizeJobData(params);
     if (!desiredJobData) {
       return false;
     }
 
     const jobId = this.buildJobId(desiredJobData.chatId);
     const membershipPrewarm = desiredJobData.source === 'webhook_membership_churn';
+    let followUp = false;
 
     try {
       const existing = await this.queue.getJob(jobId);
@@ -151,10 +152,28 @@ export class MaxChatAdminRosterSyncService {
           if (membershipPrewarm) {
             return true;
           }
-          if (existingData && this.areJobDataEqual(existingData, desiredJobData)) {
+          if (state === 'active' && desiredJobData.source === 'webhook_bot_added') {
+            // FLAG: A running pre-event probe cannot consume a new bot-added verification.
+            followUp = true;
+          } else if (existingData && this.areJobDataEqual(existingData, desiredJobData)) {
             return true;
-          }
-          if (state === 'waiting' || state === 'delayed') {
+          } else if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
+            if (
+              existingData?.source === 'webhook_bot_added' &&
+              (existingData.retryUntilMs ?? 0) > Date.now()
+            ) {
+              desiredJobData = {
+                ...desiredJobData,
+                source: 'webhook_bot_added',
+                retryUntilMs: Math.max(
+                  existingData.retryUntilMs ?? 0,
+                  desiredJobData.retryUntilMs ?? 0,
+                ),
+                botIds: [
+                  ...new Set([...(existingData.botIds ?? []), ...(desiredJobData.botIds ?? [])]),
+                ],
+              };
+            }
             await existing.remove();
           } else {
             return true;
@@ -169,7 +188,10 @@ export class MaxChatAdminRosterSyncService {
       }
 
       await this.queue.add('sync-chat-admin-roster', desiredJobData, {
-        jobId,
+        jobId: followUp ? `${jobId}__${randomUUID()}` : jobId,
+        ...(followUp
+          ? { deduplication: { id: `${jobId}__bot_added`, keepLastIfActive: true } }
+          : {}),
         attempts: this.resolveJobAttempts(desiredJobData),
         priority: this.resolveJobPriority(desiredJobData),
         removeOnComplete: true,
@@ -894,6 +916,7 @@ export class MaxChatAdminRosterSyncService {
             where: {
               chatId,
               userId: { in: accessEvidenceUserIds },
+              botId: { in: this.maxBotRegistry.getDiscoveryBots().map((bot) => bot.id) },
               checkedAt: { gt: accessContext.probeStartedAt },
             },
             select: { userId: true },
@@ -1120,6 +1143,7 @@ export class MaxChatAdminRosterSyncService {
             where: {
               chatId: job.chatId,
               userId: { in: persisted.removedUserIds },
+              botId: { in: this.maxBotRegistry.getDiscoveryBots().map((bot) => bot.id) },
               state: 'GRANTED',
               checkedAt: { gt: accessContext.probeStartedAt },
             },

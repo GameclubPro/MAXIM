@@ -163,6 +163,7 @@ describe('PublisherBindingRefreshService', () => {
           sourceVersion: edgeState.sourceVersion,
         })),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        createMany: jest.fn().mockResolvedValue({ count: 0 }),
         upsert: jest.fn().mockResolvedValue({ chatId: 'chat-1' }),
       },
     };
@@ -170,6 +171,7 @@ describe('PublisherBindingRefreshService', () => {
       $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     });
     const maxClient = {
+      getChatAdminAccesses: jest.fn().mockResolvedValue([]),
       getCurrentChatMemberAccess: jest.fn(async () => {
         if (accessResult instanceof Error) {
           throw accessResult;
@@ -244,6 +246,43 @@ describe('PublisherBindingRefreshService', () => {
     reason: 'bootstrap',
     requestedAt: '2026-08-26T12:00:00.000Z',
   } as const;
+
+  it.each(['bootstrap', 'bot_added', 'manual_recheck'] as const)(
+    'synchronizes all Publisher admins on %s even while publishing is disabled',
+    async (reason) => {
+      const f = createHarness(
+        { isAdmin: true, isOwner: false, permissions: ['write'], permissionsKnown: true },
+        true,
+        false,
+      );
+      f.maxClient.getChatAdminAccesses.mockResolvedValue([
+        { userId: 'other-admin', isBot: false, isAdmin: true, isOwner: false },
+      ]);
+      await f.service.refresh({
+        ...job,
+        reason,
+        ...(reason === 'bootstrap' ? {} : { candidateUserId: 'installer' }),
+      });
+      expect(f.tx.managedEntityAccessEdge.createMany).toHaveBeenCalledWith({
+        skipDuplicates: true,
+        data: [
+          expect.objectContaining({ userId: 'other-admin', botId: 'publik_bot', state: 'GRANTED' }),
+        ],
+      });
+    },
+  );
+
+  it('keeps user renewal targeted instead of fetching a roster per user', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    await f.service.refresh({ ...job, reason: 'stale_user_access', candidateUserId: 'installer' });
+    expect(f.maxClient.getChatMemberAccess).toHaveBeenCalled();
+    expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+  });
 
   it('probes only the exact publisher bot and persists fresh access behind a lifecycle fence', async () => {
     const { service, prisma, maxClient, dispatchHealth } = createHarness({
@@ -1164,7 +1203,7 @@ describe('PublisherBindingRefreshService', () => {
   );
 
   it.each([403, 404])(
-    'terminalizes a stale user-access HTTP %s without exhausting queue retries',
+    'terminalizes user-access HTTP %s only after a complete roster confirms absence',
     async (statusCode) => {
       const { service, tx, edgeState, maxClient, bindingState } = createHarness({
         isAdmin: true,
@@ -1212,8 +1251,57 @@ describe('PublisherBindingRefreshService', () => {
         }),
       );
       expect(bindingState.botAccessState).toBe(ChatBotAccessState.CONFIRMED_ADMIN);
+      expect(maxClient.getChatAdminAccesses).toHaveBeenCalledWith(
+        'chat-1',
+        expect.objectContaining({ botId: 'publik_bot', bypassCache: true }),
+      );
     },
   );
+
+  it.each([403, 404])(
+    'recovers an administrator from the exact roster after member HTTP %s',
+    async (statusCode) => {
+      const f = createHarness({
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      });
+      f.maxClient.getChatMemberAccess.mockRejectedValueOnce(
+        Object.assign(new Error('member lookup unavailable'), { response: { status: statusCode } }),
+      );
+      f.maxClient.getChatAdminAccesses.mockResolvedValue([
+        { userId: 'admin-1', isBot: false, isAdmin: true, isOwner: false },
+      ]);
+      await f.service.refresh({ ...job, reason: 'stale_user_access', candidateUserId: 'admin-1' });
+      expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            state: 'GRANTED',
+            deniedReason: null,
+            lastMaxStatusCode: null,
+          }),
+        }),
+      );
+    },
+  );
+
+  it('does not turn two unavailable authorization endpoints into a persisted user denial', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    f.maxClient.getChatMemberAccess.mockRejectedValueOnce(
+      Object.assign(new Error('member lookup unavailable'), { response: { status: 403 } }),
+    );
+    f.maxClient.getChatAdminAccesses.mockRejectedValueOnce(new Error('roster unavailable'));
+    await expect(
+      f.service.refresh({ ...job, reason: 'stale_user_access', candidateUserId: 'admin-1' }),
+    ).rejects.toThrow('roster unavailable');
+    expect(f.tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+  });
 
   it('keeps retryable stale user-access failures in the queue retry path', async () => {
     const { service, edgeState, maxClient } = createHarness({

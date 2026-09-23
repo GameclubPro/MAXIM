@@ -286,6 +286,61 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
+  it.each(['waiting', 'delayed', 'prioritized'])(
+    'preserves bot-added propagation retries when %s discovery work overlaps',
+    async (state) => {
+      const { service, queue } = createService();
+      const retryUntilMs = Date.now() + 45_000;
+      queue.getJob.mockResolvedValue({
+        data: { chatId: '-100122', botIds: ['bot-1'], source: 'webhook_bot_added', retryUntilMs },
+        getState: jest.fn().mockResolvedValue(state),
+        remove: jest.fn(),
+      });
+      await service.scheduleChatAdminRosterSync({
+        chatId: '-100122',
+        botIds: ['bot-2'],
+        source: 'discovery_snapshot',
+      });
+      expect(queue.add).toHaveBeenCalledWith(
+        'sync-chat-admin-roster',
+        expect.objectContaining({
+          source: 'webhook_bot_added',
+          retryUntilMs,
+          botIds: ['bot-1', 'bot-2'],
+        }),
+        expect.objectContaining({ attempts: 8, priority: 1 }),
+      );
+    },
+  );
+
+  it('retains a deduplicated bot-added follow-up when the previous probe is already active', async () => {
+    const { service, queue } = createService();
+    const remove = jest.fn();
+    queue.getJob.mockResolvedValue({
+      data: { chatId: '-100122', botIds: ['bot-1'], source: 'discovery_snapshot' },
+      getState: jest.fn().mockResolvedValue('active'),
+      remove,
+    });
+    await service.scheduleChatAdminRosterSync({
+      chatId: '-100122',
+      botIds: ['bot-2'],
+      source: 'webhook_bot_added',
+      retryUntilMs: Date.now() + 45_000,
+    });
+    expect(remove).not.toHaveBeenCalled();
+    expect(queue.add).toHaveBeenCalledWith(
+      'sync-chat-admin-roster',
+      expect.objectContaining({
+        source: 'webhook_bot_added',
+        botIds: ['bot-2'],
+      }),
+      expect.objectContaining({
+        deduplication: { id: 'chat-admin-roster-sync__-100122__bot_added', keepLastIfActive: true },
+        attempts: 8,
+      }),
+    );
+  });
+
   it('drops webhook membership churn prewarms when the roster queue is full', async () => {
     const { service, queue } = createService();
     queue.getJobCounts = jest.fn().mockResolvedValue({
@@ -736,6 +791,7 @@ describe('MaxChatAdminRosterSyncService', () => {
         ([args]) => args?.where?.userId?.in?.includes('user-1'),
       )?.[0];
       expect(supersedingEdgeQuery?.where).not.toHaveProperty('state');
+      expect(supersedingEdgeQuery?.where.botId).toEqual({ in: ['bot-1', 'bot-2'] });
     },
   );
 

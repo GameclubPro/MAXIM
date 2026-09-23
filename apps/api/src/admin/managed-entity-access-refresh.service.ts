@@ -11,11 +11,18 @@ const REFRESH_AHEAD_MS = 12 * 60 * 60_000;
 const REFRESH_COOLDOWN_MS = 30_000;
 const REFRESH_SCOPE_LIMIT = 1_000;
 const REFRESH_BATCH_SIZE = 25;
+const REFRESH_CURSOR_TTL_MS = 5 * 60_000;
+
+type RefreshScope = {
+  until: number;
+  task: Promise<void>;
+  cursor: { chatId: string; botId: string } | null;
+};
 
 @Injectable()
 export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
   private readonly logger = new Logger(ManagedEntityAccessRefreshService.name);
-  private readonly scopes = new Map<string, { until: number; task: Promise<void> }>();
+  private readonly scopes = new Map<string, RefreshScope>();
   private stopping = false;
 
   constructor(
@@ -39,13 +46,19 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
     const key = JSON.stringify([profile, userId, entityType ?? null]);
     const now = Date.now();
     for (const [scopeKey, scope] of this.scopes) {
-      if (scope.until <= now) this.scopes.delete(scopeKey);
+      if (scope.until + REFRESH_CURSOR_TTL_MS <= now) this.scopes.delete(scopeKey);
     }
-    if (this.scopes.has(key) || this.scopes.size >= REFRESH_SCOPE_LIMIT) return;
+    const previous = this.scopes.get(key);
+    if (previous && previous.until > now) return;
+    if (!previous && this.scopes.size >= REFRESH_SCOPE_LIMIT) return;
 
-    const scope = { until: Number.POSITIVE_INFINITY, task: Promise.resolve() };
+    const scope: RefreshScope = {
+      until: Number.POSITIVE_INFINITY,
+      task: Promise.resolve(),
+      cursor: previous?.cursor ?? null,
+    };
     this.scopes.set(key, scope);
-    scope.task = this.enqueueDue(userId, profile, entityType)
+    scope.task = this.enqueueDue(userId, profile, entityType, scope)
       .then(() => {
         scope.until = Date.now() + REFRESH_COOLDOWN_MS;
       })
@@ -61,7 +74,8 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
   private async enqueueDue(
     userId: string,
     profile: 'moderation' | 'publisher',
-    entityType?: ManagedEntityType,
+    entityType: ManagedEntityType | undefined,
+    scope: RefreshScope,
   ): Promise<void> {
     const publisherBotId = this.registry.getPublisherBotDescriptor().id;
     const botIds =
@@ -111,15 +125,41 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
                 lastMaxErrorCode: null,
               },
             ]),
+        {
+          state: {
+            in: [ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED],
+          },
+          checkedAt: { lte: new Date(now.getTime() - 15 * 60_000) },
+          OR: [{ expiresAt: null }, { expiresAt: { lte: now } }],
+          ...(profile === 'moderation'
+            ? {
+                chat: {
+                  botMemberships: { some: { botId: { in: botIds }, status: 'ACTIVE' as const } },
+                },
+              }
+            : {}),
+        },
       ],
       ...(profile === 'publisher'
         ? { chat: { publisherBinding: { is: publisherRefreshEvidenceWhere(publisherBotId) } } }
+        : {}),
+      ...(scope.cursor
+        ? {
+            AND: [
+              {
+                OR: [
+                  { chatId: { gt: scope.cursor.chatId } },
+                  { chatId: scope.cursor.chatId, botId: { gt: scope.cursor.botId } },
+                ],
+              },
+            ],
+          }
         : {}),
     };
     const edges = await this.prisma.managedEntityAccessEdge.findMany({
       where,
       select: { chatId: true, botId: true, entityType: true, sourceVersion: true },
-      orderBy: [{ checkedAt: 'asc' }, { chatId: 'asc' }, { botId: 'asc' }],
+      orderBy: [{ chatId: 'asc' }, { botId: 'asc' }],
       take: REFRESH_BATCH_SIZE,
     });
     const scheduled = new Set<string>();
@@ -147,5 +187,11 @@ export class ManagedEntityAccessRefreshService implements OnModuleDestroy {
       }
       scheduled.add(edge.chatId);
     }
+    // A failing or still-pending first page must not starve the rest of this user's catalog.
+    const last = edges.at(-1);
+    scope.cursor =
+      edges.length === REFRESH_BATCH_SIZE && last
+        ? { chatId: last.chatId, botId: last.botId }
+        : null;
   }
 }

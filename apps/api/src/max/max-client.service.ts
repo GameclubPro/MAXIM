@@ -3170,6 +3170,14 @@ export class MaxClientService implements OnModuleDestroy {
     return snapshot;
   }
 
+  async getChatAdminAccesses(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatMemberAccess[]> {
+    const members = await this.listChatAdminMembers(chatId.trim(), options);
+    return members.map((member) => this.parseChatMemberAccess(member));
+  }
+
   async getChatAdminIds(chatId: string, options: MaxApiRequestOptions = {}): Promise<string[]> {
     const normalizedChatId = chatId.trim();
     const botId = this.resolveBot(options.botId).id;

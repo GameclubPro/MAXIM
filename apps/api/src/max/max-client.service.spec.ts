@@ -10461,6 +10461,30 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('preserves unknown bot identity and owner roles in authorization rosters', async () => {
+    const request = jest.fn().mockReturnValue(
+      of({
+        status: 200,
+        data: {
+          members: [
+            { user_id: 'owner', is_owner: true, is_bot: false },
+            { user: { user_id: 'admin', is_bot: false }, is_admin: true },
+            { user_id: 'bot', is_admin: true, is_bot: true },
+            { user_id: 'unknown', is_admin: true },
+          ],
+        },
+      }),
+    );
+    const service = createService({ request });
+    await expect(service.getChatAdminAccesses('chat-1')).resolves.toEqual([
+      expect.objectContaining({ userId: 'owner', isOwner: true, isBot: false }),
+      expect.objectContaining({ userId: 'admin', isAdmin: true, isBot: false }),
+      expect.objectContaining({ userId: 'bot', isAdmin: true, isBot: true }),
+      expect.objectContaining({ userId: 'unknown', isAdmin: true, isBot: null }),
+    ]);
+    await service.onModuleDestroy();
+  });
+
   it('paginates and caches rich admin roster entries independently from admin ids', async () => {
     const request = jest
       .fn()

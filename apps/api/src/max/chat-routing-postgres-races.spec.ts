@@ -14,6 +14,7 @@ import { ManagedEntityAccessLossService } from './managed-entity-access-loss.ser
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND } from './max-chat-admin-roster-sync.queue';
 import { ModerationDeleteIntentAccessWakeService } from './moderation-delete-intent-access-wake.service';
+import { syncPublisherAdminRoster } from '../publisher/publisher-admin-roster';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgresRace = databaseUrl ? describe : describe.skip;
@@ -150,6 +151,116 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
   afterAll(async () => {
     await pool.end();
   });
+
+  it.each([ChatEntityType.CHAT, ChatEntityType.CHANNEL])(
+    'discovers Publisher %s admins without overwriting newer denials or Major edges',
+    async (entityType) => {
+      const chatId = `publisher-roster-${randomUUID()}`;
+      createdChatIds.push(chatId);
+      const prisma = createPrismaClient(databaseUrl, { max: 1, statement_timeout: 10_000 });
+      const probeStartedAt = new Date();
+      try {
+        await prisma.chat.create({ data: { id: chatId, title: 'Roster race', entityType } });
+        await prisma.publisherEntityBinding.create({
+          data: {
+            chatId,
+            publisherBotId: 'publik',
+            botAccessState: 'CONFIRMED_ADMIN',
+            botAccessCheckedAt: probeStartedAt,
+          },
+        });
+        await prisma.managedEntityAccessEdge.createMany({
+          data: [
+            {
+              chatId,
+              userId: 'absent-admin',
+              botId: 'publik',
+              entityType,
+              state: 'GRANTED',
+              checkedAt: probeStartedAt,
+            },
+            {
+              chatId,
+              userId: 'absent-admin',
+              botId: 'major',
+              entityType,
+              state: 'GRANTED',
+              checkedAt: probeStartedAt,
+            },
+          ],
+        });
+        const params = {
+          prisma: prisma as never,
+          chatId,
+          publisherBotId: 'publik',
+          entityType,
+          probeStartedAt,
+          botAccessCheckedAt: probeStartedAt,
+          botAccessState: 'CONFIRMED_ADMIN' as const,
+          maxClient: {
+            getChatAdminAccesses: async () => {
+              await prisma.managedEntityAccessEdge.create({
+                data: {
+                  chatId,
+                  userId: 'removed-during-probe',
+                  botId: 'publik',
+                  entityType,
+                  state: 'USER_DENIED',
+                  sourceVersion: 'newer-event',
+                  checkedAt: new Date(probeStartedAt.getTime() + 1),
+                },
+              });
+              return ['other-admin', 'removed-during-probe'].map((userId) => ({
+                userId,
+                isBot: false,
+                isAdmin: true,
+                isOwner: false,
+              }));
+            },
+          } as never,
+        };
+        await expect(syncPublisherAdminRoster(params)).resolves.toBe(true);
+        const edges = await prisma.managedEntityAccessEdge.findMany({ where: { chatId } });
+        expect(edges).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ userId: 'other-admin', botId: 'publik', state: 'GRANTED' }),
+            expect.objectContaining({
+              userId: 'removed-during-probe',
+              state: 'USER_DENIED',
+              sourceVersion: 'newer-event',
+            }),
+            expect.objectContaining({
+              userId: 'absent-admin',
+              botId: 'publik',
+              state: 'USER_DENIED',
+            }),
+            expect.objectContaining({ userId: 'absent-admin', botId: 'major', state: 'GRANTED' }),
+          ]),
+        );
+        expect(await prisma.chatBotMembership.count({ where: { chatId } })).toBe(0);
+        const newer = new Date(probeStartedAt.getTime() + 2);
+        await prisma.publisherEntityBinding.update({
+          where: { chatId },
+          data: { status: 'REMOVED', lifecycleEventAt: newer },
+        });
+        await expect(
+          syncPublisherAdminRoster({
+            ...params,
+            maxClient: {
+              getChatAdminAccesses: async () => [
+                { userId: 'late-admin', isBot: false, isAdmin: true },
+              ],
+            } as never,
+          }),
+        ).resolves.toBe(false);
+        expect(
+          await prisma.managedEntityAccessEdge.count({ where: { chatId, userId: 'late-admin' } }),
+        ).toBe(0);
+      } finally {
+        await prisma.$disconnect();
+      }
+    },
+  );
 
   it('creates one semantic claim and grants one business lease across six mirrored receipts', async () => {
     const suffix = randomUUID();
