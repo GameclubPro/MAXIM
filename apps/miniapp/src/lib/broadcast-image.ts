@@ -1,27 +1,15 @@
+import { normalizeImageMimeType, resolveInputImageMimeType } from './broadcast-image-format';
+
 export const MAX_PREPARED_IMAGE_BYTES = 6_000_000;
 export const BROADCAST_IMAGE_OPERATION_TIMEOUT_MS = 10_000;
+export const BROADCAST_IMAGE_PREPARATION_TIMEOUT_MS = 45_000;
 const MAX_SOURCE_IMAGE_BYTES = 64_000_000;
 const MIN_PREPARED_IMAGE_BYTES = 96_000;
 const IMAGE_DIMENSION_STEPS = [2560, 2200, 1920, 1600, 1440, 1280, 1080, 960, 800, 640];
 const IMAGE_QUALITY_STEPS = [0.92, 0.88, 0.84, 0.8, 0.76, 0.72];
 const BASE64_BINARY_CHUNK_BYTES = 12_288;
-const FALLBACK_IMAGE_ERROR = 'Не удалось подготовить фото. Выберите другое изображение.';
-const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
-  bmp: 'image/bmp',
-  gif: 'image/gif',
-  heic: 'image/heic',
-  heif: 'image/heif',
-  jpeg: 'image/jpeg',
-  jpg: 'image/jpeg',
-  png: 'image/png',
-  tif: 'image/tiff',
-  tiff: 'image/tiff',
-  webp: 'image/webp',
-};
-const NORMALIZED_IMAGE_MIME_TYPES: Record<string, string> = {
-  'image/jpg': 'image/jpeg',
-  'image/pjpeg': 'image/jpeg',
-};
+const FALLBACK_IMAGE_ERROR =
+  'Не удалось обработать фото на этом устройстве. Попробуйте ещё раз или выберите JPEG/PNG.';
 const IMAGE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
   'image/bmp': '.bmp',
   'image/gif': '.gif',
@@ -63,7 +51,34 @@ export type PreparedBroadcastImage = {
 type PrepareBroadcastImageOptions = {
   maxBytes?: number;
   maxSourceBytes?: number;
+  signal?: AbortSignal;
 };
+
+export class ImagePreparationError extends Error {
+  constructor(
+    readonly code:
+      | 'empty'
+      | 'source-size'
+      | 'format'
+      | 'read'
+      | 'decode'
+      | 'encode'
+      | 'output-size'
+      | 'timeout',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ImagePreparationError';
+  }
+}
+
+function imagePreparationAbortReason(signal?: AbortSignal): unknown {
+  return signal?.reason ?? new DOMException('Подготовка фото отменена.', 'AbortError');
+}
+
+function throwIfImagePreparationAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw imagePreparationAbortReason(signal);
+}
 
 type LoadedImageSource = {
   width: number;
@@ -84,54 +99,55 @@ function safeCloseImageBitmap(bitmap: ImageBitmap): void {
   }
 }
 
-function loadImageBitmapWithTimeout(blob: Blob): Promise<LoadedImageSource | null> {
-  let pendingBitmap: Promise<ImageBitmap>;
-  try {
-    pendingBitmap = createImageBitmap(blob, {
-      imageOrientation: 'from-image',
-    } as ImageBitmapOptions);
-  } catch {
-    return Promise.resolve(null);
-  }
-
+function waitForImageOperation<T>(
+  pending: Promise<T>,
+  signal?: AbortSignal,
+  releaseLate?: (value: T) => void,
+): Promise<T | null> {
   return new Promise((resolve) => {
     let settled = false;
-    const timeoutId = globalThis.setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        resolve(null);
+    const finish = (value: T | null) => {
+      if (settled) {
+        if (value !== null) releaseLate?.(value);
+        return;
       }
-    }, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
-
-    void pendingBitmap.then(
-      (bitmap) => {
-        if (settled) {
-          safeCloseImageBitmap(bitmap);
-          return;
-        }
-        settled = true;
-        globalThis.clearTimeout(timeoutId);
-        resolve({
-          width: bitmap.width,
-          height: bitmap.height,
-          draw: (context, width, height) => {
-            context.drawImage(bitmap, 0, 0, width, height);
-          },
-          close: () => safeCloseImageBitmap(bitmap),
-        });
-      },
-      () => {
-        if (!settled) {
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          resolve(null);
-        }
-      },
-    );
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', cancel);
+      resolve(value);
+    };
+    const cancel = () => finish(null);
+    const timeoutId = globalThis.setTimeout(cancel, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted) cancel();
+    void pending.then(finish, cancel);
   });
 }
 
-function loadHtmlImageWithTimeout(blob: Blob): Promise<LoadedImageSource> {
+async function loadImageBitmapWithTimeout(
+  blob: Blob,
+  signal: AbortSignal,
+): Promise<LoadedImageSource | null> {
+  let bitmap: ImageBitmap | null;
+  try {
+    bitmap = await waitForImageOperation(
+      createImageBitmap(blob, { imageOrientation: 'from-image' }),
+      signal,
+      safeCloseImageBitmap,
+    );
+  } catch {
+    return null;
+  }
+  if (!bitmap) return null;
+  return {
+    width: bitmap.width,
+    height: bitmap.height,
+    draw: (context, width, height) => context.drawImage(bitmap, 0, 0, width, height),
+    close: () => safeCloseImageBitmap(bitmap),
+  };
+}
+
+function loadHtmlImageWithTimeout(blob: Blob, signal: AbortSignal): Promise<LoadedImageSource> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     const objectUrl = URL.createObjectURL(blob);
@@ -150,6 +166,7 @@ function loadHtmlImageWithTimeout(blob: Blob): Promise<LoadedImageSource> {
       }
     };
     const clearHandlers = () => {
+      signal.removeEventListener('abort', fail);
       image.onload = null;
       image.onerror = null;
     };
@@ -172,6 +189,7 @@ function loadHtmlImageWithTimeout(blob: Blob): Promise<LoadedImageSource> {
       reject(new Error(FALLBACK_IMAGE_ERROR));
     };
     const timeoutId = globalThis.setTimeout(fail, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
+    signal.addEventListener('abort', fail, { once: true });
 
     image.onload = () => {
       if (settled) {
@@ -200,11 +218,12 @@ function loadHtmlImageWithTimeout(blob: Blob): Promise<LoadedImageSource> {
   });
 }
 
-function readBlobAsDataUrl(blob: Blob): Promise<string> {
+function readBlobAsDataUrl(blob: Blob, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     let settled = false;
     const clearHandlers = () => {
+      signal?.removeEventListener('abort', rejectRead);
       reader.onload = null;
       reader.onerror = null;
       reader.onabort = null;
@@ -224,6 +243,7 @@ function readBlobAsDataUrl(blob: Blob): Promise<string> {
       reject(new Error('Не удалось прочитать файл.'));
     };
     const timeoutId = globalThis.setTimeout(rejectRead, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
+    signal?.addEventListener('abort', rejectRead, { once: true });
 
     reader.onload = () => {
       if (settled) {
@@ -250,40 +270,15 @@ function readBlobAsDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-function readBlobArrayBufferWithTimeout(blob: Blob): Promise<ArrayBuffer | null> {
-  let pendingBuffer: Promise<ArrayBuffer>;
+function readBlobArrayBufferWithTimeout(
+  blob: Blob,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer | null> {
   try {
-    pendingBuffer = blob.arrayBuffer();
+    return waitForImageOperation(blob.arrayBuffer(), signal);
   } catch {
     return Promise.resolve(null);
   }
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const timeoutId = globalThis.setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        resolve(null);
-      }
-    }, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
-
-    void pendingBuffer.then(
-      (buffer) => {
-        if (!settled) {
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          resolve(buffer);
-        }
-      },
-      () => {
-        if (!settled) {
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          resolve(null);
-        }
-      },
-    );
-  });
 }
 
 function encodeArrayBufferAsBase64(buffer: ArrayBuffer): string {
@@ -306,11 +301,13 @@ function encodeArrayBufferAsBase64(buffer: ArrayBuffer): string {
   return chunks.join('');
 }
 
-export async function readBlobAsBase64(blob: Blob): Promise<string> {
+export async function readBlobAsBase64(blob: Blob, signal?: AbortSignal): Promise<string> {
+  throwIfImagePreparationAborted(signal);
   if (typeof blob.arrayBuffer === 'function' && typeof globalThis.btoa === 'function') {
     try {
-      const buffer = await readBlobArrayBufferWithTimeout(blob);
-      const base64 = buffer ? encodeArrayBufferAsBase64(buffer) : '';
+      const buffer = await readBlobArrayBufferWithTimeout(blob, signal);
+      throwIfImagePreparationAborted(signal);
+      const base64 = buffer?.byteLength === blob.size ? encodeArrayBufferAsBase64(buffer) : '';
       if (base64) {
         return base64;
       }
@@ -319,52 +316,36 @@ export async function readBlobAsBase64(blob: Blob): Promise<string> {
     }
   }
 
-  const dataUrl = await readBlobAsDataUrl(blob);
+  throwIfImagePreparationAborted(signal);
+  let dataUrl: string;
+  try {
+    dataUrl = await readBlobAsDataUrl(blob, signal);
+  } catch {
+    throwIfImagePreparationAborted(signal);
+    throw new ImagePreparationError('read', 'Не удалось прочитать файл. Выберите его заново.');
+  }
   const payload = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
   if (!payload) {
-    throw new Error('Не удалось прочитать файл.');
+    throw new ImagePreparationError('read', 'Не удалось прочитать файл. Выберите его заново.');
   }
 
   return payload;
 }
 
-async function loadImageFromBlob(blob: Blob): Promise<LoadedImageSource> {
+async function loadImageFromBlob(blob: Blob, signal: AbortSignal): Promise<LoadedImageSource> {
   if (typeof createImageBitmap === 'function') {
-    const bitmap = await loadImageBitmapWithTimeout(blob);
+    const bitmap = await loadImageBitmapWithTimeout(blob, signal);
     if (bitmap) {
       return bitmap;
     }
   }
 
-  return loadHtmlImageWithTimeout(blob);
-}
-
-function normalizeImageMimeType(mimeType: string): string {
-  const normalized = mimeType.trim().toLowerCase();
-  if (!normalized || normalized === 'image/*') {
-    return '';
-  }
-
-  return NORMALIZED_IMAGE_MIME_TYPES[normalized] ?? normalized;
-}
-
-function inferImageMimeTypeFromName(fileName: string): string {
-  const normalized = fileName.trim().toLowerCase();
-  const extensionMatch = normalized.match(/\.([a-z0-9]+)$/u);
-  if (!extensionMatch) {
-    return '';
-  }
-
-  return IMAGE_MIME_BY_EXTENSION[extensionMatch[1] ?? ''] ?? '';
-}
-
-function resolveInputImageMimeType(file: File): string {
-  return normalizeImageMimeType(file.type) || inferImageMimeTypeFromName(file.name);
+  throwIfImagePreparationAborted(signal);
+  return loadHtmlImageWithTimeout(blob, signal);
 }
 
 function ensureTypedImageBlob(file: File, mimeType: string): Blob {
-  const normalizedMimeType = normalizeImageMimeType(file.type);
-  if (!mimeType || normalizedMimeType === mimeType) {
+  if (!mimeType || file.type === mimeType) {
     return file;
   }
 
@@ -374,7 +355,8 @@ function ensureTypedImageBlob(file: File, mimeType: string): Blob {
 export function resolveOutputFileName(fileName: string, mimeType: string): string {
   const normalized = fileName.trim() || 'broadcast-image';
   const baseName = normalized.replace(/\.[^./\\]+$/u, '') || 'broadcast-image';
-  return `${baseName}${IMAGE_EXTENSION_BY_MIME_TYPE[mimeType] ?? '.jpg'}`;
+  const extension = IMAGE_EXTENSION_BY_MIME_TYPE[mimeType] ?? '.jpg';
+  return `${baseName.slice(0, 128 - extension.length)}${extension}`;
 }
 
 function scaleImageSize(
@@ -398,65 +380,57 @@ function renderToCanvas(
   image: LoadedImageSource,
   width: number,
   height: number,
+  mimeType: string,
+  offscreen: boolean,
 ): HTMLCanvasElement | OffscreenCanvas {
-  const canvas =
-    typeof OffscreenCanvas === 'function'
-      ? new OffscreenCanvas(width, height)
-      : Object.assign(document.createElement('canvas'), { width, height });
+  const canvas = offscreen
+    ? new OffscreenCanvas(width, height)
+    : Object.assign(document.createElement('canvas'), { width, height });
 
-  const context = canvas.getContext('2d', { alpha: false });
-  if (!context) {
-    throw new Error('Не удалось подготовить изображение.');
+  try {
+    const context = canvas.getContext('2d', { alpha: mimeType === 'image/png' });
+    if (!context) throw new ImagePreparationError('encode', FALLBACK_IMAGE_ERROR);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    if (mimeType === 'image/jpeg') {
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, width, height);
+    }
+    image.draw(context, width, height);
+    return canvas;
+  } catch (error) {
+    canvas.width = 0;
+    canvas.height = 0;
+    throw error;
   }
-
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = 'high';
-  image.draw(context, width, height);
-  return canvas;
 }
 
 function canvasToBlob(
   canvas: HTMLCanvasElement | OffscreenCanvas,
   mimeType: string,
   quality: number,
+  signal: AbortSignal,
 ): Promise<Blob | null> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (blob: Blob | null) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      globalThis.clearTimeout(timeoutId);
-      resolve(blob);
-    };
-    const timeoutId = globalThis.setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(FALLBACK_IMAGE_ERROR));
-      }
-    }, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
-
-    try {
-      if ('convertToBlob' in canvas) {
-        void canvas.convertToBlob({ type: mimeType, quality }).then(finish, () => finish(null));
-      } else {
-        canvas.toBlob(finish, mimeType, quality);
-      }
-    } catch {
-      finish(null);
-    }
-  });
+  try {
+    const pending =
+      'convertToBlob' in canvas
+        ? canvas.convertToBlob({ type: mimeType, quality })
+        : new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mimeType, quality));
+    return waitForImageOperation(pending, signal);
+  } catch {
+    return Promise.resolve(null);
+  }
 }
 
 async function readOriginalImage(
   file: Blob,
   mimeType: string,
   fileName: string,
+  signal: AbortSignal,
   dimensions: { width: number | null; height: number | null } = { width: null, height: null },
 ): Promise<PreparedBroadcastImage> {
   return {
-    base64: await readBlobAsBase64(file),
+    base64: await readBlobAsBase64(file, signal),
     mimeType,
     fileName: resolveOutputFileName(fileName, mimeType),
     width: dimensions.width,
@@ -486,109 +460,193 @@ export async function prepareBroadcastImage(
   file: File,
   options: PrepareBroadcastImageOptions = {},
 ): Promise<PreparedBroadcastImage> {
+  const controller = new AbortController();
+  let abortReason: unknown;
+  const cancel = () => {
+    abortReason = imagePreparationAbortReason(options.signal);
+    controller.abort(abortReason);
+  };
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  if (options.signal?.aborted) cancel();
+  const timer = globalThis.setTimeout(() => {
+    abortReason = new ImagePreparationError(
+      'timeout',
+      'Обработка фото заняла слишком много времени. Попробуйте фото меньшего размера.',
+    );
+    controller.abort(abortReason);
+  }, BROADCAST_IMAGE_PREPARATION_TIMEOUT_MS);
+  let rejectOnAbort: () => void = () => undefined;
+  try {
+    throwIfImagePreparationAborted(controller.signal);
+    return await Promise.race([
+      prepareImage(file, options, controller.signal),
+      new Promise<never>((_, reject) => {
+        rejectOnAbort = () => reject(abortReason);
+        controller.signal.addEventListener('abort', rejectOnAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    globalThis.clearTimeout(timer);
+    options.signal?.removeEventListener('abort', cancel);
+    controller.signal.removeEventListener('abort', rejectOnAbort);
+  }
+}
+
+async function prepareImage(
+  file: File,
+  options: PrepareBroadcastImageOptions,
+  signal: AbortSignal,
+): Promise<PreparedBroadcastImage> {
   const maxImageBytes = resolvePreparedImageMaxBytes(options);
   const maxSourceBytes = resolveSourceImageMaxBytes(options);
-  const inputMimeType = resolveInputImageMimeType(file);
+  if (!file.size) {
+    throw new ImagePreparationError('empty', 'Файл фото пустой. Выберите фото заново.');
+  }
+  if (file.size > maxSourceBytes) {
+    throw new ImagePreparationError(
+      'source-size',
+      `Исходное фото больше ${Math.round(maxSourceBytes / 1_000_000)} МБ. Выберите фото меньшего размера.`,
+    );
+  }
+  const header = await readBlobArrayBufferWithTimeout(file.slice(0, 32), signal);
+  throwIfImagePreparationAborted(signal);
+  const inputMimeType = resolveInputImageMimeType(
+    file,
+    header ? new Uint8Array(header) : new Uint8Array(),
+  );
+  if (!inputMimeType) {
+    throw new ImagePreparationError(
+      'format',
+      'Не удалось определить формат фото. Выберите файл JPEG или PNG.',
+    );
+  }
   const sourceBlob = ensureTypedImageBlob(file, inputMimeType);
   const targetMimeTypes = resolveMaxUploadImageTargetMimeTypes(inputMimeType);
-
-  if (file.size > maxSourceBytes) {
-    throw new Error('Фото слишком большое для обработки на телефоне.');
-  }
+  const outputSizeError = () =>
+    new ImagePreparationError(
+      'output-size',
+      `Не удалось уменьшить фото до ${Number((maxImageBytes / 1_000_000).toFixed(2))} МБ. Выберите фото меньшего размера.`,
+    );
+  let decoded = false;
 
   try {
-    const image = await loadImageFromBlob(sourceBlob);
+    const image = await loadImageFromBlob(sourceBlob, signal);
     const sourceWidth = image.width;
     const sourceHeight = image.height;
 
     try {
+      throwIfImagePreparationAborted(signal);
       if (!sourceWidth || !sourceHeight) {
         throw new Error(FALLBACK_IMAGE_ERROR);
       }
+      decoded = true;
 
       if (inputMimeType === 'image/gif') {
         if (file.size > maxImageBytes) {
-          throw new Error(FALLBACK_IMAGE_ERROR);
+          throw outputSizeError();
         }
 
-        return readOriginalImage(sourceBlob, inputMimeType, file.name, {
+        return readOriginalImage(sourceBlob, inputMimeType, file.name, signal, {
           width: sourceWidth,
           height: sourceHeight,
         });
       }
 
-      let bestBlob: Blob | null = null;
-      let bestMimeType = targetMimeTypes[0] ?? 'image/jpeg';
-      let bestWidth = sourceWidth;
-      let bestHeight = sourceHeight;
-
+      let encoded = false;
+      const visitedSizes = new Set<string>();
+      let useOffscreen = typeof OffscreenCanvas === 'function';
       for (const maxDimension of IMAGE_DIMENSION_STEPS) {
         const scaled = scaleImageSize(sourceWidth, sourceHeight, maxDimension);
-        const canvas = renderToCanvas(image, scaled.width, scaled.height);
+        const sizeKey = `${scaled.width}x${scaled.height}`;
+        if (visitedSizes.has(sizeKey)) continue;
+        visitedSizes.add(sizeKey);
+        let encodedAtSize = false;
 
         for (const targetMimeType of targetMimeTypes) {
-          const qualitySteps = targetMimeType === 'image/png' ? [1] : IMAGE_QUALITY_STEPS;
-          for (const quality of qualitySteps) {
-            const blob = await canvasToBlob(canvas, targetMimeType, quality);
-            if (!blob || !blob.size) {
-              continue;
+          let canvas: HTMLCanvasElement | OffscreenCanvas | null = null;
+          try {
+            throwIfImagePreparationAborted(signal);
+            try {
+              canvas = renderToCanvas(
+                image,
+                scaled.width,
+                scaled.height,
+                targetMimeType,
+                useOffscreen,
+              );
+            } catch {
+              useOffscreen = false;
+              canvas = renderToCanvas(image, scaled.width, scaled.height, targetMimeType, false);
             }
-
-            const actualMimeType = blob.type || targetMimeType;
-            if (!bestBlob || blob.size < bestBlob.size) {
-              bestBlob = blob;
-              bestMimeType = actualMimeType;
-              bestWidth = scaled.width;
-              bestHeight = scaled.height;
+            const qualitySteps = targetMimeType === 'image/png' ? [1] : IMAGE_QUALITY_STEPS;
+            for (const quality of qualitySteps) {
+              throwIfImagePreparationAborted(signal);
+              let blob = await canvasToBlob(canvas, targetMimeType, quality, signal);
+              throwIfImagePreparationAborted(signal);
+              if ((!blob || !blob.size) && useOffscreen) {
+                canvas.width = 0;
+                canvas.height = 0;
+                useOffscreen = false;
+                canvas = renderToCanvas(image, scaled.width, scaled.height, targetMimeType, false);
+                blob = await canvasToBlob(canvas, targetMimeType, quality, signal);
+              }
+              throwIfImagePreparationAborted(signal);
+              if (!blob?.size) break;
+              const actualMimeType = normalizeImageMimeType(blob.type);
+              if (actualMimeType !== 'image/png' && actualMimeType !== 'image/jpeg') {
+                break;
+              }
+              encoded = true;
+              encodedAtSize = true;
+              if (blob.size <= maxImageBytes) {
+                return {
+                  base64: await readBlobAsBase64(blob, signal),
+                  mimeType: actualMimeType,
+                  fileName: resolveOutputFileName(file.name, actualMimeType),
+                  width: scaled.width,
+                  height: scaled.height,
+                };
+              }
             }
-
-            if (blob.size <= maxImageBytes) {
-              return {
-                base64: await readBlobAsBase64(blob),
-                mimeType: actualMimeType,
-                fileName: resolveOutputFileName(file.name, actualMimeType),
-                width: scaled.width,
-                height: scaled.height,
-              };
+          } finally {
+            if (canvas) {
+              canvas.width = 0;
+              canvas.height = 0;
             }
           }
         }
+        if (!encodedAtSize) throw new ImagePreparationError('encode', FALLBACK_IMAGE_ERROR);
       }
 
       if (canUploadOriginalImageToMax(inputMimeType, file.name) && file.size <= maxImageBytes) {
-        return readOriginalImage(sourceBlob, inputMimeType, file.name, {
+        return readOriginalImage(sourceBlob, inputMimeType, file.name, signal, {
           width: sourceWidth,
           height: sourceHeight,
         });
       }
 
-      if (bestBlob && bestBlob.size <= maxImageBytes) {
-        return {
-          base64: await readBlobAsBase64(bestBlob),
-          mimeType: bestMimeType,
-          fileName: resolveOutputFileName(file.name, bestMimeType),
-          width: bestWidth,
-          height: bestHeight,
-        };
-      }
+      if (encoded) throw outputSizeError();
     } finally {
       image.close();
     }
   } catch (error: unknown) {
-    if (!inputMimeType) {
-      throw new Error('Нужен файл изображения.');
-    }
+    throwIfImagePreparationAborted(signal);
 
     if (canUploadOriginalImageToMax(inputMimeType, file.name) && file.size <= maxImageBytes) {
-      return readOriginalImage(sourceBlob, inputMimeType, file.name);
+      return readOriginalImage(sourceBlob, inputMimeType, file.name, signal);
     }
 
-    if (error instanceof Error && error.message.trim()) {
-      throw error;
+    if (error instanceof ImagePreparationError) throw error;
+    if (!decoded) {
+      throw new ImagePreparationError(
+        'decode',
+        inputMimeType === 'image/heic' || inputMimeType === 'image/heif'
+          ? `Не удалось преобразовать HEIC/HEIF на этом устройстве. Выберите JPEG/PNG или HEIC до ${Number((maxImageBytes / 1_000_000).toFixed(2))} МБ.`
+          : 'Не удалось открыть фото на этом устройстве. Файл может быть повреждён или его формат не поддерживается. Выберите JPEG/PNG.',
+      );
     }
-
-    throw new Error(FALLBACK_IMAGE_ERROR);
+    throw new ImagePreparationError('encode', FALLBACK_IMAGE_ERROR);
   }
 
-  throw new Error(FALLBACK_IMAGE_ERROR);
+  throw new ImagePreparationError('encode', FALLBACK_IMAGE_ERROR);
 }

@@ -109,6 +109,8 @@ export function BotSpeechMessageEditorSheet({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const preparationRef = useRef<AbortController | null>(null);
+  const imageErrorId = useId();
   const [editorValue, setEditorValue] = useState(() =>
     hasCustomBotSpeechText(value) ? value : defaultValue,
   );
@@ -130,6 +132,20 @@ export function BotSpeechMessageEditorSheet({
 
   useDialogFocusTrap(true, panelRef, closeButtonRef);
 
+  const closeEditor = useCallback(() => {
+    preparationRef.current?.abort();
+    preparationRef.current = null;
+    onClose();
+  }, [onClose]);
+
+  useEffect(
+    () => () => {
+      preparationRef.current?.abort();
+      preparationRef.current = null;
+    },
+    [],
+  );
+
   useLayoutEffect(() => {
     const body = document.body;
     const documentElement = document.documentElement;
@@ -149,7 +165,7 @@ export function BotSpeechMessageEditorSheet({
 
   useNativeBackHandler(
     () => {
-      onClose();
+      closeEditor();
       return true;
     },
     { enabled: true, priority: BOT_MESSAGE_EDITOR_NATIVE_BACK_PRIORITY },
@@ -168,12 +184,12 @@ export function BotSpeechMessageEditorSheet({
 
       event.preventDefault();
       event.stopImmediatePropagation();
-      onClose();
+      closeEditor();
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [closeEditor]);
 
   const applyTextModifier = useCallback((tool: MaxMarkdownTool) => {
     editorRef.current?.applyTool(tool);
@@ -189,28 +205,35 @@ export function BotSpeechMessageEditorSheet({
 
   async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
-    if (!file || !onImageChange) {
+    if (!file || !onImageChange || preparationRef.current) {
       return;
     }
 
+    const controller = new AbortController();
+    preparationRef.current = controller;
     setIsPreparingImage(true);
     setImageError('');
     try {
       const { prepareBroadcastImage } = await import('../lib/broadcast-image');
       const prepared = await prepareBroadcastImage(file, {
         maxBytes: BOT_MESSAGE_EDITOR_IMAGE_MAX_BYTES,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted || preparationRef.current !== controller) return;
       onImageChange({
         base64: prepared.base64,
         mimeType: prepared.mimeType,
         fileName: prepared.fileName,
       });
     } catch (error) {
-      setImageError(error instanceof Error ? error.message : 'Не удалось подготовить фото.');
+      if (!controller.signal.aborted && preparationRef.current === controller) {
+        setImageError(error instanceof Error ? error.message : 'Не удалось подготовить фото.');
+      }
     } finally {
-      setIsPreparingImage(false);
-      if (imageInputRef.current) {
-        imageInputRef.current.value = '';
+      if (preparationRef.current === controller) {
+        preparationRef.current = null;
+        setIsPreparingImage(false);
+        if (imageInputRef.current) imageInputRef.current.value = '';
       }
     }
   }
@@ -221,7 +244,7 @@ export function BotSpeechMessageEditorSheet({
         type="button"
         className="bot-message-editor-sheet__backdrop"
         aria-label="Закрыть редактор"
-        onClick={onClose}
+        onClick={closeEditor}
         tabIndex={-1}
       />
       <section
@@ -253,7 +276,7 @@ export function BotSpeechMessageEditorSheet({
             type="button"
             className="bot-message-editor-sheet__close"
             aria-label="Закрыть редактор"
-            onClick={onClose}
+            onClick={closeEditor}
           >
             <BotMessageEditorCloseIcon />
           </button>
@@ -275,7 +298,7 @@ export function BotSpeechMessageEditorSheet({
           />
 
           {onImageChange ? (
-            <div className="bot-message-editor-sheet__media">
+            <div className="bot-message-editor-sheet__media" aria-busy={isPreparingImage}>
               {hasImage ? (
                 <div className="bot-message-editor-sheet__media-preview">
                   <img src={imagePreviewUrl} alt="" />
@@ -316,6 +339,8 @@ export function BotSpeechMessageEditorSheet({
                     className="bot-message-editor-sheet__file-input bot-message-editor-sheet__file-input--native"
                     type="file"
                     accept="image/*"
+                    aria-invalid={Boolean(imageError) || undefined}
+                    aria-describedby={imageError ? imageErrorId : undefined}
                     onChange={handleImageChange}
                     disabled={isPreparingImage}
                     aria-label="Выбрать фото для сообщения"
@@ -331,7 +356,6 @@ export function BotSpeechMessageEditorSheet({
                       isPreparingImage && 'is-loading',
                     )}
                     onClick={() => {
-                      setImageError('');
                       openFileInputPicker(imageInputRef.current);
                     }}
                     disabled={isPreparingImage}
@@ -350,6 +374,8 @@ export function BotSpeechMessageEditorSheet({
                     className="bot-message-editor-sheet__file-input"
                     type="file"
                     accept="image/*"
+                    aria-invalid={Boolean(imageError) || undefined}
+                    aria-describedby={imageError ? imageErrorId : undefined}
                     onChange={handleImageChange}
                     disabled={isPreparingImage}
                     aria-label="Выбрать фото для сообщения"
@@ -357,7 +383,13 @@ export function BotSpeechMessageEditorSheet({
                 </>
               )}
               {imageError ? (
-                <small className="bot-message-editor-sheet__media-error">{imageError}</small>
+                <small
+                  id={imageErrorId}
+                  className="bot-message-editor-sheet__media-error"
+                  role="alert"
+                >
+                  {imageError}
+                </small>
               ) : null}
             </div>
           ) : null}
@@ -391,6 +423,7 @@ export function BotSpeechMessageEditorSheet({
             <button
               type="button"
               className="button button--ghost bot-message-editor-sheet__reset"
+              disabled={isPreparingImage}
               onClick={() => {
                 setImageError('');
                 if (hasImage) {
@@ -406,7 +439,8 @@ export function BotSpeechMessageEditorSheet({
           <button
             type="button"
             className="button button--accent bot-message-editor-sheet__done"
-            onClick={onClose}
+            onClick={closeEditor}
+            disabled={isPreparingImage}
           >
             Готово
           </button>

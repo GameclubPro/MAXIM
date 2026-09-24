@@ -125,6 +125,9 @@ export function BroadcastContentComposer({
   const pickerRestoreFrameRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const textErrorId = useId();
+  const imageErrorId = useId();
+  const preparationCallbackRef = useRef(onImagePreparationChange);
+  preparationCallbackRef.current = onImagePreparationChange;
   const [formatToolsOpen, setFormatToolsOpen] = useState(false);
   const [normalizationReady, setNormalizationReady] = useState(true);
   const [preparingImages, setPreparingImages] = useState<PreparingImagesState>({
@@ -202,6 +205,7 @@ export function BroadcastContentComposer({
     return () => {
       mountedRef.current = false;
       preparationRunIdRef.current += 1;
+      if (preparationAbortRef.current) preparationCallbackRef.current?.(false);
       preparationAbortRef.current?.abort();
       preparationAbortRef.current = null;
       if (pickerRestoreFrameRef.current !== null) {
@@ -374,6 +378,14 @@ export function BroadcastContentComposer({
 
   function removeImage(imageIndex: number) {
     emitImages(currentImages.filter((_, index) => index !== imageIndex));
+  }
+
+  function cancelImagePreparation() {
+    preparationAbortRef.current?.abort();
+    preparationAbortRef.current = null;
+    preparationRunIdRef.current += 1;
+    updatePreparingImages({ done: 0, total: 0 });
+    if (imageInputRef.current) imageInputRef.current.value = '';
   }
 
   function applyTextModifier(tool: MaxMarkdownTool) {
@@ -582,6 +594,8 @@ export function BroadcastContentComposer({
                     className="broadcast-content-composer__file-input broadcast-content-composer__file-input--native"
                     type="file"
                     accept="image/*"
+                    aria-invalid={Boolean(imageError) || undefined}
+                    aria-describedby={imageError ? imageErrorId : undefined}
                     multiple={maxImageCount > 1}
                     disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
                     onChange={(event) => void handleImageFiles(event.currentTarget.files)}
@@ -613,6 +627,8 @@ export function BroadcastContentComposer({
                     className="broadcast-content-composer__file-input"
                     type="file"
                     accept="image/*"
+                    aria-invalid={Boolean(imageError) || undefined}
+                    aria-describedby={imageError ? imageErrorId : undefined}
                     multiple={maxImageCount > 1}
                     disabled={!allowImages || isBusy}
                     onChange={(event) => void handleImageFiles(event.currentTarget.files)}
@@ -649,6 +665,17 @@ export function BroadcastContentComposer({
             </div>
 
             <span className="broadcast-content-composer__asset-strip">
+              {isPreparingImage ? (
+                <button
+                  type="button"
+                  className="broadcast-content-composer__tool"
+                  onClick={cancelImagePreparation}
+                  aria-label="Отменить подготовку фото"
+                  title="Отменить подготовку фото"
+                >
+                  <IconoirXmark aria-hidden focusable="false" />
+                </button>
+              ) : null}
               {isPreparingImage || previewImageCount > 0 || videoLabel ? (
                 <span className="broadcast-content-composer__media-label" aria-live="polite">
                   {isPreparingImage
@@ -708,8 +735,9 @@ export function BroadcastContentComposer({
         <small id={textErrorId} className="field__hint" role="alert">
           {textError}
         </small>
-      ) : imageError ? (
-        <small className="field__hint" role="alert">
+      ) : null}
+      {imageError ? (
+        <small id={imageErrorId} className="field__hint" role="alert">
           {imageError}
         </small>
       ) : null}

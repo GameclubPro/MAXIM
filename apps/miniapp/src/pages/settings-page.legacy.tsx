@@ -416,6 +416,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [rulesTextError, setRulesTextError] = useState('');
   const [rulesImageError, setRulesImageError] = useState('');
+  const [isPreparingRulesImage, setIsPreparingRulesImage] = useState(false);
+  const rulesImagePreparingRef = useRef(false);
   const [rulesButtonErrors, setRulesButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
   const [rulesButtonFieldsTouched, setRulesButtonFieldsTouched] = useState(false);
   const [rulesButtonsSheetOpen, setRulesButtonsSheetOpen] = useState(false);
@@ -1268,7 +1270,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setRulesDraft(nextServerDraft);
     setRulesTextError('');
-    setRulesImageError('');
     setRulesButtonErrors([]);
     setRulesButtonFieldsTouched(false);
     setRulesButtonRevealSignal(0);
@@ -1486,7 +1487,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         return currentSnapshot === payloadSnapshot ? saved : current;
       });
       setRulesTextError('');
-      setRulesImageError('');
       setRulesButtonErrors([]);
       setRulesButtonFieldsTouched(false);
       setRulesButtonRevealSignal(0);
@@ -2434,9 +2434,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         setRulesImageError('Поддерживаются только изображения.');
         return null;
       }
-      setRulesImageError('');
-    } else {
-      setRulesImageError('');
     }
 
     const shouldShowButtonErrors = Boolean(options.forceButtonErrors || rulesButtonFieldsTouched);
@@ -2525,7 +2522,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     options: { forceButtonErrors?: boolean; draft?: ChatRules } = {},
   ): Promise<ChatRules | null> {
     const targetDraft = options.draft ?? rulesDraft;
-    if (!targetDraft) {
+    if (!targetDraft || rulesImagePreparingRef.current) {
       return null;
     }
 
@@ -2778,6 +2775,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       !rulesDraft ||
       !hasRulesChanges ||
       isSavingRules ||
+      isPreparingRulesImage ||
       isPreparingRulesPublish ||
       isPublishingRules
     ) {
@@ -2794,7 +2792,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const timeoutId = window.setTimeout(() => {
-      mutateRules(parsed);
+      if (!rulesImagePreparingRef.current) mutateRules(parsed);
     }, AUTO_SAVE_DELAY_MS);
 
     return () => {
@@ -2803,6 +2801,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [
     chatId,
     hasRulesChanges,
+    isPreparingRulesImage,
     isPreparingRulesPublish,
     isPublishingRules,
     isSavingRules,
@@ -2904,7 +2903,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   async function handlePublishRules() {
-    if (!chatId || !rulesDraft || isPreparingRulesPublish) {
+    if (!chatId || !rulesDraft || isRulesBusy || rulesImagePreparingRef.current) {
       return;
     }
 
@@ -4107,7 +4106,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !rulesButtonEnabled ||
     !hasBroadcastLinkButtonErrors(validateBroadcastLinkButtons(normalizedRulesButtons));
   const rulesHasImage = Boolean(rulesDraft?.imageBase64 && rulesDraft?.imageMimeType);
-  const rulesImageReady = !rulesDraft?.imageBase64 || rulesHasImage;
+  const rulesImageReady = !isPreparingRulesImage && (!rulesDraft?.imageBase64 || rulesHasImage);
   const rulesHasPublishableContent = Boolean(normalizedRulesText || rulesDraft?.autoTextEnabled);
   const rulesPublishIssueLabels = [
     !rulesHasPublishableContent ? 'Текст' : null,
@@ -4154,8 +4153,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
     {
       label: 'Фото',
-      value: rulesHasImage ? 'Есть' : 'Нет',
-      tone: rulesHasImage ? 'ready' : rulesImageReady ? 'neutral' : 'danger',
+      value: isPreparingRulesImage ? 'Готовим' : rulesHasImage ? 'Есть' : 'Нет',
+      tone: isPreparingRulesImage
+        ? 'pending'
+        : rulesHasImage
+          ? 'ready'
+          : rulesImageReady
+            ? 'neutral'
+            : 'danger',
       icon: 'content',
     },
     {
@@ -4182,7 +4187,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isPublishingRules ||
     isResettingPublishedRules ||
     updateRulesAttachMutation.isPending;
-  const isRulesBusy = isSavingRules || isRulesDraftEditingDisabled;
+  const isRulesBusy = isSavingRules || isRulesDraftEditingDisabled || isPreparingRulesImage;
   const rulesSaveLabel = isSavingRules
     ? 'Сохраняем...'
     : hasRulesChanges
@@ -5984,6 +5989,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <div className="broadcast-stage-card__body">
                                   <Suspense fallback={null}>
                                     <LazyBroadcastContentComposer
+                                      key={chatId}
                                       className="rules-content-composer"
                                       text={rulesDraft.text}
                                       sourceFormat={rulesDraft.textFormat}
@@ -5997,6 +6003,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       disabled={isRulesDraftEditingDisabled}
                                       textError={rulesTextError}
                                       imageError={rulesImageError}
+                                      onImagePreparationChange={(preparing) => {
+                                        rulesImagePreparingRef.current = preparing;
+                                        setIsPreparingRulesImage(preparing);
+                                        if (preparing) setRulesImageError('');
+                                      }}
                                       messageAriaLabel="Пост правил"
                                       textPlaceholder="Текст правил"
                                       textAriaLabel="Текст правил"
@@ -6034,11 +6045,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       }}
                                       onError={(message) => {
                                         setRulesImageError(message);
-                                        pushToast({
-                                          tone: 'danger',
-                                          title: 'Фото не добавлено',
-                                          description: message,
-                                        });
                                         maxNotify('error');
                                       }}
                                       buttons={normalizedRulesButtons}

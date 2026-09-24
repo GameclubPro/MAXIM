@@ -108,7 +108,7 @@ test('rules autosave keeps draft editors enabled so mobile keyboard focus surviv
   );
   assert.match(
     settingsPageSource,
-    /const isRulesBusy = isSavingRules \|\| isRulesDraftEditingDisabled;/u,
+    /const isRulesBusy = isSavingRules \|\| isRulesDraftEditingDisabled \|\| isPreparingRulesImage;/u,
   );
 
   const rulesComposerSource = settingsPageSource.slice(
@@ -119,6 +119,9 @@ test('rules autosave keeps draft editors enabled so mobile keyboard focus surviv
     settingsPageSource.indexOf('</Suspense>', settingsPageSource.indexOf('rules-panel')),
   );
   assert.match(rulesComposerSource, /disabled=\{isRulesDraftEditingDisabled\}/u);
+  assert.match(rulesComposerSource, /onImagePreparationChange=/u);
+  assert.match(rulesComposerSource, /rulesImagePreparingRef\.current = preparing/u);
+  assert.match(settingsPageSource, /!targetDraft \|\| rulesImagePreparingRef\.current/u);
   assert.match(rulesComposerSource, /sourceFormat=\{rulesDraft\.textFormat\}/u);
   assert.match(rulesComposerSource, /textFormat: 'markdown'/u);
   assert.doesNotMatch(rulesComposerSource, /disabled=\{isRulesBusy\}/u);

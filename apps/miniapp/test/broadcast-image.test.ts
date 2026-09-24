@@ -3,6 +3,8 @@ import { Buffer } from 'node:buffer';
 import test from 'node:test';
 import {
   BROADCAST_IMAGE_OPERATION_TIMEOUT_MS,
+  BROADCAST_IMAGE_PREPARATION_TIMEOUT_MS,
+  ImagePreparationError,
   MAX_PREPARED_IMAGE_BYTES,
   canUploadOriginalImageToMax,
   prepareBroadcastImage,
@@ -12,11 +14,7 @@ import {
   resolvePreparedImageMaxBytes,
 } from '../src/lib/broadcast-image';
 
-function replaceGlobalProperty(
-  target: object,
-  key: PropertyKey,
-  value: unknown,
-): () => void {
+function replaceGlobalProperty(target: object, key: PropertyKey, value: unknown): () => void {
   const descriptor = Object.getOwnPropertyDescriptor(target, key);
   Object.defineProperty(target, key, { configurable: true, writable: true, value });
   return () => {
@@ -29,7 +27,7 @@ function replaceGlobalProperty(
 }
 
 async function flushMicrotasks(): Promise<void> {
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 30; index += 1) {
     await Promise.resolve();
   }
 }
@@ -66,6 +64,8 @@ test('keeps the file name extension aligned with the prepared image MIME type', 
   assert.equal(resolveOutputFileName('photo.jpg', 'image/heic'), 'photo.heic');
   assert.equal(resolveOutputFileName('photo.jpg', 'image/heif'), 'photo.heic');
   assert.equal(resolveOutputFileName('photo.tiff', 'image/jpeg'), 'photo.jpg');
+  assert.equal(resolveOutputFileName('x'.repeat(200) + '.png', 'image/jpeg').length, 128);
+  assert.ok(resolveOutputFileName('x'.repeat(200), 'image/tiff').endsWith('.tiff'));
 });
 
 test('allows prepared images above the old 3 MB ceiling', () => {
@@ -140,6 +140,7 @@ test('falls back to original bytes after browser decoders hang', async (t) => {
       new File([bytes], 'poll-photo.jpg', { type: 'image/jpeg' }),
     );
 
+    await flushMicrotasks();
     t.mock.timers.tick(BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
     await flushMicrotasks();
     t.mock.timers.tick(BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
@@ -229,6 +230,7 @@ test('bounds a hanging canvas encoder and falls back to original bytes', async (
         imageSmoothingEnabled: false,
         imageSmoothingQuality: 'low',
         drawImage: () => undefined,
+        fillRect: () => undefined,
       };
 
       constructor(
@@ -261,5 +263,245 @@ test('bounds a hanging canvas encoder and falls back to original bytes', async (
     restoreCanvas();
     restoreBitmap();
     t.mock.timers.reset();
+  }
+});
+
+test('reports empty and oversized sources before invoking any browser decoder', async () => {
+  await assert.rejects(prepareBroadcastImage(new File([], 'empty.jpg')), { code: 'empty' });
+  await assert.rejects(
+    prepareBroadcastImage(new File([new Uint8Array(6_000_001)], 'large.jpg'), {
+      maxSourceBytes: 6_000_000,
+    }),
+    { code: 'source-size' },
+  );
+  await assert.rejects(
+    prepareBroadcastImage(new File(['text'], 'readme.txt', { type: 'text/plain' })),
+    { code: 'format' },
+  );
+});
+
+test('recognizes nameless and misleading native photos before original-byte fallback', async () => {
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0]);
+  for (const type of ['', 'application/octet-stream', 'image/x-png']) {
+    const result = await prepareBroadcastImage(new File([bytes], 'native-id', { type }));
+    assert.equal(result.mimeType, 'image/jpeg');
+    assert.equal(result.fileName, 'native-id.jpg');
+    assert.equal(result.base64, Buffer.from(bytes).toString('base64'));
+  }
+});
+
+test('distinguishes unsupported browser decoding from output and source size limits', async () => {
+  await assert.rejects(
+    prepareBroadcastImage(new File(['avif'], 'photo.avif', { type: 'image/avif' })),
+    { code: 'decode' },
+  );
+  await assert.rejects(
+    prepareBroadcastImage(new File(['heif'], 'photo.heif', { type: 'image/heif' })),
+    (error: unknown) =>
+      error instanceof ImagePreparationError &&
+      error.code === 'decode' &&
+      error.message.includes('HEIC/HEIF'),
+  );
+});
+
+test('reports a readable error when both native file readers fail', async () => {
+  const blob = new Blob(['data']);
+  Object.defineProperty(blob, 'arrayBuffer', {
+    value: () => Promise.reject(new Error('native read failure')),
+  });
+  await assert.rejects(
+    readBlobAsBase64(blob),
+    (error: unknown) =>
+      error instanceof ImagePreparationError &&
+      error.code === 'read' &&
+      !error.message.includes('native'),
+  );
+});
+
+test('aborting a legacy file read aborts the reader and detaches its handlers', async () => {
+  const controller = new AbortController();
+  const readers: Array<{ onload: unknown; onerror: unknown; onabort: unknown }> = [];
+  let aborts = 0;
+  const blob = new Blob(['data']);
+  Object.defineProperty(blob, 'arrayBuffer', { value: undefined });
+  const restore = replaceGlobalProperty(
+    globalThis,
+    'FileReader',
+    class {
+      onload = null;
+      onerror = null;
+      onabort = null;
+      constructor() {
+        readers.push(this);
+      }
+      readAsDataURL() {}
+      abort() {
+        aborts += 1;
+      }
+    },
+  );
+  try {
+    const pending = readBlobAsBase64(blob, controller.signal);
+    controller.abort();
+    await assert.rejects(pending, { name: 'AbortError' });
+    assert.equal(aborts, 1);
+    assert.equal(readers[0]?.onload, null);
+    assert.equal(readers[0]?.onerror, null);
+    assert.equal(readers[0]?.onabort, null);
+  } finally {
+    restore();
+  }
+});
+
+test('cancellation rejects promptly and closes a late bitmap without starting another decoder', async () => {
+  const controller = new AbortController();
+  let resolveBitmap: ((value: ImageBitmap) => void) | undefined;
+  let closeCalls = 0;
+  const restore = replaceGlobalProperty(
+    globalThis,
+    'createImageBitmap',
+    () =>
+      new Promise<ImageBitmap>((resolve) => {
+        resolveBitmap = resolve;
+      }),
+  );
+  try {
+    const pending = prepareBroadcastImage(new File(['webp'], 'photo.webp'), {
+      signal: controller.signal,
+    });
+    await flushMicrotasks();
+    controller.abort();
+    await assert.rejects(pending, { name: 'AbortError' });
+    resolveBitmap?.({
+      width: 200,
+      height: 100,
+      close: () => {
+        closeCalls += 1;
+      },
+    } as ImageBitmap);
+    await flushMicrotasks();
+    assert.equal(closeCalls, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('supports WebViews without AbortSignal.throwIfAborted', async () => {
+  const restore = replaceGlobalProperty(AbortSignal.prototype, 'throwIfAborted', undefined);
+  try {
+    const result = await prepareBroadcastImage(
+      new File(['jpeg'], 'photo.jpg', { type: 'image/jpeg' }),
+    );
+    assert.equal(result.mimeType, 'image/jpeg');
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      prepareBroadcastImage(new File(['jpeg'], 'photo.jpg'), { signal: controller.signal }),
+      { name: 'AbortError' },
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('enforces one total deadline even when a source read is stuck', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const file = new File(['photo'], 'photo.jpg');
+  Object.defineProperty(file, 'slice', {
+    value: () => ({ arrayBuffer: () => new Promise(() => undefined) }),
+  });
+  const pending = prepareBroadcastImage(file);
+  const assertion = assert.rejects(pending, { code: 'timeout' });
+  t.mock.timers.tick(BROADCAST_IMAGE_PREPARATION_TIMEOUT_MS);
+  await assertion;
+  t.mock.timers.reset();
+});
+
+test('retries a broken OffscreenCanvas through DOM canvas and releases both canvases', async () => {
+  const canvases: Array<{ width: number; height: number }> = [];
+  let bitmapCloseCalls = 0;
+  const context = { drawImage() {}, fillRect() {} };
+  const restoreBitmap = replaceGlobalProperty(globalThis, 'createImageBitmap', async () => ({
+    width: 400,
+    height: 200,
+    close() {
+      bitmapCloseCalls += 1;
+    },
+  }));
+  const restoreOffscreen = replaceGlobalProperty(
+    globalThis,
+    'OffscreenCanvas',
+    class {
+      constructor(
+        public width: number,
+        public height: number,
+      ) {
+        canvases.push(this);
+      }
+      getContext() {
+        return context;
+      }
+      async convertToBlob() {
+        throw new Error('broken native encoder');
+      }
+    },
+  );
+  const restoreDocument = replaceGlobalProperty(globalThis, 'document', {
+    createElement() {
+      const canvas = {
+        width: 0,
+        height: 0,
+        getContext: () => context,
+        toBlob: (callback: (blob: Blob) => void) =>
+          callback(new Blob(['jpeg'], { type: 'image/jpeg' })),
+      };
+      canvases.push(canvas);
+      return canvas;
+    },
+  });
+  try {
+    const result = await prepareBroadcastImage(new File(['webp'], 'photo.webp'));
+    assert.equal(result.mimeType, 'image/jpeg');
+    assert.equal(result.width, 400);
+    assert.equal(result.height, 200);
+    assert.equal(canvases.length, 2);
+    assert.ok(canvases.every((canvas) => canvas.width === 0 && canvas.height === 0));
+    assert.equal(bitmapCloseCalls, 1);
+  } finally {
+    restoreDocument();
+    restoreOffscreen();
+    restoreBitmap();
+  }
+});
+
+test('does not encode identical dimensions repeatedly when the image cannot fit the budget', async () => {
+  let encodes = 0;
+  const restoreBitmap = replaceGlobalProperty(globalThis, 'createImageBitmap', async () => ({
+    width: 100,
+    height: 100,
+    close() {},
+  }));
+  const restoreCanvas = replaceGlobalProperty(
+    globalThis,
+    'OffscreenCanvas',
+    class {
+      getContext() {
+        return { drawImage() {}, fillRect() {} };
+      }
+      async convertToBlob({ type }: { type: string }) {
+        encodes += 1;
+        return new Blob([new Uint8Array(100_000)], { type });
+      }
+    },
+  );
+  try {
+    await assert.rejects(
+      prepareBroadcastImage(new File(['webp'], 'photo.webp'), { maxBytes: 96_000 }),
+      { code: 'output-size' },
+    );
+    assert.equal(encodes, 7);
+  } finally {
+    restoreCanvas();
+    restoreBitmap();
   }
 });

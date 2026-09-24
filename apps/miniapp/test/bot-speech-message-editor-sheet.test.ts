@@ -41,8 +41,9 @@ test('bot speech editor keeps focus inside the topmost named dialog', () => {
   assert.match(editorSheetSource, /ref=\{closeButtonRef\}[\s\S]*?aria-label="Закрыть редактор"/u);
   assert.match(
     editorSheetSource,
-    /event\.key !== 'Escape'[\s\S]*?isTopmostModalDialog\(panel\)[\s\S]*?onClose\(\)/u,
+    /event\.key !== 'Escape'[\s\S]*?isTopmostModalDialog\(panel\)[\s\S]*?closeEditor\(\)/u,
   );
+  assert.match(editorSheetSource, /preparationRef\.current\?\.abort\(\);[\s\S]*?onClose\(\)/u);
   assert.match(editorSheetSource, /BOT_MESSAGE_EDITOR_NATIVE_BACK_PRIORITY = 700/u);
   assert.match(editorSheetSource, /bot-message-editor-sheet__backdrop[\s\S]*?tabIndex=\{-1\}/u);
 });

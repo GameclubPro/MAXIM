@@ -10,7 +10,7 @@ import {
 
 type BroadcastImagePreparer = (
   file: File,
-  options: { maxBytes: number },
+  options: { maxBytes: number; signal: AbortSignal },
 ) => Promise<PreparedBroadcastImage>;
 
 export type ComposerImagePreparationProgress = {
@@ -77,7 +77,7 @@ export async function prepareComposerImageFiles({
 
       const remainingFileCount = Math.max(1, files.length - index);
       const maxBytes = Math.floor((remainingBase64Budget * 3) / (4 * remainingFileCount));
-      const prepared = await prepareImage(file, { maxBytes });
+      const prepared = await prepareImage(file, { maxBytes, signal });
       if (signal.aborted) {
         break;
       }
