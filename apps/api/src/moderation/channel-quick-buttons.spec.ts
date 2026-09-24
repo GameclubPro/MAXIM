@@ -117,6 +117,12 @@ describe('channel quick buttons', () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
+  it.each(['«', '“'])('rejects repeated unmatched opening quotes %s in bounded time', (quote) => {
+    const started = performance.now();
+    expect(extractChannelQuickButtons(quote.repeat(60_000), [])).toBeNull();
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it('removes multiple quoted templates in order without altering other whitespace', () => {
     expect(
       extractChannelQuickButtons(

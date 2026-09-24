@@ -8,7 +8,7 @@ import {
 import type { MaxMessageButton } from '../max/max-client.service';
 
 const QUOTED_TEMPLATE =
-  /["«“]([^"»”\r\n]+)["»”][\t \u00a0]*=[\t \u00a0]*(?:\r?\n[\t \u00a0]*)?["«“]([^"»”\r\n]+)["»”]/gu;
+  /["«“]([^"«»“”\r\n]+)["»”][\t \u00a0]*=[\t \u00a0]*(?:\r?\n[\t \u00a0]*)?["«“]([^"«»“”\r\n]+)["»”]/gu;
 const LINE_TEMPLATE = /^([^"«»“”=\r\n]+)=(?:[\t \u00a0]*\r?\n)?([^"«»“”\r\n]+)$/gmu;
 const MAX_QUICK_BUTTONS = 20;
 const MAX_BUTTON_TEXT_LENGTH = 32;
