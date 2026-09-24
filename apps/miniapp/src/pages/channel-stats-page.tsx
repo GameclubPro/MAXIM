@@ -13,7 +13,15 @@ import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
 import '../styles/statistics-experience.css';
 import type { ComponentProps } from 'react';
-import { Suspense, startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import type { ChannelMemberBanSheet as ChannelMemberBanSheetComponent } from '../components/dashboard/channel-member-ban-sheet';
@@ -149,6 +157,7 @@ function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const activeView = useRef(true);
   const profileLock = useRef(false);
   const [banTarget, setBanTarget] = useState<{
@@ -162,6 +171,34 @@ function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<ChannelStatsSection>(
     () => parseChannelStatisticsRouteQuery(location.search).section,
   );
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+
+    // Stack sticky controls using their rendered heights, including enlarged mobile text.
+    const measurements = [
+      ['.channel-insights__section-tabs', '--channel-section-tabs-height'],
+      ['.membership-feed__toolbar', '--channel-event-filters-height'],
+    ] as const;
+    const measure = () => {
+      for (const [selector, property] of measurements) {
+        const element = workspace.querySelector(selector);
+        if (element) {
+          workspace.style.setProperty(property, `${element.getBoundingClientRect().height}px`);
+        }
+      }
+    };
+    const observer = new ResizeObserver(measure);
+    for (const [selector] of measurements) {
+      const element = workspace.querySelector(selector);
+      if (element) observer.observe(element);
+    }
+    measure();
+    return () => {
+      observer.disconnect();
+      for (const [, property] of measurements) workspace.style.removeProperty(property);
+    };
+  }, [section]);
   useEffect(() => setBanTarget(null), [chatId, section]);
   const routeQuery = useMemo(
     () => parseChannelStatisticsRouteQuery(location.search),
@@ -554,7 +591,7 @@ function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
   };
 
   return (
-    <div className="channel-insights page-enter" data-managed-entity-workspace>
+    <div ref={workspaceRef} className="channel-insights page-enter" data-managed-entity-workspace>
       <ManagedEntityWorkspaceHeader
         entityType="channel"
         screen="stats"
@@ -620,7 +657,7 @@ function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
         ) : null}
 
         {section === 'events' ? (
-          <section className="channel-events-section stagger-in" aria-label="События канала">
+          <section className="channel-events-section" aria-label="События канала">
             <div className="channel-events-section__head channel-events-section__head--period">
               <div className="channel-events-section__period-copy">
                 <strong>Период</strong>

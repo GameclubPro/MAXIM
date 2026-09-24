@@ -1266,6 +1266,71 @@
     border-radius: 0;
     background: transparent;
   }
+  body[data-miniapp-profile='moderation'] .channel-events-section {
+    --channel-events-sticky-top: calc(
+      var(--managed-entity-workspace-header-bottom, 52px) + var(--channel-section-tabs-height, 45px)
+    );
+    min-width: 0;
+    border-radius: 0;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section__period-copy span {
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section__metrics {
+    border-inline: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section__metric {
+    padding: 10px 6px;
+    background: transparent;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section__metric small {
+    font-size: 0.75rem;
+    line-height: 1.4;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section__metric strong {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    font-size: 1.1rem;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+    gap: 0;
+    min-width: 0;
+    margin-inline: -12px;
+    padding: 6px 12px;
+    border: 0;
+    border-radius: 0;
+    background: var(--major-page);
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__badge {
+    /* The workspace header already shows refresh progress; keep filter geometry stable. */
+    display: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__filters {
+    min-width: 0;
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__group-list {
     border-inline: 0;
     border-radius: 0;
@@ -1273,10 +1338,84 @@
     box-shadow: none;
   }
   body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__day {
+    top: calc(var(--channel-events-sticky-top) + var(--channel-event-filters-height, 60px));
+    min-width: 0;
+    margin-inline: -12px;
+    padding: 8px 12px;
     border: 0;
+    border-bottom: 1px solid var(--major-border);
     border-radius: 0;
     background: var(--major-page);
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__day-label {
+    font-size: 0.8rem;
+    line-height: 1.35;
+    letter-spacing: 0;
+    text-transform: none;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__day-copy small {
+    font-size: 0.7rem;
+    line-height: 1.35;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__day-stats {
+    flex-shrink: 0;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__day-pill {
+    font-size: 0.75rem;
+    line-height: 1.3;
+    letter-spacing: 0;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__item {
+    min-width: 0;
+    grid-template-columns: 38px minmax(0, 1fr);
     padding-inline: 0;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__time {
+    font-size: 0.7rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__card {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-events-section
+    .membership-feed__card--actionable {
+    grid-template-columns: 36px minmax(0, 1fr) 44px;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: start;
+    gap: 2px;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-events-section
+    :is(.membership-feed__name-link, .membership-feed__row strong) {
+    display: block;
+    align-content: center;
+    min-width: 0;
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 0.875rem;
+    line-height: 1.35;
+    letter-spacing: 0;
+    text-decoration: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__pill {
+    font-size: 0.7rem;
+    line-height: 1.3;
+    letter-spacing: 0;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__status {
+    min-width: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow-wrap: anywhere;
   }
   body[data-miniapp-profile='moderation'] .events-moderation-view {
     display: grid;
