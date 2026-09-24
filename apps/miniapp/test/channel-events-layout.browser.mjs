@@ -37,7 +37,7 @@ async function assertFilterGeometry(page) {
   assert.ok(layout.toolbar.width - layout.group.width <= 25, JSON.stringify(layout));
   for (const button of layout.buttons) {
     assert.ok(button.width >= (layout.group.width - 8) / 3 - 1, JSON.stringify(layout));
-    assert.ok(button.height >= 44);
+    assert.ok(button.height >= 43.99, JSON.stringify(button));
     assert.ok(button.left >= layout.group.left && button.right <= layout.group.right);
   }
   return layout;
@@ -68,12 +68,18 @@ try {
   for (const [width, height, platform, safeTop, safeBottom] of [
     [320, 568, 'ios', 20, 0],
     [360, 800, 'android', 24, 16],
-    [393, 852, 'ios', 59, 34],
-    [430, 932, 'android', 0, 24],
+    [393, 780, 'android', 48, 24],
+    [430, 932, 'ios', 59, 34],
     [1280, 900, 'desktop', 0, 0],
   ]) {
     for (const theme of ['light', 'dark']) {
-      const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
+      const context = await browser.newContext({
+        viewport: { width, height },
+        colorScheme: theme,
+        isMobile: platform !== 'desktop',
+        hasTouch: platform !== 'desktop',
+        deviceScaleFactor: platform === 'android' ? 1.55 : 1,
+      });
       await installNativeVisualModeInitScript(context);
       await installMaxBridgeShimInitScript(context, { platform }, { colorScheme: theme });
       const page = await context.newPage();
@@ -83,6 +89,10 @@ try {
         new URL('channel/preview-channel/stats?preview=1&section=events&moderationState=slow', base)
           .href,
       );
+      if (process.argv.includes('--built')) {
+        assert.equal(await page.locator('script[src*="/@vite/client"]').count(), 0);
+        assert.ok(await page.locator('script[type="module"][src*="/assets/"]').count());
+      }
       await page.locator('.membership-feed__item').first().waitFor();
       await applyNativeVisualMode(page, { safeTop, safeBottom });
       await page.evaluate(() => document.fonts.ready);
@@ -117,6 +127,17 @@ try {
         await settle(page);
         await assertStickyStack(page);
       }
+      // Production shares statistics CSS with other routes and can load the channel
+      // chunk last. Reproduce that cascade even when this test uses a dev server.
+      await page.evaluate(() => {
+        const routeStyle = document.querySelector(
+          'style[data-vite-dev-id$="/src/styles/channel-stats.css"], link[rel="stylesheet"][href*="/channel-stats-page-"]',
+        );
+        if (!routeStyle) throw new Error('Channel route stylesheet missing');
+        document.head.append(routeStyle);
+      });
+      await settle(page);
+      await assertStickyStack(page);
       await page.screenshot({
         path: join(output, `${width}-${theme}-scrolled.png`),
         animations: 'disabled',

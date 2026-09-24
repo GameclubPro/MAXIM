@@ -1312,6 +1312,8 @@
     box-shadow: none;
   }
   body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__toolbar {
+    /* Route CSS chunks can load in either order; own the offset in the workspace layer. */
+    top: var(--channel-events-sticky-top);
     grid-template-columns: minmax(0, 1fr);
     justify-content: stretch;
     gap: 0;

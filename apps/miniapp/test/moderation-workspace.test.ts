@@ -40,6 +40,19 @@ test('the workspace layer follows legacy routes without important declarations',
   });
 });
 
+test('channel sticky filters own their top offset independently of route CSS chunk order', () => {
+  const selector =
+    "body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__toolbar";
+  const declarations = new Map<string, string>();
+  root.walkRules((rule) => {
+    if (rule.selector !== selector) return;
+    rule.walkDecls((declaration) => {
+      declarations.set(declaration.prop, declaration.value);
+    });
+  });
+  assert.equal(declarations.get('top'), 'var(--channel-events-sticky-top)');
+});
+
 test('both themes define the same essential semantic colors', () => {
   const palette = [
     'page',
