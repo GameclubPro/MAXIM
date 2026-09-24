@@ -2,7 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ManagedEntityType } from '@maxim/contracts';
 import type { QueueJobEnvelope } from '../common/queue-job-envelope';
 import type { MaxMessageButton } from '../max/max-client.service';
@@ -253,9 +253,8 @@ export class PublisherChatCommentQueueService {
     const dialogBotId = this.requireString(params.dialogBotId, 'dialogBotId');
     const countSnapshot = Math.max(0, Math.trunc(params.countSnapshot));
     const createdAt = params.createdAt ?? new Date();
-    const identity = this.hash(
-      `${params.entityType}\0${chatId}\0${messageId}\0${threadId}\0${countSnapshot}`,
-    );
+    // FLAG: Counts are not revisions: 1 -> 2 -> 1 must not hit a retained completed job.
+    const identity = randomUUID();
 
     await this.assertPublisherAdmissionEnabled();
     await this.queue.add(

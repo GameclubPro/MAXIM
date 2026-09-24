@@ -397,6 +397,7 @@ export const channelDialogResponseSchema = /*#__PURE__*/ z.object({
   type: channelDialogTypeSchema,
   introText: z.string().nullable().default(null),
   messages: z.array(channelDialogMessageSchema),
+  hasMoreMessages: z.boolean().optional(),
   notificationSettings: channelDialogNotificationSettingsSchema.default({
     mode: 'off',
     canUseAll: true,

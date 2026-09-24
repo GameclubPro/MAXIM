@@ -103,7 +103,7 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
     expect(harness.queue.enqueueKeyboardEdit).toHaveBeenCalledWith(
       expect.objectContaining({
         entityType: 'chat',
-        readinessFeature: 'chat_comments',
+        readinessFeature: 'publication',
         messageId: 'publik-reply-1',
         requiredBotId: 'publik-bot',
         dialogBotId: 'publik-bot',

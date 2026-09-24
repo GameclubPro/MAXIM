@@ -3847,7 +3847,12 @@ export function ChannelDialogPage({
             <div className="channel-dialog-comments-header__context">
               <h1>{viewModel.title}</h1>
               {dialogQuery.isSuccess ? (
-                <span aria-label={`Комментариев: ${messages.length}`}>{messages.length}</span>
+                <span
+                  aria-label={`Комментариев: ${dialogQuery.data?.hasMoreMessages ? 'больше ' : ''}${messages.length}`}
+                >
+                  {messages.length}
+                  {dialogQuery.data?.hasMoreMessages ? '+' : ''}
+                </span>
               ) : null}
             </div>
 

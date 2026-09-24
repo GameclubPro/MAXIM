@@ -78,7 +78,7 @@ export function buildPublisherChatCommentsQuery(
       AND audit.action = 'PUBLISHER_CHAT_DIALOG_COMMENT'
       ${threadPredicate}
     ORDER BY audit.created_at DESC
-    LIMIT ${CHANNEL_DIALOG_MESSAGES_LIMIT}
+    LIMIT ${CHANNEL_DIALOG_MESSAGES_LIMIT + 1}
   `;
 }
 

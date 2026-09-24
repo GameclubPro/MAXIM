@@ -43,7 +43,7 @@ describe('Publisher chat comment queries', () => {
     expect(sql).toContain("audit.payload->>'threadId' =");
     expect(sql).toContain('ORDER BY audit.created_at DESC');
     expect(sql).toContain('LIMIT');
-    expect(query.values).toEqual(['chat-1', 'thread-1', 80]);
+    expect(query.values).toEqual(['chat-1', 'thread-1', 81]);
   });
 
   it('keeps the count on the same literal action and thread expression', async () => {

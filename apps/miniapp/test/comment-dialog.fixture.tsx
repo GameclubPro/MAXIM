@@ -60,6 +60,10 @@ const api: ApiTransport = {
 
 Object.assign(window, {
   commentTest: {
+    async setTruncated(hasMoreMessages: boolean) {
+      data = { ...data, hasMoreMessages };
+      await client.invalidateQueries();
+    },
     async append(text: string) {
       data = { ...data, messages: [...data.messages, message(text)] };
       await client.invalidateQueries();

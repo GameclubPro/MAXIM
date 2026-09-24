@@ -1428,7 +1428,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
-  it('preserves custom buttons when refreshing auto-attached channel buttons after a comment', async () => {
+  it('leaves suggestion-only keyboards untouched after a comment', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -1500,22 +1500,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-channel-auto-suggest-99',
-      null,
-      expect.objectContaining({
-        buttons: [
-          [expect.objectContaining({ text: 'Предложить пост' })],
-          [{ type: 'link', text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
-          [{ type: 'link', text: 'Прайс', url: 'https://max.ru/pricelist' }],
-        ],
-        mergeExistingInlineKeyboard: true,
-      }),
-    );
-    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
-      'appendNewInlineKeyboardRows',
-    );
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
   });
 
   it('refreshes auto-attached channel buttons on the bot copy instead of the original forwarded post', async () => {

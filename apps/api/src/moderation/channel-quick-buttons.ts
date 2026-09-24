@@ -7,8 +7,9 @@ import {
 } from '../common/max-text-markup.util';
 import type { MaxMessageButton } from '../max/max-client.service';
 
-const QUOTED_TEMPLATE = /"([^"\r\n]+)"[\t ]*=[\t ]*"([^"\r\n]+)"/gu;
-const LINE_TEMPLATE = /^([^"=\r\n]+)=([^"\r\n]+)$/gmu;
+const QUOTED_TEMPLATE =
+  /["«“]([^"»”\r\n]+)["»”][\t \u00a0]*=[\t \u00a0]*(?:\r?\n[\t \u00a0]*)?["«“]([^"»”\r\n]+)["»”]/gu;
+const LINE_TEMPLATE = /^([^"«»“”=\r\n]+)=[\t \u00a0]*(?:\r?\n[\t \u00a0]*)?([^"«»“”\r\n]+)$/gmu;
 const MAX_QUICK_BUTTONS = 20;
 const MAX_BUTTON_TEXT_LENGTH = 32;
 
@@ -25,6 +26,7 @@ export function extractChannelQuickButtons(
 ): { text: string; textFormat: 'html'; quickButtons: ChannelQuickButtons } | null {
   const removals: Array<{ start: number; end: number }> = [];
   const buttons: MaxMessageButton[][] = [];
+  const seen = new Set<string>();
   const templates = [
     ...text.matchAll(QUOTED_TEMPLATE),
     ...Array.from(text.matchAll(LINE_TEMPLATE)).filter((match) => !/https?:\/\//iu.test(match[1]!)),
@@ -46,7 +48,25 @@ export function extractChannelQuickButtons(
     ) {
       continue;
     }
-    buttons.push([{ type: 'link', text: label, url }]);
+    // FLAG: Literal examples and hidden link destinations must not become executable buttons.
+    if (
+      markup.some((item) => {
+        const overlaps =
+          item.from < match.index + match[0].length && item.from + item.length > match.index;
+        return (
+          overlaps &&
+          (item.type === 'monospaced' ||
+            (item.type === 'link' && item.url !== null && normalizeHttpButtonUrl(item.url) !== url))
+        );
+      })
+    ) {
+      continue;
+    }
+    const identity = JSON.stringify([label, url]);
+    if (!seen.has(identity)) {
+      buttons.push([{ type: 'link', text: label, url }]);
+      seen.add(identity);
+    }
     if (buttons.length > MAX_QUICK_BUTTONS) {
       return null;
     }

@@ -228,6 +228,8 @@ function createHarness() {
       return { messageId: 'publisher-reply-1', url: null };
     }),
     editMessageInlineKeyboard: jest.fn().mockImplementation(async (...args) => {
+      const refresh = args[3]?.refreshButtonText;
+      if (refresh) refresh.button.text = await refresh.readText();
       await args[3]?.beforeEditMutation?.();
     }),
   };
@@ -760,6 +762,29 @@ describe('PublisherChatCommentDeliveryService', () => {
       }),
       expect.objectContaining({ botId: 'publik-bot' }),
     );
+  });
+
+  it('refreshes an existing chat counter even for a legacy job after new buttons are disabled', async () => {
+    const harness = createHarness();
+    harness.readiness.assertEntityReady.mockImplementation(
+      async (_chatId: string, feature: string) => {
+        if (feature === 'chat_comments') throw new Error('new comment buttons disabled');
+        return {
+          chatId: 'chat-1',
+          entityType: 'chat',
+          requiredBotId: 'publik-bot',
+          policyRevision: 3,
+        };
+      },
+    );
+    await harness.service.process(
+      { ...buildKeyboardJob(), readinessFeature: 'chat_comments' },
+      firstAttempt,
+    );
+    expect(
+      harness.readiness.assertEntityReady.mock.calls.every((call) => call[1] === 'publication'),
+    ).toBe(true);
+    expect(harness.maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a keyboard edit whose immutable origin differs from readiness', async () => {

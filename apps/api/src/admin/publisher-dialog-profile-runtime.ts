@@ -120,17 +120,18 @@ export class PublisherDialogProfileRuntime {
         ...(threadId ? { payload: { path: ['threadId'], equals: threadId } } : {}),
       },
       orderBy: { createdAt: 'desc' },
-      take: CHANNEL_DIALOG_MESSAGES_LIMIT,
+      take: CHANNEL_DIALOG_MESSAGES_LIMIT + 1,
     });
     return channelDialogResponseSchema.parse({
       chatId: params.chatId,
       type: dialogType,
       introText: null,
       messages: rows
-        .slice()
+        .slice(0, CHANNEL_DIALOG_MESSAGES_LIMIT)
         .reverse()
         .map((row) => params.mapAuditLog(row, dialogType, params.user.userId, new Set())),
       notificationSettings: this.defaultNotificationSettings(),
+      hasMoreMessages: rows.length > CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
   }
 
@@ -159,10 +160,11 @@ export class PublisherDialogProfileRuntime {
       type: params.dialogType,
       introText: null,
       messages: rows
-        .slice()
+        .slice(0, CHANNEL_DIALOG_MESSAGES_LIMIT)
         .reverse()
         .map((row) => params.mapAuditLog(row, params.dialogType, params.user.userId, adminUserIds)),
       notificationSettings: this.defaultNotificationSettings(),
+      hasMoreMessages: rows.length > CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
   }
 
@@ -298,10 +300,11 @@ export class PublisherDialogProfileRuntime {
       type: dialogType,
       introText: null,
       messages: rows
-        .slice()
+        .slice(0, CHANNEL_DIALOG_MESSAGES_LIMIT)
         .reverse()
         .map((row) => params.mapAuditLog(row, dialogType, params.user.userId, adminUserIds)),
       notificationSettings: this.defaultNotificationSettings(),
+      hasMoreMessages: rows.length > CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
   }
 

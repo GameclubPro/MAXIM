@@ -105,6 +105,14 @@ try {
       const field = page.locator('.channel-dialog-compose__field textarea');
       const body = page.locator('.channel-dialog-body');
       await assertLatestVisible(page, 'initial');
+      assert.equal(await page.getByLabel('Комментариев: 24', { exact: true }).textContent(), '24');
+      await page.evaluate(() => window.commentTest.setTruncated(true));
+      await page.getByLabel('Комментариев: больше 24', { exact: true }).waitFor();
+      assert.equal(
+        await page.getByLabel('Комментариев: больше 24', { exact: true }).textContent(),
+        '24+',
+      );
+      await page.evaluate(() => window.commentTest.setTruncated(false));
       assert.ok((await page.locator('.channel-dialog-message__grouped-time').count()) > 0);
       assert.equal(await page.locator('.channel-dialog-day').count(), 1);
 

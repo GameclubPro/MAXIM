@@ -5944,6 +5944,99 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('converts quick buttons after a concurrent keyboard addition without losing either action', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    const existing = { type: 'link', text: 'Shop', url: 'https://example.com/shop' };
+    const quick = { type: 'link' as const, text: 'Read', url: 'https://example.com/' };
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue({
+      body: {
+        text: 'Post\nRead=https://example.com',
+        attachments: [{ type: 'inline_keyboard', payload: { buttons: [[existing]] } }],
+      },
+    });
+    await service.editMessageInlineKeyboard('channel-1', 'mid-quick', 'Post\n', {
+      expectedSourceAttachmentTypes: [],
+      requireAllAttachmentsPreserved: true,
+      mergeExistingInlineKeyboard: true,
+      buttons: [[quick]],
+    });
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'put',
+        data: expect.objectContaining({
+          attachments: [{ type: 'inline_keyboard', payload: { buttons: [[quick], [existing]] } }],
+        }),
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('serializes fresh counts and changes only the live button label', async () => {
+    const button = {
+      type: 'link' as const,
+      text: 'Comments 0',
+      url: 'https://example.com/comments',
+    };
+    const shop = { type: 'link' as const, text: 'New shop', url: 'https://example.com/shop' };
+    let snapshot = {
+      body: {
+        text: 'Post',
+        attachments: [{ type: 'inline_keyboard', payload: { buttons: [[shop], [button]] } }],
+      },
+    };
+    const httpService = {
+      request: jest.fn().mockImplementation((config: any) => {
+        snapshot = { body: { text: 'Post', attachments: config.data.attachments } };
+        return of({ status: 200, data: { success: true } });
+      }),
+    };
+    const service = createService(httpService);
+    jest
+      .spyOn(service as any, 'getMessageById')
+      .mockImplementation(async () => JSON.parse(JSON.stringify(snapshot)));
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let count = 1;
+    const first = service.editMessageInlineKeyboard('channel-1', 'counter-race', null, {
+      refreshButtonText: {
+        button,
+        readText: async () => {
+          entered();
+          await gate;
+          return `Comments ${count}`;
+        },
+      },
+    });
+    await started;
+    const readText = jest.fn(async () => `Comments ${count}`);
+    const second = service.editMessageInlineKeyboard('channel-1', 'counter-race', null, {
+      buttons: [[{ ...shop, text: 'Old shop' }]],
+      refreshButtonText: { button, readText },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(readText).not.toHaveBeenCalled();
+    count = 2;
+    release();
+    await Promise.all([first, second]);
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(snapshot.body.attachments[0]!.payload.buttons).toEqual([
+      [shop],
+      [{ ...button, text: 'Comments 2' }],
+    ]);
+    expect(httpService.request.mock.calls[0]![0].data).not.toHaveProperty('text');
+    await service.onModuleDestroy();
+  });
+
   it('does not clear media when the message GET omits webhook attachments', async () => {
     const httpService = { request: jest.fn() };
     const service = createService(httpService);
@@ -5951,6 +6044,23 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await expect(
       service.editMessageInlineKeyboard('channel-1', 'mid-quick', 'Post', {
         expectedSourceAttachmentTypes: ['image'],
+        requireAllAttachmentsPreserved: true,
+        buttons: [[{ type: 'link', text: 'Read', url: 'https://example.com/' }]],
+      }),
+    ).rejects.toThrow('Source attachments changed');
+    expect(httpService.request).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it('does not treat a missing known source keyboard as a concurrent keyboard addition', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    jest
+      .spyOn(service as any, 'getMessageById')
+      .mockResolvedValue({ body: { text: 'Post', attachments: [] } });
+    await expect(
+      service.editMessageInlineKeyboard('channel-1', 'mid-missing-keyboard', 'Post', {
+        expectedSourceAttachmentTypes: ['inline_keyboard'],
         requireAllAttachmentsPreserved: true,
         buttons: [[{ type: 'link', text: 'Read', url: 'https://example.com/' }]],
       }),

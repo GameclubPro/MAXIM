@@ -73,7 +73,7 @@ describe('PublisherChatCommentQueueService', () => {
     expect(heartbeat.read).toHaveBeenCalledWith('publik-bot');
   });
 
-  it('keys keyboard edits by the count snapshot while preserving exact origin attribution', async () => {
+  it('does not suppress repeated count values while preserving exact origin attribution', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
     const heartbeat = createHeartbeat();
     const service = new PublisherChatCommentQueueService(
@@ -99,6 +99,7 @@ describe('PublisherChatCommentQueueService', () => {
 
     await service.enqueueKeyboardEdit(params);
     await service.enqueueKeyboardEdit({ ...params, countSnapshot: 5 });
+    await service.enqueueKeyboardEdit(params);
 
     const first = queue.add.mock.calls[0];
     const second = queue.add.mock.calls[1];
@@ -112,6 +113,7 @@ describe('PublisherChatCommentQueueService', () => {
       }),
     );
     expect(first?.[2]?.jobId).not.toBe(second?.[2]?.jobId);
+    expect(new Set(queue.add.mock.calls.map((call) => call[2].jobId)).size).toBe(3);
     expect(heartbeat.read).toHaveBeenNthCalledWith(1, 'publik-bot');
     expect(heartbeat.read).toHaveBeenNthCalledWith(2, 'publik-bot');
   });

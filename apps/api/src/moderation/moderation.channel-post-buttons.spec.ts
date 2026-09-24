@@ -331,6 +331,7 @@ describe('ModerationService channel auto post buttons', () => {
   it.each([
     { text: 'Post "Read"="https://example.com"', expectedText: 'Post ' },
     { text: 'Post\nRead = https://example.com', expectedText: 'Post\n' },
+    { text: 'Post\nRead =\nhttps://example.com', expectedText: 'Post\n' },
   ])('converts channel templates and respects the toggle (%#)', async ({ text, expectedText }) => {
     const settings = {
       quickButtonsEnabled: true,

@@ -5,6 +5,48 @@ import {
 } from './channel-auto-post-runtime';
 
 describe('channel quick buttons', () => {
+  it('converts the reported multiline and single-line subscription templates once', () => {
+    const text =
+      'Post\nПОДПИСАТЬСЯ =\nhttps://max.ru/channel_sibhealth\nПОДПИСАТЬСЯ=https://max.ru/channel_sibhealth';
+    const result = extractChannelQuickButtons(text, []);
+    expect(result?.quickButtons.buttons).toEqual([
+      [{ type: 'link', text: 'ПОДПИСАТЬСЯ', url: 'https://max.ru/channel_sibhealth' }],
+    ]);
+    expect(result?.text).toBe('Post\n\n');
+  });
+
+  it.each([
+    '«Read» = «https://example.com»',
+    '“Read” = “https://example.com”',
+    'Read\u00a0=\r\n\u00a0https://example.com',
+  ])('supports mobile quotes and line wrapping: %s', (text) => {
+    expect(extractChannelQuickButtons(text, [])?.quickButtons.buttons).toEqual([
+      [{ type: 'link', text: 'Read', url: 'https://example.com/' }],
+    ]);
+  });
+
+  it('does not consume code examples or a URL with a different hidden destination', () => {
+    const text = 'Read=https://example.com';
+    expect(
+      extractChannelQuickButtons(text, [
+        { type: 'monospaced', from: 0, length: text.length, url: null, userLink: null },
+      ]),
+    ).toBeNull();
+    expect(
+      extractChannelQuickButtons(text, [
+        { type: 'link', from: 5, length: 19, url: 'https://other.example', userLink: null },
+      ]),
+    ).toBeNull();
+  });
+
+  it('keeps distinct labels sharing one URL and rejects blank-line continuation', () => {
+    expect(
+      extractChannelQuickButtons('Read=https://example.com\nJoin=https://example.com', [])
+        ?.quickButtons.buttons,
+    ).toHaveLength(2);
+    expect(extractChannelQuickButtons('Read=\n\nhttps://example.com', [])).toBeNull();
+  });
+
   it('converts unquoted lines with optional spacing and preserves URL query parameters', () => {
     const text =
       'Post\r\n Read more = https://example.com/a?x=1&y=2 \r\nJoin=https://max.ru/channel\r\nEnd';

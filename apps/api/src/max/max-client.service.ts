@@ -7,6 +7,10 @@ import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { readMaxMemberActivity } from './max-member-activity.util';
+import {
+  refreshExistingInlineKeyboardText,
+  type MaxInlineKeyboardTextRefresh,
+} from './max-inline-keyboard-text-refresh';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import {
@@ -431,6 +435,7 @@ type MaxEditableMessageOptions = Pick<
   preserveExistingInlineKeyboard?: boolean;
   replaceCallbackPayloadPrefixes?: readonly string[];
   beforeEditMutation?: () => Promise<void>;
+  refreshButtonText?: MaxInlineKeyboardTextRefresh;
   prepareInlineKeyboard?: (
     message: Record<string, unknown> | null,
   ) => Promise<MaxMessageButton[][] | null>;
@@ -1533,7 +1538,19 @@ export class MaxClientService implements OnModuleDestroy {
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ) {
     return this.runWithMessageKeyboardEditLock(messageId, async (assertOwnership) => {
-      const message = await this.getMessageById(messageId, requestOptions);
+      let message = await this.getMessageById(messageId, requestOptions);
+      if (options?.refreshButtonText) {
+        message = await refreshExistingInlineKeyboardText(message, options.refreshButtonText);
+        if (!message) return;
+        options = {
+          ...options,
+          button: undefined,
+          buttons: undefined,
+          mergeExistingInlineKeyboard: false,
+          preserveExistingInlineKeyboard: true,
+          requireAllAttachmentsPreserved: true,
+        };
+      }
       if (options?.prepareInlineKeyboard) {
         const buttons = await options.prepareInlineKeyboard(message);
         if (buttons === null) return;
@@ -5786,14 +5803,19 @@ export class MaxClientService implements OnModuleDestroy {
   ): Record<string, unknown>[] {
     if (options?.requireAllAttachmentsPreserved) {
       const sourceAttachments = readStrictEditableAttachments(message, includeForwarded);
+      const sourceAttachmentTypes = sourceAttachments.map(
+        (attachment) => this.readLowerString(this.asRecord(attachment)?.type) ?? '',
+      );
+      // FLAG: Allow keyboards installed after admission, never an omitted known keyboard or media.
       if (
         options.expectedSourceAttachmentTypes !== undefined &&
-        !isDeepStrictEqual(
-          sourceAttachments.map(
-            (attachment) => this.readLowerString(this.asRecord(attachment)?.type) ?? '',
-          ),
-          options.expectedSourceAttachmentTypes,
-        )
+        (!isDeepStrictEqual(
+          sourceAttachmentTypes.filter((type) => type !== 'inline_keyboard'),
+          options.expectedSourceAttachmentTypes.filter((type) => type !== 'inline_keyboard'),
+        ) ||
+          sourceAttachmentTypes.filter((type) => type === 'inline_keyboard').length <
+            options.expectedSourceAttachmentTypes.filter((type) => type === 'inline_keyboard')
+              .length)
       ) {
         throw new BadRequestException('Source attachments changed; preserving the current post.');
       }

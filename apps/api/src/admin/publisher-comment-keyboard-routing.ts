@@ -46,7 +46,7 @@ export class PublisherCommentKeyboardRouting {
     try {
       await this.queue.enqueueKeyboardEdit({
         entityType: params.entityType,
-        readinessFeature: params.entityType === 'chat' ? 'chat_comments' : 'publication',
+        readinessFeature: 'publication',
         chatId: params.chatId,
         messageId: params.messageId,
         threadId: params.threadId,

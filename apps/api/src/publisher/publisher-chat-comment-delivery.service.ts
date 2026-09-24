@@ -555,19 +555,16 @@ export class PublisherChatCommentDeliveryService {
   }
 
   private async processKeyboardEdit(job: PublisherCommentKeyboardEditJob): Promise<void> {
-    let route = await this.assertReady(job.chatId, job.readinessFeature);
+    let route = await this.assertReady(job.chatId, 'publication');
     this.assertKeyboardIdentity(job, route);
 
-    // Re-read at execution time so a delayed or retried job cannot restore a stale snapshot.
-    const currentCount = await countPublisherChatComments(this.prisma, job.chatId, job.threadId);
     const buttons = job.buttons.map((row) => row.map((button) => ({ ...button })));
     const commentsButton = buttons[job.commentsButton.rowIndex]?.[job.commentsButton.columnIndex];
     if (!commentsButton) {
       throw new UnrecoverableError('Publisher comment keyboard button position is invalid');
     }
-    commentsButton.text = formatCommentsButtonText(job.commentsButton.baseText, currentCount);
 
-    route = await this.assertReady(job.chatId, job.readinessFeature);
+    route = await this.assertReady(job.chatId, 'publication');
     this.assertKeyboardIdentity(job, route);
     try {
       await this.maxClient.editMessageInlineKeyboard(
@@ -576,10 +573,18 @@ export class PublisherChatCommentDeliveryService {
         null,
         {
           buttons,
+          refreshButtonText: {
+            button: commentsButton,
+            readText: async () =>
+              formatCommentsButtonText(
+                job.commentsButton.baseText,
+                await countPublisherChatComments(this.prisma, job.chatId, job.threadId),
+              ),
+          },
           appendNewInlineKeyboardRows: true,
           mergeExistingInlineKeyboard: true,
           beforeEditMutation: async () => {
-            const immediateRoute = await this.assertReady(job.chatId, job.readinessFeature);
+            const immediateRoute = await this.assertReady(job.chatId, 'publication');
             this.assertKeyboardIdentity(job, immediateRoute);
             route = immediateRoute;
           },

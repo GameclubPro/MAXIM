@@ -184,6 +184,43 @@ function createSuggestionHarness() {
 }
 
 describe('Publisher chat dialog profile ownership', () => {
+  it.each(['moderation', 'publisher'] as const)(
+    'reports truncated comment history for %s without counting the audit table',
+    async (profile) => {
+      const { prisma, service, majorToken } = createHarness();
+      const rows = Array.from({ length: 81 }, (_, index) =>
+        commentRow(`comment-${index}`, `Text ${index}`),
+      );
+      prisma.auditLog.findMany.mockResolvedValue(rows);
+      prisma.$queryRaw.mockResolvedValue(rows);
+      const result = await service.getChatDialog(
+        CHAT_ID,
+        user,
+        'comments',
+        profile === 'publisher' ? TOKEN : majorToken,
+        profile,
+      );
+      expect(result.hasMoreMessages).toBe(true);
+      expect(result.messages).toHaveLength(80);
+      expect(result.messages[0]!.id).toBe('comment-79');
+      expect(result.messages.at(-1)!.id).toBe('comment-0');
+      expect(prisma.auditLog.count).not.toHaveBeenCalled();
+      prisma.auditLog.findMany.mockResolvedValue(rows.slice(0, 80));
+      prisma.$queryRaw.mockResolvedValue(rows.slice(0, 80));
+      expect(
+        (
+          await service.getChatDialog(
+            CHAT_ID,
+            user,
+            'comments',
+            profile === 'publisher' ? TOKEN : majorToken,
+            profile,
+          )
+        ).hasMoreMessages,
+      ).toBe(false);
+    },
+  );
+
   it('keeps a signed chat thread readable after all creation switches are disabled', async () => {
     const { assertEntityReady, prisma, publisherRow, service } = createHarness();
     prisma.publisherEntitySettings.findUnique.mockResolvedValue({

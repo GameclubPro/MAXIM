@@ -401,6 +401,7 @@ import { buildChannelPostActionRows } from '../common/channel-post-actions';
 import {
   buildChannelCommentCountKeyboard,
   prepareStoredChannelCommentsKeyboard,
+  refreshCommentsButtonCount,
 } from './admin-channel-comment-keyboard';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
@@ -7092,7 +7093,7 @@ export class AdminService implements OnModuleDestroy {
         orderBy: {
           createdAt: 'desc',
         },
-        take: CHANNEL_DIALOG_MESSAGES_LIMIT,
+        take: CHANNEL_DIALOG_MESSAGES_LIMIT + 1,
       }),
       dialogType === 'comments'
         ? this.dialogAdminAccessRuntime.readPersisted(chatId, 'channel')
@@ -7108,7 +7109,7 @@ export class AdminService implements OnModuleDestroy {
     ]);
 
     const messages = rows
-      .slice()
+      .slice(0, CHANNEL_DIALOG_MESSAGES_LIMIT)
       .reverse()
       .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
 
@@ -7118,6 +7119,7 @@ export class AdminService implements OnModuleDestroy {
       introText: this.resolveChannelDialogIntroText(channelSettings, dialogType),
       messages,
       notificationSettings,
+      hasMoreMessages: rows.length > CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
   }
 
@@ -7477,7 +7479,7 @@ export class AdminService implements OnModuleDestroy {
         orderBy: {
           createdAt: 'desc',
         },
-        take: CHANNEL_DIALOG_MESSAGES_LIMIT,
+        take: CHANNEL_DIALOG_MESSAGES_LIMIT + 1,
       }),
       this.dialogAdminAccessRuntime.readPersisted(chatId, 'chat'),
       this.readEntityDialogNotificationSettings({
@@ -7493,7 +7495,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const messages = rows
-      .slice()
+      .slice(0, CHANNEL_DIALOG_MESSAGES_LIMIT)
       .reverse()
       .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
 
@@ -7503,6 +7505,7 @@ export class AdminService implements OnModuleDestroy {
       introText: null,
       messages,
       notificationSettings,
+      hasMoreMessages: rows.length > CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
   }
 
@@ -17256,6 +17259,8 @@ export class AdminService implements OnModuleDestroy {
             storedKeyboard.buttons,
             'channel',
             botId,
+            threadId,
+            storedKeyboard.commentsButton,
           );
           continue;
         }
@@ -17315,7 +17320,15 @@ export class AdminService implements OnModuleDestroy {
         ) {
           continue;
         }
-        await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel', botId);
+        await this.safeUpdateCommentsButton(
+          chatId,
+          messageId,
+          buttons,
+          'channel',
+          botId,
+          threadId,
+          commentsButtonPosition,
+        );
         continue;
       }
 
@@ -17355,6 +17368,8 @@ export class AdminService implements OnModuleDestroy {
           storedKeyboard.buttons,
           'channel',
           botId,
+          threadId,
+          storedKeyboard.commentsButton,
         );
         continue;
       }
@@ -17414,7 +17429,15 @@ export class AdminService implements OnModuleDestroy {
       ) {
         continue;
       }
-      await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel', botId);
+      await this.safeUpdateCommentsButton(
+        chatId,
+        messageId,
+        buttons,
+        'channel',
+        botId,
+        threadId,
+        commentsButtonPosition,
+      );
     }
   }
 
@@ -17511,7 +17534,15 @@ export class AdminService implements OnModuleDestroy {
       ) {
         continue;
       }
-      await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'chat', botId);
+      await this.safeUpdateCommentsButton(
+        chatId,
+        messageId,
+        buttons,
+        'chat',
+        botId,
+        threadId,
+        commentsButtonPosition,
+      );
     }
   }
 
@@ -17520,43 +17551,22 @@ export class AdminService implements OnModuleDestroy {
     messageId: string,
     buttons: MaxMessageButton[][],
     entityType: ManagedEntityType,
-    botId?: string | null,
+    botId: string | null,
+    threadId: string,
+    commentsButton: { rowIndex: number; columnIndex: number; baseText: string | null } | null,
   ): Promise<void> {
-    try {
-      const resolvedBotId =
-        this.maxBotRegistry?.getBotById(botId)?.id ??
-        this.readTrimmedString(botId) ??
-        (await this.resolveDeliveryBotAssignment(chatId));
-      if (resolvedBotId) {
-        await this.maxClient.editMessageInlineKeyboard(
-          chatId,
-          messageId,
-          null,
-          {
-            buttons,
-            ...(entityType === 'chat' ? { appendNewInlineKeyboardRows: true } : {}),
-            mergeExistingInlineKeyboard: true,
-          },
-          { botId: resolvedBotId },
-        );
-      } else {
-        await this.maxClient.editMessageInlineKeyboard(chatId, messageId, null, {
-          buttons,
-          ...(entityType === 'chat' ? { appendNewInlineKeyboardRows: true } : {}),
-          mergeExistingInlineKeyboard: true,
-        });
-      }
-    } catch (error) {
-      this.logger.warn(
-        {
-          chatId,
-          entityType,
-          messageId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to refresh comments button counter',
-      );
-    }
+    return refreshCommentsButtonCount(
+      {
+        prisma: this.prisma,
+        maxClient: this.maxClient,
+        logger: this.logger,
+        resolveBotId: async () =>
+          this.maxBotRegistry?.getBotById(botId)?.id ??
+          this.readTrimmedString(botId) ??
+          this.resolveDeliveryBotAssignment(chatId),
+      },
+      { chatId, messageId, threadId, entityType, buttons, commentsButton },
+    );
   }
 
   private async createChannelSuggestionAuditLog(params: {
