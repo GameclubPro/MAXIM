@@ -3,6 +3,33 @@ import test from 'node:test';
 import type { ChannelStatsResponse } from '@maxim/contracts/channel-stats';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
+test('preview channel ban adds one departure without changing chat moderation', async () => {
+  const api = createPreviewApiTransport();
+  const readActivity = () =>
+    api.request('/channels/preview-channel/activity-feed?range=7d') as Promise<{
+      items: Array<{ userId: string; type: string }>;
+    }>;
+  const before = await readActivity();
+  const member = before.items.find(
+    (item, index, items) =>
+      item.type === 'joined' && items.findIndex((entry) => entry.userId === item.userId) === index,
+  )!;
+  const chatsBefore = await api.request('/chats/preview-chat/moderation-feed?range=7d');
+  const result = (await api.request(`/channels/preview-channel/members/${member.userId}/ban`, {
+    method: 'POST',
+  })) as { action: string; message: string };
+  assert.equal(result.action, 'BAN');
+  assert.equal(result.message, 'Бан включён.');
+  const after = await readActivity();
+  assert.equal(after.items.length, before.items.length + 1);
+  assert.equal(after.items[0]?.userId, member.userId);
+  assert.equal(after.items[0]?.type, 'left');
+  await assert.rejects(
+    api.request(`/channels/preview-channel/members/${member.userId}/ban`, { method: 'POST' }),
+  );
+  assert.deepEqual(await api.request('/chats/preview-chat/moderation-feed?range=7d'), chatsBefore);
+});
+
 test('slow moderation preview holds only the action and writes one event after completion', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const api = createPreviewApiTransport({ search: '?moderationState=slow' });

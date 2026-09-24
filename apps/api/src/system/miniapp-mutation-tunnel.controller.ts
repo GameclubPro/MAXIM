@@ -366,7 +366,7 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   {
     method: 'POST',
     pattern: new RegExp(
-      `^/channels/${ENTITY_ID_SEGMENT}/members/${ENTITY_ID_SEGMENT}/profile/handoff$`,
+      `^/channels/${ENTITY_ID_SEGMENT}/members/${ENTITY_ID_SEGMENT}/(profile/handoff|ban)$`,
     ),
   },
   {

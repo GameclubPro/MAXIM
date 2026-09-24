@@ -12,6 +12,7 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
+import { ChatEntityType } from '../prisma/prisma-client';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { AdminService } from './admin.service';
@@ -556,6 +557,18 @@ export class ManualModerationService {
       args[5] = { ...args[5], expectedSanctionEventId: parsed.data.expectedSanctionEventId };
     }
     return this.legacyAdminService.applyManualModerationAction(...args);
+  }
+
+  async banChannelMember(chatId: string, targetUserId: string, user: AuthUser) {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return this.legacyAdminService.applyManualModerationAction(
+      chatId,
+      targetUserId,
+      user,
+      { action: 'BAN', scope: 'current_chat' },
+      'miniapp',
+      { entityType: ChatEntityType.CHANNEL, actorAlreadyVerified: true },
+    );
   }
 
   applyManualSystemBan(

@@ -106,7 +106,7 @@ test('expanded limit labels and values use the current workspace palette', () =>
 
 test('channel period selection precedes the metrics it filters', () => {
   const source = readFileSync(
-    new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
+    new URL('../src/components/dashboard/channel-stats-overview.tsx', import.meta.url),
     'utf8',
   );
   const toolbar = source.indexOf('className="channel-insights__overview-toolbar"');

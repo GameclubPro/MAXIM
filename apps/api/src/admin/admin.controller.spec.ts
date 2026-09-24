@@ -22,6 +22,30 @@ describe('admin domain controllers', () => {
     chatTitle: null,
   };
 
+  it('routes a channel ban through the channel authorization boundary', async () => {
+    const service = { banChannelMember: jest.fn().mockResolvedValue({ ok: true }) };
+    const controller = new AdminManualModerationController(service as never);
+    await expect(controller.banChannelMember('channel-1', 'user-1', user)).resolves.toEqual({
+      ok: true,
+    });
+    expect(service.banChannelMember).toHaveBeenCalledWith('channel-1', 'user-1', user);
+  });
+
+  it('maps channel ban lock conflicts to HTTP conflict without dispatch retries', async () => {
+    const service = {
+      banChannelMember: jest
+        .fn()
+        .mockRejectedValue(
+          new ModerationSanctionStateLockBusyError({ chatId: 'channel-1', userId: 'user-1' }),
+        ),
+    };
+    const controller = new AdminManualModerationController(service as never);
+    await expect(controller.banChannelMember('channel-1', 'user-1', user)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(service.banChannelMember).toHaveBeenCalledTimes(1);
+  });
+
   it('removes allowlist rule via query parameter', async () => {
     const manualModerationService = {
       removeDomain: jest.fn().mockResolvedValue({ ok: true }),

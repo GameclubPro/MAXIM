@@ -1,5 +1,6 @@
 import type {
   BroadcastHandoffResponse,
+  ManualModerationActionResult,
   MembershipActivityPage,
   MembershipActivityQuery,
   ProfileMentionHandoffRequest,
@@ -12,6 +13,20 @@ import type {
 import type { ApiTransport } from './transport';
 
 const channelStatsRanges = new Set<ChannelStatsRange>(['24h', '7d', '30d']);
+
+export async function banChannelMember(
+  api: ApiTransport,
+  chatId: string,
+  userId: string,
+): Promise<ManualModerationActionResult> {
+  const channel = chatId.trim();
+  const target = userId.trim();
+  if (!channel || !target) throw new Error('Канал и участник обязательны.');
+  return (await api.request(
+    `/channels/${encodeURIComponent(channel)}/members/${encodeURIComponent(target)}/ban`,
+    { method: 'POST', timeoutMs: 55_000, retryMutationOnTransportError: false },
+  )) as ManualModerationActionResult;
+}
 const membershipActivityRanges = new Set<MembershipActivityQuery['range']>(['24h', '7d', '30d']);
 const membershipActivityFilters = new Set<MembershipActivityQuery['filter']>([
   'all',

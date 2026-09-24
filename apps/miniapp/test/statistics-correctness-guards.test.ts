@@ -6,10 +6,12 @@ const eventsPageSource = readFileSync(
   new URL('../src/pages/events-page.tsx', import.meta.url),
   'utf8',
 );
-const channelStatsPageSource = readFileSync(
-  new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
-  'utf8',
-);
+const channelStatsPageSource = [
+  '../src/pages/channel-stats-page.tsx',
+  '../src/components/dashboard/channel-stats-overview.tsx',
+]
+  .map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'))
+  .join('\n');
 const chatsPageSource = readFileSync(
   new URL('../src/pages/chats-page.tsx', import.meta.url),
   'utf8',

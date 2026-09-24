@@ -202,29 +202,46 @@ export class AdminManualModerationController {
         body,
       );
     } catch (error: unknown) {
-      if (error instanceof ModerationSanctionStateLockBusyError) {
-        throw new ConflictException({
-          code: 'MODERATION_ACTION_IN_PROGRESS',
-          message: 'Действие для этого участника уже выполняется. Дождитесь результата.',
-        });
-      }
-      if (error instanceof ModerationSanctionStateChangedError) {
-        throw new ConflictException({
-          code: 'MODERATION_ACTION_STATE_CHANGED',
-          message: 'Состояние участника уже изменилось. Обновите список участников.',
-        });
-      }
-      if (
-        error instanceof ModerationSanctionStateLockUnavailableError ||
-        error instanceof ModerationSanctionStateLockLeaseLostError
-      ) {
-        throw new ServiceUnavailableException({
-          code: 'MODERATION_ACTION_STATUS_UNCERTAIN',
-          message: 'Статус действия временно недоступен. Обновите список участников.',
-        });
-      }
-      throw error;
+      this.throwModerationActionError(error);
     }
+  }
+
+  @Post('channels/:chatId/members/:userId/ban')
+  async banChannelMember(
+    @Param('chatId') chatId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    try {
+      return await this.moderationService.banChannelMember(chatId, targetUserId, user);
+    } catch (error: unknown) {
+      this.throwModerationActionError(error);
+    }
+  }
+
+  private throwModerationActionError(error: unknown): never {
+    if (error instanceof ModerationSanctionStateLockBusyError) {
+      throw new ConflictException({
+        code: 'MODERATION_ACTION_IN_PROGRESS',
+        message: 'Действие для этого участника уже выполняется. Дождитесь результата.',
+      });
+    }
+    if (error instanceof ModerationSanctionStateChangedError) {
+      throw new ConflictException({
+        code: 'MODERATION_ACTION_STATE_CHANGED',
+        message: 'Состояние участника уже изменилось. Обновите список участников.',
+      });
+    }
+    if (
+      error instanceof ModerationSanctionStateLockUnavailableError ||
+      error instanceof ModerationSanctionStateLockLeaseLostError
+    ) {
+      throw new ServiceUnavailableException({
+        code: 'MODERATION_ACTION_STATUS_UNCERTAIN',
+        message: 'Статус действия временно недоступен. Обновите список участников.',
+      });
+    }
+    throw error;
   }
 
   @Post('chats/:chatId/admin-allowlist')

@@ -63,6 +63,37 @@ describe('MiniappMutationTunnelController', () => {
     controller.onModuleDestroy();
   });
 
+  it('allows only the exact POST channel ban route through the tunnel', async () => {
+    const controller = new MiniappMutationTunnelController();
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const path = '/channels/channel-1/members/user-1/ban';
+    try {
+      await controller.tunnel(
+        { method: 'POST', path },
+        'InitData auth_date=1&hash=test',
+        TEST_USER,
+        createReply() as never,
+      );
+      expect(global.fetch).toHaveBeenCalledWith(
+        `http://127.0.0.1:3001/api/v1${path}`,
+        expect.objectContaining({ method: 'POST' }),
+      );
+      await expect(
+        controller.tunnel(
+          { method: 'DELETE', path },
+          'InitData auth_date=1&hash=test',
+          TEST_USER,
+          createReply() as never,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.onModuleDestroy();
+    }
+  });
+
   it('forwards session credentials and request-origin signals to the local API', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

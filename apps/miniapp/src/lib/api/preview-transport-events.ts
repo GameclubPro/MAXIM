@@ -1393,6 +1393,26 @@ function handleChannelEventsPreviewRequest(
   url: URL,
   method: string,
 ): unknown | typeof PREVIEW_NOT_HANDLED {
+  if (tail[0] === 'members' && tail[1] && tail[2] === 'ban' && method === 'POST') {
+    const targetUserId = decodeURIComponent(tail[1]);
+    const member = state.channelActivity.find((item) => item.userId === targetUserId);
+    if (!member) throw new Error('Участник не найден.');
+    if (member.type === 'left') throw new Error('Участник уже вышел из канала или был удалён.');
+    state.channelActivity.unshift({
+      ...member,
+      id: `channel-ban-${targetUserId}-${readPreviewClock(state.clock).getTime()}`,
+      type: 'left',
+      createdAt: readPreviewClock(state.clock).toISOString(),
+    });
+    return {
+      ...createModerationResult(
+        targetUserId,
+        { action: 'BAN', scope: 'current_chat' },
+        state.clock,
+      ),
+      message: 'Бан включён.',
+    };
+  }
   if (tail[0] === 'stats' && method === 'GET') {
     const range = (url.searchParams.get('range') as ChannelStatsRange | null) ?? '7d';
     const mode = (url.searchParams.get('mode') as ChannelStatsMode | null) ?? undefined;
@@ -1433,7 +1453,7 @@ const CHAT_EVENT_ROOTS = new Set([
   'spammer-diagnostics',
   'members',
 ]);
-const CHANNEL_EVENT_ROOTS = new Set(['stats', 'activity-feed']);
+const CHANNEL_EVENT_ROOTS = new Set(['stats', 'activity-feed', 'members']);
 
 export const handleEventsPreviewRequest: PreviewRequestHandler = async (context) => {
   const entity = resolvePreviewEntityRequest(context);
@@ -1447,10 +1467,9 @@ export const handleEventsPreviewRequest: PreviewRequestHandler = async (context)
   }
   if (
     context.state.moderationActionDelayMs > 0 &&
-    entity.entityType === 'chat' &&
     entity.tail[0] === 'members' &&
     entity.tail[1] &&
-    entity.tail[2] === 'moderation-action' &&
+    (entity.tail[2] === 'moderation-action' || entity.tail[2] === 'ban') &&
     context.method === 'POST'
   ) {
     await new Promise<void>((resolve) => {

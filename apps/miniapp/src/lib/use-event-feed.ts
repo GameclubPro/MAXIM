@@ -6,6 +6,7 @@ type RequestMode = 'reload' | 'more' | 'refresh';
 type FeedState<Item> = {
   key: string;
   page: EventPage<Item>;
+  firstPage: EventPage<Item> | null;
   status: 'idle' | RequestMode;
   error: string | null;
   errorKind: RequestMode | null;
@@ -28,6 +29,7 @@ function createFeed<Item>(key: string, seed: EventPage<Item> | null): FeedState<
   return {
     key,
     page: seed ?? { items: [], hasMore: false, nextCursor: null },
+    firstPage: null,
     status: 'idle',
     error: null,
     errorKind: null,
@@ -84,6 +86,7 @@ export function useEventFeed<Item extends { id: string }, Query extends { cursor
       visitedCursorsRef.current = visited;
       setState((previous) => ({
         key: scopeKey,
+        firstPage: mode === 'more' ? previous.firstPage : page,
         page: {
           ...page,
           items: mergeEventItems(mode === 'more' ? previous.page.items : [], page.items),
@@ -126,6 +129,7 @@ export function useEventFeed<Item extends { id: string }, Query extends { cursor
 
   return {
     ...current.page,
+    firstPage: current.firstPage,
     error: current.error,
     updatedAt: current.updatedAt,
     isReloading: enabled && (state.key !== scopeKey || current.status === 'reload'),

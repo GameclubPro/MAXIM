@@ -1,5 +1,5 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
-import { type MouseEvent, useEffect, useMemo, useState } from 'react';
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   buildMembershipActivityGroups,
   MEMBERSHIP_ACTIVITY_INITIAL_RENDER_LIMIT,
@@ -29,6 +29,7 @@ type MembershipActivityFeedProps = {
   onLoadMore: () => void;
   onRetry: () => void;
   onProfileActivate?: ((item: MembershipActivityItem) => void) | null;
+  renderMemberAction?: (item: MembershipActivityItem) => ReactNode;
 };
 
 const filterOptions: Array<{ value: MembershipActivityFilter; label: string }> = [
@@ -101,6 +102,7 @@ export function MembershipActivityFeed({
   onLoadMore,
   onRetry,
   onProfileActivate = null,
+  renderMemberAction,
 }: MembershipActivityFeedProps) {
   const [renderLimit, setRenderLimit] = useState(MEMBERSHIP_ACTIVITY_INITIAL_RENDER_LIMIT);
   const { groups, visibleCount, hiddenCount } = useMemo(
@@ -214,7 +216,9 @@ export function MembershipActivityFeed({
                         <span className="membership-feed__dot" aria-hidden="true" />
                       </div>
 
-                      <div className="membership-feed__card">
+                      <div
+                        className={`membership-feed__card${renderMemberAction ? ' membership-feed__card--actionable' : ''}`}
+                      >
                         {canOpenProfile ? (
                           <a
                             href={profileHandoffUrl || profileUrl || '#'}
@@ -263,6 +267,7 @@ export function MembershipActivityFeed({
                             {resolveDescription(item, { joinedLabel, leftLabel })}
                           </p>
                         </div>
+                        {renderMemberAction?.(item)}
                       </div>
                     </article>
                   );

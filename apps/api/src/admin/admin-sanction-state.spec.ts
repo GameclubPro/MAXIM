@@ -11,6 +11,7 @@ import {
   ModerationSanctionStateLockUnavailableError,
 } from '../moderation/moderation-sanction-state-lock.service';
 import { AdminService } from './admin.service';
+import { ChatEntityType } from '../prisma/prisma-client';
 import {
   createChatContextCacheMock,
   createConfigMock,
@@ -115,6 +116,144 @@ function installSanctionStateHarness(service: AdminService) {
   (service as any).injectedModerationSanctionStateFence = sanctionStateFence;
   return { leaseGuard, sanctionStateFence, sanctionStateLock, trace };
 }
+
+describe('channel member bans', () => {
+  const options = { ...VERIFIED_COMMAND_OPTIONS, entityType: ChatEntityType.CHANNEL };
+
+  it('records and fences a local ban without chat cleanup, global evidence or channel posts', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient({
+      sendMessage: jest.fn(),
+      deleteMessage: jest.fn(),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const cleanup = jest.spyOn(service as never, 'resolveManualBanSourceCleanupSummary' as never);
+    const fanout = jest.spyOn(service as never, 'resolveManualBanFollowUpSummaries' as never);
+    const exemption = jest.spyOn(service as never, 'deleteAdminGlobalSpammerExemption' as never);
+    const intelligence = { recordManualBanObservation: jest.fn() };
+    Object.assign(service, { globalSpammerIntelligence: intelligence });
+
+    await expect(
+      service.applyManualModerationAction(
+        'channel-1',
+        'user-3',
+        ADMIN_ACTOR,
+        { action: 'BAN', scope: 'current_chat' },
+        'miniapp',
+        options,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ message: 'Бан включён.' }));
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'channel-1',
+      'user-3',
+      expect.objectContaining({
+        immediate: true,
+        beforeImmediateMemberMutation: expect.any(Function),
+      }),
+    );
+    expect(harness.sanctionStateFence.commit).toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'channel-1',
+          userId: 'user-3',
+          ruleCode: 'MANUAL_BAN',
+          metadata: expect.objectContaining({ scope: 'current_chat' }),
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(fanout).not.toHaveBeenCalled();
+    expect(exemption).not.toHaveBeenCalled();
+    expect(intelligence.recordManualBanObservation).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { action: 'BAN', scope: 'all_chats' },
+    { action: 'BAN' },
+    { action: 'MUTE', scope: 'current_chat', muteDurationHours: 24 },
+  ])('rejects unsupported channel scope or action %j', async (body) => {
+    const maxClient = createBanMaxClient();
+    const service = createService(createPrismaMock(), maxClient);
+    await expect(
+      service.applyManualModerationAction(
+        'channel-1',
+        'user-3',
+        ADMIN_ACTOR,
+        body,
+        'miniapp',
+        options,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['self', 'admin-1', {}],
+    [
+      'owner',
+      'user-3',
+      { getChatMemberAccess: jest.fn().mockResolvedValue({ isOwner: true, isAdmin: true }) },
+    ],
+    [
+      'admin',
+      'user-3',
+      { getChatMemberAccess: jest.fn().mockResolvedValue({ isOwner: false, isAdmin: true }) },
+    ],
+    ['departed', 'user-3', { getChatMemberAccess: jest.fn().mockResolvedValue(null) }],
+    [
+      'missing bot permission',
+      'user-3',
+      {
+        getCurrentChatMemberAccess: jest
+          .fn()
+          .mockResolvedValue({ isOwner: false, isAdmin: true, permissions: ['read_all_messages'] }),
+      },
+    ],
+  ])('rejects %s without a MAX mutation', async (_reason, targetUserId, overrides) => {
+    const maxClient = createBanMaxClient(overrides as Record<string, unknown>);
+    const service = createService(createPrismaMock(), maxClient);
+    installSanctionStateHarness(service);
+    await expect(
+      service.applyManualModerationAction(
+        'channel-1',
+        targetUserId as string,
+        ADMIN_ACTOR,
+        { action: 'BAN', scope: 'current_chat' },
+        'miniapp',
+        options,
+      ),
+    ).rejects.toThrow();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('reports removal-only honestly for a channel without a link', async () => {
+    const maxClient = createBanMaxClient({
+      getChatSnapshot: jest.fn().mockResolvedValue({ isPublic: false, link: null }),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+    });
+    const service = createService(createPrismaMock(), maxClient);
+    installSanctionStateHarness(service);
+    const result = await service.applyManualModerationAction(
+      'channel-1',
+      'user-3',
+      ADMIN_ACTOR,
+      { action: 'BAN', scope: 'current_chat' },
+      'miniapp',
+      options,
+    );
+    expect(result.message).toContain('MAX не поддерживает блокировку');
+    expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+});
 
 describe('AdminService sanction state ordering', () => {
   it('coalesces a second group BAN after the first command commits the active sanction', async () => {
@@ -255,24 +394,12 @@ describe('AdminService sanction state ordering', () => {
       fanoutLedgerJobId: 'job-command-ban-replay-1',
     };
 
-    await service.applyManualSystemBan(
-      'chat-1',
-      'user-3',
-      ADMIN_ACTOR,
-      'group_command',
-      options,
-    );
+    await service.applyManualSystemBan('chat-1', 'user-3', ADMIN_ACTOR, 'group_command', options);
     const routeLookupCount = maxClient.getCurrentChatMemberAccess.mock.calls.length;
     maxClient.getCurrentChatMemberAccess.mockRejectedValue(new Error('MAX route unavailable'));
 
     await expect(
-      service.applyManualSystemBan(
-        'chat-1',
-        'user-3',
-        ADMIN_ACTOR,
-        'group_command',
-        options,
-      ),
+      service.applyManualSystemBan('chat-1', 'user-3', ADMIN_ACTOR, 'group_command', options),
     ).resolves.toEqual(expect.objectContaining({ message: 'Бан включён.' }));
 
     expect(maxClient.banMember).toHaveBeenCalledTimes(1);

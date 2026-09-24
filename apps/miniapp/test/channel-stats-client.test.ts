@@ -1,8 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getChannelStats } from '../src/lib/api/channel-stats-client';
+import { banChannelMember, getChannelStats } from '../src/lib/api/channel-stats-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 import { channelStatsQueryKey } from '../src/lib/query-key-builders';
+
+test('channel ban uses the exact channel and member with no broad scope payload', async () => {
+  const calls: Array<[string, RequestInit | undefined]> = [];
+  const api: ApiTransport = {
+    async request(path, init) {
+      calls.push([path, init]);
+      return { ok: true };
+    },
+    requestKeepalive() {},
+  };
+  await banChannelMember(api, ' channel/one ', ' user/2 ');
+  assert.deepEqual(calls, [
+    [
+      '/channels/channel%2Fone/members/user%2F2/ban',
+      { method: 'POST', timeoutMs: 55_000, retryMutationOnTransportError: false },
+    ],
+  ]);
+  await assert.rejects(banChannelMember(api, '', 'user-1'));
+  await assert.rejects(banChannelMember(api, 'channel-1', ' '));
+  assert.equal(calls.length, 1);
+});
 
 test('channel stats query keys isolate overview and full payloads', () => {
   assert.deepEqual(channelStatsQueryKey('channel-1', '7d'), [

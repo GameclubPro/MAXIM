@@ -1,4 +1,9 @@
 import {
+  assertChannelMemberBanScope,
+  describeManualBanResult,
+  resolveManualMemberBanMode,
+} from './manual-member-ban-policy';
+import {
   buildChannelSuggestionMediaMetadata,
   prepareChannelSuggestionMediaRows,
 } from './admin-channel-suggestion-image-storage';
@@ -9065,6 +9070,8 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
     const actionRequest = parsed.data;
+    // FLAG: Channel bans are local-only and must not inherit chat moderation side effects.
+    assertChannelMemberBanScope(options.entityType, actionRequest);
     const sourceLedgerRootKey = this.readTrimmedString(options.fanoutLedgerJobId);
     if (
       sourceLedgerRootKey &&
@@ -9107,6 +9114,7 @@ export class AdminService implements OnModuleDestroy {
             this.resolveManualModerationBotAction(actionRequest.action),
             {
               preferredBotId: options.preferredBotId,
+              entityType: options.entityType,
             },
           );
     const targetDisplayName =
@@ -9155,6 +9163,7 @@ export class AdminService implements OnModuleDestroy {
     leaseGuard: ModerationSanctionStateLeaseGuard,
     onMemberMutationConfirmed: () => void,
   ): Promise<ManualModerationActionResult> {
+    const isChannel = options.entityType === ChatEntityType.CHANNEL;
     const expectedSanctionEventId = this.readTrimmedString(options.expectedSanctionEventId);
     await this.assertExpectedManualModerationSanctionState({
       chatId,
@@ -9623,15 +9632,17 @@ export class AdminService implements OnModuleDestroy {
       let moderationEventId: string;
       try {
         await leaseGuard.assertOwned();
-        await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
-        await leaseGuard.assertOwned();
-        await this.globalSpammerIntelligence?.recordManualBanObservation({
-          chatId,
-          targetUserId,
-          actorUserId: user.userId,
-          source,
-          executionMode,
-        });
+        if (!isChannel) {
+          await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
+          await leaseGuard.assertOwned();
+          await this.globalSpammerIntelligence?.recordManualBanObservation({
+            chatId,
+            targetUserId,
+            actorUserId: user.userId,
+            source,
+            executionMode,
+          });
+        }
         await leaseGuard.assertOwned();
         const shouldFanoutMiniappBan = source === 'miniapp' && shouldFanoutManualAction;
         const { sourceMessageCleanup, crossChatFanout } = shouldFanoutMiniappBan
@@ -9642,7 +9653,7 @@ export class AdminService implements OnModuleDestroy {
               source,
               leaseGuard,
             })
-          : source === 'miniapp'
+          : source === 'miniapp' && !isChannel
             ? {
                 sourceMessageCleanup: await this.resolveManualBanSourceCleanupSummary({
                   sourceChatId: chatId,
@@ -9731,23 +9742,24 @@ export class AdminService implements OnModuleDestroy {
         await this.commitManualSanctionStateFence(sanctionFence, moderationEventId);
         options.onModerationEventRecorded?.(moderationEventId);
         await leaseGuard.assertOwned();
-        await sendManualBanChatNotice(this.maxClient, this.logger, {
-          chatId,
-          targetUserId,
-          sanctionEventId: moderationEventId,
-          targetDisplayName,
-          source,
-          removedOnly: executionMode === 'MAX_REMOVE_ONLY',
-          botId: resolvedBotId,
-        });
+        if (!isChannel) {
+          await sendManualBanChatNotice(this.maxClient, this.logger, {
+            chatId,
+            targetUserId,
+            sanctionEventId: moderationEventId,
+            targetDisplayName,
+            source,
+            removedOnly: executionMode === 'MAX_REMOVE_ONLY',
+            botId: resolvedBotId,
+          });
+        }
         return manualModerationActionResultSchema.parse({
           ok: true,
           action: 'BAN',
           userId: targetUserId,
           muteDurationHours: null,
           muteExpiresAt: null,
-          message:
-            executionMode === 'MAX_REMOVE_ONLY' ? 'Участник удалён из чата.' : 'Бан включён.',
+          message: describeManualBanResult(executionMode, isChannel),
         });
       } catch (error: unknown) {
         throw markMaxMemberMutationConfirmed(error);
@@ -13131,35 +13143,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     botId?: string,
   ): Promise<ManualBanExecutionMode> {
-    const maxClientWithSnapshot = this.maxClient as MaxClientService & {
-      getChatSnapshot?: (
-        chatId: string,
-      ) => Promise<{ isPublic: boolean | null; link: string | null }>;
-    };
-    if (typeof maxClientWithSnapshot.getChatSnapshot !== 'function') {
-      return 'MAX_BLOCK';
-    }
-
-    try {
-      const snapshot = await maxClientWithSnapshot.getChatSnapshot(chatId, {
-        trafficClass: 'critical',
-        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-        ...(botId ? { botId } : {}),
-      } as never);
-      if (snapshot.isPublic === false && !snapshot.link) {
-        return 'MAX_REMOVE_ONLY';
-      }
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve chat visibility before manual ban',
-      );
-    }
-
-    return 'MAX_BLOCK';
+    return resolveManualMemberBanMode(this.maxClient, this.logger, chatId, botId);
   }
 
   private async resolveManualUnbanExecutionMode(

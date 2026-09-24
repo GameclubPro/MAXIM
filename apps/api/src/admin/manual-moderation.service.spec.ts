@@ -659,6 +659,43 @@ describe('ManualModerationService spammer profiles', () => {
 });
 
 describe('ManualModerationService command bridge', () => {
+  it('authorizes the exact channel before a local ban', async () => {
+    const legacy = {
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyManualModerationAction: jest.fn().mockResolvedValue({ ok: true }),
+    };
+    const service = new ManualModerationService(legacy as never, {} as never);
+    await service.banChannelMember('channel-1', 'user-1', authUser);
+    expect(legacy.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
+      'channel-1',
+      authUser.userId,
+      'channel',
+    );
+    expect(legacy.applyManualModerationAction).toHaveBeenCalledWith(
+      'channel-1',
+      'user-1',
+      authUser,
+      { action: 'BAN', scope: 'current_chat' },
+      'miniapp',
+      { entityType: 'CHANNEL', actorAlreadyVerified: true },
+    );
+    expect(legacy.assertManagedEntityAdminAccess.mock.invocationCallOrder[0]).toBeLessThan(
+      legacy.applyManualModerationAction.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('does not dispatch a channel ban when access or entity verification fails', async () => {
+    const legacy = {
+      assertManagedEntityAdminAccess: jest.fn().mockRejectedValue(new Error('Access denied')),
+      applyManualModerationAction: jest.fn(),
+    };
+    const service = new ManualModerationService(legacy as never, {} as never);
+    await expect(service.banChannelMember('channel-1', 'user-1', authUser)).rejects.toThrow(
+      'Access denied',
+    );
+    expect(legacy.applyManualModerationAction).not.toHaveBeenCalled();
+  });
+
   it('forwards system ban commands through the legacy admin boundary', async () => {
     const legacyAdminService = {
       ...createLegacyAdminServiceMock(),

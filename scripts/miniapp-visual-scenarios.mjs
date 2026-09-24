@@ -103,6 +103,9 @@ const FEATURE_SOURCE_GLOBS = {
   ],
   stats: [
     'apps/miniapp/src/pages/channel-stats-page.tsx',
+    'apps/miniapp/src/components/dashboard/channel-stats-overview.tsx',
+    'apps/miniapp/src/components/dashboard/channel-member-ban-sheet.tsx',
+    'apps/miniapp/src/lib/channel-stats-format.ts',
     'apps/miniapp/src/styles/*stats*.css',
     'apps/miniapp/src/styles/statistics-experience.css',
     'apps/miniapp/src/lib/api/channel-stats-client.ts',

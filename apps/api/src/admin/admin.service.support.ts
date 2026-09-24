@@ -237,6 +237,7 @@ export type ManualModerationBotAction = 'delete_message' | 'moderate_member';
 export type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
 export type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ALREADY_PRESENT';
 export type ManualModerationExecutionOptions = {
+  entityType?: ChatEntityType;
   actorAlreadyVerified?: boolean;
   preferredBotId?: string | null;
   targetDisplayNameHint?: string | null;
