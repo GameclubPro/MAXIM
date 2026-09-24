@@ -111,6 +111,12 @@ describe('channel quick buttons', () => {
     expect(extractChannelQuickButtons(`${' '.repeat(20_000)}not a template`, [])).toBeNull();
   });
 
+  it('rejects long malformed destinations without overlapping whitespace scans', () => {
+    const started = performance.now();
+    expect(extractChannelQuickButtons(`Read=${' '.repeat(60_000)}"`, [])).toBeNull();
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it('removes multiple quoted templates in order without altering other whitespace', () => {
     expect(
       extractChannelQuickButtons(
