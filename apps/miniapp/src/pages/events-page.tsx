@@ -30,6 +30,7 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
@@ -1711,8 +1712,10 @@ function ViolationModerationControls({
   > | null>(null);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
   const mutePresets = [1, 6, 24, 168];
+  const applyLock = useRef(false);
 
   const applyMutation = useMutation({
+    retry: false,
     mutationFn: async (payload: ManualModerationActionRequest) =>
       applyManualModerationAction(api, chatId, violation.userId, payload),
     onSuccess: (result) => {
@@ -1726,7 +1729,10 @@ function ViolationModerationControls({
       const message = normalizeActionErrorMessage(error);
       setStatus({ tone: 'danger', text: message });
     },
-    onSettled: () => setPendingScopeChoice(null),
+    onSettled: () => {
+      applyLock.current = false;
+      setPendingScopeChoice(null);
+    },
   });
 
   const applyAction = (
@@ -1734,7 +1740,8 @@ function ViolationModerationControls({
     hours?: number,
     scope?: ManualModerationScopeChoice,
   ) => {
-    if (applyMutation.isPending) return;
+    if (applyLock.current || applyMutation.isPending) return;
+    applyLock.current = true;
     const normalizedHours =
       action === 'MUTE' ? clampMuteDurationHours(hours ?? muteDurationHours) : null;
     setStatus(null);
@@ -1762,7 +1769,7 @@ function ViolationModerationControls({
     });
   };
   const closeScopeAction = () => {
-    if (applyMutation.isPending) {
+    if (applyLock.current || applyMutation.isPending) {
       return;
     }
     setPendingScopeAction(null);
@@ -2057,10 +2064,20 @@ function readEventsDashboardPrefetchNetwork(): EventsDashboardPrefetchNetwork | 
 
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
+  return <EventsWorkspace key={chatId ?? ''} api={api} />;
+}
+
+function EventsWorkspace({ api }: { api: ApiTransport }) {
+  const { chatId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const scopeActionLock = useRef(false);
+  const cleanupLock = useRef(false);
+  const immunityLock = useRef(false);
+  const profileLock = useRef(false);
+  const activeView = useRef(true);
   const [range, setRange] = useState<LogsDashboardRange>(
     () => parseChatStatisticsRouteQuery(location.search).range,
   );
@@ -2213,9 +2230,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   useEffect(() => {
+    activeView.current = true;
     document.body.classList.add('events-page-open');
 
     return () => {
+      activeView.current = false;
       document.body.classList.remove('events-page-open');
     };
   }, []);
@@ -2258,7 +2277,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     initialData: initialDashboardSnapshot ?? undefined,
     initialDataUpdatedAt: initialDashboardSnapshot ? 0 : undefined,
-    placeholderData: (previousData) => previousData,
     refetchInterval: (query) => (isTerminalApiClientError(query.state.error) ? false : 30_000),
     refetchOnWindowFocus: true,
   });
@@ -2387,7 +2405,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     dashboard && !dashboardQuery.isPlaceholderData ? dashboard : null;
   const participantsIdentity =
     chatId && participantsIdentityQuery.data?.id === chatId ? participantsIdentityQuery.data : null;
-  const currentChatIdentity = currentDashboardIdentity?.chat ?? participantsIdentity;
+  const currentChatIdentity =
+    section === 'participants' || isSanctionsView
+      ? participantsIdentity
+      : currentDashboardIdentity?.chat;
   const chatTitleResolution = useMemo(
     () =>
       resolveStatisticsTitle({
@@ -2420,7 +2441,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       ? participantsIdentity
       : null;
   const authoritativeChatIdentity =
-    authoritativeDashboardIdentity ?? authoritativeParticipantsIdentity;
+    section === 'participants' || isSanctionsView
+      ? authoritativeParticipantsIdentity
+      : authoritativeDashboardIdentity;
 
   const chatAvatarUrl = useMemo(() => {
     if (!chatId) {
@@ -2656,6 +2679,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
       handoffChatMemberProfile(api, chatId ?? '', userId, { displayName }),
     onSuccess: (result) => {
+      if (!activeView.current) return;
       if (!openMaxBotLinkAndClose(result.botUrl)) {
         pushToast({
           tone: 'danger',
@@ -2671,6 +2695,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         title: 'Не удалось открыть профиль',
         description,
       });
+    },
+    onSettled: () => {
+      profileLock.current = false;
     },
   });
   const participantImmunityMutation = useMutation({
@@ -2710,6 +2737,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: normalizeActionErrorMessage(error),
       });
     },
+    onSettled: () => {
+      immunityLock.current = false;
+    },
   });
   const participantImmunityClearMutation = useMutation({
     mutationFn: ({ userId }: { userId: string }) =>
@@ -2731,8 +2761,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: normalizeActionErrorMessage(error),
       });
     },
+    onSettled: () => {
+      immunityLock.current = false;
+    },
   });
   const participantModerationMutation = useMutation({
+    retry: false,
     mutationFn: ({ userId, payload }: { userId: string; payload: ManualModerationActionRequest }) =>
       applyManualModerationAction(api, chatId ?? '', userId, payload),
     onSuccess: (result) => {
@@ -2754,9 +2788,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: normalizeActionErrorMessage(error),
       });
     },
-    onSettled: () => setPendingScopeChoice(null),
+    onSettled: () => {
+      scopeActionLock.current = false;
+      setPendingScopeChoice(null);
+    },
   });
   const cleanupUnavailableParticipantsMutation = useMutation({
+    retry: false,
     mutationFn: () =>
       cleanupUnavailableChatParticipants(api, chatId ?? '', {
         dryRun: false,
@@ -2779,8 +2817,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: normalizeActionErrorMessage(error),
       });
     },
+    onSettled: () => {
+      cleanupLock.current = false;
+    },
   });
   const spammerDiagnosticsBanMutation = useMutation({
+    retry: false,
     mutationFn: ({ userId, scope }: { userId: string; scope: ManualModerationScopeChoice }) =>
       applyManualModerationAction(api, chatId ?? '', userId, { action: 'BAN', scope }),
     onSuccess: (result) => {
@@ -2807,7 +2849,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: normalizeActionErrorMessage(error),
       });
     },
-    onSettled: () => setPendingScopeChoice(null),
+    onSettled: () => {
+      scopeActionLock.current = false;
+      setPendingScopeChoice(null);
+    },
   });
   const spammerReviewMutation = useMutation({
     mutationFn: ({
@@ -2874,10 +2919,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const filterOptions = useMemo<
     Array<{ value: EventsFilter; label: string; count: number }>
   >(() => {
-    if (!dashboard) {
-      return [{ value: 'ALL', label: 'Все', count: 0 }];
-    }
-
     const options: Array<{ value: EventsFilter; label: string; count: number }> = [
       { value: 'ALL', label: 'Все', count: violationsSummary.total },
       { value: 'WARN', label: 'Предупр.', count: violationsSummary.warn },
@@ -2892,14 +2933,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       { value: 'UNBAN', label: 'Возвраты', count: violationsSummary.unban },
     ];
 
-    return options.filter((option) => option.value === 'ALL' || option.count > 0);
+    return options;
   }, [dashboard]);
-
-  useEffect(() => {
-    if (!filterOptions.some((option) => option.value === eventsFilter)) {
-      setEventsFilter('ALL');
-    }
-  }, [eventsFilter, filterOptions]);
 
   useEffect(() => {
     setExpandedViolationId(null);
@@ -2911,14 +2946,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       setSelectedParticipantId(null);
     }
   }, [section]);
-
-  useEffect(() => {
-    setSelectedParticipantId(null);
-    setCleanupUnavailableConfirmOpen(false);
-    setPendingScopeAction(null);
-    setParticipantsSearch('');
-    setParticipantsRoleFilter('all');
-  }, [chatId]);
 
   const selectedParticipant = useMemo(
     () =>
@@ -2939,17 +2966,22 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     setPendingScopeAction(action);
   };
   const closePendingScopeAction = () => {
-    if (participantModerationMutation.isPending || spammerDiagnosticsBanMutation.isPending) {
+    if (
+      scopeActionLock.current ||
+      participantModerationMutation.isPending ||
+      spammerDiagnosticsBanMutation.isPending
+    ) {
       return;
     }
     setPendingScopeChoice(null);
     setPendingScopeAction(null);
   };
   const applyPendingScopeAction = (scope: ManualModerationScopeChoice) => {
-    if (!pendingScopeAction) {
+    if (!pendingScopeAction || scopeActionLock.current) {
       return;
     }
 
+    scopeActionLock.current = true;
     setPendingScopeChoice(scope);
 
     if (pendingScopeAction.source === 'spammer-diagnostics') {
@@ -3201,11 +3233,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   ];
   const activateProfile = (userId: string, displayName: string) => {
     const normalizedUserId = userId.trim();
-    if (!normalizedUserId || !chatId || profileHandoffMutation.isPending) {
+    if (!normalizedUserId || !chatId || profileLock.current || profileHandoffMutation.isPending) {
       return;
     }
 
     const normalizedDisplayName = displayName.trim() || 'Пользователь';
+    profileLock.current = true;
     // FLAG: Persist the name before opening MAX; bot_started can otherwise win this race.
     profileHandoffMutation.mutate({
       userId: normalizedUserId,
@@ -3245,7 +3278,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               className="managed-entity-workspace-header__counterpart"
               aria-label="Обновить события"
               title="Обновить события"
-              disabled={activityFeed.isReloading || moderationFeed.isReloading}
+              disabled={isAppbarBusy || activityFeed.isReloading || moderationFeed.isReloading}
               onClick={() => {
                 void dashboardQuery.refetch();
                 void (section === 'activity' ? activityFeed : moderationFeed).retry();
@@ -3309,6 +3342,20 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           ariaLabel="Режим модерации"
           className="events-moderation-view"
         />
+      ) : null}
+
+      {section === 'activity' && dashboard && dashboardQuery.error ? (
+        <div className="events-refresh-error" role="status">
+          <span>Сводка не обновлена. {normalizeLoadErrorMessage(dashboardQuery.error)}</span>
+          <button
+            type="button"
+            className="button button--ghost"
+            disabled={dashboardQuery.isFetching}
+            onClick={() => void dashboardQuery.refetch()}
+          >
+            Повторить
+          </button>
+        </div>
       ) : null}
 
       {isSanctionsView ? (
@@ -3489,12 +3536,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <label className="events-filter-menu">
                 <span>Тип события</span>
                 <select
+                  aria-label="Тип события"
                   value={eventsFilter}
                   onChange={(event) => handleEventsFilterChange(event.target.value as EventsFilter)}
                 >
                   {filterOptions.map((option) => (
                     <option key={option.value} value={option.value}>
-                      {option.label} · {option.count}
+                      {option.label} · {dashboard ? option.count : '...'}
                     </option>
                   ))}
                 </select>
@@ -3528,6 +3576,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       {section === 'participants' ? (
         <Suspense fallback={<Spinner size="lg" label="Загружаем участников" />}>
           <ChatParticipantsRoster
+            resetKey={`${chatId}:${range}`}
             items={participantsFeed.items}
             search={participantsSearch}
             rangeLabel={formatStatisticsRangeLabel(range)}
@@ -3897,12 +3946,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         tone="danger"
         isBusy={cleanupUnavailableParticipantsMutation.isPending}
         onClose={() => {
-          if (cleanupUnavailableParticipantsMutation.isPending) {
+          if (cleanupLock.current || cleanupUnavailableParticipantsMutation.isPending) {
             return;
           }
           setCleanupUnavailableConfirmOpen(false);
         }}
-        onConfirm={() => cleanupUnavailableParticipantsMutation.mutate()}
+        onConfirm={() => {
+          if (cleanupLock.current) return;
+          cleanupLock.current = true;
+          cleanupUnavailableParticipantsMutation.mutate();
+        }}
       />
 
       {selectedParticipant ? (
@@ -3929,20 +3982,20 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             isOpeningProfile={profileHandoffMutation.isPending}
             onClose={() => setSelectedParticipantId(null)}
             onSaveImmunity={(payload) => {
-              if (!selectedParticipant) {
+              if (!selectedParticipant || immunityLock.current) {
                 return;
               }
-
+              immunityLock.current = true;
               participantImmunityMutation.mutate({
                 userId: selectedParticipant.userId,
                 ...payload,
               });
             }}
             onClearImmunity={() => {
-              if (!selectedParticipant) {
+              if (!selectedParticipant || immunityLock.current) {
                 return;
               }
-
+              immunityLock.current = true;
               participantImmunityClearMutation.mutate({
                 userId: selectedParticipant.userId,
               });

@@ -86,6 +86,16 @@ try {
   );
   console.log('PASS: chat switch aborts requests and rejects late responses');
 
+  await page.evaluate(() => {
+    window.oldParticipantRetry = window.participantTest.current.retry;
+  });
+  await render({ chatId: 'c' });
+  await pending(3);
+  await resolve(2, result([item('c-member')]));
+  await page.evaluate(() => window.oldParticipantRetry());
+  assert.equal(await page.evaluate(() => window.participantTest.pending.length), 3);
+  console.log('PASS: stale mutation callbacks cannot restart a previous scope');
+
   await fresh();
   await pending(1);
   await resolve(0, result([item('a')], 'page-2'));
@@ -129,6 +139,11 @@ try {
   await resolve(0, result([item('fresh')]));
   assert.equal((await state()).items[0].userId, 'fresh');
   console.log('PASS: explicit refresh bypasses initial snapshot');
+  await render({ chatId: 'a', initialPage: result([item('late-cache')]) });
+  await page.waitForTimeout(50);
+  assert.equal((await state()).items[0].userId, 'fresh');
+  assert.equal(await page.evaluate(() => window.participantTest.pending.length), 1);
+  console.log('PASS: a late snapshot cannot replace completed participant data');
 
   await fresh();
   await pending(1);
@@ -171,6 +186,22 @@ try {
   await resolve(4, result([]));
   console.log('PASS: empty-page scanning is bounded and can be resumed manually');
 
+  await page.setViewportSize({ width: 1280, height: 2400 });
+  await fresh({ chatId: 'a', roster: true });
+  await pending(1);
+  for (let index = 0; index < 4; index += 1) {
+    await page.evaluate(({ index, data }) => window.participantTest.pending[index].resolve(data), {
+      index,
+      data: result([item(`visible-${index}`)], `nonempty-${index}`),
+    });
+    if (index < 3) await pending(index + 2);
+  }
+  await page.waitForFunction(() => !window.participantTest.current.isLoadingMore);
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(() => window.participantTest.pending.length), 4);
+  assert.equal((await state()).items.length, 4);
+  console.log('PASS: nonempty pages share the same bounded automatic-load budget');
+
   await fresh({ chatId: 'a', roster: true });
   await pending(1);
   await page.evaluate(
@@ -197,6 +228,8 @@ try {
   await pending(2);
   await page.evaluate(() => window.participantTest.unmount());
   assert.equal(await page.evaluate(() => window.participantTest.pending[1].signal.aborted), true);
+  await page.evaluate(() => window.participantTest.current.retry());
+  assert.equal(await page.evaluate(() => window.participantTest.pending.length), 2);
   assert.deepEqual(errors, []);
   console.log('PASS: unmount aborts an in-flight continuation; no browser errors');
 } finally {

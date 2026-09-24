@@ -41,8 +41,30 @@ try {
     if (width === 320) assert.ok(sanctionsTop <= 320, `sanctions start too low: ${sanctionsTop}`);
     const search = page.getByRole('searchbox', { name: 'Поиск ограничений' });
     await search.fill('несуществующий участник');
+    const clearButton = await page
+      .getByRole('button', { name: 'Очистить поиск', exact: true })
+      .boundingBox();
+    assert.ok(clearButton.width >= 44 && clearButton.height >= 44);
+    if (width < 600) {
+      await page.evaluate(() => {
+        Object.defineProperty(visualViewport, 'height', {
+          configurable: true,
+          value: Math.max(260, innerHeight - 310),
+        });
+        visualViewport.dispatchEvent(new Event('resize'));
+      });
+      const searchBox = await search.boundingBox();
+      assert.ok(
+        searchBox.y + searchBox.height <= (await page.evaluate(() => visualViewport.height)) + 1,
+      );
+    }
     await search.press('Enter');
     assert.equal(await search.evaluate((node) => node === document.activeElement), false);
+    if (width < 600)
+      await page.evaluate(() => {
+        delete visualViewport.height;
+        visualViewport.dispatchEvent(new Event('resize'));
+      });
     await page.getByText('Ограничений не найдено', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Сбросить фильтры', exact: true }).click();
     await page.locator('.sanctions-workspace__row').first().click();

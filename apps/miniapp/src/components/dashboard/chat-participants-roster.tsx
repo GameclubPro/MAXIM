@@ -37,6 +37,7 @@ type ChatParticipantImmunityView = Omit<
 };
 
 type ChatParticipantsRosterProps = {
+  resetKey?: string;
   items: ChatParticipantItem[];
   search: string;
   rangeLabel: string;
@@ -207,6 +208,7 @@ function describeImmunity(immunity: ChatParticipantImmunityView | null): string 
 }
 
 export function ChatParticipantsRoster({
+  resetKey,
   items,
   hasMore,
   isReloading,
@@ -280,7 +282,7 @@ export function ChatParticipantsRoster({
 
   useEffect(() => {
     setAutoLoadCount(0);
-  }, [search, roleFilter, activityFilter, items.length]);
+  }, [search, roleFilter, activityFilter, resetKey]);
 
   useEffect(() => {
     if (!isLoadingMore) autoLoadLockRef.current = false;

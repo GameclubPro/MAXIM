@@ -22,6 +22,7 @@ import {
   createSanctionClock,
   readSanctionClock,
   sanctionStatusAt,
+  nextSanctionExpiry,
 } from '../../lib/sanction-display';
 import { ActionConfirmSheet } from '../ui/action-confirm-sheet';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
@@ -77,6 +78,7 @@ export function ChatSanctionsWorkspace({
   const [selected, setSelected] = useState<ChatSanctionItem | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [clock, setClock] = useState(performance.now());
+  const [refreshedThrough, setRefreshedThrough] = useState(0);
   const releaseLock = useRef(false);
   const pendingSearch = search.trim() !== debouncedSearch;
   useEffect(() => {
@@ -157,15 +159,19 @@ export function ChatSanctionsWorkspace({
     items.length,
     feed.fetchNextPage,
   ]);
-  const nextExpiry = items
-    .filter((item) => item.status === 'active' && !item.permanent && item.expiresAt)
-    .map((item) => Date.parse(item.expiresAt!))
-    .filter(Number.isFinite)
-    .sort((a, b) => a - b)[0];
+  const nextExpiry = useMemo(
+    () => nextSanctionExpiry(items, refreshedThrough),
+    [items, refreshedThrough],
+  );
   useEffect(() => {
     if (!nextExpiry) return;
     const timer = window.setTimeout(
-      () => refresh(),
+      () => {
+        setRefreshedThrough(
+          Math.max(nextExpiry, readSanctionClock(clockSource, performance.now())),
+        );
+        if (document.visibilityState !== 'hidden') refresh();
+      },
       Math.min(
         2_147_483_647,
         Math.max(0, nextExpiry - readSanctionClock(clockSource, performance.now())) + 100,
@@ -175,6 +181,7 @@ export function ChatSanctionsWorkspace({
   }, [nextExpiry, clockSource]);
 
   const release = useMutation({
+    retry: false,
     mutationFn: async (item: ChatSanctionItem) => {
       if (!item.releaseAction)
         throw new Error('Состояние ограничения изменилось. Обновите список.');
@@ -589,6 +596,7 @@ export function ChatSanctionsWorkspace({
           ) : undefined
         }
         confirmLabel="Снять ограничение"
+        confirmDisabled={!releaseAvailable}
         confirmBusyLabel="Снимаем..."
         tone="accent"
         isBusy={release.isPending}
@@ -596,7 +604,7 @@ export function ChatSanctionsWorkspace({
           if (!release.isPending) setConfirmOpen(false);
         }}
         onConfirm={() => {
-          if (selected && !releaseLock.current && !release.isPending) {
+          if (selected && releaseAvailable && !releaseLock.current && !release.isPending) {
             releaseLock.current = true;
             release.mutate(selected);
           }

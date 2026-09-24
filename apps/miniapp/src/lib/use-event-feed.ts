@@ -56,11 +56,12 @@ export function useEventFeed<Item extends { id: string }, Query extends { cursor
   const [state, setState] = useState(() => createFeed(scopeKey, initialPage));
   const controllerRef = useRef<AbortController | null>(null);
   const visitedCursorsRef = useRef(new Set<string>());
+  const activeScopeRef = useRef<string | null>(null);
   // FLAG: Scope changes must hide old rows before effects, including actionable user identities.
   const current = state.key === scopeKey ? state : createFeed(scopeKey, initialPage);
 
   async function requestPage(mode: RequestMode) {
-    if (!enabled) return;
+    if (!enabled || activeScopeRef.current !== scopeKey) return;
     if (mode !== 'reload' && controllerRef.current) return;
     if (mode === 'more' && (!current.page.hasMore || !current.page.nextCursor)) return;
     // Preserve the history and its cursor while the reader is paging through older events.
@@ -119,8 +120,10 @@ export function useEventFeed<Item extends { id: string }, Query extends { cursor
     controllerRef.current?.abort();
     controllerRef.current = null;
     visitedCursorsRef.current = new Set();
+    activeScopeRef.current = enabled ? scopeKey : null;
     if (enabled) loadInitialPage();
     return () => {
+      activeScopeRef.current = null;
       controllerRef.current?.abort();
       controllerRef.current = null;
     };
@@ -132,7 +135,11 @@ export function useEventFeed<Item extends { id: string }, Query extends { cursor
     firstPage: current.firstPage,
     error: current.error,
     updatedAt: current.updatedAt,
-    isReloading: enabled && (state.key !== scopeKey || current.status === 'reload'),
+    isReloading:
+      enabled &&
+      (state.key !== scopeKey ||
+        current.status === 'reload' ||
+        (current.updatedAt === null && !current.error)),
     isRefreshing: enabled && current.status === 'refresh',
     isLoadingMore: enabled && current.status === 'more',
     canAutoRefresh:

@@ -216,6 +216,7 @@ try {
         },
       });
       window.channelFeed = feed;
+      window.channelFeedInitialLoading ??= feed.isReloading;
       window.changeChannelFeedScope = setScope;
       return createElement(
         'div',
@@ -226,6 +227,7 @@ try {
     createRoot(host).render(createElement(Harness));
   });
   await page.waitForFunction(() => window.channelFeed?.firstPage?.nextCursor === 'first-cursor');
+  assert.equal(await page.evaluate(() => window.channelFeedInitialLoading), true);
   await page.evaluate(() => window.channelFeed.loadMore());
   await page.waitForFunction(() => window.channelFeed.items.length === 2);
   assert.deepEqual(await page.evaluate(() => window.channelFeed.firstPage), {
@@ -234,13 +236,19 @@ try {
     nextCursor: 'first-cursor',
   });
   assert.equal(await page.evaluate(() => window.channelFeed.canAutoRefresh), false);
-  await page.evaluate(() => window.changeChannelFeedScope('empty'));
+  await page.evaluate(() => {
+    window.previousChannelFeedRetry = window.channelFeed.retry;
+    window.changeChannelFeedScope('empty');
+  });
   await page.waitForFunction(() => window.channelFeed.firstPage?.items.length === 0);
   assert.deepEqual(await page.evaluate(() => window.channelFeed.firstPage), {
     items: [],
     hasMore: false,
     nextCursor: null,
   });
+  const callsBeforeStaleRetry = await page.evaluate(() => window.channelFeedCalls.length);
+  await page.evaluate(() => window.previousChannelFeedRetry());
+  assert.equal(await page.evaluate(() => window.channelFeedCalls.length), callsBeforeStaleRetry);
   console.log(
     'PASS feed snapshot: first-page cursor survives pagination, empty page replaces stale snapshot',
   );

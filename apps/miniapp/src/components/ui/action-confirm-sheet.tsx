@@ -17,6 +17,7 @@ type ActionConfirmSheetProps = {
   confirmLabel: string;
   confirmBusyLabel?: string;
   confirmBusy?: boolean;
+  confirmDisabled?: boolean;
   cancelLabel?: string;
   tone?: 'danger' | 'accent';
   isBusy?: boolean;
@@ -43,6 +44,7 @@ export function ActionConfirmSheet({
   confirmLabel,
   confirmBusyLabel = 'Сохраняем...',
   confirmBusy,
+  confirmDisabled = false,
   cancelLabel = 'Отмена',
   tone = 'danger',
   isBusy = false,
@@ -162,7 +164,7 @@ export function ActionConfirmSheet({
           : 'action-confirm-sheet__button--accent',
       )}
       onClick={onConfirm}
-      disabled={isBusy}
+      disabled={isBusy || confirmDisabled}
     >
       {isConfirmBusy ? confirmBusyLabel : confirmLabel}
     </button>

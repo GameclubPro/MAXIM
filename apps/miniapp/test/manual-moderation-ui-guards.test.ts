@@ -49,7 +49,8 @@ test('history actions keep the confirmation visible until the request settles', 
   const actionEnd = source.indexOf('const openScopeAction =', actionStart);
   assert.ok(actionStart >= 0 && actionEnd > actionStart);
   const action = source.slice(actionStart, actionEnd);
-  assert.match(action, /if \(applyMutation\.isPending\) return;/u);
+  assert.match(action, /if \(applyLock\.current \|\| applyMutation\.isPending\) return;/u);
+  assert.match(action, /applyLock\.current = true;/u);
   assert.doesNotMatch(action, /setPendingScopeAction\(null\)/u);
   assert.match(
     eventsPageSource,

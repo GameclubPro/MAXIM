@@ -13,7 +13,7 @@ import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
 import '../styles/statistics-experience.css';
 import type { ComponentProps } from 'react';
-import { Suspense, startTransition, useEffect, useMemo, useState } from 'react';
+import { Suspense, startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import type { ChannelMemberBanSheet as ChannelMemberBanSheetComponent } from '../components/dashboard/channel-member-ban-sheet';
@@ -139,11 +139,18 @@ function saveChannelStatsPreference(
 }
 
 export function ChannelStatsPage({ api }: { api: ApiTransport }) {
+  const { chatId } = useParams();
+  return <ChannelStatsWorkspace key={chatId ?? ''} api={api} />;
+}
+
+function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const activeView = useRef(true);
+  const profileLock = useRef(false);
   const [banTarget, setBanTarget] = useState<{
     chatId: string;
     item: MembershipActivityItem;
@@ -310,9 +317,11 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   }, [activityFeed.filter, activityFeed.firstPage, chatId, range, section]);
 
   useEffect(() => {
+    activeView.current = true;
     document.body.classList.add('channel-stats-page-open');
 
     return () => {
+      activeView.current = false;
       document.body.classList.remove('channel-stats-page-open');
     };
   }, []);
@@ -412,6 +421,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
       handoffChannelMemberProfile(api, chatId, userId, { displayName }),
     onSuccess: (result) => {
+      if (!activeView.current) return;
       if (!openMaxBotLinkAndClose(result.botUrl)) {
         pushToast({
           tone: 'danger',
@@ -426,15 +436,19 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         description: 'Попробуйте ещё раз.',
       });
     },
+    onSettled: () => {
+      profileLock.current = false;
+    },
   });
 
   const activateChannelProfile = (item: MembershipActivityItem) => {
     const normalizedUserId = item.userId.trim();
-    if (!normalizedUserId || !chatId || profileHandoffMutation.isPending) {
+    if (!normalizedUserId || !chatId || profileLock.current || profileHandoffMutation.isPending) {
       return;
     }
 
     const displayName = item.userDisplayName.trim() || 'Участник';
+    profileLock.current = true;
     // FLAG: Persist the name before opening MAX; bot_started can otherwise win this race.
     profileHandoffMutation.mutate({
       userId: normalizedUserId,
@@ -740,7 +754,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             chatId={chatId}
             channelTitle={resolvedTitle}
             target={banTarget.item}
-            onApplied={() => void activityFeed.retry()}
+            onApplied={() => void activityFeed.refresh()}
             onClose={() => setBanTarget((current) => (current === banTarget ? null : current))}
           />
         </Suspense>

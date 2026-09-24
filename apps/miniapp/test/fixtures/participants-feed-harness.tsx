@@ -50,6 +50,7 @@ function Harness(options: Options) {
   if (options.roster)
     return createElement(ChatParticipantsRoster, {
       ...feed,
+      resetKey: options.chatId,
       search: options.search ?? '',
       roleFilter: options.roleFilter ?? 'all',
       rangeLabel: 'за 7 дней',

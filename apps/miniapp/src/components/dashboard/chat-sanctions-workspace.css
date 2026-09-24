@@ -57,7 +57,7 @@
   .sanctions-workspace__search {
     min-width: 0;
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) 32px;
+    grid-template-columns: 18px minmax(0, 1fr) 44px;
     align-items: center;
     gap: 8px;
     padding-inline: 12px 4px;
@@ -97,7 +97,7 @@
     color: var(--text-primary);
   }
   .sanctions-workspace__search button {
-    width: 32px;
+    width: 44px;
     padding: 0;
   }
   .sanctions-workspace__icon-button {
@@ -510,6 +510,17 @@
   @media (hover: hover) {
     .sanctions-workspace__row:hover:not(:disabled) {
       background: var(--surface-card-muted);
+    }
+  }
+  @container sanctions (max-width: 340px) {
+    .sanctions-workspace__state {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sanctions-workspace__timer {
+      justify-self: start;
+      text-align: left;
+      max-width: 100%;
+      overflow-wrap: anywhere;
     }
   }
   @container sanctions (min-width: 650px) {

@@ -1223,6 +1223,61 @@
     padding: 0;
     gap: 12px;
   }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    > :is(
+      .events-stage,
+      .events-moderation-view,
+      .sanctions-workspace,
+      .participants-roster,
+      .membership-feed,
+      .events-feed,
+      .events-inline-state,
+      .spammer-review,
+      .events-refresh-error
+    ) {
+    width: calc(100% - 24px);
+    min-width: 0;
+    margin-inline: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .channel-insights__body {
+    padding-inline: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .events-refresh-error {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding-block: 8px;
+    border-block: 1px solid var(--major-border);
+    color: var(--major-muted);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .events-refresh-error > span {
+    flex: 1 1 180px;
+  }
+  body[data-miniapp-profile='moderation'] .events-refresh-error button {
+    min-height: 44px;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section__head--period {
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__group-list {
+    border-inline: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation'] .channel-events-section .membership-feed__day {
+    border: 0;
+    border-radius: 0;
+    background: var(--major-page);
+    padding-inline: 0;
+  }
   body[data-miniapp-profile='moderation'] .events-moderation-view {
     display: grid;
     width: 100%;
@@ -2254,10 +2309,12 @@
   }
   body[data-miniapp-profile='moderation'] .events-screen .membership-feed__row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
   }
   body[data-miniapp-profile='moderation'] .events-screen .membership-feed__name-link {
+    flex: 1 1 96px;
     display: flex;
     align-items: center;
     min-height: 44px;

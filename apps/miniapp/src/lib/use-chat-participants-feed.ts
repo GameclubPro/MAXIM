@@ -78,11 +78,12 @@ export function useChatParticipantsFeed({
   const [state, setState] = useState(() => createFeed(key, seed));
   const activeControllerRef = useRef<AbortController | null>(null);
   const visitedCursorsRef = useRef(new Set<string>());
+  const activeKeyRef = useRef<string | null>(null);
   // FLAG: Never expose another chat/filter's rows, counts, actions, or snapshot before effects run.
   const current = state.key === key ? state : createFeed(key, seed);
 
   async function requestPage(mode: 'reload' | 'more') {
-    if (!enabled || !chatId) return;
+    if (!enabled || !chatId || activeKeyRef.current !== key) return;
     if (
       mode === 'more' &&
       (activeControllerRef.current ||
@@ -156,13 +157,15 @@ export function useChatParticipantsFeed({
     activeControllerRef.current?.abort();
     activeControllerRef.current = null;
     visitedCursorsRef.current = new Set();
+    activeKeyRef.current = enabled ? key : null;
     if (enabled && chatId) startInitialRequest();
 
     return () => {
+      activeKeyRef.current = null;
       activeControllerRef.current?.abort();
       activeControllerRef.current = null;
     };
-  }, [chatId, enabled, key, initialPage, refetchInitialPage]);
+  }, [chatId, enabled, key, refetchInitialPage]);
 
   return {
     ...current.page,

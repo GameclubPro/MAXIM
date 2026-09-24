@@ -38,7 +38,7 @@ test('chat statistics identity only consumes sources validated for the current r
   );
   assert.match(
     eventsPageSource,
-    /const authoritativeChatIdentity =\s*authoritativeDashboardIdentity \?\? authoritativeParticipantsIdentity/u,
+    /const authoritativeChatIdentity =\s*section === 'participants' \|\| isSanctionsView\s*\? authoritativeParticipantsIdentity\s*: authoritativeDashboardIdentity/u,
   );
   assert.doesNotMatch(eventsPageSource, /remoteTitle: dashboardQuery\.data\?\.chat\.title/u);
 });

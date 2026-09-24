@@ -28,6 +28,20 @@ export const SANCTION_STATUS_LABELS: Record<ChatSanctionItem['status'], string> 
   review: 'Требует проверки',
 };
 
+export function nextSanctionExpiry(
+  items: readonly ChatSanctionItem[],
+  refreshedThrough: number,
+): number | null {
+  let next: number | null = null;
+  for (const item of items) {
+    if (item.status !== 'active' || item.permanent || !item.expiresAt) continue;
+    const expires = Date.parse(item.expiresAt);
+    if (Number.isFinite(expires) && expires > refreshedThrough && (next === null || expires < next))
+      next = expires;
+  }
+  return next;
+}
+
 export function sanctionStatusAt(
   item: Pick<ChatSanctionItem, 'action' | 'status' | 'permanent' | 'expiresAt'>,
   nowMs: number,

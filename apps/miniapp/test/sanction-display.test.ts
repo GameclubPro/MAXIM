@@ -6,10 +6,37 @@ import {
   createSanctionClock,
   readSanctionClock,
   sanctionStatusAt,
+  nextSanctionExpiry,
 } from '../src/lib/sanction-display';
 import { describeParticipantActivity } from '../src/lib/participant-activity';
+import type { ChatSanctionItem } from '@maxim/contracts';
 
 const now = Date.parse('2026-09-12T12:00:00Z');
+test('expiry refresh coalesces overdue sanctions and does not repeat a completed deadline', () => {
+  const item = (offset: number, extra: Partial<ChatSanctionItem> = {}) =>
+    ({
+      action: 'MUTE',
+      status: 'active',
+      permanent: false,
+      expiresAt: new Date(now + offset).toISOString(),
+      ...extra,
+    }) as ChatSanctionItem;
+  const items = [
+    item(-2000),
+    item(-1000),
+    item(1000),
+    item(2000),
+    item(3000, { action: 'BAN' }),
+    item(-6000, { permanent: true }),
+    item(-7000, { status: 'released' }),
+  ];
+  assert.equal(nextSanctionExpiry(items, 0), now - 2000);
+  assert.equal(nextSanctionExpiry(items, now), now + 1000);
+  assert.equal(nextSanctionExpiry(items, now + 1000), now + 2000);
+  assert.equal(nextSanctionExpiry(items, now + 2000), now + 3000);
+  assert.equal(nextSanctionExpiry(items, now + 3000), null);
+  assert.equal(nextSanctionExpiry([item(0, { expiresAt: 'invalid' })], 0), null);
+});
 test('the detail status expires a local mute without claiming a native unban', () => {
   const item = {
     action: 'MUTE' as const,
