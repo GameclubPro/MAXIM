@@ -122,10 +122,14 @@ try {
         animations: 'disabled',
       });
       for (const filter of ['Вошли', 'Вышли', 'Все']) {
-        await page
+        const option = page
           .getByRole('radiogroup', { name: 'Фильтр событий входа и выхода' })
-          .getByRole('radio', { name: filter, exact: true })
-          .click();
+          .getByRole('radio', { name: filter, exact: true });
+        await option.click();
+        await option.and(page.locator('[aria-checked="true"]')).waitFor();
+        await page.waitForFunction(
+          () => !document.querySelector('[aria-label="Обновить события"]').disabled,
+        );
         await page.locator('.membership-feed__item').first().waitFor();
         await assertFilterGeometry(page);
       }
@@ -140,6 +144,10 @@ try {
         window.scrollTo(0, 0);
       });
       await settle(page);
+      assert.match(
+        await page.locator('.membership-feed__name-link').first().innerText(),
+        /^ОченьДлинноеИмяПользователяБезПробелов/,
+      );
       const overflow = await page.evaluate(() => {
         const selectors =
           '.channel-events-section__period-copy span, .channel-events-section__metric strong, .membership-feed__name-link, .membership-feed__pill';
