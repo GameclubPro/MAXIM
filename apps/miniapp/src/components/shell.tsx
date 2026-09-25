@@ -410,6 +410,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
       className={cn(
         'app-shell',
         !hasTopbar && 'app-shell--no-topbar',
+        profile === 'publisher' && isChatsRoute && 'app-shell--publisher-catalog',
         (isDialogRoute || isGiveawayRoute) && 'app-shell--immersive',
         isCommentsDialogRoute && 'app-shell--comments-dialog',
         isSuggestDialogRoute && 'app-shell--suggest-dialog',

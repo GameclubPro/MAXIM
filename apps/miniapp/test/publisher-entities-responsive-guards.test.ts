@@ -10,6 +10,10 @@ const pageCss = readFileSync(
   new URL('../src/pages/publisher-entities-page.css', import.meta.url),
   'utf8',
 );
+const workspaceCss = readFileSync(
+  new URL('../src/styles/publisher-workspace.css', import.meta.url),
+  'utf8',
+);
 const pickerSource = readFileSync(
   new URL('../src/features/publications/publication-target-picker.tsx', import.meta.url),
   'utf8',
@@ -36,17 +40,37 @@ test('publisher virtual list uses the same stable row height in TypeScript and C
   assert.match(pageCss, /-webkit-line-clamp: 2;/u);
   assert.match(pageCss, /overflow-y: auto;[\s\S]*?touch-action: pan-y;/u);
   const listBlock = pageCss.match(/\.publisher-entities-page__list \{[\s\S]*?\n {2}\}/u)?.[0] ?? '';
-  assert.match(listBlock, /max-height: clamp\(/u);
-  assert.match(
-    listBlock,
-    /padding-bottom: calc\([\s\S]*?var\(--bottom-nav-height\)[\s\S]*?var\(--bottom-nav-content-inset\)[\s\S]*?var\(--bottom-nav-offset\)/u,
-  );
-  assert.match(
-    listBlock,
-    /scroll-padding-bottom: calc\([\s\S]*?var\(--bottom-nav-height\)[\s\S]*?var\(--bottom-nav-content-inset\)[\s\S]*?var\(--bottom-nav-offset\)/u,
-  );
+  assert.match(listBlock, /flex: 1 1 0;/u);
+  assert.match(listBlock, /min-height: 144px;/u);
+  assert.match(listBlock, /scroll-padding-block: 8px 12px;/u);
+  assert.doesNotMatch(listBlock, /bottom-nav|max-height: clamp/u);
   assert.doesNotMatch(listBlock, /(?:^|\n)\s*height:/u);
-  assert.match(pageCss, /\.publisher-entities-page__list\.is-virtual \{\s*height: clamp\(/u);
+  assert.doesNotMatch(workspaceCss, /publisher-entities-page__list:not\(\.is-virtual\)/u);
+});
+
+test('publisher catalog reserves a layout track for navigation, including keyboard transitions', () => {
+  assert.match(
+    workspaceCss,
+    /\.app-shell--publisher-catalog \{[\s\S]*?grid-template-rows: minmax\(0, 1fr\) auto;/u,
+  );
+  assert.match(
+    workspaceCss,
+    /\.app-shell--publisher-catalog \.bottom-nav \{[\s\S]*?position: static;[\s\S]*?transform: none;/u,
+  );
+  assert.match(workspaceCss, /\.bottom-nav\.is-keyboard-open,[\s\S]*?display: none;/u);
+  assert.match(pageSource, /new ResizeObserver\(measure\)/u);
+  assert.match(pageSource, /observer\.disconnect\(\)/u);
+});
+
+test('catalog headings and search remain legible while filters load', () => {
+  assert.match(pageSource, /currentSummary \?\? lastSummary \?\? EMPTY_PUBLISHER_SUMMARY/u);
+  assert.match(pageSource, /<h1 id="publisher-catalog-title">Публик<\/h1>/u);
+  assert.match(pageSource, /<strong title=\{entity.title\}>/u);
+  assert.doesNotMatch(pageSource, /<label className="publisher-entities-page__search"/u);
+  assert.match(
+    pageCss,
+    /\.publisher-entity-row__title strong \{[\s\S]*?overflow-wrap: anywhere;[\s\S]*?-webkit-line-clamp: 2;/u,
+  );
 });
 
 test('publisher entity actions keep native touch targets at least 44px tall', () => {

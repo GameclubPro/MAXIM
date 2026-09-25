@@ -1,7 +1,15 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { PublisherEntitiesSummary, PublisherEntity } from '@maxim/contracts/publisher';
 import { CheckCircle, NavArrowRight, Refresh, Search, WarningCircle, Xmark } from 'iconoir-react';
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type UIEvent,
+} from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
@@ -115,7 +123,9 @@ export function PublisherEntitiesPage({
   const [entityRefresh, setEntityRefresh] = useState<PublisherEntityRefreshState | null>(null);
   const [bulkRefresh, setBulkRefresh] = useState<PublisherBulkRefreshState | null>(null);
   const [openingBotDialog, setOpeningBotDialog] = useState(false);
+  const [lastSummary, setLastSummary] = useState<PublisherEntitiesSummary | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const autoLoadArmedRef = useRef(true);
   const nextPageRequestRef = useRef(false);
   const mountedRef = useRef(true);
@@ -155,7 +165,8 @@ export function PublisherEntitiesPage({
     () => entitiesQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [entitiesQuery.data?.pages],
   );
-  const summary = entitiesQuery.data?.pages[0]?.summary ?? EMPTY_PUBLISHER_SUMMARY;
+  const currentSummary = entitiesQuery.data?.pages[0]?.summary;
+  const summary = currentSummary ?? lastSummary ?? EMPTY_PUBLISHER_SUMMARY;
   const filteredTotal = entitiesQuery.data?.pages[0]?.filteredTotal ?? 0;
   const homeViewResolution = resolvePublisherHomeView(requestedView, summary);
   const shouldAutoOpenChannels =
@@ -187,6 +198,27 @@ export function PublisherEntitiesPage({
     ? entities.slice(virtualRange.startIndex, virtualRange.endIndex)
     : entities;
   const renderedOffset = virtualRange.startIndex * PUBLISHER_ENTITY_ROW_HEIGHT;
+
+  useEffect(() => {
+    if (currentSummary) setLastSummary(currentSummary);
+  }, [currentSummary]);
+
+  useEffect(() => {
+    autoLoadArmedRef.current = true;
+  }, [entities.length]);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const measure = () => {
+      setListScrollTop(list.scrollTop);
+      setListViewportHeight(list.clientHeight);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [entities.length, searchSettling, shouldVirtualize]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -512,10 +544,9 @@ export function PublisherEntitiesPage({
           />
           <span className="publisher-entity-row__copy">
             <span className="publisher-entity-row__title">
-              <strong>
+              <strong title={entity.title}>
                 {entity.title.trim() || (entity.entityType === 'channel' ? 'Канал' : 'Чат')}
               </strong>
-              <small>{entity.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
             </span>
             <span
               className="publisher-entity-row__status"
@@ -555,6 +586,7 @@ export function PublisherEntitiesPage({
   return (
     <section
       className="publisher-entities-page"
+      aria-labelledby="publisher-catalog-title"
       aria-busy={
         searchSettling ||
         entitiesQuery.isLoading ||
@@ -565,12 +597,13 @@ export function PublisherEntitiesPage({
     >
       <header className="publisher-entities-page__header">
         <div className="publisher-entities-page__brand">
-          <span>
-            <strong>Публик</strong>
+          <div className="publisher-entities-page__identity">
+            <h1 id="publisher-catalog-title">Публик</h1>
             <small>
-              {view === 'channel' ? 'Каналы' : 'Чаты'} · {summary[view]}
+              {view === 'channel' ? 'Каналы' : 'Чаты'}
+              {currentSummary || lastSummary ? ` · ${summary[view]}` : ''}
             </small>
-          </span>
+          </div>
           <button
             type="button"
             className={cn('publisher-entities-page__refresh', bulkRefresh && 'is-refreshing')}
@@ -601,22 +634,35 @@ export function PublisherEntitiesPage({
 
       {hasCatalogControls ? (
         <>
-          <label className="publisher-entities-page__search">
+          <div className="publisher-entities-page__search">
             <Search aria-hidden />
             <input
+              ref={searchRef}
               type="search"
               value={query}
               maxLength={120}
+              enterKeyHint="search"
               placeholder={view === 'channel' ? 'Найти канал' : 'Найти чат'}
               aria-label={view === 'channel' ? 'Найти канал' : 'Найти чат'}
               onChange={(event) => setQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+              }}
             />
             {query ? (
-              <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery('');
+                  searchRef.current?.focus();
+                }}
+                aria-label="Очистить поиск"
+                title="Очистить поиск"
+              >
                 <Xmark aria-hidden />
               </button>
             ) : null}
-          </label>
+          </div>
 
           <div className="publisher-entities-page__filter-row">
             <div className="publisher-entities-page__filters" role="group" aria-label="Готовность">
