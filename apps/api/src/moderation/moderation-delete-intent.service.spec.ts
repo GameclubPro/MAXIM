@@ -665,6 +665,51 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  it('binds suggestion cleanup to fresh subscription proof before and after the DELETE budget', async () => {
+    const events: string[] = [];
+    const leased = {
+      ...baseIntent,
+      suggestionSubscriptionId: 'suggestion',
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    };
+    const { service, maxClient } = createService({ MODERATION_DELETE_INTENT_MODE: 'off' });
+    maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
+      events.push('delete-budget');
+      await options?.beforeImmediateDeleteMutation?.();
+    });
+    Object.assign(service, {
+      loadIntent: jest.fn().mockResolvedValue(leased),
+      startLeaseHeartbeat: () => ownedHeartbeat,
+      assertLeaseForExternalCall: jest.fn(),
+      finishProtectedManagedBotMessageAutoDelete: jest.fn().mockResolvedValue(null),
+      resolveDeleteRouteWithRefresh: jest.fn().mockResolvedValue(confirmedRoute),
+      filterAndOrderRouteCandidates: () => ['bot-1'],
+      recordAttemptBot: jest.fn().mockResolvedValue(true),
+      markDeleteDispatchStarted: jest.fn().mockResolvedValue(true),
+      runDeletePreDispatchGuards: jest
+        .fn()
+        .mockResolvedValue({ profanityVerified: false, commercialVerifiedReasonKeys: [] }),
+      suggestionSubscriptions: {
+        prepareDeletion: async () => {
+          events.push('prepare');
+          return { chatId: leased.chatId, messageId: leased.messageId };
+        },
+        assertDeletionAllowed: async () => {
+          events.push('final');
+        },
+      },
+      recordRemoteSuccessAndFinalize: jest
+        .fn()
+        .mockResolvedValue({
+          kind: 'confirmed',
+          status: 'SUCCEEDED',
+          confirmed: true,
+          intentId: leased.id,
+        }),
+    });
+    await service.executeLeasedIntent('intent-1', 'lease-1');
+    expect(events).toEqual(['prepare', 'delete-budget', 'final', 'final']);
+  });
   it('prepares retention remote evidence before the DELETE budget and keeps final checks local', async () => {
     const events: string[] = [];
     const leased = {

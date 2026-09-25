@@ -1,3 +1,4 @@
+import { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import {
   assertChannelMemberBanScope,
   describeManualBanResult,
@@ -885,6 +886,7 @@ export class AdminService implements OnModuleDestroy {
     @Optional()
     private readonly publisherSuggestionAdminQueueService?: PublisherSuggestionAdminQueueService,
     @Optional() private readonly reports?: ReportViewService,
+    @Optional() readonly suggestionSubscriptions?: SuggestionSubscriptionService,
   ) {
     this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(
       this.maxBotRegistry,
@@ -927,6 +929,7 @@ export class AdminService implements OnModuleDestroy {
       maxBotRegistry: this.maxBotRegistry,
       enqueueSuggestionAdminDelivery: (suggestionId) =>
         this.enqueuePublisherSuggestionAdminDelivery(suggestionId),
+      suggestionSubscriptions: this.suggestionSubscriptions,
     });
     this.dialogAdminAccessRuntime = new AdminDialogAdminAccessRuntime({
       prisma: this.prisma,
@@ -17593,6 +17596,11 @@ export class AdminService implements OnModuleDestroy {
     deliveredToUserId: string | null;
     queued: boolean;
   }> {
+    await this.suggestionSubscriptions?.assertCanSubmit(
+      params.chatId,
+      params.user.userId,
+      'moderation',
+    );
     const normalizedImages = this.normalizeChannelSuggestionImages({
       images: params.images,
       imageBase64: params.imageBase64,

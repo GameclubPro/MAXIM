@@ -105,6 +105,7 @@
 ## Required Smokes
 
 - Message retention runs only in `api-message-retention`, with a separate queue, two-connection pool, and CPU/memory limits. Keep `MESSAGE_RETENTION_MODE=off` until the capacity and canary gates in `docs/operations/runbooks/message-retention-rollout.md` pass; all retention reads/deletes share the fleet-wide `message_retention` source budget. Both API rollback paths must preserve the retention guard and critical-sweeper exclusion.
+- Suggestion subscription monitoring runs only in `api-action` (Major) and `api-publisher` (Publik). Both rollback paths must preserve the subscription guards on moderation intents and Publisher post actions; see `docs/operations/runbooks/suggestion-subscriptions.md`.
 
 - After runtime deploy:
   - check local `http://127.0.0.1:3001/api/health/live` and `/ready`;

@@ -1,3 +1,4 @@
+import { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import {
   publisherSuggestionSchema,
   publisherSuggestionsQuerySchema,
@@ -84,6 +85,7 @@ export class PublisherSuggestionService {
     private readonly adminQueue?: PublisherSuggestionAdminQueueService,
     @Optional()
     private readonly publisherDialogLinks?: PublisherDialogLinkService,
+    @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
   ) {}
 
   async list(
@@ -236,6 +238,7 @@ export class PublisherSuggestionService {
     if (!text && this.readImageCount(payload) === 0) {
       throw new BadRequestException('В предложке нет текста или фото.');
     }
+    await this.suggestionSubscriptions?.assertCanSubmit(row.chatId, row.actorUserId, 'publisher');
     const claimed = await this.claimPending(row.id, entityId, user, reviewAction, row);
     if (!claimed) {
       const latest = await this.requireRow(row.id, entityId);
@@ -499,6 +502,23 @@ export class PublisherSuggestionService {
     publicationId: string,
   ): Promise<PublisherSuggestionStoredRow | null> {
     const reviewStatus = claim.action === 'draft' ? 'drafted' : 'published';
+    if (claim.action === 'publish' && this.suggestionSubscriptions) {
+      const botId = this.publisherDialogLinks?.getBotId();
+      if (!botId) throw new Error('Publisher suggestion identity unavailable');
+      await this.prisma.$transaction((tx) =>
+        this.suggestionSubscriptions!.track(
+          {
+            id: row.id,
+            chatId: row.chatId,
+            authorUserId: row.actorUserId,
+            profile: 'publisher',
+            botId,
+            publicationId,
+          },
+          tx,
+        ),
+      );
+    }
     const finalizedAt = new Date().toISOString();
     const patch = {
       reviewStatus,

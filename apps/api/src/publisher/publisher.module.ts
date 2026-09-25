@@ -1,4 +1,5 @@
 import { BullModule } from '@nestjs/bullmq';
+import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Global, Module } from '@nestjs/common';
 import { MaxModule } from '../max/max.module';
 import { SystemModule } from '../system/system.module';
@@ -116,6 +117,7 @@ const sharedPublisherProviders = [
 @Global()
 @Module({
   imports: [
+    SuggestionSubscriptionModule,
     MaxModule,
     SystemModule,
     BullModule.registerQueue(

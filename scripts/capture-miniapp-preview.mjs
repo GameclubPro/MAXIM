@@ -2515,6 +2515,16 @@ const scenarioBehaviors = [
       if (!(await enabledToggle.isChecked())) {
         throw new Error('Publisher suggestion switch did not persist its enabled state.');
       }
+      for (const label of ['Требовать подписку', 'Удалять посты после отписки']) {
+        const policyToggle = page.getByRole('checkbox', { name: label, exact: true });
+        await policyToggle.click();
+        await page.waitForFunction((name) => {
+          const checkbox = Array.from(document.querySelectorAll('input[type="checkbox"]')).find(
+            (input) => input.getAttribute('aria-label') === name,
+          );
+          return checkbox?.checked && !checkbox.disabled;
+        }, label);
+      }
     },
   },
   {

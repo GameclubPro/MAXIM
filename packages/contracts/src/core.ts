@@ -1368,6 +1368,8 @@ export const channelSettingsSchema = z
   .object({
     quickButtonsEnabled: z.boolean().default(false),
     postSuggestionsEnabled: z.boolean().default(false),
+    postSuggestionsRequireSubscription: z.boolean().default(false),
+    postSuggestionsDeleteOnUnsubscribe: z.boolean().default(false),
     postSuggestionsText: botMessageTextSchema,
     postSuggestionsDailyLimit: z.number().int().min(1).max(10).default(10),
     postSuggestionsEntryMode: channelSuggestionEntryModeSchema.default('BOT'),

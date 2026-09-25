@@ -41,6 +41,7 @@ export function buildPublicationPostActionChange(
     }
     Object.assign(data, {
       deleteAt,
+      subscriptionDeleteId: null,
       deleteStatus: 'PENDING',
       deleteAttemptCount: 0,
       deleteError: null,

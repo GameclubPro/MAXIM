@@ -1,4 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
+import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
+import { SuggestionSubscriptionMonitorService } from './suggestion-subscription-monitor.service';
 import { Module } from '@nestjs/common';
 import { ReportsModule } from '../moderation/reports/reports.module';
 import { AdminReportsController } from './admin-reports.controller';
@@ -126,6 +128,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
 
 @Module({
   imports: [
+    SuggestionSubscriptionModule,
     MessageRetentionStateModule,
     BullModule.registerQueue({ name: ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_MANUAL_FANOUT_QUEUE }),
@@ -171,6 +174,9 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SupportRequestsController,
   ],
   providers: [
+    ...(roleRunsAction(getAppRole()) || roleRunsPublisher(getAppRole())
+      ? [SuggestionSubscriptionMonitorService]
+      : []),
     AdminMessageRetentionService,
     AdminReportsService,
     AdvertisingPlacementService,

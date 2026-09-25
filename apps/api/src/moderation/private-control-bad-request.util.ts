@@ -1,7 +1,17 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { MaxMediaUploadValidationError } from '../max/max-media-upload-validation';
 
 export function extractPrivateControlUserErrorDetails(error: unknown): string | null {
+  if (error instanceof ForbiddenException) {
+    const response = error.getResponse();
+    if (
+      typeof response === 'object' &&
+      'code' in response &&
+      response.code === 'SUGGESTION_SUBSCRIPTION_REQUIRED'
+    ) {
+      return 'Чтобы предложить пост, подпишитесь на канал и повторите отправку.';
+    }
+  }
   if (error instanceof MaxMediaUploadValidationError) {
     return error.publicMessage;
   }

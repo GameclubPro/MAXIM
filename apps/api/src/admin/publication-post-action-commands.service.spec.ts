@@ -99,6 +99,7 @@ describe('publication post-action commands', () => {
     ).toEqual({
       postActionsToken: null,
       postActionsNextAt: deleteAt,
+      subscriptionDeleteId: null,
       deleteAt,
       deleteStatus: 'PENDING',
       deleteAttemptCount: 0,

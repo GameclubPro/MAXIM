@@ -429,6 +429,25 @@ test('preview persists Publik-owned chat comment module settings', async () => {
   assert.equal(Object.hasOwn(after, 'channelOverview'), false);
 });
 
+test('preview persists both independent suggestion subscription settings', async () => {
+  const api = createPreviewApiTransport({ search: '?profile=publisher' });
+  const before = await getPublisherEntity(api, 'channel', 'preview-channel');
+  await updatePublisherModules(api, 'channel', before.id, {
+    expectedRevision: before.moduleSettings.revision,
+    channelSuggestionsRequireSubscription: true,
+  });
+  const required = await getPublisherEntity(api, 'channel', before.id);
+  assert.equal(required.moduleSettings.channelSuggestionsRequireSubscription, true);
+  assert.equal(required.moduleSettings.channelSuggestionsDeleteOnUnsubscribe, false);
+  await updatePublisherModules(api, 'channel', before.id, {
+    expectedRevision: required.moduleSettings.revision,
+    channelSuggestionsDeleteOnUnsubscribe: true,
+  });
+  const deletion = await getPublisherEntity(api, 'channel', before.id);
+  assert.equal(deletion.moduleSettings.channelSuggestionsRequireSubscription, true);
+  assert.equal(deletion.moduleSettings.channelSuggestionsDeleteOnUnsubscribe, true);
+});
+
 test('preview keeps Publisher channel comments independent and exposes channel CTA metadata', async () => {
   const api = createPreviewApiTransport({
     search: '?profile=publisher&channelPostSignature=button',

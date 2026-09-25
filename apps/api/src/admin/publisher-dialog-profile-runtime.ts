@@ -1,3 +1,4 @@
+import type { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import {
   channelSettingsSchema,
   channelDialogResponseSchema,
@@ -89,6 +90,7 @@ type PublisherDialogProfileRuntimeContext = {
   publisherReadiness?: PublisherReadinessService;
   maxBotRegistry?: MaxBotRegistryService;
   enqueueSuggestionAdminDelivery?: (suggestionId: string) => Promise<void>;
+  suggestionSubscriptions?: SuggestionSubscriptionService;
 };
 
 export class PublisherDialogProfileRuntime {
@@ -220,6 +222,11 @@ export class PublisherDialogProfileRuntime {
       textFormat: parsed.data.textFormat,
       images: parsed.data.video ? [parsed.data.video] : images,
     });
+    await this.context.suggestionSubscriptions?.assertCanSubmit(
+      params.chatId,
+      params.user.userId,
+      'publisher',
+    );
     const admission = await this.admitPublisherChannelSuggestion({
       chatId: params.chatId,
       user: params.user,

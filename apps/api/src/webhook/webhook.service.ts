@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, MaxUpdate } from '@maxim/contracts';
 import { createHash, randomUUID } from 'node:crypto';
+import { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import {
   ChatEntityType,
   ManagedEntityAccessState,
@@ -312,6 +313,7 @@ export class WebhookService implements OnModuleDestroy {
     private readonly publisherAutoReplyProducer?: PublisherAutoReplyProducerService,
     @Optional() private readonly webhookIngressMetricsService?: WebhookIngressMetricsService,
     @Optional() private readonly messageRetention?: MessageRetentionStore,
+    @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
   ) {
     const configuredPublisherBotId = configService.get<unknown>('MAX_PUBLISHER_BOT_ID');
     this.publisherBotId = buildPublisherBotDescriptor({
@@ -798,6 +800,8 @@ export class WebhookService implements OnModuleDestroy {
       return;
     }
 
+    await this.suggestionSubscriptions?.wake(chatId, memberUserIds);
+
     if (this.membershipLookupService) {
       try {
         await this.membershipLookupService.invalidateMemberships(chatId, memberUserIds);
@@ -1189,6 +1193,9 @@ export class WebhookService implements OnModuleDestroy {
     webhookEventId: string | null,
     duplicate: boolean,
   ): Promise<void> {
+    if (update.type === 'user_added' || update.type === 'user_removed' || update.membership) {
+      await this.invalidateMembershipCacheFromWebhook(update);
+    }
     const consumed = await this.publisherPrivateDialogFlows?.observeWebhook(
       update,
       webhookEventId,

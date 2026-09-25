@@ -1,7 +1,7 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
-import type { Queue } from 'bullmq';
-import { createHash } from 'node:crypto';
+import { Injectable, ServiceUnavailableException, type OnModuleDestroy } from '@nestjs/common';
+import { QueueEvents, type Queue } from 'bullmq';
+import { createHash, randomUUID } from 'node:crypto';
 import type { VkBotReviewJob } from './publisher-vk-bot-review.queue';
 
 export const PUBLISHER_SUGGESTION_ADMIN_QUEUE = 'publisher-suggestion-admin';
@@ -20,6 +20,14 @@ export type PublisherSuggestionAdminReviewActor = {
 
 export type PublisherSuggestionAdminJob =
   | VkBotReviewJob
+  | {
+      version: 1;
+      kind: 'subscription';
+      chatId: string;
+      userId: string;
+      requiredBotId: string;
+      requestedAt: string;
+    }
   | {
       version: 1;
       kind: 'deliver';
@@ -101,13 +109,62 @@ export function buildPublisherSuggestionAdminReviewCallbackPayload(
 }
 
 @Injectable()
-export class PublisherSuggestionAdminQueueService {
+export class PublisherSuggestionAdminQueueService implements OnModuleDestroy {
   private failedSyncScanOffset = 0;
+  private events: QueueEvents | null = null;
 
   constructor(
     @InjectQueue(PUBLISHER_SUGGESTION_ADMIN_QUEUE)
     private readonly queue: Queue<PublisherSuggestionAdminJob>,
   ) {}
+
+  async onModuleDestroy(): Promise<void> {
+    await this.events?.close();
+  }
+
+  async checkSubscription(chatId: string, userId: string, requiredBotId: string): Promise<boolean> {
+    const counts = await this.queue.getJobCounts(
+      'wait',
+      'active',
+      'delayed',
+      'prioritized',
+      'paused',
+    );
+    if (Object.values(counts).reduce((sum, value) => sum + value, 0) >= 100) {
+      throw new ServiceUnavailableException('Проверка подписки занята. Повторите отправку позже.');
+    }
+    this.events ??= new QueueEvents(this.queue.name, {
+      connection: this.queue.opts.connection,
+      prefix: this.queue.opts.prefix,
+    });
+    const job = await this.queue.add(
+      'subscription',
+      {
+        version: 1,
+        kind: 'subscription',
+        chatId,
+        userId,
+        requiredBotId,
+        requestedAt: new Date().toISOString(),
+      },
+      {
+        jobId: `suggestion-subscription-${randomUUID()}`,
+        priority: 1,
+        attempts: 1,
+        removeOnComplete: { age: 30, count: 100 },
+        removeOnFail: { age: 30, count: 100 },
+      },
+    );
+    try {
+      const result: unknown = await job.waitUntilFinished(this.events, 8_000);
+      if (typeof result !== 'boolean') throw new Error('Missing subscription verdict');
+      return result;
+    } catch {
+      throw new ServiceUnavailableException(
+        'Не удалось проверить подписку. Повторите отправку позже.',
+      );
+    }
+  }
 
   async enqueueDelivery(params: {
     suggestionId: string;

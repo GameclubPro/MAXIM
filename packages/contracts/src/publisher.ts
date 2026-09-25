@@ -66,6 +66,8 @@ export const publisherEntityModuleSettingsSchema = z
     autoRepliesEnabled: z.boolean().nullable(),
     channelCommentsEnabled: z.boolean().nullable().default(null),
     channelSuggestionsEnabled: z.boolean().nullable(),
+    channelSuggestionsRequireSubscription: z.boolean().nullable().default(null),
+    channelSuggestionsDeleteOnUnsubscribe: z.boolean().nullable().default(null),
   })
   .strict();
 export type PublisherEntityModuleSettings = z.infer<typeof publisherEntityModuleSettingsSchema>;
@@ -97,6 +99,8 @@ export const publisherEntitySchema = z
       autoRepliesEnabled: null,
       channelCommentsEnabled: null,
       channelSuggestionsEnabled: null,
+      channelSuggestionsRequireSubscription: null,
+      channelSuggestionsDeleteOnUnsubscribe: null,
     }),
     readiness: publisherEntityReadinessSchema,
   })
@@ -329,6 +333,8 @@ export const updatePublisherEntityModuleSettingsRequestSchema = z
     expectedRevision: z.number().int().min(0),
     channelCommentsEnabled: z.boolean().optional(),
     channelSuggestionsEnabled: z.boolean().optional(),
+    channelSuggestionsRequireSubscription: z.boolean().optional(),
+    channelSuggestionsDeleteOnUnsubscribe: z.boolean().optional(),
     chatComments: publisherChatCommentSettingsSchema.optional(),
     autoRepliesEnabled: z.boolean().optional(),
   })
@@ -337,6 +343,8 @@ export const updatePublisherEntityModuleSettingsRequestSchema = z
     (value) =>
       value.channelCommentsEnabled !== undefined ||
       value.channelSuggestionsEnabled !== undefined ||
+      value.channelSuggestionsRequireSubscription !== undefined ||
+      value.channelSuggestionsDeleteOnUnsubscribe !== undefined ||
       value.chatComments !== undefined ||
       value.autoRepliesEnabled !== undefined,
     'Specify at least one Publisher module setting',

@@ -263,6 +263,22 @@ maxim_topology_require_message_retention_guard() {
   fi
 }
 
+maxim_topology_require_suggestion_subscription_guard() {
+  local commit_sha="$1"
+  local major_source publisher_source
+  # FLAG: Pending suggestion deletes must retain their exact-source and subscription guards.
+  if ! major_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)" ||
+    ! publisher_source="$(git show "${commit_sha}:apps/api/src/publisher/publisher-publication-post-actions.service.ts" 2>/dev/null)"; then
+    echo "Rollback target has no suggestion subscription guard." >&2
+    return 1
+  fi
+  if [[ "$major_source" != *'this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof)'* ]] ||
+    [[ "$publisher_source" != *'this.subscriptions!.assertDeletionAllowed(subscriptionProof)'* ]]; then
+    echo "Rollback target predates guarded suggestion subscription deletion." >&2
+    return 1
+  fi
+}
+
 maxim_topology_require_traffic_protection_guard() {
   local commit_sha="$1"
   local guard_source

@@ -95,6 +95,20 @@ function getPreviewPublisherChannelSuggestions(state: PreviewState): Record<stri
   return extended.publisherChannelSuggestions;
 }
 
+function getPreviewPublisherSubscriptionPolicies(state: PreviewState) {
+  const extended = state as PreviewState & {
+    publisherSubscriptionPolicies?: Record<
+      string,
+      {
+        channelSuggestionsRequireSubscription?: boolean;
+        channelSuggestionsDeleteOnUnsubscribe?: boolean;
+      }
+    >;
+  };
+  extended.publisherSubscriptionPolicies ??= {};
+  return extended.publisherSubscriptionPolicies;
+}
+
 function getPreviewPublisherChannelComments(state: PreviewState): Record<string, boolean> {
   const extended = state as PreviewState & {
     publisherChannelComments?: Record<string, boolean>;
@@ -350,6 +364,16 @@ function buildPreviewPublisherEntity(
           : null,
       channelCommentsEnabled: entityType === 'channel' ? channelCommentsEnabled : null,
       channelSuggestionsEnabled: entityType === 'channel' ? channelSuggestionsEnabled : null,
+      channelSuggestionsRequireSubscription:
+        entityType === 'channel'
+          ? (getPreviewPublisherSubscriptionPolicies(state)[entityId]
+              ?.channelSuggestionsRequireSubscription ?? false)
+          : null,
+      channelSuggestionsDeleteOnUnsubscribe:
+        entityType === 'channel'
+          ? (getPreviewPublisherSubscriptionPolicies(state)[entityId]
+              ?.channelSuggestionsDeleteOnUnsubscribe ?? false)
+          : null,
     },
     readiness,
   });
@@ -1271,6 +1295,18 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     if (entityType === 'channel' && request.channelSuggestionsEnabled !== undefined) {
       getPreviewPublisherChannelSuggestions(state)[entityId] = request.channelSuggestionsEnabled;
     }
+    if (entityType === 'channel') {
+      const policies = getPreviewPublisherSubscriptionPolicies(state);
+      policies[entityId] = {
+        ...policies[entityId],
+        ...(request.channelSuggestionsRequireSubscription !== undefined
+          ? { channelSuggestionsRequireSubscription: request.channelSuggestionsRequireSubscription }
+          : {}),
+        ...(request.channelSuggestionsDeleteOnUnsubscribe !== undefined
+          ? { channelSuggestionsDeleteOnUnsubscribe: request.channelSuggestionsDeleteOnUnsubscribe }
+          : {}),
+      };
+    }
     if (entityType === 'channel' && request.channelCommentsEnabled !== undefined) {
       getPreviewPublisherChannelComments(state)[entityId] = request.channelCommentsEnabled;
     }
@@ -1281,6 +1317,16 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     getPreviewPublisherModuleRevisions(state)[`${entityType}:${entityId}`] = revision;
     return publisherEntityModuleSettingsSchema.parse({
       revision,
+      channelSuggestionsRequireSubscription:
+        entityType === 'channel'
+          ? (getPreviewPublisherSubscriptionPolicies(state)[entityId]
+              ?.channelSuggestionsRequireSubscription ?? false)
+          : null,
+      channelSuggestionsDeleteOnUnsubscribe:
+        entityType === 'channel'
+          ? (getPreviewPublisherSubscriptionPolicies(state)[entityId]
+              ?.channelSuggestionsDeleteOnUnsubscribe ?? false)
+          : null,
       chatComments:
         entityType === 'chat'
           ? (getPreviewPublisherChatComments(state)[entityId] ?? entity.moduleSettings.chatComments)

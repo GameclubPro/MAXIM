@@ -28,6 +28,7 @@ export function publicationPostActionsRetryData(value: unknown) {
   return {
     ...publicationPostActionsInitialData(value, new Date()),
     postActionsToken: null,
+    subscriptionDeleteId: null,
     pinAttemptCount: 0,
     pinError: null,
     deleteAttemptCount: 0,

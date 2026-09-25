@@ -303,6 +303,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_traffic_protection_guard "$API_SOURCE_SHA"
   maxim_topology_require_participant_report_guard "$API_SOURCE_SHA"
   maxim_topology_require_message_retention_guard "$API_SOURCE_SHA"
+  maxim_topology_require_suggestion_subscription_guard "$API_SOURCE_SHA"
   maxim_topology_require_message_duplicate_delete_guard "$API_SOURCE_SHA"
   maxim_topology_require_commercial_text_delete_guard "$API_SOURCE_SHA"
   if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_PUBLISHER_SERVICE"; then

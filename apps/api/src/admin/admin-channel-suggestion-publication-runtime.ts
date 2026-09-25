@@ -1,4 +1,5 @@
 import type { ChannelSettings } from '@maxim/contracts';
+import type { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
 import { BadRequestException, ServiceUnavailableException, type Logger } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -117,6 +118,7 @@ type PublisherSuggestionRoute = PublisherReadyRoute & {
 };
 
 export type AdminChannelSuggestionPublicationRuntimeContext = {
+  readonly suggestionSubscriptions?: SuggestionSubscriptionService;
   readonly logger: Logger;
   readonly prisma: PrismaService;
   readonly maxClient: MaxClientService;
@@ -308,6 +310,11 @@ export class AdminChannelSuggestionPublicationRuntime {
       );
     }
 
+    await this.context.suggestionSubscriptions?.assertCanSubmit(
+      row.chatId,
+      row.actorUserId,
+      'moderation',
+    );
     const claim = await this.claimReview({
       suggestionId: row.id,
       userId: user.userId,
@@ -1057,6 +1064,17 @@ export class AdminChannelSuggestionPublicationRuntime {
       if (Number(persisted) !== 1) {
         return 0;
       }
+      await this.context.suggestionSubscriptions?.track(
+        {
+          id: params.suggestionId,
+          chatId: params.chatId,
+          authorUserId: params.context.authorAttribution.userId,
+          profile: 'moderation',
+          botId: params.context.botId,
+          messageId,
+        },
+        tx,
+      );
       await this.createAutoAttach({
         prisma: tx,
         chatId: params.chatId,

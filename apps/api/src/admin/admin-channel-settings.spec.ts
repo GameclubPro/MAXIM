@@ -1,7 +1,35 @@
 import { channelSettingsSchema } from '@maxim/contracts';
-import { readChannelSettings } from './admin-channel-settings';
+import { readChannelSettings, saveChannelSettings } from './admin-channel-settings';
 
 describe('channel settings normalization', () => {
+  it('preserves subscription protection when a legacy settings client omits the new fields', async () => {
+    const upsert = jest.fn();
+    const audit = jest.fn();
+    await saveChannelSettings({
+      prisma: { chat: { upsert }, auditLog: { create: audit } } as never,
+      chatContextCache: { invalidate: jest.fn() },
+      chatId: '-1',
+      actorUserId: 'admin',
+      body: { postSuggestionsEnabled: true },
+      source: 'miniapp',
+      resolveBotAssignmentData: () => ({ botId: 'major', primaryBotId: 'major' }),
+      refreshExecutionReadiness: jest.fn(),
+    });
+    const saved = upsert.mock.calls[0][0];
+    expect(saved.update.channelSettings.upsert.update).not.toHaveProperty(
+      'postSuggestionsRequireSubscription',
+    );
+    expect(saved.update.channelSettings.upsert.update).not.toHaveProperty(
+      'postSuggestionsDeleteOnUnsubscribe',
+    );
+    expect(saved.create.channelSettings.create).toMatchObject({
+      postSuggestionsRequireSubscription: false,
+      postSuggestionsDeleteOnUnsubscribe: false,
+    });
+    expect(audit.mock.calls[0][0].data.payload).not.toHaveProperty(
+      'postSuggestionsRequireSubscription',
+    );
+  });
   it('repairs a malformed stored button with an optimistic version guard', async () => {
     const updatedAt = new Date('2026-07-19T08:00:00.000Z');
     const storedSettings = {

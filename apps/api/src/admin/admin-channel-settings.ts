@@ -223,6 +223,14 @@ export async function saveChannelSettings(params: {
   const normalizedSettings = normalizeChannelSettings(parsed.data, params.chatId);
   const botAssignmentData = await params.resolveBotAssignmentData();
   const settingsToSave = normalizedSettings;
+  const settingsToUpdate: Partial<ChannelSettings> = { ...settingsToSave };
+  // FLAG: Older clients must not disable subscription protection by omitting new fields.
+  for (const key of [
+    'postSuggestionsRequireSubscription',
+    'postSuggestionsDeleteOnUnsubscribe',
+  ] as const) {
+    if (!Object.prototype.hasOwnProperty.call(params.body, key)) delete settingsToUpdate[key];
+  }
 
   await params.prisma.chat.upsert({
     where: { id: params.chatId },
@@ -244,7 +252,7 @@ export async function saveChannelSettings(params: {
       channelSettings: {
         upsert: {
           update: {
-            ...settingsToSave,
+            ...settingsToUpdate,
           },
           create: {
             ...settingsToSave,
@@ -260,7 +268,7 @@ export async function saveChannelSettings(params: {
       actorUserId: params.actorUserId,
       action: 'UPDATE_CHANNEL_SETTINGS',
       payload: {
-        ...settingsToSave,
+        ...settingsToUpdate,
         source: params.source,
       },
     },

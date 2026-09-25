@@ -1,6 +1,7 @@
 import type { ChannelDialogMessage, ChannelDialogResponse } from '@maxim/contracts/channel-dialog';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { describeSuggestionSubscriptionError } from '../lib/channel-suggestion-subscription-error';
 import {
   Attachment as IconoirAttachment,
   SendDiagonalSolid as IconoirSend,
@@ -1108,6 +1109,11 @@ export function ChannelSuggestDialogPage({
       });
     },
     onError: (error) => {
+      const subscriptionMessage = describeSuggestionSubscriptionError(error);
+      if (subscriptionMessage) {
+        pushToast({ tone: 'danger', title: subscriptionMessage });
+        return;
+      }
       const message = normalizeApiError(error);
       if (isTerminalDialogApiMessage(message)) {
         setTerminalDialogErrorState([chatId, token, message]);

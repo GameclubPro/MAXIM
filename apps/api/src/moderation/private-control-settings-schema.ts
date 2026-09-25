@@ -36,6 +36,12 @@ export const CHANNEL_SECTION_FIELDS: Record<
 > = {
   post_suggestions: [
     { key: 'postSuggestionsEnabled', label: 'Подсказка «Предложить пост»', type: 'boolean' },
+    { key: 'postSuggestionsRequireSubscription', label: 'Требовать подписку', type: 'boolean' },
+    {
+      key: 'postSuggestionsDeleteOnUnsubscribe',
+      label: 'Удалять посты после отписки',
+      type: 'boolean',
+    },
     { key: 'postSuggestionsText', label: 'Требования для участников', type: 'text' },
     { key: 'postSuggestionsButtonEnabled', label: 'Показывать кнопку перехода', type: 'boolean' },
     { key: 'postSuggestionsButtonText', label: 'Название кнопки', type: 'text' },

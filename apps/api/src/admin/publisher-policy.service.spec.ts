@@ -1090,6 +1090,8 @@ describe('PublisherPolicyService', () => {
             autoRepliesEnabled: true,
             channelCommentsEnabled: null,
             channelSuggestionsEnabled: null,
+            channelSuggestionsRequireSubscription: null,
+            channelSuggestionsDeleteOnUnsubscribe: null,
           },
         }),
         expect.objectContaining({
@@ -1107,6 +1109,8 @@ describe('PublisherPolicyService', () => {
             autoRepliesEnabled: null,
             channelCommentsEnabled: false,
             channelSuggestionsEnabled: false,
+            channelSuggestionsRequireSubscription: false,
+            channelSuggestionsDeleteOnUnsubscribe: false,
           },
         }),
       ]),
@@ -1694,6 +1698,8 @@ describe('PublisherPolicyService', () => {
       autoRepliesEnabled: null,
       channelCommentsEnabled: true,
       channelSuggestionsEnabled: true,
+      channelSuggestionsRequireSubscription: false,
+      channelSuggestionsDeleteOnUnsubscribe: false,
     });
 
     expect(getEntity).toHaveBeenCalledWith('channel', 'channel-1', user);
@@ -1746,6 +1752,8 @@ describe('PublisherPolicyService', () => {
       autoRepliesEnabled: false,
       channelCommentsEnabled: null,
       channelSuggestionsEnabled: null,
+      channelSuggestionsRequireSubscription: null,
+      channelSuggestionsDeleteOnUnsubscribe: null,
     });
 
     expect(getEntity).toHaveBeenCalledWith('chat', 'chat-1', user);
@@ -1806,6 +1814,8 @@ describe('PublisherPolicyService', () => {
       autoRepliesEnabled: true,
       channelCommentsEnabled: null,
       channelSuggestionsEnabled: null,
+      channelSuggestionsRequireSubscription: null,
+      channelSuggestionsDeleteOnUnsubscribe: null,
     });
 
     expect(fixture.tx.publisherEntitySettings.updateMany).toHaveBeenCalledWith({

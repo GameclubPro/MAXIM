@@ -50,7 +50,7 @@ export class PublisherSuggestionAdminProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<PublisherSuggestionAdminJob>, token?: string): Promise<void> {
+  async process(job: Job<PublisherSuggestionAdminJob>, token?: string): Promise<void | boolean> {
     if (!roleRunsPublisher(getAppRole()) || process.env.APP_SERVICE_NAME !== 'api-publisher') {
       throw new Error('Publisher suggestion admin job received by a non-publisher API role');
     }
@@ -60,6 +60,37 @@ export class PublisherSuggestionAdminProcessor extends WorkerHost {
     await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
     await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
     await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
+
+    if (job.data.kind === 'subscription') {
+      if (Date.now() - Date.parse(job.data.requestedAt) > 8_000) {
+        throw new UnrecoverableError('Subscription request expired');
+      }
+      const binding = await this.prisma.publisherEntityBinding.findFirst({
+        where: {
+          chatId: job.data.chatId,
+          publisherBotId: job.data.requiredBotId,
+          status: 'ACTIVE',
+        },
+        select: { chatId: true },
+      });
+      if (!binding) throw new UnrecoverableError('Publisher binding unavailable');
+      try {
+        const members = await this.maxClient.getChatMembersAccess(
+          job.data.chatId,
+          [job.data.userId],
+          {
+            botId: job.data.requiredBotId,
+            trafficClass: 'interactive',
+            sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+            bypassCache: true,
+            timeoutMs: 3_000,
+          },
+        );
+        return members.has(job.data.userId);
+      } catch {
+        throw new Error('Subscription verification unavailable');
+      }
+    }
 
     if (job.data.kind === 'vk-bot-review') {
       if (!this.vkReviews) throw new Error('VK review worker is unavailable');

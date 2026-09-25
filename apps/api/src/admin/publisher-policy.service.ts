@@ -706,7 +706,9 @@ export class PublisherPolicyService {
     if (
       entityType === 'chat' &&
       (request.channelCommentsEnabled !== undefined ||
-        request.channelSuggestionsEnabled !== undefined)
+        request.channelSuggestionsEnabled !== undefined ||
+        request.channelSuggestionsRequireSubscription !== undefined ||
+        request.channelSuggestionsDeleteOnUnsubscribe !== undefined)
     ) {
       throw new BadRequestException(
         'Комментарии канала и предложки Публика доступны только для каналов',
@@ -768,6 +770,18 @@ export class PublisherPolicyService {
               ...(request.channelSuggestionsEnabled !== undefined
                 ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
                 : {}),
+              ...(request.channelSuggestionsRequireSubscription !== undefined
+                ? {
+                    channelSuggestionsRequireSubscription:
+                      request.channelSuggestionsRequireSubscription,
+                  }
+                : {}),
+              ...(request.channelSuggestionsDeleteOnUnsubscribe !== undefined
+                ? {
+                    channelSuggestionsDeleteOnUnsubscribe:
+                      request.channelSuggestionsDeleteOnUnsubscribe,
+                  }
+                : {}),
               ...(request.channelCommentsEnabled !== undefined
                 ? { channelCommentsEnabled: request.channelCommentsEnabled }
                 : {}),
@@ -792,6 +806,18 @@ export class PublisherPolicyService {
                 : {}),
               ...(request.channelSuggestionsEnabled !== undefined
                 ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
+                : {}),
+              ...(request.channelSuggestionsRequireSubscription !== undefined
+                ? {
+                    channelSuggestionsRequireSubscription:
+                      request.channelSuggestionsRequireSubscription,
+                  }
+                : {}),
+              ...(request.channelSuggestionsDeleteOnUnsubscribe !== undefined
+                ? {
+                    channelSuggestionsDeleteOnUnsubscribe:
+                      request.channelSuggestionsDeleteOnUnsubscribe,
+                  }
                 : {}),
               ...(request.channelCommentsEnabled !== undefined
                 ? { channelCommentsEnabled: request.channelCommentsEnabled }
@@ -819,6 +845,18 @@ export class PublisherPolicyService {
               changed: {
                 ...(request.channelSuggestionsEnabled !== undefined
                   ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
+                  : {}),
+                ...(request.channelSuggestionsRequireSubscription !== undefined
+                  ? {
+                      channelSuggestionsRequireSubscription:
+                        request.channelSuggestionsRequireSubscription,
+                    }
+                  : {}),
+                ...(request.channelSuggestionsDeleteOnUnsubscribe !== undefined
+                  ? {
+                      channelSuggestionsDeleteOnUnsubscribe:
+                        request.channelSuggestionsDeleteOnUnsubscribe,
+                    }
                   : {}),
                 ...(request.channelCommentsEnabled !== undefined
                   ? { channelCommentsEnabled: request.channelCommentsEnabled }
@@ -853,6 +891,8 @@ export class PublisherPolicyService {
       chatCommentsReplaceOriginalEnabled?: boolean;
       channelCommentsEnabled: boolean;
       channelSuggestionsEnabled: boolean;
+      channelSuggestionsRequireSubscription?: boolean;
+      channelSuggestionsDeleteOnUnsubscribe?: boolean;
       autoRepliesEnabled: boolean;
     } | null,
   ): PublisherEntityModuleSettings {
@@ -874,6 +914,14 @@ export class PublisherPolicyService {
       channelSuggestionsEnabled:
         entityType === ChatEntityType.CHANNEL
           ? (settings?.channelSuggestionsEnabled ?? false)
+          : null,
+      channelSuggestionsRequireSubscription:
+        entityType === ChatEntityType.CHANNEL
+          ? (settings?.channelSuggestionsRequireSubscription ?? false)
+          : null,
+      channelSuggestionsDeleteOnUnsubscribe:
+        entityType === ChatEntityType.CHANNEL
+          ? (settings?.channelSuggestionsDeleteOnUnsubscribe ?? false)
           : null,
     };
   }

@@ -1,5 +1,15 @@
 import { publicationPostPublishSchema } from '@maxim/contracts/publication';
-import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
+import {
+  SuggestionDeletionCancelledError,
+  SuggestionSubscriptionService,
+} from '../suggestions/suggestion-subscription.service';
 import { randomUUID } from 'node:crypto';
 import { PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA } from '../admin/publication-delivery-verification-state';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
@@ -32,6 +42,7 @@ const actionSelect = {
   remoteMessageId: true,
   sentAt: true,
   postActionsNextAt: true,
+  subscriptionDeleteId: true,
   pinStatus: true,
   pinAttemptCount: true,
   deleteStatus: true,
@@ -57,6 +68,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
     private readonly credentials: PublisherActionCredentialService,
     private readonly background: PublisherBackgroundWorkCoordinatorService,
     private readonly governor: BackgroundRuntimeGovernorService,
+    @Optional() private readonly subscriptions?: SuggestionSubscriptionService,
   ) {}
 
   onModuleInit(): void {
@@ -258,7 +270,23 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       const attempt = row.deleteAttemptCount + 1;
       let deleted = false;
       try {
-        await guard();
+        const subscriptionProof = row.subscriptionDeleteId
+          ? await this.subscriptions?.prepareDeletion(row.subscriptionDeleteId, botId)
+          : null;
+        if (row.subscriptionDeleteId && !subscriptionProof)
+          throw new Error('Subscription delete guard unavailable');
+        if (
+          subscriptionProof &&
+          (subscriptionProof.chatId !== row.targetChatId ||
+            subscriptionProof.messageId !== row.remoteMessageId)
+        ) {
+          throw new Error('Subscription delete source changed');
+        }
+        const deleteGuard = async () => {
+          await guard();
+          if (subscriptionProof) await this.subscriptions!.assertDeletionAllowed(subscriptionProof);
+        };
+        await deleteGuard();
         await persist({ deleteStatus: Status.RUNNING, deleteAttemptCount: attempt });
         // FLAG: Author-scheduled deletion makes absence expected. Disarm pending verification
         // before HTTP; its old CAS cannot demote this delivery. Preserve completed verification.
@@ -276,10 +304,11 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
             ...options,
             immediate: true,
             idempotencyKey: `publication-auto-delete:${row.id}`,
-            beforeImmediateDeleteMutation: guard,
+            beforeImmediateDeleteMutation: deleteGuard,
           });
           deleted = true;
-        } catch {
+        } catch (error: unknown) {
+          if (error instanceof SuggestionDeletionCancelledError) throw error;
           // FLAG: Only exact-message absence can replace documented delete success, never a bare 404.
           deleted =
             (await this.max.getExactMessagePresence(
@@ -288,7 +317,19 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
               options,
             )) === 'absent';
         }
-      } catch {
+      } catch (error: unknown) {
+        if (error instanceof SuggestionDeletionCancelledError) {
+          await persist({
+            subscriptionDeleteId: null,
+            deleteStatus: Status.NONE,
+            deleteAt: null,
+            deleteAttemptCount: 0,
+            deleteError: null,
+            postActionsNextAt: pinNextAt,
+            postActionsToken: null,
+          });
+          return;
+        }
         deleted = false;
       }
       deleteStatus = deleted

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260920190000_add_message_retention",
-  "baselineNamesSha256": "28866b52db4abf31d3ff5b3dca7360f1655f5bc009a474198a8591ae932b680b",
-  "baselineContentsSha256": "783e14ec86b36daa0e91aa4272728a2cbda030e264a2e0591a035c6a4a3d6f52",
+  "baselineThrough": "20260925120000_add_suggestion_subscription",
+  "baselineNamesSha256": "64ba445b53ad22c91cf4fa63a0efea9633c3edcb045f0e673867d3d7b1a92050",
+  "baselineContentsSha256": "e298bd01429497e1388703cc50c4d6ff375c2db22fd1ff73b958013709189635",
   "approvedDestructive": {
     "20260919090000_add_participant_reports": {
       "reason": "Reviewed static additive policy revision trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL or destructive change is present.",
@@ -94,6 +94,9 @@
     }
   },
   "nonConcurrentIndexExceptions": {
+    "20260925120000_add_suggestion_subscription": {
+      "reason": "Indexes cover only the two new empty suggestion subscription tables. Existing settings and execution tables gain constant-false or nullable columns; no history scan, backfill, or existing-table index build is performed."
+    },
     "20260920190000_add_message_retention": {
       "reason": "Indexes are created only on the new empty retention policy/candidate tables. The existing intent table receives one constant-default boolean; no history is backfilled or indexed."
     },

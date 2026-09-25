@@ -26,6 +26,7 @@ export type ModerationDeleteEventInput = {
 };
 
 export type EnsureModerationDeleteIntentInput = {
+  suggestionSubscriptionId?: string;
   chatId: string;
   messageId: string;
   reasonKey: string;

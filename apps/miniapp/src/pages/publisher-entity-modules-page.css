@@ -279,6 +279,11 @@
     white-space: nowrap;
   }
 
+  .publisher-entity-module--subscription .publisher-entity-module__copy strong {
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+
   .publisher-entity-module__copy strong {
     color: var(--color-ink);
     font-size: 0.82rem;

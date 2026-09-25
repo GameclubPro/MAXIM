@@ -1,4 +1,5 @@
 import { BullModule } from '@nestjs/bullmq';
+import { SuggestionSubscriptionModule } from '../suggestions/suggestion-subscription.module';
 import { Module } from '@nestjs/common';
 
 import { MaxModule } from '../max/max.module';
@@ -31,6 +32,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
 
 @Module({
   imports: [
+    SuggestionSubscriptionModule,
     SystemModule,
     MessageRetentionStateModule,
     BullModule.registerQueue({ name: MODERATION_DELETE_INTENT_QUEUE }),

@@ -609,6 +609,8 @@ model PublisherEntitySettings {
   chatCommentsReplaceOriginalEnabled Boolean @default(false) @map("chat_comments_replace_original_enabled")
   channelCommentsEnabled    Boolean  @default(false) @map("channel_comments_enabled")
   channelSuggestionsEnabled Boolean  @default(false) @map("channel_suggestions_enabled")
+  channelSuggestionsRequireSubscription Boolean @default(false) @map("channel_suggestions_require_subscription")
+  channelSuggestionsDeleteOnUnsubscribe Boolean @default(false) @map("channel_suggestions_delete_on_unsubscribe")
   autoRepliesEnabled        Boolean  @default(false) @map("auto_replies_enabled")
   autoReplyConfigRevision   Int      @default(0) @map("auto_reply_config_revision")
   revision                  Int      @default(0)
@@ -619,6 +621,42 @@ model PublisherEntitySettings {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("publisher_entity_settings")
+}
+
+model SuggestionSubscriptionWatch {
+  id           String    @id
+  chatId       String    @map("chat_id")
+  authorUserId String    @map("author_user_id")
+  profile      String
+  botId        String    @map("bot_id")
+  nextCheckAt  DateTime   @default(now()) @map("next_check_at")
+  missingSince DateTime?  @map("missing_since")
+  checkedAt    DateTime?  @map("checked_at")
+  leaseToken   String?   @map("lease_token")
+  leaseUntil   DateTime?  @map("lease_until")
+  publicationCursor String? @map("publication_cursor")
+  revision     Int       @default(0)
+  publications SuggestionSubscriptionPublication[]
+
+  @@unique([chatId, authorUserId, profile, botId], map: "suggestion_subscription_watch_owner_key")
+  @@index([profile, nextCheckAt, id], map: "suggestion_subscription_watch_due_idx")
+  @@map("suggestion_subscription_watches")
+}
+
+model SuggestionSubscriptionPublication {
+  id             String    @id
+  watchId        String    @map("watch_id")
+  publicationId  String?   @map("publication_id")
+  messageId      String?   @map("message_id")
+  deliveryId     String?   @map("delivery_id")
+  publishedAt    DateTime  @default(now()) @map("published_at")
+  deletedAt      DateTime? @map("deleted_at")
+  deleteIntentId String?   @map("delete_intent_id")
+  watch SuggestionSubscriptionWatch @relation(fields: [watchId], references: [id], onDelete: Cascade)
+
+  @@index([watchId, deletedAt, id], map: "suggestion_subscription_publications_watch_idx")
+  @@index([publicationId], map: "suggestion_subscription_publications_publication_idx")
+  @@map("suggestion_subscription_publications")
 }
 
 model PublisherAutoReplyRule {
@@ -1406,6 +1444,8 @@ model ChannelSettings {
   id                           String                     @id @default(cuid())
   chatId                       String                     @unique @map("chat_id")
   postSuggestionsEnabled       Boolean                    @default(false) @map("post_suggestions_enabled")
+  postSuggestionsRequireSubscription Boolean @default(false) @map("post_suggestions_require_subscription")
+  postSuggestionsDeleteOnUnsubscribe Boolean @default(false) @map("post_suggestions_delete_on_unsubscribe")
   postSuggestionsText          String                     @default("") @map("post_suggestions_text")
   postSuggestionsDailyLimit    Int                        @default(10) @map("post_suggestions_daily_limit")
   postSuggestionsEntryMode     ChannelSuggestionEntryMode @default(BOT) @map("post_suggestions_entry_mode")
@@ -2112,6 +2152,7 @@ model ModerationDeleteIntent {
   originBotId                String?                       @map("origin_bot_id")
   routingPolicy              String                        @default("origin_only") @map("routing_policy")
   retentionOwned             Boolean                       @default(false) @map("retention_owned")
+  suggestionSubscriptionId   String?                       @map("suggestion_subscription_id")
   commercialOcrGuardRequired Boolean                       @default(false) @map("commercial_ocr_guard_required")
   commercialOcrDeadlineAt    DateTime?                     @map("commercial_ocr_deadline_at")
   status                     ModerationDeleteIntentStatus  @default(PENDING)
@@ -2997,6 +3038,7 @@ model ManagedBroadcastDelivery {
   sentAt                                DateTime?                              @map("sent_at")
   postActionsNextAt                     DateTime?                              @map("post_actions_next_at")
   postActionsToken                      String?                                @map("post_actions_token")
+  subscriptionDeleteId                  String?                                @map("subscription_delete_id")
   pinStatus                             PublicationPostActionStatus            @default(NONE) @map("pin_status")
   pinError                              String?                                @map("pin_error")
   pinAttemptCount                       Int                                    @default(0) @map("pin_attempt_count")

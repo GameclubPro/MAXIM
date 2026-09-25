@@ -1,4 +1,5 @@
 import { PublisherPublicationPostActionsService } from './publisher-publication-post-actions.service';
+import { SuggestionDeletionCancelledError } from '../suggestions/suggestion-subscription.service';
 import { hasPublicationDeliveryAutomatedVerificationState } from '../admin/publication-delivery-verification-state';
 
 const NOW = new Date('2026-09-09T12:00:00.000Z');
@@ -79,6 +80,17 @@ function setup(overrides: Record<string, unknown> = {}) {
   };
   const identity = { assertAttested: jest.fn().mockResolvedValue(undefined) };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
+  const subscriptions = {
+    prepareDeletion: jest
+      .fn()
+      .mockResolvedValue({
+        id: 'suggestion',
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        botId: 'publik',
+      }),
+    assertDeletionAllowed: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new PublisherPublicationPostActionsService(
     prisma as any,
     max as any,
@@ -88,13 +100,54 @@ function setup(overrides: Record<string, unknown> = {}) {
     { getBotId: () => 'publik' } as any,
     { runExclusive: async (_lane: string, operation: () => Promise<void>) => operation() } as any,
     governor as any,
+    subscriptions as any,
   );
-  return { service, row, prisma, max, boundary, health, identity, governor };
+  return { service, row, prisma, max, boundary, health, identity, governor, subscriptions };
 }
 
 describe('Publisher publication post actions', () => {
   beforeEach(() => jest.useFakeTimers().setSystemTime(NOW));
   afterEach(() => jest.useRealTimers());
+
+  it('checks a subscription-owned delete before preparation and at the final transport boundary', async () => {
+    const f = setup({
+      subscriptionDeleteId: 'suggestion',
+      pinStatus: 'NONE',
+      deleteAt: NOW,
+      contentRevision: { postPublish: { pin: 'none', deleteAfterMinutes: null } },
+    });
+    await f.service.processDue();
+    expect(f.subscriptions.prepareDeletion).toHaveBeenCalledWith('suggestion', 'publik');
+    expect(f.subscriptions.assertDeletionAllowed).toHaveBeenCalledTimes(2);
+    expect(f.row.deleteStatus).toBe('DONE');
+  });
+
+  it('disarms subscription deletion after resubscription without deleting or consuming attempts', async () => {
+    const f = setup({ subscriptionDeleteId: 'suggestion', pinStatus: 'NONE', deleteAt: NOW });
+    f.subscriptions.prepareDeletion.mockRejectedValue(new SuggestionDeletionCancelledError());
+    await f.service.processDue();
+    expect(f.max.deleteMessage).not.toHaveBeenCalled();
+    expect(f.row).toMatchObject({
+      subscriptionDeleteId: null,
+      deleteStatus: 'NONE',
+      deleteAt: null,
+      deleteAttemptCount: 0,
+    });
+  });
+
+  it('rechecks subscription authority after the DELETE lane wait', async () => {
+    const f = setup({ subscriptionDeleteId: 'suggestion', pinStatus: 'NONE', deleteAt: NOW });
+    f.subscriptions.assertDeletionAllowed
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new SuggestionDeletionCancelledError());
+    await f.service.processDue();
+    expect(f.max.getExactMessagePresence).not.toHaveBeenCalled();
+    expect(f.row).toMatchObject({
+      deletedAt: null,
+      subscriptionDeleteId: null,
+      deleteStatus: 'NONE',
+    });
+  });
 
   it('pins with notification on the exact Publisher token and schedules deletion from actual send', async () => {
     const { service, row, max, prisma } = setup();

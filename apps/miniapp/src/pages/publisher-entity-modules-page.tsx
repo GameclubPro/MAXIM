@@ -445,6 +445,43 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           </article>
         ) : null}
 
+        {entity.entityType === 'channel' && entity.moduleSettings.channelSuggestionsEnabled ? (
+          <>
+            <div className="publisher-entity-module publisher-entity-module--subscription">
+              <span className="publisher-entity-module__icon" aria-hidden>
+                <CheckCircle />
+              </span>
+              <span className="publisher-entity-module__copy">
+                <strong>Требовать подписку</strong>
+              </span>
+              <ModuleSwitch
+                checked={entity.moduleSettings.channelSuggestionsRequireSubscription === true}
+                disabled={mutation.isPending}
+                label="Требовать подписку"
+                onChange={(channelSuggestionsRequireSubscription) =>
+                  mutation.mutate({ channelSuggestionsRequireSubscription })
+                }
+              />
+            </div>
+            <div className="publisher-entity-module publisher-entity-module--subscription">
+              <span className="publisher-entity-module__icon" aria-hidden>
+                <WarningCircle />
+              </span>
+              <span className="publisher-entity-module__copy">
+                <strong>Удалять посты после отписки</strong>
+              </span>
+              <ModuleSwitch
+                checked={entity.moduleSettings.channelSuggestionsDeleteOnUnsubscribe === true}
+                disabled={mutation.isPending}
+                label="Удалять посты после отписки"
+                onChange={(channelSuggestionsDeleteOnUnsubscribe) =>
+                  mutation.mutate({ channelSuggestionsDeleteOnUnsubscribe })
+                }
+              />
+            </div>
+          </>
+        ) : null}
+
         <section className="publisher-entity-vk-module" data-publisher-module="vk">
           <div className="publisher-entity-module">
             <span className="publisher-entity-module__icon is-vk" aria-hidden>

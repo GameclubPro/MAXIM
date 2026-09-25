@@ -3779,6 +3779,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                 {draft.postSuggestionsEnabled ? (
                   <>
+                    <ChannelSettingsToggleCard
+                      title="Требовать подписку"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      checked={draft.postSuggestionsRequireSubscription}
+                      onChange={(value) => patchDraft('postSuggestionsRequireSubscription', value)}
+                    />
+                    <ChannelSettingsToggleCard
+                      title="Удалять посты после отписки"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      checked={draft.postSuggestionsDeleteOnUnsubscribe}
+                      onChange={(value) => patchDraft('postSuggestionsDeleteOnUnsubscribe', value)}
+                    />
                     <div className="channel-settings-mode-card channel-settings-mode-card--suggestion">
                       <span className="channel-settings-mode-card__label">Отправка</span>
                       <SegmentedControl<ChannelSuggestionEntryMode>

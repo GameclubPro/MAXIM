@@ -5,6 +5,10 @@ import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import {
+  SuggestionSubscriptionService,
+  SUGGESTION_SUBSCRIPTION_DELETE_RULE,
+} from '../suggestions/suggestion-subscription.service';
+import {
   STOP_WORDS_DELETE_RULE_CODES,
   StopWordsDeleteGuardService,
   StopWordsDeleteGuardRejectedError,
@@ -219,6 +223,7 @@ const TERMINAL_STATUSES = new Set<ModerationDeleteIntentStatus>([
 ]);
 
 type IntentRow = {
+  suggestionSubscriptionId?: string | null;
   id: string;
   chatId: string;
   messageId: string;
@@ -612,6 +617,7 @@ export class ModerationDeleteIntentService {
     @Optional() private readonly commercialDeleteGuard?: CommercialDeleteGuardService,
     @Optional() private readonly reportDeleteGuard?: ReportDeleteGuardService,
     @Optional() private readonly messageRetentionGuard?: MessageRetentionDeleteGuard,
+    @Optional() private readonly suggestionSubscriptions?: SuggestionSubscriptionService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -731,6 +737,7 @@ export class ModerationDeleteIntentService {
     ruleCodes: readonly string[],
   ): ModerationDeleteIntentRollout {
     const normalizedRuleCodes = ruleCodes.map((ruleCode) => ruleCode.trim());
+    if (normalizedRuleCodes.includes(SUGGESTION_SUBSCRIPTION_DELETE_RULE)) return 'execute';
     // FLAG: Report policies have their own execution ceiling and never use unguarded deletion.
     if (
       normalizedRuleCodes.some(
@@ -1924,8 +1931,25 @@ export class ModerationDeleteIntentService {
         let commercialVerifiedReasonKeys: string[] = [];
         try {
           await this.assertLeaseForExternalCall(heartbeat);
+          const suggestionProof = intent.suggestionSubscriptionId
+            ? await this.suggestionSubscriptions?.prepareDeletion(
+                intent.suggestionSubscriptionId,
+                botId,
+              )
+            : null;
+          if (intent.suggestionSubscriptionId && !suggestionProof)
+            throw new Error('Suggestion subscription guard unavailable');
+          if (
+            suggestionProof &&
+            (suggestionProof.chatId !== intent.chatId ||
+              suggestionProof.messageId !== intent.messageId)
+          ) {
+            throw new Error('Suggestion subscription intent identity changed');
+          }
           const beforeImmediateDeleteMutation = async () => {
             await this.assertLeaseForExternalCall(heartbeat);
+            if (suggestionProof)
+              await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof);
             const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
               intent,
               leaseToken,
@@ -1949,6 +1973,8 @@ export class ModerationDeleteIntentService {
             );
             profanityVerified = textProof.profanityVerified;
             commercialVerifiedReasonKeys = textProof.commercialVerifiedReasonKeys;
+            if (suggestionProof)
+              await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof);
           };
           // FLAG: Retention's remote checks must finish before reserving the DELETE
           // transport slot. Final guards may only revalidate cached evidence and DB authority.
@@ -1959,11 +1985,15 @@ export class ModerationDeleteIntentService {
             beforeImmediateDeleteMutation,
             botId,
             timeoutMs: this.deleteTimeoutMs,
-            trafficClass: intent.retentionOwned ? 'background' : 'critical',
-            actionHealthLane: intent.retentionOwned ? 'background' : 'critical',
+            trafficClass:
+              intent.retentionOwned || intent.suggestionSubscriptionId ? 'background' : 'critical',
+            actionHealthLane:
+              intent.retentionOwned || intent.suggestionSubscriptionId ? 'background' : 'critical',
             sourceTag: intent.retentionOwned
               ? MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
-              : MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+              : intent.suggestionSubscriptionId
+                ? MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY
+                : MAX_API_SOURCE_TAGS.MODERATION_DELETE,
             ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
             idempotencyKey: `moderation-delete-intent-${intent.id}-attempt-${intent.attemptCount}`,
           });
@@ -3696,14 +3726,14 @@ export class ModerationDeleteIntentService {
     const persist = async (tx: Prisma.TransactionClient) => {
       const rows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
         INSERT INTO "moderation_delete_intents" (
-          "id", "chat_id", "message_id", "subject_user_id", "source_message_at",
+          "id", "chat_id", "message_id", "subject_user_id", "source_message_at", "suggestion_subscription_id",
           "entity_type", "message_author_kind", "origin_bot_id", "routing_policy",
           "commercial_ocr_guard_required", "commercial_ocr_deadline_at", "status",
           "execute_at", "next_attempt_at",
           "retry_until_at", "completed_at", "created_at", "updated_at"
         ) VALUES (
           ${intentId}, ${normalized.chatId}, ${normalized.messageId}, ${normalized.subjectUserId},
-          ${normalized.sourceMessageAt}, CAST(${normalized.entityType} AS "ChatEntityType"),
+          ${normalized.sourceMessageAt}, ${normalized.suggestionSubscriptionId}, CAST(${normalized.entityType} AS "ChatEntityType"),
           ${normalized.messageAuthorKind}, ${normalized.originBotId}, ${normalized.routingPolicy},
           ${normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE},
           ${normalized.commercialOcrDeadlineAt},
@@ -3712,6 +3742,7 @@ export class ModerationDeleteIntentService {
           ${initialStatus === 'EXPIRED' ? new Date() : null}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
         ON CONFLICT ("chat_id", "message_id") DO UPDATE SET
+          "suggestion_subscription_id" = COALESCE("moderation_delete_intents"."suggestion_subscription_id", EXCLUDED."suggestion_subscription_id"),
           "retention_owned" = FALSE,
           "status" = CASE
             WHEN "moderation_delete_intents"."retention_owned"
@@ -5998,6 +6029,7 @@ export class ModerationDeleteIntentService {
       ${requiredSubscriptionDeleteFilter}
       ${imageTextStopListFilter}
       OR ${this.messageDuplicateOwnedSql(Prisma.sql`intent."id"`)}
+      OR intent."suggestion_subscription_id" IS NOT NULL
       OR (
         EXISTS (
           SELECT 1
@@ -6090,6 +6122,7 @@ export class ModerationDeleteIntentService {
       IntentRow,
       | 'chatId'
       | 'retentionOwned'
+      | 'suggestionSubscriptionId'
       | 'replacementCleanup'
       | 'nonChannelReplacementCleanup'
       | 'channelAutoPostCleanupReason'
@@ -6117,6 +6150,7 @@ export class ModerationDeleteIntentService {
       );
     }
     if (getAppRole() === 'message-retention') return false;
+    if (intent.suggestionSubscriptionId) return true;
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
       return true;
     }
@@ -6692,6 +6726,18 @@ export class ModerationDeleteIntentService {
         : null;
     const originBotId = this.optionalString(input.originBotId);
     const routingPolicy = this.resolveRoutingPolicy(input, chatId);
+    const suggestionSubscriptionId = this.optionalString(input.suggestionSubscriptionId);
+    if (
+      ruleCode === SUGGESTION_SUBSCRIPTION_DELETE_RULE &&
+      (!suggestionSubscriptionId ||
+        entityType !== 'CHANNEL' ||
+        messageAuthorKind !== 'bot' ||
+        routingPolicy !== 'origin_only')
+    ) {
+      throw new Error('Suggestion subscription delete requires exact publication binding');
+    }
+    if (suggestionSubscriptionId && ruleCode !== SUGGESTION_SUBSCRIPTION_DELETE_RULE)
+      throw new Error('Invalid subscription delete rule');
     if (
       (isBoundMessageDuplicateDelete(input) ||
         this.getRolloutForRule(chatId, ruleCode) === 'execute') &&
@@ -6712,6 +6758,7 @@ export class ModerationDeleteIntentService {
       originBotId,
       routingPolicy,
       executeAt,
+      suggestionSubscriptionId,
       retryUntilAt,
       commercialOcrDeadlineAt,
       event: {
@@ -7102,6 +7149,7 @@ export class ModerationDeleteIntentService {
       ${column('origin_bot_id')} AS "originBotId",
       ${column('routing_policy')} AS "routingPolicy",
       ${column('retention_owned')} AS "retentionOwned",
+      ${column('suggestion_subscription_id')} AS "suggestionSubscriptionId",
       ${column('commercial_ocr_guard_required')} AS "commercialOcrGuardRequired",
       ${column('commercial_ocr_deadline_at')} AS "commercialOcrDeadlineAt",
       ${column('status')} AS "status",

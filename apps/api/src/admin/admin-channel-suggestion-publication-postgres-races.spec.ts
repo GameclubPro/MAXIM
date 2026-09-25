@@ -58,6 +58,80 @@ function collectExplainNodes(value: unknown): Array<Record<string, unknown>> {
   return [record, ...Object.values(record).flatMap(collectExplainNodes)];
 }
 
+describePostgresRace('PostgreSQL suggestion subscription watches', () => {
+  let pool: Pool;
+  let watchId: string;
+  beforeAll(() => {
+    assertDisposableDatabaseUrl(databaseUrl);
+    pool = new Pool({ connectionString: databaseUrl, max: 3 });
+  });
+  beforeEach(async () => {
+    watchId = `subscription-race-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO suggestion_subscription_watches (id, chat_id, author_user_id, profile, bot_id) VALUES ($1, $1, 'author', 'moderation', 'bot')`,
+      [watchId],
+    );
+  });
+  afterEach(async () => {
+    await pool.query('DELETE FROM suggestion_subscription_watches WHERE id = $1', [watchId]);
+  });
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  it('admits only one concurrent lease for an author', async () => {
+    const claim = (token: string) =>
+      pool.query(
+        `UPDATE suggestion_subscription_watches
+      SET lease_token = $2, lease_until = CURRENT_TIMESTAMP + INTERVAL '2 minutes'
+      WHERE id = $1 AND (lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP)
+      RETURNING id`,
+        [watchId, token],
+      );
+    const results = await Promise.all([claim('first'), claim('second')]);
+    expect(results.reduce((sum, result) => sum + (result.rowCount ?? 0), 0)).toBe(1);
+  });
+
+  it('fences a delayed negative observation after a membership event', async () => {
+    await pool.query(
+      `UPDATE suggestion_subscription_watches SET revision = revision + 1,
+      checked_at = NULL, missing_since = NULL, next_check_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [watchId],
+    );
+    const staleProbe = await pool.query(
+      `UPDATE suggestion_subscription_watches
+      SET missing_since = CURRENT_TIMESTAMP, checked_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND revision = 0`,
+      [watchId],
+    );
+    expect(staleProbe.rowCount).toBe(0);
+  });
+
+  it('has exact-prefix indexes for due work, membership wakes and per-author post pages', async () => {
+    const result = await pool.query<{ indexname: string; indexdef: string }>(
+      `SELECT indexname, indexdef FROM pg_indexes
+      WHERE schemaname = 'public' AND indexname = ANY($1::text[])`,
+      [
+        [
+          'suggestion_subscription_watch_due_idx',
+          'suggestion_subscription_watch_owner_key',
+          'suggestion_subscription_publications_watch_idx',
+        ],
+      ],
+    );
+    const indexes = new Map(result.rows.map((row) => [row.indexname, row.indexdef]));
+    expect(indexes.get('suggestion_subscription_watch_due_idx')).toContain(
+      '(profile, next_check_at, id)',
+    );
+    expect(indexes.get('suggestion_subscription_watch_owner_key')).toContain(
+      '(chat_id, author_user_id, profile, bot_id)',
+    );
+    expect(indexes.get('suggestion_subscription_publications_watch_idx')).toContain(
+      '(watch_id, deleted_at, id)',
+    );
+  });
+});
+
 describePostgresRace('PostgreSQL channel suggestion publication ledger races', () => {
   let pool: Pool;
   let chatId: string;

@@ -29,6 +29,7 @@ describe('publication post-action snapshots', () => {
       deleteStatus: 'NONE',
       postActionsNextAt: null,
       postActionsToken: null,
+      subscriptionDeleteId: null,
       pinAttemptCount: 0,
       pinError: null,
       deleteAttemptCount: 0,
