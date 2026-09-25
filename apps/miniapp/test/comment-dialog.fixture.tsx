@@ -16,7 +16,7 @@ const initial = await preview.request<ChannelDialogResponse>(`${route}?token=${t
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 let sequence = 0;
 const message = (
-  text = 'Комментарий для проверки прокрутки. Весь текст должен быть доступен.',
+  text = 'Комментарий для проверки прокрутки. Весь текст должен быть доступен. https://example.org/info',
 ) => ({
   ...initial.messages[0]!,
   id: `scroll-comment-${++sequence}`,

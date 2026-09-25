@@ -391,10 +391,10 @@
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose {
-    /* FLAG: Paint through the safe area; only controls are inset, never the entire dialog. */
+    /* FLAG: Paint through the safe area; inset controls only, subtracting space already reserved by MAX. */
     margin-inline: 0;
     padding: 8px max(var(--comments-native-edge-inline), calc((100% - 760px) / 2))
-      max(8px, var(--safe-bottom, 0px));
+      max(8px, var(--app-bottom-nav-content-inset, 0px));
     border-top: 1px solid var(--comment-line);
     background: var(--comment-surface);
   }
@@ -410,6 +410,19 @@
     border-radius: 0;
     box-shadow: none;
     padding-inline: 0;
+  }
+
+  /* FLAG: A held touch can reach the newly mounted menu. Neither its labels nor message links may start native selection. */
+  :root
+    .channel-dialog-screen--comments
+    :is(.channel-dialog-message, .channel-dialog-popover-layer),
+  :root
+    .channel-dialog-screen--comments
+    :is(.channel-dialog-message, .channel-dialog-popover-layer)
+    * {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__toolbar {

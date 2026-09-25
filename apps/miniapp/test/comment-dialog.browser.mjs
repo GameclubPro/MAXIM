@@ -22,6 +22,13 @@ const profiles = [
   { name: 'iphone', device: devices['iPhone 15'], platform: 'ios', safeTop: 59, safeBottom: 34 },
   { name: 'android', device: devices['Pixel 7'], platform: 'android', safeTop: 24, safeBottom: 0 },
   {
+    name: 'android-gesture',
+    device: devices['Pixel 7'],
+    platform: 'android',
+    safeTop: 24,
+    safeBottom: 24,
+  },
+  {
     name: 'desktop',
     device: { viewport: { width: 1280, height: 900 } },
     platform: 'web',
@@ -53,6 +60,11 @@ async function assertLatestVisible(page, state) {
       composerOverflow: composer.bottom - visibleBottom,
       composerWidth: composer.width,
       viewportWidth: innerWidth,
+      dockPaintsBottom: Boolean(
+        document
+          .elementFromPoint(innerWidth / 2, visibleBottom - 1)
+          ?.closest('.channel-dialog-compose'),
+      ),
       lastTop: last.top,
       bodyTop: body.top,
       lastHeight: last.height,
@@ -75,6 +87,7 @@ async function assertLatestVisible(page, state) {
     `${state}: composer is not full width`,
   );
   assert.ok(metrics.horizontalOverflow <= 1, `${state}: horizontal overflow`);
+  assert.ok(metrics.dockPaintsBottom, `${state}: wallpaper visible below composer`);
   assert.ok(metrics.bodyHeight >= 64, `${state}: composer leaves no usable message area`);
   if (metrics.lastHeight + 16 <= metrics.bodyHeight)
     assert.ok(metrics.lastTop >= metrics.bodyTop - 1, `${state}: short last comment clipped`);
@@ -137,6 +150,135 @@ try {
       await page.evaluate(() => window.commentTest.setTruncated(false));
       assert.ok((await page.locator('.channel-dialog-message__grouped-time').count()) > 0);
       assert.equal(await page.locator('.channel-dialog-day').count(), 1);
+
+      const dock = page.locator('.channel-dialog-compose');
+      const readBottomPadding = () =>
+        dock.evaluate((element) => parseFloat(getComputedStyle(element).paddingBottom));
+      assert.equal(await readBottomPadding(), Math.max(8, profile.safeBottom));
+      if (profile.safeBottom > 0) {
+        await page.evaluate(
+          (inset) =>
+            document.documentElement.style.setProperty(
+              '--app-layout-viewport-bottom',
+              `${inset}px`,
+            ),
+          profile.safeBottom,
+        );
+        assert.equal(
+          await readBottomPadding(),
+          8,
+          'MAX-reserved safe area must not be counted twice',
+        );
+        await assertLatestVisible(page, 'native-reserved bottom inset');
+        await page.evaluate(() =>
+          document.documentElement.style.setProperty('--app-layout-viewport-bottom', '0px'),
+        );
+      }
+
+      const lastBubble = page.locator('.channel-dialog-message__bubble').last();
+      const actions = page.getByRole('dialog', { name: 'Действия с комментарием', exact: true });
+      if (profile.device.hasTouch) {
+        const touch = await context.newCDPSession(page);
+        const bounds = await lastBubble.boundingBox();
+        await touch.send('Input.dispatchTouchEvent', {
+          type: 'touchStart',
+          touchPoints: [{ x: bounds.x + 24, y: bounds.y + 24 }],
+        });
+        await actions.waitFor();
+        await page.waitForTimeout(700);
+        await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await touch.detach();
+      } else {
+        await lastBubble.press('Enter');
+      }
+      await actions.waitFor();
+      assert.equal(
+        await page.evaluate(() => document.getSelection()?.isCollapsed),
+        true,
+        'holding a comment does not select text',
+      );
+      const nativeMenu = await actions.evaluate((element) => {
+        const button = element.querySelector('.channel-dialog-reaction-popover__action');
+        const selectionAllowed = button.dispatchEvent(
+          new Event('selectstart', { bubbles: true, cancelable: true }),
+        );
+        const contextMenuAllowed = button.dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+        );
+        const protectedLabels = [...element.querySelectorAll('*')].every(
+          (node) => getComputedStyle(node).userSelect === 'none',
+        );
+        const range = document.createRange();
+        range.selectNodeContents(button);
+        document.getSelection().addRange(range);
+        return { selectionAllowed, contextMenuAllowed, protectedLabels };
+      });
+      assert.deepEqual(nativeMenu, {
+        selectionAllowed: false,
+        contextMenuAllowed: false,
+        protectedLabels: true,
+      });
+      await page.waitForFunction(() => document.getSelection()?.isCollapsed);
+      await page.screenshot({ path: path.join(output, `${profile.name}-${mode}-held-menu.png`) });
+      const replyAction = actions.getByRole('button', { name: 'Ответить', exact: true });
+      if (profile.device.hasTouch) await replyAction.tap();
+      else await replyAction.click();
+      await actions.waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: 'Отменить ответ', exact: true }).click();
+      assert.equal(
+        await lastBubble.locator('a').evaluate((element) => getComputedStyle(element).userSelect),
+        'none',
+        'links do not re-enable the native long-press menu',
+      );
+      await field.fill('Выделение в черновике доступно');
+      const draftSelection = await field.evaluate((element) => {
+        element.setSelectionRange(0, 9);
+        return {
+          selected: element.selectionEnd - element.selectionStart,
+          selectionAllowed: element.dispatchEvent(
+            new Event('selectstart', { bubbles: true, cancelable: true }),
+          ),
+          contextMenuAllowed: element.dispatchEvent(
+            new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+          ),
+          userSelect: getComputedStyle(element).userSelect,
+        };
+      });
+      assert.equal(draftSelection.selected, 9);
+      assert.ok(
+        draftSelection.selectionAllowed &&
+          draftSelection.contextMenuAllowed &&
+          draftSelection.userSelect !== 'none',
+        'draft keeps native selection and paste',
+      );
+      await field.fill('');
+      await field.blur();
+      if (profile.device.hasTouch) {
+        const touch = await context.newCDPSession(page);
+        const bounds = await body.boundingBox();
+        const previousTop = await body.evaluate((element) => element.scrollTop);
+        const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+        await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+        for (let distance = 20; distance <= 120; distance += 20) {
+          await touch.send('Input.dispatchTouchEvent', {
+            type: 'touchMove',
+            touchPoints: [{ x: point.x, y: point.y + distance }],
+          });
+          await page.waitForTimeout(20);
+        }
+        await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await page.waitForFunction(
+          (previousTop) =>
+            document.querySelector('.channel-dialog-body').scrollTop < previousTop - 40,
+          previousTop,
+        );
+        assert.equal(await actions.count(), 0, 'vertical scrolling must not open message actions');
+        // Let the native fling settle before testing the separate jump-to-latest command.
+        await page.waitForTimeout(1000);
+        await page.getByRole('button', { name: 'К последнему комментарию', exact: true }).click();
+        await touch.detach();
+        await assertLatestVisible(page, 'native touch scroll');
+      }
 
       await field.fill(
         'Многострочный комментарий\nВторая строка\nТретья строка\nЧетвёртая строка\nПятая строка',
@@ -247,7 +389,7 @@ try {
       await assertLatestVisible(page, 'first comment');
       assert.deepEqual(errors, [], 'browser errors');
       console.log(
-        `PASS ${profile.name} ${mode}: end gap, scroll, unread, replies, edits, send failure, files, keyboards, empty state`,
+        `PASS ${profile.name} ${mode}: edge-to-edge dock, native insets, long press, selection, scroll, unread, replies, edits, send failure, files, keyboards, empty state`,
       );
       await context.close();
     }

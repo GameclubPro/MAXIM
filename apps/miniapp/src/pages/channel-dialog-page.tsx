@@ -2199,7 +2199,7 @@ export function ChannelDialogPage({
     };
   }, [canManageCommentNotifications, dialogType]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeMessageId || typeof document === 'undefined') {
       return undefined;
     }
@@ -2213,8 +2213,36 @@ export function ChannelDialogPage({
       dismissMessageActions();
     };
 
+    const screen = screenRef.current;
+    const popover = reactionPopoverRef.current;
+    const clearNativeSelection = () => {
+      const selection = document.getSelection();
+      if (!selection || selection.isCollapsed) return;
+      const isCommentSelection = [selection.anchorNode, selection.focusNode].some((node) => {
+        const element = node instanceof Element ? node : node?.parentElement;
+        return (
+          element &&
+          screen?.contains(element) &&
+          element.closest('.channel-dialog-message, .channel-dialog-popover-layer')
+        );
+      });
+      if (isCommentSelection) selection.removeAllRanges();
+    };
+    const preventNativeSelection = (event: Event) => {
+      event.preventDefault();
+      clearNativeSelection();
+    };
+
+    // FLAG: Android may continue the original long press after the action menu has mounted.
+    clearNativeSelection();
+    popover?.addEventListener('selectstart', preventNativeSelection);
+    popover?.addEventListener('contextmenu', preventNativeSelection);
+    document.addEventListener('selectionchange', clearNativeSelection);
     document.addEventListener('keydown', handleKeyDown);
     return () => {
+      popover?.removeEventListener('selectstart', preventNativeSelection);
+      popover?.removeEventListener('contextmenu', preventNativeSelection);
+      document.removeEventListener('selectionchange', clearNativeSelection);
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [activeMessageId]);
@@ -4939,7 +4967,21 @@ export function ChannelDialogPage({
 
       {dialogType === 'comments' && activeMessage
         ? createPortal(
-            <div className="channel-dialog-popover-layer" onClick={dismissMessageActions}>
+            <div
+              className="channel-dialog-popover-layer"
+              onPointerDownCapture={() => {
+                ignoreNextBubbleClickRef.current = false;
+              }}
+              onClickCapture={(event) => {
+                // FLAG: The opening long press's release click must not activate the newly mounted menu.
+                if (ignoreNextBubbleClickRef.current && event.detail > 0) {
+                  ignoreNextBubbleClickRef.current = false;
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }}
+              onClick={dismissMessageActions}
+            >
               <div
                 ref={reactionPopoverRef}
                 className={cn(
