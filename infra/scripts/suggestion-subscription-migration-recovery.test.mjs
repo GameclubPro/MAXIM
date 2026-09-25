@@ -9,6 +9,7 @@ import {
   verifyRecoveryState,
   recoverSuggestionMigration,
 } from './suggestion-subscription-migration-recovery.mjs';
+import { recoveryCompletionSql, verifySchema } from './suggestion-subscription-recovery-schema.mjs';
 
 const migrationSql = readFileSync(`apps/api/prisma/migrations/${MIGRATION}/migration.sql`, 'utf8');
 const checksum = createHash('sha256').update(migrationSql).digest('hex');
@@ -46,7 +47,7 @@ test('fixed audit verifies all absent DDL and the exact failed record in Postgre
     assert.equal(applied.columns_present, 6);
     assert.equal(applied.relations_present, 8);
     assert.equal(applied.types_present, 2);
-    assert.throws(() => verifyRecoveryState(applied, checksum), /partial schema/);
+    assert.equal(verifyRecoveryState(applied, checksum), 'resolve-ready');
   } finally {
     await db.close();
   }
@@ -187,11 +188,11 @@ test('operator entry point is fixed, locked, bounded, identity checked, and exac
     'utf8',
   );
   const wrapper = readFileSync('infra/scripts/vps-connect.sh', 'utf8');
-  assert.match(helper, /'--rolled-back',\s*MIGRATION/);
-  assert.doesNotMatch(helper, /'--applied'|DROP TABLE|DELETE FROM/);
+  assert.match(helper, /state === 'failed' \? '--rolled-back' : '--applied'/);
+  assert.doesNotMatch(helper, /DROP TABLE|DELETE FROM/);
   for (const invariant of [
     'MAXIM_EXPECTED_DEPLOY_SHA',
-    'default_transaction_read_only=on',
+    "mutate ? 'off' : 'on'",
     'statement_timeout=2500ms',
     'lock_timeout=250ms',
     'max_parallel_workers_per_gather=0',
@@ -215,4 +216,146 @@ test('operator entry point is fixed, locked, bounded, identity checked, and exac
   );
   assert.match(entry, /scripts\/ci\/assert-green\.mjs/);
   assert.match(entry, /MAXIM_EXPECTED_DEPLOY_SHA/);
+});
+
+test('the exact five-column prefix completes atomically before marking the migration applied', async () => {
+  const { db, read } = await fixture();
+  const calls = [];
+  try {
+    await db.exec(
+      migrationSql.slice(0, migrationSql.indexOf('ALTER TABLE "moderation_delete_intents"')),
+    );
+    assert.equal(verifyRecoveryState(await read(), checksum), 'complete-prefix');
+    const operations = {
+      checksum,
+      read,
+      assertHealthy: async () => {
+        calls.push('health');
+      },
+      complete: async () => {
+        calls.push('complete');
+        await db.exec(recoveryCompletionSql(migrationSql));
+      },
+      resolve: async (mode) => {
+        calls.push(mode);
+        assert.equal(verifySchema(await read()), 'complete');
+        await db.query(
+          'UPDATE _prisma_migrations SET rolled_back_at = now() WHERE migration_name = $1 AND finished_at IS NULL',
+          [MIGRATION],
+        );
+        await db.query('INSERT INTO _prisma_migrations VALUES ($1,$2,$3,now(),NULL,0,NULL)', [
+          'resolved-attempt',
+          MIGRATION,
+          checksum,
+        ]);
+      },
+    };
+    assert.deepEqual(await recoverSuggestionMigration(operations, false), {
+      state: 'complete-prefix',
+      applied: false,
+    });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await recoverSuggestionMigration(operations, true), {
+      state: 'applied',
+      applied: true,
+    });
+    assert.deepEqual(calls, ['health', 'complete', '--applied']);
+    assert.deepEqual(await recoverSuggestionMigration(operations, true), {
+      state: 'applied',
+      applied: false,
+    });
+    assert.deepEqual(calls, ['health', 'complete', '--applied']);
+  } finally {
+    await db.close();
+  }
+});
+
+test('prefix recovery refuses type, default and nullability drift', async () => {
+  const { db, read } = await fixture();
+  try {
+    await db.exec(
+      migrationSql.slice(0, migrationSql.indexOf('ALTER TABLE "moderation_delete_intents"')),
+    );
+    for (const ddl of [
+      'ALTER TABLE channel_settings ALTER COLUMN post_suggestions_require_subscription DROP NOT NULL',
+      'ALTER TABLE channel_settings ALTER COLUMN post_suggestions_require_subscription SET DEFAULT true',
+      'ALTER TABLE managed_broadcast_deliveries ALTER COLUMN subscription_delete_id TYPE varchar(100)',
+    ]) {
+      await db.exec('BEGIN');
+      await db.exec(ddl);
+      const report = await read();
+      assert.throws(() => verifySchema(report));
+      await db.exec('ROLLBACK');
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+test('complete-schema validation rejects wrong columns, constraints, indexes and RLS', async () => {
+  const { db, read } = await fixture();
+  try {
+    await db.exec(migrationSql);
+    for (const ddl of [
+      'ALTER TABLE suggestion_subscription_watches ALTER COLUMN revision SET DEFAULT 1',
+      'ALTER TABLE suggestion_subscription_publications DROP CONSTRAINT suggestion_subscription_publications_watch_id_fkey',
+      'ALTER TABLE suggestion_subscription_watches DROP CONSTRAINT suggestion_subscription_watches_profile_check',
+      'ALTER TABLE suggestion_subscription_watches ADD COLUMN unexpected text',
+      'ALTER TABLE suggestion_subscription_watches ENABLE ROW LEVEL SECURITY',
+      'DROP INDEX suggestion_subscription_watch_due_idx; CREATE INDEX suggestion_subscription_watch_due_idx ON suggestion_subscription_watches(next_check_at)',
+      'CREATE INDEX unexpected_index ON suggestion_subscription_publications(message_id)',
+    ]) {
+      await db.exec('BEGIN');
+      await db.exec(ddl);
+      const report = await read();
+      assert.throws(() => verifySchema(report));
+      await db.exec('ROLLBACK');
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+test('failed completion and a changed migration receipt never permit applied resolution', async () => {
+  const { db, read } = await fixture();
+  try {
+    await db.exec(
+      migrationSql.slice(0, migrationSql.indexOf('ALTER TABLE "moderation_delete_intents"')),
+    );
+    let resolved = false;
+    const operations = {
+      checksum,
+      read,
+      assertHealthy: async () => {},
+      complete: async () => {
+        throw new Error('lock unavailable');
+      },
+      resolve: async () => {
+        resolved = true;
+      },
+    };
+    await assert.rejects(() => recoverSuggestionMigration(operations, true), /lock unavailable/);
+    assert.equal(resolved, false);
+    operations.complete = async () => {
+      await db.exec(recoveryCompletionSql(migrationSql));
+      await db.query('UPDATE _prisma_migrations SET id = $1', ['replacement']);
+    };
+    await assert.rejects(() => recoverSuggestionMigration(operations, true), /metadata changed/);
+    assert.equal(resolved, false);
+  } finally {
+    await db.close();
+  }
+});
+
+test('the suffix is exactly the immutable remaining DDL inside a bounded NOWAIT transaction', () => {
+  const sql = recoveryCompletionSql(migrationSql);
+  assert.match(sql, /^BEGIN;/);
+  assert.match(sql, /ACCESS EXCLUSIVE MODE NOWAIT/);
+  assert.match(sql, /statement_timeout = '10s'/);
+  assert.ok(sql.endsWith('COMMIT;'));
+  assert.doesNotMatch(
+    sql,
+    /ALTER TABLE "channel_settings"|ALTER TABLE "publisher_entity_settings"|ALTER TABLE "managed_broadcast_deliveries"|DROP TABLE|DELETE FROM|UPDATE public/,
+  );
+  assert.throws(() => recoveryCompletionSql('not the migration'));
 });

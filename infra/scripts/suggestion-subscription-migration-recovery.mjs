@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import {
+  schemaAuditFieldsSql,
+  verifySchema,
+  recoveryCompletionSql,
+} from './suggestion-subscription-recovery-schema.mjs';
 
 export const MIGRATION = '20260925120000_add_suggestion_subscription';
 const columns = [
@@ -29,6 +34,7 @@ export const recoveryAuditSql = `WITH expected_columns(table_name, column_name) 
 )
 SELECT json_build_object(
   'migration', '${MIGRATION}',
+  ${schemaAuditFieldsSql}
   'parents_present', (
     SELECT count(*) = 4 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relkind = 'r'
@@ -73,16 +79,8 @@ SELECT json_build_object(
 );`;
 
 export function verifyRecoveryState(report, checksum) {
-  if (
-    report?.migration !== MIGRATION ||
-    report.parents_present !== true ||
-    report.columns_present !== 0 ||
-    report.relations_present !== 0 ||
-    report.types_present !== 0
-  )
-    throw new Error(
-      'Recovery requires every additive object to be absent; partial schema is not repaired.',
-    );
+  if (report?.migration !== MIGRATION) throw new Error('Unexpected recovery migration.');
+  const schema = verifySchema(report);
   const metadata = report.metadata;
   if (
     !metadata ||
@@ -94,25 +92,37 @@ export function verifyRecoveryState(report, checksum) {
     throw new Error(
       'Migration metadata is oversized, invalid, or contains another failed migration.',
     );
-  if (metadata.records.length === 0 && metadata.rolled_back_count > 0) return 'retry-ready';
+  if (metadata.records.length === 0 && metadata.rolled_back_count > 0 && schema === 'absent')
+    return 'retry-ready';
   const record = metadata.records[0];
   if (
     metadata.records.length !== 1 ||
     typeof record.id !== 'string' ||
     !record.id ||
     record.checksum !== checksum ||
-    record.finished !== false ||
+    typeof record.finished !== 'boolean'
+  )
+    throw new Error('Expected one checksum-matching, zero-step lock/timeout failure.');
+  if (record.finished) {
+    if (schema !== 'complete') throw new Error('Applied migration has schema drift.');
+    return 'applied';
+  }
+  if (
     record.applied_steps_count !== 0 ||
     !['lock_timeout', 'statement_timeout', 'deadlock'].includes(record.failure)
   )
-    throw new Error('Expected one checksum-matching, zero-step lock/timeout failure.');
-  return 'failed';
+    throw new Error('Only a zero-step lock/timeout failure is recoverable.');
+  return schema === 'absent'
+    ? 'failed'
+    : schema === 'complete'
+      ? 'resolve-ready'
+      : 'complete-prefix';
 }
 
 export async function recoverSuggestionMigration(operations, apply) {
   const before = await operations.read();
   const state = verifyRecoveryState(before, operations.checksum);
-  if (!apply || state === 'retry-ready') return { state, applied: false };
+  if (!apply || state === 'retry-ready' || state === 'applied') return { state, applied: false };
   await operations.assertHealthy();
   const confirmed = await operations.read();
   if (
@@ -120,14 +130,27 @@ export async function recoverSuggestionMigration(operations, apply) {
     JSON.stringify(confirmed) !== JSON.stringify(before)
   )
     throw new Error('Migration metadata changed during recovery.');
-  await operations.resolve();
+  if (state === 'complete-prefix') {
+    await operations.complete();
+    const completed = await operations.read();
+    if (
+      verifyRecoveryState(completed, operations.checksum) !== 'resolve-ready' ||
+      JSON.stringify(completed.metadata) !== JSON.stringify(before.metadata)
+    )
+      throw new Error('Completion schema or migration metadata changed; resolution refused.');
+  }
+  await operations.resolve(state === 'failed' ? '--rolled-back' : '--applied');
   const after = await operations.read();
+  const replacesAttempt =
+    state === 'failed' || after.metadata?.records?.[0]?.id !== before.metadata.records[0].id;
   if (
-    verifyRecoveryState(after, operations.checksum) !== 'retry-ready' ||
-    after.metadata.rolled_back_count !== before.metadata.rolled_back_count + 1
+    verifyRecoveryState(after, operations.checksum) !==
+      (state === 'failed' ? 'retry-ready' : 'applied') ||
+    after.metadata.rolled_back_count !==
+      before.metadata.rolled_back_count + (replacesAttempt ? 1 : 0)
   )
     throw new Error('Recovery receipt is invalid; deployment must remain blocked.');
-  return { state: 'retry-ready', applied: true };
+  return { state: state === 'failed' ? 'retry-ready' : 'applied', applied: true };
 }
 
 function command(binary, args, options = {}) {
@@ -137,8 +160,12 @@ function command(binary, args, options = {}) {
     maxBuffer: 128 * 1024,
     ...options,
   });
-  if (result.error || result.status !== 0)
-    throw new Error(`Recovery command failed: ${binary}. No success state was recorded.`);
+  if (result.error || result.status !== 0) {
+    const sqlState = String(result.stderr ?? '').match(/ERROR:\s+([A-Z0-9]{5})\b/u)?.[1];
+    throw new Error(
+      `Recovery command failed: ${binary}${sqlState ? ` (SQLSTATE ${sqlState})` : ''}. No success state was recorded.`,
+    );
+  }
   return result.stdout.trim();
 }
 
@@ -154,6 +181,7 @@ async function main() {
   command('git', ['diff', '--quiet', 'HEAD', '--', 'infra', 'apps/api/prisma/migrations']);
   for (const file of [
     'suggestion-subscription-migration-recovery.mjs',
+    'suggestion-subscription-recovery-schema.mjs',
     'vps-recover-suggestion-subscription-migration.sh',
   ])
     command('git', ['cat-file', '-e', `HEAD:infra/scripts/${file}`]);
@@ -166,36 +194,39 @@ async function main() {
     '-f',
     'infra/docker-compose.yml',
   ];
-  const read = () =>
-    JSON.parse(
-      command(
-        'docker',
-        [
-          ...compose,
-          'exec',
-          '-T',
-          '-e',
-          `PGAPPNAME=${appName}`,
-          '-e',
-          'PGOPTIONS=-c statement_timeout=2500ms -c lock_timeout=250ms -c default_transaction_read_only=on -c idle_in_transaction_session_timeout=4s -c max_parallel_workers_per_gather=0 -c temp_file_limit=8MB -c work_mem=1MB -c search_path=pg_catalog,public',
-          'postgres',
-          'psql',
-          '-X',
-          '-v',
-          'ON_ERROR_STOP=1',
-          '-A',
-          '-t',
-          '-U',
-          'maxim',
-          '-d',
-          'maxim',
-        ],
-        { input: recoveryAuditSql },
-      ),
+  const sqlCommand = (sql, mutate = false) =>
+    command(
+      'docker',
+      [
+        ...compose,
+        'exec',
+        '-T',
+        '-e',
+        `PGAPPNAME=${appName}`,
+        '-e',
+        `PGOPTIONS=-c statement_timeout=2500ms -c lock_timeout=250ms -c default_transaction_read_only=${mutate ? 'off' : 'on'} -c idle_in_transaction_session_timeout=4s -c max_parallel_workers_per_gather=0 -c max_parallel_maintenance_workers=0 -c temp_file_limit=8MB -c work_mem=1MB -c search_path=public,pg_catalog`,
+        'postgres',
+        'psql',
+        '-X',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-v',
+        'VERBOSITY=sqlstate',
+        '-A',
+        '-t',
+        '-U',
+        'maxim',
+        '-d',
+        'maxim',
+      ],
+      { input: sql },
     );
-  const checksum = createHash('sha256')
-    .update(readFileSync(`apps/api/prisma/migrations/${MIGRATION}/migration.sql`))
-    .digest('hex');
+  const read = () => JSON.parse(sqlCommand(recoveryAuditSql));
+  const migrationSql = readFileSync(
+    `apps/api/prisma/migrations/${MIGRATION}/migration.sql`,
+    'utf8',
+  );
+  const checksum = createHash('sha256').update(migrationSql).digest('hex');
   const result = await recoverSuggestionMigration(
     {
       checksum,
@@ -222,7 +253,10 @@ async function main() {
             throw new Error('Healthy runtime is required before resetting a migration attempt.');
         }
       },
-      resolve: () => {
+      complete: () => sqlCommand(recoveryCompletionSql(migrationSql), true),
+      resolve: (mode) => {
+        if (!['--rolled-back', '--applied'].includes(mode))
+          throw new Error('Invalid recovery mode.');
         const container = command('docker', [...compose, 'ps', '-q', 'api-ingress']);
         if (!/^[a-f0-9]{12,64}$/u.test(container))
           throw new Error('Expected one running ingress container.');
@@ -241,7 +275,7 @@ async function main() {
             command('docker', ['image', 'inspect', '--format', '{{.Id}}', image])
         )
           throw new Error('Recovery image identity differs from the running immutable source.');
-        // FLAG: Only a fully absent migration may be marked rolled back. Never resolve it as applied.
+        // FLAG: Rollback requires absent DDL; applied resolution requires the exact complete catalog above.
         command(
           'docker',
           [
@@ -265,7 +299,7 @@ async function main() {
             './node_modules/.bin/prisma',
             'migrate',
             'resolve',
-            '--rolled-back',
+            mode,
             MIGRATION,
             '--config',
             'apps/api/prisma.config.ts',

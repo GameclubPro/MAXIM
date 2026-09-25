@@ -32,16 +32,25 @@ Both API rollback wrappers require the subscription-aware Major and Publik final
 For a failed `20260925120000_add_suggestion_subscription`, synchronize the reviewed
 recovery tooling and run `./infra/scripts/vps-connect.sh recover-suggestion-subscription-migration`.
 This fixed, deploy-locked preview reads bounded catalog and Prisma metadata only. It requires
-all six added columns, both new tables/types, and their indexes to be absent, plus exactly one
-checksum-matching, zero-step lock-timeout, statement-timeout, or deadlock failure. It refuses
-partial schema, another failed migration, changed metadata, and oversized migration metadata.
+exactly one checksum-matching, zero-step lock-timeout, statement-timeout, or deadlock failure.
+It recognizes only absent DDL, the exact first-five-column prefix with all new tables/types/indexes
+absent, or the complete schema. Wrong types/defaults/nullability, unknown partial states, another
+failed migration, changed metadata, and oversized migration metadata stop recovery.
 
 After reviewing a `failed` result, repeat with `--apply`. The helper checks runtime health,
 revalidates the snapshot, marks only that failed attempt rolled back using the running immutable
-Prisma image, and verifies the rollback receipt. It never drops DDL, changes application rows,
-or marks a migration applied. Normal deployment must still execute the original immutable
-migration. A `retry-ready` result is idempotent; an interrupted release still requires the
-normal typed-journal and queue-fence adoption workflow.
+Prisma image, and verifies the rollback receipt. Normal deployment must then execute the original
+immutable migration. A `retry-ready` result is idempotent.
+
+For `complete-prefix`, apply completes only the original immutable suffix in one transaction.
+It takes `ACCESS EXCLUSIVE ... NOWAIT` on `moderation_delete_intents`, never waiting in front of
+live traffic, and bounds statements to ten seconds. A lock failure rolls back the entire suffix;
+recheck activity and rerun preview before a reviewed retry. After completion, every additive
+column, new table column, check/foreign-key/primary-key constraint, and index must match the
+fixed catalog definition before Prisma may resolve it applied. `resolve-ready` resumes only
+that metadata resolution after an interrupted successful DDL transaction. `applied` is a
+verified no-op. No path drops objects or changes application rows. An interrupted release still
+requires the normal typed-journal and queue-fence adoption workflow.
 
 Focused checks:
 
