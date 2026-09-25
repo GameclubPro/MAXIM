@@ -53,6 +53,7 @@ Commands:
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   recover-publication-post-actions-migration [--apply]
+  recover-suggestion-subscription-migration [--apply]
                               Run fixed, bounded, privacy-safe PostgreSQL diagnostics
   postgres-audit-provision [--apply]
                               Preview or provision the dedicated PostgreSQL audit role
@@ -340,6 +341,17 @@ recover_publication_post_actions_migration() {
   target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
   remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-recover-publication-post-actions-migration.sh "$@")"
+}
+
+recover_suggestion_subscription_migration() {
+  if [[ $# -gt 1 || ( $# -eq 1 && "$1" != '--apply' ) ]]; then
+    echo 'Usage: recover-suggestion-subscription-migration [--apply]' >&2
+    exit 2
+  fi
+  local target_sha
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-recover-suggestion-subscription-migration.sh "$@")"
 }
 
 postgres_audit_provision() {
@@ -1177,6 +1189,9 @@ case "$command" in
     ;;
   recover-publication-post-actions-migration)
     recover_publication_post_actions_migration "$@"
+    ;;
+  recover-suggestion-subscription-migration)
+    recover_suggestion_subscription_migration "$@"
     ;;
   commercial-ocr-promote)
     commercial_ocr_promote "$@"

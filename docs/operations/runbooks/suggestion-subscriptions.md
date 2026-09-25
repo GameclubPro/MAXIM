@@ -27,6 +27,22 @@ The additive `20260925120000_add_suggestion_subscription` migration adds default
 
 Both API rollback wrappers require the subscription-aware Major and Publik final guards. Do not bypass this source floor: persisted deletion work can outlive a settings change or process restart. Use a compatible immutable release for rollback.
 
+### Failed Migration Recovery
+
+For a failed `20260925120000_add_suggestion_subscription`, synchronize the reviewed
+recovery tooling and run `./infra/scripts/vps-connect.sh recover-suggestion-subscription-migration`.
+This fixed, deploy-locked preview reads bounded catalog and Prisma metadata only. It requires
+all six added columns, both new tables/types, and their indexes to be absent, plus exactly one
+checksum-matching, zero-step lock-timeout, statement-timeout, or deadlock failure. It refuses
+partial schema, another failed migration, changed metadata, and oversized migration metadata.
+
+After reviewing a `failed` result, repeat with `--apply`. The helper checks runtime health,
+revalidates the snapshot, marks only that failed attempt rolled back using the running immutable
+Prisma image, and verifies the rollback receipt. It never drops DDL, changes application rows,
+or marks a migration applied. Normal deployment must still execute the original immutable
+migration. A `retry-ready` result is idempotent; an interrupted release still requires the
+normal typed-journal and queue-fence adoption workflow.
+
 Focused checks:
 
 ```sh
