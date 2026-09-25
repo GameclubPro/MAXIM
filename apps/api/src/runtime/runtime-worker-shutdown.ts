@@ -6,9 +6,14 @@ import type { Worker } from 'bullmq';
 export const RUNTIME_WORKER_SHUTDOWN_GRACE_MS = 5_000;
 export const RUNTIME_SHUTDOWN_HARD_TIMEOUT_MS = 9_000;
 
-type RuntimeWorker = Pick<Worker, 'close' | 'pause'> & {
+export type RuntimeWorker = Pick<Worker, 'close' | 'pause'> & {
   readonly name?: string;
 };
+
+export abstract class RuntimeWorkerOwner {
+  // FLAG: Freeze worker creation synchronously before returning the shutdown snapshot.
+  abstract stopWorkerAdmission(): readonly RuntimeWorker[];
+}
 
 type RuntimeShutdownContext = Pick<INestApplicationContext, 'get'> & {
   close(signal?: string): Promise<void>;
@@ -53,6 +58,11 @@ export function discoverRegisteredRuntimeWorkers(context: RuntimeShutdownContext
 
   for (const provider of discovery.getProviders()) {
     const instance = provider.instance;
+    if (instance instanceof RuntimeWorkerOwner) {
+      for (const worker of instance.stopWorkerAdmission()) {
+        workers.add(worker);
+      }
+    }
     if (!(instance instanceof WorkerHost)) {
       continue;
     }

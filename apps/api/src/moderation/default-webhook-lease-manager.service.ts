@@ -4,6 +4,7 @@ import type { Job, Worker } from 'bullmq';
 import { Worker as BullWorker } from 'bullmq';
 import Redis from 'ioredis';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
+import { RuntimeWorkerOwner } from '../runtime/runtime-worker-shutdown';
 import { buildDefaultWebhookLeasePlan } from '../runtime/default-webhook-lease-plan';
 import {
   buildDefaultWebhookHandoffKey,
@@ -138,7 +139,10 @@ function buildDefaultWebhookLeaseFenceKey(queueName: DefaultWebhookQueueName): s
 }
 
 @Injectable()
-export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModuleDestroy {
+export class DefaultWebhookLeaseManagerService
+  extends RuntimeWorkerOwner
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(DefaultWebhookLeaseManagerService.name);
   private readonly redis: Redis;
   private readonly redisUrl: string;
@@ -162,6 +166,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private syncTimer: NodeJS.Timeout | null = null;
   private syncing = false;
+  private stopping = false;
 
   constructor(
     configService: ConfigService,
@@ -169,6 +174,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     private readonly queueMetricsService: QueueMetricsService,
     private readonly systemModeService: SystemModeService,
   ) {
+    super();
     this.redisUrl = configService.getOrThrow<string>('REDIS_URL');
     this.redis = new Redis(this.redisUrl);
     this.workerGroupName = getWebhookDynamicLeasesWorkerGroup(
@@ -203,7 +209,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   }
 
   onModuleInit() {
-    if (!roleRunsModeration(getAppRole()) || !this.workerGroupName) {
+    if (this.stopping || !roleRunsModeration(getAppRole()) || !this.workerGroupName) {
       return;
     }
 
@@ -219,7 +225,8 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     void this.sync();
   }
 
-  async onModuleDestroy() {
+  stopWorkerAdmission(): readonly Worker<ProcessWebhookJob>[] {
+    this.stopping = true;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -228,16 +235,18 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       clearInterval(this.syncTimer);
       this.syncTimer = null;
     }
+    return [...this.workers.values()];
+  }
 
-    await Promise.all(
-      [...this.workers.values()].map((worker) => worker.close().catch(() => undefined)),
-    );
+  async onModuleDestroy() {
+    const workers = this.stopWorkerAdmission();
+    await Promise.all(workers.map((worker) => worker.close().catch(() => undefined)));
     this.workers.clear();
     await this.redis.quit();
   }
 
   private async sync(): Promise<void> {
-    if (!this.workerGroupName || this.syncing) {
+    if (this.stopping || !this.workerGroupName || this.syncing) {
       return;
     }
 
@@ -245,14 +254,18 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     try {
       if (this.mode === 'off' || this.mode === 'shadow') {
         await this.releaseLocalDynamicClaims();
+        if (this.stopping) return;
         await this.ensureStaticHomeWorkers();
         await this.closeWorkersExcept(new Set(this.homeQueues));
+        if (this.stopping) return;
         await this.persistSummary(await this.buildSummary());
         return;
       }
 
       await this.bootstrapHomeClaims();
+      if (this.stopping) return;
       await this.applyDynamicPlan();
+      if (this.stopping) return;
       await this.persistSummary(await this.buildSummary());
     } catch (error: unknown) {
       this.logger.warn(
@@ -265,12 +278,13 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   }
 
   private async publishKeepalive(): Promise<void> {
-    if (!this.workerGroupName) {
+    if (this.stopping || !this.workerGroupName) {
       return;
     }
 
     try {
       await this.writeHeartbeat();
+      if (this.stopping) return;
       if (this.mode === 'on' || this.mode === 'canary') {
         await this.renewLocalClaims();
       }
@@ -283,7 +297,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   }
 
   private async applyDynamicPlan(): Promise<void> {
-    if (!this.workerGroupName) {
+    if (this.stopping || !this.workerGroupName) {
       return;
     }
 
@@ -315,6 +329,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
 
     const allowedWorkers = new Set<DefaultWebhookQueueName>();
     for (const queueName of DEFAULT_WEBHOOK_QUEUE_NAMES) {
+      if (this.stopping) return;
       const entry = plan.queues[queueName];
       if (!entry.eligibleForDynamicLeases) {
         if (entry.homeOwner === this.workerGroupName) {
@@ -339,6 +354,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
           allowedWorkers.add(queueName);
           continue;
         }
+        if (this.stopping) return;
         await this.issueHandoff(queueName, this.workerGroupName, entry.desiredOwner);
         if (currentClaim?.ownerId === this.workerGroupName) {
           await this.releaseClaim(queueName);
@@ -438,6 +454,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   }
 
   private async persistSummary(summary: DefaultWebhookLeaseSummary): Promise<void> {
+    if (this.stopping) return;
     await this.redis.set(
       DEFAULT_WEBHOOK_LEASE_SUMMARY_KEY,
       JSON.stringify(summary),
@@ -654,7 +671,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   }
 
   private async claimQueue(queueName: DefaultWebhookQueueName): Promise<boolean> {
-    if (!this.workerGroupName) {
+    if (this.stopping || !this.workerGroupName) {
       return false;
     }
 
@@ -787,6 +804,8 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     queueName: DefaultWebhookQueueName,
     counters?: QueueCounters,
   ): Promise<void> {
+    // FLAG: An in-flight lease sync must not create consumers after the shutdown snapshot.
+    if (this.stopping) return;
     const existingWorker = this.workers.get(queueName);
     if (existingWorker) {
       if (!this.shouldRecycleStaleWorker(queueName, existingWorker, counters)) {
@@ -875,6 +894,8 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   }
 
   private async closeWorker(queueName: DefaultWebhookQueueName): Promise<CloseWorkerResult> {
+    // FLAG: Shutdown owns the first close call so its grace deadline can still force close.
+    if (this.stopping) return 'skipped';
     const worker = this.workers.get(queueName);
     if (!worker || this.closingWorkers.has(queueName)) {
       return 'skipped';

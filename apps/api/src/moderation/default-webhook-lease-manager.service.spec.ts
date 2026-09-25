@@ -7,6 +7,10 @@ import {
 } from '../runtime/default-webhook-dynamic-leases';
 import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
 import { WebhookOrderedPredecessorPendingError } from './webhook-ordered-predecessor-fence';
+import {
+  closeRuntimeContextWithWorkerDrain,
+  discoverRegisteredRuntimeWorkers,
+} from '../runtime/runtime-worker-shutdown';
 
 type RedisMockInstance = {
   store: Map<string, string>;
@@ -259,6 +263,169 @@ describe('DefaultWebhookLeaseManagerService', () => {
       process.env.APP_ROLE = originalRole;
     }
     jest.useRealTimers();
+  });
+
+  it.each(['off', 'shadow', 'canary', 'on'])(
+    'drains manually owned shard workers before closing dependencies in %s mode',
+    async (mode) => {
+      const service = new DefaultWebhookLeaseManagerService(
+        createConfigMock({ WEBHOOK_DYNAMIC_LEASES_MODE: mode }) as never,
+        { processWebhookEvent: jest.fn() } as never,
+        createQueueMetricsMock() as never,
+        createSystemModeMock() as never,
+      );
+      let finishJob!: () => void;
+      const activeJob = new Promise<void>((resolve) => {
+        finishJob = resolve;
+      });
+      const worker = {
+        pause: jest.fn(() => activeJob),
+        close: jest.fn().mockResolvedValue(undefined),
+      };
+      (service as any).workers.set('moderation-default-0', worker);
+      const context = {
+        get: jest.fn().mockReturnValue({ getProviders: () => [{ instance: service }] }),
+        close: jest.fn().mockResolvedValue(undefined),
+      };
+      try {
+        const workers = discoverRegisteredRuntimeWorkers(context as never);
+        expect(workers).toEqual([worker]);
+        const shutdown = closeRuntimeContextWithWorkerDrain(context as never, 'SIGTERM', workers);
+        expect(worker.pause).toHaveBeenCalledWith(false);
+        expect(context.close).not.toHaveBeenCalled();
+        finishJob();
+        await shutdown;
+        expect(worker.close).toHaveBeenCalledWith(false);
+        expect(context.close).toHaveBeenCalledWith('SIGTERM');
+        expect(redisInstances[0]!.quit).not.toHaveBeenCalled();
+      } finally {
+        finishJob();
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it('freezes synchronization admission before shutdown snapshots its workers', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock({ WEBHOOK_DYNAMIC_LEASES_MODE: 'off' }) as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const releaseClaims = jest.spyOn(service as any, 'releaseLocalDynamicClaims');
+    jest.spyOn(service as any, 'ensureStaticHomeWorkers').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'buildSummary').mockResolvedValue({});
+    jest.spyOn(service as any, 'persistSummary').mockResolvedValue(undefined);
+    const context = {
+      get: jest.fn().mockReturnValue({ getProviders: () => [{ instance: service }] }),
+    };
+    try {
+      discoverRegisteredRuntimeWorkers(context as never);
+      await (service as any).sync();
+      await (service as any).publishKeepalive();
+      expect(releaseClaims).not.toHaveBeenCalled();
+      expect(redisInstances[0]!.set).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('does not create or rebalance workers when an in-flight sync resumes during shutdown', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock({ WEBHOOK_DYNAMIC_LEASES_MODE: 'off' }) as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    let finishRelease!: () => void;
+    const release = new Promise<void>((resolve) => {
+      finishRelease = resolve;
+    });
+    jest.spyOn(service as any, 'releaseLocalDynamicClaims').mockReturnValue(release);
+    const ensure = jest.spyOn(service as any, 'ensureStaticHomeWorkers');
+    const worker = {
+      pause: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).workers.set('moderation-default-0', worker);
+    const sync = (service as any).sync();
+    try {
+      expect(service.stopWorkerAdmission()).toEqual([worker]);
+      finishRelease();
+      await sync;
+      expect(ensure).not.toHaveBeenCalled();
+      await (service as any).ensureWorkerRunning('moderation-default-1');
+      await expect((service as any).closeWorker('moderation-default-0')).resolves.toBe('skipped');
+      expect(service.stopWorkerAdmission()).toEqual([worker]);
+      expect(worker.close).not.toHaveBeenCalled();
+      expect(redisInstances[0]!.set).not.toHaveBeenCalled();
+    } finally {
+      finishRelease();
+      await sync;
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('force closes a stuck shard worker before dependency teardown at the shared grace deadline', async () => {
+    jest.useFakeTimers();
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const worker = {
+      pause: jest.fn(() => new Promise<void>(() => undefined)),
+      close: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).workers.set('moderation-default-0', worker);
+    const context = {
+      get: jest.fn().mockReturnValue({ getProviders: () => [{ instance: service }] }),
+      close: jest.fn().mockResolvedValue(undefined),
+    };
+    const shutdown = closeRuntimeContextWithWorkerDrain(
+      context as never,
+      'SIGTERM',
+      discoverRegisteredRuntimeWorkers(context as never),
+    );
+    try {
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(worker.close).not.toHaveBeenCalled();
+      expect(context.close).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(shutdown).resolves.toMatchObject({ forced: true, workerCount: 1 });
+      expect(worker.close).toHaveBeenCalledTimes(1);
+      expect(worker.close).toHaveBeenCalledWith(true);
+      expect(context.close).toHaveBeenCalledWith('SIGTERM');
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('cancels owner timers and cannot restart them after shutdown begins', async () => {
+    jest.useFakeTimers();
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const sync = jest.spyOn(service as any, 'sync').mockResolvedValue(undefined);
+    const keepalive = jest.spyOn(service as any, 'publishKeepalive').mockResolvedValue(undefined);
+    try {
+      service.onModuleInit();
+      expect(jest.getTimerCount()).toBe(2);
+      expect(service.stopWorkerAdmission()).toEqual([]);
+      expect(jest.getTimerCount()).toBe(0);
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(3_000);
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(keepalive).toHaveBeenCalledTimes(1);
+      await expect((service as any).claimQueue('moderation-default-0')).resolves.toBe(false);
+      expect(redisInstances[0]!.eval).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
   });
 
   it('defers a dynamically leased worker job behind its committed predecessor', async () => {

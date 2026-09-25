@@ -6,6 +6,7 @@ import {
   discoverRegisteredRuntimeWorkers,
   drainRuntimeWorkers,
   installRuntimeWorkerShutdown,
+  RuntimeWorkerOwner,
 } from './runtime-worker-shutdown';
 
 type TestWorker = Pick<Worker, 'close' | 'pause'> & { name: string };
@@ -84,6 +85,23 @@ describe('runtime worker shutdown', () => {
     };
 
     expect(discoverRegisteredRuntimeWorkers(context as never)).toEqual([worker]);
+  });
+
+  it('freezes explicit worker owners and de-duplicates them with registered hosts', () => {
+    const worker = createWorker('queue-a');
+    const host = new TestWorkerHost();
+    host.setWorker(worker);
+    class Owner extends RuntimeWorkerOwner {
+      stopWorkerAdmission = jest.fn(() => [worker]);
+    }
+    const owner = new Owner();
+    const context = {
+      get: jest.fn().mockReturnValue({
+        getProviders: () => [{ instance: host }, { instance: owner }],
+      }),
+    };
+    expect(discoverRegisteredRuntimeWorkers(context as never)).toEqual([worker]);
+    expect(owner.stopWorkerAdmission).toHaveBeenCalledTimes(1);
   });
 
   it('stops admission and lets active jobs settle before the first graceful close', async () => {
