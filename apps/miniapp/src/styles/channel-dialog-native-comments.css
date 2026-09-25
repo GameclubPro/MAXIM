@@ -39,7 +39,7 @@
     --comments-native-x: clamp(8px, 2.1vw, 13px);
     --comments-native-edge-inline: var(--comments-native-x);
     --comments-native-edge-top: 0px;
-    --comments-native-edge-bottom: max(0px, var(--safe-bottom, 0px));
+    --comments-native-edge-bottom: 0px;
     --comments-native-header-height: 44px;
     --comments-native-top-bleed: var(--comments-dialog-top-bleed, 4px);
     --comments-native-notification-top: calc(

@@ -51,6 +51,8 @@ async function assertLatestVisible(page, state) {
       headerGap: body.top - header.bottom,
       bodyGap: composer.top - body.bottom,
       composerOverflow: composer.bottom - visibleBottom,
+      composerWidth: composer.width,
+      viewportWidth: innerWidth,
       lastTop: last.top,
       bodyTop: body.top,
       lastHeight: last.height,
@@ -64,6 +66,14 @@ async function assertLatestVisible(page, state) {
   );
   assert.ok(metrics.headerGap >= -1 && metrics.bodyGap >= -1, `${state}: regions overlap`);
   assert.ok(metrics.composerOverflow <= 1, `${state}: composer outside visual viewport`);
+  assert.ok(
+    Math.abs(metrics.composerOverflow) <= 1,
+    `${state}: gap below the composer: ${JSON.stringify(metrics)}`,
+  );
+  assert.ok(
+    Math.abs(metrics.composerWidth - metrics.viewportWidth) <= 1,
+    `${state}: composer is not full width`,
+  );
   assert.ok(metrics.horizontalOverflow <= 1, `${state}: horizontal overflow`);
   assert.ok(metrics.bodyHeight >= 64, `${state}: composer leaves no usable message area`);
   if (metrics.lastHeight + 16 <= metrics.bodyHeight)
@@ -105,6 +115,18 @@ try {
       const field = page.locator('.channel-dialog-compose__field textarea');
       const body = page.locator('.channel-dialog-body');
       await assertLatestVisible(page, 'initial');
+      const tools = page.getByRole('button', { name: 'Вложения и эмодзи', exact: true });
+      assert.equal(await tools.getAttribute('aria-expanded'), 'false');
+      const dockHeight = await page
+        .locator('.channel-dialog-compose')
+        .evaluate((element) => element.clientHeight);
+      assert.ok(dockHeight <= 68 + profile.safeBottom, 'idle composer stays compact');
+      await tools.click();
+      await page.getByRole('button', { name: 'Эмодзи', exact: true }).waitFor();
+      await assertLatestVisible(page, 'expanded tools');
+      await page.keyboard.press('Escape');
+      assert.equal(await tools.getAttribute('aria-expanded'), 'false');
+      assert.ok(await tools.evaluate((element) => element === document.activeElement));
       assert.equal(await page.getByLabel('Комментариев: 24', { exact: true }).textContent(), '24');
       await page.evaluate(() => window.commentTest.setTruncated(true));
       await page.getByLabel('Комментариев: больше 24', { exact: true }).waitFor();
@@ -122,6 +144,7 @@ try {
       await assertLatestVisible(page, 'growing draft');
       await field.fill('');
       await assertLatestVisible(page, 'shrinking draft');
+      assert.equal(await tools.getAttribute('aria-expanded'), 'false');
 
       await page.evaluate(() => window.commentTest.append('Новое длинное сообщение. '.repeat(16)));
       await page.waitForFunction(
@@ -213,6 +236,10 @@ try {
       await field.blur();
       await assertLatestVisible(page, 'visual viewport restored');
       await page.screenshot({ path: path.join(output, `${profile.name}-${mode}.png`) });
+      await field.fill('Отправка с клавиатуры');
+      await field.press('Control+Enter');
+      await page.waitForFunction(() => document.querySelector('textarea').value === '');
+      await assertLatestVisible(page, 'keyboard send');
       await page.evaluate(() => window.commentTest.empty());
       await page.getByText('Комментариев пока нет', { exact: true }).waitFor();
       await page.evaluate(() => window.commentTest.append('Первый комментарий'));

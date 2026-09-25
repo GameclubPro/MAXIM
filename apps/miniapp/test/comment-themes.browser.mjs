@@ -53,6 +53,12 @@ function commentsUrl(profile, extra = {}) {
   return url.href;
 }
 
+async function openEmoji(page) {
+  const tools = page.getByRole('button', { name: 'Вложения и эмодзи', exact: true });
+  if ((await tools.getAttribute('aria-expanded')) !== 'true') await tools.click();
+  await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+}
+
 async function assertLayout(page) {
   const errors = await page.evaluate(() => {
     const failures = [];
@@ -74,6 +80,8 @@ async function assertLayout(page) {
     const shell = document.querySelector('.channel-dialog-shell').getBoundingClientRect();
     const composer = document.querySelector('.channel-dialog-compose').getBoundingClientRect();
     if (Math.abs(composer.bottom - shell.bottom) > 2) failures.push('composer not pinned');
+    if (Math.abs(composer.bottom - screenRect.bottom) > 1) failures.push('gap below composer');
+    if (Math.abs(composer.width - screenRect.width) > 1) failures.push('composer not full width');
     const submit = screen.querySelector('.channel-dialog-submit').getBoundingClientRect();
     if (submit.height > 48 || submit.height < 44)
       failures.push('send button changes height with the draft');
@@ -221,6 +229,16 @@ try {
       );
       await page.waitForTimeout(200);
       assert.equal(wallpapers.size, 1, 'a cold dialog loads only its active wallpaper');
+      const tools = page.getByRole('button', { name: 'Вложения и эмодзи', exact: true });
+      await tools.click();
+      await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      await page.waitForFunction(
+        () => document.querySelector('#channel-dialog-compose-tools').hidden,
+      );
+      assert.equal(
+        await page.evaluate(() => Boolean(window.__MAXIM_VISUAL_BRIDGE_CLOSED__)),
+        false,
+      );
       const draftPrefix = 'Тема меняется, черновик остаётся.';
       const draft = `${draftPrefix}\nВторая строка.\nТретья строка.\nhttps://example.org/${'x'.repeat(110)}`;
       await page.locator('.channel-dialog-compose__field textarea').fill(draft);
@@ -371,7 +389,7 @@ try {
           });
           window.visualViewport.dispatchEvent(new Event('resize'));
         });
-        await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+        await openEmoji(page);
         await page.locator('.channel-dialog-compose__emoji-panel').waitFor();
         await page.waitForFunction(
           () =>
@@ -395,7 +413,7 @@ try {
       await page.waitForTimeout(150);
       await assertLayout(page);
       await page.screenshot({ path: path.join(output, `${profile.name}-${mode}-keyboard.png`) });
-      await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+      await openEmoji(page);
       const emojiPanel = page.locator('.channel-dialog-compose__emoji-panel');
       await emojiPanel.waitFor();
       await assertLayout(page);
@@ -423,7 +441,7 @@ try {
       });
       await page.getByRole('button', { name: 'Закрыть эмодзи', exact: true }).click();
       await page.locator('.channel-dialog-compose__field textarea').fill('x'.repeat(2000));
-      await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+      await openEmoji(page);
       await emojiPanel.locator('.channel-dialog-compose__emoji').first().click();
       assert.equal(
         (await page.locator('.channel-dialog-compose__field textarea').inputValue()).length,
@@ -440,6 +458,43 @@ try {
       await assertLayout(page);
       await smallDialog.getByRole('button', { name: 'Готово', exact: true }).click();
       await page.setViewportSize(viewport);
+      for (const botProfile of ['moderation', 'publisher']) {
+        for (const entity of ['channel', 'chat']) {
+          const url = commentsUrl(profile, { profile: botProfile }).replace(
+            '/channel/preview-channel/',
+            `/${entity}/preview-${entity}/`,
+          );
+          await page.goto(url);
+          await page.locator('.channel-dialog-message').first().waitFor();
+          await applyNativeVisualMode(page, profile);
+          await page.getByRole('button', { name: 'Вложения и эмодзи', exact: true }).click();
+          assert.equal(
+            await page.locator('.channel-dialog-compose input[type="file"]').count(),
+            botProfile === 'moderation' ? 2 : 0,
+            'attachment capabilities remain bot-scoped',
+          );
+          assert.equal(
+            await page.getByRole('button', { name: 'Настройки уведомлений', exact: true }).count(),
+            botProfile === 'moderation' ? 1 : 0,
+            'notification capabilities remain bot-scoped',
+          );
+          await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+          await page.getByRole('button', { name: 'Закрыть эмодзи', exact: true }).click();
+          await page
+            .locator('.channel-dialog-compose__field textarea')
+            .fill(`Проверка ${botProfile} ${entity}`);
+          await page.getByRole('button', { name: 'Отправить', exact: true }).click();
+          await page
+            .locator('.channel-dialog-message')
+            .filter({ hasText: `Проверка ${botProfile} ${entity}` })
+            .waitFor();
+          await assertLayout(page);
+          await assertThemeContrast(page);
+          await page.screenshot({
+            path: path.join(output, `${profile.name}-${mode}-${botProfile}-${entity}.png`),
+          });
+        }
+      }
       await page.goto(commentsUrl(profile, { profile: 'publisher' }));
       await page.locator('.channel-dialog-message').first().waitFor();
       await applyNativeVisualMode(page, profile);

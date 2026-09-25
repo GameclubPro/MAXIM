@@ -46,6 +46,11 @@
 }
 
 .app-shell--immersive.app-shell--comments-dialog {
+  /* FLAG: visualViewport.height excludes the keyboard-induced offset above the visible area. */
+  --immersive-height: min(
+    100dvh,
+    calc(var(--app-viewport-height) + var(--app-visual-viewport-top, 0px))
+  );
   --comments-dialog-top-bleed: 4px;
   --immersive-top-bleed: var(--comments-dialog-top-bleed);
 }

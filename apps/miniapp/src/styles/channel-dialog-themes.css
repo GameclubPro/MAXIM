@@ -1,22 +1,23 @@
 /* FLAG: Public comment themes must override workspace input defaults without styling other routes. */
 @layer workspace {
   :root .channel-dialog-screen--comments[data-comment-theme] {
-    --comment-bg: #f0f4f1;
+    --comment-bg: #f4f6f7;
     --comment-surface: #ffffff;
-    --comment-soft: #edf3f0;
-    --comment-ink: #202c29;
-    --comment-muted: #5d716a;
-    --comment-line: #cedbd5;
-    --comment-accent: #167565;
+    --comment-soft: #f0f3f4;
+    --comment-ink: #20292f;
+    --comment-muted: #52636c;
+    --comment-line: #dce3e5;
+    --comment-accent: #087568;
     --comment-accent-ink: #ffffff;
-    --comment-own: #d3eae1;
+    --comment-own: #e1f3ee;
     --comment-own-ink: #183c31;
     --comment-own-muted: #41675a;
-    --comment-shadow: rgba(17, 30, 25, 0.12);
+    --comment-shadow: rgba(17, 30, 25, 0.06);
     --comment-overlay: rgba(13, 20, 17, 0.36);
     --comment-danger: #b6414e;
     --comment-admin: #a44737;
     --comment-control-shadow: none;
+    --comment-wallpaper-opacity: 0.3;
     --comment-atlas-light: url('../assets/wallpapers/comments-atlas-light.webp');
     --comment-atlas-dark: url('../assets/wallpapers/comments-atlas-dark.webp');
     --comment-chrome-light: url('../assets/wallpapers/comments-chrome-light.webp');
@@ -40,7 +41,8 @@
     --comments-native-own-ink: var(--comment-own-ink);
     --comments-native-own-muted: var(--comment-own-muted);
     --comments-native-blue: var(--comment-accent);
-    --comments-native-header-height: 52px;
+    --comments-native-header-height: 64px;
+    --comments-native-edge-inline: 12px;
     --comments-frost: var(--comment-surface);
     --comments-frost-strong: var(--comment-surface);
     --comments-frost-soft: var(--comment-soft);
@@ -69,22 +71,24 @@
     --comments-compose-action-size: 44px;
     --comments-compose-submit-size: 46px;
     --comments-compose-toolbar-height: 44px;
-    --comments-compose-surface-gap: 2px;
-    --comments-compose-surface-padding: 6px;
+    --comments-compose-surface-gap: 8px;
+    --comments-compose-surface-padding: 0px;
     --comments-compose-field-padding: 11px 12px;
     color: var(--comment-ink);
+    padding: 0;
+    letter-spacing: 0;
   }
 
   :root[data-max-theme='dark'] .channel-dialog-screen--comments[data-comment-theme] {
-    --comment-bg: #191f1e;
-    --comment-surface: #252f2c;
-    --comment-soft: #303d37;
-    --comment-ink: #edf3ef;
-    --comment-muted: #adbeb5;
-    --comment-line: #485c50;
+    --comment-bg: #151719;
+    --comment-surface: #222628;
+    --comment-soft: #2d3335;
+    --comment-ink: #f4f6f7;
+    --comment-muted: #b1bdc2;
+    --comment-line: #414b4f;
     --comment-accent: #8adbc1;
     --comment-accent-ink: #173c2e;
-    --comment-own: #274d40;
+    --comment-own: #224039;
     --comment-own-ink: #f0faf4;
     --comment-own-muted: #b6d2c2;
     --comment-shadow: rgba(0, 0, 0, 0.24);
@@ -164,6 +168,7 @@
     --comment-shadow: rgba(0, 0, 0, 0.24);
     --comment-overlay: rgba(0, 0, 0, 0.64);
     --comment-control-shadow: 0 0 18px rgba(199, 255, 98, 0.18);
+    --comment-wallpaper-opacity: 0.65;
     --comment-wallpaper: var(--comment-neon);
   }
 
@@ -222,11 +227,29 @@
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-screen__backdrop {
     background: var(--comment-wallpaper) center top / cover no-repeat var(--comment-bg);
+    opacity: var(--comment-wallpaper-opacity);
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-shell {
+    width: 100%;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-body {
+    width: min(calc(100% - 2 * var(--comments-native-edge-inline)), 760px);
+    margin-inline: auto;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message-list {
+    gap: 12px;
+    padding-block: 16px 20px;
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-comments-header {
     inset-inline: 0;
-    min-height: calc(52px + var(--comments-dialog-notification-top-nudge, 0px));
+    min-height: calc(
+      var(--comments-native-header-height) + var(--comments-dialog-notification-top-nudge, 0px)
+    );
+    margin-inline: 0;
     padding: 0;
     background: var(--comment-surface);
     border-bottom: 1px solid var(--comment-line);
@@ -252,12 +275,26 @@
     position: static;
     max-width: none;
     flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, max-content) auto;
+    gap: 3px 8px;
+    align-items: center;
+    justify-content: start;
     padding: 0;
     background: transparent;
     border: 0;
     box-shadow: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-comments-header__eyebrow {
+    grid-column: 1 / -1;
+    color: var(--comment-muted);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.3;
+    letter-spacing: 0;
   }
 
   :root
@@ -270,7 +307,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.86rem;
+    font-size: 17px;
     font-weight: 750;
     line-height: 1.2;
   }
@@ -279,10 +316,14 @@
     .channel-dialog-screen--comments[data-comment-theme]
     .channel-dialog-comments-header__context
     span {
-    background: var(--comment-soft);
-    color: var(--comment-muted);
+    background: var(--comment-own);
+    color: var(--comment-own-ink);
     font-weight: 650;
     flex-shrink: 0;
+    min-width: 24px;
+    min-height: 22px;
+    justify-self: start;
+    font-size: 12px;
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-header-actions {
@@ -339,19 +380,29 @@
     color: var(--comment-ink);
     border: 1px solid var(--comment-line);
     border-radius: 8px;
-    box-shadow: 0 2px 8px var(--comment-shadow);
+    box-shadow: 0 1px 3px var(--comment-shadow);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__bubble {
-    gap: 6px;
-    padding: 10px 12px;
+    gap: 7px;
+    padding: 11px 13px;
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose {
+    /* FLAG: Paint through the safe area; only controls are inset, never the entire dialog. */
+    margin-inline: 0;
+    padding: 8px max(var(--comments-native-edge-inline), calc((100% - 760px) / 2))
+      max(8px, var(--safe-bottom, 0px));
     border-top: 1px solid var(--comment-line);
     background: var(--comment-surface);
+  }
+
+  :root[data-max-keyboard-open='true']
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose {
+    padding-bottom: 6px;
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__surface {
@@ -359,6 +410,51 @@
     border-radius: 0;
     box-shadow: none;
     padding-inline: 0;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--comment-line);
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__toolbar[hidden] {
+    display: none;
+  }
+
+  :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__row {
+    grid-template-columns: 44px minmax(0, 1fr) var(--comments-compose-submit-size);
+    gap: 8px;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-compose__tools-toggle {
+    display: grid;
+    place-items: center;
+    align-self: end;
+    width: 44px;
+    height: 46px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    color: var(--comment-muted);
+    background: var(--comment-soft);
+    cursor: pointer;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-compose__tools-toggle svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-compose__tools-toggle.is-active {
+    background: var(--comment-own);
+    color: var(--comment-own-ink);
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-compose__tools-toggle.is-active svg {
+    transform: rotate(45deg);
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose__context {
@@ -411,7 +507,7 @@
     border-radius: 8px;
     border-color: var(--comment-line);
     background: var(--comment-own);
-    box-shadow: 0 2px 8px var(--comment-shadow);
+    box-shadow: 0 1px 3px var(--comment-shadow);
   }
 
   :root
@@ -426,11 +522,13 @@
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__meta strong {
     color: var(--comment-accent);
     font-weight: 700;
+    font-size: 12px;
   }
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-message__meta time {
     color: var(--comment-muted);
     font-weight: 500;
     font-variant-numeric: tabular-nums;
+    font-size: 11px;
   }
   :root
     .channel-dialog-screen--comments[data-comment-theme]
@@ -540,6 +638,9 @@
   }
 
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-jump-latest {
+    left: auto;
+    right: max(var(--comments-native-edge-inline), calc((100% - 760px) / 2));
+    transform: none;
     min-width: 44px;
     min-height: 44px;
     justify-content: center;
@@ -676,9 +777,21 @@
     color: var(--comment-muted);
   }
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__meta {
-    justify-content: flex-end;
-    font-size: 0.68rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 16px;
+    padding-inline: 4px;
+    font-size: 11px;
     font-variant-numeric: tabular-nums;
+  }
+
+  :root
+    .channel-dialog-screen--comments[data-comment-theme]
+    .channel-dialog-compose__meta
+    span:last-child {
+    margin-left: auto;
+    flex-shrink: 0;
   }
 
   :root
@@ -754,6 +867,11 @@
     box-shadow: none;
   }
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-empty {
+    width: min(100%, 320px);
+    display: grid;
+    justify-items: center;
+    gap: 16px;
+    padding: 24px 12px;
     border: 0;
     border-radius: 0;
     background: transparent;
@@ -763,6 +881,14 @@
   }
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-empty strong {
     color: var(--comment-ink);
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  .channel-dialog-screen--comments .channel-dialog-empty__icon {
+    width: 48px;
+    height: 48px;
+    color: var(--comment-accent);
+    stroke-width: 1.25px;
   }
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-empty span {
     color: var(--comment-muted);
@@ -996,6 +1122,7 @@
       :is(
         .channel-dialog-theme-toggle,
         .channel-dialog-notifications__toggle,
+        .channel-dialog-compose__tools-toggle,
         .channel-dialog-compose__attach
       ):hover {
       background: var(--comment-soft);

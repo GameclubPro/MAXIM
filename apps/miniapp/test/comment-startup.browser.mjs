@@ -217,7 +217,7 @@ try {
     if (!baseline)
       assert.ok(
         !resources.some((entry) =>
-          /max-rich-text-editor-|max-markdown-editor-|comment-theme-sheet-/u.test(entry.name),
+          /max-rich-text-editor-|max-markdown-editor-|comment-theme-sheet-|comment-compose-emoji-picker-/u.test(entry.name),
         ),
         'unused tools stay lazy',
       );

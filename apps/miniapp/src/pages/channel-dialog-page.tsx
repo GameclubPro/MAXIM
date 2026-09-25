@@ -26,7 +26,9 @@ import {
   Italic as IconoirItalic,
   Link as IconoirLink,
   NavArrowDown as IconoirArrowDown,
+  ArrowUp as IconoirArrowUp,
   Palette as IconoirPalette,
+  Plus as IconoirPlus,
   ShieldCheck as IconoirShieldCheck,
   Strikethrough as IconoirStrikethrough,
   Type as IconoirType,
@@ -120,6 +122,7 @@ const LazyChannelDialogNotificationSheet = lazy(
   () => import('../components/channel-dialog-notification-sheet'),
 );
 const CommentThemeSheet = lazy(() => import('../components/comment-theme-sheet'));
+const CommentComposeEmojiPicker = lazy(() => import('../components/comment-compose-emoji-picker'));
 const MaxRichTextEditor = lazy(async () => {
   const module = await import('../components/max-rich-text-editor');
   return { default: module.MaxRichTextEditor };
@@ -153,29 +156,6 @@ const COMMENT_REACTION_PRIMARY_OPTIONS = COMMENT_REACTION_OPTIONS.slice(0, 6);
 const COMMENT_REACTION_EXPANDED_OPTIONS = COMMENT_REACTION_OPTIONS.slice(6);
 const COMMENT_NOTIFICATION_TOP_MARGIN_PX = 6;
 const COMMENT_NOTIFICATION_MAX_NUDGE_PX = 88;
-const COMMENT_COMPOSE_EMOJI_GROUPS = [
-  {
-    id: 'frequent',
-    label: 'Частые',
-    emojis: ['👍', '❤️', '😂', '🔥', '👏', '😍', '🎉', '💯'],
-  },
-  {
-    id: 'faces',
-    label: 'Лица',
-    emojis: ['😊', '😎', '🤔', '😮', '😢', '😡', '😇', '🙌'],
-  },
-  {
-    id: 'gestures',
-    label: 'Жесты',
-    emojis: ['👌', '🤝', '🙏', '💪', '👀', '✅', '❌', '⭐'],
-  },
-  {
-    id: 'symbols',
-    label: 'Символы',
-    emojis: ['🚀', '⚡', '✨', '💬', '📌', '📎', '🧠', '🫶'],
-  },
-] as const;
-type CommentComposeEmojiGroupId = (typeof COMMENT_COMPOSE_EMOJI_GROUPS)[number]['id'];
 const COMMENT_DRAFT_MAX_LENGTH = 2_000;
 const SOURCE_HIGHLIGHT_DURATION_MS = 1_500;
 const ATTACHMENT_SELECTION_DEDUPE_MS = 2_500;
@@ -1181,15 +1161,6 @@ function BackIcon() {
   );
 }
 
-function PlusIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path d="M10 4.5V15.5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-      <path d="M4.5 10H15.5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 function ReplyArrowIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
@@ -1358,6 +1329,7 @@ export function ChannelDialogPage({
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isComposeEmojiOpen, setIsComposeEmojiOpen] = useState(false);
+  const [isComposeToolsOpen, setIsComposeToolsOpen] = useState(false);
   const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
   const [isThemeSettingsOpen, setIsThemeSettingsOpen] = useState(false);
   const [moderationSheet, setModerationSheet] = useState<{
@@ -1367,8 +1339,6 @@ export function ChannelDialogPage({
     useState<ChannelDialogNotificationMode>('off');
   const [notificationDraftScope, setNotificationDraftScope] =
     useState<ChannelDialogNotificationScope>('thread');
-  const [activeComposeEmojiGroupId, setActiveComposeEmojiGroupId] =
-    useState<CommentComposeEmojiGroupId>('frequent');
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [terminalDialogErrorState, setTerminalDialogErrorState] =
     useState<TerminalDialogErrorState | null>(null);
@@ -1381,6 +1351,7 @@ export function ChannelDialogPage({
   );
   const [commentsNotificationTopNudge, setCommentsNotificationTopNudge] = useState(0);
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
+  const composeToolsToggleRef = useRef<HTMLButtonElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
@@ -1582,7 +1553,11 @@ export function ChannelDialogPage({
   const draftAttachmentCount = draftAttachments.length;
   const editingAttachmentCount = editingMessage?.attachments.length ?? 0;
   const isPreparingAttachment = preparingAttachmentState !== null;
-  const showComposeMeta = isPreparingAttachment || draftLength > 0 || editingAttachmentCount > 0;
+  const showComposeMeta =
+    isPreparingAttachment ||
+    draftLength >= COMMENT_DRAFT_MAX_LENGTH * 0.9 ||
+    draftAttachmentCount > 0 ||
+    editingAttachmentCount > 0;
   const canSubmitMessage =
     dialogQuery.isSuccess &&
     !isPreparingAttachment &&
@@ -1653,12 +1628,6 @@ export function ChannelDialogPage({
     : editingMessage
       ? editingAttachmentSummary
       : draftAttachmentSummary;
-  const activeComposeEmojiGroup = useMemo(
-    () =>
-      COMMENT_COMPOSE_EMOJI_GROUPS.find((group) => group.id === activeComposeEmojiGroupId) ??
-      COMMENT_COMPOSE_EMOJI_GROUPS[0],
-    [activeComposeEmojiGroupId],
-  );
   const activeViewerAttachment = imageViewer?.attachments[imageViewer.activeIndex] ?? null;
   const activeViewerImageSrc = activeViewerAttachment
     ? getCommentAttachmentViewerUrl(activeViewerAttachment)
@@ -1863,6 +1832,20 @@ export function ChannelDialogPage({
     { enabled: isComposeEmojiOpen, priority: 620 },
   );
 
+  const closeComposeTools = () => {
+    setIsComposeToolsOpen(false);
+    setIsComposeEmojiOpen(false);
+    requestAnimationFrame(() => composeToolsToggleRef.current?.focus({ preventScroll: true }));
+  };
+
+  useNativeBackHandler(
+    () => {
+      closeComposeTools();
+      return true;
+    },
+    { enabled: isComposeToolsOpen, priority: 615 },
+  );
+
   useNativeBackHandler(
     () => {
       setIsNotificationSettingsOpen(false);
@@ -1885,43 +1868,6 @@ export function ChannelDialogPage({
     }
     setIsNotificationSettingsOpen(false);
   }, [canManageCommentNotifications]);
-
-  useLayoutEffect(() => {
-    if (!isComposeEmojiOpen || dialogType !== 'comments') return;
-    const screen = screenRef.current;
-    const panel = screen?.querySelector<HTMLElement>('.channel-dialog-compose__emoji-panel');
-    const surface = panel?.parentElement;
-    const header = screen?.querySelector<HTMLElement>('.channel-dialog-comments-header');
-    if (!panel || !surface || !header) return;
-    const update = () => {
-      const headerBottom = header.getBoundingClientRect().bottom;
-      const bounds = surface.getBoundingClientRect();
-      const above = bounds.top - headerBottom - 10;
-      const viewport = window.visualViewport;
-      const visibleBottom = Math.min(
-        bounds.bottom,
-        viewport ? viewport.offsetTop + viewport.height : window.innerHeight,
-      );
-      const useAbove = above >= 180 && bounds.top < visibleBottom;
-      panel.style.bottom = useAbove
-        ? 'calc(100% + 7px)'
-        : `${Math.max(0, bounds.bottom - visibleBottom)}px`;
-      panel.style.maxHeight = `${Math.max(0, Math.min(280, useAbove ? above : visibleBottom - headerBottom - 10))}px`;
-    };
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
-    observer?.observe(surface);
-    observer?.observe(header);
-    window.addEventListener('resize', update);
-    window.visualViewport?.addEventListener('resize', update);
-    window.visualViewport?.addEventListener('scroll', update);
-    update();
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('resize', update);
-      window.visualViewport?.removeEventListener('resize', update);
-      window.visualViewport?.removeEventListener('scroll', update);
-    };
-  }, [dialogType, isComposeEmojiOpen]);
 
   useEffect(() => {
     if (canUploadCommentAttachments) {
@@ -1960,6 +1906,8 @@ export function ChannelDialogPage({
     setTerminalDialogErrorState(null);
     setReactionPopoverLayout(null);
     setIsThemeSettingsOpen(false);
+    setIsComposeToolsOpen(false);
+    setIsComposeEmojiOpen(false);
     setDraft('');
     setDraftAttachments([]);
     setPreparingAttachmentState(null);
@@ -3845,6 +3793,7 @@ export function ChannelDialogPage({
         >
           <div className="channel-dialog-comments-header__inner">
             <div className="channel-dialog-comments-header__context">
+              <small className="channel-dialog-comments-header__eyebrow">Обсуждение поста</small>
               <h1>{viewModel.title}</h1>
               {dialogQuery.isSuccess ? (
                 <span
@@ -4363,7 +4312,9 @@ export function ChannelDialogPage({
                                             event.stopPropagation();
                                             handleReactionToggle(message.id, group.emoji);
                                           }}
-                                          disabled={isReactionPending}
+                                          disabled={isReactionPending || commentBlocked}
+                                          aria-label={`Реакция ${group.emoji}: ${group.count}`}
+                                          aria-pressed={group.reactedByMe}
                                         >
                                           <b>{group.emoji}</b>
                                           <span>{group.count}</span>
@@ -4380,6 +4331,7 @@ export function ChannelDialogPage({
                     })
                   ) : (
                     <div className="channel-dialog-empty">
+                      <IconoirEmoji className="channel-dialog-empty__icon" aria-hidden />
                       <strong>Комментариев пока нет</strong>
                     </div>
                   )}
@@ -4390,7 +4342,17 @@ export function ChannelDialogPage({
         </section>
 
         {dialogType === 'comments' ? (
-          <section className="channel-dialog-compose">
+          <section
+            className="channel-dialog-compose"
+            aria-label="Новый комментарий"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && isComposeToolsOpen && !isComposeEmojiOpen) {
+                event.preventDefault();
+                event.stopPropagation();
+                closeComposeTools();
+              }
+            }}
+          >
             {showJumpToLatest ? (
               <button
                 type="button"
@@ -4511,7 +4473,13 @@ export function ChannelDialogPage({
                   </div>
                 ) : null}
 
-                <div className="channel-dialog-compose__toolbar">
+                <div
+                  id="channel-dialog-compose-tools"
+                  className="channel-dialog-compose__toolbar"
+                  hidden={!isComposeToolsOpen}
+                  role="group"
+                  aria-label="Вложения и эмодзи"
+                >
                   <div
                     className={cn(
                       'channel-dialog-compose__quick-actions',
@@ -4702,92 +4670,50 @@ export function ChannelDialogPage({
                       )
                     ) : null}
                   </div>
-
-                  {showComposeMeta ? (
-                    <div
-                      className={cn(
-                        'channel-dialog-compose__meta',
-                        !composeMetaLabel && 'channel-dialog-compose__meta--solo',
-                      )}
-                    >
-                      {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
-                      <span>
-                        {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
-                      </span>
-                    </div>
-                  ) : null}
                 </div>
 
                 {isComposeEmojiOpen ? (
-                  <div
-                    id="channel-dialog-compose-emoji-panel"
-                    className="channel-dialog-compose__emoji-panel"
-                    role="group"
-                    aria-label="Эмодзи"
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Escape') return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setIsComposeEmojiOpen(false);
-                      requestAnimationFrame(() => composeFieldRef.current?.focus());
-                    }}
-                  >
-                    <div className="channel-dialog-compose__emoji-head">
-                      <span className="channel-dialog-compose__emoji-handle" aria-hidden />
-                      <button
-                        type="button"
-                        className="channel-dialog-compose__emoji-close"
-                        onClick={() => {
-                          maxImpact('light');
-                          setIsComposeEmojiOpen(false);
-                          requestAnimationFrame(() => composeFieldRef.current?.focus());
-                        }}
-                        aria-label="Закрыть эмодзи"
-                      >
-                        <CloseIcon />
-                      </button>
-                    </div>
-                    <div
-                      className="channel-dialog-compose__emoji-tabs"
-                      role="group"
-                      aria-label="Группа эмодзи"
-                    >
-                      {COMMENT_COMPOSE_EMOJI_GROUPS.map((group) => (
-                        <button
-                          key={group.id}
-                          type="button"
-                          className={cn(
-                            'channel-dialog-compose__emoji-tab',
-                            group.id === activeComposeEmojiGroup.id && 'is-active',
-                          )}
-                          aria-pressed={group.id === activeComposeEmojiGroup.id}
-                          onClick={() => setActiveComposeEmojiGroupId(group.id)}
-                        >
-                          {group.label}
-                        </button>
-                      ))}
-                    </div>
-                    <div
-                      className="channel-dialog-compose__emoji-grid"
-                      role="group"
-                      aria-label="Выбор эмодзи"
-                    >
-                      {activeComposeEmojiGroup.emojis.map((emoji, emojiIndex) => (
-                        <button
-                          key={`${emoji}-${emojiIndex}`}
-                          type="button"
-                          className="channel-dialog-compose__emoji"
-                          onClick={() => handleComposeEmojiInsert(emoji)}
-                          aria-label={`Добавить ${emoji}`}
-                        >
-                          {emoji}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <Suspense fallback={null}>
+                    <CommentComposeEmojiPicker
+                      onSelect={handleComposeEmojiInsert}
+                      onClose={() => {
+                        setIsComposeEmojiOpen(false);
+                        requestAnimationFrame(() => composeFieldRef.current?.focus());
+                      }}
+                    />
+                  </Suspense>
                 ) : null}
 
                 <div className="channel-dialog-compose__row">
+                  <button
+                    ref={composeToolsToggleRef}
+                    type="button"
+                    className={cn(
+                      'channel-dialog-compose__tools-toggle',
+                      isComposeToolsOpen && 'is-active',
+                    )}
+                    aria-label="Вложения и эмодзи"
+                    title="Вложения и эмодзи"
+                    aria-expanded={isComposeToolsOpen}
+                    aria-controls="channel-dialog-compose-tools"
+                    disabled={isComposePending}
+                    onClick={() => {
+                      maxImpact('light');
+                      setIsComposeEmojiOpen(false);
+                      setIsComposeToolsOpen((current) => !current);
+                      if (!isComposeToolsOpen) {
+                        requestAnimationFrame(() =>
+                          screenRef.current
+                            ?.querySelector<HTMLButtonElement>(
+                              '#channel-dialog-compose-tools button',
+                            )
+                            ?.focus({ preventScroll: true }),
+                        );
+                      }
+                    }}
+                  >
+                    <IconoirPlus aria-hidden />
+                  </button>
                   <label className="channel-dialog-compose__field">
                     <textarea
                       ref={composeFieldRef}
@@ -4796,7 +4722,20 @@ export function ChannelDialogPage({
                       readOnly={isComposePending}
                       aria-busy={isComposePending}
                       onChange={(event) => setDraft(event.target.value)}
-                      onFocus={() => setIsComposeEmojiOpen(false)}
+                      onFocus={() => {
+                        setIsComposeEmojiOpen(false);
+                        setIsComposeToolsOpen(false);
+                      }}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === 'Enter' &&
+                          (event.ctrlKey || event.metaKey) &&
+                          !event.nativeEvent.isComposing
+                        ) {
+                          event.preventDefault();
+                          onSubmit();
+                        }
+                      }}
                       aria-label={
                         editingMessage
                           ? 'Текст редактируемого комментария'
@@ -4836,11 +4775,22 @@ export function ChannelDialogPage({
                       {isComposePending ? (
                         <span className="channel-dialog-submit__loader" aria-hidden />
                       ) : (
-                        <SendArrowIcon />
+                        <IconoirArrowUp aria-hidden />
                       )}
                     </button>
                   </div>
                 </div>
+                {showComposeMeta ? (
+                  <div
+                    className="channel-dialog-compose__meta"
+                    role={isPreparingAttachment ? 'status' : undefined}
+                  >
+                    {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
+                    <span>
+                      {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             )}
           </section>
@@ -5036,6 +4986,7 @@ export function ChannelDialogPage({
                             }
                             disabled={isCommentActionPending || commentBlocked}
                             aria-label={`Поставить реакцию ${emoji}`}
+                            aria-pressed={reactedByMe}
                           >
                             {emoji}
                           </button>
@@ -5118,7 +5069,7 @@ export function ChannelDialogPage({
                         disabled={isCommentActionPending}
                         aria-label="Показать больше реакций"
                       >
-                        <PlusIcon />
+                        <IconoirPlus aria-hidden />
                       </button>
                     </div>
                   </div>
@@ -5144,8 +5095,9 @@ export function ChannelDialogPage({
                                 closePicker: true,
                               })
                             }
-                            disabled={isCommentActionPending}
+                            disabled={isCommentActionPending || commentBlocked}
                             aria-label={`Поставить реакцию ${emoji}`}
+                            aria-pressed={reactedByMe}
                           >
                             {emoji}
                           </button>
