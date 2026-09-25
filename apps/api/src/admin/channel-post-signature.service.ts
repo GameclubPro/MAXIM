@@ -22,6 +22,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
+import { hasConfirmedEditMessageAccess } from '../max/max-delete-message-access.util';
 import { ChannelPostSignaturePresentation, ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -89,6 +90,9 @@ export class ChannelPostSignatureService {
       return result.data;
     };
     const preview = validateNext(current);
+    if (preview.enabled && (parsed.data.enabled === true || !current.enabled)) {
+      await this.assertEditAccessAvailable(chatId);
+    }
     const channelLinkVerified = preview.enabled && !preview.url;
     if (channelLinkVerified) {
       await this.resolveChannelLink(chatId, 'interactive');
@@ -261,6 +265,38 @@ export class ChannelPostSignatureService {
     if (chat?.entityType !== ChatEntityType.CHANNEL) {
       throw new BadRequestException('Подпись публикаций доступна только для канала.');
     }
+  }
+
+  private async assertEditAccessAvailable(chatId: string): Promise<void> {
+    const candidates = await this.maxBotLinkService.resolveBotIdsForModerationAction({
+      chatId,
+      action: 'edit_message',
+      fallbackToPrimary: false,
+    });
+    let lookupFailed = false;
+    for (const botId of new Set(candidates)) {
+      if (this.maxBotLinkService.getExecutableBotById(botId)?.id !== botId) continue;
+      try {
+        const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+          botId,
+          bypassCache: true,
+          trafficClass: 'interactive',
+          sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+          timeoutMs: 2_000,
+        });
+        if (hasConfirmedEditMessageAccess({ ...access, checkedAt: null }, ChatEntityType.CHANNEL)) {
+          return;
+        }
+      } catch {
+        lookupFailed = true;
+      }
+    }
+    if (lookupFailed) {
+      throw new ServiceUnavailableException('Не удалось проверить права бота. Повторите позже.');
+    }
+    throw new BadRequestException(
+      'Для подписи под постами предоставьте боту право редактировать сообщения канала.',
+    );
   }
 
   private async resolveChannelLink(

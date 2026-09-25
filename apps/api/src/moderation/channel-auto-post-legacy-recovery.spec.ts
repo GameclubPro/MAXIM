@@ -90,6 +90,30 @@ function createHarness(options: {
 }
 
 describe('ChannelAutoPostLegacyRecovery', () => {
+  it('recovers a durable signature-only edit using the locked snapshot, even without a sender', async () => {
+    const harness = createHarness({
+      candidates: [candidate('channel-1', 'missed-signature', 'retryable_edit_marker')],
+      contextRows: [contextRow('channel-1', { commentsEnabled: false })],
+    });
+    await expect(harness.runner.runIfDue()).resolves.toMatchObject({
+      status: 'completed',
+      mutationAttempts: 1,
+      remoteLookups: 0,
+    });
+    expect(harness.lookup).not.toHaveBeenCalled();
+    expect(harness.attach).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'missed-signature',
+        text: null,
+        senderId: null,
+        allowSenderlessEngagement: true,
+        managedChannel: expect.objectContaining({
+          channelSettings: expect.objectContaining({ postSignatureEnabled: true }),
+        }),
+      }),
+    );
+  });
+
   it('uses a seven-day bounded page, persists recovery cursors, and sweeps at most every five minutes', async () => {
     const harness = createHarness({});
 
@@ -272,7 +296,7 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     expect(harness.claimChannelAutoPost).not.toHaveBeenCalled();
   });
 
-  it('terminalizes a proven historical predispatch claim without replaying an edit', async () => {
+  it('recovers a proven predispatch failure with the current signature and a fresh edit snapshot', async () => {
     const harness = createHarness({
       candidates: [candidate('channel-1', undefined, 'predispatch_marker')],
       contextRows: [contextRow('channel-1')],
@@ -282,20 +306,19 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     await expect(harness.runner.runIfDue()).resolves.toEqual(
       expect.objectContaining({
         status: 'completed',
-        remoteLookups: 1,
-        mutationAttempts: 0,
-        terminalizedCandidates: 1,
+        remoteLookups: 0,
+        mutationAttempts: 1,
+        terminalizedCandidates: 0,
       }),
     );
-    expect(harness.attach).not.toHaveBeenCalled();
-    expect(harness.completeChannelAutoPost).toHaveBeenCalledWith(
+    expect(harness.attach).toHaveBeenCalledWith(
       expect.objectContaining({
-        status: 'SKIPPED',
-        deliveryMode: 'edit_message',
-        terminalEditAttemptExhausted: true,
-        lastError: expect.stringContaining('historical post author cannot be verified'),
+        allowSenderlessEngagement: true,
+        text: null,
+        linkType: null,
       }),
     );
+    expect(harness.completeChannelAutoPost).not.toHaveBeenCalled();
   });
 
   it('limits mutations to three per sweep and one candidate per channel', async () => {

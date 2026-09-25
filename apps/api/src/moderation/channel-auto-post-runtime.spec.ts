@@ -1,6 +1,7 @@
 import {
   ChannelAutoPostScanManager,
   buildChannelAutoPostButtons,
+  buildChannelAutoPostTextMutationOptions,
   extractChannelAutoPostMessageLinkType,
   isChannelAutoPostMessage,
   isChannelAutoPostKeyboardOnly,
@@ -374,8 +375,8 @@ describe('channel auto-post runtime', () => {
 
     manager.markWebhookSeen('channel-1', 'message-webhook', 700);
     expect(manager.states.get('channel-1')).toMatchObject({
-      latestTimestampMs: 700,
-      latestMessageIdsAtTimestamp: ['message-webhook'],
+      latestTimestampMs: 0,
+      latestMessageIdsAtTimestamp: [],
       idleStreak: 0,
       nextScanAtMs: 15_000,
     });
@@ -517,6 +518,51 @@ describe('channel auto-post runtime', () => {
       idleStreak: 0,
       nextScanAtMs: 11_000,
     });
+  });
+
+  it('repairs a missed earlier post despite newer, continuous webhooks', async () => {
+    let now = 10_000;
+    const manager = createScanManager(() => now);
+    manager.markWebhookSeen('channel-1', 'newer', 300);
+    now += 1_000;
+    manager.markWebhookSeen('channel-1', 'newest', 400);
+    expect(manager.states.get('channel-1')?.nextScanAtMs).toBe(15_000);
+    const attach = jest.fn().mockResolvedValue('attached');
+    await manager.processListedMessages({
+      chatId: 'channel-1',
+      messages: [{ id: 'missed', timestamp: 200, body: { text: 'Missed' } }],
+      adminUserIds: [],
+      settingsUpdatedAtMs: 100,
+      maxNewMessagesPerScan: 1,
+      attach,
+    });
+    expect(attach).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'missed' }));
+    manager.markWebhookSeen('channel-1', 'later', 500);
+    expect(manager.states.get('channel-1')?.latestTimestampMs).toBe(200);
+  });
+
+  it('prepares a media caption and its markup from the fresh snapshot, not the event text', async () => {
+    const preparePostText = jest.fn().mockResolvedValue({ text: 'Signed', signatureApplied: true });
+    const options = buildChannelAutoPostTextMutationOptions({
+      chatId: 'channel-1',
+      text: 'Stale',
+      postSignatureEnabled: true,
+      signatureService: { preparePostText },
+      sourceTag: 'channel_auto_post',
+      preserveText: false,
+      onSignatureApplied: jest.fn(),
+    });
+    await options.prepareMessageText!({
+      body: { caption: 'Fresh', caption_markup: [{ type: 'strong', from: 0, length: 5 }] },
+    });
+    expect(preparePostText).toHaveBeenCalledWith(
+      'channel-1',
+      { text: '<strong>Fresh</strong>', textFormat: 'html' },
+      expect.any(Object),
+    );
+    await expect(options.prepareMessageText!({ link: { type: 'forward' } })).rejects.toThrow(
+      'forwarded post',
+    );
   });
 
   it('selects only the edit-capable bot that authored the channel post', async () => {

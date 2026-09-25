@@ -42,7 +42,7 @@ export type ChannelAutoPostLegacyRecoveryAttachInput = {
   source: 'poll';
   senderId: null;
   senderAdminVerified: false;
-  allowSenderlessEngagement: false;
+  allowSenderlessEngagement: boolean;
   requiredAuthorUserId: null;
 };
 
@@ -161,6 +161,48 @@ export class ChannelAutoPostLegacyRecovery {
             break;
           }
           terminalizedCandidates += finished === 'completed' ? 1 : 0;
+          continue;
+        }
+
+        if (
+          candidate.evidence === 'retryable_edit_marker' ||
+          (candidate.evidence === 'predispatch_marker' &&
+            context.channelSettings.postSignatureEnabled)
+        ) {
+          if (mutationAttempts >= LEGACY_RECOVERY_MUTATION_LIMIT) {
+            cursorCanAdvance = false;
+            deferReason ??= 'mutation_limit';
+            continue;
+          }
+          mutationAttempts += 1;
+          try {
+            // FLAG: The durable edit intent authorizes a fresh locked GET/PUT, never a send.
+            // Keep the current signature enabled even when no discussion buttons are configured.
+            const outcome = await this.dependencies.attach({
+              chatId: candidate.chatId,
+              messageId: candidate.messageId,
+              text: null,
+              textFormat: null,
+              linkType: null,
+              existingDialogButtonKinds: [],
+              existingDialogThreadId: null,
+              managedChannel: context,
+              source: 'poll',
+              senderId: null,
+              senderAdminVerified: false,
+              allowSenderlessEngagement: true,
+              requiredAuthorUserId: null,
+            });
+            if (outcome !== 'attached') {
+              cursorCanAdvance = false;
+              deferReason ??= 'marker_in_progress';
+            }
+          } catch (error: unknown) {
+            this.warn(error, candidate, 'Deferred channel post edit recovery');
+            cursorCanAdvance = false;
+            deferReason = 'attach_error';
+            break;
+          }
           continue;
         }
 
@@ -397,6 +439,7 @@ export class ChannelAutoPostLegacyRecovery {
         botId: null,
         linkType: null,
         hasEngagementButtons: true,
+        replaySafeEdit: candidate.evidence === 'retryable_edit_marker',
       });
       if (claim.status !== 'claimed') {
         return claim.status === 'done' ? 'done' : 'deferred';

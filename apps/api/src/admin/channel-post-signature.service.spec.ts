@@ -45,12 +45,19 @@ function createFixture() {
     operation(prisma),
   );
   const maxClient = {
+    getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['edit_message'],
+    }),
     getChatSnapshot: jest.fn().mockResolvedValue({
       entityType: 'channel',
       link: 'https://max.ru/channel/live',
     }),
   };
   const maxBotLinkService = {
+    resolveBotIdsForModerationAction: jest.fn().mockResolvedValue(['bot-1']),
+    getExecutableBotById: jest.fn((id: string) => ({ id })),
     resolveBotIdForSend: jest.fn().mockResolvedValue('bot-1'),
   };
   const service = new ChannelPostSignatureService(
@@ -63,6 +70,48 @@ function createFixture() {
 }
 
 describe('ChannelPostSignatureService', () => {
+  it('refuses activation with write-only channel access before saving anything', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+    await expect(service.updateSettings('channel-1', 'admin', { enabled: true })).rejects.toThrow(
+      'право редактировать',
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    await expect(
+      service.updateSettings('channel-1', 'admin', { enabled: false }),
+    ).resolves.toMatchObject({ enabled: false });
+  });
+
+  it('allows an eligible standby editor even when the primary access probe fails', async () => {
+    const { service, maxClient, maxBotLinkService } = createFixture();
+    maxBotLinkService.resolveBotIdsForModerationAction.mockResolvedValue(['bot-1', 'bot-2']);
+    maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(new Error('timeout'));
+    await expect(
+      service.updateSettings('channel-1', 'admin', { enabled: true }),
+    ).resolves.toMatchObject({ enabled: true });
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenLastCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        botId: 'bot-2',
+        bypassCache: true,
+        trafficClass: 'interactive',
+      }),
+    );
+  });
+
+  it('distinguishes temporary access lookup failure from missing permissions', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    maxClient.getCurrentChatMemberAccess.mockRejectedValue(new Error('timeout'));
+    await expect(
+      service.updateSettings('channel-1', 'admin', { enabled: true }),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid merged button label with HTTP 400 before writing', async () => {
     const { prisma, service } = createFixture();
     prisma.channelSettings.findUnique.mockResolvedValue({

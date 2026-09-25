@@ -1,11 +1,18 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
+import type { MaxClientService } from '../max/max-client.service';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
 } from '../max/max-action-pre-dispatch-guard';
 import { ModerationService } from './moderation.service';
+
+async function prepareLockedEditText(
+  ...[_chatId, _messageId, text, options]: Parameters<MaxClientService['editMessageInlineKeyboard']>
+) {
+  return options?.prepareMessageText?.({ body: { text, format: options.textFormat } });
+}
 
 function expectChannelAutoPostOptions(overrides: Record<string, unknown> = {}) {
   return expect.objectContaining({
@@ -2338,7 +2345,7 @@ describe('ModerationService channel auto post buttons', () => {
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      editMessageInlineKeyboard: jest.fn(prepareLockedEditText),
     };
     const channelPostSignatureService = {
       preparePostText: jest.fn().mockResolvedValue({
@@ -2375,10 +2382,10 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-1',
-      'Новый пост в канале\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      'Новый пост в канале',
       expect.objectContaining({
         buttons: [],
-        textFormat: 'html',
+        prepareMessageText: expect.any(Function),
         preserveExistingInlineKeyboard: true,
       }),
       expectChannelAutoPostOptions(),
@@ -2420,7 +2427,7 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      editMessageInlineKeyboard: jest.fn(prepareLockedEditText),
     };
     const channelPostSignatureService = {
       preparePostText: jest.fn().mockResolvedValue({
@@ -2461,10 +2468,10 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-admin-signature-1',
-      'Новый пост в канале\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      'Новый пост в канале',
       expect.objectContaining({
         buttons: [],
-        textFormat: 'html',
+        prepareMessageText: expect.any(Function),
         preserveExistingInlineKeyboard: true,
       }),
       expectChannelAutoPostOptions(),
@@ -2495,7 +2502,7 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      editMessageInlineKeyboard: jest.fn(prepareLockedEditText),
     };
     const channelPostSignatureService = {
       preparePostText: jest.fn().mockResolvedValue({
@@ -2531,13 +2538,13 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-no-sender-1',
-      'Новый пост без senderId\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      'Новый пост без senderId',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
-        textFormat: 'html',
+        prepareMessageText: expect.any(Function),
       }),
       expectChannelAutoPostOptions(),
     );
@@ -2617,7 +2624,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-combined-1',
-      '<b>Пост</b>',
+      '**Пост**',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
@@ -2629,7 +2636,7 @@ describe('ModerationService channel auto post buttons', () => {
             },
           ],
         ],
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
       expectChannelAutoPostOptions(),
     );
@@ -2717,8 +2724,10 @@ describe('ModerationService channel auto post buttons', () => {
   });
 
   it('does not duplicate a signature after an ambiguous successful edit is retried', async () => {
+    const marker = createChannelAutoPostAttachMarkerMock();
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
+      channelAutoPostAttachMarker: marker.delegate,
       channelSettings: {
         findUnique: jest.fn().mockResolvedValue({
           postSignatureEnabled: true,
@@ -2739,7 +2748,9 @@ describe('ModerationService channel auto post buttons', () => {
     const ambiguousEditError = new Error('MAX edit response timed out');
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      editMessageInlineKeyboard: jest.fn().mockRejectedValueOnce(ambiguousEditError),
+      editMessageInlineKeyboard: jest
+        .fn(prepareLockedEditText)
+        .mockRejectedValueOnce(ambiguousEditError),
     };
     const channelPostSignatureService = new ChannelPostSignatureService(
       prisma as never,
@@ -2781,9 +2792,16 @@ describe('ModerationService channel auto post buttons', () => {
         text: 'Пост',
       }),
     ).rejects.toBe(ambiguousEditError);
+    expect(marker.rows.get('channel-1:mid-signature-timeout-1')).toMatchObject({
+      status: 'IN_PROGRESS',
+      deliveryMode: 'edit_message',
+      lockToken: null,
+      lockedAt: null,
+    });
 
     const prepareFreshText =
-      maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3].prepareMessageText;
+      maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]?.prepareMessageText;
+    if (!prepareFreshText) throw new Error('Expected locked text preparation');
     await expect(
       prepareFreshText({
         body: {
@@ -2819,8 +2837,13 @@ describe('ModerationService channel auto post buttons', () => {
         text: 'Пост\n\n<a href="https://max.ru/science">Наука и Факты</a>',
         textFormat: 'html',
       }),
-    ).resolves.toBe('noop');
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    ).resolves.toBe('attached');
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
+    expect(marker.rows.get('channel-1:mid-signature-timeout-1')).toMatchObject({
+      status: 'SUCCEEDED',
+      deliveryMode: 'edit_message',
+    });
+    await expect(maxClient.editMessageInlineKeyboard.mock.results[1]!.value).resolves.toBeNull();
   });
 
   it('terminally skips a local signature validation failure', async () => {
@@ -2833,7 +2856,7 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      editMessageInlineKeyboard: jest.fn(),
+      editMessageInlineKeyboard: jest.fn(prepareLockedEditText),
     };
     const channelPostSignatureService = {
       preparePostText: jest
@@ -2872,7 +2895,7 @@ describe('ModerationService channel auto post buttons', () => {
         requiredAuthorUserId: '777000',
       }),
     ).resolves.toBe('skipped');
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
@@ -3468,12 +3491,12 @@ describe('ModerationService channel auto post buttons', () => {
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest
-        .fn()
-        .mockRejectedValueOnce({
-          response: { status: 200 },
-          message: 'Error on message edit',
+        .fn(prepareLockedEditText)
+        .mockImplementationOnce(async (...args) => {
+          await prepareLockedEditText(...args);
+          throw { response: { status: 200 }, message: 'Error on message edit' };
         })
-        .mockResolvedValueOnce(undefined),
+        .mockImplementationOnce(prepareLockedEditText),
       sendMessageImmediateWithResolvedLink: jest.fn(),
     };
     const channelPostSignatureService = {
@@ -3523,19 +3546,19 @@ describe('ModerationService channel auto post buttons', () => {
       }),
     ).resolves.toBe('attached');
 
-    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledTimes(1);
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledTimes(2);
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
       1,
       'channel-1',
       'mid-channel-replacement-edit-1',
-      '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      '**Пост**',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
           [expect.objectContaining({ text: '📰 Предложить пост' })],
         ],
-        textFormat: 'html',
+        textFormat: 'markdown',
         mergeExistingInlineKeyboard: true,
         requireAllAttachmentsPreserved: true,
         preserveExistingChannelDialogButtons: true,
@@ -3549,13 +3572,13 @@ describe('ModerationService channel auto post buttons', () => {
       2,
       'channel-1',
       'mid-channel-replacement-edit-1',
-      '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      '**Пост**',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
           [expect.objectContaining({ text: '📰 Предложить пост' })],
         ],
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
       expectChannelAutoPostOptions(),
     );
@@ -3600,7 +3623,12 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      editMessageInlineKeyboard: jest.fn().mockRejectedValue(terminalEditError),
+      editMessageInlineKeyboard: jest.fn(
+        async (...args: Parameters<MaxClientService['editMessageInlineKeyboard']>) => {
+          await prepareLockedEditText(...args);
+          throw terminalEditError;
+        },
+      ),
       sendMessageImmediateWithResolvedLink: jest.fn(),
     };
     const channelPostSignatureService = {
@@ -3653,7 +3681,7 @@ describe('ModerationService channel auto post buttons', () => {
       'skipped',
     );
 
-    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledTimes(1);
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledTimes(2);
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
     expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).toEqual(
       expect.objectContaining({

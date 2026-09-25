@@ -15017,11 +15017,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         channelCandidates,
         executionPlan.batchSize,
       );
-      if (scanBatchRefs.length === 0) {
-        this.channelAutoPostScanManager.resetThrottle();
-        return;
-      }
-
       const scanBatch = await this.loadChannelAutoPostScanContexts(
         scanBatchRefs.map((item) => item.chatId),
       );
@@ -15404,7 +15399,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         { chatId, messageId, source },
         'Channel post signature service is unavailable for post decoration',
       );
-      return 'noop';
+      throw new Error('Channel post signature service is unavailable.');
     }
 
     const autoAttachRoute = await this.resolveAutoAttachMutationBotId({
@@ -15430,6 +15425,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       linkType,
       hasEngagementButtons:
         buttonVisibility.includeCommentsButton || buttonVisibility.includeSuggestButton,
+      replaySafeEdit: linkType !== 'forward' && !quickButtons,
     });
     if (claim.status === 'done') {
       return 'skipped';
@@ -15489,9 +15485,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
         botId: autoAttachBotId,
       };
-      const preparedText = await prepareChannelAutoPostDecoration(decoration);
+      const preparedText =
+        replaceForward || quickButtons
+          ? await prepareChannelAutoPostDecoration(decoration)
+          : { text, textFormat: textFormat ?? undefined, signatureApplied: false };
       signatureApplied = preparedText.signatureApplied;
-      if (buttons.length === 0 && !preparedText.signatureApplied) {
+      if (
+        buttons.length === 0 &&
+        !preparedText.signatureApplied &&
+        (replaceForward || !postSignatureEnabled)
+      ) {
         await this.replacementAttachMarkerStore.completeChannelAutoPost({
           chatId,
           messageId,
@@ -15510,12 +15513,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const mutationTextOptions = buildChannelAutoPostTextMutationOptions({
         ...decoration,
         quickButtons,
-        preparedText,
         preserveText: Boolean(ctaButton) || editForwardInPlace,
+        allowForwardCopy: replaceForward,
         onSignatureApplied: (applied) => {
           signatureApplied = applied;
         },
       });
+      const beforeEditMutation = async () => {
+        if (quickButtons) await this.assertChannelQuickButtonsEnabled(chatId);
+        await this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId);
+        if (linkType !== 'forward' && !quickButtons) {
+          await this.replacementAttachMarkerStore.assertChannelEditClaimCurrent({
+            chatId,
+            messageId,
+            lockToken: claim.lockToken,
+          });
+        }
+      };
 
       if (replaceForward) {
         maxMutationAttemptStartedAt = new Date();
@@ -15639,15 +15653,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               requireAllAttachmentsPreserved: true,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
-              beforeEditMutation: async () => {
-                if (quickButtons) {
-                  await this.assertChannelQuickButtonsEnabled(chatId);
-                }
-                await this.channelAutoPostMutationGuard.assertEditAuthorized(
-                  chatId,
-                  autoAttachBotId,
-                );
-              },
+              beforeEditMutation,
               debugContext: {
                 screen: 'channel-auto-post',
                 action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
@@ -15695,8 +15701,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               preserveExistingChannelDialogButtons: true,
               requireAllAttachmentsPreserved: true,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
-              beforeEditMutation: () =>
-                this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId),
+              beforeEditMutation,
               debugContext: {
                 screen: 'channel-auto-post',
                 action:

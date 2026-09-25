@@ -1,4 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { BadRequestException } from '@nestjs/common';
 
 import {
   readInternalChannelDialogButtonIdentitiesFromMessage,
@@ -184,7 +185,7 @@ function extractMessageTextSource(
   message: Record<string, unknown> | null,
 ): ChannelAutoPostMessageTextSource {
   const body = asRecord(message?.body);
-  const textCandidates = [body?.text, message?.text, message?.caption];
+  const textCandidates = [body?.text, body?.caption, message?.text, message?.caption];
   const text =
     textCandidates.find(
       (candidate): candidate is string =>
@@ -517,7 +518,7 @@ export function buildChannelAutoPostTextMutationOptions(
   params: Parameters<typeof prepareChannelAutoPostDecoration>[0] & {
     quickButtons?: ChannelQuickButtons;
     preserveText: boolean;
-    preparedText: Awaited<ReturnType<typeof prepareChannelAutoPostDecoration>>;
+    allowForwardCopy?: boolean;
     onSignatureApplied: (applied: boolean) => void;
   },
 ) {
@@ -537,17 +538,16 @@ export function buildChannelAutoPostTextMutationOptions(
       if (!params.postSignatureEnabled || params.preserveText) {
         return null;
       }
+      if (!params.allowForwardCopy && readLowerString(asRecord(message.link)?.type) === 'forward') {
+        throw new BadRequestException('Cannot append a signature to a forwarded post in place.');
+      }
       const current = resolveChannelAutoPostMessageText(message, null);
-      // FLAG: Reuse preparation only for the exact text/format fetched under the edit lock.
-      const decorated =
-        current.text === params.text &&
-        (current.textFormat ?? undefined) === (params.textFormat ?? undefined)
-          ? params.preparedText
-          : await prepareChannelAutoPostDecoration({
-              ...params,
-              text: current.text,
-              textFormat: current.textFormat,
-            });
+      // FLAG: Read both content and current settings inside the edit lock, including no-ops.
+      const decorated = await prepareChannelAutoPostDecoration({
+        ...params,
+        text: current.text,
+        textFormat: current.textFormat,
+      });
       params.onSignatureApplied(decorated.signatureApplied);
       return decorated.signatureApplied ? decorated : null;
     },
@@ -716,16 +716,16 @@ export class ChannelAutoPostScanManager {
     return { ...current, idleStreak, nextScanAtMs: this.now() + nextDelayMs };
   }
 
-  markWebhookSeen(chatId: string, messageId: string, timestampMs: number): void {
+  markWebhookSeen(chatId: string, _messageId: string, _timestampMs: number): void {
     const current = this.states.get(chatId) ?? this.createState();
-    const nextState =
-      Number.isFinite(timestampMs) && timestampMs > 0
-        ? this.advance(current, { messageId, timestampMs })
-        : current;
+    const repairAtMs = this.now() + this.config.repairSweepMs;
+    // FLAG: A single webhook does not prove earlier posts were handled. Only scans advance
+    // the contiguous cursor; sustained webhook traffic must not postpone repair indefinitely.
     this.states.set(chatId, {
-      ...nextState,
+      ...current,
       idleStreak: 0,
-      nextScanAtMs: Math.max(nextState.nextScanAtMs, this.now() + this.config.repairSweepMs),
+      nextScanAtMs:
+        current.nextScanAtMs > 0 ? Math.min(current.nextScanAtMs, repairAtMs) : repairAtMs,
     });
   }
 

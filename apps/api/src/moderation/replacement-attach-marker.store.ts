@@ -52,7 +52,7 @@ export type PublisherChatCommentLockEpoch = {
 export type LegacyChannelEditRecoveryCandidate = {
   chatId: string;
   messageId: string;
-  evidence: 'marker' | 'predispatch_marker' | 'audit';
+  evidence: 'marker' | 'predispatch_marker' | 'retryable_edit_marker' | 'audit';
   evidenceId: string;
   evidenceAt: Date;
 };
@@ -83,6 +83,7 @@ type MarkerRow = {
   lockedAt: Date | null;
   botId: string | null;
   deliveryMode: string | null;
+  linkType: string | null;
   replacementMessageId: string | null;
   replyMessageId: string | null;
   replacementSendStartedAt: Date | null;
@@ -217,6 +218,7 @@ export class ReplacementAttachMarkerStore {
     botId: string | null;
     linkType: string | null;
     hasEngagementButtons: boolean;
+    replaySafeEdit?: boolean;
   }): Promise<ReplacementAttachMarkerClaim> {
     return this.claim('channel_auto_post', params);
   }
@@ -293,7 +295,11 @@ export class ReplacementAttachMarkerStore {
       chat: {
         channelSettings: {
           is: {
-            OR: [{ commentsEnabled: true }, { postSuggestionsEnabled: true }],
+            OR: [
+              { commentsEnabled: true },
+              { postSuggestionsEnabled: true },
+              { postSignatureEnabled: true },
+            ],
           },
         },
       },
@@ -321,6 +327,12 @@ export class ReplacementAttachMarkerStore {
           },
           {
             OR: [
+              {
+                status: 'IN_PROGRESS',
+                deliveryMode: 'edit_message',
+                updatedAt: { lte: windowEnd },
+                OR: [{ lockedAt: null }, { lockedAt: { lt: windowEnd } }],
+              },
               {
                 status: 'SKIPPED',
                 deliveryMode: 'edit_message',
@@ -868,6 +880,28 @@ export class ReplacementAttachMarkerStore {
     return this.release('channel_auto_post', params);
   }
 
+  async assertChannelEditClaimCurrent(params: {
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+  }): Promise<void> {
+    const delegate = this.getDelegate('channel_auto_post');
+    if (!delegate?.updateMany) return;
+    // FLAG: A reclaimed edit lease must fence the previous worker before its MAX PUT.
+    const result = await delegate.updateMany({
+      where: {
+        ...params,
+        status: 'IN_PROGRESS',
+        deliveryMode: 'edit_message',
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+      },
+      data: { lockedAt: new Date() },
+    });
+    if (result.count !== 1) throw new Error('Channel post edit claim is no longer current.');
+  }
+
   releaseChatAutoComment(params: {
     chatId: string;
     messageId: string;
@@ -889,6 +923,7 @@ export class ReplacementAttachMarkerStore {
       botId: string | null;
       linkType?: string | null;
       hasEngagementButtons?: boolean;
+      replaySafeEdit?: boolean;
       publisherSettingsRevision?: number;
       publicationPolicyRevision?: number;
     },
@@ -958,6 +993,7 @@ export class ReplacementAttachMarkerStore {
         replyMessageId: true,
         replacementSendStartedAt: true,
         lastError: true,
+        linkType: true,
       },
     });
     if (existing?.status === 'SUCCEEDED') {
@@ -1008,10 +1044,20 @@ export class ReplacementAttachMarkerStore {
       kind === 'channel_auto_post' &&
       existing?.status === 'IN_PROGRESS' &&
       this.hasProvenChannelAutoPostPreDispatchEvidence(existing.lastError);
+    // FLAG: Only an explicitly persisted in-place edit can be replayed after a timeout/crash.
+    // Unknown outcomes and every replacement/reply send retain their no-replay fence.
+    const channelEditRecovery =
+      kind === 'channel_auto_post' &&
+      params.replaySafeEdit === true &&
+      params.linkType !== 'forward' &&
+      existing?.status === 'IN_PROGRESS' &&
+      existing.linkType !== 'forward' &&
+      existing.deliveryMode === 'edit_message';
     if (
       kind === 'channel_auto_post' &&
       existing?.status === 'IN_PROGRESS' &&
-      !channelPreDispatchRecovery
+      !channelPreDispatchRecovery &&
+      !channelEditRecovery
     ) {
       return { status: 'in_progress' };
     }
@@ -1081,6 +1127,9 @@ export class ReplacementAttachMarkerStore {
         source: params.source,
         botId: params.botId,
         ...(kind === 'channel_auto_post' ? { linkType: params.linkType ?? null } : {}),
+        ...(kind === 'channel_auto_post' && params.replaySafeEdit && params.linkType !== 'forward'
+          ? { deliveryMode: 'edit_message' }
+          : {}),
         ...(recoveryClaim
           ? {
               deliveryMode: 'edit_message',
@@ -1127,6 +1176,9 @@ export class ReplacementAttachMarkerStore {
         ...(kind === 'channel_auto_post' && existing?.status === 'IN_PROGRESS'
           ? { lastError: existing.lastError }
           : {}),
+        ...(channelEditRecovery
+          ? { lockToken: existing.lockToken, deliveryMode: 'edit_message' }
+          : {}),
         replacementMessageId: null,
         replyMessageId: null,
         replacementSendStartedAt: null,
@@ -1148,6 +1200,9 @@ export class ReplacementAttachMarkerStore {
         source: params.source,
         botId: params.botId,
         ...(kind === 'channel_auto_post' ? { linkType: params.linkType ?? null } : {}),
+        ...(kind === 'channel_auto_post' && params.replaySafeEdit && params.linkType !== 'forward'
+          ? { deliveryMode: 'edit_message' }
+          : {}),
         ...(channelPreDispatchRecovery
           ? { lastError: CHANNEL_AUTO_POST_PRE_DISPATCH_PROOF_CONSUMED }
           : recoveryClaim
@@ -1712,12 +1767,19 @@ export class ReplacementAttachMarkerStore {
       this.hasProvenChannelAutoPostPreDispatchEvidence(
         typeof row.lastError === 'string' ? row.lastError : null,
       );
+    const retryableEdit = row.status === 'IN_PROGRESS' && row.deliveryMode === 'edit_message';
     const evidenceAt =
-      preDispatchMarker && row.updatedAt instanceof Date ? row.updatedAt : row.createdAt;
+      (preDispatchMarker || retryableEdit) && row.updatedAt instanceof Date
+        ? row.updatedAt
+        : row.createdAt;
     return {
       chatId,
       messageId,
-      evidence: preDispatchMarker ? 'predispatch_marker' : 'marker',
+      evidence: retryableEdit
+        ? 'retryable_edit_marker'
+        : preDispatchMarker
+          ? 'predispatch_marker'
+          : 'marker',
       evidenceId,
       evidenceAt,
     };

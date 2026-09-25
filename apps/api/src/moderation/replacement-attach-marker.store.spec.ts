@@ -767,6 +767,105 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
     expect(marker.delegate.updateMany).not.toHaveBeenCalled();
   });
 
+  it('persists replay-safe edit intent and retries a released timeout without discussion buttons', async () => {
+    const marker = createMarkerDelegate();
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+    const params = {
+      ...channelClaim,
+      messageId: 'signature-timeout',
+      hasEngagementButtons: false,
+      replaySafeEdit: true,
+    };
+    const first = await store.claimChannelAutoPost(params);
+    expect(first.status).toBe('claimed');
+    if (first.status !== 'claimed') throw new Error('Expected edit claim');
+    expect(marker.row?.deliveryMode).toBe('edit_message');
+    await expect(store.claimChannelAutoPost(params)).resolves.toEqual({ status: 'in_progress' });
+    await store.releaseChannelAutoPost({
+      ...params,
+      lockToken: first.lockToken,
+      lastError: 'MAX response timed out',
+      lastStatusCode: 504,
+    });
+    const second = await store.claimChannelAutoPost(params);
+    expect(second.status).toBe('claimed');
+    if (second.status !== 'claimed') throw new Error('Expected retry claim');
+    expect(second.lockToken).not.toBe(first.lockToken);
+    await expect(
+      store.assertChannelEditClaimCurrent({
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: first.lockToken,
+      }),
+    ).rejects.toThrow('no longer current');
+    await expect(
+      store.assertChannelEditClaimCurrent({
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: second.lockToken,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    { label: 'stale pure edit', overrides: {}, replaySafeEdit: true, expected: 'claimed' },
+    {
+      label: 'unproven edit',
+      overrides: { deliveryMode: null },
+      replaySafeEdit: true,
+      expected: 'in_progress',
+    },
+    {
+      label: 'caller without fresh edit semantics',
+      overrides: {},
+      replaySafeEdit: false,
+      expected: 'in_progress',
+    },
+    {
+      label: 'send fence',
+      overrides: { replacementSendStartedAt: new Date() },
+      replaySafeEdit: true,
+      expected: 'in_progress',
+    },
+    {
+      label: 'delivered replacement',
+      overrides: { replacementMessageId: 'copy' },
+      replaySafeEdit: true,
+      expected: 'in_progress',
+    },
+    {
+      label: 'delivered reply',
+      overrides: { replyMessageId: 'reply' },
+      replaySafeEdit: true,
+      expected: 'in_progress',
+    },
+  ])(
+    'recovers only proven in-place edits: $label',
+    async ({ overrides, replaySafeEdit, expected }) => {
+      const marker = createMarkerDelegate({
+        ...legacySkippedEdit('crashed-edit'),
+        status: 'IN_PROGRESS',
+        lockedAt: new Date(Date.now() - 5 * 60_000),
+        lockToken: 'old',
+        ...overrides,
+      });
+      const store = new ReplacementAttachMarkerStore({
+        auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+        channelAutoPostAttachMarker: marker.delegate,
+      } as never);
+      expect(
+        await store.claimChannelAutoPost({
+          ...channelClaim,
+          messageId: 'crashed-edit',
+          replaySafeEdit,
+        }),
+      ).toMatchObject({ status: expected });
+    },
+  );
+
   it.each([
     'MAX API circuit breaker is open',
     '[channel-auto-post:pre-dispatch:v1][MAX_API_INTERNAL_RATE_LIMIT] MAX API background rate limit exceeded',
@@ -981,7 +1080,11 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
         chat: {
           channelSettings: {
             is: {
-              OR: [{ commentsEnabled: true }, { postSuggestionsEnabled: true }],
+              OR: [
+                { commentsEnabled: true },
+                { postSuggestionsEnabled: true },
+                { postSignatureEnabled: true },
+              ],
             },
           },
         },
@@ -1427,7 +1530,11 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
           chat: {
             channelSettings: {
               is: {
-                OR: [{ commentsEnabled: true }, { postSuggestionsEnabled: true }],
+                OR: [
+                  { commentsEnabled: true },
+                  { postSuggestionsEnabled: true },
+                  { postSignatureEnabled: true },
+                ],
               },
             },
           },
