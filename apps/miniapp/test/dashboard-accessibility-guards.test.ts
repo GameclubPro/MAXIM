@@ -11,15 +11,11 @@ const membershipFeedSource = readFileSync(
   'utf8',
 );
 
-test('participant moderation composers expose stable disclosure relationships', () => {
-  assert.match(
-    participantSheetSource,
-    /participant-sheet__action--mute[\s\S]*?aria-controls=\{MUTE_COMPOSER_ID\}[\s\S]*?aria-expanded=\{isMuteComposerOpen\}/u,
-  );
-  assert.match(
-    participantSheetSource,
-    /participant-sheet__action--immunity[\s\S]*?aria-controls=\{IMMUNITY_COMPOSER_ID\}[\s\S]*?aria-expanded=\{isImmunityComposerOpen\}/u,
-  );
+test('participant editors keep named back navigation and stable control surfaces', () => {
+  assert.match(participantSheetSource, /aria-label="К участнику"/u);
+  assert.match(participantSheetSource, /onClick=\{backToOverview\}/u);
+  assert.match(participantSheetSource, /confirmCloseWhen=\{draftDirty && !isBusy\}/u);
+  assert.match(participantSheetSource, /isTopmostModalDialog/u);
   assert.match(
     participantSheetSource,
     /<div id=\{MUTE_COMPOSER_ID\} className="participant-sheet__composer">/u,
@@ -59,7 +55,10 @@ test('participant protection progress belongs to the selected save or remove act
   for (const action of ['save', 'clear']) {
     assert.match(
       participantSheetSource,
-      new RegExp(`aria-busy=\\{isSavingImmunity && pendingImmunityAction === '${action}'\\}`, 'u'),
+      new RegExp(
+        `aria-busy=\\{[\\s\\S]{0,100}?isSavingImmunity && pendingImmunityAction === '${action}'`,
+        'u',
+      ),
     );
   }
 });

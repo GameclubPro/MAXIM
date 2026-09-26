@@ -29,6 +29,7 @@ type MembershipActivityFeedProps = {
   onLoadMore: () => void;
   onRetry: () => void;
   onProfileActivate?: ((item: MembershipActivityItem) => void) | null;
+  onParticipantActivate?: (item: MembershipActivityItem) => void;
   renderMemberAction?: (item: MembershipActivityItem) => ReactNode;
 };
 
@@ -102,6 +103,7 @@ export function MembershipActivityFeed({
   onLoadMore,
   onRetry,
   onProfileActivate = null,
+  onParticipantActivate,
   renderMemberAction,
 }: MembershipActivityFeedProps) {
   const [renderLimit, setRenderLimit] = useState(MEMBERSHIP_ACTIVITY_INITIAL_RENDER_LIMIT);
@@ -219,7 +221,21 @@ export function MembershipActivityFeed({
                       <div
                         className={`membership-feed__card${renderMemberAction ? ' membership-feed__card--actionable' : ''}`}
                       >
-                        {canOpenProfile ? (
+                        {onParticipantActivate && item.userId.trim() ? (
+                          <button
+                            type="button"
+                            className="membership-feed__avatar-link"
+                            tabIndex={-1}
+                            aria-label={`Открыть участника ${displayName}`}
+                            onClick={() => onParticipantActivate(item)}
+                          >
+                            <PersonAvatar
+                              avatarUrl={avatarUrl}
+                              fallback={resolveInitial(displayName)}
+                              className="membership-feed__avatar"
+                            />
+                          </button>
+                        ) : canOpenProfile ? (
                           <a
                             href={profileHandoffUrl || profileUrl || '#'}
                             className="membership-feed__avatar-link"
@@ -244,7 +260,16 @@ export function MembershipActivityFeed({
                         )}
                         <div className="membership-feed__content">
                           <div className="membership-feed__row">
-                            {canOpenProfile ? (
+                            {onParticipantActivate && item.userId.trim() ? (
+                              <button
+                                type="button"
+                                className="membership-feed__name-link"
+                                aria-label={`Открыть участника ${displayName}`}
+                                onClick={() => onParticipantActivate(item)}
+                              >
+                                {displayName}
+                              </button>
+                            ) : canOpenProfile ? (
                               <a
                                 href={profileHandoffUrl || profileUrl || '#'}
                                 className="membership-feed__name-link"

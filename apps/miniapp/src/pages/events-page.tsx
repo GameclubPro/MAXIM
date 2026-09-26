@@ -16,11 +16,17 @@ import type {
   MembershipActivityItem,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { InfoCircle, NavArrowDown as IconNavArrowDown, Refresh } from 'iconoir-react';
+import {
+  InfoCircle,
+  NavArrowDown as IconNavArrowDown,
+  NavArrowRight as IconNavArrowRight,
+  Refresh,
+} from 'iconoir-react';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-experience.css';
 import '../styles/dashboard-events.css';
 import '../styles/statistics-experience.css';
+import '../styles/events-participant-navigation.css';
 import {
   startTransition,
   Suspense,
@@ -34,10 +40,10 @@ import {
   useState,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import type { ChatParticipantSheet as ChatParticipantSheetComponent } from '../components/dashboard/chat-participant-sheet';
+import type { ChatParticipantCard as ChatParticipantCardComponent } from '../components/dashboard/chat-participant-card';
 import type { ChatSanctionsWorkspace as ChatSanctionsWorkspaceComponent } from '../components/dashboard/chat-sanctions-workspace';
 import type { ChatParticipantsRoster as ChatParticipantsRosterComponent } from '../components/dashboard/chat-participants-roster';
-import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
+import type { MembershipActivityFeed as MembershipActivityFeedComponent } from '../components/dashboard/membership-activity-feed';
 import type { ActionConfirmSheet as ActionConfirmSheetComponent } from '../components/ui/action-confirm-sheet';
 import { PersonAvatar } from '../components/ui/person-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -61,7 +67,6 @@ import {
   getLogsDashboard,
   handoffChatMemberProfile,
   reviewGlobalSpammerCandidate,
-  updateChatParticipantImmunity,
 } from '../lib/api/events-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -114,13 +119,17 @@ import { recoverableLazyNamedComponent } from '../lib/recoverable-lazy';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { describeManualModerationFeedback } from '../lib/manual-moderation-feedback';
+import { participantDetailsKey, type ParticipantCardTarget } from '../lib/participant-card';
 
 const ChatParticipantsRoster = recoverableLazyNamedComponent<
   ComponentProps<typeof ChatParticipantsRosterComponent>
 >(() => import('../components/dashboard/chat-participants-roster'), 'ChatParticipantsRoster');
-const ChatParticipantSheet = recoverableLazyNamedComponent<
-  ComponentProps<typeof ChatParticipantSheetComponent>
->(() => import('../components/dashboard/chat-participant-sheet'), 'ChatParticipantSheet');
+const MembershipActivityFeed = recoverableLazyNamedComponent<
+  ComponentProps<typeof MembershipActivityFeedComponent>
+>(() => import('../components/dashboard/membership-activity-feed'), 'MembershipActivityFeed');
+const ChatParticipantCard = recoverableLazyNamedComponent<
+  ComponentProps<typeof ChatParticipantCardComponent>
+>(() => import('../components/dashboard/chat-participant-card'), 'ChatParticipantCard');
 const ChatSanctionsWorkspace = recoverableLazyNamedComponent<
   ComponentProps<typeof ChatSanctionsWorkspaceComponent>
 >(() => import('../components/dashboard/chat-sanctions-workspace'), 'ChatSanctionsWorkspace');
@@ -2075,7 +2084,6 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const scopeActionLock = useRef(false);
   const cleanupLock = useRef(false);
-  const immunityLock = useRef(false);
   const profileLock = useRef(false);
   const activeView = useRef(true);
   const [range, setRange] = useState<LogsDashboardRange>(
@@ -2108,7 +2116,9 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
   const [spammerReviewOpen, setSpammerReviewOpen] = useState(false);
-  const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
+  const [participantTarget, setParticipantTarget] = useState<ParticipantCardTarget | null>(null);
+  const [participantSavedVersion, setParticipantSavedVersion] = useState(0);
+  const selectedParticipant = participantTarget?.chatId === chatId ? participantTarget : null;
   const [cleanupUnavailableConfirmOpen, setCleanupUnavailableConfirmOpen] = useState(false);
   const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
     useState<SpammerDiagnosticsTarget | null>(null);
@@ -2700,71 +2710,6 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
       profileLock.current = false;
     },
   });
-  const participantImmunityMutation = useMutation({
-    mutationFn: ({
-      userId,
-      mode,
-      durationHours,
-      dailyViolationLimit,
-    }: {
-      userId: string;
-      mode?: 'limited' | 'always';
-      durationHours?: number;
-      dailyViolationLimit?: number;
-    }) =>
-      updateChatParticipantImmunity(api, chatId ?? '', userId, {
-        enabled: true,
-        mode,
-        ...(mode === 'always'
-          ? {}
-          : {
-              durationHours,
-              dailyViolationLimit,
-            }),
-      }),
-    onSuccess: () => {
-      setSelectedParticipantId(null);
-      pushToast({
-        tone: 'success',
-        title: 'Защита сохранена',
-      });
-      void participantsFeed.retry();
-    },
-    onError: (error: unknown) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось сохранить защиту',
-        description: normalizeActionErrorMessage(error),
-      });
-    },
-    onSettled: () => {
-      immunityLock.current = false;
-    },
-  });
-  const participantImmunityClearMutation = useMutation({
-    mutationFn: ({ userId }: { userId: string }) =>
-      updateChatParticipantImmunity(api, chatId ?? '', userId, {
-        enabled: false,
-      }),
-    onSuccess: () => {
-      setSelectedParticipantId(null);
-      pushToast({
-        tone: 'success',
-        title: 'Защита снята',
-      });
-      void participantsFeed.retry();
-    },
-    onError: (error: unknown) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось снять защиту',
-        description: normalizeActionErrorMessage(error),
-      });
-    },
-    onSettled: () => {
-      immunityLock.current = false;
-    },
-  });
   const participantModerationMutation = useMutation({
     retry: false,
     mutationFn: ({ userId, payload }: { userId: string; payload: ManualModerationActionRequest }) =>
@@ -2772,14 +2717,17 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ['chat-sanctions', chatId] });
       setPendingScopeAction((current) => (current?.source === 'participant' ? null : current));
-      setSelectedParticipantId(null);
+      setParticipantSavedVersion((value) => value + 1);
+      void queryClient.invalidateQueries({
+        queryKey: participantDetailsKey(chatId ?? '', result.userId),
+      });
       pushToast({
         tone: 'success',
         title: describeManualModerationFeedback(result),
       });
       void dashboardQuery.refetch();
       void participantsIdentityQuery.refetch();
-      void participantsFeed.retry();
+      if (section === 'participants') void participantsFeed.retry();
     },
     onError: (error: unknown) => {
       pushToast({
@@ -2942,24 +2890,8 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
   }, [eventsFilter, range, section]);
 
   useEffect(() => {
-    if (section !== 'participants') {
-      setSelectedParticipantId(null);
-    }
-  }, [section]);
-
-  const selectedParticipant = useMemo(
-    () =>
-      selectedParticipantId
-        ? (participantsFeed.items.find((item) => item.userId === selectedParticipantId) ?? null)
-        : null,
-    [participantsFeed.items, selectedParticipantId],
-  );
-
-  useEffect(() => {
-    if (selectedParticipantId && !selectedParticipant) {
-      setSelectedParticipantId(null);
-    }
-  }, [participantsFeed.items.length, selectedParticipant, selectedParticipantId]);
+    setParticipantTarget(null);
+  }, [chatId]);
 
   const openPendingScopeAction = (action: PendingScopeAction) => {
     setPendingScopeChoice(null);
@@ -3383,6 +3315,19 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
               );
             }}
             onProfileActivate={activateProfile}
+            onParticipantActivate={(item) =>
+              setParticipantTarget({
+                chatId,
+                userId: item.userId,
+                userDisplayName: item.userDisplayName,
+                avatarUrl: item.avatarUrl,
+                origin: {
+                  title: item.action === 'BAN' ? 'Блокировка' : 'Запрет сообщений',
+                  date: item.createdAt,
+                  reason: item.reason,
+                },
+              })
+            }
             isOpeningProfile={profileHandoffMutation.isPending}
             onChanged={() => {
               void participantsFeed.retry();
@@ -3553,24 +3498,35 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
       )}
 
       {section === 'activity' ? (
-        <MembershipActivityFeed
-          joinedLabel="чату"
-          leftLabel="чат"
-          resetKey={`${chatId ?? ''}:${range}`}
-          variant="immersive"
-          filter={activityFeed.filter}
-          onFilterChange={handleActivityFilterChange}
-          items={activityFeed.items}
-          hasMore={activityFeed.hasMore}
-          isReloading={activityFeed.isReloading}
-          isLoadingMore={activityFeed.isLoadingMore}
-          error={activityFeed.error}
-          onLoadMore={() => void activityFeed.loadMore()}
-          onRetry={() => void activityFeed.retryFailed()}
-          onProfileActivate={(item: MembershipActivityItem) =>
-            activateProfile(item.userId, item.userDisplayName)
-          }
-        />
+        <Suspense fallback={<Spinner size="lg" label="Загружаем события" />}>
+          <MembershipActivityFeed
+            joinedLabel="чату"
+            leftLabel="чат"
+            resetKey={`${chatId ?? ''}:${range}`}
+            variant="immersive"
+            filter={activityFeed.filter}
+            onFilterChange={handleActivityFilterChange}
+            items={activityFeed.items}
+            hasMore={activityFeed.hasMore}
+            isReloading={activityFeed.isReloading}
+            isLoadingMore={activityFeed.isLoadingMore}
+            error={activityFeed.error}
+            onLoadMore={() => void activityFeed.loadMore()}
+            onRetry={() => void activityFeed.retryFailed()}
+            onParticipantActivate={(item: MembershipActivityItem) =>
+              setParticipantTarget({
+                chatId,
+                userId: item.userId,
+                userDisplayName: item.userDisplayName,
+                avatarUrl: item.avatarUrl,
+                origin: {
+                  title: item.type === 'joined' ? 'Вход в чат' : 'Выход из чата',
+                  date: item.createdAt,
+                },
+              })
+            }
+          />
+        </Suspense>
       ) : null}
 
       {section === 'participants' ? (
@@ -3600,7 +3556,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
               void participantsIdentityQuery.refetch();
             }}
             onParticipantActivate={(item: ChatParticipantItem) =>
-              setSelectedParticipantId(item.userId)
+              setParticipantTarget({ ...item, chatId })
             }
             onCleanupUnavailable={() => setCleanupUnavailableConfirmOpen(true)}
             isCleanupUnavailableBusy={cleanupUnavailableParticipantsMutation.isPending}
@@ -3704,7 +3660,21 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                   const violationReason = resolveModerationFeedReason(violation);
                   const profileHandoffUrl = violation.profileHandoffUrl?.trim() ?? '';
                   const profileUrl = violation.profileUrl?.trim() ?? '';
-                  const canOpenProfile = violation.userId.trim().length > 0;
+                  const canOpenParticipant = violation.userId.trim().length > 0;
+                  const openParticipant = () =>
+                    setParticipantTarget({
+                      chatId,
+                      userId: violation.userId,
+                      userDisplayName: displayName,
+                      avatarUrl,
+                      profileUrl,
+                      profileHandoffUrl,
+                      origin: {
+                        title: actionLabelMap[displayAction],
+                        date: violation.createdAt,
+                        reason: violationReason || resolveViolationBlurb(violation),
+                      },
+                    });
                   const toggleExpanded = () =>
                     setExpandedViolationId((current) =>
                       current === violation.id ? null : violation.id,
@@ -3718,23 +3688,19 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                       }`}
                     >
                       <div className="event-feed-item__trigger">
-                        {canOpenProfile ? (
-                          <a
-                            href={profileHandoffUrl || profileUrl || '#'}
+                        {canOpenParticipant ? (
+                          <button
+                            type="button"
                             className="event-feed-item__avatar-link"
-                            aria-label={`Открыть профиль ${displayName} в MAX`}
-                            onClick={(event) =>
-                              handleProfileLinkClick(event, () =>
-                                activateProfile(violation.userId, displayName),
-                              )
-                            }
+                            aria-label={`Открыть участника ${displayName}`}
+                            onClick={openParticipant}
                           >
                             <PersonAvatar
                               avatarUrl={avatarUrl}
                               fallback={resolveOffenderInitial(displayName)}
                               className="event-feed-item__avatar"
                             />
-                          </a>
+                          </button>
                         ) : (
                           <PersonAvatar
                             avatarUrl={avatarUrl}
@@ -3743,40 +3709,51 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                           />
                         )}
 
-                        <button
-                          type="button"
-                          className="event-feed-item__expand"
-                          onClick={toggleExpanded}
-                          aria-expanded={isExpanded}
-                          aria-controls={`event-details-${violation.id}`}
-                          aria-label={`${isExpanded ? 'Скрыть' : 'Показать'} детали нарушения: ${displayName}`}
-                        >
-                          <span className="event-feed-item__body">
-                            <span className="event-feed-item__headline">
-                              <span className="event-feed-item__identity">
-                                <strong>{displayName}</strong>
-                                <span className="event-feed-item__stamp">
-                                  <span
-                                    className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
-                                  >
-                                    {actionLabelMap[displayAction]}
+                        <div className="event-feed-item__main">
+                          <button
+                            type="button"
+                            className="event-feed-item__person"
+                            disabled={!canOpenParticipant}
+                            onClick={openParticipant}
+                            aria-label={`Открыть участника ${displayName}`}
+                          >
+                            <strong>{displayName}</strong>
+                            <IconNavArrowRight width={16} height={16} aria-hidden />
+                          </button>
+                          <button
+                            type="button"
+                            className="event-feed-item__expand"
+                            onClick={toggleExpanded}
+                            aria-expanded={isExpanded}
+                            aria-controls={`event-details-${violation.id}`}
+                            aria-label={`${isExpanded ? 'Скрыть' : 'Показать'} детали нарушения: ${displayName}`}
+                          >
+                            <span className="event-feed-item__body">
+                              <span className="event-feed-item__headline">
+                                <span className="event-feed-item__identity">
+                                  <span className="event-feed-item__stamp">
+                                    <span
+                                      className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
+                                    >
+                                      {actionLabelMap[displayAction]}
+                                    </span>
+                                    <time dateTime={violation.createdAt}>
+                                      {formatViolationDate(violation.createdAt)}
+                                    </time>
                                   </span>
-                                  <time dateTime={violation.createdAt}>
-                                    {formatViolationDate(violation.createdAt)}
-                                  </time>
+                                </span>
+
+                                <span className="event-feed-item__toggle" aria-hidden="true">
+                                  <IconNavArrowDown width={18} height={18} strokeWidth={2.2} />
                                 </span>
                               </span>
 
-                              <span className="event-feed-item__toggle" aria-hidden="true">
-                                <IconNavArrowDown width={18} height={18} strokeWidth={2.2} />
+                              <span className="event-feed-item__summary">
+                                {violationReason || resolveViolationBlurb(violation)}
                               </span>
                             </span>
-
-                            <span className="event-feed-item__summary">
-                              {violationReason || resolveViolationBlurb(violation)}
-                            </span>
-                          </span>
-                        </button>
+                          </button>
+                        </div>
                       </div>
 
                       {isExpanded ? (
@@ -3965,41 +3942,47 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
               id="participant-sheet-loading"
               open
               title={selectedParticipant.userDisplayName}
-              onClose={() => setSelectedParticipantId(null)}
+              onClose={() => setParticipantTarget(null)}
             >
               <Spinner size="lg" label="Загружаем карточку участника" />
             </SettingsDrilldownPanel>
           }
         >
-          <ChatParticipantSheet
-            open={Boolean(selectedParticipant)}
-            item={selectedParticipant}
-            rangeLabel={formatStatisticsRangeLabel(range)}
-            isSavingImmunity={
-              participantImmunityMutation.isPending || participantImmunityClearMutation.isPending
+          <ChatParticipantCard
+            key={`${chatId}:${selectedParticipant.userId}`}
+            api={api}
+            target={selectedParticipant}
+            range={range}
+            chatTitle={chatTitle}
+            savedVersion={participantSavedVersion}
+            onSanctionsChanged={() => {
+              void dashboardQuery.refetch();
+              if (section === 'moderation' && !isSanctionsView) void moderationFeed.retry();
+            }}
+            describeReason={(item) =>
+              resolveModerationFeedReason({
+                ruleCode: item.ruleCode,
+                metadata: { reason: item.reason },
+              })
             }
+            onRelease={async (item) => {
+              if (!item.releaseAction)
+                throw new Error('Состояние ограничения изменилось. Обновите список.');
+              return describeManualModerationFeedback(
+                await applyManualModerationAction(api, chatId, item.userId, {
+                  action: item.releaseAction,
+                  expectedSanctionEventId: item.id,
+                }),
+              );
+            }}
+            open={Boolean(selectedParticipant)}
+            rangeLabel={formatStatisticsRangeLabel(range)}
+            onImmunityChanged={() => {
+              if (section === 'participants') void participantsFeed.retry();
+            }}
             isApplyingModeration={participantModerationMutation.isPending}
             isOpeningProfile={profileHandoffMutation.isPending}
-            onClose={() => setSelectedParticipantId(null)}
-            onSaveImmunity={(payload) => {
-              if (!selectedParticipant || immunityLock.current) {
-                return;
-              }
-              immunityLock.current = true;
-              participantImmunityMutation.mutate({
-                userId: selectedParticipant.userId,
-                ...payload,
-              });
-            }}
-            onClearImmunity={() => {
-              if (!selectedParticipant || immunityLock.current) {
-                return;
-              }
-              immunityLock.current = true;
-              participantImmunityClearMutation.mutate({
-                userId: selectedParticipant.userId,
-              });
-            }}
+            onClose={() => setParticipantTarget(null)}
             onProfileActivate={() => {
               if (!selectedParticipant) {
                 return;
@@ -4020,12 +4003,6 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                 profileUrl: selectedParticipant.profileUrl,
                 profileHandoffUrl: selectedParticipant.profileHandoffUrl,
               });
-            }}
-            onSanctionsActivate={() => {
-              if (!selectedParticipant) return;
-              const userId = selectedParticipant.userId;
-              setSelectedParticipantId(null);
-              changeModerationView('sanctions', userId);
             }}
             onMute={(durationHours) => {
               if (!selectedParticipant) {

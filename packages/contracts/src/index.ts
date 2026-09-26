@@ -4,6 +4,7 @@ export * from './duplicate-settings.js';
 export * from './duplicate-diagnostics.js';
 export * from './button-url.js';
 export * from './chat-participants.js';
+export type { ChatParticipantDetails } from './participant-details.js';
 export type { ChatSanctionItem, ChatSanctionsPage, ChatSanctionsQuery } from './chat-sanctions.js';
 export * from './manual-moderation.js';
 export * from './broadcast-request-utils.js';

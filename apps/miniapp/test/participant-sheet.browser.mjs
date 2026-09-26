@@ -40,7 +40,7 @@ try {
     await page.getByRole('slider', { name: 'Срок ограничения в часах' }).inputValue(),
     '6',
   );
-  await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+  await page.getByRole('button', { name: 'Ограничить сообщения', exact: true }).click();
   assert.deepEqual(await actions(), [{ kind: 'mute', payload: 6 }]);
   await page.getByRole('button', { name: 'Как работает ограничение сообщений' }).click();
   assert.match(await page.locator('#participant-sheet-hint-mute').innerText(), /останется в чате/u);
@@ -74,7 +74,7 @@ try {
     /пока вы её не снимете/u,
   );
   assert.equal(await page.getByRole('slider').count(), 0);
-  await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await page.getByRole('button', { name: 'Сохранить защиту', exact: true }).click();
   assert.deepEqual(await actions(), [{ kind: 'save', payload: { mode: 'always' } }]);
   assert.equal(
     await page.getByRole('button', { name: 'Сохраняем...', exact: true }).getAttribute('aria-busy'),
@@ -105,7 +105,7 @@ try {
     'true',
   );
   assert.equal(
-    await page.getByRole('button', { name: 'Сохранить', exact: true }).isDisabled(),
+    await page.getByRole('button', { name: 'Сохранить защиту', exact: true }).isDisabled(),
     true,
   );
   assert.equal(await page.getByRole('button', { name: 'Сохраняем...', exact: true }).count(), 0);
@@ -120,10 +120,10 @@ try {
       item: { ...window.participantSheetTest.participant, violationCount: 4 },
     }),
   );
-  await page.getByRole('button', { name: 'Защита', exact: true }).click();
-  await page.getByRole('button', { name: 'Защита', exact: true }).click();
+  await page.getByRole('button', { name: 'К участнику', exact: true }).click();
+  await page.getByRole('button', { name: 'Продолжить редактирование', exact: true }).click();
   assert.equal(await page.getByRole('slider', { name: 'Срок защиты в днях' }).inputValue(), '7');
-  await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await page.getByRole('button', { name: 'Сохранить защиту', exact: true }).click();
   assert.deepEqual(await actions(), [
     {
       kind: 'save',
@@ -170,8 +170,14 @@ try {
       .getByRole('button', { name: 'Заблокировать', exact: true })
       .waitFor({ state: 'detached' });
     assert.equal(await page.getByRole('button', { name: 'Заблокировать', exact: true }).count(), 0);
-    assert.equal(await page.getByRole('button', { name: 'Без сообщений', exact: true }).count(), 0);
-    assert.equal(await page.getByRole('button', { name: 'Защита', exact: true }).count(), 0);
+    assert.equal(
+      await page.getByRole('button', { name: 'Без сообщений', exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(
+      await page.getByRole('button', { name: 'Защита', exact: true }).isDisabled(),
+      true,
+    );
   }
   console.log(
     'PASS: owner, administrator and bot profiles expose no unavailable moderation actions',
@@ -190,6 +196,7 @@ try {
     await page.getByRole('button', { name: 'Как работает ограничение сообщений' }).click();
     for (const composer of ['mute', 'immunity']) {
       if (composer === 'immunity') {
+        await page.getByRole('button', { name: 'К участнику', exact: true }).click();
         await page.getByRole('button', { name: 'Защита', exact: true }).click();
         await page.getByRole('button', { name: 'Что значит лимит защиты' }).click();
       }

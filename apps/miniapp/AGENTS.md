@@ -30,6 +30,7 @@
 - Run `npm run check:miniapp-css` after CSS ownership/import changes.
 - Lazy-route CSS remains loaded for the SPA session. Scope route polish to route-specific body/root selectors and test both cold loads and cross-route navigation.
 - `moderation-workspace.css` owns final moderation presentation in the `workspace` layer after route CSS. Scope every rule to `body[data-miniapp-profile='moderation']`; Shell sets/clears that profile for portal sheets as well. Publisher styling must remain unchanged across profile navigation.
+- Participant-card-only styles load lazily from `chat-participant-card.css` in that same scoped `workspace` layer. Keep them out of global startup CSS so opening unrelated public dialogs does not load moderation tools.
 - Do not put global `touch-action` or root `overscroll-behavior-y` locks on `html`/`body`; MAX WebViews can stop page and nested-list scrolling. Put `pan-y` and momentum scrolling on the actual scroll container.
 - Do not apply MAX `safeTop` or CSS safe-area values as a blanket content offset; some WebViews already account for system UI. Use `visualViewport` and real element measurements around floating controls.
 - Keep stable dimensions and responsive constraints on boards, grids, controls, counters, and fixed-format UI. Text and controls must not overlap at supported mobile sizes.

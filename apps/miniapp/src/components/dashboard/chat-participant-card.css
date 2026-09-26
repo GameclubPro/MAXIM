@@ -1,0 +1,230 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .participant-card.participant-sheet {
+    width: min(100%, 560px);
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .settings-drilldown__body {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 16px;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .settings-drilldown__footer {
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    background: var(--major-surface);
+    border-top: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    :is(.participant-sheet__hero, .participant-sheet__dock, .participant-sheet__composer) {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__identity
+    strong {
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__identity
+    span {
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border-top: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) 18px;
+    align-items: center;
+    justify-items: stretch;
+    width: 100%;
+    min-height: 60px;
+    gap: 12px;
+    padding: 12px 0;
+    border: 0;
+    border-bottom: 1px solid var(--major-border);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    text-align: left;
+    color: var(--major-ink);
+    transform: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action:active:not(:disabled) {
+    background: var(--major-subtle);
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action
+    > span {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action
+    small {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action
+    > svg {
+    width: 22px;
+    height: 22px;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action
+    > svg:last-child {
+    width: 18px;
+    height: 18px;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action--ban {
+    margin-top: 16px;
+    color: var(--major-danger);
+    border-bottom: 0;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__action--ban
+    > svg {
+    color: var(--major-danger);
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__section-title {
+    margin: 0;
+    padding: 4px 0;
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__violations {
+    margin: 0;
+    font-size: 13px;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__origin {
+    padding: 10px 0 10px 12px;
+    border-left: 2px solid var(--major-accent);
+    color: var(--major-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__origin > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    justify-content: space-between;
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__origin strong {
+    color: var(--major-ink);
+    font-weight: 600;
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__origin p {
+    margin: 4px 0 0;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.participant-card__notice, .participant-card__loading) {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--major-muted);
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__notice p {
+    margin: 0 0 8px;
+  }
+  body[data-miniapp-profile='moderation'] .participant-card__back {
+    display: inline-grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--major-subtle);
+    color: var(--major-ink);
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__row-actions
+    > button {
+    flex: 1 1 180px;
+    min-height: 48px;
+    white-space: normal;
+    border-radius: 8px;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__duration-presets {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__duration-presets
+    button {
+    min-width: 0;
+    min-height: 48px;
+    padding: 8px 2px;
+    font-size: 13px;
+    border-radius: 8px;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .participant-sheet__mode-option {
+    min-height: 48px;
+  }
+  body[data-miniapp-profile='moderation']
+    .participant-card.participant-sheet
+    .settings-drilldown__summary {
+    display: block;
+    margin-top: 4px;
+    font-size: 13px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+}

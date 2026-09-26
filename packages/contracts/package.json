@@ -47,6 +47,10 @@
       "types": "./dist/chat-participants.d.ts",
       "default": "./dist/chat-participants.js"
     },
+    "./participant-details": {
+      "types": "./dist/participant-details.d.ts",
+      "default": "./dist/participant-details.js"
+    },
     "./chat-sanctions": {
       "types": "./dist/chat-sanctions.d.ts",
       "default": "./dist/chat-sanctions.js"

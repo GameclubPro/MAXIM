@@ -1,0 +1,62 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .events-screen .event-feed-item__main {
+    flex: 1;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .events-screen .event-feed-item__person {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 48px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    color: var(--major-ink);
+    font-size: 15px;
+    line-height: 1.4;
+  }
+  body[data-miniapp-profile='moderation'] .events-screen .event-feed-item__person strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .events-screen .event-feed-item__person svg {
+    flex: none;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen
+    :is(
+      button.event-feed-item__avatar-link,
+      button.membership-feed__avatar-link,
+      button.membership-feed__name-link
+    ) {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--major-ink);
+    font: inherit;
+    text-align: left;
+    min-height: 48px;
+  }
+  body[data-miniapp-profile='moderation'] .events-screen button.membership-feed__name-link {
+    font-size: 15px;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .events-screen .event-feed-item__expand {
+    min-height: 48px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen
+    :is(.event-feed-item__person, button.membership-feed__name-link):focus-visible {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 2px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen
+    :is(.event-feed-item__person, button.membership-feed__name-link):active {
+    background: var(--major-subtle);
+  }
+}

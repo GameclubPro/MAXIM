@@ -37,6 +37,8 @@ type Props = {
   chatId: string;
   chatTitle: string;
   initialUserId?: string | null;
+  lockedUserId?: string;
+  onParticipantActivate?: (item: ChatSanctionItem) => void;
   onProfileActivate: (userId: string, displayName: string) => void;
   onChanged: () => void;
   onRelease: (item: ChatSanctionItem) => Promise<string>;
@@ -60,6 +62,8 @@ export function ChatSanctionsWorkspace({
   chatId,
   chatTitle,
   initialUserId,
+  lockedUserId,
+  onParticipantActivate,
   onProfileActivate,
   onChanged,
   onRelease,
@@ -86,7 +90,7 @@ export function ChatSanctionsWorkspace({
     return () => window.clearTimeout(timer);
   }, [search]);
   const feed = useInfiniteQuery({
-    queryKey: ['chat-sanctions', chatId, status, action, debouncedSearch, userId],
+    queryKey: ['chat-sanctions', chatId, status, action, debouncedSearch, lockedUserId ?? userId],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       getChatSanctions(
@@ -96,7 +100,7 @@ export function ChatSanctionsWorkspace({
           status,
           action,
           search: debouncedSearch || undefined,
-          userId: userId || undefined,
+          userId: lockedUserId ?? (userId || undefined),
           limit: 30,
           cursor: pageParam,
         },
@@ -223,14 +227,18 @@ export function ChatSanctionsWorkspace({
           type="button"
           className="button button--ghost"
           disabled={release.isPending || isOpeningProfile}
-          onClick={() => onProfileActivate(selected.userId, selected.userDisplayName)}
+          onClick={() =>
+            onParticipantActivate
+              ? onParticipantActivate(selected)
+              : onProfileActivate(selected.userId, selected.userDisplayName)
+          }
         >
           {isOpeningProfile ? (
             <Spinner size="sm" label={null} />
           ) : (
             <UserCircle width={20} height={20} aria-hidden />
           )}
-          {isOpeningProfile ? 'Открываем...' : 'Профиль'}
+          {isOpeningProfile ? 'Открываем...' : onParticipantActivate ? 'Участник' : 'Профиль в MAX'}
         </button>
         <button
           type="button"
@@ -331,7 +339,7 @@ export function ChatSanctionsWorkspace({
           </select>
         </label>
       </div>
-      {userId ? (
+      {userId && !lockedUserId ? (
         <div className="sanctions-workspace__user-filter">
           <span>ID {userId}</span>
           <button
@@ -429,60 +437,83 @@ export function ChatSanctionsWorkspace({
       {!pendingSearch ? (
         <div className="sanctions-workspace__list" aria-busy={feed.isFetching}>
           {items.map((item) => (
-            <button
-              type="button"
+            <article
               key={item.id}
               className="sanctions-workspace__row"
               data-status={sanctionStatusAt(item, nowMs)}
-              disabled={feed.isRefetching}
-              onClick={() => {
-                release.reset();
-                setSelected(item);
-              }}
             >
-              <PersonAvatar
-                avatarUrl={item.avatarUrl}
-                fallback={item.userDisplayName.slice(0, 1)}
-                className="sanctions-workspace__avatar"
-              />
-              <span className="sanctions-workspace__identity">
-                <strong>{item.userDisplayName}</strong>
-                <span>{describeReason(item)}</span>
-                <small>
-                  {item.operator === 'ADMIN' ? 'Админ' : 'Бот'} ·{' '}
-                  {new Date(item.createdAt).toLocaleDateString('ru-RU')}
-                </small>
-              </span>
-              <span
-                className={`sanctions-workspace__state sanctions-workspace__state--${item.action === 'BAN' ? 'ban' : 'mute'}`}
+              <button
+                type="button"
+                className="sanctions-workspace__person"
+                aria-label={
+                  onParticipantActivate
+                    ? `Открыть участника ${item.userDisplayName}`
+                    : `Открыть ограничение ${item.userDisplayName}`
+                }
+                disabled={feed.isRefetching}
+                onClick={() => {
+                  if (onParticipantActivate) onParticipantActivate(item);
+                  else {
+                    release.reset();
+                    setSelected(item);
+                  }
+                }}
               >
-                <span>
-                  {item.action === 'BAN' ? (
-                    <Prohibition width={15} height={15} aria-hidden />
-                  ) : (
-                    <SoundOff width={15} height={15} aria-hidden />
-                  )}
-                  {item.action === 'BAN' ? 'Блокировка' : 'Запрет писать'}
+                <PersonAvatar
+                  avatarUrl={item.avatarUrl}
+                  fallback={item.userDisplayName.slice(0, 1)}
+                  className="sanctions-workspace__avatar"
+                />
+                <span className="sanctions-workspace__identity">
+                  <strong>{item.userDisplayName}</strong>
+                  <span>{describeReason(item)}</span>
+                  <small>
+                    {item.operator === 'ADMIN' ? 'Админ' : 'Бот'} ·{' '}
+                    {new Date(item.createdAt).toLocaleDateString('ru-RU')}
+                  </small>
                 </span>
-                <strong className="sanctions-workspace__timer">
-                  {formatSanctionRemaining(item, nowMs)}
-                </strong>
-                {item.status === 'active' && !item.permanent && item.expiresAt ? (
-                  <progress
-                    className="sanctions-workspace__progress"
-                    max={1}
-                    value={sanctionTimeProgress(item, nowMs) ?? 0}
-                    aria-hidden
-                  />
-                ) : null}
-              </span>
-              <NavArrowRight
-                className="sanctions-workspace__arrow"
-                width={18}
-                height={18}
-                aria-hidden
-              />
-            </button>
+              </button>
+              <button
+                type="button"
+                className="sanctions-workspace__details-trigger"
+                aria-label={`Открыть ограничение ${item.userDisplayName}`}
+                disabled={feed.isRefetching}
+                onClick={() => {
+                  release.reset();
+                  setSelected(item);
+                }}
+              >
+                <span
+                  className={`sanctions-workspace__state sanctions-workspace__state--${item.action === 'BAN' ? 'ban' : 'mute'}`}
+                >
+                  <span>
+                    {item.action === 'BAN' ? (
+                      <Prohibition width={15} height={15} aria-hidden />
+                    ) : (
+                      <SoundOff width={15} height={15} aria-hidden />
+                    )}
+                    {item.action === 'BAN' ? 'Блокировка' : 'Запрет писать'}
+                  </span>
+                  <strong className="sanctions-workspace__timer">
+                    {formatSanctionRemaining(item, nowMs)}
+                  </strong>
+                  {item.status === 'active' && !item.permanent && item.expiresAt ? (
+                    <progress
+                      className="sanctions-workspace__progress"
+                      max={1}
+                      value={sanctionTimeProgress(item, nowMs) ?? 0}
+                      aria-hidden
+                    />
+                  ) : null}
+                </span>
+                <NavArrowRight
+                  className="sanctions-workspace__arrow"
+                  width={18}
+                  height={18}
+                  aria-hidden
+                />
+              </button>
+            </article>
           ))}
         </div>
       ) : null}

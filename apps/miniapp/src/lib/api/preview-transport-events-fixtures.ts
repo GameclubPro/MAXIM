@@ -11,6 +11,7 @@ import {
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
 } from '@maxim/contracts';
+import { chatParticipantDetailsSchema } from '@maxim/contracts/participant-details';
 import { PREVIEW_CHAT_ID } from '../design-preview';
 import type { PreviewState } from './preview-transport-state';
 import { readPreviewClock, type PreviewClock } from './preview-transport-runtime';
@@ -22,6 +23,32 @@ import {
   buildPreviewProfileHandoffUrl,
   buildPreviewProfileUrl,
 } from './preview-transport-shared';
+
+export function buildPreviewParticipantDetails(state: PreviewState, userId: string, url: URL) {
+  const participant = state.chatParticipants.find((item) => item.userId === userId);
+  const profile = resolvePreviewUser(state, userId);
+  const range = url.searchParams.get('range') ?? '7d';
+  const now = readPreviewClock(state.clock).getTime();
+  const from = now - (range === '24h' ? 1 : range === '30d' ? 30 : 7) * 86_400_000;
+  const violationCount = state.chatViolations.filter(
+    (item) =>
+      item.userId === userId &&
+      Date.parse(item.createdAt) >= from &&
+      Date.parse(item.createdAt) <= now &&
+      ['WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN'].includes(item.action),
+  ).length;
+  return chatParticipantDetailsSchema.parse({
+    ...(participant ?? {
+      userId,
+      userDisplayName: profile.displayName,
+      avatarUrl: profile.avatarUrl,
+      role: null,
+    }),
+    violationCount,
+    membershipStatus: participant ? 'member' : 'left',
+    canManage: participant?.role === 'member' && !participant.isBot,
+  });
+}
 
 export function buildModerationMessage(payload: ManualModerationActionRequest): string {
   const scopeLabel = payload.scope === 'all_chats' ? 'во всех чатах' : 'в этом чате';

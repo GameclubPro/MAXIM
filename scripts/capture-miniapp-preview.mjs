@@ -1688,7 +1688,7 @@ const scenarioBehaviors = [
     name: 'events-moderation',
     beforeShot: async (page) => {
       await page.getByRole('radio', { name: 'Ограничения', exact: true }).click();
-      await page.locator('.sanctions-workspace__row').first().click();
+      await page.locator('.sanctions-workspace__details-trigger').first().click();
       await page.locator('.sanction-details .button--accent').click({ trial: true });
       await page
         .locator('.sanction-details')
@@ -1727,7 +1727,11 @@ const scenarioBehaviors = [
   {
     name: 'events-sanction-details',
     beforeShot: async (page) => {
-      await page.locator('.sanctions-workspace__row').filter({ hasText: 'Сергей Маркет' }).click();
+      await page
+        .locator('.sanctions-workspace__row')
+        .filter({ hasText: 'Сергей Маркет' })
+        .locator('.sanctions-workspace__details-trigger')
+        .click();
       await page.locator('.sanction-details__status progress').waitFor();
       await page.locator('.sanction-details .button--accent').click({ trial: true });
     },
@@ -1738,6 +1742,7 @@ const scenarioBehaviors = [
       await page
         .locator('.sanctions-workspace__row')
         .filter({ hasText: 'Екатерина Михайлова' })
+        .locator('.sanctions-workspace__details-trigger')
         .click();
       await page.getByRole('button', { name: 'Разрешить писать', exact: true }).click();
       await page.getByRole('dialog', { name: 'Разрешить писать?' }).waitFor();

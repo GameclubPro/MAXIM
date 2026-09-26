@@ -107,6 +107,16 @@ export class AdminManualModerationController {
     return this.moderationService.getChatParticipantsPage(chatId, user, query);
   }
 
+  @Get('chats/:chatId/members/:userId')
+  getChatParticipantDetails(
+    @Param('chatId') chatId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.moderationService.getChatParticipantDetails(chatId, targetUserId, user, query);
+  }
+
   @Put('chats/:chatId/members/:userId/immunity')
   updateChatParticipantImmunity(
     @Param('chatId') chatId: string,

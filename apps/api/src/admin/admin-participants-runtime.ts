@@ -12,10 +12,12 @@ import {
   type ChatParticipantImmunity,
   type ChatParticipantImmunityUpdateResult,
   type ChatParticipantItem,
+  type ChatParticipantDetails,
   type ChatParticipantsPage,
   type ChatParticipantsQuery,
   type ManagedEntityType,
 } from '@maxim/contracts';
+import { chatParticipantDetailsSchema } from '@maxim/contracts/participant-details';
 import {
   BadRequestException,
   ForbiddenException,
@@ -213,6 +215,96 @@ export class AdminParticipantsRuntime {
     }
 
     return this.getCachedChatParticipantsPage(chatId, user.userId, parsed.data, 'chat');
+  }
+
+  async getChatParticipantDetails(
+    chatId: string,
+    targetUserIdRaw: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<ChatParticipantDetails> {
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+    const parsed = chatParticipantsQuerySchema.pick({ range: true }).safeParse(query);
+    const targetUserId = targetUserIdRaw.trim();
+    if (!parsed.success) throw new BadRequestException(parsed.error.format());
+    if (!targetUserId || targetUserId.length > 200) {
+      throw new BadRequestException('Неверный участник.');
+    }
+
+    const now = new Date();
+    const botId = await this.resolveBackgroundReadBotAssignment(chatId);
+    const options = {
+      botId,
+      trafficClass: 'interactive' as const,
+      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      sourceTag: MAX_API_SOURCE_TAGS.PARTICIPANT_SEARCH,
+      timeoutMs: CHAT_PARTICIPANTS_SEARCH_MAX_API_WAIT_MS,
+    };
+    const [accessResult, profileResult, localName, settings, immunity, violationCount] =
+      await Promise.all([
+        this.maxClient.getChatMemberAccess(chatId, targetUserId, options).then(
+          (access) => ({ known: true, access }),
+          () => ({ known: false, access: null }),
+        ),
+        this.maxClient
+          .getChatMemberProfiles(chatId, [targetUserId], options)
+          .catch(() => new Map()),
+        this.prisma.chatUserDisplayName.findUnique({
+          where: { chatId_userId: { chatId, userId: targetUserId } },
+          select: { displayName: true },
+        }),
+        this.prisma.chatSettings.findUnique({
+          where: { chatId },
+          select: { nightModeTimezone: true },
+        }),
+        this.prisma.chatParticipantModerationImmunity.findUnique({
+          where: { chatId_userId: { chatId, userId: targetUserId } },
+        }),
+        this.prisma.moderationEvent.count({
+          where: this.buildParticipantViolationCountWhere(
+            chatId,
+            [targetUserId],
+            this.resolveLogsDashboardFrom(parsed.data.range, now),
+            now,
+          ),
+        }),
+      ]);
+    const access = accessResult.access;
+    const profile = profileResult.get(targetUserId);
+    const role = access ? (access.isOwner ? 'owner' : access.isAdmin ? 'admin' : 'member') : null;
+    const username = profile?.username?.replace(/^@+/u, '').trim() || null;
+    const displayName =
+      profile?.displayName?.trim() || localName?.displayName || username || 'Участник';
+    // FLAG: A failed MAX lookup is unknown, not evidence that the participant left the chat.
+    return chatParticipantDetailsSchema.parse({
+      userId: targetUserId,
+      userDisplayName: displayName,
+      username,
+      avatarUrl: profile?.avatarUrl || null,
+      profileUrl:
+        this.normalizeMaxProfileUrl(profile?.profileUrl ?? null) ??
+        this.buildUserProfileUrl(username),
+      profileHandoffUrl: this.buildProfileMentionHandoffUrl(
+        chatId,
+        'chat',
+        targetUserId,
+        displayName,
+        botId,
+      ),
+      role,
+      isBot: access?.isBot === true,
+      membershipStatus: !accessResult.known ? 'unknown' : access ? 'member' : 'left',
+      canManage: role === 'member' && access?.isBot === false && targetUserId !== user.userId,
+      violationCount,
+      immunity: immunity
+        ? this.buildChatParticipantImmunitySummary(
+            immunity,
+            now,
+            this.normalizeParticipantImmunityTimezone(settings?.nightModeTimezone),
+          )
+        : null,
+    });
   }
 
   async updateChatParticipantImmunity(

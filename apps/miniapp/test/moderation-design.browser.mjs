@@ -67,7 +67,7 @@ try {
       });
     await page.getByText('Ограничений не найдено', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Сбросить фильтры', exact: true }).click();
-    await page.locator('.sanctions-workspace__row').first().click();
+    await page.locator('.sanctions-workspace__details-trigger').first().click();
     const panel = page.locator('.sanction-details');
     const primary = panel.getByRole('button', { name: 'Разрешить писать', exact: true });
     await primary.click({ trial: true });

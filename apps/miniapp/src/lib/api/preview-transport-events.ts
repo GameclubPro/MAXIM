@@ -46,6 +46,7 @@ import {
   createModerationResult,
   createPreviewSpammerReviewResult,
   resolvePreviewUser,
+  buildPreviewParticipantDetails,
 } from './preview-transport-events-fixtures';
 import type { PreviewState } from './preview-transport-state';
 import { buildPreviewSanctionsPage, createPreviewOlderSanctions } from './preview-chat-sanctions';
@@ -1302,7 +1303,9 @@ function handleChatEventsPreviewRequest(
     );
   }
 
-  if (tail[0] === 'members' && method === 'GET') {
+  if (tail[0] === 'members' && tail.length <= 2 && method === 'GET') {
+    if (tail[1])
+      return cloneJson(buildPreviewParticipantDetails(state, decodeURIComponent(tail[1]), url));
     const now = readPreviewClock(state.clock);
     return cloneJson(
       buildParticipantsPage(
