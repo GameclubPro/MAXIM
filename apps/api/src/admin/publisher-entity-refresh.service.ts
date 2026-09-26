@@ -15,6 +15,8 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { PublisherBindingRefreshQueueService } from '../publisher/publisher-binding-refresh.queue';
+import { PrismaService } from '../prisma/prisma.service';
+import { stageMissingPublicationActor } from '../publisher/publisher-publication-actor-candidate';
 import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import { PublisherPolicyService } from './publisher-policy.service';
 
@@ -37,6 +39,7 @@ export class PublisherEntityRefreshService {
     private readonly policyService: PublisherPolicyService,
     private readonly refreshQueue: PublisherBindingRefreshQueueService,
     private readonly botRegistry: MaxBotRegistryService,
+    private readonly prisma: PrismaService,
   ) {}
 
   async requestRefresh(
@@ -74,18 +77,33 @@ export class PublisherEntityRefreshService {
     return this.serializeBulkRefresh(user.userId, async () => {
       const requestedAt = new Date();
       const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
-      await mapWithConcurrencyLimit(uniqueEntityIds, 8, (chatId) =>
-        this.refreshQueue.enqueue({
+      const queued = await mapWithConcurrencyLimit(uniqueEntityIds, 8, async (chatId) => {
+        const edge = await this.prisma.managedEntityAccessEdge.findUnique({
+          where: {
+            chatId_userId_botId: { chatId, userId: user.userId, botId: publisherBotId },
+          },
+          select: { sourceVersion: true },
+        });
+        const nomination = edge
+          ? { requestedAt, candidateVersion: edge.sourceVersion ?? undefined }
+          : await stageMissingPublicationActor(this.prisma, {
+              chatId,
+              userId: user.userId,
+              botId: publisherBotId,
+            });
+        if (!nomination) return false;
+        await this.refreshQueue.enqueue({
           chatId,
           publisherBotId,
           candidateUserId: user.userId,
           reason: 'manual_recheck',
-          requestedAt,
-        }),
-      );
+          ...nomination,
+        });
+        return true;
+      });
       return publicationTargetsRefreshResponseSchema.parse({
         accepted: true,
-        queuedCount: uniqueEntityIds.length,
+        queuedCount: queued.filter(Boolean).length,
       });
     });
   }

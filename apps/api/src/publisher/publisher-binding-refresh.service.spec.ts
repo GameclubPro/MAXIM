@@ -11,6 +11,8 @@ import {
   PublisherBindingRefreshService,
 } from './publisher-binding-refresh.service';
 import { buildPublisherForwardedBindingSource } from './publisher-entity-binding-lifecycle.service';
+import { PublisherReadinessService } from './publisher-readiness.service';
+import type { PublisherBindingRefreshJob } from './publisher-binding-refresh.queue';
 
 const createBackgroundWork = () => ({
   runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
@@ -247,6 +249,85 @@ describe('PublisherBindingRefreshService', () => {
     reason: 'bootstrap',
     requestedAt: '2026-08-26T12:00:00.000Z',
   } as const;
+
+  it('stages a missing publication actor edge before a version-fenced MAX verification', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    let edge: Record<string, unknown> | null = null;
+    const readEdge = async () => edge;
+    f.prisma.managedEntityAccessEdge.findUnique.mockImplementation(readEdge);
+    f.tx.managedEntityAccessEdge.findUnique.mockImplementation(readEdge);
+    f.tx.managedEntityAccessEdge.createMany.mockImplementation(async (args: any) => {
+      if (edge) return { count: 0 };
+      edge = args.data[0];
+      return { count: 1 };
+    });
+    const findMany = jest
+      .fn()
+      .mockResolvedValue([{ id: 'chat-1', entityType: ChatEntityType.CHAT, accessEdges: [] }]);
+    const findFirst = jest
+      .fn()
+      .mockResolvedValue({ id: 'chat-1', entityType: ChatEntityType.CHAT });
+    Object.assign(f.prisma.chat, { findMany });
+    Object.assign(f.tx.chat, { findFirst });
+    const enqueue = jest.fn();
+    const readiness = new PublisherReadinessService(
+      f.prisma as never,
+      {} as never,
+      {
+        get: (key: string, fallback: unknown) =>
+          key === 'MAX_PUBLISHER_BOT_ID'
+            ? 'publik_bot'
+            : key === 'MAX_PUBLISHER_DISPATCH_ENABLED'
+              ? true
+              : fallback,
+      } as never,
+      { enqueue } as never,
+    );
+    await readiness.requestActorAccessRefresh(
+      [{ chatId: 'chat-1', entityType: 'chat' }],
+      'actor-1',
+      'publik_bot',
+    );
+    expect(f.tx.managedEntityAccessEdge.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'actor-1',
+          botId: 'publik_bot',
+          state: ManagedEntityAccessState.BOT_DENIED,
+          userRole: ManagedEntityAccessRole.UNKNOWN,
+          source: 'publisher_actor_candidate_publication',
+          sourceVersion: expect.stringMatching(/^publication:/u),
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    const nominated = enqueue.mock.calls[0][0];
+    expect(nominated.candidateVersion).toBe(edge!.sourceVersion);
+    expect(nominated.requestedAt).toEqual(edge!.checkedAt);
+    await expect(
+      f.service.refresh({
+        version: 1,
+        ...nominated,
+        requestedAt: nominated.requestedAt.toISOString(),
+      } as PublisherBindingRefreshJob),
+    ).resolves.toBeUndefined();
+    expect(f.maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'actor-1',
+      expect.objectContaining({ botId: 'publik_bot', bypassCache: true }),
+    );
+    expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ state: ManagedEntityAccessState.GRANTED }),
+      }),
+    );
+  });
 
   it.each(['bootstrap', 'bot_added', 'manual_recheck'] as const)(
     'synchronizes all Publisher admins on %s even while publishing is disabled',

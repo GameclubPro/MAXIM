@@ -20,12 +20,25 @@ describe('PublisherEntityRefreshService', () => {
     const botRegistry = {
       getPublisherBotDescriptor: jest.fn().mockReturnValue({ id: 'publik-bot' }),
     };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'channel-1' }]),
+      chat: { findFirst: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }) },
+      managedEntityAccessEdge: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      managedEntityAccessEdge: { findUnique: jest.fn().mockResolvedValue({ sourceVersion: null }) },
+      $transaction: jest.fn((run: (client: typeof tx) => unknown) => run(tx)),
+    };
     const service = new PublisherEntityRefreshService(
       policyService as never,
       refreshQueue as never,
       botRegistry as never,
+      prisma as never,
     );
-    return { service, policyService, refreshQueue, botRegistry };
+    return { service, policyService, refreshQueue, botRegistry, prisma, tx };
   }
 
   it('authorizes the user-scoped entity before enqueueing one targeted refresh', async () => {
@@ -119,6 +132,68 @@ describe('PublisherEntityRefreshService', () => {
     expect(
       new Set(fixture.refreshQueue.enqueue.mock.calls.map(([request]) => request.requestedAt)).size,
     ).toBe(1);
+  });
+
+  it('stages a missing authorized publication actor before a manual recheck', async () => {
+    const f = createFixture();
+    f.prisma.managedEntityAccessEdge.findUnique.mockResolvedValue(null);
+    await expect(f.service.requestAuthorizedEntitiesRefresh(['channel-1'], user)).resolves.toEqual({
+      accepted: true,
+      queuedCount: 1,
+    });
+    const candidate = f.tx.managedEntityAccessEdge.createMany.mock.calls[0][0].data[0];
+    expect(candidate).toMatchObject({
+      chatId: 'channel-1',
+      userId: user.userId,
+      botId: 'publik-bot',
+      state: 'BOT_DENIED',
+      userRole: 'UNKNOWN',
+      botRole: 'UNKNOWN',
+    });
+    expect(f.refreshQueue.enqueue).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      publisherBotId: 'publik-bot',
+      candidateUserId: user.userId,
+      reason: 'manual_recheck',
+      requestedAt: candidate.checkedAt,
+      candidateVersion: candidate.sourceVersion,
+    });
+  });
+
+  it('does not count a removed or superseded target as queued', async () => {
+    const f = createFixture();
+    f.prisma.managedEntityAccessEdge.findUnique.mockResolvedValue(null);
+    f.tx.chat.findFirst.mockResolvedValue(null);
+    await expect(f.service.requestAuthorizedEntitiesRefresh(['channel-1'], user)).resolves.toEqual({
+      accepted: true,
+      queuedCount: 0,
+    });
+    expect(f.refreshQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('preserves an existing denial version for explicit MAX revalidation without overwriting it', async () => {
+    const f = createFixture();
+    f.prisma.managedEntityAccessEdge.findUnique.mockResolvedValue({
+      sourceVersion: 'denied:current',
+    });
+    await f.service.requestAuthorizedEntitiesRefresh(['channel-1'], user);
+    expect(f.prisma.$transaction).not.toHaveBeenCalled();
+    expect(f.refreshQueue.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateVersion: 'denied:current',
+        reason: 'manual_recheck',
+      }),
+    );
+  });
+
+  it('does not report an accepted publication refresh when Redis fails after staging', async () => {
+    const f = createFixture();
+    f.prisma.managedEntityAccessEdge.findUnique.mockResolvedValue(null);
+    f.refreshQueue.enqueue.mockRejectedValue(new Error('redis unavailable'));
+    await expect(f.service.requestAuthorizedEntitiesRefresh(['channel-1'], user)).rejects.toThrow(
+      'redis unavailable',
+    );
+    expect(f.tx.managedEntityAccessEdge.createMany).toHaveBeenCalledTimes(1);
   });
 
   it('rotates consecutive bulk requests beyond the first fifty entities', async () => {

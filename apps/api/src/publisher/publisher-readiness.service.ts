@@ -22,6 +22,7 @@ import { PublisherSetupRequiredException } from './publisher-errors';
 import { PublisherRuntimeHeartbeatReaderService } from './publisher-runtime-heartbeat.service';
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
 import { publisherRefreshEvidenceWhere } from './publisher-entity-connection.util';
+import { stageMissingPublicationActor } from './publisher-publication-actor-candidate';
 
 export type PublisherFeature =
   | 'publication'
@@ -137,17 +138,35 @@ export class PublisherReadinessService {
           },
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        entityType: true,
+        accessEdges: {
+          where: { userId: actorUserId, botId: this.publisherBotId },
+          select: { sourceVersion: true },
+          take: 1,
+        },
+      },
       take: MAX_PUBLICATION_TARGETS,
     });
     for (const candidate of candidates) {
       try {
+        const existingEdge = candidate.accessEdges[0];
+        const nomination = existingEdge
+          ? { requestedAt: now, candidateVersion: existingEdge.sourceVersion ?? undefined }
+          : await stageMissingPublicationActor(this.prisma, {
+              chatId: candidate.id,
+              entityType: candidate.entityType,
+              userId: actorUserId,
+              botId: this.publisherBotId,
+            });
+        if (!nomination) continue;
         await this.bindingRefreshQueue.enqueue({
           chatId: candidate.id,
           publisherBotId: this.publisherBotId,
           candidateUserId: actorUserId,
           reason: 'stale_user_access',
-          requestedAt: now,
+          ...nomination,
         });
       } catch (error: unknown) {
         this.logger.warn(
