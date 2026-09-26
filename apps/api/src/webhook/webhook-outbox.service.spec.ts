@@ -1010,6 +1010,39 @@ function createCompletedSemanticOwnerFixture(options?: {
 }
 
 describe('WebhookOutboxService', () => {
+  it('retains a privacy-safe failure diagnostic only after its retry state commits', async () => {
+    const fixture = createService({
+      findManyResult: [{ id: 'private-event', enqueueAttempts: 0 }],
+    });
+    const error = Object.assign(new Error('private-payload'), { code: 'P2003' });
+    fixture.webhookService.preparePersistedWebhookEvent.mockRejectedValue(error);
+    const warning = jest.spyOn((fixture.service as any).logger, 'warn').mockImplementation();
+    const enqueueBatch = () =>
+      (fixture.service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+    try {
+      await enqueueBatch();
+      expect(warning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          errorCode: 'P2003',
+          enqueueAttempts: 1,
+          retryScheduled: true,
+          retryDelaySec: 2,
+        }),
+        'Recorded webhook preparation failure',
+      );
+      expect(JSON.stringify(warning.mock.calls)).not.toMatch(/private-/u);
+      warning.mockClear();
+      fixture.prisma.webhookEvent.updateMany.mockResolvedValue({ count: 0 });
+      await enqueueBatch();
+      expect(warning).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'Recorded webhook preparation failure',
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('keeps preparation deferrals durable beyond the ordinary attempt ceiling', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
     try {

@@ -32,6 +32,13 @@ an ordering fence, not a throughput shortage. Inspect the predecessor's retry
 progress before considering resource changes. Do not force normal mode, skip
 ordered work, mark receipts processed or purge queues to make readiness green.
 
+After a preparation failure is committed, `api-enqueue` records
+`Recorded webhook preparation failure` with an allowlisted error code, bounded HTTP
+status, attempt/delay and a known service's numeric location. It never includes the
+event, chat, participant, error message, payload or stack. This preserves evidence
+after a successful retry clears the receipt's error. Lost-CAS observations do not
+produce a committed-failure log, and diagnostic extraction cannot alter retry state.
+
 Further database diagnostics must extend the fixed catalog with indexed, bounded,
 privacy-safe reads and tests. Never substitute raw production SQL. An exact
 recovery requires current execution-claim and action-ledger evidence; absence of

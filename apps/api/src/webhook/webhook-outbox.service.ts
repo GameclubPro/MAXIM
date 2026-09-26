@@ -31,6 +31,7 @@ import {
 } from './webhook-queues';
 import { WebhookRoutingService } from './webhook-routing.service';
 import { WebhookService } from './webhook.service';
+import { describeWebhookPreparationFailure } from './webhook-preparation-diagnostic';
 import {
   isPendingWebhookTimeoutQuarantineMessage,
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
@@ -1542,6 +1543,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       const failureOutcome = await this.markFailedWithBackoff(
         event,
         `Webhook preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+        { preparationError: error },
       );
       return failureOutcome === 'terminal' ? 'advance' : 'block';
     }
@@ -1756,6 +1758,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async markFailedWithBackoff(
     event: WebhookEnqueueStateSnapshot,
     message: string,
+    diagnostic?: { preparationError: unknown },
   ): Promise<CandidateEnqueueOutcome> {
     const nextAttempts = event.enqueueAttempts + 1;
     const exhausted = nextAttempts >= this.maxEnqueueAttempts;
@@ -1774,6 +1777,17 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+    if (result.count === 1 && diagnostic) {
+      this.logger.warn(
+        {
+          ...describeWebhookPreparationFailure(diagnostic.preparationError),
+          enqueueAttempts: nextAttempts,
+          retryScheduled: !exhausted,
+          retryDelaySec: exhausted ? null : nextDelaySec,
+        },
+        'Recorded webhook preparation failure',
+      );
+    }
     return result.count === 1
       ? exhausted
         ? 'terminal'
