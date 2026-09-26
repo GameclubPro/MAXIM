@@ -20,7 +20,12 @@ For the oldest RECEIVED event it exposes an exact indexed predecessor's age,
 enqueue attempts, fixed error category, remaining retry delay and overdue duration.
 `null` predecessor metadata means this lookup found no blocking predecessor; it
 does not prove that every chat is unblocked. Categories classify stored error
-prefixes, not the root cause. No payload, error text or event identity is exposed.
+prefixes, not the root cause. `error_family` narrows known constraint, lease, transport
+and validation failures without returning their text. `error_truncated` signals
+insufficient retained detail; `webhook_service_line` is only a numeric location in
+the known compiled service, never a stack trace. Resolve it against the exact
+running API image, not a newer checkout. No payload, error text or event identity
+is exposed.
 
 Compare repeated samples. A growing oldest age with small pending counts can be
 an ordering fence, not a throughput shortage. Inspect the predecessor's retry

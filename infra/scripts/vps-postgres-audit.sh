@@ -452,6 +452,9 @@ SELECT json_build_object(
           'age_seconds', greatest(0, floor(extract(epoch FROM clock_timestamp() - predecessor.created_at))::bigint),
           'enqueue_attempts', predecessor.enqueue_attempts,
           'error_kind', predecessor.error_kind,
+          'error_family', predecessor.error_family,
+          'error_truncated', predecessor.error_truncated,
+          'webhook_service_line', predecessor.webhook_service_line,
           'retry_in_seconds', CASE WHEN predecessor.next_enqueue_at IS NULL THEN NULL ELSE
             greatest(0, ceil(extract(epoch FROM predecessor.next_enqueue_at - clock_timestamp()))::bigint) END,
           'retry_overdue_seconds', CASE WHEN predecessor.next_enqueue_at IS NULL THEN NULL ELSE
@@ -524,7 +527,39 @@ LEFT JOIN LATERAL (
       WHEN error_message LIKE 'Webhook preparation failed:%' THEN 'preparation_failed'
       WHEN error_message LIKE 'Failed to retry existing failed job:%' THEN 'queue_retry_failed'
       ELSE 'other'
-    END AS error_kind
+    END AS error_kind,
+    -- FLAG: Error text is untrusted and may contain payloads. Emit fixed families only.
+    CASE
+      WHEN error_message IS NULL THEN 'none'
+      WHEN error_message ILIKE '%preparation lease was lost%' THEN 'preparation_lease_lost'
+      WHEN error_message ILIKE '%execution claim disappeared%' THEN 'execution_claim_missing'
+      WHEN error_message ILIKE '%Publisher webhook lifecycle boundary is unavailable%'
+        THEN 'publisher_boundary_unavailable'
+      WHEN error_message ILIKE '%foreign key constraint%' THEN 'foreign_key'
+      WHEN error_message ILIKE '%unique constraint%' OR error_message LIKE '%P2002%'
+        THEN 'unique_constraint'
+      WHEN error_message ILIKE '%record to update not found%' OR error_message LIKE '%P2025%'
+        THEN 'record_missing'
+      WHEN error_message ILIKE '%transaction already closed%' OR error_message LIKE '%P2028%'
+        THEN 'transaction_expired'
+      WHEN error_message ILIKE '%deadlock detected%' THEN 'deadlock'
+      WHEN error_message ILIKE '%could not serialize access%' THEN 'serialization_conflict'
+      WHEN error_message ILIKE '%statement timeout%' THEN 'statement_timeout'
+      WHEN error_message ILIKE '%request failed with status code 400%' THEN 'http_400'
+      WHEN error_message ILIKE '%request failed with status code 401%' THEN 'http_401'
+      WHEN error_message ILIKE '%request failed with status code 403%' THEN 'http_403'
+      WHEN error_message ILIKE '%request failed with status code 404%' THEN 'http_404'
+      WHEN error_message ILIKE '%request failed with status code 429%' THEN 'http_429'
+      WHEN error_message ILIKE '%cannot read properties of%' THEN 'invalid_object_state'
+      WHEN error_message ILIKE '%circular structure%' THEN 'circular_json'
+      WHEN error_message ILIKE '%invalid%invocation%' THEN 'prisma_invocation'
+      WHEN error_message ILIKE '%timeout%' OR error_message ILIKE '%timed out%' THEN 'timeout'
+      WHEN error_message ILIKE '%connection%' THEN 'connection'
+      ELSE 'other'
+    END AS error_family,
+    length(COALESCE(error_message, '')) >= 500 AS error_truncated,
+    substring(error_message FROM '/app/apps/api/dist/apps/api/src/webhook/webhook[.]service[.]js:([0-9]{1,7}):')::integer
+      AS webhook_service_line
   FROM webhook_events
   -- FLAG: Match the ordered-chat-head partial index; this is one exact chat from one oldest row.
   WHERE (

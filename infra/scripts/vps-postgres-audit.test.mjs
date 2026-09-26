@@ -542,6 +542,8 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
   ).oldest_ordering_predecessor;
   assert.equal(predecessor.enqueue_attempts, 17);
   assert.equal(predecessor.error_kind, 'preparation_failed');
+  assert.equal(predecessor.error_family, 'other');
+  assert.equal(predecessor.error_truncated, false);
   assert.equal(predecessor.retry_in_seconds, 0);
   assert.ok(predecessor.retry_overdue_seconds >= 30);
   assert.ok(predecessor.age_seconds >= 600);
@@ -550,6 +552,36 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
     null,
   );
   assert.doesNotMatch(JSON.stringify(retryReport), /private-chat|private-secret-error|fixture/u);
+  for (const [error, family] of [
+    ['Foreign key constraint violated: private-identity', 'foreign_key'],
+    ['Webhook preparation lease was lost before READY for private-event', 'preparation_lease_lost'],
+    ['Request failed with status code 400: private-payload', 'http_400'],
+    ['Invalid prisma.privateModel.create invocation: private-data', 'prisma_invocation'],
+    ['Cannot read properties of undefined: private-field', 'invalid_object_state'],
+  ]) {
+    await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+      `Webhook preparation failed: ${error}`,
+    ]);
+    const classified = await database.query(statement);
+    const classifiedReport = JSON.parse(Object.values(classified.rows[0])[0]);
+    assert.equal(
+      classifiedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+        .error_family,
+      family,
+    );
+    assert.doesNotMatch(JSON.stringify(classifiedReport), /private-/u);
+  }
+  await database.query("UPDATE webhook_events SET error_message = $1 WHERE status = 'FAILED'", [
+    'Webhook preparation failed: Invalid prisma.chat.upsert() invocation in /app/apps/api/dist/apps/api/src/webhook/webhook.service.js:1915:72\nprivate-data',
+  ]);
+  const located = await database.query(statement);
+  const locatedReport = JSON.parse(Object.values(located.rows[0])[0]);
+  assert.equal(
+    locatedReport.rows.find((row) => row.status === 'RECEIVED').oldest_ordering_predecessor
+      .webhook_service_line,
+    1915,
+  );
+  assert.doesNotMatch(JSON.stringify(locatedReport), /private-|\/app\/|upsert/u);
   await database.exec('SET enable_seqscan = off');
   const { rows: plans } = await database.query(
     `EXPLAIN (FORMAT JSON) SELECT enqueue_attempts, next_enqueue_at, error_message
