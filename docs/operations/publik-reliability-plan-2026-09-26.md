@@ -54,8 +54,10 @@ blocker: 28 SLOTS и 4 RECURRENCE, с активными расписаниям�
 готовые метаданные получателей. Уточнённая группировка по состоянию запуска и lifecycle
 показала: все 148 выбранных target slots текущих SCHEDULED относятся к просроченному
 `publisher_user_not_admin`; `metadata_ready` относится к историческим состояниям.
-Это повторяющиеся target slots, не 148 уникальных каналов. Отчёт не доказывает,
-что старый отказ всё ещё соответствует правам в MAX.
+Это повторяющиеся target slots, не 148 уникальных каналов. Сам первый отчёт не доказывал,
+что старый отказ всё ещё соответствует правам в MAX. После восстановления очереди
+повторный срез показал те же причины уже с `edge_unexpired=true`: штатная перепроверка
+обновила отказ. Нужна проверка прав автора, а не принудительный retry отправки.
 
 Код ACTOR_ACCESS объединяет недоступную/просроченную авторизацию, подключение,
 отсутствующий каталог и выключенную политику. Повтор каждые 60 секунд сам по себе не
@@ -96,10 +98,10 @@ ACTOR_ACCESS блокировки.
 | ------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | 1       | Ограниченная production-диагностика по публикациям, получателям и доставкам | Индексы до исполнения; не более 32 запусков на статус и 8 targets/deliveries на запуск; нет текста и IDs в выводе        | Реализовано, локально проверено и синхронизировано                              |
 | 2       | Исправить Prisma-проекцию, вызывающую глобальные задержки                   | Регрессия падает до исправления; реальные generated-client запросы чата/канала валидны; queue backlog сходится без purge | Выпущено: `b4fef123`; backlog сократился, strict smokes прошли                  |
-| 3       | Проверить восстановление доступа и точность blocker                         | Missing candidate номинируется под lifecycle/version fence; свежий DENIED не становится GRANTED без MAX                  | Реализовано, 223 целевых теста прошли; готовится выпуск                         |
-| 4       | Проверить NOW/расписания/recurrence/VK, медиа и crash boundaries            | Подтверждённый результат восстанавливается без send; timeout остаётся ambiguous; частичная отправка не теряется          | Проверены существующие границы; полные API-тесты первого выпуска прошли         |
+| 3       | Проверить восстановление доступа и точность blocker                         | Missing candidate номинируется под lifecycle/version fence; свежий DENIED не становится GRANTED без MAX                  | Выпущено: `1adf9525`; automatic/manual nomination и safety tests                |
+| 4       | Проверить NOW/расписания/recurrence/VK, медиа и crash boundaries            | Подтверждённый результат восстанавливается без send; timeout остаётся ambiguous; частичная отправка не теряется          | Проверены существующие границы; оба полных API check и exact-SHA CI прошли      |
 | 5       | Продуктовые причины задержек                                                | Автор видит access/setup/transient/ambiguous отдельно; recheck не является Retry; права не расширяются                   | Сохранены существующие UI-состояния; исправлен серверный разрыв ручного recheck |
-| 6       | Production выпуск и наблюдение                                              | Зелёные Required + CodeQL exact SHA, immutable API image, все 14 ролей, strict smokes и честное post-release окно        | Первый выпуск завершён, второй после полного validation/CI                      |
+| 6       | Production выпуск и наблюдение                                              | Зелёные Required + CodeQL exact SHA, immutable API image, все 14 ролей, strict smokes и честное post-release окно        | Оба выпуска завершены; результаты и ограничения наблюдения ниже                 |
 
 ## Современная архитектурная цель
 
@@ -138,13 +140,58 @@ Exact-SHA Required и CodeQL зелёные. Проверенный CI image з�
 повторов и обработки backlog лаг снизился до 0,4 секунды в отдельном срезе. Это возраст
 очереди, не latency публикаций. Readiness и обязательные локальные/публичные/OCR smokes
 прошли. В ограниченном журнале новых `Recorded webhook preparation failure` нет.
-Окончательное окно наблюдения записывается отдельно после второго выпуска.
+За завершённое окно `2026-09-26T10:31:30Z`–`10:46:00Z`: 58 capacity samples,
+полное покрытие, p95 возраста старейшего события 1,876 секунды, максимум 1,987 секунды;
+readiness/queue metrics/queue fence без отказов. Первые samples включают штатный
+stabilizing mode, поэтому весь интервал не объявляется полностью normal. Отдельный
+fleet sample не прошёл во время recycle OCR auxiliary; точечная проверка всех 14 API
+ролей показала ноль перезапусков, у изолированного OCR позднее было два, OOM=false.
+Этот отдельный native-boundary риск не скрывается сбросом счётчиков или отключением
+защиты. В позднем срезе очереди осталось по одному RECEIVED/QUEUED возрастом около
+секунды, без ordering predecessor. Старые FAILED и quarantine-маркеры не очищались.
 
 Восстановление actor edge: 14 suites / 223 tests прошли, включая producer-to-worker,
 сохранение concurrent grant/denial, отсутствие entity/binding, проигранный insert CAS,
 fresh-denial фильтр, выключенный automatic dispatch, ручной refresh и Redis failure.
 Локальный Docker daemon недоступен: новые проверки конкурентности используют mocks,
-а не реальный PostgreSQL. Полный API check и exact-SHA CI второго выпуска обязательны.
+а не реальный PostgreSQL. Полный локальный API check второго выпуска (`1adf9525`):
+593 suites / 13 246 passed, 24 environment-gated suites / 176 tests skipped;
+retention storage: 10 passed / 1 external-PostgreSQL race skipped. Typecheck/build,
+static (554 tool tests), docs и diff-check прошли. Exact-SHA CI `36236415330`
+завершился успешно, включая отдельные Redis и существующие PostgreSQL race suites.
+Новый отдельный PostgreSQL race-тест для actor nomination не добавлялся.
+CodeQL `36236415351` также прошёл, включая проверку открытых high-severity alerts.
+Второй verified CI image загружен штатным preload и развёрнут во всех 14 API-ролях
+с OCR auxiliary. Release: `release-20260926T105726Z-1adf95259102`.
+Миграций нет; PostgreSQL и Redis не пересоздавались. После version fence очередь
+возобновлена штатно, lag при обработке rollout backlog снизился с 234 до 148 секунд,
+затем до текущих событий. Ingress/admin live/ready, public live, OCR isolation и
+UDS raster smokes прошли до фиксации release manifest.
+
+После второго выпуска точечная проверка всех API-ролей и OCR показала running,
+restarts=0, OOM=false. Publisher status: dispatch enabled, runtime exact,
+global auth pause отсутствует, heartbeat свежий, secrets ready. В ограниченной
+выборке 396 записей трёх ролей нет `Recorded webhook preparation failure`,
+`Failed to enqueue scheduled publication actor access refresh` и
+`Publisher binding refresh scan failed`.
+
+Второе завершённое capacity-окно `2026-09-26T11:04:30Z`–`11:09:15Z`: 19 samples,
+полное покрытие, p50 возраста старейшего события 0,477 секунды, p95/max 4,489 секунды.
+Readiness, queue metrics, queue fence и fleet topology без отказов; перезапуски и
+сбросы счётчиков не наблюдались. Все samples ещё относятся к `stabilizing`, поэтому
+сводный статус отчёта остаётся degraded, несмотря на ready=200 и низкий queue lag.
+Это короткое post-release окно, не SLO или доказательство доставки конкретных постов.
+
+Это не подтверждение доставки всей истории: в одном post-release срезе оставалось
+25 IN_PROGRESS, включая target slots без подключения/со stale bot access, а старейшие
+32 SCHEDULED по-прежнему блокировались свежим `publisher_user_not_admin`.
+Состояния FAILED/AMBIGUOUS и существующие receipts не изменялись вручную. Для конкретной
+жалобы нужен авторизованный разбор точного запуска/получателя, а не массовый replay.
+
+Живые тестовые посты в MAX не создавались; диагностика production была read-only,
+кроме штатной выдачи ограниченных audit-role grants и развёртывания приложения.
+Автоматическая работа уже существующих пользовательских расписаний не подменялась
+ручным запуском или массовым replay.
 
 ## Последующие улучшения и критерии
 
