@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { PrismaService } from '../prisma/prisma.service';
+import type { Prisma } from '../prisma/prisma-client';
 import { MAX_SEND_AMBIGUOUS_ERROR_PREFIX } from '../max/max-send-ambiguity.util';
 import type { PublisherChatCommentAdmissionFailureReason } from '../publisher/publisher-chat-comment.queue';
 import {
@@ -83,7 +84,7 @@ type MarkerRow = {
   lockedAt: Date | null;
   botId: string | null;
   deliveryMode: string | null;
-  linkType: string | null;
+  linkType?: string | null;
   replacementMessageId: string | null;
   replyMessageId: string | null;
   replacementSendStartedAt: Date | null;
@@ -102,6 +103,25 @@ type MarkerPrisma = {
   channelAutoPostAttachMarker?: MarkerDelegate;
   chatAutoCommentAttachMarker?: MarkerDelegate;
 };
+
+// FLAG: Chat markers have no linkType column. Validate each projection against its own
+// generated model so optional Publisher comment preparation cannot poison webhook ordering.
+const CHAT_MARKER_CLAIM_SELECT = {
+  id: true,
+  status: true,
+  lockToken: true,
+  lockedAt: true,
+  botId: true,
+  deliveryMode: true,
+  replacementMessageId: true,
+  replyMessageId: true,
+  replacementSendStartedAt: true,
+  lastError: true,
+} as const satisfies Prisma.ChatAutoCommentAttachMarkerSelect;
+const CHANNEL_MARKER_CLAIM_SELECT = {
+  ...CHAT_MARKER_CLAIM_SELECT,
+  linkType: true,
+} as const satisfies Prisma.ChannelAutoPostAttachMarkerSelect;
 
 const ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const CHAT_AUTO_COMMENT_MARKER_ID_PREFIX = 'ccr1_';
@@ -982,19 +1002,7 @@ export class ReplacementAttachMarkerStore {
 
     const existing = await delegate.findUnique({
       where: { chatId_messageId: { chatId: params.chatId, messageId: params.messageId } },
-      select: {
-        id: true,
-        status: true,
-        lockToken: true,
-        lockedAt: true,
-        botId: true,
-        deliveryMode: true,
-        replacementMessageId: true,
-        replyMessageId: true,
-        replacementSendStartedAt: true,
-        lastError: true,
-        linkType: true,
-      },
+      select: kind === 'channel_auto_post' ? CHANNEL_MARKER_CLAIM_SELECT : CHAT_MARKER_CLAIM_SELECT,
     });
     if (existing?.status === 'SUCCEEDED') {
       return { status: 'done' };

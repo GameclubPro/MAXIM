@@ -133,6 +133,9 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
   LEFT JOIN publication_schedules s ON s.id = o.schedule_id
 ), target_candidates AS MATERIALIZED (
   SELECT o.id AS occurrence_id, o.actor_user_id, o.required_bot_id,
+    o.status AS occurrence_status, o.lifecycle,
+    CASE WHEN o.dispatch_blocker_code = 'PUBLISHER_ACTOR_ACCESS_REQUIRED'
+      THEN 'actor_access' WHEN o.dispatch_blocker_code IS NULL THEN 'none' ELSE 'other' END AS blocker,
     target.target_chat_id, target.entity_type, target.position
   FROM scoped o
   CROSS JOIN LATERAL (
@@ -146,7 +149,7 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
     FROM target_candidates
   ) ranked WHERE target_rank <= 8
 ), classified_targets AS MATERIALIZED (
-  SELECT t.occurrence_id,
+  SELECT t.occurrence_id, t.occurrence_status, t.lifecycle, t.blocker,
     CASE
       WHEN t.required_bot_id IS NULL OR b.publisher_bot_id IS DISTINCT FROM t.required_bot_id
         THEN 'binding_missing_or_wrong_bot'
@@ -207,7 +210,8 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
     lifecycle, schedule_status, schedule_mode, audience_mode, count(*) AS occurrences
   FROM scoped GROUP BY 1, 2, 3, 4, 5
 ), target_counts AS (
-  SELECT reason, denial, edge_unexpired, count(*) AS targets FROM classified_targets GROUP BY 1, 2, 3
+  SELECT occurrence_status, lifecycle, blocker, reason, denial, edge_unexpired, count(*) AS targets
+  FROM classified_targets GROUP BY 1, 2, 3, 4, 5, 6
 ), delivery_counts AS (
   SELECT status, has_remote_id, attempt_count > 0 AS attempted, count(*) AS deliveries
   FROM delivery_sample GROUP BY 1, 2, 3

@@ -2,6 +2,7 @@ import {
   persistChannelAutoPostPreDispatchFailureEvidence,
   ReplacementAttachMarkerStore,
 } from './replacement-attach-marker.store';
+import { PrismaClient } from '../prisma/prisma-client';
 
 type TestMarkerRow = {
   id: string;
@@ -120,6 +121,62 @@ const channelClaim = {
   linkType: null,
   hasEngagementButtons: true,
 };
+
+describe('ReplacementAttachMarkerStore generated Prisma query validation', () => {
+  it.each(['chat_auto_comment', 'channel_auto_post'] as const)(
+    'uses only fields belonging to the %s model',
+    async (kind) => {
+      const queryRaw = jest.fn(async () => ({ columnNames: [], columnTypes: [], rows: [] }));
+      const client = new PrismaClient({
+        adapter: {
+          provider: 'postgres',
+          adapterName: 'query-validation-fixture',
+          connect: async () => ({
+            provider: 'postgres',
+            adapterName: 'query-validation-fixture',
+            queryRaw,
+            executeRaw: async () => 0,
+            dispose: async () => undefined,
+          }),
+        } as never,
+      });
+      const marker = createMarkerDelegate();
+      const findUnique = jest.fn(async (args: never) =>
+        kind === 'chat_auto_comment'
+          ? client.chatAutoCommentAttachMarker.findUnique(args)
+          : client.channelAutoPostAttachMarker.findUnique(args),
+      );
+      const store = new ReplacementAttachMarkerStore({
+        auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+        [kind === 'chat_auto_comment'
+          ? 'chatAutoCommentAttachMarker'
+          : 'channelAutoPostAttachMarker']: {
+          ...marker.delegate,
+          findUnique,
+        },
+      } as never);
+      try {
+        const result =
+          kind === 'chat_auto_comment'
+            ? await store.claimChatAutoComment({
+                chatId: 'fixture-chat',
+                messageId: 'fixture-message',
+                source: 'webhook',
+                botId: 'fixture-bot',
+              })
+            : await store.claimChannelAutoPost({ ...channelClaim, messageId: 'fixture-message' });
+        expect(result.status).toBe('claimed');
+        expect(queryRaw).toHaveBeenCalled();
+        const query = findUnique.mock.calls.at(-1)?.[0] as unknown as {
+          select: Record<string, unknown>;
+        };
+        expect(query.select.linkType).toBe(kind === 'channel_auto_post' ? true : undefined);
+      } finally {
+        await client.$disconnect();
+      }
+    },
+  );
+});
 
 function publisherAdmissionMarker(overrides: Partial<TestMarkerRow> = {}): TestMarkerRow {
   return {
