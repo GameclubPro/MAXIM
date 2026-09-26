@@ -122,6 +122,7 @@ const LazyChannelDialogNotificationSheet = lazy(
   () => import('../components/channel-dialog-notification-sheet'),
 );
 const CommentThemeSheet = lazy(() => import('../components/comment-theme-sheet'));
+const CommentCopyAction = lazy(() => import('../components/comment-copy-action'));
 const CommentComposeEmojiPicker = lazy(() => import('../components/comment-compose-emoji-picker'));
 const MaxRichTextEditor = lazy(async () => {
   const module = await import('../components/max-rich-text-editor');
@@ -2275,12 +2276,17 @@ export function ChannelDialogPage({
       const bubbleRect = bubble.getBoundingClientRect();
       const composeSurface = screen.querySelector<HTMLElement>('.channel-dialog-compose__surface');
       const composeTop = composeSurface?.getBoundingClientRect().top ?? screenRect.bottom;
-      const popoverHeight =
-        reactionPopoverRef.current?.getBoundingClientRect().height ??
-        (isReactionPickerExpanded ? 168 : 108);
       const availableWidth = Math.max(220, Math.min(screenRect.width - 24, 304));
-      const topBoundary = viewportRect.top + 6;
-      const bottomBoundary = Math.min(viewportRect.bottom - 8, composeTop - 8);
+      const visual = window.visualViewport;
+      const topBoundary = Math.max(viewportRect.top + 6, (visual?.offsetTop ?? 0) + 6);
+      const bottomBoundary = Math.min(
+        viewportRect.bottom - 8,
+        composeTop - 8,
+        (visual ? visual.offsetTop + visual.height : window.innerHeight) - 8,
+      );
+      const popover = reactionPopoverRef.current;
+      if (popover) popover.style.maxHeight = `${Math.max(0, bottomBoundary - topBoundary)}px`;
+      const popoverHeight = popover?.getBoundingClientRect().height ?? 108;
       const topSpace = bubbleRect.top - topBoundary;
       const bottomSpace = bottomBoundary - bubbleRect.bottom;
       const placeBelow = topSpace < popoverHeight + 10 && bottomSpace > topSpace;
@@ -2324,15 +2330,22 @@ export function ChannelDialogPage({
     };
 
     requestLayout();
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(requestLayout);
+    observer?.observe(viewport);
+    if (reactionPopoverRef.current) observer?.observe(reactionPopoverRef.current);
     viewport.addEventListener('scroll', requestLayout, { passive: true });
     window.addEventListener('resize', requestLayout);
     window.visualViewport?.addEventListener('resize', requestLayout);
+    window.visualViewport?.addEventListener('scroll', requestLayout);
 
     return () => {
       cancelAnimationFrame(frameId);
+      observer?.disconnect();
       viewport.removeEventListener('scroll', requestLayout);
       window.removeEventListener('resize', requestLayout);
       window.visualViewport?.removeEventListener('resize', requestLayout);
+      window.visualViewport?.removeEventListener('scroll', requestLayout);
     };
   }, [activeMessageId, activeMessageIsOwn, isReactionPickerExpanded]);
 
@@ -3206,10 +3219,7 @@ export function ChannelDialogPage({
     }
 
     maxImpact('soft');
-    setEditingMessageId(null);
-    setEditRestoreState(null);
-    setDraft('');
-    setDraftAttachments([]);
+    if (editingMessageId) cancelEditing({ restoreDraft: true });
     setReplyToMessageId(message.id);
     setIsComposeEmojiOpen(false);
     dismissMessageActions();
@@ -5037,6 +5047,15 @@ export function ChannelDialogPage({
                     </div>
 
                     <div className="channel-dialog-reaction-popover__rail-actions">
+                      {activeMessage.text ? (
+                        <Suspense fallback={null}>
+                          <CommentCopyAction
+                            key={activeMessage.id}
+                            text={activeMessage.text}
+                            onCopied={dismissMessageActions}
+                          />
+                        </Suspense>
+                      ) : null}
                       <button
                         type="button"
                         className={cn(

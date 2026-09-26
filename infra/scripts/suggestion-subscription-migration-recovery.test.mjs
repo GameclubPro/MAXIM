@@ -107,6 +107,19 @@ test('metadata guard fails closed for duplicates, drift, prior application, and 
   }
 });
 
+test('oversized compressed migration logs cannot authorize recovery or require a full log scan', async () => {
+  const { db, read } = await fixture();
+  try {
+    await db.query('UPDATE _prisma_migrations SET logs = $1', ['55P03'.repeat(20_000)]);
+    const report = await read();
+    assert.equal(report.metadata.records[0].failure, 'oversized');
+    assert.throws(() => verifyRecoveryState(report, checksum));
+  } finally {
+    await db.close();
+  }
+  assert.match(recoveryAuditSql, /pg_total_relation_size/);
+});
+
 test('preview never mutates; apply resets only the failed attempt and verifies the receipt', async () => {
   const { db, read } = await fixture();
   const calls = [];

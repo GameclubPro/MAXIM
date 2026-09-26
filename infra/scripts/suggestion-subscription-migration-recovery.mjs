@@ -55,7 +55,7 @@ SELECT json_build_object(
     SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = 'public' AND t.typname IN ('suggestion_subscription_watches', 'suggestion_subscription_publications')
   ),
-  'metadata', CASE WHEN pg_relation_size('public._prisma_migrations') <= 8388608 THEN (
+  'metadata', CASE WHEN pg_total_relation_size('public._prisma_migrations') <= 8388608 THEN (
     SELECT json_build_object(
       'other_failed', EXISTS (
         SELECT 1 FROM public._prisma_migrations
@@ -65,6 +65,7 @@ SELECT json_build_object(
       'records', (SELECT COALESCE(json_agg(x), '[]'::json) FROM (
         SELECT id, checksum, finished_at IS NOT NULL AS finished, applied_steps_count,
           CASE
+            WHEN octet_length(logs) > 65536 THEN 'oversized'
             WHEN logs LIKE '%55P03%' OR logs LIKE '%lock timeout%' THEN 'lock_timeout'
             WHEN logs LIKE '%57014%' OR logs LIKE '%statement timeout%' THEN 'statement_timeout'
             WHEN logs LIKE '%40P01%' THEN 'deadlock'

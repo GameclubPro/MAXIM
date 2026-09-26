@@ -425,6 +425,13 @@
     -webkit-touch-callout: none;
   }
 
+  .channel-dialog-screen--comments .channel-dialog-reaction-popover {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    border-radius: 8px;
+  }
+
   :root .channel-dialog-screen--comments[data-comment-theme] .channel-dialog-compose__toolbar {
     grid-template-columns: minmax(0, 1fr);
     padding-bottom: 6px;

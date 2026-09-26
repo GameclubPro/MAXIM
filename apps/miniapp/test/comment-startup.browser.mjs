@@ -217,7 +217,7 @@ try {
     if (!baseline)
       assert.ok(
         !resources.some((entry) =>
-          /max-rich-text-editor-|max-markdown-editor-|comment-theme-sheet-|comment-compose-emoji-picker-/u.test(
+          /max-rich-text-editor-|max-markdown-editor-|comment-theme-sheet-|comment-compose-emoji-picker-|comment-copy-action-/u.test(
             entry.name,
           ),
         ),

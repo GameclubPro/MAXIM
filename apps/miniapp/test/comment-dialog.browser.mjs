@@ -107,6 +107,7 @@ try {
         reducedMotion: 'reduce',
         locale: 'ru-RU',
       });
+      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
       await context.route('https://st.max.ru/js/max-web-app.js', (route) =>
         route.fulfill({ body: '' }),
       );
@@ -309,10 +310,94 @@ try {
       await page.getByRole('button', { name: 'Перейти к 1 новым комментариям' }).click();
       await assertLatestVisible(page, 'jump to unread');
 
+      await field.fill('Черновик перед ответом');
+      await page.locator('.channel-dialog-compose input[type="file"]:not([accept])').setInputFiles({
+        name: 'draft.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('draft attachment'),
+      });
+      await page.locator('.channel-dialog-compose__attachment').waitFor();
       await page.locator('.channel-dialog-message__bubble').last().press('Enter');
       await page.getByRole('button', { name: 'Ответить', exact: true }).click();
+      assert.equal(
+        await field.inputValue(),
+        'Черновик перед ответом',
+        'reply preserves the existing draft',
+      );
+      assert.equal(
+        await page.locator('.channel-dialog-compose__attachment').count(),
+        1,
+        'reply preserves attachments',
+      );
       await assertLatestVisible(page, 'reply strip');
       await page.getByRole('button', { name: 'Отменить ответ', exact: true }).click();
+      await page.locator('.channel-dialog-message__bubble').last().press('Enter');
+      await page.getByRole('button', { name: 'Изменить', exact: true }).click();
+      await field.fill('Несохранённое изменение');
+      await page.locator('.channel-dialog-message__bubble').last().press('Enter');
+      await page.getByRole('button', { name: 'Ответить', exact: true }).click();
+      assert.equal(
+        await field.inputValue(),
+        'Черновик перед ответом',
+        'reply from editing restores the original draft',
+      );
+      assert.equal(await page.locator('.channel-dialog-compose__attachment').count(), 1);
+      await page.getByRole('button', { name: 'Отменить ответ', exact: true }).click();
+      await page.locator('.channel-dialog-compose__attachment-dismiss').click();
+
+      await page.evaluate(() => {
+        window.commentCopiedText = null;
+        window.readCommentClipboard = navigator.clipboard.readText.bind(navigator.clipboard);
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            writeText: async (text) => {
+              window.commentCopiedText = text;
+            },
+          },
+        });
+      });
+      const copyText = await page
+        .locator('.channel-dialog-message__bubble')
+        .last()
+        .locator('p')
+        .allTextContents();
+      await page.locator('.channel-dialog-message__bubble').last().press('Enter');
+      await page.getByRole('button', { name: 'Копировать', exact: true }).click();
+      await actions.waitFor({ state: 'hidden' });
+      assert.equal(await page.evaluate(() => window.commentCopiedText), copyText.join('\n'));
+      assert.equal(await field.inputValue(), 'Черновик перед ответом');
+      await page.getByRole('button', { name: 'Закрыть уведомление', exact: true }).click();
+      await page.evaluate(() => {
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+      });
+      await page.locator('.channel-dialog-message__bubble').last().press('Enter');
+      await page.getByRole('button', { name: 'Копировать', exact: true }).click();
+      await actions.waitFor({ state: 'hidden' });
+      assert.equal(await page.evaluate(() => window.readCommentClipboard()), copyText.join('\n'));
+      assert.equal(
+        await page.locator('textarea').count(),
+        1,
+        'legacy copy removes its temporary field',
+      );
+      assert.equal(await field.inputValue(), 'Черновик перед ответом');
+      await page.getByRole('button', { name: 'Закрыть уведомление', exact: true }).click();
+      await page.evaluate(() =>
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            writeText: async () => {
+              throw new Error('denied');
+            },
+          },
+        }),
+      );
+      await page.locator('.channel-dialog-message__bubble').last().press('Enter');
+      await page.getByRole('button', { name: 'Копировать', exact: true }).click();
+      await page.getByText('Не удалось скопировать текст', { exact: true }).waitFor();
+      await actions.waitFor();
+      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: 'Закрыть уведомление', exact: true }).click();
 
       await field.fill('Черновик до редактирования');
       await page.locator('.channel-dialog-message__bubble').last().press('Enter');
@@ -350,6 +435,23 @@ try {
       await field.fill('С открытой клавиатурой\nВторая строка\nТретья строка');
       await page.setViewportSize({ width: viewport.width, height: 360 });
       await assertLatestVisible(page, 'resize keyboard with files');
+      await page.locator('.channel-dialog-message__bubble').last().press('Enter');
+      await page.getByRole('button', { name: 'Показать больше реакций', exact: true }).click();
+      await page.waitForFunction(() => {
+        const menu = document
+          .querySelector('.channel-dialog-reaction-popover')
+          .getBoundingClientRect();
+        const header = document
+          .querySelector('.channel-dialog-comments-header')
+          .getBoundingClientRect();
+        const composer = document.querySelector('.channel-dialog-compose').getBoundingClientRect();
+        return menu.top >= header.bottom && menu.bottom <= composer.top;
+      });
+      await page.screenshot({
+        path: path.join(output, `${profile.name}-${mode}-keyboard-menu.png`),
+      });
+      await page.keyboard.press('Escape');
+      await field.focus();
       assert.ok(
         await field.evaluate((element) => element.scrollTop > 0),
         'end caret remains visible after keyboard resize',
