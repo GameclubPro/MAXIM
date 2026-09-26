@@ -529,12 +529,44 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
     'timeout_quarantined',
   );
   assert.doesNotMatch(JSON.stringify(fencedReport), /private-chat|private-nonce/u);
+  await database.exec(`
+    UPDATE webhook_events SET enqueue_attempts = 17,
+      next_enqueue_at = now() - interval '30 seconds',
+      error_message = 'Webhook preparation failed: private-secret-error'
+    WHERE status = 'FAILED';
+  `);
+  const retryResult = await database.query(statement);
+  const retryReport = JSON.parse(Object.values(retryResult.rows[0])[0]);
+  const predecessor = retryReport.rows.find(
+    (row) => row.status === 'RECEIVED',
+  ).oldest_ordering_predecessor;
+  assert.equal(predecessor.enqueue_attempts, 17);
+  assert.equal(predecessor.error_kind, 'preparation_failed');
+  assert.equal(predecessor.retry_in_seconds, 0);
+  assert.ok(predecessor.retry_overdue_seconds >= 30);
+  assert.ok(predecessor.age_seconds >= 600);
+  assert.equal(
+    retryReport.rows.find((row) => row.status === 'QUEUED').oldest_ordering_predecessor,
+    null,
+  );
+  assert.doesNotMatch(JSON.stringify(retryReport), /private-chat|private-secret-error|fixture/u);
   await database.exec('SET enable_seqscan = off');
   const { rows: plans } = await database.query(
     `EXPLAIN (FORMAT JSON) SELECT enqueue_attempts, next_enqueue_at, error_message
      FROM webhook_events WHERE status = 'RECEIVED' ORDER BY created_at ASC LIMIT 1`,
   );
   assert.match(JSON.stringify(plans), /webhook_events_status_created_at_idx/u);
+  await database.exec(
+    readFileSync(
+      resolve(
+        root,
+        'apps/api/prisma/migrations/20260815123000_add_webhook_ordered_chat_head_index/migration.sql',
+      ),
+      'utf8',
+    ).replace('CREATE INDEX CONCURRENTLY', 'CREATE INDEX'),
+  );
+  const predecessorPlan = await database.query(`EXPLAIN (FORMAT JSON) ${statement}`);
+  assert.match(JSON.stringify(predecessorPlan.rows), /webhook_events_ordered_chat_head_idx/u);
 });
 
 test('monitor signal audit bounds both indexed source samples before aggregation', (t) => {

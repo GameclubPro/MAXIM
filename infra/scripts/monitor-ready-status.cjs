@@ -135,8 +135,9 @@ function summarizeReadyHealth(readyProbe, adminProbe) {
     softWarning: queueLag.softWarning === true,
     softWarningCode: queueLag.softWarning === true ? safeToken(queueLag.softWarningCode) : 'none',
     rawOk: typeof queueLag.rawOk === 'boolean' ? String(queueLag.rawOk) : 'unknown',
-    bots: bots.length,
-    botsWithRecentFailedEvents,
+    // FLAG: Readiness only carries optional cached fleet detail, never an authoritative census.
+    bots: bots.length > 0 ? bots.length : 'unknown',
+    botsWithRecentFailedEvents: bots.length > 0 ? botsWithRecentFailedEvents : 'unknown',
   };
   const healthy =
     summary.readyHttpOk &&
@@ -241,7 +242,7 @@ if (require.main === module || __filename === '[stdin]') {
           'queueLagSec=unknown queueOk=false db=false redis=false apiAdminReady=false ' +
           'apiAdminStatus=unavailable apiAdminSchema=false apiAdminDb=false ' +
           'apiAdminRedis=false softWarning=false softWarningCode=none ' +
-          'rawOk=unknown bots=0 botsWithRecentFailedEvents=0\n',
+          'rawOk=unknown bots=unknown botsWithRecentFailedEvents=unknown\n',
       );
       process.exitCode = 1;
     });

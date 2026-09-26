@@ -198,13 +198,10 @@ export class WebhookSloService {
           },
           take: this.sampleLimit + 1,
         }),
+        // FLAG: Backlog is not a receipt-window metric. Separate exact-status reads use
+        // the status/created_at index and must retain old or previously enqueued receipts.
         this.prisma.webhookEvent.findFirst({
-          where: {
-            createdAt: createdAtWindow,
-            status: {
-              in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED],
-            },
-          },
+          where: { status: WebhookStatus.RECEIVED },
           select: {
             id: true,
             createdAt: true,
@@ -214,11 +211,7 @@ export class WebhookSloService {
           },
         }),
         this.prisma.webhookEvent.findFirst({
-          where: {
-            createdAt: createdAtWindow,
-            status: WebhookStatus.RECEIVED,
-            queuedAt: null,
-          },
+          where: { status: WebhookStatus.QUEUED },
           select: {
             id: true,
             createdAt: true,
@@ -268,8 +261,8 @@ export class WebhookSloService {
         failedEvents,
         loadedProcessedSample,
         loadedEnqueueSample,
-        oldestUnprocessed,
         oldestPendingEnqueue,
+        oldestQueued,
         lastProcessed,
         lastQueued,
         executionClaims,
@@ -277,6 +270,12 @@ export class WebhookSloService {
       ingress,
     ] = await Promise.all([databaseSnapshotPromise, ingressPromise]);
 
+    const oldestUnprocessed =
+      oldestPendingEnqueue && oldestQueued
+        ? oldestPendingEnqueue.createdAt <= oldestQueued.createdAt
+          ? oldestPendingEnqueue
+          : oldestQueued
+        : (oldestPendingEnqueue ?? oldestQueued);
     const processedSampleTruncated = loadedProcessedSample.length > this.sampleLimit;
     const enqueueSampleTruncated = loadedEnqueueSample.length > this.sampleLimit;
     const processedSample = loadedProcessedSample.slice(0, this.sampleLimit);

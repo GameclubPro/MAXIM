@@ -447,6 +447,16 @@ SELECT json_build_object(
       END,
       'oldest_preparation_state', oldest.preparation_state,
       'oldest_ordering_fence', predecessor.fence,
+      'oldest_ordering_predecessor', CASE WHEN predecessor.fence IS NULL THEN NULL ELSE
+        json_build_object(
+          'age_seconds', greatest(0, floor(extract(epoch FROM clock_timestamp() - predecessor.created_at))::bigint),
+          'enqueue_attempts', predecessor.enqueue_attempts,
+          'error_kind', predecessor.error_kind,
+          'retry_in_seconds', CASE WHEN predecessor.next_enqueue_at IS NULL THEN NULL ELSE
+            greatest(0, ceil(extract(epoch FROM predecessor.next_enqueue_at - clock_timestamp()))::bigint) END,
+          'retry_overdue_seconds', CASE WHEN predecessor.next_enqueue_at IS NULL THEN NULL ELSE
+            greatest(0, floor(extract(epoch FROM clock_timestamp() - predecessor.next_enqueue_at))::bigint) END
+        ) END,
       'oldest_age_seconds', CASE
         WHEN oldest_created_at IS NULL THEN 0
         ELSE greatest(
@@ -498,7 +508,23 @@ LEFT JOIN LATERAL (
     WHEN status = 'FAILED'::"WebhookStatus" THEN 'retry_pending'
     WHEN status = 'QUEUED'::"WebhookStatus" THEN 'queued_predecessor'
     ELSE 'received_predecessor'
-  END AS fence
+  END AS fence,
+    created_at,
+    enqueue_attempts,
+    next_enqueue_at,
+    -- FLAG: Classify only the exact indexed predecessor; never return its error text or identity.
+    CASE
+      WHEN error_message IS NULL THEN 'pristine'
+      WHEN error_message LIKE 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:%' THEN 'timeout_quarantined'
+      WHEN error_message LIKE 'Webhook preparation deferred: canonical webhook preparation%'
+        THEN 'canonical_pending'
+      WHEN error_message LIKE 'Webhook preparation deferred: Committed membership denial cache%'
+        THEN 'membership_cache_pending'
+      WHEN error_message LIKE 'Webhook preparation deferred:%' THEN 'preparation_deferred'
+      WHEN error_message LIKE 'Webhook preparation failed:%' THEN 'preparation_failed'
+      WHEN error_message LIKE 'Failed to retry existing failed job:%' THEN 'queue_retry_failed'
+      ELSE 'other'
+    END AS error_kind
   FROM webhook_events
   -- FLAG: Match the ordered-chat-head partial index; this is one exact chat from one oldest row.
   WHERE (

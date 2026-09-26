@@ -58,7 +58,9 @@ export class PublisherStartProcessor extends WorkerHost {
     }
     const { publisherBotId, privateChatId, requestedAt } = job.data;
     if (
-      job.data.version !== 1 ||
+      // FLAG: Legacy jobs can be restored from before their Redis-only dispatch fence.
+      // Only v2 producers belong to the durable-ledger delivery protocol.
+      job.data.version !== 2 ||
       !job.id ||
       publisherBotId !== this.botRegistry.getPublisherBotDescriptor().id ||
       !isPrivateDirectChatId(privateChatId)
@@ -75,7 +77,7 @@ export class PublisherStartProcessor extends WorkerHost {
     );
     let dispatchClaimed = false;
     try {
-      await this.maxClient.sendMessageImmediateWithId(
+      await this.maxClient.sendMessage(
         privateChatId,
         buildPublisherStartText(this.config.get<string>('APP_BASE_URL')),
         {
@@ -86,7 +88,13 @@ export class PublisherStartProcessor extends WorkerHost {
               : []),
             [{ type: 'link', text: 'Поддержка', url: SUPPORT_CHAT_URL }],
           ],
-          beforeSend: async () => {
+        },
+        {
+          // FLAG: Use the existing PostgreSQL send ledger before any MAX attempt. Keep the
+          // original job identity across retries, worker crashes and Redis snapshot restores.
+          immediate: true,
+          idempotencyKey: job.id,
+          beforeImmediateSendMutation: async () => {
             // FLAG: Persist before POST /messages. A stalled or ambiguous send must never replay.
             if (job.data.dispatchStarted)
               throw new UnrecoverableError('Publisher greeting already attempted');
@@ -97,8 +105,6 @@ export class PublisherStartProcessor extends WorkerHost {
             dispatchClaimed = true;
             await job.updateData({ ...job.data, dispatchStarted: true });
           },
-        },
-        {
           botId: publisherBotId,
           trafficClass: 'interactive',
           actionHealthLane: 'background',

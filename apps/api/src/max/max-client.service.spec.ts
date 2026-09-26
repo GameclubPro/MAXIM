@@ -44,6 +44,9 @@ import {
 import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
 import { AdminDialogLinkHelper } from '../admin/admin-dialog-link-helper';
 import { readInternalChannelDialogButtonIdentity } from '../common/channel-dialog-button-identity.util';
+import { PublisherStartProcessor } from '../publisher/publisher-start.processor';
+import type { PublisherStartJob } from '../publisher/publisher-start.queue';
+import type { Job } from 'bullmq';
 
 const TINY_JPEG_BASE64 =
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
@@ -1757,6 +1760,106 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await service.onModuleDestroy();
   });
+
+  it.each([false, true])(
+    'keeps the Publisher greeting fence after Redis job restoration (ambiguous=%s)',
+    async (ambiguous) => {
+      const previousRole = process.env.APP_ROLE;
+      const previousService = process.env.APP_SERVICE_NAME;
+      process.env.APP_ROLE = 'publisher';
+      process.env.APP_SERVICE_NAME = 'api-publisher';
+      let claimed = false;
+      let dispatchToken: string | null = null;
+      let remoteMessageId: string | null = null;
+      const actionLedgerService = {
+        isIrreversibleAction: jest.fn().mockReturnValue(true),
+        assertCanEnqueue: jest.fn(async () => {
+          if (dispatchToken && !remoteMessageId) throw new UnrecoverableError('manual review');
+        }),
+        recordStarted: jest.fn().mockResolvedValue(undefined),
+        recordSucceeded: jest.fn().mockResolvedValue(undefined),
+        recordFailed: jest.fn().mockResolvedValue(undefined),
+        getCompletedSendDispatchResult: jest.fn(async () =>
+          remoteMessageId
+            ? { remoteMessageId, dispatchBotId: '777000_bot', completedAt: new Date() }
+            : null,
+        ),
+        claimSendDispatch: jest.fn(async () => {
+          if (dispatchToken) throw new UnrecoverableError('retained dispatch');
+          dispatchToken = 'durable-token';
+          return { kind: 'claimed', dispatchToken };
+        }),
+        completeSendDispatch: jest.fn(async (_job, _token, messageId) => {
+          remoteMessageId = messageId;
+          return new Date();
+        }),
+        recordAmbiguousSendDispatch: jest.fn().mockResolvedValue(true),
+      };
+      const httpService = {
+        request: jest.fn(() =>
+          ambiguous
+            ? throwError(() => Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }))
+            : of({ status: 200, data: { message_id: 'publisher-greeting' } }),
+        ),
+      };
+      const service = createService(httpService, {}, undefined, actionLedgerService);
+      const processor = new PublisherStartProcessor(
+        service,
+        { getPublisherBotDescriptor: () => ({ id: '777000_bot' }) } as never,
+        { buildMiniappStartUrlSync: () => null } as never,
+        { get: () => undefined } as never,
+        { assertDispatchEnabled: () => undefined } as never,
+        { assertAttested: async () => undefined } as never,
+        { assertDispatchAllowed: async () => undefined } as never,
+        {
+          claimDispatch: async () => {
+            if (claimed) return false;
+            claimed = true;
+            return true;
+          },
+        } as never,
+      );
+      const original: PublisherStartJob = {
+        version: 2,
+        publisherBotId: '777000_bot',
+        privateChatId: '123',
+        requestedAt: new Date().toISOString(),
+      };
+      const restoredJob = () => {
+        const job = {
+          id: 'publisher-start-snapshot-fixture',
+          data: { ...original },
+          updateData: async (data: PublisherStartJob) => {
+            job.data = data;
+          },
+        };
+        return job as unknown as Job<PublisherStartJob>;
+      };
+      try {
+        if (ambiguous) await expect(processor.process(restoredJob())).rejects.toThrow();
+        else await processor.process(restoredJob());
+        expect(httpService.request).toHaveBeenCalledTimes(1);
+        expect(actionLedgerService.claimSendDispatch).toHaveBeenCalledTimes(1);
+        claimed = false;
+        (Redis as unknown as { __store: Map<string, unknown> }).__store.clear();
+        if (ambiguous)
+          await expect(processor.process(restoredJob())).rejects.toThrow('manual review');
+        else await processor.process(restoredJob());
+        expect(httpService.request).toHaveBeenCalledTimes(1);
+        expect(actionLedgerService.claimSendDispatch).toHaveBeenCalledTimes(1);
+        const jobs = actionLedgerService.assertCanEnqueue.mock.calls as unknown as [MaxActionJob][];
+        expect(jobs).toHaveLength(2);
+        expect(jobs[0][0].idempotencyKey).toBe(jobs[1][0].idempotencyKey);
+        expect(jobs[0][0]).toMatchObject({ botId: '777000_bot', sourceTag: 'publisher_start' });
+      } finally {
+        await service.onModuleDestroy();
+        if (previousRole === undefined) delete process.env.APP_ROLE;
+        else process.env.APP_ROLE = previousRole;
+        if (previousService === undefined) delete process.env.APP_SERVICE_NAME;
+        else process.env.APP_SERVICE_NAME = previousService;
+      }
+    },
+  );
 
   it('rejects an ephemeral send guard on queued dispatch', async () => {
     const beforeImmediateSendMutation = jest.fn();

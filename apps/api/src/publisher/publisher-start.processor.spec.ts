@@ -23,7 +23,7 @@ describe('PublisherStartProcessor', () => {
     const job = {
       id: 'start-1',
       data: {
-        version: 1,
+        version: 2,
         publisherBotId: 'publisher-bot',
         privateChatId: '123',
         requestedAt: new Date().toISOString(),
@@ -33,8 +33,9 @@ describe('PublisherStartProcessor', () => {
       }),
     };
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(async (_chat, _text, options) => {
-        await options.beforeSend();
+      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(async (_chat, _text, _options, dispatchOptions) => {
+        await dispatchOptions.beforeImmediateSendMutation();
         return { messageId: 'sent-1' };
       }),
     };
@@ -79,7 +80,7 @@ describe('PublisherStartProcessor', () => {
     expect(text).toContain(USER_AGREEMENT_START_NOTICE);
     expect(text).toContain('автопостинг из VK.');
     expect(text).not.toContain('Настройки модерации');
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '123',
       text,
       expect.objectContaining({
@@ -106,13 +107,41 @@ describe('PublisherStartProcessor', () => {
     );
     expect(job.data.dispatchStarted).toBe(true);
     await processor.process(job);
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('uses the configured legal document origin', () => {
     expect(buildPublisherStartText('https://example.test/')).toContain(
       '[пользовательское соглашение](https://example.test/app/legal/agreement)',
     );
+  });
+
+  it('uses the durable immediate send path with a stable bot-bound identity', async () => {
+    const { processor, job, maxClient } = fixture();
+    const durableSend = jest.fn().mockResolvedValue({ messageId: 'durable-message' });
+    Object.assign(maxClient, { sendMessage: durableSend });
+    job.data.version = 2;
+    await processor.process(job);
+    expect(durableSend).toHaveBeenCalledWith(
+      '123',
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({
+        immediate: true,
+        botId: 'publisher-bot',
+        idempotencyKey: job.id,
+        beforeImmediateSendMutation: expect.any(Function),
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
+
+  it('does not send restored legacy jobs without a durable dispatch history', async () => {
+    const { processor, job, maxClient } = fixture();
+    job.data.version = 1;
+    await expect(processor.process(job)).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('refuses another role or bot identity', async () => {
@@ -122,7 +151,7 @@ describe('PublisherStartProcessor', () => {
     process.env.APP_ROLE = 'publisher';
     job.data.publisherBotId = 'major-bot';
     await expect(processor.process(job)).rejects.toBeInstanceOf(UnrecoverableError);
-    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('checks runtime, identity and dispatch health before touching the send fence', async () => {
@@ -137,20 +166,22 @@ describe('PublisherStartProcessor', () => {
       if (guard === 'identity') identity.assertAttested.mockRejectedValue(error);
       if (guard === 'health') health.assertDispatchAllowed.mockRejectedValue(error);
       await expect(processor.process(job)).rejects.toThrow();
-      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(queue.claimDispatch).not.toHaveBeenCalled();
     }
   });
 
   it('does not automatically retry an ambiguous send', async () => {
     const { processor, job, maxClient } = fixture();
-    maxClient.sendMessageImmediateWithId.mockImplementationOnce(async (_chat, _text, options) => {
-      await options.beforeSend();
-      throw new Error('timeout');
-    });
+    maxClient.sendMessage.mockImplementationOnce(
+      async (_chat, _text, _options, dispatchOptions) => {
+        await dispatchOptions.beforeImmediateSendMutation();
+        throw new Error('timeout');
+      },
+    );
     await expect(processor.process(job)).rejects.toBeInstanceOf(UnrecoverableError);
     await processor.process(job);
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('fences competing workers and refuses to send when persisting the marker fails', async () => {
@@ -165,7 +196,7 @@ describe('PublisherStartProcessor', () => {
   it('allows preparation failures to retry without claiming dispatch', async () => {
     const { processor, job, maxClient, queue } = fixture();
     const error = new Error('rate limited before dispatch');
-    maxClient.sendMessageImmediateWithId.mockRejectedValueOnce(error);
+    maxClient.sendMessage.mockRejectedValueOnce(error);
     await expect(processor.process(job)).rejects.toBe(error);
     expect(queue.claimDispatch).not.toHaveBeenCalled();
     expect(job.updateData).not.toHaveBeenCalled();
@@ -175,6 +206,6 @@ describe('PublisherStartProcessor', () => {
     const { processor, job, maxClient } = fixture();
     job.data.requestedAt = '2020-01-01T00:00:00Z';
     await processor.process(job);
-    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 });

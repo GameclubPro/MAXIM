@@ -47,7 +47,7 @@ describe('PublisherStartQueueService', () => {
     expect(queue.add).toHaveBeenCalledWith(
       'greet',
       {
-        version: 1,
+        version: 2,
         publisherBotId,
         privateChatId: '123',
         requestedAt: now.toISOString(),

@@ -16,7 +16,7 @@ export function isFreshPublisherStart(requestedAt: string): boolean {
 }
 
 export type PublisherStartJob = {
-  version: 1;
+  version: 1 | 2;
   publisherBotId: string;
   privateChatId: string;
   requestedAt: string;
@@ -78,7 +78,7 @@ export class PublisherStartQueueService {
     await this.queue.add(
       'greet',
       {
-        version: 1,
+        version: 2,
         publisherBotId: this.publisherBotId,
         privateChatId,
         requestedAt: requestedAt.toISOString(),

@@ -358,6 +358,7 @@ test('readiness monitor returns zero for two healthy 200 responses', async () =>
   assert.equal(lines.length, 1);
   assert.match(lines[0], /ready ok=true status=200 schema=true mode=normal/u);
   assert.match(lines[0], /apiAdminReady=true apiAdminStatus=200/u);
+  assert.match(lines[0], /bots=unknown botsWithRecentFailedEvents=unknown/u);
 });
 
 test('readiness parser fails closed on incomplete and contradictory 200 payloads', () => {
