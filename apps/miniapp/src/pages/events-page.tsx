@@ -159,6 +159,7 @@ type SpammerDiagnosticsTarget = {
 };
 type ScoreMeterStyle = CSSProperties & { '--spammer-score': string };
 type PendingScopeAction = {
+  chatId: string;
   id: string;
   userId: string;
   action: Extract<ManualModerationAction, 'MUTE' | 'BAN'>;
@@ -2712,19 +2713,37 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
   });
   const participantModerationMutation = useMutation({
     retry: false,
-    mutationFn: ({ userId, payload }: { userId: string; payload: ManualModerationActionRequest }) =>
-      applyManualModerationAction(api, chatId ?? '', userId, payload),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ['chat-sanctions', chatId] });
-      setPendingScopeAction((current) => (current?.source === 'participant' ? null : current));
-      setParticipantSavedVersion((value) => value + 1);
+    mutationFn: ({
+      chatId: actionChatId,
+      userId,
+      payload,
+    }: {
+      chatId: string;
+      userId: string;
+      payload: ManualModerationActionRequest;
+    }) => applyManualModerationAction(api, actionChatId, userId, payload),
+    onSuccess: (result, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['chat-sanctions', variables.chatId] });
+      setPendingScopeAction((current) =>
+        current?.source === 'participant' &&
+        current.chatId === variables.chatId &&
+        current.userId === variables.userId
+          ? null
+          : current,
+      );
+      if (
+        selectedParticipant?.chatId === variables.chatId &&
+        selectedParticipant.userId === variables.userId
+      )
+        setParticipantSavedVersion((value) => value + 1);
       void queryClient.invalidateQueries({
-        queryKey: participantDetailsKey(chatId ?? '', result.userId),
+        queryKey: participantDetailsKey(variables.chatId, result.userId),
       });
       pushToast({
         tone: 'success',
         title: describeManualModerationFeedback(result),
       });
+      if (variables.chatId !== chatId) return;
       void dashboardQuery.refetch();
       void participantsIdentityQuery.refetch();
       if (section === 'participants') void participantsFeed.retry();
@@ -2891,11 +2910,14 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     setParticipantTarget(null);
+    setPendingScopeAction(null);
+    setPendingScopeChoice(null);
+    setSpammerDiagnosticsTarget(null);
   }, [chatId]);
 
-  const openPendingScopeAction = (action: PendingScopeAction) => {
+  const openPendingScopeAction = (action: Omit<PendingScopeAction, 'chatId'>) => {
     setPendingScopeChoice(null);
-    setPendingScopeAction(action);
+    setPendingScopeAction({ ...action, chatId: chatId ?? '' });
   };
   const closePendingScopeAction = () => {
     if (
@@ -2909,7 +2931,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
     setPendingScopeAction(null);
   };
   const applyPendingScopeAction = (scope: ManualModerationScopeChoice) => {
-    if (!pendingScopeAction || scopeActionLock.current) {
+    if (!pendingScopeAction || pendingScopeAction.chatId !== chatId || scopeActionLock.current) {
       return;
     }
 
@@ -2925,6 +2947,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
     }
 
     participantModerationMutation.mutate({
+      chatId: pendingScopeAction.chatId,
       userId: pendingScopeAction.userId,
       payload: {
         action: pendingScopeAction.action,
@@ -3869,7 +3892,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
 
       <ActionConfirmSheet
         id={pendingScopeAction?.id ?? 'manual-moderation-scope'}
-        open={Boolean(pendingScopeAction)}
+        open={Boolean(pendingScopeAction && pendingScopeAction.chatId === chatId)}
         title={
           pendingScopeAction?.action === 'BAN' ? 'Блокировка участника' : 'Ограничение сообщений'
         }

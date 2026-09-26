@@ -18,7 +18,7 @@ test('participant editors keep named back navigation and stable control surfaces
   assert.match(participantSheetSource, /isTopmostModalDialog/u);
   assert.match(
     participantSheetSource,
-    /<div id=\{MUTE_COMPOSER_ID\} className="participant-sheet__composer">/u,
+    /id=\{MUTE_COMPOSER_ID\}[\s\S]*?className="participant-sheet__composer"[\s\S]*?ref=\{editorRef\}[\s\S]*?tabIndex=\{-1\}/u,
   );
   assert.match(
     participantSheetSource,

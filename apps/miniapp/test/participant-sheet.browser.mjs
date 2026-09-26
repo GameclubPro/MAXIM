@@ -35,6 +35,26 @@ const actions = () => page.evaluate(() => window.participantSheetTest.actions);
 try {
   await fresh();
   await page.getByRole('button', { name: 'Без сообщений', exact: true }).click();
+  await page.waitForFunction(
+    () => document.activeElement?.id === 'participant-sheet-mute-composer',
+  );
+  await page.getByRole('button', { name: '6 ч', exact: true }).click();
+  await page.getByRole('button', { name: 'К участнику', exact: true }).click();
+  await page.getByRole('button', { name: 'Отменить изменения', exact: true }).click();
+  await page.waitForFunction(() =>
+    document.activeElement?.classList.contains('participant-sheet__action--mute'),
+  );
+  await page.getByRole('button', { name: 'Без сообщений', exact: true }).click();
+  assert.equal(
+    await page.getByRole('slider', { name: 'Срок ограничения в часах' }).inputValue(),
+    '24',
+  );
+  console.log(
+    'PASS: editor focus returns to its command and discarding resets the unsaved duration',
+  );
+
+  await fresh();
+  await page.getByRole('button', { name: 'Без сообщений', exact: true }).click();
   await page.getByRole('button', { name: '6 ч', exact: true }).click();
   assert.equal(
     await page.getByRole('slider', { name: 'Срок ограничения в часах' }).inputValue(),

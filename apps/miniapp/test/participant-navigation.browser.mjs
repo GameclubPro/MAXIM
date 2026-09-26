@@ -128,6 +128,26 @@ try {
       await card.waitFor();
       await card.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
       assert.equal(await page.locator('.sanction-details').isVisible(), true);
+      await page
+        .locator('.sanction-details')
+        .getByRole('button', { name: 'Закрыть панель', exact: true })
+        .click();
+      await page.getByRole('radio', { name: 'Журнал', exact: true }).click();
+      await page.locator('.event-feed-item__person').first().click();
+      await card.getByRole('button', { name: 'Заблокировать', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Блокировка участника', exact: true }).waitFor();
+      await page.evaluate(() => {
+        history.pushState(
+          null,
+          '',
+          '/app/chat/preview-other/events?preview=1&section=moderation&moderationView=history',
+        );
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      });
+      await card.waitFor({ state: 'detached' });
+      await page
+        .getByRole('dialog', { name: 'Блокировка участника', exact: true })
+        .waitFor({ state: 'detached' });
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
         true,

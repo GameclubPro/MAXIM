@@ -347,13 +347,31 @@ export function ChatParticipantSheet({
   const [draftDirty, setDraftDirty] = useState(false);
   const [discardEditorOpen, setDiscardEditorOpen] = useState(false);
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open || (!activeComposer && !editorTriggerRef.current)) return;
+    const frame = window.requestAnimationFrame(() => {
+      const panel = document.querySelector<HTMLElement>('.participant-card[role="dialog"]');
+      if (!panel || !isTopmostModalDialog(panel)) return;
+      if (activeComposer) {
+        editorRef.current?.focus();
+        return;
+      }
+      const selector = editorTriggerRef.current?.classList.contains(
+        'participant-sheet__action--mute',
+      )
+        ? '.participant-sheet__action--mute'
+        : '.participant-sheet__action--immunity';
+      panel.querySelector<HTMLButtonElement>(selector)?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeComposer, open]);
   const backToOverview = () => {
     if (draftDirty) {
       setDiscardEditorOpen(true);
       return;
     }
     setActiveComposer(null);
-    editorTriggerRef.current?.focus();
   };
 
   useNativeBackHandler(
@@ -759,7 +777,12 @@ export function ChatParticipantSheet({
         ) : null}
 
         {canManageParticipant && isMuteComposerOpen ? (
-          <div id={MUTE_COMPOSER_ID} className="participant-sheet__composer">
+          <div
+            id={MUTE_COMPOSER_ID}
+            className="participant-sheet__composer"
+            ref={editorRef}
+            tabIndex={-1}
+          >
             <div className="participant-sheet__composer-head">
               <div className="participant-sheet__label-with-info">
                 <span className="participant-sheet__composer-title">Без сообщений</span>
@@ -825,6 +848,8 @@ export function ChatParticipantSheet({
           <div
             id={IMMUNITY_COMPOSER_ID}
             className="participant-sheet__composer participant-sheet__composer--stack"
+            ref={editorRef}
+            tabIndex={-1}
           >
             <div className="participant-sheet__composer-head">
               <div className="participant-sheet__label-with-info">
@@ -1004,6 +1029,7 @@ export function ChatParticipantSheet({
         onConfirm={() => {
           setDiscardEditorOpen(false);
           setDraftDirty(false);
+          setMuteDurationHours(24);
           immunityDraftStartedRef.current = false;
           setActiveComposer(null);
         }}

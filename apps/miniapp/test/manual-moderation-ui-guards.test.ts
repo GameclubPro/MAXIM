@@ -41,6 +41,26 @@ test('disabled confirmation actions have a visible state', () => {
   assert.match(confirmSheetCss, /\.action-confirm-sheet__button:disabled\s*\{[\s\S]*?opacity:/u);
 });
 
+test('participant confirmations and mutation results stay bound to their original chat and user', () => {
+  assert.match(
+    eventsPageSource,
+    /setPendingScopeAction\(\{ \.\.\.action, chatId: chatId \?\? '' \}\)/u,
+  );
+  assert.match(eventsPageSource, /pendingScopeAction\.chatId !== chatId/u);
+  assert.match(
+    eventsPageSource,
+    /open=\{Boolean\(pendingScopeAction && pendingScopeAction\.chatId === chatId\)\}/u,
+  );
+  assert.match(
+    eventsPageSource,
+    /applyManualModerationAction\(api, actionChatId, userId, payload\)/u,
+  );
+  assert.match(
+    eventsPageSource,
+    /selectedParticipant\?\.chatId === variables\.chatId &&[\s\S]*?selectedParticipant\.userId === variables\.userId/u,
+  );
+});
+
 test('history actions keep the confirmation visible until the request settles', () => {
   const start = eventsPageSource.indexOf('function ViolationModerationControls');
   assert.ok(start >= 0);
