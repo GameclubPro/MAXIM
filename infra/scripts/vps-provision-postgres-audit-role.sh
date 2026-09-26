@@ -22,7 +22,9 @@ local Docker-socket access under the production pg_hba rules, with:
   - table SELECT only on webhook_events/moderation_events
   - exact Antiduplicate column SELECT grants and pg_read_all_stats membership
   - ten rules-publication metadata columns; no rules text, media, links, or settings
-  - fourteen Publisher comment readiness columns; no messages, identities, or tokens
+  - sixteen Publisher binding/comment metadata columns
+  - forty-three publication/access metadata columns; IDs are join-only and never report output
+  - no publication content, media, tokens or raw permission payloads
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
 
@@ -118,7 +120,10 @@ BEGIN
         'chat_rules',
         'chat_settings',
         'moderation_delete_intents',
-        'moderation_delete_intent_reasons'
+        'moderation_delete_intent_reasons',
+        'publications', 'publication_schedules', 'publication_occurrences',
+        'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
+        'managed_broadcast_deliveries', 'chats'
       )
     GROUP BY table_name
   LOOP
@@ -137,7 +142,7 @@ GRANT USAGE ON SCHEMA public TO maxim_audit;
 GRANT SELECT ON TABLE public.webhook_events, public.moderation_events TO maxim_audit;
 GRANT SELECT (
   chat_id, status, bot_access_state, bot_access_checked_at,
-  bot_access_expires_at, send_route_quarantined_until
+  bot_access_expires_at, send_route_quarantined_until, publisher_bot_id, last_webhook_at
 ) ON TABLE public.publisher_entity_bindings TO maxim_audit;
 GRANT SELECT (
   chat_id, chat_comments_enabled, chat_comments_admins_enabled,
@@ -169,6 +174,18 @@ GRANT SELECT (
   reason_key,
   rule_code
 ) ON TABLE public.moderation_delete_intent_reasons TO maxim_audit;
+GRANT SELECT (id, actor_user_id, lifecycle, audience_mode, audience_selection, dispatch_profile, required_bot_id)
+  ON TABLE public.publications TO maxim_audit;
+GRANT SELECT (id, mode, status, revision) ON TABLE public.publication_schedules TO maxim_audit;
+GRANT SELECT (id, publication_id, schedule_id, status, scheduled_at, dispatch_profile, required_bot_id, dispatch_blocker_code)
+  ON TABLE public.publication_occurrences TO maxim_audit;
+GRANT SELECT (publication_id, target_chat_id, entity_type, position) ON TABLE public.publication_targets TO maxim_audit;
+GRANT SELECT (chat_id, user_id, bot_id, state, user_role, entity_type, checked_at, expires_at, denied_reason)
+  ON TABLE public.managed_entity_access_edges TO maxim_audit;
+GRANT SELECT (bot_id, chat_id, status, entity_type) ON TABLE public.managed_bot_chat_catalog TO maxim_audit;
+GRANT SELECT (publication_occurrence_id, created_at, status, attempt_count, remote_message_id)
+  ON TABLE public.managed_broadcast_deliveries TO maxim_audit;
+GRANT SELECT (id, entity_type) ON TABLE public.chats TO maxim_audit;
 GRANT pg_read_all_stats TO maxim_audit;
 
 ALTER ROLE maxim_audit RESET ALL;
@@ -358,7 +375,7 @@ BEGIN
       AND NOT (
         (relation.relname = 'publisher_entity_bindings' AND attribute.attname IN (
           'chat_id', 'status', 'bot_access_state', 'bot_access_checked_at',
-          'bot_access_expires_at', 'send_route_quarantined_until'
+          'bot_access_expires_at', 'send_route_quarantined_until', 'publisher_bot_id', 'last_webhook_at'
         ))
         OR (relation.relname = 'publisher_entity_settings' AND attribute.attname IN (
           'chat_id', 'chat_comments_enabled', 'chat_comments_admins_enabled',
@@ -367,7 +384,7 @@ BEGIN
         OR (relation.relname = 'managed_entity_publication_policies'
           AND attribute.attname IN ('chat_id', 'publik_enabled'))
       )
-  ) OR 14 <> (
+  ) OR 16 <> (
     SELECT count(*) FROM information_schema.role_column_grants
     WHERE grantee = 'maxim_audit' AND table_schema = 'public'
       AND table_name IN (
@@ -376,6 +393,40 @@ BEGIN
       ) AND privilege_type = 'SELECT'
   ) THEN
     RAISE EXCEPTION 'maxim_audit Publisher metadata privileges are not exact';
+  END IF;
+
+  IF 43 <> (
+    SELECT count(*) FROM information_schema.role_column_grants
+    WHERE grantee = 'maxim_audit' AND table_schema = 'public' AND privilege_type = 'SELECT'
+      AND table_name IN ('publications', 'publication_schedules', 'publication_occurrences',
+        'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
+        'managed_broadcast_deliveries', 'chats')
+  ) OR EXISTS (
+    SELECT 1 FROM pg_class relation
+    JOIN pg_namespace ns ON ns.oid = relation.relnamespace
+    JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+    WHERE ns.nspname = 'public' AND relation.relname IN (
+      'publications', 'publication_schedules', 'publication_occurrences', 'publication_targets',
+      'managed_entity_access_edges', 'managed_bot_chat_catalog', 'managed_broadcast_deliveries', 'chats')
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND has_column_privilege('maxim_audit', relation.oid, attribute.attnum, 'SELECT')
+      AND NOT (
+        (relation.relname = 'publications' AND attribute.attname IN
+          ('id', 'actor_user_id', 'lifecycle', 'audience_mode', 'audience_selection', 'dispatch_profile', 'required_bot_id'))
+        OR (relation.relname = 'publication_schedules' AND attribute.attname IN ('id', 'mode', 'status', 'revision'))
+        OR (relation.relname = 'publication_occurrences' AND attribute.attname IN
+          ('id', 'publication_id', 'schedule_id', 'status', 'scheduled_at', 'dispatch_profile', 'required_bot_id', 'dispatch_blocker_code'))
+        OR (relation.relname = 'publication_targets' AND attribute.attname IN
+          ('publication_id', 'target_chat_id', 'entity_type', 'position'))
+        OR (relation.relname = 'managed_entity_access_edges' AND attribute.attname IN
+          ('chat_id', 'user_id', 'bot_id', 'state', 'user_role', 'entity_type', 'checked_at', 'expires_at', 'denied_reason'))
+        OR (relation.relname = 'managed_bot_chat_catalog' AND attribute.attname IN ('bot_id', 'chat_id', 'status', 'entity_type'))
+        OR (relation.relname = 'managed_broadcast_deliveries' AND attribute.attname IN
+          ('publication_occurrence_id', 'created_at', 'status', 'attempt_count', 'remote_message_id'))
+        OR (relation.relname = 'chats' AND attribute.attname IN ('id', 'entity_type'))
+      )
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit publication metadata privileges are not exact';
   END IF;
 
   IF EXISTS (
@@ -396,6 +447,9 @@ BEGIN
               'publisher_entity_settings',
               'managed_entity_publication_policies',
               'chat_rules',
+              'publications', 'publication_schedules', 'publication_occurrences',
+              'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
+              'managed_broadcast_deliveries', 'chats',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'

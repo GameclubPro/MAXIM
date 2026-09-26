@@ -29,6 +29,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|all]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -71,6 +72,13 @@ SIGNAL_WINDOW_MIN=''
 RULES_CLEANUP_CHAT_ID=''
 RULES_CLEANUP_EXPLAIN=''
 case "$AUDIT_MODE" in
+  publisher-publications)
+    if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
+      usage
+      exit 2
+    fi
+    RULES_CLEANUP_EXPLAIN="${2:-}"
+    ;;
   rules-cleanup|publisher-comments)
     if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
           ( $# -eq 3 && "$3" != '--explain' ) ]]; then
@@ -192,7 +200,7 @@ SELECT CASE
         AND NOT (
           (relation.relname = 'publisher_entity_bindings' AND attribute.attname IN (
             'chat_id', 'status', 'bot_access_state', 'bot_access_checked_at',
-            'bot_access_expires_at', 'send_route_quarantined_until'
+            'bot_access_expires_at', 'send_route_quarantined_until', 'publisher_bot_id', 'last_webhook_at'
           ))
           OR (relation.relname = 'publisher_entity_settings' AND attribute.attname IN (
             'chat_id', 'chat_comments_enabled', 'chat_comments_admins_enabled',
@@ -348,6 +356,9 @@ SELECT CASE
               'publisher_entity_settings',
               'managed_entity_publication_policies',
               'chat_rules',
+              'publications', 'publication_schedules', 'publication_occurrences',
+              'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
+              'managed_broadcast_deliveries', 'chats',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -1321,6 +1332,11 @@ emit_legacy_default_webhook_audit() {
 
 emit_sql() {
   emit_prelude
+  local publication_privilege_args=(--privileges)
+  if [[ "$AUDIT_MODE" == 'publisher-publications' ]]; then
+    publication_privilege_args+=(--require-all)
+  fi
+  node "$ROOT_DIR/infra/scripts/publisher-publications-audit.mjs" "${publication_privilege_args[@]}"
   case "$AUDIT_MODE" in
     queue)
       emit_queue_audit
@@ -1347,6 +1363,13 @@ emit_sql() {
         publisher_args+=("$RULES_CLEANUP_EXPLAIN")
       fi
       node "$ROOT_DIR/infra/scripts/publisher-comments-audit.mjs" "${publisher_args[@]}"
+      ;;
+    publisher-publications)
+      local publication_args=()
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        publication_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/publisher-publications-audit.mjs" "${publication_args[@]}"
       ;;
     all)
       emit_queue_audit

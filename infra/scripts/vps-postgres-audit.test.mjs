@@ -16,6 +16,10 @@ import test from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
 import { buildRulesCleanupAuditSql } from './rules-cleanup-audit.mjs';
 import { buildPublisherCommentsAuditSql } from './publisher-comments-audit.mjs';
+import {
+  buildPublisherPublicationsAuditSql,
+  buildPublisherPublicationPrivilegesSql,
+} from './publisher-publications-audit.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const audit = resolve(root, 'infra/scripts/vps-postgres-audit.sh');
@@ -199,7 +203,7 @@ function extractAuditColumnResetSql() {
   const revokeEndMarker = '$revoke_audit_columns$;';
   const revokeEnd = source.indexOf(revokeEndMarker, revokeStart) + revokeEndMarker.length;
   const grantStart = source.indexOf('GRANT SELECT (', revokeEnd);
-  const grantEndMarker = ') ON TABLE public.moderation_delete_intent_reasons TO maxim_audit;';
+  const grantEndMarker = 'ON TABLE public.chats TO maxim_audit;';
   const grantEnd = source.indexOf(grantEndMarker, grantStart) + grantEndMarker.length;
   assert.notEqual(revokeStart, -1);
   assert.ok(revokeEnd >= revokeEndMarker.length);
@@ -300,7 +304,10 @@ test('queue audit uses the dedicated role and a hard read-only resource envelope
   assert.match(sql, /WHERE webhook_events\.status = queue_statuses\.status/u);
   assert.match(sql, /ORDER BY webhook_events\.created_at ASC\n {4}LIMIT 2001/u);
   assert.match(sql, /'sample_cap_per_status', 2000/u);
-  assert.doesNotMatch(sql, /raw_payload|source_ip|user_id|masked_excerpt/u);
+  assert.doesNotMatch(
+    sql.slice(sql.indexOf('WITH queue_statuses(status) AS')),
+    /raw_payload|source_ip|user_id|masked_excerpt/u,
+  );
   assert.doesNotMatch(
     sql,
     /'error_message'|'next_enqueue_at'|'normalized_payload'|'message_chat_id'/u,
@@ -617,8 +624,42 @@ test('monitor signal audit bounds both indexed source samples before aggregation
   assert.equal([...sql.matchAll(/LIMIT 2001/gu)].length, 2);
   assert.match(sql, /LIMIT 2000/u);
   assert.doesNotMatch(
-    sql,
+    sql.slice(sql.indexOf('WITH webhook_statuses(status) AS')),
     /raw_payload|normalized_payload|error_message|source_ip|user_id|masked_excerpt/u,
+  );
+});
+
+test('Publisher publication audit uses only fixed bounded SQL and an optional plain EXPLAIN', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['publisher-publications', '--explain']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /publisher_publication_audit_ready/u);
+  assert.match(sql, /publisher_publication_indexes_ready/u);
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) WITH statuses/u);
+  assert.doesNotMatch(sql, /EXPLAIN ANALYZE|raw_payload|publisher_dialog_context/u);
+  for (const args of [
+    ['publisher-publications', 'private-id'],
+    ['publisher-publications', '--explain', 'extra'],
+  ]) {
+    assert.notEqual(runAudit(data, args).status, 0);
+    assert.notEqual(
+      spawnSync('bash', [connect, 'postgres-audit', ...args], {
+        cwd: root,
+        env: baseEnv(data),
+        encoding: 'utf8',
+      }).status,
+      0,
+    );
+  }
+  assert.equal(
+    spawnSync('bash', [connect, 'postgres-audit', 'publisher-publications', '--explain'], {
+      cwd: root,
+      env: baseEnv(data),
+      encoding: 'utf8',
+    }).status,
+    0,
   );
 });
 
@@ -759,7 +800,8 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     CREATE TABLE publisher_entity_bindings (
       chat_id TEXT PRIMARY KEY, status TEXT, bot_access_state TEXT,
       bot_access_checked_at TIMESTAMP, bot_access_expires_at TIMESTAMP,
-      send_route_quarantined_until TIMESTAMP, publisher_bot_id TEXT
+      send_route_quarantined_until TIMESTAMP, publisher_bot_id TEXT,
+      last_webhook_at TIMESTAMP, bot_access_source TEXT
     );
     CREATE TABLE publisher_entity_settings (
       chat_id TEXT PRIMARY KEY, chat_comments_enabled BOOLEAN,
@@ -861,9 +903,17 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     SET enable_seqscan = off;
     SET enable_bitmapscan = off;
   `);
+  await database.exec(
+    readFileSync(resolve(root, 'infra/scripts/test-fixtures/publisher-publications.sql'), 'utf8'),
+  );
   const columnResetSql = extractAuditColumnResetSql();
   await database.exec(columnResetSql);
   await database.exec(columnResetSql);
+  const publicationPrivileges = buildPublisherPublicationPrivilegesSql(true).split('\\gset')[0];
+  assert.equal(
+    (await database.query(publicationPrivileges)).rows[0].publisher_publication_audit_ready,
+    true,
+  );
 
   const privilegeResult = await database.query(`
     SELECT
@@ -941,12 +991,14 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
   const verificationSql = extractProvisionVerificationSql();
   await database.exec(verificationSql);
 
-  await database.exec('GRANT SELECT (publisher_bot_id) ON publisher_entity_bindings TO PUBLIC;');
+  await database.exec('GRANT SELECT (bot_access_source) ON publisher_entity_bindings TO PUBLIC;');
   await assert.rejects(
     database.exec(verificationSql),
     /Publisher metadata privileges are not exact/u,
   );
-  await database.exec('REVOKE SELECT (publisher_bot_id) ON publisher_entity_bindings FROM PUBLIC;');
+  await database.exec(
+    'REVOKE SELECT (bot_access_source) ON publisher_entity_bindings FROM PUBLIC;',
+  );
   await database.exec(`
     INSERT INTO publisher_entity_bindings
       (chat_id, status, bot_access_state, bot_access_expires_at)
@@ -965,6 +1017,10 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
       CURRENT_TIMESTAMP, 'private rules content');
   `);
   await database.exec('SET SESSION AUTHORIZATION maxim_audit;');
+  assert.equal(
+    (await database.query(buildPublisherPublicationsAuditSql())).rows[0].json_build_object.audit,
+    'publisher_publications',
+  );
   const rulesReport = (await database.query(buildRulesCleanupAuditSql('-123'))).rows[0]
     .json_build_object;
   assert.equal(rulesReport.pending_cleanup_bot_id, 'previous-bot');
@@ -999,7 +1055,7 @@ test('duplicate SQL executes, grants converge, and each bounded source has an in
     assert.match(commentsPlan, new RegExp(`${table}_pkey`, 'u'));
   }
   await assert.rejects(
-    database.query('SELECT publisher_bot_id FROM publisher_entity_bindings'),
+    database.query('SELECT bot_access_source FROM publisher_entity_bindings'),
     /permission denied/u,
   );
   await database.exec('SET SESSION AUTHORIZATION postgres;');

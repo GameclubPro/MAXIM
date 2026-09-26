@@ -52,6 +52,7 @@ Commands:
   postgres-audit [queue|activity|duplicate|publication-schema|all]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
+  postgres-audit publisher-publications [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-suggestion-subscription-migration [--apply]
                               Run fixed, bounded, privacy-safe PostgreSQL diagnostics
@@ -303,6 +304,15 @@ ERROR
 
 postgres_audit() {
   local mode="${1:-all}"
+
+  if [[ "$mode" == 'publisher-publications' ]]; then
+    if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
+      echo "Usage: postgres-audit publisher-publications [--explain]" >&2
+      exit 2
+    fi
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
 
   if [[ "$mode" == 'rules-cleanup' || "$mode" == 'publisher-comments' ]]; then
     if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
