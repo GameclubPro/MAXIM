@@ -9,6 +9,7 @@ import {
 import { createPortal } from 'react-dom';
 import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
 import { EditPencil, Undo } from 'iconoir-react';
+import { AppIcon } from '../components/ui/app-icon';
 import {
   FilterGlyph,
   HOME_ENTITY_FAVORITE_ICONS,
@@ -66,17 +67,7 @@ type HomeEntitySheetsProps = {
 };
 
 function CheckGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path
-        d="M5 12.4l4.2 4.1L19 7"
-        stroke="currentColor"
-        strokeWidth="2.1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+  return <AppIcon icon="Check" {...props} />;
 }
 
 function HomeSheet({

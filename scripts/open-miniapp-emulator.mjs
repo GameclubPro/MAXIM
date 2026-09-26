@@ -1,7 +1,13 @@
 import process from 'node:process';
-import { chromium, devices } from 'playwright';
+import { chromium, webkit } from 'playwright';
+import {
+  captureBrowserLaunchOptions,
+  readPhoneMetrics,
+  resolveCaptureDevice,
+} from './miniapp-smartphone.mjs';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
 import {
+  allocateMiniappBaseUrl,
   ensureMiniappDevServer,
   isLocalMiniappBaseUrl,
   stopChildProcess,
@@ -17,7 +23,7 @@ const deviceProfiles = previewDevicePresets;
 
 function printUsage() {
   console.log(`Usage:
-  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/'] [--theme light|dark] [--target device|native] [--max-bridge|--no-max-bridge]
+  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/'] [--theme light|dark] [--target smartphone|device|native] [--max-bridge|--no-max-bridge]
   npm run emulator:miniapp -- [--base-url http://127.0.0.1:3000/app/] [--reuse-server]
 
 Environment:
@@ -25,7 +31,9 @@ Environment:
   MINIAPP_EMULATOR_ROUTE
   MINIAPP_EMULATOR_BASE_URL
   MINIAPP_EMULATOR_COLOR_SCHEME=light|dark
-  MINIAPP_EMULATOR_TARGET=device|native
+  MINIAPP_EMULATOR_TARGET=smartphone|device|native (default: smartphone)
+  MINIAPP_EMULATOR_BROWSER=auto|webkit|chromium
+  MINIAPP_PHONE_METRICS_PATH=/absolute/path/to/phone-metrics.json
   MINIAPP_EMULATOR_MAX_BRIDGE=1
   MINIAPP_EMULATOR_REUSE_SERVER=1
   MINIAPP_EMULATOR_HEADLESS=1
@@ -207,41 +215,47 @@ async function main() {
     .trim()
     .toLowerCase();
   const route = (args.route ?? process.env.MINIAPP_EMULATOR_ROUTE ?? '/').trim() || '/';
-  const baseUrl = (
+  let baseUrl = (
     args.baseUrl ??
     process.env.MINIAPP_EMULATOR_BASE_URL ??
     LOCAL_MINIAPP_BASE_URL
   ).trim();
-  const target = (args.target ?? process.env.MINIAPP_EMULATOR_TARGET ?? 'device')
+  const target = (args.target ?? process.env.MINIAPP_EMULATOR_TARGET ?? 'smartphone')
     .trim()
     .toLowerCase();
   const colorScheme = (args.colorScheme ?? process.env.MINIAPP_EMULATOR_COLOR_SCHEME ?? 'light')
     .trim()
     .toLowerCase();
   const envMaxBridge = optionalEnvFlag('MINIAPP_EMULATOR_MAX_BRIDGE');
-  const maxBridgeEnabled = args.maxBridge ?? envMaxBridge ?? target === 'native';
+  const nativeTarget = target === 'native' || target === 'smartphone';
+  const maxBridgeEnabled = args.maxBridge ?? envMaxBridge ?? nativeTarget;
   const reuseServer = args.reuseServer ?? envFlag('MINIAPP_EMULATOR_REUSE_SERVER');
+  if (!reuseServer && !args.baseUrl && !process.env.MINIAPP_EMULATOR_BASE_URL?.trim()) {
+    baseUrl = await allocateMiniappBaseUrl(baseUrl);
+  }
   const headless = args.headless ?? envFlag('MINIAPP_EMULATOR_HEADLESS');
   const timeoutMs =
     args.timeoutMs ?? envNumber('MINIAPP_EMULATOR_TIMEOUT_MS') ?? (headless ? 1_500 : 0);
-  const profile = deviceProfiles[deviceKey];
+  let profile = deviceProfiles[deviceKey];
 
   if (!profile) {
     throw new Error('Device must be one of: android, iphone, iphone-se');
   }
 
-  if (target !== 'device' && target !== 'native') {
-    throw new Error('Target must be one of: device, native');
+  if (!['smartphone', 'device', 'native'].includes(target)) {
+    throw new Error('Target must be one of: smartphone, device, native');
   }
 
   if (colorScheme !== 'light' && colorScheme !== 'dark') {
     throw new Error('Theme must be one of: light, dark');
   }
 
-  const device = devices[profile.viewportName];
-  if (!device) {
-    throw new Error(`Unknown Playwright device profile: ${profile.viewportName}`);
-  }
+  const capture = resolveCaptureDevice(profile, {
+    target,
+    engine: process.env.MINIAPP_EMULATOR_BROWSER,
+    metrics: await readPhoneMetrics(process.env.MINIAPP_PHONE_METRICS_PATH),
+  });
+  profile = capture.profile;
 
   const previewUrl = buildPreviewUrl(baseUrl, route, profile.queryDevice);
   const shouldManageDevServer = !reuseServer && isLocalMiniappBaseUrl(baseUrl);
@@ -273,20 +287,22 @@ async function main() {
     }
 
     try {
-      browser = await chromium.launch({
-        headless,
-      });
+      browser = await { chromium, webkit }[capture.browserName].launch(
+        captureBrowserLaunchOptions(capture.browserName, baseUrl, headless),
+      );
     } catch (error) {
-      throw formatLaunchError(error);
+      throw new Error(
+        `Cannot launch ${capture.browserName}. Run npx playwright install --with-deps ${capture.browserName}. ${formatLaunchError(error).message}`,
+      );
     }
 
     const context = await browser.newContext({
-      ...device,
+      ...capture.contextOptions,
       colorScheme,
       locale: 'ru-RU',
       timezoneId: 'Europe/Moscow',
     });
-    if (target === 'native') {
+    if (nativeTarget) {
       await installNativeVisualModeInitScript(context);
     }
     if (maxBridgeEnabled) {
@@ -304,11 +320,15 @@ async function main() {
     if (maxBridgeEnabled) {
       await assertMaxBridgeShim(page);
     }
-    if (target === 'native') {
+    if (nativeTarget) {
       await applyNativeVisualMode(page, profile);
     }
 
     console.log(`Mini app emulator ready (${target}): ${previewUrl}`);
+    if (capture.phone)
+      console.log(
+        `WebView ${capture.phone.viewport.width}x${capture.phone.viewport.height}, ${capture.browserName}. Host panels are excluded from this interactive window; phone screenshots include an approximate host frame.`,
+      );
 
     if (timeoutMs > 0) {
       await page.waitForTimeout(timeoutMs);

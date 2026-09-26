@@ -223,7 +223,7 @@ test('shared workspace header replaces counterpart routes and preserves route st
   );
   assert.match(
     compactIconsSource,
-    /export function SettingsGlyph[\s\S]*?<circle cx="12" cy="12" r="3" \/>/u,
+    /export function SettingsGlyph[\s\S]*?<AppIcon icon="Settings"/u,
   );
   assert.match(
     workspaceHeaderCss,

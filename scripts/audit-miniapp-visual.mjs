@@ -133,6 +133,15 @@ function runCapture(env) {
 }
 
 async function main() {
+  const target = process.env.MINIAPP_VISUAL_AUDIT_TARGET?.trim() || 'smartphone';
+  const failures = [];
+  const captureAndContinue = async (env) => {
+    try {
+      await runCapture({ ...env, MINIAPP_SCREENSHOT_CONTINUE_ON_FAILURE: '1' });
+    } catch (error) {
+      failures.push(`${env.MINIAPP_SCREENSHOT_LABEL}: ${error.message}`);
+    }
+  };
   const quick = envFlag('MINIAPP_VISUAL_AUDIT_QUICK');
   const baseUrls = resolveMiniappVisualAuditBaseUrls();
   const devices = splitList(process.env.MINIAPP_VISUAL_AUDIT_DEVICES, ['all']);
@@ -183,37 +192,37 @@ async function main() {
         for (const device of devices) {
           for (const scheme of schemes) {
             console.log(
-              `\n== Visual audit: ${baseUrl} device=${device} scheme=${scheme} native ==`,
+              `\n== Visual audit: ${baseUrl} device=${device} scheme=${scheme} ${target} ==`,
             );
-            await runCapture({
+            await captureAndContinue({
               MINIAPP_SCREENSHOT_BASE_URL: baseUrl,
               MINIAPP_SCREENSHOT_DEVICE: device,
               MINIAPP_SCREENSHOT_SCENARIOS: scenarios,
-              MINIAPP_SCREENSHOT_TARGET: 'native',
+              MINIAPP_SCREENSHOT_TARGET: target,
               MINIAPP_SCREENSHOT_COLOR_SCHEME: scheme,
               MINIAPP_SCREENSHOT_STRICT_LAYOUT: '1',
               MINIAPP_SCREENSHOT_STRICT_CONTRAST: '1',
               MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY: '1',
               MINIAPP_SCREENSHOT_REUSE_SERVER: localBaseUrl ? '1' : '0',
-              MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-${scheme}-native`,
+              MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-${scheme}-${target}`,
             });
           }
         }
 
         for (const device of keyboardDevices) {
           console.log(`\n== Visual audit: ${baseUrl} device=${device} simulated-keyboard ==`);
-          await runCapture({
+          await captureAndContinue({
             MINIAPP_SCREENSHOT_BASE_URL: baseUrl,
             MINIAPP_SCREENSHOT_DEVICE: device,
             MINIAPP_SCREENSHOT_SCENARIOS: keyboardScenario,
-            MINIAPP_SCREENSHOT_TARGET: 'native',
+            MINIAPP_SCREENSHOT_TARGET: target,
             MINIAPP_SCREENSHOT_COLOR_SCHEME: 'light',
             MINIAPP_SCREENSHOT_STRICT_LAYOUT: '1',
             MINIAPP_SCREENSHOT_STRICT_CONTRAST: '1',
             MINIAPP_SCREENSHOT_STRICT_ACCESSIBILITY: '1',
             MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD: '1',
             MINIAPP_SCREENSHOT_REUSE_SERVER: localBaseUrl ? '1' : '0',
-            MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-keyboard`,
+            MINIAPP_SCREENSHOT_LABEL: `${hostLabel(baseUrl)}-${device}-keyboard-${target}`,
           });
         }
       } finally {
@@ -221,6 +230,7 @@ async function main() {
         activeDevServerProcess = null;
       }
     }
+    if (failures.length) throw new Error(`Visual audit failures:\n${failures.join('\n')}`);
   } finally {
     process.removeListener('SIGINT', handleSignal);
     process.removeListener('SIGTERM', handleSignal);

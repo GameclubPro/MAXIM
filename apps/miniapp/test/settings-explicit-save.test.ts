@@ -71,7 +71,7 @@ test('overview settings tiles expose context, current state, and navigation affo
   );
   assert.match(renderSource, /settings-section__status-chip/u);
   assert.match(renderSource, /settings-section__chevron/u);
-  assert.match(renderSource, /<NavArrowRight/u);
+  assert.match(renderSource, /<AppIcon icon="NavArrowRight"/u);
 });
 
 test('settings search includes visible metadata and domain aliases', () => {

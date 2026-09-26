@@ -1,0 +1,31 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .settings-section__icon-badge .app-icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  body[data-miniapp-profile='moderation'] .settings-section__icon-badge.is-sky {
+    background: var(--major-accent-soft);
+    color: var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .settings-section__icon-badge.is-mint {
+    background: var(--major-positive-soft);
+    color: var(--major-positive);
+  }
+
+  body[data-miniapp-profile='moderation'] .settings-section__icon-badge.is-amber {
+    background: var(--major-warning-soft);
+    color: var(--major-warning);
+  }
+
+  body[data-miniapp-profile='moderation'] .settings-section__icon-badge.is-rose {
+    background: var(--major-danger-soft);
+    color: var(--major-danger);
+  }
+
+  body[data-miniapp-profile='moderation'] .settings-section__icon-badge.is-ink {
+    background: var(--major-subtle);
+    color: var(--major-muted);
+  }
+}

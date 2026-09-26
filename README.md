@@ -81,6 +81,13 @@ npm run audit:miniapp:visual
 Emulator, screenshots, and visual audit are local-first and inspect the current working tree. Native
 mode installs a safe MAX Bridge shim for BackButton, haptics, share/download, viewport, and storage.
 
+The default screenshot/emulator target is `smartphone`: iOS uses WebKit and Android uses Chromium,
+with a WebView sized separately from the phone's system/MAX panels. Captures include both raw
+WebView pixels and an approximate phone composition. Existing `smoke`/`moderation` presets keep
+their legacy target; set `MINIAPP_SCREENSHOT_TARGET=smartphone` to use the new model with a preset.
+See [smartphone capture](docs/miniapp-smartphone-capture.md) for calibration, keyboard models,
+failure screenshots, and the limits of desktop emulation.
+
 Use an explicit mode for a deployed-origin audit:
 
 ```bash

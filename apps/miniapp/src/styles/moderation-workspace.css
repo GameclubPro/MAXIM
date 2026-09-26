@@ -333,6 +333,17 @@
   body[data-miniapp-profile='moderation'] .bottom-nav__item.is-active {
     color: var(--major-accent);
   }
+
+  body[data-miniapp-profile='moderation'] .app-icon {
+    display: block;
+    flex-shrink: 0;
+    stroke-width: 1.8;
+  }
+
+  body[data-miniapp-profile='moderation'] .bottom-nav__icon-svg.app-icon {
+    width: 24px;
+    height: 24px;
+  }
   body[data-miniapp-profile='moderation'] .bottom-nav__item::before {
     border-radius: 6px;
     background: var(--major-accent-soft);
@@ -466,6 +477,7 @@
     border-radius: 8px;
     box-shadow: none;
   }
+
   body[data-miniapp-profile='moderation'] .settings-advertising-soon__entry {
     grid-template-columns: 34px minmax(0, 1fr) auto;
     opacity: 1;

@@ -1,7 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium, devices } from 'playwright';
+import { chromium, webkit } from 'playwright';
+import {
+  capturePhoneScreenshot,
+  captureBrowserLaunchOptions,
+  readCaptureGeometry,
+  readPhoneMetrics,
+  resolveCaptureDevice,
+  setPhoneKeyboard,
+  settleVisualFrame,
+} from './miniapp-smartphone.mjs';
 import {
   assertStopWordsEditorFlow,
   assertStopWordsSaveFailure,
@@ -43,7 +52,11 @@ const deviceProfiles = previewDevicePresets;
 const visualPresetName = (process.env.MINIAPP_SCREENSHOT_PRESET ?? '').trim().toLowerCase();
 const visualPreset = MINIAPP_VISUAL_PRESETS[visualPresetName];
 
-const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? visualPreset?.target ?? 'device')
+const screenshotTarget = (
+  process.env.MINIAPP_SCREENSHOT_TARGET ??
+  visualPreset?.target ??
+  'smartphone'
+)
   .trim()
   .toLowerCase();
 const colorScheme = (process.env.MINIAPP_SCREENSHOT_COLOR_SCHEME ?? 'light').trim().toLowerCase();
@@ -58,7 +71,15 @@ const strictAccessibility =
   visualPreset?.checks?.accessibility ??
   false;
 const envMaxBridgeShim = parseOptionalEnvFlag('MINIAPP_SCREENSHOT_MAX_BRIDGE');
-const maxBridgeShimEnabled = envMaxBridgeShim ?? screenshotTarget === 'native';
+const nativeScreenshot = screenshotTarget === 'native' || screenshotTarget === 'smartphone';
+const maxBridgeShimEnabled = envMaxBridgeShim ?? nativeScreenshot;
+const continueOnFailure =
+  parseOptionalEnvFlag('MINIAPP_SCREENSHOT_CONTINUE_ON_FAILURE') ??
+  screenshotTarget === 'smartphone';
+const phoneMetrics = await readPhoneMetrics(process.env.MINIAPP_PHONE_METRICS_PATH);
+if (!['smartphone', 'native', 'device', 'screen', 'page'].includes(screenshotTarget)) {
+  throw new Error('Screenshot target must be smartphone, native, device, screen or page.');
+}
 const reuseServer = parseEnvFlag('MINIAPP_SCREENSHOT_REUSE_SERVER');
 const visualNow = resolveMiniappVisualNow();
 const simulateKeyboard = parseEnvFlag('MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD');
@@ -3045,7 +3066,7 @@ async function assertCommentsComposerPinned(page) {
 }
 
 async function assertCommentsTopEdgeCovered(page) {
-  if (screenshotTarget !== 'native') {
+  if (!nativeScreenshot) {
     return;
   }
 
@@ -3097,7 +3118,7 @@ async function assertCommentsTopEdgeCovered(page) {
 }
 
 async function assertCommentsContentTopInset(page) {
-  if (screenshotTarget !== 'native') {
+  if (!nativeScreenshot) {
     return;
   }
 
@@ -3233,7 +3254,7 @@ async function runScenarioNavigation(page, scenario, baseUrl, profile, runtime) 
 }
 
 async function applyNativeScreenshotMode(page, profile) {
-  if (screenshotTarget !== 'native') {
+  if (!nativeScreenshot) {
     return;
   }
 
@@ -3466,6 +3487,38 @@ async function assertPublisherButtonsKeyboardFinalLayout(page) {
 async function simulateKeyboardViewport(page, scenario) {
   if (!shouldSimulateKeyboardScenario(scenario)) {
     return null;
+  }
+
+  if (screenshotTarget === 'smartphone') {
+    const keyboardProfile = resolveKeyboardScenarioProfile(scenario);
+    const field = page
+      .locator(
+        keyboardProfile?.focusSelector ??
+          'input[type="search"]:visible, textarea:visible, [contenteditable="true"]:visible, input[type="text"]:visible',
+      )
+      .first();
+    if (!(await field.count()))
+      throw new Error(`No editable field for keyboard scenario ${scenario.name}`);
+    await field.click();
+    await page.waitForTimeout(200);
+    const platform = await page.evaluate(() => document.documentElement.dataset.maxPlatform);
+    const mode =
+      process.env.MINIAPP_SCREENSHOT_KEYBOARD_MODE || (platform === 'ios' ? 'visual' : 'resize');
+    let geometry;
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      geometry = await setPhoneKeyboard(page, { height: normalizedKeyboardOverlapPx, mode });
+      await page.waitForTimeout(260);
+      if (cycle < 2) {
+        await setPhoneKeyboard(page, { mode, open: false });
+        await page.waitForTimeout(260);
+      }
+    }
+    return {
+      ...geometry,
+      cycles: 3,
+      focus: keyboardProfile?.focusReport ?? (await field.getAttribute('aria-label')),
+      simulated: true,
+    };
   }
 
   const keyboardProfile = resolveKeyboardScenarioProfile(scenario);
@@ -4880,6 +4933,37 @@ async function assertChannelStatsContinuousChart(page) {
 }
 
 async function assertKeyboardState(page, scenario) {
+  if (screenshotTarget === 'smartphone' && shouldSimulateKeyboardScenario(scenario)) {
+    const state = await page.evaluate(() => {
+      const viewport = visualViewport;
+      const focused = document.activeElement;
+      const rect = focused?.getBoundingClientRect();
+      const top = viewport?.offsetTop ?? 0;
+      const bottom = top + (viewport?.height ?? innerHeight);
+      const nav = document.querySelector('.bottom-nav');
+      const style = nav ? getComputedStyle(nav) : null;
+      const navRect = nav?.getBoundingClientRect();
+      return {
+        focused: focused?.matches('input, textarea, [contenteditable="true"]'),
+        reachable: Boolean(rect && rect.top >= top - 1 && rect.bottom <= bottom + 1),
+        navVisible: Boolean(
+          style &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          Number(style.opacity) > 0.05 &&
+          navRect.bottom > top &&
+          navRect.top < bottom,
+        ),
+        geometry: { top, bottom, focusedTop: rect?.top, focusedBottom: rect?.bottom },
+      };
+    });
+    if (!state.focused || !state.reachable || state.navVisible) {
+      throw new Error(
+        `Smartphone keyboard layout failed without test CSS overrides: ${JSON.stringify(state)}`,
+      );
+    }
+    return;
+  }
   if (
     !shouldSimulateKeyboardScenario(scenario) ||
     scenario.preview === false ||
@@ -5028,7 +5112,7 @@ async function assertKeyboardState(page, scenario) {
 }
 
 function resolveScreenshotLocator(page) {
-  if (screenshotTarget === 'native') {
+  if (nativeScreenshot) {
     return null;
   }
 
@@ -5108,11 +5192,8 @@ function assertNavigationResponse(response, scenario, url) {
   }
 }
 
-async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, report) {
-  const device = devices[profile.viewportName];
-  if (!device) {
-    throw new Error(`Unknown Playwright device profile: ${profile.viewportName}`);
-  }
+async function captureDeviceScenarios(browser, capture, baseUrl, outputDir, report) {
+  const { profile } = capture;
 
   const shotDir = path.join(outputDir, profile.outputDirName);
   await ensureDir(shotDir);
@@ -5128,20 +5209,24 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
       cold: scenario.cold,
       navigation: [],
       status: 'running',
+      browser: capture.browserName,
+      browserVersion: browser.version(),
+      phone: capture.phone,
     };
     report.scenarios.push(reportEntry);
     const runtime = resolveScenarioRuntime(scenario, maxBridgeShimEnabled);
     let context = null;
+    let page = null;
 
     try {
       context = await browser.newContext({
-        ...device,
+        ...capture.contextOptions,
         colorScheme: colorScheme === 'dark' ? 'dark' : 'light',
         locale: 'ru-RU',
         timezoneId: 'Europe/Moscow',
       });
       await installDeterministicExternalScripts(context);
-      if (screenshotTarget === 'native') {
+      if (nativeScreenshot) {
         await installNativeVisualModeInitScript(context);
       }
       if (runtime.bridgeEnabled) {
@@ -5152,7 +5237,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
         });
       }
 
-      const page = await context.newPage();
+      page = await context.newPage();
       await page.clock.setFixedTime(visualNow);
       const diagnostics = attachPageDiagnostics(page, scenario);
       const url = buildPreviewUrl(
@@ -5187,10 +5272,23 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
 
       // Scenario flows can reload the document and restore the preview scaffold.
       await applyNativeScreenshotMode(page, profile);
+      await page.evaluate(() => document.fonts.ready.then(() => true));
       const keyboardGeometry = await simulateKeyboardViewport(page, scenario);
       if (keyboardGeometry) {
         reportEntry.keyboard = keyboardGeometry;
       }
+      await settleVisualFrame(page);
+      // External SVG symbols must be loaded; empty buttons can otherwise pass layout checks.
+      await page.waitForFunction(
+        () =>
+          [...document.querySelectorAll('svg.app-icon')].every((icon) => {
+            if (!icon.getBoundingClientRect().width) return true;
+            const bounds = icon.getBBox();
+            return bounds.width > 0 && bounds.height > 0;
+          }),
+        null,
+        { timeout: 10_000 },
+      );
 
       if (scenario.name.includes('dialog-comments')) {
         await assertCommentsTopEdgeCovered(page);
@@ -5208,19 +5306,20 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
       }
 
       const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
-      if (screenshotTarget === 'native' && (await page.locator('.design-preview').count())) {
+      if (nativeScreenshot && (await page.locator('.design-preview').count())) {
         throw new Error('Native screenshot cannot include restored design-preview geometry.');
       }
       const locator = resolveScreenshotLocator(page);
+      let screenshotImage;
 
       if (locator) {
-        await locator.screenshot({
+        screenshotImage = await locator.screenshot({
           path: screenshotPath,
           animations: 'disabled',
           timeout: 120_000,
         });
       } else {
-        await page.screenshot({
+        screenshotImage = await page.screenshot({
           path: screenshotPath,
           animations: 'disabled',
           timeout: 120_000,
@@ -5228,16 +5327,47 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
         });
       }
 
+      reportEntry.screenshot = path.relative(ROOT_DIR, screenshotPath);
+      reportEntry.geometry = await readCaptureGeometry(page);
+      if (capture.phone) {
+        const phonePath = path.join(shotDir, `${scenario.name}-phone.png`);
+        await capturePhoneScreenshot(browser, page, capture, phonePath, {
+          theme: colorScheme,
+          title: scenario.searchParams?.profile === 'publisher' ? 'Публик' : 'Майор Максимов',
+          keyboard: reportEntry.keyboard,
+          imageBuffer: screenshotImage,
+        });
+        reportEntry.phoneScreenshot = path.relative(ROOT_DIR, phonePath);
+      }
       if (scenario.afterShot) {
         await scenario.afterShot(page);
       }
       diagnostics.assertClean();
       reportEntry.status = 'passed';
-      reportEntry.screenshot = path.relative(ROOT_DIR, screenshotPath);
     } catch (error) {
       reportEntry.status = 'failed';
       reportEntry.error = error instanceof Error ? error.message : String(error);
-      throw error;
+      if (page && !page.isClosed()) {
+        try {
+          const failurePath = path.join(shotDir, `${scenario.name}-failed.png`);
+          const failureImage = await page.screenshot({ path: failurePath, timeout: 10_000 });
+          reportEntry.screenshot = path.relative(ROOT_DIR, failurePath);
+          reportEntry.geometry = await readCaptureGeometry(page);
+          if (capture.phone) {
+            const phonePath = path.join(shotDir, `${scenario.name}-failed-phone.png`);
+            await capturePhoneScreenshot(browser, page, capture, phonePath, {
+              theme: colorScheme,
+              keyboard: reportEntry.keyboard,
+              imageBuffer: failureImage,
+            });
+            reportEntry.phoneScreenshot = path.relative(ROOT_DIR, phonePath);
+          }
+        } catch (diagnosticError) {
+          reportEntry.diagnosticError = String(diagnosticError);
+        }
+      }
+      console.error(`${profile.outputDirName}/${scenario.name}: ${reportEntry.error}`);
+      if (!continueOnFailure) throw error;
     } finally {
       reportEntry.durationMs = Date.now() - startedAt;
       await context?.close();
@@ -5273,13 +5403,22 @@ async function main() {
   await ensureDir(path.dirname(reportPath));
 
   const report = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'running',
     baseUrl,
     source: isLocalMiniappBaseUrl(baseUrl) ? 'local' : 'remote',
     target: screenshotTarget,
     colorScheme,
     fixedNow: visualNow.toISOString(),
+    simulation:
+      screenshotTarget === 'smartphone'
+        ? {
+            hostChrome:
+              'Approximation; calibrate MINIAPP_PHONE_METRICS_PATH against a real device.',
+            keyboard: 'Simulated viewport events, not a native OS keyboard.',
+            data: 'Deterministic preview fixtures; not production data.',
+          }
+        : null,
     selection: {
       reason: scenarioSelection.reason,
       preset: visualPresetName || null,
@@ -5296,15 +5435,13 @@ async function main() {
     scenarios: [],
   };
 
-  let browser = null;
+  const browsers = new Map();
   let devServerProcess = null;
   let reportWritePromise = null;
 
   const cleanup = async () => {
-    if (browser) {
-      await browser.close();
-      browser = null;
-    }
+    for (const browser of browsers.values()) await browser.close();
+    browsers.clear();
     await stopChildProcess(devServerProcess);
     devServerProcess = null;
   };
@@ -5345,28 +5482,30 @@ async function main() {
       `Mini app screenshot source: ${baseUrl} (${isLocalMiniappBaseUrl(baseUrl) ? 'local' : 'explicit remote'})`,
     );
 
-    try {
-      browser = await chromium.launch({
-        headless: true,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('error while loading shared libraries')) {
-        throw new Error(
-          [
-            'Playwright Chromium cannot start because system libraries are missing.',
-            'Local fallback: install Playwright browser dependencies for your OS.',
-            'VPS fallback: run the screenshot flow inside the Playwright Docker image.',
-          ].join(' '),
-        );
-      }
-
-      throw error;
-    }
-
     for (const key of deviceKeys) {
-      await captureDeviceScenarios(browser, deviceProfiles[key], baseUrl, outputDir, report);
+      const capture = resolveCaptureDevice(deviceProfiles[key], {
+        target: screenshotTarget,
+        engine: process.env.MINIAPP_SCREENSHOT_BROWSER,
+        metrics: phoneMetrics,
+      });
+      let browser = browsers.get(capture.browserName);
+      if (!browser) {
+        try {
+          browser = await { chromium, webkit }[capture.browserName].launch(
+            captureBrowserLaunchOptions(capture.browserName, baseUrl),
+          );
+        } catch (error) {
+          throw new Error(
+            `Cannot launch ${capture.browserName}. Install it with npx playwright install --with-deps ${capture.browserName}. ${error.message}`,
+          );
+        }
+        browsers.set(capture.browserName, browser);
+      }
+      await captureDeviceScenarios(browser, capture, baseUrl, outputDir, report);
     }
+    const failures = report.scenarios.filter((scenario) => scenario.status === 'failed');
+    if (failures.length)
+      throw new Error(`${failures.length} visual scenarios failed. See ${reportPath}`);
     report.status = 'passed';
   } catch (error) {
     report.status = 'failed';
