@@ -5,6 +5,7 @@ import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.serv
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation.service.support';
 import { CommercialAdDetector } from './commercial-ad.detector';
 import { isCommercialMessageDeleteEligible } from './commercial-action-policy';
 import {
@@ -108,6 +109,7 @@ export class CommercialDeleteGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000,
     };
     const access = await this.maxClient.getChatMemberAccess(params.chatId, userId, options);

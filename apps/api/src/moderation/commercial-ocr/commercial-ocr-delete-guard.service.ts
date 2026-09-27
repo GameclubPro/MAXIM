@@ -6,6 +6,7 @@ import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.serv
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation.service.support';
 import {
   extractVisiblePhotoMessageContent,
   MAX_PHOTO_ALBUM_IMAGES,
@@ -353,6 +354,7 @@ export class CommercialOcrDeleteGuardService {
     const remoteAccess = await this.maxClient.getChatMemberAccess(params.chatId, binding.senderId, {
       trafficClass: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       botId: params.botId,
       bypassCache: true,
     });
@@ -375,6 +377,7 @@ export class CommercialOcrDeleteGuardService {
     const exactRow = await this.maxClient.getExactMessageRow(params.chatId, params.messageId, {
       trafficClass: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       botId: params.botId,
       bypassCache: true,
     });

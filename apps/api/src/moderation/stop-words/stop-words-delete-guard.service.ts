@@ -5,6 +5,7 @@ import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.serv
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation.service.support';
 import {
   extractEnabledWebhookNavigationTargets,
   resolveEnabledNavigationTargetOptions,
@@ -74,7 +75,8 @@ export class StopWordsDeleteGuardService {
     // FLAG: The compatibility release leaves pre-policy sanctions on the existing execution
     // path until activation. A present but invalid policy must never take this legacy branch.
     const current = await this.prisma.chatSettings.findUnique({
-      where: { chatId: params.chatId }, select: { stopWordsPolicy: true },
+      where: { chatId: params.chatId },
+      select: { stopWordsPolicy: true },
     });
     if (current?.stopWordsPolicy === null) return;
     const result = await this.assertMessageStillActionable(
@@ -100,6 +102,7 @@ export class StopWordsDeleteGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
     };
     const access = await this.maxClient.getChatMemberAccess(params.chatId, senderId, options);

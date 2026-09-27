@@ -7,6 +7,7 @@ import { WebhookParser } from '../webhook/webhook.parser';
 import { detectMediaFlags } from './moderation-update-extractors';
 import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
 import { DUPLICATE_EVENT_MAX_FUTURE_SKEW_MS } from './duplicate-state';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 import {
   fingerprintTrafficSource,
   hasTrafficMedia,
@@ -62,6 +63,7 @@ export class TrafficProtectionDeleteGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000,
     };
     const access = await this.maxClient.getChatMemberAccess(params.chatId, userId, options);

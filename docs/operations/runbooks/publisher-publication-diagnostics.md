@@ -80,6 +80,15 @@ all historical posts. Investigate a concrete occurrence through authenticated pr
 access when a user reports a remaining delay; never turn that investigation into a
 bulk retry of attempted, failed-with-receipt, or ambiguous deliveries.
 
+Post-rollout diagnostics also identified a separate global governor input: moderation
+pre-dispatch lookups counted target-local HTTP 404 responses as user-facing MAX failures.
+One sampled 60-second health window contained 26 failures in 1,155 calls, no critical
+failures, and zero webhook lag; the bounded failure logs reported `moderation_delete`,
+HTTP 404 and `not.found`. This can keep publication preparation paused despite an empty
+webhook queue. Moderation pre-dispatch reads now use the same existing 403/404 metric
+exclusions as the delete mutation. Errors still propagate and preserve fail-closed
+authorization/absence handling; 429, server and network failures remain health signals.
+
 ## Priority Index Migration Recovery
 
 If `20260927160000_index_publication_materialization_priority` stops with a lock

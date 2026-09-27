@@ -3241,6 +3241,7 @@ export class ModerationDeleteIntentService {
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.deleteTimeoutMs,
     });
     if (snapshot.entityType !== 'channel') {
@@ -3257,6 +3258,7 @@ export class ModerationDeleteIntentService {
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.deleteTimeoutMs,
     });
     if (senderAccess?.isAdmin !== true && senderAccess?.isOwner !== true) {
@@ -3378,6 +3380,7 @@ export class ModerationDeleteIntentService {
         trafficClass: 'critical',
         actionHealthLane: 'critical',
         sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+        ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
         timeoutMs: this.deleteTimeoutMs,
       },
     );
@@ -3397,6 +3400,7 @@ export class ModerationDeleteIntentService {
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.deleteTimeoutMs,
     });
     if (!exactRow) {

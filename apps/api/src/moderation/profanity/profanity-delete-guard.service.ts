@@ -8,6 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import { RuleEngineService } from '../rule-engine.service';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation.service.support';
 
 export const PROFANITY_DELETE_RULE_CODE = 'PROFANITY_DELETE';
 const PROFANITY_PARTICIPANT_IMMUNITY_SCOPE = 'profanity-delete:v1';
@@ -95,6 +96,7 @@ export class ProfanityDeleteGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.timeoutMs,
     };
     const access = await this.maxClient.getChatMemberAccess(

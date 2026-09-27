@@ -90,6 +90,7 @@ describe('ProfanityDeleteGuardService', () => {
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: [403, 404],
       timeoutMs: 5_000,
     });
     expect(harness.maxClient.getChatMemberAccess).toHaveBeenCalledTimes(1);

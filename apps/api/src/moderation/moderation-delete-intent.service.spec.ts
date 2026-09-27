@@ -6257,6 +6257,7 @@ describe('ModerationDeleteIntentService', () => {
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: 'moderation_delete',
+      ignoreFailureMetricStatuses: [403, 404],
       timeoutMs: 5_000,
     });
     expect(getChatMemberAccess).toHaveBeenCalledTimes(scenario.expectSenderLookup ? 1 : 0);

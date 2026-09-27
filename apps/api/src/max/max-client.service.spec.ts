@@ -47,6 +47,7 @@ import { readInternalChannelDialogButtonIdentity } from '../common/channel-dialo
 import { PublisherStartProcessor } from '../publisher/publisher-start.processor';
 import type { PublisherStartJob } from '../publisher/publisher-start.queue';
 import type { Job } from 'bullmq';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation/moderation.service.support';
 
 const TINY_JPEG_BASE64 =
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
@@ -9633,6 +9634,50 @@ describe('MaxClientService inline keyboard guardrails', () => {
         if (expectedTimeout === undefined) {
           expect(request).not.toHaveProperty('timeout');
         }
+      }
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each([403, 404, 429, 503])(
+    'keeps a failed moderation pre-delete lookup HTTP %s fail-closed without false global pressure',
+    async (status) => {
+      const error = {
+        response: { status, data: { code: status === 404 ? 'not.found' : 'lookup.failed' } },
+      };
+      const httpService = {
+        request: jest.fn().mockReturnValueOnce(throwError(() => error)),
+      };
+      const service = createService(httpService);
+      const health = (
+        service as unknown as {
+          actionHealthService: { recordFailureForLane: jest.Mock };
+        }
+      ).actionHealthService;
+      const options = {
+        botId: '777000_bot',
+        trafficClass: 'critical' as const,
+        actionHealthLane: 'critical' as const,
+        sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+        ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
+      };
+
+      await expect(
+        service.deleteMessage('chat-1', 'mid-guarded', {
+          ...options,
+          immediate: true,
+          beforeImmediateDeleteMutation: async () => {
+            await service.getExactMessageRow('chat-1', 'mid-guarded', options);
+          },
+        }),
+      ).rejects.toBe(error);
+      expect(httpService.request).toHaveBeenCalledTimes(1);
+      expect(httpService.request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
+      if (status === 403 || status === 404) {
+        expect(health.recordFailureForLane).not.toHaveBeenCalled();
+      } else {
+        expect(health.recordFailureForLane).toHaveBeenCalledTimes(1);
+        expect(health.recordFailureForLane).toHaveBeenCalledWith('critical', true, '777000_bot');
       }
       await service.onModuleDestroy();
     },

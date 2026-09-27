@@ -6,6 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import { resolveDuplicateFlowConfig, resolveDuplicateFlowOutcome } from '../duplicate-flow-policy';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation.service.support';
 import {
   buildMessageDuplicateIdentity,
   extractDuplicateMessageContent,
@@ -131,6 +132,7 @@ export class MessageDuplicateDeleteGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
     };
     const access = await this.max.getChatMemberAccess(params.chatId, binding.senderId, options);
     // FLAG: Null is a valid uncached response without this member, not an unavailable MAX API.
