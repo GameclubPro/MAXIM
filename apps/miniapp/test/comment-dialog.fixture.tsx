@@ -31,6 +31,9 @@ const message = (
 let data = { ...initial, messages: Array.from({ length: 24 }, () => message()) };
 let pendingSend: { resolve: () => void; reject: (error: Error) => void } | null = null;
 let holdSend = false;
+let failNotificationSave = false;
+const profile =
+  new URLSearchParams(location.search).get('profile') === 'publisher' ? 'publisher' : 'moderation';
 const api: ApiTransport = {
   ...preview,
   async request(path, init = {}) {
@@ -38,6 +41,35 @@ const api: ApiTransport = {
       return structuredClone(data) as never;
     }
     const payload = JSON.parse(String(init.body ?? '{}'));
+    if (path.endsWith('/notifications') && init.method === 'PUT') {
+      if (failNotificationSave) {
+        failNotificationSave = false;
+        throw new Error('Не удалось сохранить уведомления');
+      }
+      const settings = { ...data.notificationSettings };
+      const key =
+        payload.scope === 'thread'
+          ? 'thread'
+          : payload.scope === 'channel'
+            ? 'channel'
+            : 'allChannels';
+      settings[key] = { mode: payload.mode, explicit: true };
+      settings.scope = settings.thread.explicit
+        ? 'thread'
+        : settings.channel.explicit
+          ? 'channel'
+          : settings.allChannels.explicit
+            ? 'all_channels'
+            : 'thread';
+      settings.mode =
+        settings.scope === 'thread'
+          ? settings.thread.mode
+          : settings.scope === 'channel'
+            ? settings.channel.mode
+            : settings.allChannels.mode;
+      data = { ...data, notificationSettings: settings };
+      return { ok: true, notificationSettings: settings } as never;
+    }
     if (path.endsWith('/messages') && init.method === 'POST') {
       if (holdSend) {
         await new Promise<void>((resolve, reject) => {
@@ -60,6 +92,12 @@ const api: ApiTransport = {
 
 Object.assign(window, {
   commentTest: {
+    failNotificationSave() {
+      failNotificationSave = true;
+    },
+    async refresh() {
+      await client.invalidateQueries();
+    },
     async setTruncated(hasMoreMessages: boolean) {
       data = { ...data, hasMoreMessages };
       await client.invalidateQueries();
@@ -95,9 +133,7 @@ createRoot(document.getElementById('root')!).render(
             <Routes>
               <Route
                 path="/channel/:chatId/dialog/comments"
-                element={
-                  <ChannelDialogPage api={api} profile="moderation" userId="preview-admin" />
-                }
+                element={<ChannelDialogPage api={api} profile={profile} userId="preview-admin" />}
               />
             </Routes>
           </div>

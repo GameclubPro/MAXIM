@@ -23,6 +23,8 @@
     position: relative;
     z-index: 1;
     width: min(100%, 390px);
+    max-height: 100%;
+    overflow-y: auto;
     display: grid;
     gap: 12px;
     padding: 10px 12px 12px;
@@ -113,9 +115,9 @@
   }
 
   .channel-dialog-notification-sheet__scope span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
   }
 
   .channel-dialog-notification-sheet__scope i {
@@ -133,6 +135,26 @@
     display: grid;
     grid-template-columns: minmax(0, 0.72fr) minmax(0, 1fr);
     gap: 7px;
+  }
+
+  .channel-dialog-notification-sheet__note,
+  .channel-dialog-notification-sheet__delivery {
+    margin: 0;
+    color: var(--comments-text);
+    font-size: 0.76rem;
+    line-height: 1.45;
+  }
+
+  .channel-dialog-notification-sheet__delivery p {
+    margin: 0;
+  }
+
+  .channel-dialog-notification-sheet__delivery a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    color: var(--comments-link);
+    text-underline-offset: 3px;
   }
 
   .channel-dialog-notification-sheet__button--ghost {

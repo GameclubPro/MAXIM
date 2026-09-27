@@ -38,6 +38,7 @@ import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.se
 import { PublisherDialogLinkService } from './publisher-dialog-link.service';
 import { PublisherBindingRefreshService } from './publisher-binding-refresh.service';
 import { PublisherChannelCommentDeliveryService } from './publisher-channel-comment-delivery.service';
+import { PublisherCommentNotificationDeliveryService } from './publisher-comment-notification-delivery.service';
 import {
   ChatEntityType,
   ManagedEntityAccessRole,
@@ -96,6 +97,7 @@ export class PublisherChatCommentDeliveryService {
     private readonly bindingRefresh: PublisherBindingRefreshService,
     @Optional() private readonly dispatchHealth?: PublisherDispatchHealthService,
     @Optional() private readonly channelDelivery?: PublisherChannelCommentDeliveryService,
+    @Optional() private readonly notifications?: PublisherCommentNotificationDeliveryService,
   ) {
     this.markerStore = new ReplacementAttachMarkerStore(prisma);
     this.publisherBotId = credentials.getBotId();
@@ -103,6 +105,11 @@ export class PublisherChatCommentDeliveryService {
 
   async process(job: PublisherChatCommentJob, attempt: PublisherJobAttempt): Promise<void> {
     this.assertEnvelope(job);
+    if (job.kind === 'deliver_notification') {
+      if (!this.notifications) throw new Error('Publisher comment notifications unavailable');
+      await this.notifications.process(job);
+      return;
+    }
     if (job.kind === 'attach_channel_keyboard') {
       if (!this.channelDelivery) throw new Error('Publisher channel keyboard delivery unavailable');
       await this.channelDelivery.process(job);
@@ -930,17 +937,19 @@ export class PublisherChatCommentDeliveryService {
       throw new UnrecoverableError('Publisher chat-comment job envelope is invalid');
     }
     const requiredStrings =
-      job.kind === 'attach_chat_reply'
-        ? [
-            job.markerId,
-            job.lockToken,
-            job.chatId,
-            job.messageId,
-            job.senderId,
-            job.requiredBotId,
-            job.dialogBotId,
-          ]
-        : [job.chatId, job.messageId, job.threadId, job.requiredBotId, job.dialogBotId];
+      job.kind === 'deliver_notification'
+        ? [job.eventId, job.requiredBotId]
+        : job.kind === 'attach_chat_reply'
+          ? [
+              job.markerId,
+              job.lockToken,
+              job.chatId,
+              job.messageId,
+              job.senderId,
+              job.requiredBotId,
+              job.dialogBotId,
+            ]
+          : [job.chatId, job.messageId, job.threadId, job.requiredBotId, job.dialogBotId];
     if (requiredStrings.some((value) => typeof value !== 'string' || !value.trim())) {
       throw new UnrecoverableError('Publisher chat-comment job identity is invalid');
     }

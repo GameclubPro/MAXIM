@@ -281,7 +281,13 @@ export function buildPreviewNotificationSettings(bucket: PreviewDialogBucket) {
     (bucket.threadNotificationMode !== undefined || bucket.notificationMode !== undefined);
   const channelExplicit = bucket.channelNotificationExplicit ?? false;
   const allChannelsExplicit = bucket.allChannelsNotificationExplicit ?? false;
-  const scope = bucket.notificationScope ?? 'thread';
+  const scope = threadExplicit
+    ? 'thread'
+    : channelExplicit
+      ? 'channel'
+      : allChannelsExplicit
+        ? 'all_channels'
+        : 'thread';
   const mode =
     scope === 'all_channels' ? allChannelsMode : scope === 'channel' ? channelMode : threadMode;
 

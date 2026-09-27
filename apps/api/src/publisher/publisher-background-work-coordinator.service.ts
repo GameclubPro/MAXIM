@@ -4,6 +4,7 @@ export type PublisherBackgroundWorkLane =
   | 'suggestion_subscriptions'
   | 'binding_refresh'
   | 'chat_comment_recovery'
+  | 'comment_notification_recovery'
   | 'auto_reply_recovery'
   | 'auto_reply_authoring_recovery'
   | 'publication_deadline'

@@ -2,17 +2,21 @@ import type {
   ChannelDialogNotificationMode,
   ChannelDialogNotificationScope,
 } from '@maxim/contracts';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
 import { useDialogFocusTrap } from '../lib/dialog-focus';
 import type { LastEntityType } from '../lib/last-chat';
 import { useNativeBackHandler } from '../lib/native-back';
+import { openPublikBot, PUBLIK_BOT_URL } from '../lib/publik-bot';
 import './channel-dialog-notification-sheet.css';
 
 type ChannelDialogNotificationSheetProps = {
   portalTarget: Element;
   entityType: LastEntityType;
+  profile: MiniappProfile;
+  threadOverrideMode: ChannelDialogNotificationMode | null;
   draftMode: ChannelDialogNotificationMode;
   draftScope: ChannelDialogNotificationScope;
   availableTargetCount: number;
@@ -30,6 +34,26 @@ const NOTIFICATION_SCOPE_OPTIONS: ChannelDialogNotificationScope[] = [
   'channel',
   'all_channels',
 ];
+
+function handleRadioKeys(event: KeyboardEvent<HTMLDivElement>) {
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
+    return;
+  const buttons = Array.from(
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]:not(:disabled)'),
+  );
+  const current = buttons.indexOf(event.target as HTMLButtonElement);
+  if (current < 0 || !buttons.length) return;
+  const direction = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+  const next =
+    event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? buttons.length - 1
+        : (current + direction + buttons.length) % buttons.length;
+  event.preventDefault();
+  buttons[next]?.focus();
+  buttons[next]?.click();
+}
 
 function getNotificationModeLabel(mode: ChannelDialogNotificationMode): string {
   if (mode === 'off') {
@@ -57,6 +81,8 @@ function getNotificationScopeLabel(
 export default function ChannelDialogNotificationSheet({
   portalTarget,
   entityType,
+  profile,
+  threadOverrideMode,
   draftMode,
   draftScope,
   availableTargetCount,
@@ -80,7 +106,7 @@ export default function ChannelDialogNotificationSheet({
   );
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') {
         return;
       }
@@ -128,7 +154,12 @@ export default function ChannelDialogNotificationSheet({
           <span>{scopeLabel}</span>
         </header>
 
-        <div className="channel-dialog-notification-sheet__modes" role="radiogroup">
+        <div
+          className="channel-dialog-notification-sheet__modes"
+          role="radiogroup"
+          aria-label="Какие уведомления получать"
+          onKeyDown={handleRadioKeys}
+        >
           {modeOptions.map((mode) => (
             <button
               key={mode}
@@ -139,6 +170,7 @@ export default function ChannelDialogNotificationSheet({
               )}
               role="radio"
               aria-checked={draftMode === mode}
+              tabIndex={draftMode === mode ? 0 : -1}
               disabled={isPending}
               onClick={() => onDraftModeSelect(mode)}
             >
@@ -147,7 +179,12 @@ export default function ChannelDialogNotificationSheet({
           ))}
         </div>
 
-        <div className="channel-dialog-notification-sheet__scopes" role="radiogroup">
+        <div
+          className="channel-dialog-notification-sheet__scopes"
+          role="radiogroup"
+          aria-label="Где получать уведомления"
+          onKeyDown={handleRadioKeys}
+        >
           {NOTIFICATION_SCOPE_OPTIONS.map((scope) => (
             <button
               key={scope}
@@ -158,6 +195,7 @@ export default function ChannelDialogNotificationSheet({
               )}
               role="radio"
               aria-checked={draftScope === scope}
+              tabIndex={draftScope === scope ? 0 : -1}
               disabled={isPending}
               onClick={() => onDraftScopeSelect(scope)}
             >
@@ -166,6 +204,21 @@ export default function ChannelDialogNotificationSheet({
             </button>
           ))}
         </div>
+
+        {draftScope !== 'thread' && threadOverrideMode !== null ? (
+          <p className="channel-dialog-notification-sheet__note">
+            Для этого поста действует отдельная настройка:{' '}
+            {getNotificationModeLabel(threadOverrideMode).toLowerCase()}.
+          </p>
+        ) : null}
+        {profile === 'publisher' ? (
+          <div className="channel-dialog-notification-sheet__delivery">
+            <p>Личные сообщения от Публика. Бот должен быть запущен и не заблокирован.</p>
+            <a href={PUBLIK_BOT_URL} onClick={openPublikBot}>
+              Открыть Публик
+            </a>
+          </div>
+        ) : null}
 
         <footer className="channel-dialog-notification-sheet__actions">
           <button

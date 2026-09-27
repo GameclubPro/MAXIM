@@ -380,13 +380,14 @@ import { PublisherChatCommentQueueService } from '../publisher/publisher-chat-co
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
+import { PublisherCommentNotificationService } from '../publisher/publisher-comment-notification.service';
 import {
   buildPublisherSuggestionAdminReviewCallbackPayload,
   buildPublisherSuggestionAdminSyncMarker,
   PublisherSuggestionAdminQueueService,
 } from '../publisher/publisher-suggestion-admin.queue';
 import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
-import { withCommentWrite } from './comment-restriction-store';
+import { createCommentDialogAudit } from './comment-dialog-write';
 import {
   countPublisherChatComments,
   toggleDialogCommentReactionForProfile,
@@ -887,6 +888,8 @@ export class AdminService implements OnModuleDestroy {
     private readonly publisherSuggestionAdminQueueService?: PublisherSuggestionAdminQueueService,
     @Optional() private readonly reports?: ReportViewService,
     @Optional() readonly suggestionSubscriptions?: SuggestionSubscriptionService,
+    @Optional()
+    private readonly publisherCommentNotifications?: PublisherCommentNotificationService,
   ) {
     this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(
       this.maxBotRegistry,
@@ -930,6 +933,7 @@ export class AdminService implements OnModuleDestroy {
       enqueueSuggestionAdminDelivery: (suggestionId) =>
         this.enqueuePublisherSuggestionAdminDelivery(suggestionId),
       suggestionSubscriptions: this.suggestionSubscriptions,
+      commentNotifications: this.publisherCommentNotifications,
     });
     this.dialogAdminAccessRuntime = new AdminDialogAdminAccessRuntime({
       prisma: this.prisma,
@@ -7545,7 +7549,12 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Уведомления доступны только в комментариях.');
     }
     if (dialogProfile === 'publisher') {
-      throw new BadRequestException('Уведомления для комментариев Публика пока недоступны.');
+      return this.publisherDialogProfileRuntime.updateCommentNotifications(
+        chatId,
+        'channel',
+        user.userId,
+        body,
+      );
     }
     if (!channelSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
@@ -7576,8 +7585,12 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
     }
     if (dialogProfile === 'publisher') {
-      await this.publisherDialogProfileRuntime.assertChatReady(chatId);
-      throw new BadRequestException('Уведомления для комментариев Публика пока недоступны.');
+      return this.publisherDialogProfileRuntime.updateCommentNotifications(
+        chatId,
+        'chat',
+        user.userId,
+        body,
+      );
     }
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
@@ -7685,49 +7698,11 @@ export class AdminService implements OnModuleDestroy {
       params.normalizedAttachments,
     );
 
-    const created = await withCommentWrite(
+    const created = await createCommentDialogAudit(
       this.prisma,
-      {
-        chatId: params.chatId,
-        entityType: params.entityType,
-        profile: params.dialogProfile ?? 'moderation',
-      },
-      params.user.userId,
-      (tx) =>
-        tx.auditLog.create({
-          data: {
-            chatId: params.chatId,
-            actorUserId: params.user.userId,
-            action: resolveDialogAuditAction(params.dialogType, params.dialogProfile),
-            payload: {
-              type: params.dialogType,
-              threadId: params.threadId,
-              text: params.text,
-              authorDisplayName: params.authorDisplayName ?? null,
-              authorAvatarUrl: params.authorAvatarUrl ?? null,
-              ...(params.replyTo
-                ? {
-                    replyTo: {
-                      messageId: params.replyTo.messageId,
-                      authorDisplayName: params.replyTo.authorDisplayName,
-                      text: params.replyTo.text,
-                    },
-                  }
-                : {}),
-              ...(uploadedAttachments.length > 0
-                ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
-                : {}),
-              ...(params.entityType === 'chat'
-                ? {
-                    delivered: true,
-                    deliveredToUserId: null,
-                  }
-                : {}),
-              source: params.source,
-              ...(params.dialogProfile === 'publisher' ? { publisherProfile: true } : {}),
-            },
-          },
-        }),
+      params,
+      uploadedAttachments,
+      this.publisherCommentNotifications,
     );
 
     const message = {
@@ -7764,7 +7739,9 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
-    if (params.dialogProfile !== 'publisher') {
+    if (params.dialogProfile === 'publisher') {
+      void this.publisherCommentNotifications!.enqueue(created.id);
+    } else {
       await this.ensureEntityDialogReplySubscription({
         entityType: params.entityType,
         chatId: params.chatId,

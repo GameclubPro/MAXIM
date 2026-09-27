@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260925120000_add_suggestion_subscription",
-  "baselineNamesSha256": "64ba445b53ad22c91cf4fa63a0efea9633c3edcb045f0e673867d3d7b1a92050",
-  "baselineContentsSha256": "e298bd01429497e1388703cc50c4d6ff375c2db22fd1ff73b958013709189635",
+  "baselineThrough": "20260927120000_add_publisher_comment_notifications",
+  "baselineNamesSha256": "6b1ffc3c2eb02f2e068e395c4ece4d76b1aa9a05cf81d2041c5dcb62eb2c5d0a",
+  "baselineContentsSha256": "fbb58f5535fd56dfb6b1040cbd9bca2b898496e972916c60828eefdc72b8a36b",
   "approvedDestructive": {
     "20260919090000_add_participant_reports": {
       "reason": "Reviewed static additive policy revision trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL or destructive change is present.",
@@ -94,6 +94,9 @@
     }
   },
   "nonConcurrentIndexExceptions": {
+    "20260927120000_add_publisher_comment_notifications": {
+      "reason": "Indexes cover only three new empty Publisher comment notification tables. No existing table, history scan, or backfill is involved."
+    },
     "20260925120000_add_suggestion_subscription": {
       "reason": "Indexes cover only the two new empty suggestion subscription tables. Existing settings and execution tables gain constant-false or nullable columns; no history scan, backfill, or existing-table index build is performed."
     },

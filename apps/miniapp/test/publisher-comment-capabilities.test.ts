@@ -13,9 +13,9 @@ const dialogPageSource = readFileSync(
   'utf8',
 );
 
-test('comment capabilities keep Major-routed controls out of Publisher', () => {
+test('both profiles support notifications while Publisher keeps text-only comments', () => {
   assert.deepEqual(resolveChannelDialogProfileCapabilities('publisher'), {
-    canManageCommentNotifications: false,
+    canManageCommentNotifications: true,
     canUploadCommentAttachments: false,
     canUploadSuggestionImages: true,
   });
@@ -38,7 +38,7 @@ test('comment routes pass their authenticated profile into the lazy page', () =>
   );
 });
 
-test('Publisher comments hide notification and upload controls with payload guards', () => {
+test('comment capabilities guard notification and upload controls with payload guards', () => {
   assert.match(dialogPageSource, /resolveChannelDialogProfileCapabilities\(profile\)/u);
   assert.match(
     dialogPageSource,

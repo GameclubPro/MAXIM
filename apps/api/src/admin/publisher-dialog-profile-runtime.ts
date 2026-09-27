@@ -5,6 +5,8 @@ import {
   channelDialogTypeSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
+  updateChannelDialogNotificationsRequestSchema,
+  updateChannelDialogNotificationsResponseSchema,
   type ChannelDialogMessage,
   type ChannelDialogNotificationSettings,
   type ChannelDialogType,
@@ -31,6 +33,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import { PublisherCommentNotificationService } from '../publisher/publisher-comment-notification.service';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 import { resolveChannelSuggestionActorDisplayName } from './admin-channel-suggestion-author';
 import { normalizeMaxProfileUrl } from './admin-profile-links';
@@ -91,10 +94,38 @@ type PublisherDialogProfileRuntimeContext = {
   maxBotRegistry?: MaxBotRegistryService;
   enqueueSuggestionAdminDelivery?: (suggestionId: string) => Promise<void>;
   suggestionSubscriptions?: SuggestionSubscriptionService;
+  commentNotifications?: PublisherCommentNotificationService;
 };
 
 export class PublisherDialogProfileRuntime {
   constructor(private readonly context: PublisherDialogProfileRuntimeContext) {}
+
+  async updateCommentNotifications(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userId: string,
+    body: unknown,
+  ) {
+    const parsed = updateChannelDialogNotificationsRequestSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.format());
+    const threadId = this.resolveRequiredPublisherThreadId(
+      chatId,
+      entityType,
+      'comments',
+      parsed.data.token,
+    );
+    if (entityType === 'channel') await this.assertChannelCommentThreadReady(chatId);
+    else await this.assertChatReady(chatId);
+    if (!this.context.commentNotifications)
+      throw new ServiceUnavailableException('Уведомления Публика временно недоступны.');
+    const notificationSettings = await this.context.commentNotifications.updateSettings(
+      { chatId, entityType, threadId },
+      userId,
+      parsed.data.mode,
+      parsed.data.scope,
+    );
+    return updateChannelDialogNotificationsResponseSchema.parse({ ok: true, notificationSettings });
+  }
 
   async getChannelDialog(params: {
     chatId: string;
@@ -165,7 +196,12 @@ export class PublisherDialogProfileRuntime {
         .slice(0, CHANNEL_DIALOG_MESSAGES_LIMIT)
         .reverse()
         .map((row) => params.mapAuditLog(row, params.dialogType, params.user.userId, adminUserIds)),
-      notificationSettings: this.defaultNotificationSettings(),
+      notificationSettings: await this.readCommentNotificationSettings(
+        params.chatId,
+        'channel',
+        threadId,
+        params.user.userId,
+      ),
       hasMoreMessages: rows.length > CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
   }
@@ -310,7 +346,12 @@ export class PublisherDialogProfileRuntime {
         .slice(0, CHANNEL_DIALOG_MESSAGES_LIMIT)
         .reverse()
         .map((row) => params.mapAuditLog(row, dialogType, params.user.userId, adminUserIds)),
-      notificationSettings: this.defaultNotificationSettings(),
+      notificationSettings: await this.readCommentNotificationSettings(
+        params.chatId,
+        'chat',
+        threadId!,
+        params.user.userId,
+      ),
       hasMoreMessages: rows.length > CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
   }
@@ -326,6 +367,17 @@ export class PublisherDialogProfileRuntime {
     if (route.entityType !== 'chat') {
       throw new BadRequestException('Комментарии Публика доступны только для чатов.');
     }
+  }
+
+  private async readCommentNotificationSettings(
+    chatId: string,
+    entityType: ManagedEntityType,
+    threadId: string,
+    userId: string,
+  ) {
+    return this.context.commentNotifications
+      ? this.context.commentNotifications.readSettings({ chatId, entityType, threadId }, userId)
+      : this.defaultNotificationSettings();
   }
 
   resolveChatThreadId(

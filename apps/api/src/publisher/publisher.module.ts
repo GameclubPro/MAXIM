@@ -67,6 +67,7 @@ import {
   PublisherVideoUploadQueueService,
 } from './publisher-video-upload.queue';
 import { PublisherVideoUploadProcessor } from './publisher-video-upload.processor';
+import { PublisherCommentNotificationService } from './publisher-comment-notification.service';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -88,6 +89,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   : [];
 
 const sharedPublisherProviders = [
+  PublisherCommentNotificationService,
   PublisherBackgroundWorkCoordinatorService,
   PublisherRuntimeHeartbeatReaderService,
   PublisherBindingRefreshQueueService,

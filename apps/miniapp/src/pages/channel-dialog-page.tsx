@@ -245,50 +245,6 @@ function getNotificationSettingsForScope(
   return settings.thread;
 }
 
-function applyOptimisticNotificationSettings(
-  current: ChannelDialogResponse,
-  fallbackSettings: ChannelDialogNotificationSettings,
-  payload: {
-    mode: ChannelDialogNotificationMode;
-    scope: ChannelDialogNotificationScope;
-  },
-): ChannelDialogResponse {
-  const currentSettings = current.notificationSettings ?? fallbackSettings;
-  const nextSettings: ChannelDialogNotificationSettings = {
-    ...currentSettings,
-    scope: payload.scope,
-    thread:
-      payload.scope === 'thread'
-        ? {
-            mode: payload.mode,
-            explicit: true,
-          }
-        : currentSettings.thread,
-    channel:
-      payload.scope === 'channel'
-        ? {
-            mode: payload.mode,
-            explicit: true,
-          }
-        : currentSettings.channel,
-    allChannels:
-      payload.scope === 'all_channels'
-        ? {
-            mode: payload.mode,
-            explicit: true,
-          }
-        : currentSettings.allChannels,
-  };
-  const activeScopedSettings = getNotificationSettingsForScope(nextSettings, payload.scope);
-  return {
-    ...current,
-    notificationSettings: {
-      ...nextSettings,
-      mode: activeScopedSettings.mode,
-    },
-  };
-}
-
 const COMMENT_IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/iu;
 
 function isCommentAttachmentImageLike(
@@ -2112,22 +2068,6 @@ export function ChannelDialogPage({
   }, [activeMessageId]);
 
   useEffect(() => {
-    if (!canManageCommentNotifications || !isNotificationSettingsOpen) {
-      return;
-    }
-
-    setNotificationDraftScope(notificationScope);
-    setNotificationDraftMode(
-      getNotificationSettingsForScope(notificationSettings, notificationScope).mode,
-    );
-  }, [
-    canManageCommentNotifications,
-    isNotificationSettingsOpen,
-    notificationScope,
-    notificationSettings,
-  ]);
-
-  useEffect(() => {
     if (
       !canManageCommentNotifications ||
       !isNotificationSettingsOpen ||
@@ -2958,19 +2898,10 @@ export function ChannelDialogPage({
             mode: payload.mode,
             scope: payload.scope,
           }),
-    onMutate: async (payload) => {
+    onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: dialogQueryKey });
-      const previousDialog = queryClient.getQueryData<ChannelDialogResponse | undefined>(
-        dialogQueryKey,
-      );
-      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
-        current
-          ? applyOptimisticNotificationSettings(current, notificationSettings, payload)
-          : current,
-      );
-      return { previousDialog };
     },
-    onSuccess: (result) => {
+    onSuccess: (result, payload) => {
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
         current
           ? {
@@ -2981,18 +2912,10 @@ export function ChannelDialogPage({
       );
       pushToast({
         tone: 'success',
-        title:
-          result.notificationSettings.mode === 'off'
-            ? 'Уведомления выключены'
-            : result.notificationSettings.scope === 'all_channels'
-              ? `Уведомления включены для ${result.notificationSettings.availableChannelCount ?? 0} каналов`
-              : 'Уведомления включены',
+        title: `${payload.scope === 'thread' ? 'Пост' : payload.scope === 'channel' ? (entityType === 'channel' ? 'Канал' : 'Чат') : entityType === 'channel' ? 'Все каналы' : 'Все чаты'}: ${payload.mode === 'off' ? 'уведомления выключены' : payload.mode === 'replies' ? 'ответы на ваши комментарии' : 'все комментарии'}`,
       });
     },
-    onError: (error, _mode, context) => {
-      if (context?.previousDialog) {
-        queryClient.setQueryData(dialogQueryKey, context.previousDialog);
-      }
+    onError: (error) => {
       pushToast({
         tone: 'danger',
         title: describeUserFacingError(error, 'Не удалось обновить уведомления'),
@@ -3898,6 +3821,13 @@ export function ChannelDialogPage({
                       setIsComposeEmojiOpen(false);
                       setIsThemeSettingsOpen(false);
                       composeFieldRef.current?.blur();
+                      if (!isNotificationSettingsOpen) {
+                        setNotificationDraftScope(notificationScope);
+                        setNotificationDraftMode(
+                          getNotificationSettingsForScope(notificationSettings, notificationScope)
+                            .mode,
+                        );
+                      }
                       setIsNotificationSettingsOpen((current) => !current);
                     }}
                     aria-label="Настройки уведомлений"
@@ -5190,6 +5120,10 @@ export function ChannelDialogPage({
           <LazyChannelDialogNotificationSheet
             portalTarget={screenRef.current ?? document.body}
             entityType={entityType}
+            profile={profile}
+            threadOverrideMode={
+              notificationSettings.thread.explicit ? notificationSettings.thread.mode : null
+            }
             draftMode={notificationDraftMode}
             draftScope={notificationDraftScope}
             availableTargetCount={notificationAvailableChannelCount}
@@ -5201,6 +5135,9 @@ export function ChannelDialogPage({
             onDraftScopeSelect={(scope) => {
               maxImpact('soft');
               setNotificationDraftScope(scope);
+              setNotificationDraftMode(
+                getNotificationSettingsForScope(notificationSettings, scope).mode,
+              );
             }}
             onApply={handleNotificationSettingsApply}
           />

@@ -23,7 +23,11 @@ export class PublisherChatCommentAdmissionError extends Error {
 
 type PublisherCommentJobMetadata = {
   idempotencyKey: string;
-  sourceTag: 'chat_auto_comment' | 'channel_auto_post' | 'comment_button_count';
+  sourceTag:
+    | 'chat_auto_comment'
+    | 'channel_auto_post'
+    | 'comment_button_count'
+    | 'comment_notification';
   retryPolicyName: 'publisher-chat-comment';
   createdAt: string;
 };
@@ -71,7 +75,13 @@ export type PublisherCommentKeyboardEditJob = QueueJobEnvelope<
 export type PublisherChatCommentJob =
   | PublisherChatCommentAttachJob
   | PublisherChannelCommentAttachJob
-  | PublisherCommentKeyboardEditJob;
+  | PublisherCommentKeyboardEditJob
+  | PublisherCommentNotificationJob;
+
+export type PublisherCommentNotificationJob = QueueJobEnvelope<
+  { version: 1; kind: 'deliver_notification'; eventId: string; requiredBotId: string },
+  PublisherCommentJobMetadata
+>;
 
 export type PublisherChannelCommentAttachJob = QueueJobEnvelope<
   {
@@ -123,6 +133,24 @@ export class PublisherChatCommentQueueService {
     this.publisherBotId = buildPublisherBotDescriptor({
       id: configService.get<string>('MAX_PUBLISHER_BOT_ID'),
     }).id;
+  }
+
+  async enqueueNotification(eventId: string): Promise<void> {
+    await this.assertPublisherAdmissionEnabled();
+    await this.queue.add(
+      'deliver-comment-notification',
+      {
+        version: 1,
+        kind: 'deliver_notification',
+        eventId: this.requireString(eventId, 'eventId'),
+        requiredBotId: this.publisherBotId,
+        idempotencyKey: eventId,
+        sourceTag: 'comment_notification',
+        retryPolicyName: 'publisher-chat-comment',
+        createdAt: new Date().toISOString(),
+      },
+      this.jobOptions(`publisher-comment-notify-${randomUUID()}`, 8, false),
+    );
   }
 
   async enqueueAttach(params: {

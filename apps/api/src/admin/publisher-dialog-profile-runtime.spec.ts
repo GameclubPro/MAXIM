@@ -101,6 +101,21 @@ function createHarness() {
     resolveChatDialogThreadId: jest.fn<string | null, []>().mockReturnValue(THREAD_ID),
     resolveChannelDialogThreadId: () => THREAD_ID,
   };
+  const commentNotifications = {
+    recordComment: jest.fn().mockResolvedValue(undefined),
+    enqueue: jest.fn().mockResolvedValue(undefined),
+    readSettings: jest.fn().mockResolvedValue({
+      mode: 'replies',
+      scope: 'thread',
+      canUseAll: true,
+      thread: { mode: 'replies', explicit: false },
+      channel: { mode: 'off', explicit: false },
+      allChannels: { mode: 'off', explicit: false },
+    }),
+    updateSettings: jest.fn(),
+  };
+  commentNotifications.updateSettings.mockImplementation(() => commentNotifications.readSettings());
+  (service as any).publisherCommentNotifications = commentNotifications;
   const publisherRuntime = new PublisherDialogProfileRuntime({
     prisma,
     majorDialogLinks,
@@ -108,6 +123,7 @@ function createHarness() {
     publisherReadiness: {
       assertEntityReady,
     } as never,
+    commentNotifications: commentNotifications as never,
   });
   (service as any).publisherDialogProfileRuntime = publisherRuntime;
 
@@ -125,6 +141,7 @@ function createHarness() {
     service,
     majorToken,
     publisherDialogLinks,
+    commentNotifications,
   };
 }
 
@@ -184,6 +201,73 @@ function createSuggestionHarness() {
 }
 
 describe('Publisher chat dialog profile ownership', () => {
+  it.each(['chat', 'channel'] as const)(
+    'saves %s notification settings using the signed Publisher thread',
+    async (entityType) => {
+      const { service, commentNotifications, publisherDialogLinks, prisma } = createHarness();
+      const id = entityType === 'chat' ? CHAT_ID : CHANNEL_ID;
+      const method =
+        entityType === 'chat'
+          ? 'updateChatDialogNotifications'
+          : 'updateChannelDialogNotifications';
+      const response = await service[method](
+        id,
+        user,
+        'comments',
+        { token: TOKEN, mode: 'all', scope: 'channel' },
+        'publisher',
+      );
+      expect(response.ok).toBe(true);
+      expect(commentNotifications.updateSettings).toHaveBeenCalledWith(
+        { chatId: id, entityType, threadId: THREAD_ID },
+        user.userId,
+        'all',
+        'channel',
+      );
+      expect(prisma.dialogNotificationSubscription.upsert).not.toHaveBeenCalled();
+      if (entityType === 'chat')
+        expect(publisherDialogLinks.resolveChatDialogThreadId).toHaveBeenCalledWith(
+          id,
+          'comments',
+          TOKEN,
+        );
+    },
+  );
+
+  it('rejects an invalid Publisher notification token before saving preferences', async () => {
+    const { service, commentNotifications, publisherDialogLinks } = createHarness();
+    publisherDialogLinks.resolveChatDialogThreadId.mockReturnValue(null);
+    await expect(
+      service.updateChatDialogNotifications(
+        CHAT_ID,
+        user,
+        'comments',
+        { token: TOKEN, mode: 'all', scope: 'thread' },
+        'publisher',
+      ),
+    ).rejects.toThrow('Ссылка на комментарии недействительна');
+    expect(commentNotifications.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('records the Publisher outbox in the comment transaction', async () => {
+    const { service, commentNotifications } = createHarness();
+    await service.createChatDialogMessage(
+      CHAT_ID,
+      user,
+      'comments',
+      { token: TOKEN, text: 'Ответ' },
+      'publisher',
+    );
+    expect(commentNotifications.recordComment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        id: 'publisher-created',
+        threadId: THREAD_ID,
+        authorUserId: user.userId,
+      }),
+    );
+    expect(commentNotifications.enqueue).toHaveBeenCalledWith('publisher-created');
+  });
   it.each(['moderation', 'publisher'] as const)(
     'reports truncated comment history for %s without counting the audit table',
     async (profile) => {

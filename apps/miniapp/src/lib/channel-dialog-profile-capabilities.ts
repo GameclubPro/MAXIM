@@ -11,7 +11,7 @@ export function resolveChannelDialogProfileCapabilities(
 ): ChannelDialogProfileCapabilities {
   const majorRoutedControls = profile === 'moderation';
   return {
-    canManageCommentNotifications: majorRoutedControls,
+    canManageCommentNotifications: true,
     canUploadCommentAttachments: majorRoutedControls,
     canUploadSuggestionImages: true,
   };
