@@ -79,3 +79,33 @@ from catch-up and denied targets. A healthy release alone does not prove deliver
 all historical posts. Investigate a concrete occurrence through authenticated product
 access when a user reports a remaining delay; never turn that investigation into a
 bulk retry of attempted, failed-with-receipt, or ambiguous deliveries.
+
+## Priority Index Migration Recovery
+
+If `20260927160000_index_publication_materialization_priority` stops with a lock
+timeout, preserve its immutable SQL and the deploy transition journal. Synchronize
+the reviewed, green exact-SHA checkout before using the fixed recovery command:
+
+```bash
+./infra/scripts/vps-connect.sh recover-publication-priority-migration
+./infra/scripts/vps-connect.sh recover-publication-priority-migration --apply
+```
+
+Review the preview before applying. The command validates the checksum and one active
+zero-step lock-timeout record, rejects other failed migrations, and checks exact index
+parents, keys, sort definitions, methods, predicates and validity. Metadata is capped
+at 8 MiB and logs at 64 KiB; the occurrence table must be at most 512 MiB. Unknown
+definitions, partitioned parents and concurrent-repair leftovers abort recovery.
+
+Apply holds the deploy lock, requires healthy ingress/admin readiness and normal system
+mode, creates absent indexes concurrently or reindexes exact invalid indexes concurrently,
+and rechecks each result. Each DDL operation has a 30-second lock timeout, 120-second
+statement timeout, zero parallel workers and bounded memory/temp usage. The wrapper has
+a 420-second wall deadline and cleans only its own labeled container/backend. Only two
+verified valid indexes permit `migrate resolve --applied`; the receipt is checked again.
+No application rows, queues or release manifests are changed. A failed step leaves the
+migration unresolved; inspect a new preview before considering another apply.
+
+Continue through normal scoped API deployment afterward. An interrupted release journal
+requires caller-only `MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1`; the normal deploy must
+re-prove the queue fence and exact image inventory before recording the new release.
