@@ -245,6 +245,7 @@ export class BackgroundRuntimeGovernorService {
     sourceTag: string;
     allowRecoveryWindowRun?: boolean;
     allowQueueLagSlowPathBelowSec?: number;
+    allowQueueBacklogSlowPath?: boolean;
     allowMaxApiCapacitySlowPath?: boolean;
     ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): Promise<BackgroundRuntimeGovernorDecision> {
@@ -252,6 +253,7 @@ export class BackgroundRuntimeGovernorService {
     const modeOnlyDecision = this.buildModeOnlyPauseDecision(
       mode,
       params.allowRecoveryWindowRun === true,
+      params.allowQueueBacklogSlowPath === true,
     );
     const decision =
       modeOnlyDecision ??
@@ -263,6 +265,7 @@ export class BackgroundRuntimeGovernorService {
         {
           allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
           allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
+          allowQueueBacklogSlowPath: params.allowQueueBacklogSlowPath === true,
           allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
           ignoredPressureDomains: params.ignoredPressureDomains,
         },
@@ -285,12 +288,17 @@ export class BackgroundRuntimeGovernorService {
     sourceTag: string;
     allowRecoveryWindowRun?: boolean;
     allowQueueLagSlowPathBelowSec?: number;
+    allowQueueBacklogSlowPath?: boolean;
     allowMaxApiCapacitySlowPath?: boolean;
     ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): BackgroundRuntimeGovernorDecision | null {
     const mode = this.systemModeService.peekCachedSnapshot(this.cacheTtlMs);
     const modeOnlyDecision = mode
-      ? this.buildModeOnlyPauseDecision(mode, params.allowRecoveryWindowRun === true)
+      ? this.buildModeOnlyPauseDecision(
+          mode,
+          params.allowRecoveryWindowRun === true,
+          params.allowQueueBacklogSlowPath === true,
+        )
       : null;
     if (modeOnlyDecision) {
       return modeOnlyDecision;
@@ -311,6 +319,7 @@ export class BackgroundRuntimeGovernorService {
       {
         allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
         allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
+        allowQueueBacklogSlowPath: params.allowQueueBacklogSlowPath === true,
         allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
         ignoredPressureDomains: params.ignoredPressureDomains,
       },
@@ -517,6 +526,7 @@ export class BackgroundRuntimeGovernorService {
     options: {
       allowRecoveryWindowRun?: boolean;
       allowQueueLagSlowPathBelowSec?: number;
+      allowQueueBacklogSlowPath?: boolean;
       allowMaxApiCapacitySlowPath?: boolean;
       ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
     } = {},
@@ -532,9 +542,27 @@ export class BackgroundRuntimeGovernorService {
     const ignoreMaxApiTraffic =
       options.ignoredPressureDomains?.includes('max_api_traffic') === true;
 
-    const modeOnlyDecision = this.buildModeOnlyPauseDecision(snapshot.mode, allowRecoveryWindowRun);
+    const modeOnlyDecision = this.buildModeOnlyPauseDecision(
+      snapshot.mode,
+      allowRecoveryWindowRun,
+      options.allowQueueBacklogSlowPath === true,
+    );
     if (modeOnlyDecision) {
       return modeOnlyDecision;
+    }
+
+    // FLAG: Bounded publication preparation may advance behind an unrelated webhook backlog,
+    // but host pressure and manual/MAX emergency pauses retain authority over this slow path.
+    if (options.allowQueueBacklogSlowPath) {
+      const pressure = this.buildSystemPressureDecision(snapshot.systemPressure);
+      if (pressure?.action === 'pause') return pressure;
+      if (queueLagSec >= this.softQueueLagSec || snapshot.mode.condition === 'queue_backlog') {
+        return {
+          action: 'slow',
+          retryAfterMs: this.slowRetryAfterMs,
+          reason: `bounded preparation during queue lag ${queueLagSec.toFixed(1)}s`,
+        };
+      }
     }
 
     if (queueLagSec >= this.softQueueLagSec) {
@@ -587,8 +615,18 @@ export class BackgroundRuntimeGovernorService {
   private buildModeOnlyPauseDecision(
     mode: SystemModeSnapshot,
     allowRecoveryWindowRun: boolean,
+    allowQueueBacklogSlowPath = false,
   ): BackgroundRuntimeGovernorDecision | null {
     if (mode.mode !== 'degrade') {
+      return null;
+    }
+
+    if (
+      allowQueueBacklogSlowPath &&
+      mode.source === 'auto' &&
+      mode.manualMode === null &&
+      mode.condition === 'queue_backlog'
+    ) {
       return null;
     }
 

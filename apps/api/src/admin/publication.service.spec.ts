@@ -343,6 +343,7 @@ describe('PublicationService', () => {
       sourceTag: 'managed_broadcast',
       allowRecoveryWindowRun: true,
       allowMaxApiCapacitySlowPath: true,
+      allowQueueBacklogSlowPath: true,
     });
     expect(materializeSpy).not.toHaveBeenCalled();
     expect(rollupOccurrencesSpy).toHaveBeenCalledTimes(1);
@@ -400,22 +401,22 @@ describe('PublicationService', () => {
     await service.processDuePublications('scheduled');
 
     expect(dispatchSpy).toHaveBeenNthCalledWith(1, 50, [PublicationScheduleMode.NOW]);
-    expect(dispatchSpy).toHaveBeenNthCalledWith(2, 10, [
+    expect(dispatchSpy).toHaveBeenNthCalledWith(2, 2, [
       PublicationScheduleMode.ONCE,
       PublicationScheduleMode.SLOTS,
       PublicationScheduleMode.RECURRENCE,
     ]);
-    expect(dispatchSpy).toHaveBeenNthCalledWith(3, 10, [
+    expect(dispatchSpy).toHaveBeenNthCalledWith(3, 2, [
       PublicationScheduleMode.ONCE,
       PublicationScheduleMode.SLOTS,
       PublicationScheduleMode.RECURRENCE,
     ]);
     expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledWith();
     expect(managedBroadcastService.processDueDeadlinePublicationBroadcasts).toHaveBeenCalledWith(
-      10,
+      2,
       verificationBudget,
     );
-    expect(materializeSpy).toHaveBeenCalledWith(10);
+    expect(materializeSpy).toHaveBeenCalledWith(2);
     expect(backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0]).toBeLessThan(
       managedBroadcastService.processDueDeadlinePublicationBroadcasts.mock.invocationCallOrder[0],
     );

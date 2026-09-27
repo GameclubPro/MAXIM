@@ -2120,6 +2120,38 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it.each(['immediate', 'deadline'] as const)(
+    'yields a slow Publisher %s sweep between durable attempts',
+    async (lane) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-27T10:00:00Z'));
+      try {
+        const runtime = new AdminManagedBroadcastRuntime(
+          {
+            prisma: {
+              managedBroadcast: {
+                findMany: jest.fn().mockResolvedValue([{ id: 'first' }, { id: 'second' }]),
+              },
+            },
+            logger: { log: jest.fn(), warn: jest.fn() },
+          } as never,
+          PublicationDispatchProfile.PUBLIK_V1,
+        );
+        const process = jest
+          .spyOn(runtime as any, 'processManagedBroadcastOccurrence')
+          .mockImplementation(async () => {
+            jest.setSystemTime(Date.now() + 6_000);
+          });
+        if (lane === 'immediate') await runtime.processDueImmediatePublicationBroadcasts();
+        else await runtime.processDueDeadlinePublicationBroadcasts();
+        expect(process).toHaveBeenCalledTimes(1);
+        expect(process.mock.calls[0]?.[0]).toBe('first');
+        if (lane === 'immediate') expect(process.mock.calls[0]?.[6]).toBe(4);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
   it('delivers exact due NOW envelopes through the explicit immediate entry point', async () => {
     const managedBroadcast = {
       findMany: jest.fn().mockResolvedValue([{ id: 'broadcast-now' }]),
@@ -2147,6 +2179,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       ],
       undefined,
       { remaining: PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE },
+      undefined,
     );
     expect(managedBroadcast.findMany).toHaveBeenNthCalledWith(
       1,

@@ -7,9 +7,11 @@ import {
 } from './admin-managed-broadcast-due-selection';
 import {
   MANAGED_BROADCAST_AUTOMATIC_DELIVERY_QUANTUM,
-  MANAGED_BROADCAST_DUE_MAX_PASSES,
   PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE,
 } from './admin.service.support';
+
+const TARGETED_MAX_PASSES = 4;
+const TARGETED_BUDGET_MS = 5_000;
 
 type TargetedPublicationReason = 'immediate' | 'deadline';
 
@@ -41,7 +43,8 @@ export async function processTargetedPublisherPublicationBroadcasts(options: {
     return verificationBudget;
   }
 
-  for (let pass = 0; pass < MANAGED_BROADCAST_DUE_MAX_PASSES; pass += 1) {
+  const deadline = Date.now() + TARGETED_BUDGET_MS;
+  for (let pass = 0; pass < TARGETED_MAX_PASSES; pass += 1) {
     const scope = {
       publicationId: options.publicationId,
       ...(options.occurrenceId ? { occurrenceId: options.occurrenceId } : {}),
@@ -72,18 +75,14 @@ export async function processTargetedPublisherPublicationBroadcasts(options: {
         rethrowPreDispatchPrismaError: true,
       });
       madeProgress ||= result.sentChatIds.length > 0 || result.failedChatIds.length > 0;
+      // FLAG: Yield only between durable occurrence attempts. The exact pending-work timer
+      // continues both NOW and scheduled sends without replaying any attempted delivery.
+      if (Date.now() >= deadline) return verificationBudget;
     }
     if (!madeProgress) {
       return verificationBudget;
     }
   }
 
-  options.context.logger.warn(
-    {
-      publicationId: options.publicationId,
-      occurrenceId: options.occurrenceId ?? null,
-    },
-    `Targeted Publisher ${options.reason === 'immediate' ? 'NOW' : 'deadline'} backlog was not fully drained after ${MANAGED_BROADCAST_DUE_MAX_PASSES} passes.`,
-  );
   return verificationBudget;
 }

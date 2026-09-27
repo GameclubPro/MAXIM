@@ -138,6 +138,71 @@ function createDecisionSnapshotForTest() {
 }
 
 describe('BackgroundRuntimeGovernorService', () => {
+  it('allows bounded publication preparation during an automatic webhook backlog', async () => {
+    const snapshot = createDecisionSnapshotForTest();
+    snapshot.mode = {
+      ...snapshot.mode,
+      mode: 'degrade',
+      reason: 'queue backlog',
+      queueLagSec: 3600,
+    };
+    Object.assign(snapshot.mode, { condition: 'queue_backlog' });
+    snapshot.queues.effectiveLagSec = 3600;
+    const mode = { getEffectiveSnapshot: jest.fn().mockResolvedValue(snapshot.mode) };
+    const service = new BackgroundRuntimeGovernorService(
+      {} as never,
+      mode as never,
+      {} as never,
+      createConfigMock(),
+    );
+    jest.spyOn(service as any, 'getPressureSnapshot').mockResolvedValue(snapshot);
+    const request = { component: 'publication-materializer', sourceTag: 'managed_broadcast' };
+
+    await expect(service.decide(request)).resolves.toMatchObject({ action: 'pause' });
+    await expect(
+      service.decide({ ...request, allowQueueBacklogSlowPath: true }),
+    ).resolves.toMatchObject({ action: 'slow' });
+
+    snapshot.systemPressure.ioWaitRatio = 0.5;
+    await expect(
+      service.decide({ ...request, allowQueueBacklogSlowPath: true }),
+    ).resolves.toMatchObject({ action: 'pause', reason: 'system iowait 50.0%' });
+    snapshot.systemPressure.ioWaitRatio = 0;
+    snapshot.systemPressure.loadRatio1m = 2;
+    await expect(
+      service.decide({ ...request, allowQueueBacklogSlowPath: true }),
+    ).resolves.toMatchObject({ action: 'pause' });
+  });
+
+  it.each(['manual', 'max_api', 'mixed', 'unknown'])(
+    'preserves the %s pause for bounded publication preparation',
+    async (condition) => {
+      const snapshot = createDecisionSnapshotForTest();
+      const mode = {
+        ...snapshot.mode,
+        mode: 'degrade',
+        condition,
+        source: condition === 'manual' ? 'manual' : 'auto',
+        manualMode: condition === 'manual' ? 'degrade' : null,
+      };
+      const service = new BackgroundRuntimeGovernorService(
+        {} as never,
+        { getEffectiveSnapshot: jest.fn().mockResolvedValue(mode) } as never,
+        {} as never,
+        createConfigMock(),
+      );
+      const readPressure = jest.spyOn(service as any, 'getPressureSnapshot');
+      await expect(
+        service.decide({
+          component: 'publication-materializer',
+          sourceTag: 'managed_broadcast',
+          allowQueueBacklogSlowPath: true,
+        }),
+      ).resolves.toMatchObject({ action: 'pause' });
+      expect(readPressure).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps aggregate and hottest-bot MAX load observational', () => {
     const service = new BackgroundRuntimeGovernorService(
       {} as never,

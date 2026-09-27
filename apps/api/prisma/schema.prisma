@@ -2944,6 +2944,8 @@ model PublicationOccurrence {
   @@index([legacyBroadcastId], map: "publication_occurrences_legacy_broadcast_idx")
   @@index([status, scheduledAt], map: "publication_occurrences_status_scheduled_idx")
   @@index([dispatchProfile, status, scheduledAt], map: "publication_occurrences_dispatch_status_scheduled_idx")
+  @@index([dispatchProfile, status, dispatchBlockerCode, scheduledAt, id], map: "publication_occurrences_ready_dispatch_idx")
+  @@index([dispatchProfile, status, dispatchBlockedAt, scheduledAt, id], map: "publication_occurrences_blocked_dispatch_idx")
   @@index([publicationId, scheduledAt(sort: Desc), id(sort: Desc)], map: "publication_occurrences_publication_scheduled_id_idx")
   @@map("publication_occurrences")
 }

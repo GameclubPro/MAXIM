@@ -5,8 +5,17 @@ describe('PublisherPublicationDispatchRunnerService', () => {
   const createBackgroundWork = () => ({
     runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
   });
-  const createPrisma = (findFirst = jest.fn().mockResolvedValue(null)) => ({
-    managedBroadcast: { findFirst },
+  const createPrisma = (
+    findFirst = jest.fn().mockResolvedValue(null),
+    findImmediate = jest.fn().mockResolvedValue(null),
+  ) => ({
+    managedBroadcast: {
+      findFirst: jest.fn((args) => {
+        const modes = args.where.publicationOccurrence.is.schedule.is.mode.in;
+        return modes.length === 1 && modes[0] === 'NOW' ? findImmediate(args) : findFirst(args);
+      }),
+    },
+    publicationSchedule: { findUnique: jest.fn().mockResolvedValue({ mode: 'ONCE' }) },
   });
 
   afterEach(() => {
@@ -453,6 +462,103 @@ describe('PublisherPublicationDispatchRunnerService', () => {
       expect(deadline).toHaveBeenCalledTimes(1);
     } finally {
       runner.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('acknowledges a NOW wake while unrelated deadline work is waiting', async () => {
+    process.env.APP_ROLE = 'publisher';
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const backgroundWork = {
+      runExclusive: jest.fn(async () => {
+        await gate;
+      }),
+    };
+    const prisma = createPrisma();
+    prisma.publicationSchedule.findUnique.mockResolvedValue({ mode: 'NOW' });
+    const targetedDeadline = jest.fn();
+    const runner = new PublisherPublicationDispatchRunnerService(
+      {
+        processTargetedImmediatePublicationBroadcasts: jest
+          .fn()
+          .mockResolvedValue({ remaining: 1 }),
+        processTargetedDeadlinePublicationBroadcasts: targetedDeadline,
+      } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      { dispatchEnabled: true, assertDispatchEnabled: jest.fn() } as never,
+      { assertDispatchAllowed: jest.fn().mockResolvedValue(undefined) } as never,
+      backgroundWork as never,
+      prisma as never,
+    );
+    (runner as any).startDeadlineRun('scheduled');
+    try {
+      await runner.wakeAfterPublicationMaterialization('now-publication');
+      expect(targetedDeadline).not.toHaveBeenCalled();
+      expect(backgroundWork.runExclusive).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await runner.onModuleDestroy();
+    }
+  });
+
+  it('continues NOW quanta while an older deadline waits, without overlap or a pause loop', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-27T10:00:00Z'));
+    process.env.APP_ROLE = 'publisher';
+    let paused = false;
+    let active = 0;
+    let maxActive = 0;
+    let releaseDeadline!: () => void;
+    const deadlineGate = new Promise<void>((resolve) => {
+      releaseDeadline = resolve;
+    });
+    const immediate = jest.fn(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      active -= 1;
+      return { remaining: 1 };
+    });
+    const runner = new PublisherPublicationDispatchRunnerService(
+      { processDueImmediatePublicationBroadcasts: immediate } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      { dispatchEnabled: true } as never,
+      { isGloballyPaused: jest.fn(async () => paused) } as never,
+      {
+        runExclusive: jest.fn(async () => {
+          await deadlineGate;
+        }),
+      } as never,
+      createPrisma(
+        jest.fn().mockResolvedValue({
+          id: 'older-scheduled',
+          nextSendAt: new Date('2026-09-27T08:00:00Z'),
+        }),
+        jest.fn().mockResolvedValue({
+          id: 'pending-now',
+          nextSendAt: new Date('2026-09-27T09:00:00Z'),
+        }),
+      ) as never,
+    );
+    try {
+      await (runner as any).refreshDeadlineWakeup();
+      await jest.advanceTimersByTimeAsync(250);
+      expect(immediate).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(500);
+      await jest.advanceTimersByTimeAsync(249);
+      expect(immediate).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(immediate).toHaveBeenCalledTimes(2);
+      paused = true;
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(immediate).toHaveBeenCalledTimes(2);
+      expect(maxActive).toBe(1);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      releaseDeadline();
+      await runner.onModuleDestroy();
       jest.useRealTimers();
     }
   });

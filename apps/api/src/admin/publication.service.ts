@@ -58,7 +58,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
-import { isSystemModeRecoveryWindow, SystemModeService } from '../system/system-mode.service';
+import { SystemModeService } from '../system/system-mode.service';
 import { isPrismaKnownError } from './admin-legacy-utils';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
@@ -121,7 +121,7 @@ const PUBLICATION_PAST_GRACE_MS = 5 * 60_000;
 const PUBLICATION_MATERIALIZE_BATCH = 50;
 const PUBLICATION_DISPATCH_BATCH = 50;
 const PUBLICATION_DEADLINE_DISPATCH_BATCH = 25;
-const PUBLICATION_SLOW_BATCH = 10;
+const PUBLICATION_SLOW_BATCH = 2;
 const PUBLICATION_RECONCILE_BATCH = 200;
 
 type PublicationCalendarConflictOccurrence = {
@@ -3822,15 +3822,11 @@ export class PublicationService {
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
       allowRecoveryWindowRun: true,
       allowMaxApiCapacitySlowPath: true,
+      allowQueueBacklogSlowPath: true,
     });
     if (decision.action !== 'run') {
       this.logThrottle(reason, decision.action, decision.reason);
       return decision.action;
-    }
-    const snapshot = await this.systemModeService.getSnapshot();
-    if (snapshot.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot)) {
-      this.logThrottle(reason, 'pause', snapshot.reason);
-      return 'pause';
     }
     return 'run';
   }

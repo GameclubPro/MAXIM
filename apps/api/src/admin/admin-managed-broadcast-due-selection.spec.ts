@@ -111,6 +111,7 @@ describe('publication managed broadcast due selection', () => {
                     PublicationScheduleMode.ONCE,
                     PublicationScheduleMode.SLOTS,
                     PublicationScheduleMode.RECURRENCE,
+                    PublicationScheduleMode.NOW,
                   ],
                 },
               },
@@ -265,6 +266,12 @@ describe('publication managed broadcast due selection', () => {
       const profile = where.dispatchProfile ?? where.AND?.[0]?.dispatchProfile;
       expect(profile).toBe(PublicationDispatchProfile.PUBLIK_V1);
     }
+    const verification = findMany.mock.calls[1][0].where.deliveries.some;
+    expect(verification.sentAt.lte).toBeInstanceOf(Date);
+    expect(verification.AND[1].OR).toEqual([
+      { remoteMessageVerificationNextAt: null },
+      { remoteMessageVerificationNextAt: { lte: expect.any(Date) } },
+    ]);
   });
 
   it('serializes PUBLIK_V1 discovery queries to preserve a foreground pool slot', async () => {

@@ -131,6 +131,12 @@ export type PendingPublisherPublicationDeadline = {
 export async function selectNextPendingPublisherPublicationDeadline(
   prisma: Pick<PrismaService, 'managedBroadcast'>,
   now = new Date(),
+  scheduleModes: readonly PublicationScheduleMode[] = [
+    PublicationScheduleMode.ONCE,
+    PublicationScheduleMode.SLOTS,
+    PublicationScheduleMode.RECURRENCE,
+    PublicationScheduleMode.NOW,
+  ],
 ): Promise<PendingPublisherPublicationDeadline | null> {
   const staleDeliveryLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
   // FLAG: Exact wakeups are only for ACTIVE executable delivery work. PARTIAL/FAILED anomalies,
@@ -152,13 +158,7 @@ export async function selectNextPendingPublisherPublicationDeadline(
           schedule: {
             is: {
               status: PublicationScheduleStatus.ACTIVE,
-              mode: {
-                in: [
-                  PublicationScheduleMode.ONCE,
-                  PublicationScheduleMode.SLOTS,
-                  PublicationScheduleMode.RECURRENCE,
-                ],
-              },
+              mode: { in: [...scheduleModes] },
             },
           },
         },
@@ -320,7 +320,16 @@ export async function selectPublicationManagedBroadcastDueBatch(
     status: ManagedBroadcastDeliveryStatus.SENT,
     remoteMessageId: { not: null },
     remoteMessageVerifiedAt: null,
-    AND: [buildPublicationDeliveryAutomatedVerificationWhere()],
+    sentAt: { lte: new Date(now.getTime() - PUBLICATION_POST_SEND_VERIFY_DELAY_MS) },
+    AND: [
+      buildPublicationDeliveryAutomatedVerificationWhere(),
+      {
+        OR: [
+          { remoteMessageVerificationNextAt: null },
+          { remoteMessageVerificationNextAt: { lte: now } },
+        ],
+      },
+    ],
   };
   const unenrolledSentDeliveryWhere: Prisma.ManagedBroadcastDeliveryWhereInput = {
     status: ManagedBroadcastDeliveryStatus.SENT,

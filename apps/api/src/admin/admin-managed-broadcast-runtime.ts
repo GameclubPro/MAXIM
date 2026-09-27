@@ -1035,6 +1035,7 @@ export class AdminManagedBroadcastRuntime {
       this.publicationExecutorProfile,
     );
 
+    const sweepDeadline = Date.now() + 5_000;
     for (const row of dueRows) {
       await this.processManagedBroadcastOccurrence(
         row.id,
@@ -1047,7 +1048,15 @@ export class AdminManagedBroadcastRuntime {
         ],
         undefined,
         verificationBudget,
+        this.publicationExecutorProfile === PrismaPublicationDispatchProfile.PUBLIK_V1
+          ? MANAGED_BROADCAST_AUTOMATIC_DELIVERY_QUANTUM
+          : undefined,
       );
+      if (
+        this.publicationExecutorProfile === PrismaPublicationDispatchProfile.PUBLIK_V1 &&
+        Date.now() >= sweepDeadline
+      )
+        break;
     }
     return verificationBudget;
   }
@@ -1122,6 +1131,7 @@ export class AdminManagedBroadcastRuntime {
       this.publicationExecutorProfile,
     );
 
+    const sweepDeadline = Date.now() + 5_000;
     for (const row of dueRows) {
       await this.processManagedBroadcastOccurrence(
         row.id,
@@ -1135,6 +1145,11 @@ export class AdminManagedBroadcastRuntime {
         undefined,
         verificationBudget,
       );
+      if (
+        this.publicationExecutorProfile === PrismaPublicationDispatchProfile.PUBLIK_V1 &&
+        Date.now() >= sweepDeadline
+      )
+        break;
     }
     return verificationBudget;
   }

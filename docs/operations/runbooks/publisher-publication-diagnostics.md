@@ -34,3 +34,48 @@ No report outcome authorizes bulk retry or recreating a failed publication as a 
 
 This command makes no MAX calls, runs no publication workers and changes no queue or
 application state. Use normal product authentication for any separately reviewed action.
+
+## Publication Delay Investigation, 2026-09-27
+
+A bounded post-release log sample contained 34 deadline delivery claims with lateness
+between 32.7 seconds and 74.4 minutes (median 18.3 minutes). These include historical
+catch-up and measure claim time, not MAX-confirmed delivery or a new-publication SLO.
+The action role paused preparation during an automatic webhook backlog of roughly
+46-48 minutes and also reported host-load pressure. The capped database audit still
+found fresh actor-access denials. Those denials must not be overridden to reduce lag.
+
+The latency fixes retain the existing per-bot budgets, two-connection Publisher pool,
+receipt fences, post-send stability window, and serialized background coordinator:
+
+- Only publication preparation opts into a bounded slow path for automatic webhook
+  backlog. Manual, MAX, mixed/unknown emergency modes and hard CPU/I/O pressure still
+  pause it. Slow preparation uses two rows per pass; normal preparation retains its
+  existing limits. Actual sending remains Publisher-owned.
+- Preparation selects unblocked rows first and reserves a small recovery share for
+  previously blocked work. Recovery rotates by last blocked check, with at most two
+  reserved slots and no increase to the total batch. Two concurrent indexes support
+  the new ordered selections; the migration changes no application data.
+- Targeted wakes yield after four passes or a five-second soft budget; global sweeps
+  also yield between envelopes. Each Publisher send quantum claims at most four
+  recipients. The budget never cancels an in-flight MAX call, so a slow individual
+  send can exceed it. Remaining deliveries retain their durable state.
+- NOW and scheduled work have independent pending-work timers, with a 250ms overdue
+  rearm and sequential database reads. A completed
+  NOW wake no longer waits for unrelated scheduled work in the background coordinator.
+  The 15-second safety poll remains; pauses and failed sweeps do not spin the timer.
+- Delivery verification becomes selectable only after its initial delay and persisted
+  next-check time. Future verification rows cannot displace currently due verification.
+
+Regression coverage includes a real disposable PostgreSQL fixture with 3,000 old
+blocked occurrences, fresh-work priority, rotating recovery, the actual generated
+query plans, future verification exclusion, and pending NOW selection. Timer tests
+cover nonoverlapping continuation, pause, shutdown, and strict wake failure propagation.
+The PostgreSQL suite is part of `test:postgres-races` and requires a local `race_test`
+database; it never sends messages to MAX.
+
+After rollout, use the bounded catalog, Publisher dispatch health and existing
+`Publik publication deadline delivery claimed` logs. Compare newly due work separately
+from catch-up and denied targets. A healthy release alone does not prove delivery of
+all historical posts. Investigate a concrete occurrence through authenticated product
+access when a user reports a remaining delay; never turn that investigation into a
+bulk retry of attempted, failed-with-receipt, or ambiguous deliveries.

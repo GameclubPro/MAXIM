@@ -99,6 +99,44 @@ function createHarness(options: {
 }
 
 describe('publication occurrence dispatcher', () => {
+  it('prepares new ready work ahead of older blocked schedules while reserving recovery', async () => {
+    const harness = createHarness({ createExecutionError: null });
+    const ready = Array.from({ length: 10 }, (_, index) => ({
+      ...occurrence,
+      id: `ready-${index}`,
+      scheduledAt: new Date('2026-09-27T10:00:00Z'),
+    }));
+    const blocked = Array.from({ length: 2 }, (_, index) => ({
+      ...occurrence,
+      id: `blocked-${index}`,
+      scheduledAt: new Date('2026-09-01T10:00:00Z'),
+    }));
+    harness.context.prisma.publicationOccurrence.findMany
+      .mockResolvedValueOnce(ready)
+      .mockResolvedValueOnce(blocked);
+    harness.context.createExecution.mockResolvedValue(undefined);
+
+    await dispatchScheduledPublicationOccurrences(harness.context as never, 10);
+
+    expect(harness.context.createExecution.mock.calls.map(([row]) => row.id)).toEqual(
+      [...ready.slice(0, 8), ...blocked].map((row) => row.id),
+    );
+    const calls = harness.context.prisma.publicationOccurrence.findMany.mock.calls as any[];
+    expect(calls[0][0].where.dispatchBlockerCode).toBeNull();
+    expect(calls[1][0].where.dispatchBlockerCode).toEqual({ not: null });
+    expect(calls[1][0].take).toBe(2);
+  });
+
+  it('uses spare capacity for blocked recovery without increasing the total batch', async () => {
+    const harness = createHarness({ createExecutionError: null });
+    harness.context.prisma.publicationOccurrence.findMany
+      .mockResolvedValueOnce([occurrence])
+      .mockResolvedValueOnce([{ ...occurrence, id: 'blocked' }]);
+    harness.context.createExecution.mockResolvedValue(undefined);
+    await dispatchScheduledPublicationOccurrences(harness.context as never, 2);
+    expect(harness.context.createExecution).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     [
       'P1001 connection failure',

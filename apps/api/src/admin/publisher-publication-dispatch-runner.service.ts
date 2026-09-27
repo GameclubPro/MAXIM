@@ -5,7 +5,11 @@ import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-
 import { PublisherIdentityAttestationService } from '../publisher/publisher-identity-attestation.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { selectNextPendingPublisherPublicationDeadline } from './admin-managed-broadcast-due-selection';
+import { PublicationScheduleMode } from '../prisma/prisma-client';
+import {
+  selectNextPendingPublisherPublicationDeadline,
+  type PendingPublisherPublicationDeadline,
+} from './admin-managed-broadcast-due-selection';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 
 const PUBLISHER_PUBLICATION_POLL_INTERVAL_MS = 15_000;
@@ -35,14 +39,22 @@ type PublisherPublicationDeadlineScope = {
   occurrenceId?: string;
 };
 
+type PublicationWakeLane = 'immediate' | 'deadline';
+type PublicationWakeTimer = {
+  timer: NodeJS.Timeout | null;
+  key: string | null;
+  atMs: number | null;
+};
+
 @Injectable()
 export class PublisherPublicationDispatchRunnerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PublisherPublicationDispatchRunnerService.name);
   private readonly enabled = roleRunsPublisher(getAppRole());
   private timer: NodeJS.Timeout | null = null;
-  private deadlineWakeTimer: NodeJS.Timeout | null = null;
-  private deadlineWakeKey: string | null = null;
-  private deadlineWakeAtMs: number | null = null;
+  private readonly wakeTimers: Record<PublicationWakeLane, PublicationWakeTimer> = {
+    immediate: { timer: null, key: null, atMs: null },
+    deadline: { timer: null, key: null, atMs: null },
+  };
   private deadlineWakeRefreshInFlight: Promise<void> | null = null;
   private deadlineWakeRefreshGeneration = 0;
   private deadlineWakeRefreshCompletedGeneration = 0;
@@ -108,6 +120,13 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
     if (this.destroyed) {
       return;
     }
+    const schedule = await this.prisma.publicationSchedule.findUnique({
+      where: { publicationId },
+      select: { mode: true },
+    });
+    // FLAG: A NOW command has already completed its durable dispatch quantum. It must not hold
+    // the sole wakeup worker while unrelated scheduled work waits for background maintenance.
+    if (!schedule || schedule.mode === PublicationScheduleMode.NOW) return;
     while (!this.destroyed) {
       const activeDeadlineRun = this.deadlineInFlight;
       if (activeDeadlineRun) {
@@ -218,6 +237,7 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
 
       if (verificationBudget && !this.destroyed) {
         void this.startDeadlineRun(reason, verificationBudget);
+        void this.refreshDeadlineWakeup();
       }
       this.immediateGlobalWakeCompletedGeneration = generation;
       reason = 'scheduled';
@@ -369,18 +389,36 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
   }
 
   private async refreshDeadlineWakeupOnce(): Promise<void> {
-    const next = await selectNextPendingPublisherPublicationDeadline(this.prisma);
+    // FLAG: A blocked scheduled lane must not hide NOW continuation. Keep the reads
+    // sequential on the two-connection pool and arm independent durable-work timers.
+    const deadline = await selectNextPendingPublisherPublicationDeadline(this.prisma, new Date(), [
+      PublicationScheduleMode.ONCE,
+      PublicationScheduleMode.SLOTS,
+      PublicationScheduleMode.RECURRENCE,
+    ]);
+    this.armWakeTimer('deadline', deadline);
+    if (this.destroyed) return;
+    const immediate = await selectNextPendingPublisherPublicationDeadline(this.prisma, new Date(), [
+      PublicationScheduleMode.NOW,
+    ]);
+    this.armWakeTimer('immediate', immediate);
+  }
+
+  private armWakeTimer(
+    lane: PublicationWakeLane,
+    next: PendingPublisherPublicationDeadline | null,
+  ): void {
     if (this.destroyed) {
       return;
     }
     if (!next) {
-      this.clearDeadlineWakeTimer();
+      this.clearDeadlineWakeTimer(lane);
       return;
     }
 
     const deadlineAtMs = next.nextSendAt.getTime();
     if (!Number.isFinite(deadlineAtMs)) {
-      this.clearDeadlineWakeTimer();
+      this.clearDeadlineWakeTimer(lane);
       return;
     }
     const now = Date.now();
@@ -389,36 +427,42 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
     // the four-delivery quantum can drain promptly without becoming a database busy loop.
     const wakeAtMs = overdue ? now + PUBLISHER_PUBLICATION_OVERDUE_REARM_MS : deadlineAtMs;
     const wakeKey = `${next.id}:${deadlineAtMs}`;
+    const state = this.wakeTimers[lane];
     if (
-      this.deadlineWakeTimer &&
-      this.deadlineWakeKey === wakeKey &&
-      (!overdue || (this.deadlineWakeAtMs ?? Number.POSITIVE_INFINITY) <= wakeAtMs)
+      state.timer &&
+      state.key === wakeKey &&
+      (!overdue || (state.atMs ?? Number.POSITIVE_INFINITY) <= wakeAtMs)
     ) {
       return;
     }
 
-    this.clearDeadlineWakeTimer();
-    this.deadlineWakeKey = wakeKey;
-    this.deadlineWakeAtMs = wakeAtMs;
-    this.deadlineWakeTimer = setTimeout(
+    this.clearDeadlineWakeTimer(lane);
+    state.key = wakeKey;
+    state.atMs = wakeAtMs;
+    state.timer = setTimeout(
       () => {
-        this.deadlineWakeTimer = null;
-        this.deadlineWakeKey = null;
-        this.deadlineWakeAtMs = null;
-        void this.startDeadlineRun('deadline_wakeup');
+        state.timer = null;
+        state.key = null;
+        state.atMs = null;
+        if (lane === 'immediate') {
+          this.immediateGlobalWakeGeneration += 1;
+          void this.ensureImmediateDrain('scheduled');
+        } else {
+          void this.startDeadlineRun('deadline_wakeup');
+        }
       },
       Math.max(0, Math.min(MAX_NODE_TIMER_DELAY_MS, wakeAtMs - now)),
     );
-    this.deadlineWakeTimer.unref();
+    state.timer.unref();
   }
 
-  private clearDeadlineWakeTimer(): void {
-    if (this.deadlineWakeTimer) {
-      clearTimeout(this.deadlineWakeTimer);
-      this.deadlineWakeTimer = null;
+  private clearDeadlineWakeTimer(lane?: PublicationWakeLane): void {
+    for (const state of lane ? [this.wakeTimers[lane]] : Object.values(this.wakeTimers)) {
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = null;
+      state.key = null;
+      state.atMs = null;
     }
-    this.deadlineWakeKey = null;
-    this.deadlineWakeAtMs = null;
   }
 
   private logFailure(reason: PublisherPublicationRunReason, error: unknown): void {

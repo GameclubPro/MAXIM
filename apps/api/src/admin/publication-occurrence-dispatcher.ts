@@ -95,40 +95,61 @@ export async function dispatchScheduledPublicationOccurrences(
   const now = new Date();
   const horizon = new Date(now.getTime() + PUBLICATION_EXECUTION_HORIZON_MS);
   const blockedRetryBefore = context.publisherRouting.blockedRetryBefore(now);
-  const occurrences = await context.prisma.publicationOccurrence.findMany({
-    where: {
-      ...(scope.publicationId ? { publicationId: scope.publicationId } : {}),
-      ...(scope.occurrenceId ? { id: scope.occurrenceId } : {}),
-      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-      status: PublicationOccurrenceStatus.SCHEDULED,
-      scheduledAt: { lte: horizon, ...(scope.notBefore ? { gte: scope.notBefore } : {}) },
-      publication: {
-        is: {
-          lifecycle: PublicationLifecycle.ACTIVE,
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-        },
-      },
-      schedule: {
-        is: {
-          status: PublicationScheduleStatus.ACTIVE,
-          ...(scheduleModes ? { mode: { in: scheduleModes } } : {}),
-        },
-      },
-      legacyBroadcasts: { none: {} },
-      OR: [{ dispatchBlockerCode: null }, { dispatchBlockedAt: { lte: blockedRetryBefore } }],
-    },
-    orderBy: { scheduledAt: 'asc' },
-    take: limit,
-    include: {
-      schedule: true,
-      contentRevision: true,
-      publication: {
-        include: {
-          targets: { orderBy: { position: 'asc' } },
-        },
+  if (!Number.isSafeInteger(limit) || limit <= 0) return;
+  const boundedLimit = Math.min(limit, 50);
+  const where: Prisma.PublicationOccurrenceWhereInput = {
+    ...(scope.publicationId ? { publicationId: scope.publicationId } : {}),
+    ...(scope.occurrenceId ? { id: scope.occurrenceId } : {}),
+    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    status: PublicationOccurrenceStatus.SCHEDULED,
+    scheduledAt: { lte: horizon, ...(scope.notBefore ? { gte: scope.notBefore } : {}) },
+    publication: {
+      is: {
+        lifecycle: PublicationLifecycle.ACTIVE,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       },
     },
+    schedule: {
+      is: {
+        status: PublicationScheduleStatus.ACTIVE,
+        ...(scheduleModes ? { mode: { in: scheduleModes } } : {}),
+      },
+    },
+    legacyBroadcasts: { none: {} },
+  };
+  const include = {
+    schedule: true,
+    contentRevision: true,
+    publication: {
+      include: {
+        targets: { orderBy: { position: 'asc' } },
+      },
+    },
+  } satisfies Prisma.PublicationOccurrenceInclude;
+  // FLAG: Unready historical schedules must not occupy every materialization slot. Reserve a
+  // small recovery share, and keep both reads bounded and sequential on the shared database.
+  const ready = await context.prisma.publicationOccurrence.findMany({
+    where: { ...where, dispatchBlockerCode: null },
+    orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+    take: boundedLimit,
+    include,
   });
+  const recoveryReservation = boundedLimit > 1 ? Math.min(2, Math.ceil(boundedLimit / 5)) : 0;
+  const recoveryLimit = Math.max(recoveryReservation, boundedLimit - ready.length);
+  const blocked =
+    recoveryLimit > 0
+      ? await context.prisma.publicationOccurrence.findMany({
+          where: {
+            ...where,
+            dispatchBlockerCode: { not: null },
+            OR: [{ dispatchBlockedAt: null }, { dispatchBlockedAt: { lte: blockedRetryBefore } }],
+          },
+          orderBy: [{ dispatchBlockedAt: 'asc' }, { scheduledAt: 'asc' }, { id: 'asc' }],
+          take: recoveryLimit,
+          include,
+        })
+      : [];
+  const occurrences = [...ready.slice(0, boundedLimit - blocked.length), ...blocked];
 
   for (const occurrence of occurrences) {
     try {
