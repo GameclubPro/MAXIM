@@ -55,6 +55,7 @@ Commands:
   postgres-audit publisher-publications [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
+  recover-publisher-catalog-migration [--apply]
   recover-suggestion-subscription-migration [--apply]
                               Run fixed, bounded, privacy-safe PostgreSQL diagnostics
   postgres-audit-provision [--apply]
@@ -363,6 +364,17 @@ recover_publication_priority_migration() {
   target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
   remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-recover-publication-priority-migration.sh "$@")"
+}
+
+recover_publisher_catalog_migration() {
+  if [[ $# -gt 1 || ( $# -eq 1 && "$1" != '--apply' ) ]]; then
+    echo 'Usage: recover-publisher-catalog-migration [--apply]' >&2
+    exit 2
+  fi
+  local target_sha
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-recover-publisher-catalog-migration.sh "$@")"
 }
 
 recover_suggestion_subscription_migration() {
@@ -1217,6 +1229,9 @@ case "$command" in
     ;;
   recover-publication-priority-migration)
     recover_publication_priority_migration "$@"
+    ;;
+  recover-publisher-catalog-migration)
+    recover_publisher_catalog_migration "$@"
     ;;
   commercial-ocr-promote)
     commercial_ocr_promote "$@"

@@ -30,3 +30,21 @@ The fixed `publication-schema` audit diagnoses the additive schema introduced by
 
 The `all` audit deliberately excludes this specialized schema probe. No extra database table
 grants, SQL parameters, schema names, or file paths are accepted by the public command.
+
+## Publisher Catalog Index
+
+For a lock-timeout failure of `20260928121000_index_publisher_catalog_page`, use
+`./infra/scripts/vps-connect.sh recover-publisher-catalog-migration` after synchronizing
+the green exact-SHA tooling. Preview checks the migration checksum and receipt plus the
+exact non-unique btree index on `(user_id, bot_id, state, chat_id)` in
+`managed_entity_access_edges`, including collation, operator classes and column order.
+
+After reviewing preview, repeat with `--apply`. Only an absent index or an exact invalid
+index can be created/reindexed concurrently. Schema drift, foreign failures, leftover
+reindex artifacts, tables above 512 MiB and unhealthy runtime abort. The same two-minute
+statement deadline, 30-second lock deadline, memory/temp-file limits, shared deploy lock
+and exact-backend cleanup apply. Prisma resolution occurs only after the exact index
+is valid; its receipt is verified afterward. No access rows or release journals change.
+
+Resume the interrupted deploy through the existing journal adoption flow. The committed
+migration stays immutable; the recovery command does not complete the release itself.
