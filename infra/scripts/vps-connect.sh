@@ -49,10 +49,11 @@ Commands:
   health                      Check local-on-VPS and public health endpoints
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
-  postgres-audit [queue|activity|duplicate|publication-schema|all]
+  postgres-audit [queue|activity|duplicate|publication-schema|storage|all]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
+  postgres-audit storage [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
   recover-publisher-catalog-migration [--apply]
@@ -307,9 +308,9 @@ ERROR
 postgres_audit() {
   local mode="${1:-all}"
 
-  if [[ "$mode" == 'publisher-publications' ]]; then
+  if [[ "$mode" == 'publisher-publications' || "$mode" == 'storage' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
-      echo "Usage: postgres-audit publisher-publications [--explain]" >&2
+      echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2
     fi
     remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
@@ -327,7 +328,7 @@ postgres_audit() {
   fi
 
   if [[ $# -gt 1 ]]; then
-    echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|all]" >&2
+    echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|storage|all]" >&2
     exit 2
   fi
 
@@ -336,7 +337,7 @@ postgres_audit() {
       ;;
     *)
       echo "Unknown PostgreSQL audit mode: $mode" >&2
-      echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|all]" >&2
+      echo "Usage: $0 postgres-audit [queue|activity|duplicate|publication-schema|storage|all]" >&2
       exit 2
       ;;
   esac

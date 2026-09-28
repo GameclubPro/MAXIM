@@ -181,6 +181,11 @@ connection. It does not receive `pg_read_all_data`. Run
 and recent delete-intent aggregates. Every section reports its cap and whether a count is complete
 or only a lower bound.
 
+For disk attribution, use the opt-in
+[`postgres-audit storage` report](operations/runbooks/postgres-storage-audit.md).
+It measures table/index files through catalogs and statistics without scanning
+application rows; `--explain` previews its plan. It is excluded from `all`.
+
 ## Bot Auto-Delete Access-Ambiguity Recovery
 
 When the closed dashboard reports recent auto-delete `access-ambiguous` ledger rows, run the

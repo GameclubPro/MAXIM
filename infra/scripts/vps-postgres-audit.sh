@@ -26,10 +26,11 @@ POSTGRES_AUDIT_OPTIONS='-c default_transaction_read_only=on -c statement_timeout
 usage() {
   cat <<'USAGE' >&2
 Usage:
-  ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|all]
+  ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
+  ./infra/scripts/vps-postgres-audit.sh storage [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -72,7 +73,7 @@ SIGNAL_WINDOW_MIN=''
 RULES_CLEANUP_CHAT_ID=''
 RULES_CLEANUP_EXPLAIN=''
 case "$AUDIT_MODE" in
-  publisher-publications)
+  publisher-publications|storage)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -1349,6 +1350,13 @@ emit_sql() {
       ;;
     publication-schema)
       node "$ROOT_DIR/infra/scripts/publication-post-actions-schema-audit.mjs"
+      ;;
+    storage)
+      local storage_args=()
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
+        storage_args+=("$RULES_CLEANUP_EXPLAIN")
+      fi
+      node "$ROOT_DIR/infra/scripts/postgres-storage-audit.mjs" "${storage_args[@]}"
       ;;
     rules-cleanup)
       local args=("$RULES_CLEANUP_CHAT_ID")

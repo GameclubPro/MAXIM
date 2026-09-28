@@ -255,6 +255,25 @@ test('rules cleanup audit accepts only an exact chat ID and never operator SQL',
   );
 });
 
+test('storage audit is opt-in, uses the bounded audit role, and rejects operator SQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['storage']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /'audit', 'postgres_storage'/u);
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /maxim_audit/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'storage']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /vps-postgres-audit\.sh\\ storage/u);
+  assert.equal(runAudit(data, ['storage', 'SELECT 1']).status, 2);
+  assert.equal(runConnect(data, ['postgres-audit', 'storage', 'SELECT 1']).status, 2);
+  assert.equal(runAudit(data, ['storage', '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'storage', '--explain']).status, 0);
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'postgres_storage'/u);
+});
+
 test('queue audit uses the dedicated role and a hard read-only resource envelope', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
