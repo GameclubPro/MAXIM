@@ -8,6 +8,7 @@ import {
 import {
   buildChannelSuggestionMediaMetadata,
   prepareChannelSuggestionMediaRows,
+  prepareNormalizedChannelSuggestionImageRows,
 } from './admin-channel-suggestion-image-storage';
 import { uploadChannelSuggestionVideo } from './admin-channel-suggestion-video';
 import {
@@ -17599,7 +17600,17 @@ export class AdminService implements OnModuleDestroy {
     const imageFileNames = normalizedImages
       .map((image) => image.fileName?.trim() ?? '')
       .filter((fileName): fileName is string => fileName.length > 0);
-    const videoRows = params.video ? await prepareChannelSuggestionMediaRows([], params.video) : [];
+    const storeImageRows =
+      normalizedImages.length > 0 &&
+      params.mediaType !== 'video' &&
+      normalizedImages.every(
+        (image) => image.type !== 'video' && !image.mimeType?.startsWith('video/'),
+      );
+    const mediaRows = params.video
+      ? await prepareChannelSuggestionMediaRows([], params.video)
+      : storeImageRows
+        ? await prepareNormalizedChannelSuggestionImageRows(normalizedImages)
+        : [];
 
     const created = await this.prisma.auditLog.create({
       data: {
@@ -17633,8 +17644,8 @@ export class AdminService implements OnModuleDestroy {
           deliveries: [],
           source: params.source,
           reviewStatus: 'pending',
-          ...(params.video
-            ? buildChannelSuggestionMediaMetadata(videoRows)
+          ...(params.video || storeImageRows
+            ? buildChannelSuggestionMediaMetadata(mediaRows)
             : {
                 hasImage: normalizedImages.length > 0,
                 imageCount: normalizedImages.length,
@@ -17651,7 +17662,13 @@ export class AdminService implements OnModuleDestroy {
               }),
           mediaBotId: params.mediaBotId ?? null,
         },
-        ...(videoRows.length ? { channelSuggestionImageAssets: { create: videoRows } } : {}),
+        ...(mediaRows.length
+          ? {
+              channelSuggestionImageAssets: {
+                create: mediaRows,
+              },
+            }
+          : {}),
       },
       select: {
         id: true,

@@ -4,6 +4,8 @@ import {
   CHANNEL_SUGGESTION_IMAGE_STORAGE_VERSION,
   loadStoredChannelSuggestionImages,
   prepareChannelSuggestionImageRows,
+  prepareNormalizedChannelSuggestionImageRows,
+  buildChannelSuggestionMediaMetadata,
 } from './admin-channel-suggestion-image-storage';
 
 const TINY_PNG = Buffer.from(
@@ -12,6 +14,45 @@ const TINY_PNG = Buffer.from(
 );
 
 describe('channel suggestion image storage', () => {
+  it('round-trips mixed inline and bot receipt images through metadata-only audit storage', async () => {
+    const rows = await prepareNormalizedChannelSuggestionImageRows([
+      { payload: { token: 'bot-owned-token' }, fileName: 'remote.jpg', mimeType: 'image/jpeg' },
+      { base64: TINY_PNG.toString('base64'), fileName: 'local.png', mimeType: 'image/png' },
+    ]);
+    const payload = buildChannelSuggestionMediaMetadata(rows);
+    expect(payload).toMatchObject({ imageStorageVersion: 1, imageCount: 2 });
+    expect(JSON.stringify(payload)).not.toContain('bot-owned-token');
+    expect(JSON.stringify(payload)).not.toContain(TINY_PNG.toString('base64'));
+    const images = await loadStoredChannelSuggestionImages({
+      auditLogId: 'mixed-suggestion',
+      payload,
+      legacyImages: [],
+      repository: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(
+            rows.map((row) => ({ bytes: null, durablePayload: null, sizeBytes: null, ...row })),
+          ),
+      },
+      logger: { error: jest.fn() },
+    });
+    expect(images).toEqual([
+      { payload: { token: 'bot-owned-token' }, fileName: 'remote.jpg', mimeType: 'image/jpeg' },
+      { base64: TINY_PNG.toString('base64'), fileName: 'local.png', mimeType: 'image/png' },
+    ]);
+  });
+
+  it('rejects ambiguous storage and videos on the compact image path', async () => {
+    await expect(
+      prepareNormalizedChannelSuggestionImageRows([
+        { payload: { token: 'token' }, base64: TINY_PNG.toString('base64') },
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      prepareNormalizedChannelSuggestionImageRows([{ type: 'video', payload: { token: 'video' } }]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('validates image bytes and prepares compact ordered relation rows', async () => {
     const rows = await prepareChannelSuggestionImageRows([
       {

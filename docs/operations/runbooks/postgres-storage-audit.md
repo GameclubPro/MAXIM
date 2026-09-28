@@ -23,6 +23,11 @@ Measurement is limited to 512 ordinary public tables/materialized views and
 measurements as zero storage. Output includes aggregate bytes and the largest
 32 tables and 32 indexes, estimated live/dead row counts, cumulative mutations,
 vacuum/analyze timestamps, statistics reset time and selected storage settings.
+It also reports up to 32 groups of valid/live indexes with identical access
+method, key/include columns, operator classes, collations, ordering, expressions
+and predicates. Uniqueness, constraint ownership, replica identity and clustering
+are reported separately. These are review candidates, not automatic DROP targets;
+retain constraints and inspect dependencies and recovery cost before any DDL.
 
 Interpret the report as follows:
 

@@ -350,6 +350,9 @@ export class VkParsingPostImportRepository {
 
     // FLAG: An active intent owns one immutable content revision. Once its key is cleared, a
     // later sync may import a newer VK revision and classify it against the published hash.
+    // FLAG: Preserve equal stored JSON values so PostgreSQL can reuse their TOAST pointers.
+    // Freshness timestamps still advance on every observation; hash equality alone cannot
+    // substitute for JSON equality (CDN URLs and raw counters can change independently).
     await database.$executeRaw(Prisma.sql`
       INSERT INTO "vk_parsing_posts" (
         "id",
@@ -413,11 +416,15 @@ export class VkParsingPostImportRepository {
           WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
             AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
           THEN "vk_parsing_posts"."photo_urls"
+          WHEN "vk_parsing_posts"."photo_urls" IS NOT DISTINCT FROM EXCLUDED."photo_urls"
+          THEN "vk_parsing_posts"."photo_urls"
           ELSE EXCLUDED."photo_urls"
         END,
         "video_urls" = CASE
           WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
             AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
+          THEN "vk_parsing_posts"."video_urls"
+          WHEN "vk_parsing_posts"."video_urls" IS NOT DISTINCT FROM EXCLUDED."video_urls"
           THEN "vk_parsing_posts"."video_urls"
           ELSE EXCLUDED."video_urls"
         END,
@@ -425,15 +432,37 @@ export class VkParsingPostImportRepository {
           WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
             AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
           THEN "vk_parsing_posts"."link_urls"
+          WHEN "vk_parsing_posts"."link_urls" IS NOT DISTINCT FROM EXCLUDED."link_urls"
+          THEN "vk_parsing_posts"."link_urls"
           ELSE EXCLUDED."link_urls"
         END,
-        "attachments" = EXCLUDED."attachments",
-        "attachment_types" = EXCLUDED."attachment_types",
-        "unsupported_attachments" = EXCLUDED."unsupported_attachments",
+        "attachments" = CASE
+          WHEN "vk_parsing_posts"."attachments" IS NOT DISTINCT FROM EXCLUDED."attachments"
+          THEN "vk_parsing_posts"."attachments"
+          ELSE EXCLUDED."attachments"
+        END,
+        "attachment_types" = CASE
+          WHEN "vk_parsing_posts"."attachment_types" IS NOT DISTINCT FROM EXCLUDED."attachment_types"
+          THEN "vk_parsing_posts"."attachment_types"
+          ELSE EXCLUDED."attachment_types"
+        END,
+        "unsupported_attachments" = CASE
+          WHEN "vk_parsing_posts"."unsupported_attachments" IS NOT DISTINCT FROM EXCLUDED."unsupported_attachments"
+          THEN "vk_parsing_posts"."unsupported_attachments"
+          ELSE EXCLUDED."unsupported_attachments"
+        END,
         "has_unsupported_attachments" = EXCLUDED."has_unsupported_attachments",
         "is_advertising" = EXCLUDED."is_advertising",
-        "advertising_markers" = EXCLUDED."advertising_markers",
-        "raw" = EXCLUDED."raw",
+        "advertising_markers" = CASE
+          WHEN "vk_parsing_posts"."advertising_markers" IS NOT DISTINCT FROM EXCLUDED."advertising_markers"
+          THEN "vk_parsing_posts"."advertising_markers"
+          ELSE EXCLUDED."advertising_markers"
+        END,
+        "raw" = CASE
+          WHEN "vk_parsing_posts"."raw" IS NOT DISTINCT FROM EXCLUDED."raw"
+          THEN "vk_parsing_posts"."raw"
+          ELSE EXCLUDED."raw"
+        END,
         "content_hash" = EXCLUDED."content_hash",
         "status" = EXCLUDED."status",
         "last_seen_at" = EXCLUDED."last_seen_at",

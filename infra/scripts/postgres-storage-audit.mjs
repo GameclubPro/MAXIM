@@ -25,7 +25,10 @@ WITH relations AS MATERIALIZED (
   FROM relations r LEFT JOIN pg_stat_user_tables s ON s.relid = r.oid
   WHERE (SELECT count(*) FROM relations) <= 512
 ), index_candidates AS MATERIALIZED (
-  SELECT i.indexrelid, i.indrelid, i.indisvalid, i.indisready, i.indisunique
+  SELECT i.indexrelid, i.indrelid, i.indisvalid, i.indisready, i.indisunique,
+    i.indislive, i.indisreplident, i.indisclustered,
+    i.indnkeyatts, i.indnatts, i.indkey, i.indclass, i.indcollation, i.indoption,
+    i.indexprs::text AS expressions, i.indpred::text AS predicate
   FROM pg_index i JOIN measured r ON r.oid = i.indrelid
   ORDER BY i.indexrelid LIMIT 4097
 ), measured_indexes AS MATERIALIZED (
@@ -37,6 +40,21 @@ WITH relations AS MATERIALIZED (
   JOIN measured r ON r.oid = i.indrelid
   LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = i.indexrelid
   WHERE (SELECT count(*) FROM index_candidates) <= 4096
+), equivalent_index_groups AS MATERIALIZED (
+  SELECT r.relname AS table_name,
+    json_agg(json_build_object(
+      'index_name', c.relname, 'bytes', pg_relation_size(i.indexrelid),
+      'unique_index', i.indisunique,
+      'constraint_backed', EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid),
+      'replica_identity', i.indisreplident, 'clustered', i.indisclustered
+    ) ORDER BY c.relname) AS indexes
+  FROM index_candidates i JOIN pg_class c ON c.oid = i.indexrelid
+  JOIN measured r ON r.oid = i.indrelid
+  WHERE (SELECT count(*) FROM index_candidates) <= 4096
+    AND i.indisvalid AND i.indisready AND i.indislive
+  GROUP BY r.relname, c.relam, i.indnkeyatts, i.indnatts,
+    i.indkey, i.indclass, i.indcollation, i.indoption, i.expressions, i.predicate
+  HAVING count(*) > 1
 )
 SELECT json_build_object(
   'schema_version', 1, 'audit', 'postgres_storage', 'sampled_at', clock_timestamp(),
@@ -68,6 +86,10 @@ SELECT json_build_object(
   ) t),
   'largest_indexes', (SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (
     SELECT * FROM measured_indexes ORDER BY bytes DESC, index_name LIMIT 32
+  ) t),
+  'equivalent_index_groups_limit_exceeded', (SELECT count(*) > 32 FROM equivalent_index_groups),
+  'equivalent_index_groups', (SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (
+    SELECT * FROM equivalent_index_groups ORDER BY table_name, indexes::text LIMIT 32
   ) t)
 );
 `;

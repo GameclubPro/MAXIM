@@ -5,6 +5,7 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import type { Prisma } from '../prisma/prisma-client';
 
 import {
   MaxMediaUploadValidationError,
@@ -54,9 +55,9 @@ export async function prepareChannelSuggestionMediaRows(
 }
 
 export function buildChannelSuggestionMediaMetadata(
-  rows: readonly PreparedChannelSuggestionImageRow[],
+  rows: readonly { mimeType: string | null; fileName: string | null }[],
 ) {
-  const video = rows.find((row) => row.mimeType.startsWith('video/'));
+  const video = rows.find((row) => row.mimeType?.startsWith('video/'));
   return video
     ? {
         hasImage: false,
@@ -92,6 +93,44 @@ export type PreparedChannelSuggestionImageRow = {
   fileName: string;
   sizeBytes: number;
 };
+
+// FLAG: The caller has already authenticated the media bot. Store its opaque
+// receipt unchanged beside the audit row; never share tokens across bots/authors.
+export async function prepareNormalizedChannelSuggestionImageRows(
+  images: readonly ChannelSuggestionImageAsset[],
+) {
+  if (images.some((image) => image.type === 'video' || image.mimeType?.startsWith('video/'))) {
+    throw new BadRequestException('Видео требует отдельного формата хранения.');
+  }
+  if (images.length > MAX_CHANNEL_DIALOG_SUGGEST_IMAGES) {
+    throw new BadRequestException(
+      `Можно добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фотографий.`,
+    );
+  }
+  const inline = images.filter((image) => !image.payload);
+  const prepared = await prepareChannelSuggestionImageRows(
+    inline.map((image) => ({
+      base64: image.base64 ?? '',
+      mimeType: image.mimeType ?? '',
+      fileName: image.fileName ?? '',
+    })),
+  );
+  let inlineIndex = 0;
+  return images.map((image, position) => {
+    if (image.payload) {
+      if (!Object.keys(image.payload).length || image.base64) {
+        throw new BadRequestException('Некорректное хранилище фото.');
+      }
+      return {
+        position,
+        durablePayload: image.payload as Prisma.InputJsonObject,
+        mimeType: image.mimeType ?? null,
+        fileName: image.fileName ?? null,
+      };
+    }
+    return { ...prepared[inlineIndex++]!, position };
+  });
+}
 
 type StoredChannelSuggestionImageRow = {
   position: number;

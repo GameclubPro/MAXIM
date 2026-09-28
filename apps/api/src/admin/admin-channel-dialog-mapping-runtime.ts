@@ -1,4 +1,8 @@
-import type { ChannelDialogMessage, ChannelDialogType } from '@maxim/contracts';
+import {
+  MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
+  type ChannelDialogMessage,
+  type ChannelDialogType,
+} from '@maxim/contracts';
 import type { Prisma } from '../prisma/prisma-client';
 import type {
   ChannelDialogAttachmentAsset,
@@ -125,8 +129,20 @@ export class AdminChannelDialogMappingRuntime {
       ),
     );
     const legacyImageFileName = this.readTrimmedString(payload.imageFileName);
+    const storedImageFileNames = Array.isArray(payload.imageFileNames)
+      ? payload.imageFileNames
+          .slice(0, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES)
+          .map((name) => this.readTrimmedString(name))
+          .filter((name): name is string => name !== null)
+      : [];
     const resolvedImageFileNames =
-      imageFileNames.length > 0 ? imageFileNames : legacyImageFileName ? [legacyImageFileName] : [];
+      imageFileNames.length > 0
+        ? imageFileNames
+        : storedImageFileNames.length > 0
+          ? storedImageFileNames
+          : legacyImageFileName
+            ? [legacyImageFileName]
+            : [];
     const imageFileName = resolvedImageFileNames[0] ?? null;
     const imageCount = hasImage
       ? Math.max(

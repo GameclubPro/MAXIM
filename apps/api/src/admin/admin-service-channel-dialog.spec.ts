@@ -679,9 +679,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           delivered: false,
           reviewStatus: 'pending',
           hasImage: true,
-          imageCount: 1,
-          imageFileName: 'suggestion.jpg',
-          imageFileNames: ['suggestion.jpg'],
+          imageStorageVersion: 1,
+          imageCount: 2,
+          imageFileNames: ['suggestion.jpg', 'second.png'],
           suggestionDelivery: {
             state: 'partially_delivered',
             deliveredCount: 1,
@@ -725,9 +725,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(result.messages[0]).toMatchObject({
       id: 'channel-suggestion-compact-image-1',
       hasImage: true,
-      imageCount: 1,
+      imageCount: 2,
       imageFileName: 'suggestion.jpg',
-      imageFileNames: ['suggestion.jpg'],
+      imageFileNames: ['suggestion.jpg', 'second.png'],
     });
     expect(result.messages[0]?.suggestionDelivery).toEqual({
       state: 'partially_delivered',
@@ -1888,7 +1888,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         token: suggestToken,
         text: '',
         imageBase64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         imageMimeType: 'image/png',
         imageFileName: 'suggestion.webp',
       },
@@ -1994,7 +1994,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const suggestToken = await publishSuggestDialogToken(service, maxClient);
     const image = {
       base64:
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
       mimeType: 'image/png',
       fileName: 'suggestion.webp',
     };
@@ -2023,12 +2023,18 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         data: expect.objectContaining({
           payload: expect.objectContaining({
             imageCount: 1,
-            imageFileNames: ['suggestion.webp'],
-            images: [expect.objectContaining({ fileName: 'suggestion.webp' })],
+            imageFileNames: ['suggestion.png'],
+            imageStorageVersion: 1,
           }),
         }),
       }),
     );
+    const stored = prisma.auditLog.create.mock.calls[1]?.[0]?.data;
+    expect(stored.payload.images).toBeUndefined();
+    expect(stored.payload.imageBase64).toBeUndefined();
+    expect(stored.channelSuggestionImageAssets.create).toEqual([
+      expect.objectContaining({ position: 0, bytes: expect.any(Uint8Array), sizeBytes: 68 }),
+    ]);
     expect(result.message).toMatchObject({
       id: 'suggestion-image-dedupe-1',
       type: 'suggest',
@@ -3750,7 +3756,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         token: suggestToken,
         text: '',
         imageBase64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         imageMimeType: 'image/png',
         imageFileName: 'suggestion.png',
       },
@@ -3793,14 +3799,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             source: 'private_bot',
             hasImage: true,
             imageCount: 1,
-            imageFileName: 'suggestion.png',
             imageFileNames: ['suggestion.png'],
-            images: [
-              expect.objectContaining({
-                fileName: 'suggestion.png',
-                mimeType: 'image/png',
-              }),
-            ],
+            imageStorageVersion: 1,
           }),
         }),
       }),
@@ -3831,7 +3831,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     await expect(
       (service as any).uploadChannelSuggestionImage({
         imageBase64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         imageMimeType: 'image/png',
         imageFileName: 'suggestion.png',
       }),
@@ -3938,20 +3938,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             source: 'private_bot',
             hasImage: true,
             imageCount: 2,
-            imageFileName: 'suggestion-1.png',
             imageFileNames: ['suggestion-1.png', 'suggestion-2.jpg'],
-            images: [
-              expect.objectContaining({
-                payload: { token: 'uploaded-image-1' },
-                mimeType: 'image/png',
-                fileName: 'suggestion-1.png',
-              }),
-              expect.objectContaining({
-                payload: { token: 'uploaded-image-2' },
-                mimeType: 'image/jpeg',
-                fileName: 'suggestion-2.jpg',
-              }),
-            ],
+            imageStorageVersion: 1,
           }),
         }),
       }),
@@ -4726,7 +4714,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         token: suggestToken,
         text: 'Предложка',
         imageBase64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         imageMimeType: 'image/png',
         imageFileName: 'entry-bot-suggestion.png',
       },
@@ -6328,7 +6316,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         threadId: sourceThreadId,
         reviewStatus: 'pending',
         imageBase64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         imageMimeType: 'image/png',
         imageFileName: 'suggestion.png',
         deliveries: [

@@ -73,3 +73,32 @@ test('storage SQL generator rejects all caller input', () => {
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
 });
+
+test('equivalent index groups separate predicates, ordering and includes and identify constraints', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(`
+      CREATE TABLE storage_indexes (id int PRIMARY KEY, value int);
+      CREATE INDEX storage_duplicate ON storage_indexes (id);
+      CREATE INDEX storage_descending ON storage_indexes (id DESC);
+      CREATE INDEX storage_partial ON storage_indexes (id) WHERE value > 0;
+      CREATE INDEX storage_included ON storage_indexes (id) INCLUDE (value);
+      CREATE ROLE storage_index_auditor;
+      GRANT pg_read_all_stats TO storage_index_auditor;
+      SET ROLE storage_index_auditor;
+    `);
+    const report = (await db.query(postgresStorageAuditSql)).rows[0].json_build_object;
+    assert.equal(report.equivalent_index_groups.length, 1);
+    assert.equal(report.equivalent_index_groups_limit_exceeded, false);
+    const indexes = report.equivalent_index_groups[0].indexes;
+    assert.deepEqual(
+      indexes.map((index) => index.index_name),
+      ['storage_duplicate', 'storage_indexes_pkey'],
+    );
+    assert.equal(indexes[0].constraint_backed, false);
+    assert.equal(indexes[1].constraint_backed, true);
+    assert.equal(indexes[1].unique_index, true);
+  } finally {
+    await db.close();
+  }
+});
