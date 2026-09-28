@@ -1624,6 +1624,16 @@ describe('WebhookOutboxService', () => {
           selectedCount: 0,
           degraded: false,
           completedTimeoutRepair: true,
+          progress: {
+            workUnits: 0,
+            orderedHeadBlocked: 0,
+            preparationBlocked: 0,
+            prepared: 0,
+            settled: 0,
+            outstanding: 0,
+            enqueueBlocked: 0,
+            workUnitErrors: 0,
+          },
         },
         'Slow webhook enqueue batch',
       );
@@ -2682,6 +2692,111 @@ describe('WebhookOutboxService', () => {
     expect(selectionQuery.values).toContain(5_000);
     expect(selectionSql).not.toContain('ordered_message_head_ids AS MATERIALIZED');
     expect(selectionQuery.values).toContain(6);
+  });
+
+  it('continues other work units after a routing failure without dropping the failed receipt', async () => {
+    const { service, webhookRoutingService, webhookRows, queues } = createService({
+      systemMode: 'degrade',
+      configOverrides: { ENQUEUE_CONCURRENCY: 1 },
+      findManyResult: Array.from({ length: 3 }, (_, index) => ({
+        id: `route-failure-${index}`,
+        enqueueAttempts: 0,
+        normalizedPayload: { type: 'message_created', message: { chatId: `route-chat-${index}` } },
+      })),
+    });
+    webhookRoutingService.resolveQueueName.mockRejectedValueOnce(new Error('temporary failure'));
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const enqueuedIds = Object.values(queues).flatMap((queue) =>
+      queue.add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    expect(enqueuedIds).toEqual(expect.arrayContaining(['route-failure-1', 'route-failure-2']));
+    expect(enqueuedIds).not.toContain('route-failure-0');
+    expect(webhookRows.find((row) => row.id === 'route-failure-0')?.status).toBe(
+      WebhookStatus.RECEIVED,
+    );
+  });
+
+  it('keeps the polling fence until concurrent work drains after another unit fails', async () => {
+    const { service, webhookRoutingService, prisma } = createService({
+      systemMode: 'degrade',
+      configOverrides: { ENQUEUE_CONCURRENCY: 2 },
+      findManyResult: Array.from({ length: 3 }, (_, index) => ({
+        id: `drain-${index}`,
+        enqueueAttempts: 0,
+        normalizedPayload: { type: 'message_callback' },
+      })),
+    });
+    let release!: () => void;
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    webhookRoutingService.resolveQueueName.mockImplementation(async (id: string) => {
+      if (id === 'drain-0') throw new Error('temporary routing failure');
+      if (id === 'drain-1') {
+        started();
+        await pending;
+      }
+      return 'moderation-critical';
+    });
+    const internals = service as unknown as { tick: () => Promise<void> };
+    let finished = false;
+    const firstTick = internals.tick().then(() => {
+      finished = true;
+    });
+    try {
+      await entered;
+      // Let the failed worker's rejection propagate before probing the polling fence.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await internals.tick();
+      expect(finished).toBe(false);
+      expect(
+        prisma.$queryRaw.mock.calls.filter(([query]) =>
+          extractSql(query).includes('fair_enqueue_candidates'),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      release();
+      await firstTick;
+    }
+  });
+
+  it('admits aged low-priority receipts while a full window of newer joins keeps arriving', async () => {
+    const now = Date.now();
+    const { service, queues } = createService({
+      systemMode: 'degrade',
+      configOverrides: { ENQUEUE_BATCH_SIZE: 8 },
+      findManyResult: [
+        {
+          id: 'aged-title-change',
+          enqueueAttempts: 0,
+          createdAt: new Date(now - 600_000),
+          normalizedPayload: { type: 'chat_title_changed', chatId: 'aged-chat' },
+        },
+        ...Array.from({ length: 40 }, (_, index) => ({
+          id: `recent-join-${index}`,
+          enqueueAttempts: 0,
+          createdAt: new Date(now - 40_000 + index * 100),
+          normalizedPayload: { type: 'user_added', chatId: `join-chat-${index}` },
+        })),
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const enqueuedIds = Object.values(queues).flatMap((queue) =>
+      queue.add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    expect(enqueuedIds).toContain('aged-title-change');
+    expect(enqueuedIds.filter((id) => id.startsWith('recent-join-')).length).toBeGreaterThanOrEqual(
+      6,
+    );
+    expect(enqueuedIds).toHaveLength(8);
   });
 
   it('enqueues high-priority membership joins before older message_created events', async () => {

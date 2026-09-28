@@ -57,6 +57,8 @@ const SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS = 30_000;
 const CANONICAL_PREPARATION_PENDING_RETRY_MS = 1_000;
 const RECEIVED_BATCH_SHARE = 0.75;
 const RECENT_RECEIPT_BATCH_SHARE = 0.25;
+const AGED_RECEIPT_RESERVE_SHARE = 0.25;
+const AGED_RECEIPT_WAIT_MS = 60_000;
 const MEMBERSHIP_LEAVE_WEBHOOK_TYPES = new Set([
   'user_removed',
   'bot_removed',
@@ -272,6 +274,21 @@ type WebhookEnqueueAdmission = {
 
 type CandidatePreparationOutcome = 'ready' | 'advance' | 'block';
 type CandidateEnqueueOutcome = 'terminal' | 'outstanding' | 'block';
+
+function createEnqueueProgress() {
+  return {
+    workUnits: 0,
+    orderedHeadBlocked: 0,
+    preparationBlocked: 0,
+    prepared: 0,
+    settled: 0,
+    outstanding: 0,
+    enqueueBlocked: 0,
+    workUnitErrors: 0,
+  };
+}
+
+type EnqueueProgress = ReturnType<typeof createEnqueueProgress>;
 
 type ManualClosePriorityCacheEntry = {
   prioritized: boolean;
@@ -610,12 +627,16 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     const prioritizationFinishedAtMs = Date.now();
-    await this.enqueueCandidates(expandedCandidates, admission.enqueueConcurrency);
+    const progress = await this.enqueueCandidates(expandedCandidates, admission.enqueueConcurrency);
     const finishedAtMs = Date.now();
     const durationMs = finishedAtMs - now.getTime();
-    if (durationMs >= SLOW_ENQUEUE_BATCH_MS && finishedAtMs >= this.nextSlowEnqueueBatchLogAtMs) {
+    if (
+      (durationMs >= SLOW_ENQUEUE_BATCH_MS || candidates.length > 0) &&
+      finishedAtMs >= this.nextSlowEnqueueBatchLogAtMs
+    ) {
       this.nextSlowEnqueueBatchLogAtMs = finishedAtMs + SLOW_ENQUEUE_BATCH_LOG_INTERVAL_MS;
-      this.logger.warn(
+      const log = durationMs >= SLOW_ENQUEUE_BATCH_MS ? 'warn' : 'log';
+      this.logger[log](
         {
           durationMs,
           admissionMs: admissionFinishedAtMs - now.getTime(),
@@ -626,8 +647,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           selectedCount: expandedCandidates.length,
           degraded: admission.degraded,
           completedTimeoutRepair: admission.includeCompletedTimeoutRepair,
+          progress,
         },
-        'Slow webhook enqueue batch',
+        durationMs >= SLOW_ENQUEUE_BATCH_MS
+          ? 'Slow webhook enqueue batch'
+          : 'Webhook enqueue batch progress',
       );
     }
   }
@@ -875,7 +899,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         priority: this.resolveCandidatePriority(candidate, manualCloseChatIds),
       }))
       .sort((left, right) => this.comparePrioritizedCandidates(left, right));
-    const selectedCandidates = this.selectCandidatesWithReceiptReserve(prioritizedCandidates, take);
+    const selectedCandidates = this.selectCandidatesWithReceiptReserve(
+      prioritizedCandidates,
+      take,
+      now,
+    );
     return this.ensureMembershipLeaveReserve(prioritizedCandidates, selectedCandidates, take).sort(
       (left, right) => this.comparePrioritizedCandidates(left, right),
     );
@@ -1033,6 +1061,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private selectCandidatesWithReceiptReserve<T extends WebhookEnqueueCandidate>(
     candidates: readonly T[],
     take: number,
+    now?: Date,
   ): T[] {
     const recentReceipts = candidates.filter(
       (candidate) => candidate.status === WebhookStatus.RECEIVED && candidate.isRecentReceipt,
@@ -1040,6 +1069,23 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const backlogReceipts = candidates.filter(
       (candidate) => candidate.status === WebhookStatus.RECEIVED && !candidate.isRecentReceipt,
     );
+    // FLAG: Priority alone can indefinitely starve old receipts under sustained joins/callbacks.
+    // Reserve bounded admission by age; BullMQ priority and per-chat ordering remain unchanged.
+    if (now) {
+      const agedReceipts = backlogReceipts
+        .filter(
+          (candidate) => now.getTime() - candidate.createdAt.getTime() >= AGED_RECEIPT_WAIT_MS,
+        )
+        .sort((left, right) => this.compareCandidateSequence(left, right))
+        .slice(0, Math.floor(take * AGED_RECEIPT_RESERVE_SHARE));
+      const agedIds = new Set(agedReceipts.map((candidate) => candidate.id));
+      backlogReceipts.splice(
+        0,
+        backlogReceipts.length,
+        ...agedReceipts,
+        ...backlogReceipts.filter((candidate) => !agedIds.has(candidate.id)),
+      );
+    }
     const recoveryCandidates = candidates.filter(
       (candidate) => candidate.status !== WebhookStatus.RECEIVED,
     );
@@ -1227,12 +1273,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async enqueueCandidates(
     candidates: PrioritizedWebhookEnqueueCandidate[],
     enqueueConcurrency = this.enqueueConcurrency,
-  ) {
+  ): Promise<EnqueueProgress> {
+    const progress = createEnqueueProgress();
     if (candidates.length === 0) {
-      return;
+      return progress;
     }
 
     const workUnits = this.buildEnqueueWorkUnits(candidates);
+    progress.workUnits = workUnits.length;
     const orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(
       workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : [])),
     );
@@ -1249,14 +1297,22 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.enqueueCandidateSequence(
-          workUnit,
-          workUnit.chatId ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null) : null,
-        );
+        try {
+          await this.enqueueCandidateSequence(
+            workUnit,
+            workUnit.chatId ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null) : null,
+            progress,
+          );
+        } catch {
+          // FLAG: Isolate a failed unit and drain every worker before the next poll starts.
+          // The persisted receipt remains retryable; never log its payload or an unsafe error.
+          progress.workUnitErrors += 1;
+        }
       }
     };
 
     await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    return progress;
   }
 
   private buildEnqueueWorkUnits(
@@ -1289,16 +1345,19 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async enqueueCandidateSequence(
     workUnit: WebhookEnqueueWorkUnit,
     initialOrderedHead: OrderedWebhookHead | null,
+    progress = createEnqueueProgress(),
   ): Promise<void> {
     let orderedHead = initialOrderedHead;
 
     for (const event of workUnit.candidates) {
       if (workUnit.chatId) {
         if (!orderedHead) {
+          progress.orderedHeadBlocked += 1;
           return;
         }
         const headOrder = this.compareCandidateSequence(orderedHead, event);
         if (headOrder < 0) {
+          progress.orderedHeadBlocked += 1;
           return;
         }
         if (headOrder > 0) {
@@ -1308,15 +1367,18 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
       const preparationOutcome = await this.prepareCandidateForCanonicalExecution(event);
       if (preparationOutcome === 'block') {
+        progress.preparationBlocked += 1;
         return;
       }
       if (preparationOutcome === 'advance') {
+        progress.settled += 1;
         if (workUnit.chatId) {
           orderedHead = await this.findOrderedWebhookHeadForChat(workUnit.chatId, event);
         }
         continue;
       }
 
+      progress.prepared += 1;
       const queueName = await this.webhookRoutingService.resolveQueueName(
         event.id,
         event.normalizedPayload,
@@ -1331,11 +1393,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           : queueName;
       const enqueueOutcome = await this.enqueueOne(event, event.priority, targetQueueName);
       if (enqueueOutcome === 'block') {
+        progress.enqueueBlocked += 1;
         return;
       }
       if (enqueueOutcome === 'outstanding') {
+        progress.outstanding += 1;
         return;
       }
+      progress.settled += 1;
       if (workUnit.chatId) {
         orderedHead = await this.findOrderedWebhookHeadForChat(workUnit.chatId, event);
       }
