@@ -26,9 +26,10 @@ WITH relations AS MATERIALIZED (
   WHERE (SELECT count(*) FROM relations) <= 512
 ), index_candidates AS MATERIALIZED (
   SELECT i.indexrelid, i.indrelid, i.indisvalid, i.indisready, i.indisunique,
-    i.indislive, i.indisreplident, i.indisclustered,
+    i.indislive, i.indisreplident, i.indisclustered, i.indnullsnotdistinct,
     i.indnkeyatts, i.indnatts, i.indkey, i.indclass, i.indcollation, i.indoption,
-    i.indexprs::text AS expressions, i.indpred::text AS predicate
+    pg_get_expr(i.indexprs, i.indrelid) AS expressions,
+    pg_get_expr(i.indpred, i.indrelid) AS predicate
   FROM pg_index i JOIN measured r ON r.oid = i.indrelid
   ORDER BY i.indexrelid LIMIT 4097
 ), measured_indexes AS MATERIALIZED (
@@ -45,6 +46,7 @@ WITH relations AS MATERIALIZED (
     json_agg(json_build_object(
       'index_name', c.relname, 'bytes', pg_relation_size(i.indexrelid),
       'unique_index', i.indisunique,
+      'nulls_not_distinct', i.indnullsnotdistinct,
       'constraint_backed', EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid),
       'replica_identity', i.indisreplident, 'clustered', i.indisclustered
     ) ORDER BY c.relname) AS indexes

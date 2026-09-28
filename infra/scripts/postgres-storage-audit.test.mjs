@@ -102,3 +102,27 @@ test('equivalent index groups separate predicates, ordering and includes and ide
     await db.close();
   }
 });
+
+test('equivalent expressions ignore source locations and SQL quoting differences', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(`
+      CREATE TABLE storage_expression (payload jsonb, created_at timestamp);
+      CREATE INDEX expression_first
+      ON storage_expression (((payload->'message'->>'chatId')), created_at)
+      WHERE (payload->>'type' IN ('user_added', 'user_removed'));
+
+      CREATE INDEX "expression_second" ON "storage_expression"
+      (((payload->'message'->>'chatId')), "created_at")
+      WHERE (payload->>'type' IN ('user_added', 'user_removed'));
+    `);
+    const report = (await db.query(postgresStorageAuditSql)).rows[0].json_build_object;
+    assert.equal(report.equivalent_index_groups.length, 1);
+    assert.deepEqual(
+      report.equivalent_index_groups[0].indexes.map((index) => index.index_name),
+      ['expression_first', 'expression_second'],
+    );
+  } finally {
+    await db.close();
+  }
+});
