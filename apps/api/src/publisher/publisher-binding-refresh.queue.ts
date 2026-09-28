@@ -49,6 +49,7 @@ export type PublisherScheduledBacklogCompactionResult = {
   scheduledCount: number;
   duplicateCount: number;
   removedCount: number;
+  reprioritizedCount: number;
   racedCount: number;
   truncated: boolean;
 };
@@ -63,10 +64,13 @@ function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
     case 'forwarded_private':
     case 'historical_actor_recovery':
     case 'send_access_lost':
-    case 'stale_user_access':
       return 5;
-    case 'bootstrap':
+    // FLAG: The 15-minute bot snapshot gates every publication. Background actor checks
+    // refresh three-day grants and must not starve this prerequisite or interactive work.
     case 'stale_access':
+      return 10;
+    case 'bootstrap':
+    case 'stale_user_access':
       return 20;
   }
 }
@@ -114,6 +118,7 @@ export class PublisherBindingRefreshQueueService {
       );
     const seen = new Set<string>();
     const duplicates: Job<PublisherBindingRefreshJob>[] = [];
+    const retained: Job<PublisherBindingRefreshJob>[] = [];
     for (const job of scheduled) {
       const logicalKey = this.scheduledLogicalKey(job.data)!;
       if (seen.has(logicalKey)) {
@@ -122,10 +127,12 @@ export class PublisherBindingRefreshQueueService {
         }
       } else {
         seen.add(logicalKey);
+        retained.push(job);
       }
     }
 
     let removedCount = 0;
+    let reprioritizedCount = 0;
     let racedCount = 0;
     for (
       let offset = 0;
@@ -147,11 +154,36 @@ export class PublisherBindingRefreshQueueService {
       );
     }
 
+    // FLAG: Repair persisted priorities as well as new producers. BullMQ changes priority
+    // atomically without activating delayed/active jobs or replacing their deduplication key.
+    for (
+      let offset = 0;
+      offset < retained.length;
+      offset += PUBLISHER_SCHEDULED_COMPACTION_REMOVE_CONCURRENCY
+    ) {
+      await Promise.all(
+        retained
+          .slice(offset, offset + PUBLISHER_SCHEDULED_COMPACTION_REMOVE_CONCURRENCY)
+          .map(async (job) => {
+            const priority = resolveRefreshPriority(job.data.reason);
+            if (job.priority === priority) return;
+            try {
+              await job.changePriority({ priority });
+              reprioritizedCount += 1;
+            } catch {
+              // The job may have completed and expired after the bounded snapshot.
+              racedCount += 1;
+            }
+          }),
+      );
+    }
+
     return {
       scannedCount: scanned.length,
       scheduledCount: scheduled.length,
       duplicateCount: duplicates.length,
       removedCount,
+      reprioritizedCount,
       racedCount,
       truncated:
         scanned.length >= PUBLISHER_SCHEDULED_COMPACTION_MAX_SCANNED ||

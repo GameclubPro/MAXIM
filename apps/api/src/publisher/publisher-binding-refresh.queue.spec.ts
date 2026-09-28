@@ -117,9 +117,9 @@ describe('PublisherBindingRefreshQueueService', () => {
   it('compacts only non-active scheduled duplicates and preserves exact actor versions', async () => {
     const removableBinding = { remove: jest.fn().mockResolvedValue(undefined) };
     const removableActor = { remove: jest.fn().mockResolvedValue(undefined) };
-    const keptBinding = { remove: jest.fn() };
-    const keptActor = { remove: jest.fn() };
-    const keptNewActorVersion = { remove: jest.fn() };
+    const keptBinding = { priority: 10, remove: jest.fn() };
+    const keptActor = { priority: 20, remove: jest.fn() };
+    const keptNewActorVersion = { priority: 20, remove: jest.fn() };
     const manual = { remove: jest.fn() };
     const jobs = [
       {
@@ -214,6 +214,7 @@ describe('PublisherBindingRefreshQueueService', () => {
       scheduledCount: 5,
       duplicateCount: 2,
       removedCount: 2,
+      reprioritizedCount: 0,
       racedCount: 0,
       truncated: false,
     });
@@ -234,6 +235,7 @@ describe('PublisherBindingRefreshQueueService', () => {
     let maxActiveRemovals = 0;
     const jobs = Array.from({ length: 18 }, (_, index) => ({
       id: `scheduled-${index}`,
+      priority: 10,
       timestamp: index,
       data: {
         version: 1,
@@ -305,6 +307,43 @@ describe('PublisherBindingRefreshQueueService', () => {
     expect(queue.getJobs).toHaveBeenCalledTimes(20);
     expect(queue.getJobs.mock.calls.every(([states]) => states.length === 1)).toBe(true);
     expect(nextJob).toBe(5_000);
+  });
+
+  it('bounds repair concurrency and tolerates a job disappearing during priority repair', async () => {
+    let active = 0;
+    let peak = 0;
+    const jobs = Array.from({ length: 18 }, (_, index) => ({
+      id: `priority-${index}`,
+      timestamp: index,
+      priority: index === 0 ? 10 : 20,
+      data: {
+        version: 1,
+        chatId: `chat-${index}`,
+        publisherBotId: 'publisher',
+        reason: 'stale_access',
+        requestedAt: new Date().toISOString(),
+      },
+      changePriority: jest.fn(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await Promise.resolve();
+        active -= 1;
+        if (index === 9) throw new Error('job removed');
+      }),
+      remove: jest.fn(),
+    }));
+    const queue = {
+      getJobs: jest.fn(async ([state]: string[]) => (state === 'prioritized' ? jobs : [])),
+    };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+    await expect(service.compactScheduledBacklog()).resolves.toMatchObject({
+      reprioritizedCount: 16,
+      racedCount: 1,
+      removedCount: 0,
+    });
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(jobs[0]!.changePriority).not.toHaveBeenCalled();
+    expect(jobs.every((job) => job.remove.mock.calls.length === 0)).toBe(true);
   });
 
   it('scopes actor refresh deduplication to the normalized Publisher user', async () => {
