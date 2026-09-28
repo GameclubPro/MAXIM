@@ -1,5 +1,5 @@
 .page-enter {
-  animation: pageReveal 0.45s ease both;
+  animation: pageReveal 0.2s ease both;
 }
 
 .events-screen[data-managed-entity-workspace].page-enter,
@@ -12,7 +12,7 @@
 }
 
 .stagger-in {
-  animation: riseIn 0.45s ease both;
+  animation: riseIn 0.2s ease both;
 }
 
 .button:not(:disabled):active,

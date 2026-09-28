@@ -1088,6 +1088,10 @@ const scenarioBehaviors = [
       }
       await summary.click();
       await page.locator('.publication-target-picker__list').waitFor({ state: 'visible' });
+      if (simulateKeyboard) {
+        await page.keyboard.press('Escape');
+        await sheet.waitFor({ state: 'detached' });
+      }
     },
   },
   {

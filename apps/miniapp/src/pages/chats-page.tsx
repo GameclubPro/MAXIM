@@ -98,6 +98,7 @@ import {
 } from './home-refresh-cooldown';
 import './chats-page.css';
 import './chats-page-native.css';
+import './chats-page-signal.css';
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'error';
@@ -1804,6 +1805,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         `chats-home--${activeTab}`,
         categoryEditMode && 'is-category-editing',
       )}
+      data-design-variant={
+        searchParams.get('preview') === '1' && searchParams.get('design') === 'editorial'
+          ? 'editorial'
+          : 'signal'
+      }
     >
       {homeOverlayOpen ? (
         <Suspense fallback={null}>
@@ -1855,7 +1861,32 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         padding="sm"
         elevated
       >
-        <h1 className="chats-command__sr">{tabLabel}</h1>
+        <div className="chats-command__identity">
+          <span className="chats-command__mark" aria-hidden="true">
+            М
+          </span>
+          <div className="chats-command__brand">
+            <h1>Майор Максимов</h1>
+            <span>{tabLabel}</span>
+          </div>
+          {!categoryEditMode ? (
+            <button
+              type="button"
+              className="chats-command__connect"
+              aria-label="Подключить чат или канал"
+              aria-haspopup="dialog"
+              aria-controls="home-sheet-connect"
+              aria-expanded={connectSheetOpen}
+              title="Подключить чат или канал"
+              onPointerEnter={() => void preloadHomeEntitySheets()}
+              onPointerDown={() => void preloadHomeEntitySheets()}
+              onFocus={() => void preloadHomeEntitySheets()}
+              onClick={(event) => void openConnectSheet(event.currentTarget)}
+            >
+              <PlusCircleGlyph aria-hidden focusable="false" />
+            </button>
+          ) : null}
+        </div>
         <output className="chats-command__sr" aria-live="polite" aria-atomic="true">
           {homeResultStatus}
         </output>
@@ -1926,21 +1957,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           ) : (
             <div className="chats-command__actions" role="group" aria-label="Действия со списком">
               <button
-                type="button"
-                className="chats-command__connect"
-                aria-label="Подключить чат или канал"
-                aria-haspopup="dialog"
-                aria-controls="home-sheet-connect"
-                aria-expanded={connectSheetOpen}
-                title="Подключить чат или канал"
-                onPointerEnter={() => void preloadHomeEntitySheets()}
-                onPointerDown={() => void preloadHomeEntitySheets()}
-                onFocus={() => void preloadHomeEntitySheets()}
-                onClick={(event) => void openConnectSheet(event.currentTarget)}
-              >
-                <PlusCircleGlyph aria-hidden focusable="false" />
-              </button>
-              <button
                 ref={favoriteFilterTriggerRef}
                 type="button"
                 className={cn(
@@ -1983,14 +1999,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           )}
         </div>
       </GlassCard>
-
-      {!categoryEditMode ? (
-        <div className="chats-home__publik">
-          <Suspense fallback={null}>
-            <LazyPublikHandoff />
-          </Suspense>
-        </div>
-      ) : null}
 
       {activeFavoriteFilterLabel && !categoryEditMode ? (
         <button
@@ -2153,6 +2161,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             filteredEntities.map((entity, index) => renderEntityCard(entity, index))
           )}
         </section>
+      ) : null}
+      {!categoryEditMode ? (
+        <div className="chats-home__publik">
+          <Suspense fallback={null}>
+            <LazyPublikHandoff compact />
+          </Suspense>
+        </div>
       ) : null}
     </div>
   );

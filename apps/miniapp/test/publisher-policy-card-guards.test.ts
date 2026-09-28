@@ -74,7 +74,15 @@ test('Publik policy belongs to its entity module page, never Major settings', ()
 
 test('Major offers only a bot handoff, not Publisher controls', () => {
   assert.doesNotMatch(chatsPageSource, /PublisherPolicy/u);
-  assert.equal(chatsPageSource.match(/<LazyPublikHandoff \/>/gu)?.length, 1);
+  assert.equal(chatsPageSource.match(/<LazyPublikHandoff compact \/>/gu)?.length, 1);
+  const handoff = readFileSync(
+    new URL('../src/components/publik-handoff.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    handoff,
+    /className="publik-handoff-link" href=\{PUBLIK_BOT_URL\} onClick=\{openPublikBot\}/u,
+  );
   assert.doesNotMatch(chatSettingsSource, /<PublisherPolicyCardEntry/u);
   assert.doesNotMatch(channelSettingsSource, /<PublisherPolicyCard api=/u);
   assert.doesNotMatch(

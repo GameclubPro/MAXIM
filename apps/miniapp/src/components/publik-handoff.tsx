@@ -16,7 +16,16 @@ export function PublikBotLink() {
   );
 }
 
-export function PublikHandoff() {
+export function PublikHandoff({ compact = false }: { compact?: boolean }) {
+  if (compact) {
+    return (
+      <a className="publik-handoff-link" href={PUBLIK_BOT_URL} onClick={openPublikBot}>
+        <span>Посты в Публике</span>
+        <ArrowUpRight aria-hidden />
+      </a>
+    );
+  }
+
   return (
     <aside className="publik-handoff" aria-label="Посты в Публике">
       <div className="publik-handoff__copy">

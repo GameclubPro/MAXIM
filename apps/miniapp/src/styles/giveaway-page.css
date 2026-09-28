@@ -1,14 +1,15 @@
 @layer components {
   .giveaway-page {
     --giveaway-bg: #ffffff;
-    --giveaway-ink: #202526;
-    --giveaway-secondary: #596167;
-    --giveaway-line: #dce1e3;
+    --giveaway-ink: #181c23;
+    --giveaway-secondary: #526171;
+    --giveaway-line: #dce1e7;
     --giveaway-success: #087450;
-    --giveaway-accent: #1761bc;
+    --giveaway-accent: #2855ec;
+    --giveaway-on-accent: #ffffff;
     --giveaway-tint: #e9f6ef;
-    --giveaway-surface: #f2f5f6;
-    --giveaway-error: #b32c43;
+    --giveaway-surface: #f6f7fa;
+    --giveaway-error: #c43855;
     --giveaway-gold: #88600d;
     --giveaway-gold-tint: #fff5d8;
     --giveaway-state: var(--giveaway-accent);
@@ -26,12 +27,13 @@
     overflow-wrap: anywhere;
   }
   html[data-max-theme='dark'] .giveaway-page {
-    --giveaway-bg: #161819;
-    --giveaway-ink: #f0f3f1;
+    --giveaway-bg: #121518;
+    --giveaway-ink: #f3f5f7;
     --giveaway-secondary: #aeb9b6;
     --giveaway-line: #343c3a;
     --giveaway-success: #71dfaf;
-    --giveaway-accent: #91bcff;
+    --giveaway-accent: #a4bcff;
+    --giveaway-on-accent: #181c23;
     --giveaway-tint: #213b30;
     --giveaway-surface: #23282a;
     --giveaway-error: #ff99a9;
@@ -40,12 +42,13 @@
   }
   @media (prefers-color-scheme: dark) {
     html:not([data-max-theme]) .giveaway-page {
-      --giveaway-bg: #161819;
-      --giveaway-ink: #f0f3f1;
+      --giveaway-bg: #121518;
+      --giveaway-ink: #f3f5f7;
       --giveaway-secondary: #aeb9b6;
       --giveaway-line: #343c3a;
       --giveaway-success: #71dfaf;
-      --giveaway-accent: #91bcff;
+      --giveaway-accent: #a4bcff;
+      --giveaway-on-accent: #181c23;
       --giveaway-tint: #213b30;
       --giveaway-surface: #23282a;
       --giveaway-error: #ff99a9;
@@ -223,7 +226,7 @@
   .giveaway-page__timer strong {
     font-size: 36px;
     line-height: 1.1;
-    font-weight: 650;
+    font-weight: 800;
   }
   .giveaway-page__timer time {
     color: var(--giveaway-secondary);
@@ -433,8 +436,8 @@
     padding: 12px 16px;
     border: 0;
     border-radius: 8px;
-    background: #106948;
-    color: #fff;
+    background: var(--giveaway-accent);
+    color: var(--giveaway-on-accent);
     font-size: 14px;
     font-weight: 650;
   }
@@ -547,7 +550,7 @@
       background: var(--giveaway-surface);
     }
     .giveaway-page__primary:hover:not(:disabled) {
-      background: #0c573c;
+      background: color-mix(in srgb, var(--giveaway-accent) 90%, var(--giveaway-ink));
     }
   }
   @media (prefers-reduced-motion: reduce) {

@@ -716,9 +716,9 @@ const baseScenarios = [
       'events-participant-scope',
       { searchParams: { section: 'participants', moderationState: 'slow' } },
     ],
-    'events-spam-review',
-    'events-spam-diagnostics',
-    'events-spam-help',
+    ['events-spam-review', { searchParams: { moderationView: 'history' } }],
+    ['events-spam-diagnostics', { searchParams: { moderationView: 'history' } }],
+    ['events-spam-help', { searchParams: { moderationView: 'history' } }],
   ]),
   ...defineRouteScenarios('chat-settings', [
     'chat-settings',

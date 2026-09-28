@@ -2,13 +2,6 @@
   .publications-header {
     container: publik-header / inline-size;
   }
-  .publications-page.is-publisher {
-    --accent: #0f5c42;
-    --accent-soft: #e2f3eb;
-    --color-accent: #0f5c42;
-    --color-accent-soft: #e2f3eb;
-  }
-
   .publications-header h1 {
     display: flex;
     align-items: center;
@@ -138,14 +131,6 @@
 
   .publication-publisher-status__refresh.is-refreshing svg {
     animation: publication-publisher-status-spin 0.9s linear infinite;
-  }
-
-  html[data-max-theme='dark'] .publications-page.is-publisher {
-    --accent: #62c69f;
-    --accent-soft: #17372b;
-    --color-accent: #62c69f;
-    --color-accent-soft: #17372b;
-    --publication-ui-on-accent: #0b1a14;
   }
 
   @media (prefers-reduced-motion: reduce) {

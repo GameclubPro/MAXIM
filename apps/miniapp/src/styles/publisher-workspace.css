@@ -1,17 +1,19 @@
 @layer workspace {
   body[data-miniapp-profile='publisher'] {
-    --color-page: #f6f7f8;
+    --color-page: #f6f7fa;
     --color-surface: #ffffff;
     --color-surface-raised: #ffffff;
     --color-surface-muted: #eef1f3;
     --color-surface-tint: #e6ebed;
-    --color-ink: #202629;
+    --color-ink: #181c23;
     --color-ink-muted: #526168;
     --color-ink-subtle: #606e75;
     --color-border: #dce2e5;
     --color-border-strong: #bdc8cd;
-    --color-accent: #116b4c;
-    --color-accent-soft: #e5f3ec;
+    --color-accent: #b54708;
+    --color-accent-soft: #fff0e5;
+    --publisher-brand: #ff8a38;
+    --publisher-on-brand: #24160f;
     --color-warning: var(--publication-warning-ink);
     --warning: var(--color-warning);
     --accent: var(--color-accent);
@@ -43,8 +45,8 @@
     --publication-ui-control-count: var(--color-surface-tint);
     --publication-ui-row-border: var(--color-border);
     --publication-ui-selected: var(--color-accent-soft);
-    --publication-ui-shadow: none;
-    --publisher-shadow-ink: rgb(16 39 26 / 10%);
+    --publication-ui-shadow: 0 4px 16px var(--publisher-shadow-ink);
+    --publisher-shadow-ink: rgb(24 28 35 / 10%);
     --publisher-danger-action-surface: #b02c43;
     --publisher-danger-action-ink: #ffffff;
     background: var(--color-page);
@@ -52,8 +54,8 @@
   }
 
   html[data-max-theme='dark'] body[data-miniapp-profile='publisher'] {
-    --color-page: #141719;
-    --color-surface: #1c2023;
+    --color-page: #121518;
+    --color-surface: #1e2329;
     --color-surface-raised: #23282b;
     --color-surface-muted: #272d31;
     --color-surface-tint: #30383d;
@@ -62,9 +64,9 @@
     --color-ink-subtle: #a5b3bb;
     --color-border: #353f45;
     --color-border-strong: #506169;
-    --color-accent: #72d3a8;
-    --color-accent-soft: #203e2f;
-    --publication-ui-on-accent: #10251a;
+    --color-accent: #ffad70;
+    --color-accent-soft: #3f2c20;
+    --publication-ui-on-accent: #24160f;
     --publisher-shadow-ink: rgb(0 0 0 / 25%);
     --publisher-danger-action-surface: #f297a7;
     --publisher-danger-action-ink: #2b1018;
@@ -194,7 +196,7 @@
     box-shadow: 0 3px 16px var(--publisher-shadow-ink);
   }
   body[data-miniapp-profile='publisher'] .toast--success {
-    border-left-color: var(--color-accent);
+    border-left-color: var(--publication-success-ink);
   }
   body[data-miniapp-profile='publisher'] .toast--danger {
     border-left-color: var(--color-danger);
@@ -281,7 +283,7 @@
 
   body[data-miniapp-profile='publisher'] .publisher-entity-row__title strong {
     font-size: 0.9375rem;
-    font-weight: 700;
+    font-weight: 750;
   }
 
   body[data-miniapp-profile='publisher'] .publisher-entity-row__status {

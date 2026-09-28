@@ -14,7 +14,7 @@
     --suggest-line: var(--color-border, #dce1e6);
     --suggest-surface: var(--color-surface, #fff);
     --suggest-soft: var(--color-surface-muted, #f5f7f9);
-    --suggest-accent: #087681;
+    --suggest-accent: var(--color-accent);
     --suggest-bar-height: 64px;
     --suggest-keyboard-reserve: 0px;
     --suggest-bar-bottom: max(
@@ -63,7 +63,7 @@
     margin: 0;
     font-size: 22px;
     line-height: 1.25;
-    font-weight: 700;
+    font-weight: 800;
     letter-spacing: 0;
   }
 
@@ -352,8 +352,8 @@
     padding: 0 12px;
     border: 0;
     border-radius: 6px;
-    background: #087681;
-    color: #fff;
+    background: var(--suggest-accent);
+    color: var(--color-on-accent);
     font: inherit;
     font-size: 14px;
     font-weight: 600;
@@ -600,20 +600,10 @@
   .channel-dialog-screen--suggest .channel-dialog-submit__loader {
     width: 18px;
     height: 18px;
-    border: 2px solid #ffffff65;
-    border-top-color: #fff;
+    border: 2px solid color-mix(in srgb, currentColor 40%, transparent);
+    border-top-color: currentColor;
     border-radius: 50%;
     animation: channelSuggestSpin 0.8s linear infinite;
-  }
-
-  html[data-max-theme='dark'] .channel-dialog-screen--suggest {
-    --suggest-accent: #70d3d6;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    html:not([data-max-theme]) .channel-dialog-screen--suggest {
-      --suggest-accent: #70d3d6;
-    }
   }
 
   @media (max-width: 360px) {

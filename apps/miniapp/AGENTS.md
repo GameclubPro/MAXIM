@@ -7,6 +7,16 @@
 - The MAX Bridge script is loaded from `https://st.max.ru/js/max-web-app.js`. Prefer shared wrappers over raw bridge calls.
 - Routine work never deploys, publishes, or smokes CDN, Object Storage, app2, or the legacy support static service.
 
+## Design Direction
+
+- The mini app must feel bold, stylish, modern, and visually memorable, with a clear wow effect. This is the default design target for future UI work, including moderation screens.
+- Build a recognizable visual identity through expressive typography, confident color accents, deliberate composition, refined icons and imagery, and polished interaction states. Use depth and purposeful motion where they strengthen the experience; respect reduced-motion preferences.
+- Minimalism and muted utilitarian styling are not product goals. Existing flat surfaces, disabled shadows, and uniform radii are implementation choices, not requirements to preserve during redesign.
+- Visual ambition must support clear priorities and fast everyday actions. Keep readable contrast, accessible touch targets, responsive layouts, and coherent light/dark themes; decoration must not obscure content or controls.
+- Bundle budgets protect loading speed, not a minimalist aesthetic. Optimize assets and loading to deliver the intended design within the checked budgets; do not silently raise limits or remove visual quality to avoid optimization.
+- Publisher uses an orange brand/action accent in both themes. Keep success, warning, and destructive states semantic; do not restore route-local green brand overrides.
+- The runtime Manrope font is WOFF2; retain the source TTF and its full Cyrillic/variable-weight coverage. The distributed license is `public/licenses/manrope.txt`.
+
 ## Validation And Visual Work
 
 - Focused checks: `npm run check:miniapp`, `npm run typecheck:miniapp`, and `npm run build --workspace @maxim/miniapp` for bundle budgets.
@@ -29,7 +39,7 @@
 - `src/styles.css` is the only global CSS entrypoint. Its imports use `@import ... layer(...)`; CSS imported directly from TS/TSX must be fully wrapped in an explicit `@layer`.
 - Run `npm run check:miniapp-css` after CSS ownership/import changes.
 - Lazy-route CSS remains loaded for the SPA session. Scope route polish to route-specific body/root selectors and test both cold loads and cross-route navigation.
-- `moderation-workspace.css` owns final moderation presentation in the `workspace` layer after route CSS. Scope every rule to `body[data-miniapp-profile='moderation']`; Shell sets/clears that profile for portal sheets as well. Publisher styling must remain unchanged across profile navigation.
+- `moderation-workspace.css` owns shared moderation presentation in the `workspace` layer after route CSS. Home-only presentation lives in the same layer in lazy `pages/chats-page-signal.css` so public cold launches do not load it. Scope every rule in these workspace layers to `body[data-miniapp-profile='moderation']`; Shell sets/clears that profile for portal sheets as well. Publisher styling must remain unchanged across profile navigation.
 - Participant-card-only styles load lazily from `chat-participant-card.css` in that same scoped `workspace` layer. Keep them out of global startup CSS so opening unrelated public dialogs does not load moderation tools.
 - Do not put global `touch-action` or root `overscroll-behavior-y` locks on `html`/`body`; MAX WebViews can stop page and nested-list scrolling. Put `pan-y` and momentum scrolling on the actual scroll container.
 - Do not apply MAX `safeTop` or CSS safe-area values as a blanket content offset; some WebViews already account for system UI. Use `visualViewport` and real element measurements around floating controls.

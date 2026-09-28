@@ -1527,25 +1527,6 @@ export function ChannelStatsOverview({
           <strong>{formatCount(averageViews24h.value)}</strong>
           <span>{formatReachCaption(averageViews24h)}</span>
         </article>
-        <article className="channel-summary-card channel-summary-card--compact">
-          <small>
-            Средние просмотры за <span className="channel-summary-card__unit">48 ч</span>
-          </small>
-          <strong>{formatCount(averageViews48h.value)}</strong>
-          <span>{formatReachCaption(averageViews48h)}</span>
-        </article>
-        <article
-          className="channel-summary-card channel-summary-card--compact"
-          title="Средние просмотры поста за первые 48 часов / подписчики × 100"
-        >
-          <small>
-            Охват подписчиков за <span className="channel-summary-card__unit">48 ч</span>
-          </small>
-          <strong>{formatPercent(err48.value)}</strong>
-          <span>
-            {formatReachCaption(err48, `Постов в расчёте: ${formatCount(err48.sampleSize)}`)}
-          </span>
-        </article>
       </div>
 
       <div className="channel-insights__overview-top">
@@ -1636,6 +1617,29 @@ export function ChannelStatsOverview({
           </section>
         ) : null}
       </div>
+
+      <details className="channel-insights__reach-details">
+        <summary>Просмотры и охват за 48 часов</summary>
+        <div className="channel-insights__summary-metrics channel-insights__summary-metrics--compact">
+          <article className="channel-summary-card channel-summary-card--compact">
+            <small>
+              Средние просмотры за <span className="channel-summary-card__unit">48 ч</span>
+            </small>
+            <strong>{formatCount(averageViews48h.value)}</strong>
+            <span>{formatReachCaption(averageViews48h)}</span>
+          </article>
+          <article className="channel-summary-card channel-summary-card--compact">
+            <small>
+              Охват подписчиков за <span className="channel-summary-card__unit">48 ч</span>
+            </small>
+            <strong>{formatPercent(err48.value)}</strong>
+            <span>
+              {formatReachCaption(err48, `Постов в расчёте: ${formatCount(err48.sampleSize)}`)}
+            </span>
+          </article>
+        </div>
+        <p>Охват: средние просмотры поста за первые 48 часов / подписчики × 100.</p>
+      </details>
 
       {hasDetailPanels ? (
         <div className="channel-insights__detail-grid">

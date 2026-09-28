@@ -597,6 +597,9 @@ export function PublisherEntitiesPage({
     >
       <header className="publisher-entities-page__header">
         <div className="publisher-entities-page__brand">
+          <span className="publisher-entities-page__mark" aria-hidden="true">
+            П
+          </span>
           <div className="publisher-entities-page__identity">
             <h1 id="publisher-catalog-title">Публик</h1>
             <small>
