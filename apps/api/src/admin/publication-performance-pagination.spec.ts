@@ -289,7 +289,7 @@ describe('Publication performance and pagination', () => {
     const catalogSearchValues = extractSqlValues(queryRaw.mock.calls[0]?.[0]);
     expect(catalogSearchSql).toContain('FROM "managed_bot_chat_catalog" AS catalog');
     expect(catalogSearchSql).toContain('catalog."status" = \'ACTIVE\'');
-    expect(catalogSearchValues).toEqual(['publisher-bot', '%Публика%', 501]);
+    expect(catalogSearchValues).toEqual(['publisher-bot', '%Публика%']);
     const searchBranches = publicationFindMany.mock.calls[0]?.[0].where.AND[0].OR;
     expect(searchBranches).toContainEqual({
       targets: {
@@ -833,6 +833,8 @@ describe('Publication performance and pagination', () => {
     const row = await presenter.loadPublicationDetailsRow('publication-1', 'user-1');
 
     expect(publicationFindFirst.mock.calls[0]?.[0].include.occurrences.select).toEqual({
+      dispatchFirstBlockedAt: true,
+      dispatchBlockedAt: true,
       id: true,
       scheduleId: true,
       scheduleRevision: true,
@@ -844,6 +846,8 @@ describe('Publication performance and pagination', () => {
       _count: { select: { legacyBroadcasts: true } },
     });
     expect(occurrenceFindMany.mock.calls[0]?.[0].select).toEqual({
+      dispatchFirstBlockedAt: true,
+      dispatchBlockedAt: true,
       id: true,
       scheduleId: true,
       scheduleRevision: true,

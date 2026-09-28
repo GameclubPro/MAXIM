@@ -23,6 +23,7 @@ function createHarness() {
     },
     publication: {
       id: 'publication',
+      version: 1,
       canonicalContentRevisionId: 'content',
       dispatchProfile: 'PUBLIK_V1',
       requiredBotId: 'publik',
@@ -35,9 +36,14 @@ function createHarness() {
   const claim = jest.fn().mockResolvedValue({ count: 1 });
   const latest = jest.fn().mockResolvedValue(null);
   const tx = {
-    publicationSchedule: { updateMany: claim },
+    publicationSchedule: {
+      updateMany: jest.fn((args) =>
+        args.data.status === PublicationScheduleStatus.ERROR ? scheduleUpdate(args) : claim(args),
+      ),
+    },
     publication: {
       findUnique: jest.fn().mockResolvedValue({ canonicalContentRevisionId: 'content' }),
+      updateMany: publicationUpdate,
     },
     publicationOccurrence: { createMany: occurrenceCreate },
   };
@@ -114,7 +120,7 @@ describe('Publication recurrence preparation recovery', () => {
         revision: 2,
         status: PublicationScheduleStatus.ACTIVE,
         nextMaterializeAt: new Date('2026-09-13T09:00:00Z'),
-        publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+        publication: { is: { lifecycle: PublicationLifecycle.ACTIVE, version: 1 } },
       },
       data: {
         nextMaterializeAt: new Date('2026-09-13T10:01:00Z'),
@@ -143,5 +149,18 @@ describe('Publication recurrence preparation recovery', () => {
       }),
     );
     expect(harness.publicationUpdate).toHaveBeenCalledTimes(1);
+    expect(harness.service.lockPublicationCalendar).toHaveBeenCalledTimes(2);
+    expect(harness.publicationUpdate).toHaveBeenCalledWith({
+      where: { id: 'publication', lifecycle: PublicationLifecycle.ACTIVE, version: 1 },
+      data: { lifecycle: PublicationLifecycle.ERROR },
+    });
+  });
+
+  it('does not change a publication when a newer schedule or content revision wins', async () => {
+    const harness = createHarness();
+    harness.service.reservePublicationCalendar.mockRejectedValue(new Error('Invalid calendar'));
+    harness.scheduleUpdate.mockResolvedValue({ count: 0 });
+    await harness.service.materializeRecurringSchedules(1);
+    expect(harness.publicationUpdate).not.toHaveBeenCalled();
   });
 });

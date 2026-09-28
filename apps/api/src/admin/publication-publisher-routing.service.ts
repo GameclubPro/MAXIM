@@ -1,5 +1,4 @@
 import {
-  MAX_PUBLICATION_TARGETS,
   type PublicationAudienceInput,
   type PublicationTargetInput,
 } from '@maxim/contracts/publication';
@@ -14,7 +13,10 @@ import {
   PublicationOccurrenceStatus,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
-import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
+import {
+  PublisherActorAccessRequiredException,
+  PublisherSetupRequiredException,
+} from '../publisher/publisher-errors';
 import {
   PublisherReadinessService,
   type PublisherReadyRoute,
@@ -51,6 +53,7 @@ type PublisherOccurrence = {
   publicationId: string;
   scheduleRevision: number;
   dispatchProfile: PublicationDispatchProfile;
+  dispatchFirstBlockedAt?: Date | null;
 };
 
 @Injectable()
@@ -115,7 +118,9 @@ export class PublicationPublisherRoutingService {
             ? target.entityType === 'channel'
             : true,
       );
-      this.assertResolvedTargetCount(resolved);
+      if (resolved.length === 0) {
+        throw new PublisherSetupRequiredException([], 'audience_empty');
+      }
       return resolved;
     }
 
@@ -202,18 +207,15 @@ export class PublicationPublisherRoutingService {
         PublicationDispatchProfile.PUBLIK_V1,
       );
     } catch (error: unknown) {
-      if (!(error instanceof BadRequestException)) throw error;
+      if (!(error instanceof PublisherActorAccessRequiredException)) throw error;
       // FLAG: A missing cached recipient is not proof of permanent access loss. Preserve the
       // scheduled intent while the exact Publisher-owned access is refreshed; never use Major scope.
       await this.readiness.requestActorAccessRefresh(
-        targets,
+        targets.filter((target) => error.chatIds.includes(target.chatId)),
         publication.actorUserId,
         publication.requiredBotId ?? '',
       );
-      throw new PublisherSetupRequiredException(
-        targets.map((target) => target.chatId),
-        PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
-      );
+      throw new PublisherSetupRequiredException(error.chatIds, PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE);
     }
   }
 
@@ -314,10 +316,12 @@ export class PublicationPublisherRoutingService {
         id: occurrence.id,
         scheduleRevision: occurrence.scheduleRevision,
         status: PublicationOccurrenceStatus.SCHEDULED,
+        dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? null,
         legacyBroadcasts: { none: {} },
       },
       data: {
         dispatchBlockerCode: error.blockerCode.slice(0, 96),
+        dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? new Date(),
         dispatchBlockedAt: new Date(),
       },
     });
@@ -335,11 +339,6 @@ export class PublicationPublisherRoutingService {
   private assertResolvedTargetCount(targets: readonly ResolvedPublicationTarget[]): void {
     if (targets.length === 0) {
       throw new BadRequestException('Нет доступных получателей для публикации.');
-    }
-    if (targets.length > MAX_PUBLICATION_TARGETS) {
-      throw new BadRequestException(
-        `Можно выбрать не больше ${MAX_PUBLICATION_TARGETS} чатов и каналов.`,
-      );
     }
   }
 

@@ -502,6 +502,17 @@ const baseScenarios = [
       { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },
     ],
     [
+      'publications-publisher-missed-window',
+      {
+        searchParams: { profile: 'publisher', publicationWindow: 'missed' },
+        features: ['publisher', 'publications'],
+      },
+    ],
+    [
+      'publications-publisher-recheck',
+      { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },
+    ],
+    [
       'publications-publisher-create',
       {
         searchParams: {

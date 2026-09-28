@@ -4,6 +4,7 @@ import type { MiniappProfile } from '@maxim/contracts/publisher';
 import type { FastifyRequest } from 'fastify';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { canAuthenticateInitDataForBotState } from '../max/max-bot-state.util';
 import { MiniappProfileForbiddenException } from './miniapp-profile.error';
 import { MINIAPP_PROFILES_METADATA } from './miniapp-profile';
 
@@ -53,6 +54,8 @@ export class MiniappProfileGuard implements CanActivate {
     if (launchBotId === this.botRegistry.getPublisherBotDescriptor().id) {
       return 'publisher';
     }
-    return this.botRegistry.getBotById(launchBotId) ? 'moderation' : null;
+    const bot = this.botRegistry.getBotById(launchBotId);
+    // FLAG: Cookie sessions must observe the same current lifecycle as signed init data.
+    return bot && canAuthenticateInitDataForBotState(bot.state) ? 'moderation' : null;
   }
 }

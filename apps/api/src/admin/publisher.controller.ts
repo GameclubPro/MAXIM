@@ -82,6 +82,11 @@ export class PublisherController {
     return this.policyService.listEntities(user, query);
   }
 
+  @Get('refresh-operations/:operationId')
+  getRefreshOperation(@Param('operationId') operationId: string, @CurrentUser() user: AuthUser) {
+    return this.entityRefreshService.getRefreshOperation(operationId, user);
+  }
+
   @Get('entities/:entityType/:entityId')
   getEntity(
     @Param('entityType') entityType: string,

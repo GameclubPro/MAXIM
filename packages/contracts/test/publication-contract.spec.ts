@@ -36,14 +36,14 @@ describe('publication contracts', () => {
     ).toBe(false);
   });
 
-  it('bounds publication-scoped target refresh responses without exposing target ids', () => {
+  it('accepts publication-scoped refresh counts without a recipient ceiling or target ids', () => {
     expect(
       publicationTargetsRefreshResponseSchema.parse({ accepted: true, queuedCount: 500 }),
     ).toEqual({ accepted: true, queuedCount: 500 });
     expect(
       publicationTargetsRefreshResponseSchema.safeParse({ accepted: true, queuedCount: 501 })
         .success,
-    ).toBe(false);
+    ).toBe(true);
     expect(
       publicationTargetsRefreshResponseSchema.safeParse({
         accepted: true,

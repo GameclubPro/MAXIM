@@ -27,6 +27,10 @@ import {
 } from './max-api-metrics-key.util';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
 import {
+  MAX_MEMBER_RESTORE_RETIRES_AT,
+  MaxMemberRestoreUnavailableError,
+} from './max-member-restore-capability';
+import {
   MAX_FILE_UPLOAD_MAX_BYTES,
   MAX_IMAGE_UPLOAD_MAX_BYTES,
   MAX_VIDEO_UPLOAD_MAX_BYTES,
@@ -3028,6 +3032,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   describe.each(['BAN_MEMBER', 'KICK_MEMBER', 'UNBAN_MEMBER'] as const)(
     '%s response confirmation',
     (actionType) => {
+      beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z')));
       it.each([
         null,
         {},
@@ -3035,6 +3040,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
         { success: 'true' },
         { success: 1 },
         { message: 'User is already a chat member' },
+        { success: true, failed_user_ids: ['user-1'] },
+        { success: true, failed_user_details: [{ user_id: 'user-1', error: 'denied' }] },
+        { success: true, failed_user_ids: 'malformed' },
       ])('does not confirm a malformed response: %j', async (payload) => {
         const httpService = {
           request: jest.fn(() => of({ status: 200, data: payload })),
@@ -3096,7 +3104,45 @@ describe('MaxClientService inline keyboard guardrails', () => {
     },
   );
 
+  it('rejects old queued unbans after retirement without a remote attempt or ledger cleanup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date(MAX_MEMBER_RESTORE_RETIRES_AT));
+    const httpService = { request: jest.fn() };
+    const ledger = { clearTerminalBanStateAfterUnban: jest.fn() };
+    const service = createService(httpService, {}, undefined, ledger);
+    try {
+      await expect(
+        service.executeActionJob({
+          actionType: 'UNBAN_MEMBER',
+          chatId: 'chat-1',
+          userId: 'user-1',
+          attempt: 1,
+          idempotencyKey: 'retired-unban',
+          createdAt: '2026-09-28T00:00:00Z',
+        }),
+      ).rejects.toBeInstanceOf(MaxMemberRestoreUnavailableError);
+      expect(httpService.request).not.toHaveBeenCalled();
+      expect(ledger.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('does not enqueue delayed unbans due after retirement', async () => {
+    jest.useFakeTimers().setSystemTime(new Date(MAX_MEMBER_RESTORE_RETIRES_AT - 30_000));
+    const service = createService({ request: jest.fn() });
+    const dispatch = jest.spyOn(service as any, 'dispatchAction');
+    try {
+      await expect(
+        service.unbanMember('chat-1', 'user-1', { delayMs: 60_000 }),
+      ).rejects.toBeInstanceOf(MaxMemberRestoreUnavailableError);
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
   it('clears terminal ban state only after MAX confirms an unban', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z'));
     const httpService = {
       request: jest.fn(() => of({ data: { success: true } })),
     };
@@ -3126,6 +3172,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('marks an UNBAN_MEMBER transport failure after its HTTP mutation callback begins', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z'));
     const transportError = Object.assign(new Error('socket hang up'), {
       code: 'ECONNRESET',
     });
@@ -3157,6 +3204,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('keeps the UNBAN_MEMBER attempt marker when post-mutation ledger cleanup fails', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z'));
     const ledgerError = new Error('terminal ban state cleanup failed');
     const httpService = {
       request: jest.fn(() => of({ data: { success: true } })),
@@ -3186,6 +3234,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('treats a documented already-present success=false response as confirmed unban state', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z'));
     const httpService = {
       request: jest.fn(() =>
         of({
@@ -3222,6 +3271,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('keeps terminal ban state when MAX rejects an unban', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z'));
     const maxError = new Error('unban rejected');
     const httpService = {
       request: jest.fn(() => throwError(() => maxError)),
@@ -3248,6 +3298,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('does not treat an already-member phrase in a 5xx response as confirmed unban state', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z'));
     const serverError = {
       response: {
         status: 500,
@@ -13751,6 +13802,7 @@ describe('MaxClientService delayed member actions', () => {
   });
 
   it('uses bot-independent delayed unban ids for routed jobs', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T00:00:00Z'));
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
       getJob: jest.fn().mockResolvedValue(null),

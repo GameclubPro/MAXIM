@@ -1628,6 +1628,7 @@ model ManagedEntityAccessEdge {
   @@index([userId, entityType, state, expiresAt, checkedAt(sort: Desc)], map: "managed_entity_access_edges_user_visible_idx")
   @@index([chatId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_chat_state_idx")
   @@index([botId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_bot_state_idx")
+  @@index([userId, botId, state, chatId], map: "managed_entity_access_edges_publisher_page_idx")
   @@map("managed_entity_access_edges")
 }
 
@@ -2928,6 +2929,7 @@ model PublicationOccurrence {
   requiredBotId       String?                     @map("required_bot_id")
   dispatchBlockerCode String?                     @map("dispatch_blocker_code")
   dispatchBlockedAt   DateTime?                   @map("dispatch_blocked_at")
+  dispatchFirstBlockedAt DateTime?                   @map("dispatch_first_blocked_at")
   createdAt           DateTime                    @default(now()) @map("created_at")
   updatedAt           DateTime                    @updatedAt @map("updated_at")
 
@@ -3704,4 +3706,18 @@ model MessageRetentionQuota {
   healthySince DateTime? @map("healthy_since")
 
   @@map("message_retention_quotas")
+}
+
+model PublisherStartIntent {
+  id             String   @id
+  publisherBotId String   @map("publisher_bot_id")
+  privateChatId  String   @map("private_chat_id")
+  requestedAt    DateTime @map("requested_at")
+  expiresAt      DateTime @map("expires_at")
+  nextEnqueueAt  DateTime @default(now()) @map("next_enqueue_at")
+  status         String   @default("PENDING")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([status, nextEnqueueAt, id], map: "publisher_start_intents_due_idx")
+  @@map("publisher_start_intents")
 }

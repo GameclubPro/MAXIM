@@ -4,7 +4,6 @@ import {
   type ManagedEntityType,
   type PublisherEntityReadiness,
 } from '@maxim/contracts/publisher';
-import { MAX_PUBLICATION_TARGETS } from '@maxim/contracts/publication';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -117,63 +116,64 @@ export class PublisherReadinessService {
     const now = new Date();
     // FLAG: Persisted publication targets may nominate a probe, never grant access. Respect fresh
     // denials and let the Publisher worker revalidate the exact bot/user under its lifecycle fence.
-    const candidates = await this.prisma.chat.findMany({
-      where: {
-        OR: [...new Map(targets.map((target) => [target.chatId, target])).values()]
-          .slice(0, MAX_PUBLICATION_TARGETS)
-          .map((target) => ({
+    const uniqueTargets = [...new Map(targets.map((target) => [target.chatId, target])).values()];
+    for (let offset = 0; offset < uniqueTargets.length; offset += 200) {
+      const candidates = await this.prisma.chat.findMany({
+        take: 200,
+        where: {
+          OR: uniqueTargets.slice(offset, offset + 200).map((target) => ({
             id: target.chatId,
             entityType:
               target.entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
           })),
-        publisherBinding: { is: publisherRefreshEvidenceWhere(this.publisherBotId) },
-        accessEdges: {
-          none: {
-            userId: actorUserId,
-            botId: this.publisherBotId,
-            OR: [
-              { expiresAt: { gt: now } },
-              { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 15 * 60_000) } },
-            ],
-          },
-        },
-      },
-      select: {
-        id: true,
-        entityType: true,
-        accessEdges: {
-          where: { userId: actorUserId, botId: this.publisherBotId },
-          select: { sourceVersion: true },
-          take: 1,
-        },
-      },
-      take: MAX_PUBLICATION_TARGETS,
-    });
-    for (const candidate of candidates) {
-      try {
-        const existingEdge = candidate.accessEdges[0];
-        const nomination = existingEdge
-          ? { requestedAt: now, candidateVersion: existingEdge.sourceVersion ?? undefined }
-          : await stageMissingPublicationActor(this.prisma, {
-              chatId: candidate.id,
-              entityType: candidate.entityType,
+          publisherBinding: { is: publisherRefreshEvidenceWhere(this.publisherBotId) },
+          accessEdges: {
+            none: {
               userId: actorUserId,
               botId: this.publisherBotId,
-            });
-        if (!nomination) continue;
-        await this.bindingRefreshQueue.enqueue({
-          chatId: candidate.id,
-          publisherBotId: this.publisherBotId,
-          candidateUserId: actorUserId,
-          reason: 'stale_user_access',
-          ...nomination,
-        });
-      } catch (error: unknown) {
-        this.logger.warn(
-          { err: error instanceof Error ? error.message : String(error) },
-          'Failed to enqueue scheduled publication actor access refresh',
-        );
-        break;
+              OR: [
+                { expiresAt: { gt: now } },
+                { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 15 * 60_000) } },
+              ],
+            },
+          },
+        },
+        select: {
+          id: true,
+          entityType: true,
+          accessEdges: {
+            where: { userId: actorUserId, botId: this.publisherBotId },
+            select: { sourceVersion: true },
+            take: 1,
+          },
+        },
+      });
+      for (const candidate of candidates) {
+        try {
+          const existingEdge = candidate.accessEdges[0];
+          const nomination = existingEdge
+            ? { requestedAt: now, candidateVersion: existingEdge.sourceVersion ?? undefined }
+            : await stageMissingPublicationActor(this.prisma, {
+                chatId: candidate.id,
+                entityType: candidate.entityType,
+                userId: actorUserId,
+                botId: this.publisherBotId,
+              });
+          if (!nomination) continue;
+          await this.bindingRefreshQueue.enqueue({
+            chatId: candidate.id,
+            publisherBotId: this.publisherBotId,
+            candidateUserId: actorUserId,
+            reason: 'stale_user_access',
+            ...nomination,
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            { err: error instanceof Error ? error.message : String(error) },
+            'Failed to enqueue scheduled publication actor access refresh',
+          );
+          return;
+        }
       }
     }
   }

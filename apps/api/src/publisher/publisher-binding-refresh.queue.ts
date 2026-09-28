@@ -1,7 +1,8 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Job, JobType, Queue } from 'bullmq';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import type { PublisherRefreshOperation } from '@maxim/contracts/publisher';
 
 export const PUBLISHER_BINDING_REFRESH_QUEUE = 'publisher-binding-refresh';
 
@@ -168,11 +169,11 @@ export class PublisherBindingRefreshQueueService {
     requiresReadAccess?: boolean;
     requestedAt?: Date;
     eventAt?: Date | null;
-  }): Promise<void> {
+  }): Promise<string | null> {
     const chatId = params.chatId.trim();
     const publisherBotId = params.publisherBotId.trim();
     if (!chatId || !publisherBotId) {
-      return;
+      return null;
     }
 
     const requestedAt = params.requestedAt ?? new Date();
@@ -214,7 +215,7 @@ export class PublisherBindingRefreshQueueService {
       requestedAt: requestedAt.toISOString(),
     });
 
-    await this.queue.add(
+    const queued = await this.queue.add(
       'refresh',
       {
         version: 1,
@@ -237,7 +238,9 @@ export class PublisherBindingRefreshQueueService {
                   params.reason === 'manual_recheck'
                     ? `publisher-binding-refresh-manual-${entityHash}${candidateScope}`
                     : `publisher-binding-refresh-policy-enablement-${entityHash}`,
-                ttl: PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS,
+                ...(params.reason === 'policy_enablement_recheck'
+                  ? { ttl: PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS }
+                  : {}),
               },
             }
           : coalescedWebhookObservation
@@ -272,6 +275,92 @@ export class PublisherBindingRefreshQueueService {
         },
       },
     );
+    return queued?.id ?? jobId;
+  }
+
+  async saveOperation(actorId: string, botId: string, jobIds: readonly string[]): Promise<string> {
+    const operationId = randomUUID();
+    const client = await this.queue.client;
+    await client.set(
+      this.queue.toKey(`operation-${operationId}`),
+      JSON.stringify({
+        scope: this.operationScope(actorId, botId),
+        jobIds: [...new Set(jobIds)],
+      }),
+      { EX: 3600 },
+    );
+    return operationId;
+  }
+
+  async readOperation(
+    operationId: string,
+    actorId: string,
+    botId: string,
+  ): Promise<PublisherRefreshOperation> {
+    if (!/^[a-f0-9-]{36}$/i.test(operationId)) throw new NotFoundException();
+    const client = await this.queue.client;
+    const raw = await client.get(this.queue.toKey(`operation-${operationId}`));
+    if (!raw) throw new NotFoundException('Проверка недоступна или срок её хранения истёк.');
+    const operation = JSON.parse(raw) as { scope: string; jobIds: string[] };
+    if (operation.scope !== this.operationScope(actorId, botId)) throw new NotFoundException();
+    let completed = 0;
+    let failed = 0;
+    let running = 0;
+    let missing = 0;
+    client.defineCommand('publisherRefreshJobState', {
+      numberOfKeys: 3,
+      readOnly: true,
+      lua: `if redis.call('HEXISTS', KEYS[1], 'timestamp') == 0 then return 0 end
+        if redis.call('ZSCORE', KEYS[3], ARGV[1]) then return 4 end
+        if redis.call('ZSCORE', KEYS[2], ARGV[1]) then return 3 end
+        if redis.call('HEXISTS', KEYS[1], 'processedOn') == 1 then return 2 end
+        return 1`,
+    });
+    // Read only exact jobs in bounded Redis pipelines. A lost/evicted job is unknown,
+    // never evidence that permission checks completed successfully.
+    for (let offset = 0; offset < operation.jobIds.length; offset += 200) {
+      const pipeline = client.pipeline();
+      for (const id of operation.jobIds.slice(offset, offset + 200)) {
+        pipeline.runCommand('publisherRefreshJobState', [
+          this.queue.toKey(id),
+          this.queue.toKey('completed'),
+          this.queue.toKey('failed'),
+          id,
+        ]);
+      }
+      const rows = await pipeline.exec();
+      if (!rows) throw new Error('Publisher refresh status unavailable');
+      for (const [error, state] of rows) {
+        if (error) throw error;
+        if (state === 0) missing += 1;
+        else if (state === 4) failed += 1;
+        else if (state === 3) completed += 1;
+        else if (state === 2) running += 1;
+      }
+    }
+    const total = operation.jobIds.length;
+    return {
+      operationId,
+      total,
+      completed,
+      failed,
+      state:
+        missing > 0
+          ? 'unavailable'
+          : completed + failed === total
+            ? failed > 0
+              ? 'partial'
+              : 'complete'
+            : running + completed + failed > 0
+              ? 'running'
+              : 'queued',
+    };
+  }
+
+  private operationScope(actorId: string, botId: string): string {
+    return createHash('sha256')
+      .update(JSON.stringify(['publisher', actorId, botId]))
+      .digest('hex');
   }
 
   private scheduledLogicalKey(job: PublisherBindingRefreshJob | null | undefined): string | null {

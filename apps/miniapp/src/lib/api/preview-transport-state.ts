@@ -1074,6 +1074,22 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   state.publications = publicationFixtures.publications;
   state.publicationDeliveries = publicationFixtures.deliveries;
 
+  if (new URLSearchParams(search).get('publicationWindow') === 'missed') {
+    const publication = state.publications.find(
+      (item) => item.id === 'publication-access-required',
+    );
+    if (publication) {
+      publication.dispatchIssue = 'target_setup_required';
+      publication.requiresScheduleDecision = true;
+      for (const occurrence of publication.occurrences) {
+        occurrence.status = 'FAILED';
+        occurrence.dispatchIssue = 'target_setup_required';
+        occurrence.requiresScheduleDecision = true;
+        occurrence.canRetry = true;
+      }
+    }
+  }
+
   if (publisherPostImportVariant === 'ready') {
     const imported = buildPreviewPublicationDetails(
       state,

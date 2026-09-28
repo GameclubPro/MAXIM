@@ -6,7 +6,6 @@ export const MAX_PUBLICATION_IMAGE_BASE64_LENGTH = 12_000_000;
 export const MAX_PUBLICATION_IMAGES_TOTAL_BASE64_LENGTH = 32_000_000;
 export const MAX_PUBLICATION_VIDEO_BASE64_LENGTH = 32_000_000;
 export const MAX_PUBLICATION_BUTTONS = 8;
-export const MAX_PUBLICATION_TARGETS = 500;
 export const MAX_PUBLICATION_RECURRENCE_OCCURRENCES = 365;
 export const MAX_PUBLICATION_EXPLICIT_SLOTS = 300;
 export const MAX_PUBLICATION_LIST_CURSOR_LENGTH = 1_024;
@@ -309,7 +308,7 @@ export const publicationAudienceInputSchema = z
   .object({
     selection: publicationAudienceSelectionSchema.default('SELECTED'),
     mode: publicationAudienceModeSchema.default('SNAPSHOT'),
-    targets: z.array(publicationTargetInputSchema).max(MAX_PUBLICATION_TARGETS).default([]),
+    targets: z.array(publicationTargetInputSchema).default([]),
   })
   .superRefine((value, ctx) => {
     if (value.selection === 'SELECTED' && value.targets.length === 0) {
@@ -453,7 +452,7 @@ export type PublicationCalendarAvailabilityRequest = z.infer<
 
 export const publicationCalendarAvailabilitySlotSchema = z.object({
   scheduledAt: publicationDateTimeSchema,
-  targetCount: z.number().int().min(1).max(MAX_PUBLICATION_TARGETS),
+  targetCount: z.number().int().min(1),
 });
 export type PublicationCalendarAvailabilitySlot = z.infer<
   typeof publicationCalendarAvailabilitySlotSchema
@@ -538,6 +537,9 @@ export const publicationOccurrenceSummarySchema = z.object({
   scheduledAt: publicationDateTimeSchema,
   status: publicationOccurrenceStatusSchema,
   dispatchIssue: publicationDispatchIssueSchema.nullable().optional().default(null),
+  dispatchBlockedSince: publicationDateTimeSchema.nullable().optional(),
+  dispatchCheckedAt: publicationDateTimeSchema.nullable().optional(),
+  requiresScheduleDecision: z.boolean().optional(),
   delivery: publicationDeliveryStatsSchema,
   canRetry: z.boolean(),
   contentRevision: z.number().int().min(1).optional(),
@@ -546,6 +548,7 @@ export const publicationOccurrenceSummarySchema = z.object({
 export type PublicationOccurrenceSummary = z.infer<typeof publicationOccurrenceSummarySchema>;
 
 export const publicationSummarySchema = z.object({
+  requiresScheduleDecision: z.boolean().optional(),
   postPublish: publicationPostPublishSchema.optional(),
   id: z.string(),
   title: z.string(),
@@ -579,7 +582,8 @@ export type PublicationDetails = z.infer<typeof publicationDetailsSchema>;
 export const publicationTargetsRefreshResponseSchema = z
   .object({
     accepted: z.literal(true),
-    queuedCount: z.number().int().min(0).max(MAX_PUBLICATION_TARGETS),
+    queuedCount: z.number().int().min(0),
+    operationId: z.string().uuid().optional(),
   })
   .strict();
 export type PublicationTargetsRefreshResponse = z.infer<

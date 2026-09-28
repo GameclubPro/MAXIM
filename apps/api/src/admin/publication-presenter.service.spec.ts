@@ -214,10 +214,10 @@ describe('PublicationPresenterService', () => {
     expect(searchSql).toContain(
       'COALESCE(NULLIF(BTRIM(catalog."title"), \'\'), catalog."chat_id") ILIKE ?',
     );
-    expect(searchValues).toEqual(['publisher-bot', '%fallback%', 501]);
+    expect(searchValues).toEqual(['publisher-bot', '%fallback%']);
   });
 
-  it('batches Publisher catalog presentation reads and rejects overbroad searches', async () => {
+  it('batches Publisher catalog presentation reads and allows broad searches', async () => {
     const catalogFindMany = jest.fn().mockResolvedValue([]);
     const queryRaw = jest.fn().mockResolvedValue(
       Array.from({ length: 501 }, (_, index) => ({
@@ -238,9 +238,9 @@ describe('PublicationPresenterService', () => {
     expect(catalogFindMany).toHaveBeenCalledTimes(2);
     expect(catalogFindMany.mock.calls[0]?.[0].where.chatId.in).toHaveLength(200);
     expect(catalogFindMany.mock.calls[1]?.[0].where.chatId.in).toEqual(['chat-200']);
-    await expect(presenter.findPublisherTargetSearchMatches('publisher-bot', 'а')).rejects.toThrow(
-      'Уточните поиск по чатам и каналам.',
-    );
+    await expect(
+      presenter.findPublisherTargetSearchMatches('publisher-bot', 'а'),
+    ).resolves.toHaveLength(501);
   });
 
   it('maps current and historical delivery content revisions without guessing legacy rows', () => {
@@ -530,59 +530,73 @@ describe('PublicationPresenterService', () => {
     expect(queryRaw).not.toHaveBeenCalled();
   });
 
-  it('serializes only sanitized publication and occurrence issues', async () => {
-    const presenter = new PublicationPresenterService({} as never);
-    const details = await presenter.mapPublicationDetails({
-      id: 'publication-publik-blocked',
-      title: 'Публикация',
-      lifecycle: PublicationLifecycle.ACTIVE,
-      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-      requiredBotId: 'publisher-bot-internal',
-      dispatchIssue: 'actor_access_required',
-      version: 1,
-      canonicalContentRevisionId: 'content-1',
-      canonicalContentRevision: {
-        id: 'content-1',
-        revision: 1,
-        text: 'Текст',
-        textFormat: 'PLAIN',
-        buttons: [],
-        assets: [],
-      },
-      targets: [],
-      audienceSelection: 'SELECTED',
-      audienceMode: 'SNAPSHOT',
-      schedule: {
-        id: 'schedule-1',
-        mode: PublicationScheduleMode.NOW,
-        status: PublicationScheduleStatus.ACTIVE,
-        revision: 1,
-        rule: { mode: 'now', timezone: 'Europe/Moscow' },
-        lastError: null,
-      },
-      occurrences: [
-        {
-          id: 'occurrence-1',
-          scheduleId: 'schedule-1',
-          scheduleRevision: 1,
-          contentRevisionId: 'content-1',
-          contentRevision: { revision: 1 },
-          scheduledAt: new Date('2026-08-27T10:00:00.000Z'),
-          status: PublicationOccurrenceStatus.IN_PROGRESS,
-          dispatchIssue: 'actor_access_required',
-          dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
-          deliveryStats: EMPTY_DELIVERY,
+  it.each([
+    ['actor_access_required', 'actor_access_required', false],
+    ['decision_required', 'target_setup_required', true],
+  ])(
+    'serializes %s with a backwards-compatible public issue',
+    async (issue, publicIssue, requiresDecision) => {
+      const presenter = new PublicationPresenterService({} as never);
+      const details = await presenter.mapPublicationDetails({
+        id: 'publication-publik-blocked',
+        title: 'Публикация',
+        lifecycle: PublicationLifecycle.ACTIVE,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: 'publisher-bot-internal',
+        dispatchIssue: issue,
+        version: 1,
+        canonicalContentRevisionId: 'content-1',
+        canonicalContentRevision: {
+          id: 'content-1',
+          revision: 1,
+          text: 'Текст',
+          textFormat: 'PLAIN',
+          buttons: [],
+          assets: [],
         },
-      ],
-      deliveryStats: EMPTY_DELIVERY,
-      actionableDeliveryStats: EMPTY_DELIVERY,
-      createdAt: new Date('2026-08-27T09:00:00.000Z'),
-      updatedAt: new Date('2026-08-27T10:00:00.000Z'),
-    });
+        targets: [],
+        audienceSelection: 'SELECTED',
+        audienceMode: 'SNAPSHOT',
+        schedule: {
+          id: 'schedule-1',
+          mode: PublicationScheduleMode.NOW,
+          status: PublicationScheduleStatus.ACTIVE,
+          revision: 1,
+          rule: { mode: 'now', timezone: 'Europe/Moscow' },
+          lastError: null,
+        },
+        occurrences: [
+          {
+            id: 'occurrence-1',
+            scheduleId: 'schedule-1',
+            scheduleRevision: 1,
+            contentRevisionId: 'content-1',
+            contentRevision: { revision: 1 },
+            scheduledAt: new Date('2026-08-27T10:00:00.000Z'),
+            status: PublicationOccurrenceStatus.IN_PROGRESS,
+            dispatchIssue: issue,
+            dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+            dispatchFirstBlockedAt: new Date('2026-08-27T08:00:00.000Z'),
+            dispatchBlockedAt: new Date('2026-08-27T09:00:00.000Z'),
+            deliveryStats: EMPTY_DELIVERY,
+          },
+        ],
+        deliveryStats: EMPTY_DELIVERY,
+        actionableDeliveryStats: EMPTY_DELIVERY,
+        createdAt: new Date('2026-08-27T09:00:00.000Z'),
+        updatedAt: new Date('2026-08-27T10:00:00.000Z'),
+      });
 
-    expect(details.dispatchIssue).toBe('actor_access_required');
-    expect(details.occurrences[0]?.dispatchIssue).toBe('actor_access_required');
-    expect(JSON.stringify(details)).not.toContain('PUBLISHER_ACTOR_ACCESS_REQUIRED');
-    expect(JSON.stringify(details)).not.toContain('publisher-bot-internal');
-  });
+      expect(details.dispatchIssue).toBe(publicIssue);
+      expect(details.requiresScheduleDecision).toBe(requiresDecision);
+      expect(details.occurrences[0]).toMatchObject({
+        dispatchIssue: publicIssue,
+        requiresScheduleDecision: requiresDecision,
+        dispatchBlockedSince: '2026-08-27T08:00:00.000Z',
+        dispatchCheckedAt: '2026-08-27T09:00:00.000Z',
+      });
+      expect(JSON.stringify(details)).not.toContain('PUBLISHER_ACTOR_ACCESS_REQUIRED');
+      expect(JSON.stringify(details)).not.toContain('publisher-bot-internal');
+    },
+  );
 });

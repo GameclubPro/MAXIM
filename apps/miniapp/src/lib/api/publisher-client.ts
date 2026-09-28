@@ -1,4 +1,6 @@
 import {
+  MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS,
+  publisherRefreshOperationSchema,
   PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
   managedEntityPublicationPolicySchema,
   publisherEntitiesCursorQuerySchema,
@@ -132,18 +134,120 @@ export async function refreshPublisherEntities(
   return publisherEntitiesRefreshResponseSchema.parse(response);
 }
 
+class PublisherRefreshTerminalError extends Error {}
+type PendingRefresh = { startedAt: number; result: Promise<{ operationId?: string }> };
+const pendingRefreshes = new WeakMap<ApiTransport, Map<string, PendingRefresh>>();
+
+export async function runOrResumePublisherRefresh(
+  api: ApiTransport,
+  scope: string,
+  enqueue: () => Promise<{ operationId?: string }>,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  const operations = pendingRefreshes.get(api) ?? new Map<string, PendingRefresh>();
+  pendingRefreshes.set(api, operations);
+  for (const [key, value] of operations) {
+    if (Date.now() - value.startedAt >= 3600_000) operations.delete(key);
+  }
+  let pending = operations.get(scope);
+  if (!pending) {
+    pending = { startedAt: Date.now(), result: enqueue() };
+    operations.set(scope, pending);
+  }
+  let result: { operationId?: string };
+  try {
+    result = await pending.result;
+  } catch (error) {
+    if (operations.get(scope) === pending) operations.delete(scope);
+    throw error;
+  }
+  try {
+    await waitForPublisherRefresh(api, result.operationId, signal);
+    if (operations.get(scope) === pending) operations.delete(scope);
+  } catch (error) {
+    const status = (error as { status?: number } | null)?.status;
+    if (
+      error instanceof PublisherRefreshTerminalError ||
+      status === 401 ||
+      status === 403 ||
+      status === 404
+    ) {
+      if (operations.get(scope) === pending) operations.delete(scope);
+    }
+    throw error;
+  }
+}
+
+export async function waitForPublisherRefresh(
+  api: ApiTransport,
+  operationId: string | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!operationId)
+    throw new PublisherRefreshTerminalError(
+      'Проверка принята. Обновите список позже, чтобы увидеть результат.',
+    );
+  const deadline = Date.now() + 120_000;
+  let delayMs = 1000;
+  while (true) {
+    signal?.throwIfAborted();
+    const result = publisherRefreshOperationSchema.parse(
+      await api.request(`/publisher/refresh-operations/${encodeURIComponent(operationId)}`, {
+        signal,
+      }),
+    );
+    signal?.throwIfAborted();
+    if (result.state === 'complete') return;
+    if (result.state === 'partial')
+      throw new PublisherRefreshTerminalError(
+        'Часть подключений не удалось проверить. Повторите проверку позже.',
+      );
+    if (result.state === 'unavailable')
+      throw new PublisherRefreshTerminalError(
+        'Результат проверки недоступен. Обновите список и повторите проверку.',
+      );
+    if (Date.now() >= deadline)
+      throw new Error('Проверка ещё выполняется. Результаты появятся после обновления списка.');
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        clearTimeout(timer);
+        reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', abort);
+        resolve();
+      }, delayMs);
+      signal?.addEventListener('abort', abort, { once: true });
+    });
+    delayMs = Math.min(5000, delayMs + 500);
+  }
+}
+
 export async function resolvePublisherEntities(
   api: ApiTransport,
   payload: ResolvePublisherEntitiesRequest,
   options: { signal?: AbortSignal } = {},
 ): Promise<ResolvePublisherEntitiesResponse> {
-  const body = resolvePublisherEntitiesRequestSchema.parse(payload);
-  const response = await api.request('/publisher/entities/resolve', {
-    method: 'POST',
-    body: JSON.stringify(body),
-    signal: options.signal,
-  });
-  return resolvePublisherEntitiesResponseSchema.parse(response);
+  const items: ResolvePublisherEntitiesResponse['items'] = [];
+  for (
+    let offset = 0;
+    offset < payload.targets.length;
+    offset += MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS
+  ) {
+    options.signal?.throwIfAborted();
+    const body = resolvePublisherEntitiesRequestSchema.parse({
+      ...payload,
+      targets: payload.targets.slice(offset, offset + MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS),
+    });
+    const response = await api.request('/publisher/entities/resolve', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal: options.signal,
+    });
+    items.push(...resolvePublisherEntitiesResponseSchema.parse(response).items);
+  }
+  return { items };
 }
 
 export async function updatePublisherPolicy(

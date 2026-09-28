@@ -248,6 +248,27 @@ manifest_field() {
     --state-dir "$RELEASE_STATE_DIR"
 }
 
+verify_checkout_compatibility() {
+  local checkout_sha="$1"
+  if [[ "$MANIFEST_SOURCE_SHA" == "$checkout_sha" ]]; then
+    return 0
+  fi
+  [[ "$COMMAND" == status ]] ||
+    fail "Current checkout does not match the active API release source SHA."
+  # FLAG: Read-only status may follow an independent static/docs release only when
+  # its runtime inventory and topology readers still match the active API source.
+  git diff --quiet "$MANIFEST_SOURCE_SHA" "$checkout_sha" -- \
+    infra/docker-compose.yml \
+    infra/scripts/lib/deploy-topology.sh \
+    infra/scripts/lib/deploy-lock.sh \
+    infra/scripts/lib/webhook-rollout-quiescence.sh \
+    infra/scripts/publisher-dispatch-rollout-state.mjs \
+    infra/scripts/publisher-dispatch-rollout-control.cjs \
+    infra/scripts/commercial-ocr-runtime-inventory.mjs \
+    infra/scripts/vps-publisher-dispatch-rollout.sh ||
+    fail "Status tooling is incompatible with the active API release source."
+}
+
 resolve_release_fence() {
   MANIFEST_SOURCE_SHA="$(manifest_field sourceSha)" ||
     fail "Current API release manifest source SHA is unavailable."
@@ -257,10 +278,9 @@ resolve_release_fence() {
     fail "Current API release manifest image id is unavailable."
   local checkout_sha image_fence
   checkout_sha="$(git rev-parse --verify HEAD)" || fail "Current checkout SHA is unavailable."
-  [[ "$MANIFEST_SOURCE_SHA" == "$checkout_sha" ]] ||
-    fail "Current checkout does not match the active API release source SHA."
   [[ "$MANIFEST_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] ||
     fail "Active API release source SHA is invalid."
+  verify_checkout_compatibility "$checkout_sha"
   [[ "$MANIFEST_IMAGE_REF" == "maxim-api:${MANIFEST_SOURCE_SHA}" ]] ||
     fail "Active API image ref is not the immutable source-SHA ref."
   [[ "$MANIFEST_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ ]] ||

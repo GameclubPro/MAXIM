@@ -936,6 +936,38 @@ export async function reconcileOrphanedPublicationOccurrences(options: {
   );
 }
 
+export async function recordPublicationDeliveryResolution(
+  tx: Prisma.TransactionClient,
+  params: {
+    delivery: {
+      id: string;
+      targetChatId: string;
+      status: ManagedBroadcastDeliveryStatus;
+      remoteMessageId: string | null;
+    };
+    actorUserId: string;
+    publicationId: string;
+    occurrenceId: string;
+    requestId: string;
+    resolution: 'mark_sent' | 'mark_failed';
+  },
+): Promise<void> {
+  const { delivery, actorUserId, ...decision } = params;
+  await tx.auditLog.create({
+    data: {
+      chatId: delivery.targetChatId,
+      actorUserId,
+      action: 'PUBLICATION_DELIVERY_RESOLVED',
+      payload: {
+        ...decision,
+        deliveryId: delivery.id,
+        previousStatus: delivery.status,
+        hadRemoteMessageId: delivery.remoteMessageId !== null,
+      },
+    },
+  });
+}
+
 export async function syncPublicationBroadcastAfterDeliveryResolution(
   tx: any,
   broadcastId: string,

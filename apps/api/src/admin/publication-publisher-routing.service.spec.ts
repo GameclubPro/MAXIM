@@ -1,6 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import { ChatEntityType, PublicationDispatchProfile } from '../prisma/prisma-client';
-import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
+import {
+  PublisherActorAccessRequiredException,
+  PublisherSetupRequiredException,
+} from '../publisher/publisher-errors';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 
@@ -9,7 +12,7 @@ describe('PublicationPublisherRoutingService', () => {
     const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
     const resolvePublicationTargets = jest
       .fn()
-      .mockRejectedValue(new BadRequestException('Unavailable'));
+      .mockRejectedValue(new PublisherActorAccessRequiredException(['channel']));
     const service = new PublicationPublisherRoutingService(
       {} as never,
       {} as never,
@@ -64,8 +67,11 @@ describe('PublicationPublisherRoutingService', () => {
     expect(resolvePublicationTargets).toHaveBeenCalledWith(expect.any(Object), undefined);
   });
 
-  it('does not convert a database error into a missing target', async () => {
-    const error = Object.assign(new Error('Pool timeout'), { code: 'P2024' });
+  it.each([
+    Object.assign(new Error('Pool timeout'), { code: 'P2024' }),
+    new BadRequestException('Invalid audience'),
+    new PublisherSetupRequiredException(['channel'], 'policy_disabled'),
+  ])('does not convert an unrelated error into actor access: %s', async (error) => {
     const requestActorAccessRefresh = jest.fn();
     const service = new PublicationPublisherRoutingService(
       {} as never,

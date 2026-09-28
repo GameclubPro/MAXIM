@@ -49,6 +49,7 @@ export function publisherNotificationFailure(
 export class PublisherCommentNotificationDeliveryService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PublisherCommentNotificationDeliveryService.name);
   private timer: NodeJS.Timeout | null = null;
+  private retentionAfter: { expiresAt: Date; id: string } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -114,25 +115,39 @@ export class PublisherCommentNotificationDeliveryService implements OnModuleInit
         botId: this.preferences.botId,
         completed: true,
         expiresAt: { lt: new Date(now.getTime() - 7 * 24 * 60 * 60_000) },
+        ...(this.retentionAfter
+          ? {
+              OR: [
+                { expiresAt: { gt: this.retentionAfter.expiresAt } },
+                { expiresAt: this.retentionAfter.expiresAt, id: { gt: this.retentionAfter.id } },
+              ],
+            }
+          : {}),
       },
       orderBy: [{ expiresAt: 'asc' }, { id: 'asc' }],
       take: 5,
-      select: { id: true },
+      select: { id: true, expiresAt: true },
     });
+    this.retentionAfter = expired.at(-1) ?? null;
     for (const event of expired) {
       const rows = await this.prisma.publisherCommentNotificationDelivery.findMany({
-        where: { eventId: event.id },
+        where: { eventId: event.id, status: { notIn: ['SENDING', 'UNKNOWN'] } },
         orderBy: { id: 'asc' },
         take: 100,
         select: { id: true },
       });
       if (rows.length)
         await this.prisma.publisherCommentNotificationDelivery.deleteMany({
-          where: { id: { in: rows.map((row) => row.id) } },
+          where: {
+            id: { in: rows.map((row) => row.id) },
+            status: { notIn: ['SENDING', 'UNKNOWN'] },
+          },
         });
       if (rows.length < 100)
         await this.prisma.publisherCommentNotificationEvent.deleteMany({
-          where: { id: event.id, completed: true },
+          // FLAG: Never cascade-delete uncertainty. Advance the bounded retention
+          // cursor past retained evidence so it cannot starve cleanup of other events.
+          where: { id: event.id, completed: true, deliveries: { none: {} } },
         });
     }
   }

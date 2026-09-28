@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260927160000_index_publication_materialization_priority",
-  "baselineNamesSha256": "02f8857ae178a4295bcccf6a353deed8cd556b9c65a6fca658db2af351e71f28",
-  "baselineContentsSha256": "aebd9fc6c638a28c09931fc6e194226d40b0522b2839bb12da0be9b4ce93bdc5",
+  "baselineThrough": "20260928122000_add_publication_blocker_first_seen",
+  "baselineNamesSha256": "67d554f62164baaa475ac7226285b72cc1d7586579c67df528c7c127c29c1f8a",
+  "baselineContentsSha256": "19063f64c83ce9186aeb7c08d327e2f692da7a624324e0de2e0c316918a5b7e6",
   "approvedDestructive": {
     "20260919090000_add_participant_reports": {
       "reason": "Reviewed static additive policy revision trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL or destructive change is present.",
@@ -94,6 +94,9 @@
     }
   },
   "nonConcurrentIndexExceptions": {
+    "20260928120000_add_publisher_start_intents": {
+      "reason": "The recovery index is created on a new empty intent table in the same additive transaction. No existing data or tables are modified."
+    },
     "20260927120000_add_publisher_comment_notifications": {
       "reason": "Indexes cover only three new empty Publisher comment notification tables. No existing table, history scan, or backfill is involved."
     },

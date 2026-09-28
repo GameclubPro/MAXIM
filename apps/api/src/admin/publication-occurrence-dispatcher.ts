@@ -14,6 +14,10 @@ import {
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { publicationBackgroundAccess } from './publication-background-access';
+import {
+  PUBLISHER_MISSED_WINDOW_BLOCKER_CODE,
+  PUBLISHER_EXPLICIT_RETRY_CODE,
+} from './publication-dispatch-issue';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 import {
   PublicationPublisherRoutingService,
@@ -142,7 +146,11 @@ export async function dispatchScheduledPublicationOccurrences(
           where: {
             ...where,
             dispatchBlockerCode: { not: null },
-            OR: [{ dispatchBlockedAt: null }, { dispatchBlockedAt: { lte: blockedRetryBefore } }],
+            OR: [
+              { dispatchBlockerCode: PUBLISHER_EXPLICIT_RETRY_CODE },
+              { dispatchBlockedAt: null },
+              { dispatchBlockedAt: { lte: blockedRetryBefore } },
+            ],
           },
           orderBy: [{ dispatchBlockedAt: 'asc' }, { scheduledAt: 'asc' }, { id: 'asc' }],
           take: recoveryLimit,
@@ -171,6 +179,55 @@ export async function dispatchScheduledPublicationOccurrences(
             },
           },
           data: { status: PublicationOccurrenceStatus.CANCELED },
+        });
+        continue;
+      }
+      if (
+        !(
+          occurrence.dispatchBlockerCode === PUBLISHER_EXPLICIT_RETRY_CODE &&
+          occurrence.dispatchBlockedAt &&
+          occurrence.dispatchBlockedAt.getTime() >= now.getTime() - PUBLICATION_EXECUTION_HORIZON_MS
+        ) &&
+        (occurrence.schedule.mode === PublicationScheduleMode.ONCE ||
+          occurrence.schedule.mode === PublicationScheduleMode.SLOTS ||
+          occurrence.schedule.mode === PublicationScheduleMode.RECURRENCE) &&
+        occurrence.scheduledAt.getTime() < now.getTime() - PUBLICATION_EXECUTION_HORIZON_MS
+      ) {
+        // FLAG: Returning access cannot authorize catch-up sends. Only an explicit author
+        // retry may execute a missed one-off slot; recurrence continues with future slots.
+        await context.prisma.$transaction(async (tx) => {
+          await context.lockCalendar(tx);
+          await tx.publicationOccurrence.updateMany({
+            where: {
+              id: occurrence.id,
+              status: PublicationOccurrenceStatus.SCHEDULED,
+              scheduleRevision: occurrence.scheduleRevision,
+              dispatchBlockerCode: occurrence.dispatchBlockerCode ?? null,
+              dispatchBlockedAt: occurrence.dispatchBlockedAt ?? null,
+              dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? null,
+              schedule: {
+                is: {
+                  revision: occurrence.scheduleRevision,
+                  status: PublicationScheduleStatus.ACTIVE,
+                },
+              },
+              publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
+              legacyBroadcasts: { none: {} },
+              deliveries: { none: {} },
+            },
+            data: {
+              status:
+                occurrence.schedule.mode === PublicationScheduleMode.RECURRENCE
+                  ? PublicationOccurrenceStatus.CANCELED
+                  : PublicationOccurrenceStatus.FAILED,
+              dispatchBlockerCode:
+                occurrence.schedule.mode === PublicationScheduleMode.RECURRENCE
+                  ? 'PUBLISHER_WINDOW_EXPIRED'
+                  : PUBLISHER_MISSED_WINDOW_BLOCKER_CODE,
+              dispatchBlockedAt: now,
+              dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? now,
+            },
+          });
         });
         continue;
       }

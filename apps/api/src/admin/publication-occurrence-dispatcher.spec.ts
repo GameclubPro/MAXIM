@@ -99,6 +99,68 @@ function createHarness(options: {
 }
 
 describe('publication occurrence dispatcher', () => {
+  it('uses durable manual retry authorization even after a Redis wake is lost', async () => {
+    const harness = createHarness({ createExecutionError: null });
+    harness.context.createExecution.mockResolvedValue(undefined);
+    harness.context.prisma.publicationOccurrence.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          ...occurrence,
+          schedule: { ...occurrence.schedule, mode: PublicationScheduleMode.ONCE },
+          dispatchBlockerCode: 'PUBLISHER_EXPLICIT_RETRY',
+          dispatchBlockedAt: new Date(),
+        },
+      ]);
+    await dispatchScheduledPublicationOccurrences(harness.context as never, 1);
+    expect(harness.context.createExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a delayed explicit wake revive expired retry authorization', async () => {
+    const harness = createHarness({ createExecutionError: null });
+    harness.context.prisma.publicationOccurrence.findMany
+      .mockResolvedValueOnce([
+        {
+          ...occurrence,
+          schedule: { ...occurrence.schedule, mode: PublicationScheduleMode.ONCE },
+          dispatchBlockerCode: 'PUBLISHER_EXPLICIT_RETRY',
+          dispatchBlockedAt: new Date(Date.now() - 600_000),
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    await dispatchScheduledPublicationOccurrences(harness.context as never, 1, undefined, {
+      occurrenceId: occurrence.id,
+    });
+    expect(harness.context.createExecution).not.toHaveBeenCalled();
+    expect(harness.tx.publicationOccurrence.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'FAILED',
+          dispatchBlockerCode: 'PUBLISHER_MISSED_WINDOW_REVIEW',
+        }),
+      }),
+    );
+  });
+  it.each([
+    PublicationScheduleMode.ONCE,
+    PublicationScheduleMode.SLOTS,
+    PublicationScheduleMode.RECURRENCE,
+  ])('does not send missed %s slots after access returns', async (mode) => {
+    const harness = createHarness({ createExecutionError: null });
+    harness.context.prisma.publicationOccurrence.findMany
+      .mockResolvedValueOnce([{ ...occurrence, schedule: { ...occurrence.schedule, mode } }])
+      .mockResolvedValueOnce([]);
+    await dispatchScheduledPublicationOccurrences(harness.context as never, 1);
+    expect(harness.context.createExecution).not.toHaveBeenCalled();
+    expect(harness.context.resolveTargets).not.toHaveBeenCalled();
+    expect(harness.tx.publicationOccurrence.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: mode === PublicationScheduleMode.RECURRENCE ? 'CANCELED' : 'FAILED',
+        }),
+      }),
+    );
+  });
   it('prepares new ready work ahead of older blocked schedules while reserving recovery', async () => {
     const harness = createHarness({ createExecutionError: null });
     const ready = Array.from({ length: 10 }, (_, index) => ({

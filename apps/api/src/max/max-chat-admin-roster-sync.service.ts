@@ -2,6 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
+import { managedRefreshBackoffMs } from './managed-refresh-backoff';
 import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
@@ -96,7 +97,7 @@ export class MaxChatAdminRosterSyncSourceBackoffError extends Error {
 @Injectable()
 export class MaxChatAdminRosterSyncService {
   private readonly logger = new Logger(MaxChatAdminRosterSyncService.name);
-  private managedRefreshSourceBackoffUntilMs = 0;
+  private readonly managedRefreshSourceBackoffUntilMs = new Map<string, number>();
   private readonly terminalBotBackoffUntilMs = new Map<string, number>();
 
   constructor(
@@ -391,9 +392,16 @@ export class MaxChatAdminRosterSyncService {
     let skippedDueToTerminalBackoff = false;
 
     for (const botId of candidateBotIds) {
-      const sourceBackoffDelayMs = await this.resolveManagedRefreshSourceBackoffDelayMs(normalized);
+      const sourceBackoffDelayMs = await this.resolveManagedRefreshSourceBackoffDelayMs(
+        normalized,
+        botId,
+      );
       if (sourceBackoffDelayMs > 0) {
-        throw new MaxChatAdminRosterSyncSourceBackoffError(normalized.chatId, sourceBackoffDelayMs);
+        recoverableError ??= new MaxChatAdminRosterSyncSourceBackoffError(
+          normalized.chatId,
+          sourceBackoffDelayMs,
+        );
+        continue;
       }
 
       if (
@@ -463,12 +471,14 @@ export class MaxChatAdminRosterSyncService {
           continue;
         }
 
-        if (this.isRateLimitPressureError(error)) {
-          await this.markManagedRefreshSourceBackoff();
-          throw new MaxChatAdminRosterSyncSourceBackoffError(
+        const backoffMs = managedRefreshBackoffMs(error);
+        if (backoffMs !== null) {
+          await this.markManagedRefreshSourceBackoff(botId, backoffMs);
+          recoverableError ??= new MaxChatAdminRosterSyncSourceBackoffError(
             normalized.chatId,
-            await this.resolveManagedRefreshSourceBackoffDelayMs(normalized),
+            await this.resolveManagedRefreshSourceBackoffDelayMs(normalized, botId),
           );
+          continue;
         }
 
         recoverableError ??= error;
@@ -2031,38 +2041,20 @@ export class MaxChatAdminRosterSyncService {
     );
   }
 
-  private isRateLimitPressureError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } } | null)?.response?.status;
-    if (status === 429) {
-      return true;
-    }
-
-    const message = error instanceof Error ? error.message : String(error);
-    const normalizedMessage = message.trim().toLowerCase();
-    return (
-      normalizedMessage.includes('rate limit exceeded') ||
-      normalizedMessage.includes('source limit exceeded')
-    );
-  }
-
-  private isLocalManagedRefreshSourceBackoffActive(now = Date.now()): boolean {
-    if (this.managedRefreshSourceBackoffUntilMs <= now) {
-      this.managedRefreshSourceBackoffUntilMs = 0;
-      return false;
-    }
-
-    return true;
-  }
-
-  private async markManagedRefreshSourceBackoff(now = Date.now()): Promise<void> {
-    this.managedRefreshSourceBackoffUntilMs = Math.max(
-      this.managedRefreshSourceBackoffUntilMs,
-      now + CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS,
+  private async markManagedRefreshSourceBackoff(
+    botId: string,
+    backoffMs: number,
+    now = Date.now(),
+  ): Promise<void> {
+    this.managedRefreshSourceBackoffUntilMs.set(
+      botId,
+      Math.max(this.managedRefreshSourceBackoffUntilMs.get(botId) ?? 0, now + backoffMs),
     );
 
     try {
       await this.chatContextCache.activateManagedRefreshSourceBackoff(
-        Math.ceil(CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS / 1_000),
+        Math.ceil(backoffMs / 1_000),
+        botId,
       );
     } catch (error: unknown) {
       this.logger.debug(
@@ -2076,21 +2068,30 @@ export class MaxChatAdminRosterSyncService {
 
   private async resolveManagedRefreshSourceBackoffDelayMs(
     job: Pick<MaxChatAdminRosterSyncJob, 'chatId'>,
+    botId: string,
     now = Date.now(),
   ): Promise<number> {
-    const localRemainingMs = this.isLocalManagedRefreshSourceBackoffActive(now)
-      ? Math.max(1, this.managedRefreshSourceBackoffUntilMs - now)
-      : 0;
+    const localRemainingMs = Math.max(
+      0,
+      (this.managedRefreshSourceBackoffUntilMs.get(botId) ?? 0) - now,
+    );
+    if (localRemainingMs === 0) this.managedRefreshSourceBackoffUntilMs.delete(botId);
     let sharedRemainingMs = 0;
     try {
       const getRemainingMs = (
         this.chatContextCache as ChatContextCacheService & {
-          getManagedRefreshSourceBackoffRemainingMs?: () => Promise<number>;
+          getManagedRefreshSourceBackoffRemainingMs?: (botId?: string) => Promise<number>;
         }
       ).getManagedRefreshSourceBackoffRemainingMs;
       if (typeof getRemainingMs === 'function') {
-        sharedRemainingMs = await getRemainingMs.call(this.chatContextCache);
-      } else if (await this.chatContextCache.isManagedRefreshSourceBackoffActive()) {
+        sharedRemainingMs = Math.max(
+          await getRemainingMs.call(this.chatContextCache, botId),
+          await getRemainingMs.call(this.chatContextCache),
+        );
+      } else if (
+        (await this.chatContextCache.isManagedRefreshSourceBackoffActive(botId)) ||
+        (await this.chatContextCache.isManagedRefreshSourceBackoffActive())
+      ) {
         sharedRemainingMs = CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS;
       }
     } catch (error: unknown) {

@@ -32,6 +32,7 @@ const SWEEP_BUDGET_MS = 10_000;
 const MAX_DELETE_ATTEMPTS = 10;
 const MAX_PIN_ATTEMPTS = 10;
 const PIN_UNCONFIRMED = 'Закрепление не подтверждено. Проверьте пост в MAX.';
+class PinAuthorityUnavailableError extends Error {}
 
 const actionSelect = {
   id: true,
@@ -48,7 +49,7 @@ const actionSelect = {
   deleteStatus: true,
   deleteAt: true,
   deleteAttemptCount: true,
-  contentRevision: { select: { postPublish: true } },
+  contentRevision: { select: { postPublish: true, publicationId: true } },
 } satisfies Prisma.ManagedBroadcastDeliverySelect;
 type Delivery = Prisma.ManagedBroadcastDeliveryGetPayload<{ select: typeof actionSelect }>;
 
@@ -225,6 +226,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
               ...options,
               beforeMutation: async () => {
                 await guard();
+                await this.assertPinAuthority(row, botId);
                 if (deleteAt && deleteAt.getTime() <= Date.now()) throw new Error('Post expired');
                 await persist({ pinStatus: Status.RUNNING });
                 dispatched = true;
@@ -235,15 +237,22 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         } catch (error: unknown) {
           const status = extractPublisherMaxStatusCode(error);
           const rejected = status !== null && [400, 401, 403, 404, 422].includes(status);
-          pinStatus = rejected
-            ? Status.FAILED
-            : dispatched && status !== 429
-              ? Status.AMBIGUOUS
-              : attempt >= MAX_PIN_ATTEMPTS
+          pinStatus =
+            error instanceof PinAuthorityUnavailableError
+              ? Status.PENDING
+              : rejected
                 ? Status.FAILED
-                : Status.PENDING;
+                : dispatched && status !== 429
+                  ? Status.AMBIGUOUS
+                  : attempt >= MAX_PIN_ATTEMPTS
+                    ? Status.FAILED
+                    : Status.PENDING;
           if (pinStatus === Status.PENDING) {
             pinNextAt = new Date(Date.now() + Math.min(3_600_000, 30_000 * 2 ** (attempt - 1)));
+          }
+          if (error instanceof PinAuthorityUnavailableError) {
+            pinNextAt = new Date(Date.now() + 5 * 60_000);
+            await persist({ pinAttemptCount: row.pinAttemptCount });
           }
         }
         await persist({
@@ -252,7 +261,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
             pinStatus === Status.DONE
               ? null
               : pinStatus === Status.PENDING
-                ? 'Закрепление отложено. Повторим автоматически.'
+                ? 'Закрепление отложено до подтверждения прав автора и подключения Публика.'
                 : pinStatus === Status.FAILED
                   ? 'Не удалось закрепить пост. Проверьте права Публика в MAX.'
                   : PIN_UNCONFIRMED,
@@ -364,5 +373,61 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       .finally(() => {
         this.inFlight = null;
       });
+  }
+
+  private async assertPinAuthority(row: Delivery, botId: string): Promise<void> {
+    const publicationId = row.contentRevision?.publicationId;
+    if (!publicationId) throw new PinAuthorityUnavailableError();
+    const publication = await this.prisma.publication.findFirst({
+      where: {
+        id: publicationId,
+        requiredBotId: botId,
+        dispatchProfile: 'PUBLIK_V1',
+        lifecycle: { in: ['ACTIVE', 'COMPLETED'] },
+      },
+      select: { actorUserId: true },
+    });
+    if (!publication) throw new PinAuthorityUnavailableError();
+    const now = new Date();
+    // FLAG: A new pin needs current author authority. Previously committed timed
+    // deletion keeps its original policy and never inherits this permission check.
+    const access = await this.prisma.managedEntityAccessEdge.findFirst({
+      where: {
+        chatId: row.targetChatId,
+        userId: publication.actorUserId,
+        botId,
+        state: 'GRANTED',
+        userRole: { in: ['OWNER', 'ADMIN'] },
+        OR: [
+          { expiresAt: { gt: now } },
+          { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 7 * 86400_000) } },
+        ],
+        chat: {
+          OR: [
+            { publicationPolicy: { is: null } },
+            { publicationPolicy: { is: { publikEnabled: true } } },
+          ],
+          publisherBinding: {
+            is: {
+              publisherBotId: botId,
+              status: 'ACTIVE',
+              botAccessState: { in: ['CONFIRMED_ADMIN', 'CONFIRMED_OWNER'] },
+              botAccessExpiresAt: { gt: now },
+              AND: [
+                { OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: row.sentAt! } }] },
+                {
+                  OR: [
+                    { sendRouteQuarantinedUntil: null },
+                    { sendRouteQuarantinedUntil: { lte: now } },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
+      select: { chatId: true },
+    });
+    if (!access) throw new PinAuthorityUnavailableError();
   }
 }

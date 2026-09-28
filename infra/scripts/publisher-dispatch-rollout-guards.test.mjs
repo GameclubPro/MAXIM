@@ -51,6 +51,32 @@ test('keeps publisher dispatch false by default and previews mutations unless ap
   assert.match(rollout, /Status does not accept --apply/u);
 });
 
+test('allows compatible component status without weakening the mutation source fence', () => {
+  const block = functionBlock(rollout, 'verify_checkout_compatibility');
+  for (const [command, compatible, expected] of [
+    ['status', true, 0],
+    ['status', false, 1],
+    ['enable', true, 1],
+    ['disable', true, 1],
+  ]) {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail
+${block}
+fail() { return 1; }
+git() { return ${compatible ? 0 : 1}; }
+MANIFEST_SOURCE_SHA=${'a'.repeat(40)}
+COMMAND=${command}
+verify_checkout_compatibility ${'b'.repeat(40)}`,
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, expected, `${command}: ${result.stderr}`);
+  }
+});
+
 test('renders a private false-to-true preview across all 13 env_file consumers', (t) => {
   const directory = mkdtempSync(resolve(tmpdir(), 'publisher-compose-preview-'));
   t.after(() => rmSync(directory, { force: true, recursive: true }));

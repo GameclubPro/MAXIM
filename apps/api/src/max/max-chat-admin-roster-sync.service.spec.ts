@@ -1232,7 +1232,7 @@ describe('MaxChatAdminRosterSyncService', () => {
 
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledTimes(2);
-    expect(chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(10);
+    expect(chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(10, 'bot-1');
   });
 
   it('uses shared managed_refresh source backoff before making another MAX request', async () => {

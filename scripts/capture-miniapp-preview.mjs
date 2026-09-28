@@ -1623,6 +1623,37 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-missed-window',
+    beforeShot: async (page) => {
+      await page
+        .locator(
+          '[data-publication-id="publication-access-required"] .publication-feed-card__surface',
+        )
+        .click();
+      const details = page.getByRole('dialog', { name: 'Объявление для канала' });
+      await details
+        .getByText('Запуск пропущен', { exact: true })
+        .first()
+        .waitFor({ state: 'visible' });
+      await details.getByText(/^Ожидает с /u).waitFor({ state: 'visible' });
+      await details.getByText(/^Проверено /u).waitFor({ state: 'visible' });
+      await details.getByRole('button', { name: 'Повторить запуск' }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-recheck',
+    beforeShot: async (page) => {
+      await page
+        .locator(
+          '[data-publication-id="publication-access-required"] .publication-feed-card__surface',
+        )
+        .click();
+      const details = page.getByRole('dialog', { name: 'Объявление для канала' });
+      await details.getByRole('button', { name: 'Проверить подключения' }).click();
+      await details.locator('.publication-details-dispatch-notice').waitFor({ state: 'hidden' });
+    },
+  },
+  {
     name: 'publications-actions',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });

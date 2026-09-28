@@ -1,4 +1,5 @@
 import type { ChatSanctionItem, ChatSanctionsQuery } from '@maxim/contracts';
+import { isMaxMemberRestoreAvailable } from '@maxim/contracts/max-capabilities';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import {
@@ -267,7 +268,11 @@ export function ChatSanctionsWorkspace({
           }}
         >
           <ShieldCheck width={20} height={20} aria-hidden />
-          {selected.action === 'BAN' ? 'Снять блокировку' : 'Разрешить писать'}
+          {selected.action === 'BAN'
+            ? isMaxMemberRestoreAvailable()
+              ? 'Снять блокировку'
+              : 'Проверить снятие в MAX'
+            : 'Разрешить писать'}
         </button>
       ) : null}
     </div>
@@ -614,7 +619,13 @@ export function ChatSanctionsWorkspace({
       <ActionConfirmSheet
         id="sanction-release"
         open={confirmOpen && Boolean(selected)}
-        title={selected?.action === 'BAN' ? 'Снять блокировку?' : 'Разрешить писать?'}
+        title={
+          selected?.action === 'BAN'
+            ? isMaxMemberRestoreAvailable()
+              ? 'Снять блокировку?'
+              : 'Проверить снятие в MAX?'
+            : 'Разрешить писать?'
+        }
         summary={selected?.userDisplayName}
         previewTitle={chatTitle}
         previewMeta={
@@ -622,13 +633,23 @@ export function ChatSanctionsWorkspace({
             <span role="alert">
               {describeUserFacingError(release.error, 'Не удалось снять ограничение.')}
             </span>
+          ) : selected?.action === 'BAN' && !isMaxMemberRestoreAvailable() ? (
+            'Снимите блокировку вручную в MAX. Проверка подтвердит возвращение участника в чат.'
           ) : selected ? (
             `Назначено ${formatDate(selected.createdAt)}`
           ) : undefined
         }
-        confirmLabel="Снять ограничение"
+        confirmLabel={
+          selected?.action === 'BAN' && !isMaxMemberRestoreAvailable()
+            ? 'Проверить'
+            : 'Снять ограничение'
+        }
         confirmDisabled={!releaseAvailable}
-        confirmBusyLabel="Снимаем..."
+        confirmBusyLabel={
+          selected?.action === 'BAN' && !isMaxMemberRestoreAvailable()
+            ? 'Проверяем...'
+            : 'Снимаем...'
+        }
         tone="accent"
         isBusy={release.isPending}
         onClose={() => {

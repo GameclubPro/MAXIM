@@ -7,6 +7,7 @@ export * from './chat-participants.js';
 export type { ChatParticipantDetails } from './participant-details.js';
 export type { ChatSanctionItem, ChatSanctionsPage, ChatSanctionsQuery } from './chat-sanctions.js';
 export * from './manual-moderation.js';
+export * from './max-capabilities.js';
 export * from './broadcast-request-utils.js';
 export * from './channel-post-signature.js';
 export * from './safety-desk.js';

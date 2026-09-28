@@ -30,7 +30,10 @@ function setup(overrides: Record<string, unknown> = {}) {
     contentRevision: { postPublish: { pin: 'notify', deleteAfterMinutes: 60 } },
     ...overrides,
   };
+  if (row.contentRevision) row.contentRevision.publicationId = 'publication-1';
   const prisma = {
+    publication: { findFirst: jest.fn().mockResolvedValue({ actorUserId: 'author-1' }) },
+    managedEntityAccessEdge: { findFirst: jest.fn().mockResolvedValue({ chatId: 'chat-1' }) },
     managedBroadcastDelivery: {
       findMany: jest.fn(async () =>
         row.status === 'SENT' &&
@@ -81,14 +84,12 @@ function setup(overrides: Record<string, unknown> = {}) {
   const identity = { assertAttested: jest.fn().mockResolvedValue(undefined) };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
   const subscriptions = {
-    prepareDeletion: jest
-      .fn()
-      .mockResolvedValue({
-        id: 'suggestion',
-        chatId: 'chat-1',
-        messageId: 'message-1',
-        botId: 'publik',
-      }),
+    prepareDeletion: jest.fn().mockResolvedValue({
+      id: 'suggestion',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      botId: 'publik',
+    }),
     assertDeletionAllowed: jest.fn().mockResolvedValue(undefined),
   };
   const service = new PublisherPublicationPostActionsService(
@@ -108,6 +109,26 @@ function setup(overrides: Record<string, unknown> = {}) {
 describe('Publisher publication post actions', () => {
   beforeEach(() => jest.useFakeTimers().setSystemTime(NOW));
   afterEach(() => jest.useRealTimers());
+
+  it('pauses a pin after author access is revoked without losing the committed deletion', async () => {
+    const f = setup();
+    f.prisma.managedEntityAccessEdge.findFirst.mockResolvedValue(null);
+    await f.service.processDue();
+    expect(f.row.pinStatus).toBe('PENDING');
+    expect(f.row.pinAttemptCount).toBe(0);
+    expect(f.row.deleteAt).toEqual(new Date(NOW.getTime() + 3600_000));
+    jest.setSystemTime(new Date(NOW.getTime() + 3600_000));
+    await f.service.processDue();
+    expect(f.row.deleteStatus).toBe('DONE');
+  });
+
+  it('pauses pin when the publication has been canceled or paused', async () => {
+    const f = setup();
+    f.prisma.publication.findFirst.mockResolvedValue(null);
+    await f.service.processDue();
+    expect(f.row.pinStatus).toBe('PENDING');
+    expect(f.row.pinAttemptCount).toBe(0);
+  });
 
   it('checks a subscription-owned delete before preparation and at the final transport boundary', async () => {
     const f = setup({

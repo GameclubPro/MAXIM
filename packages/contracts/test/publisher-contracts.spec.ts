@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { meSchema } from '../src/core.js';
-import { MAX_PUBLICATION_TARGETS } from '../src/publication.js';
 import {
   MAX_PUBLISHER_BULK_REFRESH_TARGETS,
-  MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS,
   MAX_PUBLISHER_SUGGESTIONS_CURSOR_LENGTH,
   decodePublisherEntitiesCursor,
   encodePublisherEntitiesCursor,
@@ -28,10 +26,6 @@ import {
 import { systemRuntimeProfileSchema } from '../src/system-core.js';
 
 describe('publisher contracts', () => {
-  it('keeps draft hydration bounded to the publication target ceiling', () => {
-    expect(MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS).toBe(MAX_PUBLICATION_TARGETS);
-  });
-
   it('projects a publisher mini app profile without bot identity details', () => {
     const me = meSchema.parse({
       userId: '42',

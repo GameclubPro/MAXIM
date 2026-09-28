@@ -59,6 +59,10 @@
       "types": "./dist/manual-moderation.d.ts",
       "default": "./dist/manual-moderation.js"
     },
+    "./max-capabilities": {
+      "types": "./dist/max-capabilities.d.ts",
+      "default": "./dist/max-capabilities.js"
+    },
     "./managed-entities": {
       "types": "./dist/managed-entities.d.ts",
       "default": "./dist/managed-entities.js"

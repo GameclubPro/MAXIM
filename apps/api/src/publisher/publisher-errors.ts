@@ -1,4 +1,4 @@
-import { ConflictException, HttpStatus } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpStatus } from '@nestjs/common';
 import type { PublisherReadinessBlockerCode } from '@maxim/contracts/publisher';
 
 const SETUP_MESSAGES: Record<PublisherReadinessBlockerCode, string> = {
@@ -13,6 +13,15 @@ const SETUP_MESSAGES: Record<PublisherReadinessBlockerCode, string> = {
   publisher_runtime_unavailable: 'Публик временно недоступен. Повторите позже.',
 };
 
+export class PublisherActorAccessRequiredException extends BadRequestException {
+  constructor(readonly chatIds: readonly string[]) {
+    super({
+      code: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+      message: 'Некоторые получатели недоступны. Перепроверьте свои права администратора.',
+    });
+  }
+}
+
 export class PublisherSetupRequiredException extends ConflictException {
   constructor(
     readonly chatIds: readonly string[],
@@ -23,7 +32,11 @@ export class PublisherSetupRequiredException extends ConflictException {
       error: 'Conflict',
       message: Object.hasOwn(SETUP_MESSAGES, blockerCode)
         ? SETUP_MESSAGES[blockerCode as PublisherReadinessBlockerCode]
-        : 'Проверьте подключение и права Публика в этом чате или канале.',
+        : blockerCode === 'catalog_unconfirmed'
+          ? 'Подключение ещё не появилось в каталоге Публика. Перепроверьте его.'
+          : blockerCode === 'audience_empty'
+            ? 'Не осталось доступных получателей. Измените аудиторию публикации.'
+            : 'Проверьте подключение и права Публика в этом чате или канале.',
       code: 'PUBLISHER_SETUP_REQUIRED',
       blockerCode,
       chatIds: [...chatIds],

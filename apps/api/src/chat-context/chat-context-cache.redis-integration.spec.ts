@@ -15,6 +15,30 @@ const isLocalRedisUrl = (() => {
 const describeLocalRedis = isLocalRedisUrl ? describe : describe.skip;
 
 describeLocalRedis('ChatContextCacheService Redis integration', () => {
+  it('shares bot backoff across clients without throttling other bots or shortening Retry-After', async () => {
+    const botId = `backoff-${randomUUID()}`;
+    const config = { getOrThrow: () => redisIntegrationUrl };
+    const first = new ChatContextCacheService({} as never, config as never, {} as never);
+    const second = new ChatContextCacheService({} as never, config as never, {} as never);
+    const inspector = new Redis(redisIntegrationUrl);
+    try {
+      await first.activateManagedRefreshSourceBackoff(20, botId);
+      await second.activateManagedRefreshSourceBackoff(1, botId);
+      await expect(second.isManagedRefreshSourceBackoffActive(botId)).resolves.toBe(true);
+      await expect(second.isManagedRefreshSourceBackoffActive(`${botId}-other`)).resolves.toBe(
+        false,
+      );
+      await expect(first.getManagedRefreshSourceBackoffRemainingMs(botId)).resolves.toBeGreaterThan(
+        19_000,
+      );
+    } finally {
+      await inspector.del(ChatContextCacheService.managedRefreshSourceBackoffKey(botId));
+      await inspector.quit();
+      await first.onModuleDestroy();
+      await second.onModuleDestroy();
+    }
+  });
+
   it('orders equal-time denial above grant and expires the per-user epoch', async () => {
     const suffix = randomUUID();
     const userId = `redis-epoch-user-${suffix}`;

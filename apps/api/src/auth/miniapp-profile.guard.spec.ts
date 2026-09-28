@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { MiniappProfileForbiddenException } from './miniapp-profile.error';
 import { MINIAPP_PROFILES_METADATA } from './miniapp-profile';
 import { MiniappProfileGuard } from './miniapp-profile.guard';
+import type { MaxBotLifecycleState } from '../max/max-bot-config.util';
 
 function createContext(
   request: Record<string, unknown>,
@@ -16,14 +17,29 @@ function createContext(
   } as unknown as ExecutionContext;
 }
 
-function createGuard() {
+function createGuard(state: MaxBotLifecycleState = 'active') {
   return new MiniappProfileGuard(new Reflector(), {
     getPublisherBotDescriptor: () => ({ id: 'publik-bot', label: 'Публик', kind: 'publisher' }),
-    getBotById: (botId: string) => (botId === 'main-bot' ? { id: botId } : null),
+    getBotById: (botId: string) => (botId === 'main-bot' ? { id: botId, state } : null),
   } as never);
 }
 
 describe('MiniappProfileGuard', () => {
+  it.each(['active', 'draining', 'dormant'] as const)(
+    'preserves authentication for a %s bot',
+    (state) => {
+      expect(
+        createGuard(state).canActivate(createContext({ user: { launchBotId: 'main-bot' } })),
+      ).toBe(true);
+    },
+  );
+
+  it('rejects an existing principal after its bot is disabled', () => {
+    expect(() =>
+      createGuard('disabled').canActivate(createContext({ user: { launchBotId: 'main-bot' } })),
+    ).toThrow(MiniappProfileForbiddenException);
+  });
+
   it('allows a main-bot launch on default moderation surfaces', () => {
     const request = { user: { launchBotId: 'main-bot' } };
     expect(createGuard().canActivate(createContext(request))).toBe(true);
@@ -58,11 +74,7 @@ describe('MiniappProfileGuard', () => {
 
     expect(() =>
       createGuard().canActivate(
-        createContext(
-          { user: { launchBotId: 'publik-bot' } },
-          updatePolicy,
-          PublisherController,
-        ),
+        createContext({ user: { launchBotId: 'publik-bot' } }, updatePolicy, PublisherController),
       ),
     ).toThrow(MiniappProfileForbiddenException);
     const moderationRequest = { user: { launchBotId: 'main-bot' } };

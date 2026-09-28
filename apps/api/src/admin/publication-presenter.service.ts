@@ -1,5 +1,4 @@
 import {
-  MAX_PUBLICATION_TARGETS,
   publicationDetailsSchema,
   publicationPostPublishSchema,
   publicationOccurrenceSummarySchema,
@@ -9,10 +8,9 @@ import {
   type PublicationDelivery,
   type PublicationDeliveryStats,
   type PublicationDetails,
-  type PublicationDispatchIssue,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
-import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { stripSupportedMarkdownToPlainText } from '../common/max-markdown.util';
 import {
   ChatEntityType,
@@ -32,6 +30,7 @@ import {
   emptyPublicationDispatchIssueIndex,
   type PublicationDispatchBlockerRow,
   type PublicationDispatchIssueIndex,
+  type InternalPublicationDispatchIssue,
 } from './publication-dispatch-issue';
 import { buildEffectivePublicationDeliveryStatusSql } from './publication-legacy-automated-absence';
 
@@ -59,6 +58,8 @@ const PUBLICATION_DETAILS_OCCURRENCE_SELECT = {
   scheduledAt: true,
   status: true,
   contentRevision: { select: { revision: true } },
+  dispatchFirstBlockedAt: true,
+  dispatchBlockedAt: true,
   _count: { select: { legacyBroadcasts: true } },
 } as const;
 
@@ -250,8 +251,14 @@ export class PublicationPresenterService {
     preloadedDeliveryStats?: PublicationDeliveryStats,
     preloadedActionableDeliveryStats?: PublicationDeliveryStats,
     publisherTargetPresentations?: PublisherTargetPresentationMap,
-    preloadedDispatchIssue?: PublicationDispatchIssue | null,
+    preloadedDispatchIssue?: InternalPublicationDispatchIssue | null,
   ): Promise<PublicationSummary> {
+    const issue =
+      row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? preloadedDispatchIssue !== undefined
+          ? preloadedDispatchIssue
+          : (row.dispatchIssue ?? null)
+        : null;
     const delivery =
       preloadedDeliveryStats ?? row.deliveryStats ?? (await this.loadDeliveryStats(row.id));
     const content = row.canonicalContentRevision;
@@ -304,12 +311,8 @@ export class PublicationPresenterService {
         )
           ? this.mapSchedule(row.schedule, nextOccurrenceAt)
           : null,
-      dispatchIssue:
-        row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-          ? preloadedDispatchIssue !== undefined
-            ? preloadedDispatchIssue
-            : (row.dispatchIssue ?? null)
-          : null,
+      dispatchIssue: issue === 'decision_required' ? 'target_setup_required' : issue,
+      requiresScheduleDecision: issue === 'decision_required',
       delivery,
       actionableDelivery:
         preloadedActionableDeliveryStats ?? row.actionableDeliveryStats ?? delivery,
@@ -385,9 +388,14 @@ export class PublicationPresenterService {
           id: occurrence.id,
           scheduledAt: occurrence.scheduledAt.toISOString(),
           status: effectiveOccurrenceStatus,
+          dispatchBlockedSince: occurrence.dispatchFirstBlockedAt?.toISOString() ?? null,
+          dispatchCheckedAt: occurrence.dispatchBlockedAt?.toISOString() ?? null,
+          requiresScheduleDecision: occurrence.dispatchIssue === 'decision_required',
           dispatchIssue:
             row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-              ? (occurrence.dispatchIssue ?? null)
+              ? occurrence.dispatchIssue === 'decision_required'
+                ? 'target_setup_required'
+                : (occurrence.dispatchIssue ?? null)
               : null,
           delivery,
           canRetry,
@@ -453,10 +461,11 @@ export class PublicationPresenterService {
           AND schedule."publication_id" = occurrence."publication_id"
           AND schedule."revision" = occurrence."schedule_revision"
         WHERE occurrence."publication_id" IN (${Prisma.join(uniquePublicationIds)})
-          AND occurrence."status" IN (
+          AND (occurrence."status" IN (
             'SCHEDULED'::"PublicationOccurrenceStatus",
             'IN_PROGRESS'::"PublicationOccurrenceStatus"
-          )
+          ) OR (occurrence."status" = 'FAILED'::"PublicationOccurrenceStatus"
+            AND occurrence."dispatch_blocker_code" = 'PUBLISHER_MISSED_WINDOW_REVIEW'))
           AND occurrence."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
           AND publication."actor_user_id" = ${normalizedActorUserId}
           AND publication."dispatch_profile" = CAST(
@@ -706,11 +715,7 @@ export class PublicationPresenterService {
         AND COALESCE(NULLIF(BTRIM(catalog."title"), ''), catalog."chat_id")
           ILIKE ${`%${normalizedQuery}%`}
       ORDER BY catalog."entity_type" ASC, catalog."chat_id" ASC
-      LIMIT ${MAX_PUBLICATION_TARGETS + 1}
     `);
-    if (rows.length > MAX_PUBLICATION_TARGETS) {
-      throw new BadRequestException('Уточните поиск по чатам и каналам.');
-    }
     return rows;
   }
 

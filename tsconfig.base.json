@@ -26,6 +26,7 @@
       "@maxim/contracts/karavan-storefront": ["packages/contracts/src/karavan-storefront.ts"],
       "@maxim/contracts/managed-entities": ["packages/contracts/src/managed-entities.ts"],
       "@maxim/contracts/manual-moderation": ["packages/contracts/src/manual-moderation.ts"],
+      "@maxim/contracts/max-capabilities": ["packages/contracts/src/max-capabilities.ts"],
       "@maxim/contracts/poll": ["packages/contracts/src/poll.ts"],
       "@maxim/contracts/publication": ["packages/contracts/src/publication.ts"],
       "@maxim/contracts/publication-draft": ["packages/contracts/src/publication-draft.ts"],

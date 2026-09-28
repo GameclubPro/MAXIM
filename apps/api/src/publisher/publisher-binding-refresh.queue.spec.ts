@@ -1,7 +1,7 @@
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
 
 describe('PublisherBindingRefreshQueueService', () => {
-  it('prioritizes manual rechecks and deduplicates only the short in-flight window', async () => {
+  it('prioritizes manual rechecks and deduplicates until the in-flight job finishes', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
     const service = new PublisherBindingRefreshQueueService(queue as never);
 
@@ -20,7 +20,6 @@ describe('PublisherBindingRefreshQueueService', () => {
         priority: 1,
         deduplication: {
           id: expect.stringMatching(/^publisher-binding-refresh-manual-[a-f0-9]{24}$/u),
-          ttl: 5_000,
         },
       }),
     );
@@ -328,7 +327,6 @@ describe('PublisherBindingRefreshQueueService', () => {
           id: expect.stringMatching(
             /^publisher-binding-refresh-manual-[a-f0-9]{24}-[a-f0-9]{16}$/u,
           ),
-          ttl: 5_000,
         },
       }),
     );

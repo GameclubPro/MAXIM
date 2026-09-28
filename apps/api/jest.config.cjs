@@ -23,6 +23,8 @@ module.exports = {
       '<rootDir>/../../packages/contracts/src/managed-entities.ts',
     '^@maxim/contracts/manual-moderation$':
       '<rootDir>/../../packages/contracts/src/manual-moderation.ts',
+    '^@maxim/contracts/max-capabilities$':
+      '<rootDir>/../../packages/contracts/src/max-capabilities.ts',
     '^@maxim/contracts/poll$': '<rootDir>/../../packages/contracts/src/poll.ts',
     '^@maxim/contracts/publication$': '<rootDir>/../../packages/contracts/src/publication.ts',
     '^@maxim/contracts/publication-draft$':

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
+import { PrismaService } from '../prisma/prisma.service';
 
 export const PUBLISHER_START_QUEUE = 'publisher-start';
 export const PUBLISHER_START_MAX_AGE_MS = 24 * 60 * 60_000;
@@ -16,7 +17,7 @@ export function isFreshPublisherStart(requestedAt: string): boolean {
 }
 
 export type PublisherStartJob = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   publisherBotId: string;
   privateChatId: string;
   requestedAt: string;
@@ -30,6 +31,7 @@ export class PublisherStartQueueService {
   constructor(
     @InjectQueue(PUBLISHER_START_QUEUE) private readonly queue: Queue<PublisherStartJob>,
     botRegistry: MaxBotRegistryService,
+    private readonly prisma: PrismaService,
   ) {
     this.publisherBotId = botRegistry.getPublisherBotDescriptor().id;
   }
@@ -75,16 +77,40 @@ export class PublisherStartQueueService {
     const identity = createHash('sha256')
       .update(`${this.publisherBotId}\0${privateChatId}\0${update.updateId}`)
       .digest('hex');
-    await this.queue.add(
-      'greet',
-      {
-        version: 2,
+    const id = `publisher-start-${identity}`;
+    // FLAG: Commit before acknowledging the source event or touching Redis. Re-observation
+    // preserves the original deadline and any already recorded dispatch attempt.
+    const intent = await this.prisma.publisherStartIntent.upsert({
+      where: { id },
+      update: {},
+      create: {
+        id,
         publisherBotId: this.publisherBotId,
         privateChatId,
-        requestedAt: requestedAt.toISOString(),
+        requestedAt,
+        expiresAt: new Date(requestedAt.getTime() + PUBLISHER_START_MAX_AGE_MS),
+      },
+    });
+    if (intent.status === 'PENDING') await this.enqueueIntent(intent);
+    return true;
+  }
+
+  async enqueueIntent(intent: {
+    id: string;
+    publisherBotId: string;
+    privateChatId: string;
+    requestedAt: Date;
+  }): Promise<void> {
+    const job = await this.queue.add(
+      'greet',
+      {
+        version: 3,
+        publisherBotId: intent.publisherBotId,
+        privateChatId: intent.privateChatId,
+        requestedAt: intent.requestedAt.toISOString(),
       },
       {
-        jobId: `publisher-start-${identity}`,
+        jobId: intent.id,
         attempts: 3,
         backoff: { type: 'exponential', delay: 1_000 },
         // FLAG: Retain the dispatch fence longer than the accepted event age, including failures.
@@ -92,7 +118,41 @@ export class PublisherStartQueueService {
         removeOnFail: { age: 2 * 24 * 60 * 60 },
       },
     );
-    return true;
+    // FLAG: A terminal job may have exhausted retries before entering the durable
+    // dispatch fence. Retry the same identity only while SQL still says PENDING.
+    if (job?.getState && (await job.getState()) === 'failed') {
+      const pending = await this.prisma.publisherStartIntent.findFirst({
+        where: { id: intent.id, status: 'PENDING', expiresAt: { gt: new Date() } },
+        select: { id: true },
+      });
+      if (pending) await job.retry('failed');
+    }
+    await this.prisma.publisherStartIntent.updateMany({
+      where: { id: intent.id, status: 'PENDING' },
+      data: { nextEnqueueAt: new Date(Date.now() + 60_000) },
+    });
+  }
+
+  async claimDurableDispatch(id: string, data: PublisherStartJob): Promise<boolean> {
+    const claimed = await this.prisma.publisherStartIntent.updateMany({
+      where: {
+        id,
+        status: 'PENDING',
+        publisherBotId: data.publisherBotId,
+        privateChatId: data.privateChatId,
+        requestedAt: new Date(data.requestedAt),
+        expiresAt: { gt: new Date() },
+      },
+      data: { status: 'ATTEMPTED' },
+    });
+    return claimed.count === 1;
+  }
+
+  async completeIntent(id: string, status: 'SENT' | 'UNKNOWN'): Promise<void> {
+    await this.prisma.publisherStartIntent.updateMany({
+      where: { id, status: 'ATTEMPTED' },
+      data: { status },
+    });
   }
 
   async claimDispatch(jobId: string): Promise<boolean> {

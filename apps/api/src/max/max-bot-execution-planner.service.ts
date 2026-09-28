@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import { managedRefreshBackoffMs } from './managed-refresh-backoff';
 import {
   ChatBotAccessState,
   ChatBotMembershipRole,
@@ -63,12 +64,11 @@ const ASSIST_CAPABILITIES_BY_ENTITY: Record<
   ],
 };
 const ACCESS_SNAPSHOT_REFRESH_DEBOUNCE_MS = 60_000;
-const ACCESS_SNAPSHOT_RATE_LIMIT_BACKOFF_MS = 10_000;
 
 @Injectable()
 export class MaxBotExecutionPlannerService {
   private readonly logger = new Logger(MaxBotExecutionPlannerService.name);
-  private managedRefreshBackoffUntilMs = 0;
+  private readonly managedRefreshBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -688,7 +688,7 @@ export class MaxBotExecutionPlannerService {
     botId: string,
     options: { source: string; honorSharedBackoff?: boolean },
   ): Promise<BotAccessSnapshotRefreshResult> {
-    if (await this.isManagedRefreshBackoffActive(options)) {
+    if (await this.isManagedRefreshBackoffActive(botId, options)) {
       return {
         snapshot: await this.resolveStoredPermissionsSnapshot(chatId, botId),
       };
@@ -725,8 +725,9 @@ export class MaxBotExecutionPlannerService {
           : {}),
       };
     } catch (error: unknown) {
-      if (this.isRateLimitPressureError(error)) {
-        await this.markManagedRefreshBackoff();
+      const backoffMs = managedRefreshBackoffMs(error);
+      if (backoffMs !== null) {
+        await this.markManagedRefreshBackoff(botId, backoffMs);
         this.logger.debug(
           {
             chatId,
@@ -857,20 +858,6 @@ export class MaxBotExecutionPlannerService {
     return snapshot;
   }
 
-  private isRateLimitPressureError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } } | null)?.response?.status;
-    if (status === 429) {
-      return true;
-    }
-
-    const message = error instanceof Error ? error.message : String(error);
-    const normalizedMessage = message.trim().toLowerCase();
-    return (
-      normalizedMessage.includes('rate limit exceeded') ||
-      normalizedMessage.includes('source limit exceeded')
-    );
-  }
-
   private isTerminalBotAccessError(error: unknown): boolean {
     const status = (error as { response?: { status?: number } } | null)?.response?.status;
     if (status === 403 || status === 404) {
@@ -899,9 +886,9 @@ export class MaxBotExecutionPlannerService {
     return null;
   }
 
-  private isLocalManagedRefreshBackoffActive(now = Date.now()): boolean {
-    if (this.managedRefreshBackoffUntilMs <= now) {
-      this.managedRefreshBackoffUntilMs = 0;
+  private isLocalManagedRefreshBackoffActive(botId: string, now = Date.now()): boolean {
+    if ((this.managedRefreshBackoffUntilMs.get(botId) ?? 0) <= now) {
+      this.managedRefreshBackoffUntilMs.delete(botId);
       return false;
     }
 
@@ -909,10 +896,11 @@ export class MaxBotExecutionPlannerService {
   }
 
   private async isManagedRefreshBackoffActive(
+    botId: string,
     options: { honorSharedBackoff?: boolean } = {},
     now = Date.now(),
   ): Promise<boolean> {
-    if (this.isLocalManagedRefreshBackoffActive(now)) {
+    if (this.isLocalManagedRefreshBackoffActive(botId, now)) {
       return true;
     }
 
@@ -921,7 +909,10 @@ export class MaxBotExecutionPlannerService {
     }
 
     try {
-      return await this.chatContextCache.isManagedRefreshSourceBackoffActive();
+      return (
+        (await this.chatContextCache.isManagedRefreshSourceBackoffActive(botId)) ||
+        (await this.chatContextCache.isManagedRefreshSourceBackoffActive())
+      );
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -933,10 +924,14 @@ export class MaxBotExecutionPlannerService {
     }
   }
 
-  private async markManagedRefreshBackoff(now = Date.now()): Promise<void> {
-    this.managedRefreshBackoffUntilMs = Math.max(
-      this.managedRefreshBackoffUntilMs,
-      now + ACCESS_SNAPSHOT_RATE_LIMIT_BACKOFF_MS,
+  private async markManagedRefreshBackoff(
+    botId: string,
+    backoffMs: number,
+    now = Date.now(),
+  ): Promise<void> {
+    this.managedRefreshBackoffUntilMs.set(
+      botId,
+      Math.max(this.managedRefreshBackoffUntilMs.get(botId) ?? 0, now + backoffMs),
     );
 
     if (!this.chatContextCache) {
@@ -945,7 +940,8 @@ export class MaxBotExecutionPlannerService {
 
     try {
       await this.chatContextCache.activateManagedRefreshSourceBackoff(
-        Math.ceil(ACCESS_SNAPSHOT_RATE_LIMIT_BACKOFF_MS / 1_000),
+        Math.ceil(backoffMs / 1_000),
+        botId,
       );
     } catch (error: unknown) {
       this.logger.debug(

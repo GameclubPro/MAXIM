@@ -62,6 +62,7 @@ import { SystemModeService } from '../system/system-mode.service';
 import { isPrismaKnownError } from './admin-legacy-utils';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
+import { PUBLISHER_EXPLICIT_RETRY_CODE } from './publication-dispatch-issue';
 import {
   deleteUnstartedPublicationExecutionEnvelopes,
   rollupPublicationOccurrenceWithRouteOutageRecovery,
@@ -94,6 +95,7 @@ import {
 import {
   reconcileOrphanedPublicationOccurrences as reconcilePublicationOrphans,
   syncPublicationBroadcastAfterDeliveryResolution,
+  recordPublicationDeliveryResolution,
   syncResolvedPublicationOccurrence,
 } from './publication-execution-recovery';
 import {
@@ -1541,6 +1543,14 @@ export class PublicationService {
             status: retryWithoutExecutionEnvelope
               ? PublicationOccurrenceStatus.SCHEDULED
               : PublicationOccurrenceStatus.IN_PROGRESS,
+            // FLAG: Persist the author's bounded past-slot authorization. A Redis wake
+            // or an ordinary poller must observe the same choice after a crash.
+            ...(retryWithoutExecutionEnvelope
+              ? {
+                  dispatchBlockerCode: PUBLISHER_EXPLICIT_RETRY_CODE,
+                  dispatchBlockedAt: retryLockedAt,
+                }
+              : {}),
             ...(contentMode === 'latest' ? { contentRevisionId: retryContentRevisionId } : {}),
           },
         });
@@ -1748,6 +1758,14 @@ export class PublicationService {
           delivery.occurrenceIndex,
         );
         await syncResolvedPublicationOccurrence(tx, occurrenceId);
+        await recordPublicationDeliveryResolution(tx, {
+          delivery,
+          actorUserId: user.userId,
+          publicationId,
+          occurrenceId,
+          requestId: parsed.data.requestId,
+          resolution: parsed.data.resolution,
+        });
         await tx.publicationMutationRecord.create({
           data: {
             actorUserId: user.userId,
@@ -2157,6 +2175,8 @@ export class PublicationService {
           prisma: this.prisma,
           logger: this.logger,
           schedule,
+          publicationVersion: schedule.publication.version,
+          lockCalendar: (tx) => this.lockPublicationCalendar(tx),
           error,
         });
       }

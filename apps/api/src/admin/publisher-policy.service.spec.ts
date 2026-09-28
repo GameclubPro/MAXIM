@@ -1,10 +1,5 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import {
-  PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
-  decodePublisherEntitiesCursor,
-  encodePublisherEntitiesCursor,
-} from '@maxim/contracts/publisher';
-import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
   ChannelPostSignaturePresentation,
@@ -1117,190 +1112,26 @@ describe('PublisherPolicyService', () => {
     );
   });
 
-  it('paginates a stable deduplicated list and reports unfiltered summary totals', async () => {
-    const fixture = createListFixture(
-      [
-        createListEntity('chat-team', 'Команда', ChatEntityType.CHAT),
-        createListEntity('channel-beta', 'Бета', ChatEntityType.CHANNEL),
-        createListEntity('chat-alpha', 'Альфа', ChatEntityType.CHAT),
-        createListEntity('channel-alpha', 'Альфа', ChatEntityType.CHANNEL),
-      ],
-      ['channel-alpha', 'chat-team'],
-    );
-
-    const firstPage = await fixture.service.listEntities(user, {
-      pagination: 'cursor',
-      limit: '2',
-    });
-
-    expect(firstPage.items.map((entity) => entity.id)).toEqual(['channel-alpha', 'channel-beta']);
-    expect(firstPage.filteredTotal).toBe(4);
-    expect(firstPage).not.toHaveProperty('setupHandoffUrl');
-    expect(firstPage.summary).toEqual({
-      total: 4,
-      chat: 2,
-      channel: 2,
-      ready: 2,
-      attention: 2,
-    });
-    expect(firstPage.nextCursor).toEqual(expect.any(String));
-    expect(decodePublisherEntitiesCursor(firstPage.nextCursor ?? '')).toEqual({
-      v: 1,
-      snapshotId: expect.any(String),
-      offset: 2,
-      query: '',
-      entityType: null,
-      readiness: null,
-    });
-    const firstSnapshotCalls = fixture.readiness.resolveReadiness.mock.calls;
-    expect(firstSnapshotCalls).toHaveLength(4);
-    expect(new Set(firstSnapshotCalls.map(([, snapshot]) => snapshot?.now)).size).toBe(1);
-    expect(firstSnapshotCalls[0]?.[1]).toEqual({
-      now: expect.any(Date),
-      runtimeAvailable: true,
-    });
-    expect(fixture.readiness.isRuntimeAvailable).toHaveBeenCalledTimes(1);
-
-    const secondPage = await fixture.service.listEntities(user, {
-      pagination: 'cursor',
-      limit: 2,
-      cursor: firstPage.nextCursor,
-    });
-
-    expect(secondPage.items.map((entity) => entity.id)).toEqual(['chat-alpha', 'chat-team']);
-    expect(secondPage.nextCursor).toBeNull();
-    expect(secondPage.filteredTotal).toBe(4);
-    expect(secondPage.summary).toEqual(firstPage.summary);
-    expect(fixture.readiness.isRuntimeAvailable).toHaveBeenCalledTimes(2);
-    expect(fixture.catalogFindMany).toHaveBeenCalledTimes(2);
-    expect(fixture.findMany).toHaveBeenCalledTimes(2);
-
-    await expect(
-      fixture.service.listEntities(user, {
-        pagination: 'cursor',
-        limit: 2,
-        cursor: firstPage.nextCursor,
-      }),
-    ).rejects.toMatchObject({
-      response: {
-        message: 'Курсор списка получателей недействителен.',
-        code: PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
-      },
-    });
-    expect(fixture.findMany).toHaveBeenCalledTimes(2);
-  });
-
-  it('reuses an identical first page through bounded hydration instead of another full scan', async () => {
+  it('hydrates only SQL page ids and preserves keyset order after current access filtering', async () => {
     const fixture = createListFixture([
-      createListEntity('chat-1', 'Один', ChatEntityType.CHAT),
-      createListEntity('chat-2', 'Два', ChatEntityType.CHAT),
-      createListEntity('chat-3', 'Три', ChatEntityType.CHAT),
+      createListEntity('chat-1', 'Первый', ChatEntityType.CHAT),
+      createListEntity('chat-2', 'Второй', ChatEntityType.CHAT),
+      createListEntity('chat-3', 'Третий', ChatEntityType.CHAT),
     ]);
-
-    const first = await fixture.service.listEntities(user, { pagination: 'cursor', limit: 1 });
-    const repeated = await fixture.service.listEntities(user, { pagination: 'cursor', limit: 1 });
-
-    expect(repeated.items.map((entity) => entity.id)).toEqual(
-      first.items.map((entity) => entity.id),
-    );
-    expect(decodePublisherEntitiesCursor(repeated.nextCursor ?? '')?.snapshotId).toBe(
-      decodePublisherEntitiesCursor(first.nextCursor ?? '')?.snapshotId,
-    );
-    expect(fixture.findMany).toHaveBeenCalledTimes(2);
-    expect(fixture.findMany.mock.calls[0]?.[0]?.where).not.toHaveProperty('chatId');
-    expect(fixture.findMany.mock.calls[1]?.[0]?.where).toEqual(
-      expect.objectContaining({ chatId: { in: [first.items[0]?.id] } }),
-    );
-  });
-
-  it('omits access revoked after the snapshot without losing later authorized items', async () => {
-    const entities = [
-      createListEntity('channel-a', 'Альфа', ChatEntityType.CHANNEL),
-      createListEntity('channel-b', 'Бета', ChatEntityType.CHANNEL),
-      createListEntity('channel-c', 'Гамма', ChatEntityType.CHANNEL),
-    ];
-    const fixture = createListFixture(entities);
-    const first = await fixture.service.listEntities(user, { pagination: 'cursor', limit: 1 });
-
-    fixture.findMany.mockImplementation((request?: { where?: { chatId?: { in?: string[] } } }) => {
-      const requestedIds = request?.where?.chatId?.in;
-      return Promise.resolve(
-        entities
-          .filter((chat) => chat.id !== 'channel-b')
-          .filter((chat) => !requestedIds || requestedIds.includes(chat.id))
-          .map((chat) => ({
-            chatId: chat.id,
-            botId: 'publik-bot',
-            entityType: chat.entityType,
-            chat,
-          })),
-      );
-    });
-
-    const revokedPage = await fixture.service.listEntities(user, {
-      pagination: 'cursor',
-      limit: 1,
-      cursor: first.nextCursor,
-    });
-    expect(revokedPage.items).toEqual([]);
-    expect(revokedPage.nextCursor).toEqual(expect.any(String));
-
-    const finalPage = await fixture.service.listEntities(user, {
-      pagination: 'cursor',
-      limit: 1,
-      cursor: revokedPage.nextCursor,
-    });
-    expect(finalPage.items.map((entity) => entity.id)).toEqual(['channel-c']);
-    expect(finalPage.nextCursor).toBeNull();
-    expect(fixture.findMany.mock.calls[1]?.[0]?.where).toEqual(
-      expect.objectContaining({
-        chatId: { in: ['channel-b'] },
-        userId: user.userId,
-        state: ManagedEntityAccessState.GRANTED,
-      }),
-    );
-  });
-
-  it('filters cursor pages by entity type, readiness, title or id', async () => {
-    const fixture = createListFixture(
-      [
-        createListEntity('channel-news', 'Новости', ChatEntityType.CHANNEL),
-        createListEntity('chat-team', 'Команда', ChatEntityType.CHAT),
-        createListEntity('chat-help', 'Помощь', ChatEntityType.CHAT),
-      ],
-      ['channel-news', 'chat-team'],
-    );
-
-    await expect(
-      fixture.service.listEntities(user, {
-        pagination: 'cursor',
-        entityType: 'chat',
-        readiness: 'ready',
-        query: '  TEAM ',
-      }),
-    ).resolves.toMatchObject({
-      items: [expect.objectContaining({ id: 'chat-team' })],
+    const page = jest.fn().mockResolvedValue({
+      ids: ['chat-3', 'revoked', 'chat-1'],
       nextCursor: null,
-      filteredTotal: 1,
-      summary: {
-        total: 3,
-        chat: 2,
-        channel: 1,
-        ready: 2,
-        attention: 1,
-      },
+      filteredTotal: 3,
+      summary: { total: 3, chat: 3, channel: 0, ready: 0, attention: 3 },
     });
-
-    await expect(
-      fixture.service.listEntities(user, {
-        pagination: 'cursor',
-        readiness: 'attention',
-        query: 'ПОМОЩЬ',
+    Object.assign(fixture.service, { catalogQuery: { page } });
+    const response = await fixture.service.listEntities(user, { pagination: 'cursor', limit: 3 });
+    expect(response.items.map((entity) => entity.id)).toEqual(['chat-3', 'chat-1']);
+    expect(fixture.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ chatId: { in: ['chat-3', 'revoked', 'chat-1'] } }),
       }),
-    ).resolves.toMatchObject({
-      items: [expect.objectContaining({ id: 'chat-help' })],
-      filteredTotal: 1,
-    });
+    );
   });
 
   it('hydrates only requested user-scoped entities in request order', async () => {
@@ -1438,57 +1269,6 @@ describe('PublisherPolicyService', () => {
     await expect(fixture.service.resolveEntities(user, { targets: [] })).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(fixture.findMany).not.toHaveBeenCalled();
-  });
-
-  it('rejects malformed or filter-mismatched cursors before loading user entities', async () => {
-    const fixture = createListFixture([
-      createListEntity('chat-1', 'Один', ChatEntityType.CHAT),
-      createListEntity('chat-2', 'Два', ChatEntityType.CHAT),
-    ]);
-    const firstPage = await fixture.service.listEntities(user, {
-      pagination: 'cursor',
-      limit: 1,
-    });
-    fixture.findMany.mockClear();
-    fixture.readiness.isRuntimeAvailable.mockClear();
-
-    await expect(
-      fixture.service.listEntities(user, {
-        pagination: 'cursor',
-        limit: 1,
-        query: 'другой фильтр',
-        cursor: firstPage.nextCursor,
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    await expect(
-      fixture.service.listEntities(user, {
-        pagination: 'cursor',
-        cursor: 'not-a-valid-cursor',
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-
-    expect(fixture.findMany).not.toHaveBeenCalled();
-    expect(fixture.readiness.isRuntimeAvailable).not.toHaveBeenCalled();
-  });
-
-  it('rejects an unknown cursor snapshot without loading the user catalog', async () => {
-    const fixture = createListFixture([
-      createListEntity('chat-visible', 'Доступный чат', ChatEntityType.CHAT),
-    ]);
-    const cursor = encodePublisherEntitiesCursor({
-      v: 1,
-      snapshotId: 'unknown_snapshot',
-      offset: 1,
-      query: '',
-      entityType: null,
-      readiness: null,
-    });
-
-    await expect(
-      fixture.service.listEntities(user, { pagination: 'cursor', cursor }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-
     expect(fixture.findMany).not.toHaveBeenCalled();
   });
 

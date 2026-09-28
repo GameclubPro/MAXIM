@@ -10,7 +10,8 @@ export type PublisherBackgroundWorkLane =
   | 'publication_deadline'
   | 'publication_post_actions'
   | 'suggestion_recovery'
-  | 'post_import_recovery';
+  | 'post_import_recovery'
+  | 'start_recovery';
 
 export class PublisherBackgroundWorkCoordinatorClosedError extends Error {
   constructor() {

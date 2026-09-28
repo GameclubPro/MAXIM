@@ -3,7 +3,6 @@ import {
   publicationDetailsSchema,
   publicationDraftContentInputSchema,
   publicationTargetInputSchema,
-  MAX_PUBLICATION_TARGETS,
   MAX_PUBLICATION_EXPLICIT_SLOTS,
   MAX_PUBLICATION_BUTTONS,
 } from './publication.js';
@@ -60,7 +59,6 @@ export const savePublicationDraftRequestSchema = z
     content: publicationDraftContentInputSchema,
     targets: z
       .array(publicationTargetInputSchema)
-      .max(MAX_PUBLICATION_TARGETS)
       .refine(
         (targets) => new Set(targets.map((target) => target.chatId)).size === targets.length,
         'Один получатель выбран несколько раз.',

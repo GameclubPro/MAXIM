@@ -1,8 +1,9 @@
 import {
+  PublisherActorAccessRequiredException,
+  PublisherSetupRequiredException,
+} from '../publisher/publisher-errors';
+import {
   MAX_PUBLISHER_BULK_REFRESH_TARGETS,
-  PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
-  decodePublisherEntitiesCursor,
-  encodePublisherEntitiesCursor,
   publisherEntitiesCursorQuerySchema,
   publisherEntitiesCursorResponseSchema,
   publisherEntitiesResponseSchema,
@@ -55,11 +56,7 @@ import {
   BotCapabilityRequiredException,
   type BotCapabilityPermission,
 } from './bot-capability-required.error';
-import {
-  PublisherEntitiesCursorStore,
-  type PublisherEntitiesCursorScope,
-  type PublisherEntitiesCursorSnapshot,
-} from './publisher-entities-cursor.store';
+import { PublisherCatalogQueryService } from './publisher-catalog-query.service';
 
 const PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE = 200;
 const PUBLISHER_BULK_REFRESH_QUERY_TAKE = 200;
@@ -88,7 +85,6 @@ type PublisherRefreshCandidateRow = {
 @Injectable()
 export class PublisherPolicyService {
   private readonly logger = new Logger(PublisherPolicyService.name);
-  private readonly cursorStore = new PublisherEntitiesCursorStore();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -97,6 +93,7 @@ export class PublisherPolicyService {
     private readonly managedEntitiesService: ManagedEntitiesService,
     private readonly publisherBindingRefreshQueue: PublisherBindingRefreshQueueService,
     @Optional() private readonly accessRefresh?: ManagedEntityAccessRefreshService,
+    @Optional() private readonly catalogQuery?: PublisherCatalogQueryService,
   ) {}
 
   async listEntities(user: AuthUser, query?: unknown): Promise<PublisherEntitiesResponse> {
@@ -565,19 +562,63 @@ export class PublisherPolicyService {
     const entities = await this.loadScopedEntities(
       user,
       targets ? [...new Set(targets.map((target) => target.chatId))] : undefined,
+      true,
     );
     const byKey = new Map(entities.map((entity) => [`${entity.entityType}:${entity.id}`, entity]));
+    const missing = targets?.find((target) => !byKey.has(`${target.entityType}:${target.chatId}`));
+    if (missing) {
+      const now = new Date();
+      const [edge] = await this.prisma.managedEntityAccessEdge.findMany({
+        where: {
+          chatId: missing.chatId,
+          userId: user.userId,
+          botId: this.botRegistry.getPublisherBotDescriptor().id,
+          entityType:
+            missing.entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
+          state: ManagedEntityAccessState.GRANTED,
+          userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+          OR: [
+            { expiresAt: { gt: now } },
+            { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 7 * 86400_000) } },
+          ],
+        },
+        take: 1,
+        include: {
+          chat: {
+            select: {
+              id: true,
+              entityType: true,
+              publicationPolicy: true,
+              publisherSettings: true,
+              publisherBinding: true,
+            },
+          },
+        },
+      });
+      // FLAG: Diagnose connection/catalog state only after proving this actor's
+      // current exact-bot access; missing/denied access must not reveal entity metadata.
+      if (!edge) throw new PublisherActorAccessRequiredException([missing.chatId]);
+      const readiness = this.readinessService.resolveReadiness(edge.chat, {
+        now,
+        runtimeAvailable: await this.readinessService.isRuntimeAvailable(),
+      });
+      throw new PublisherSetupRequiredException(
+        [missing.chatId],
+        readiness.blockerCode ?? 'catalog_unconfirmed',
+      );
+    }
     const selected = targets
       ? targets.map((target) => {
           const entity = byKey.get(`${target.entityType}:${target.chatId}`);
           if (!entity) {
-            throw new BadRequestException(
-              'Некоторые выбранные чаты или каналы больше недоступны. Обновите список.',
-            );
+            throw new PublisherActorAccessRequiredException([target.chatId]);
+          }
+          if (!entity.policy.publikEnabled) {
+            throw new PublisherSetupRequiredException([target.chatId], 'policy_disabled');
           }
           return entity;
         })
-      : entities;
+      : entities.filter((entity) => entity.policy.publikEnabled);
     return selected.map((entity) => ({
       chatId: entity.id,
       entityType: entity.entityType,
@@ -1109,184 +1150,29 @@ export class PublisherPolicyService {
     user: AuthUser,
     query: PublisherEntitiesCursorQuery,
   ): Promise<PublisherEntitiesResponse> {
-    const cursor = query.cursor ? decodePublisherEntitiesCursor(query.cursor) : null;
-    if (
-      query.cursor &&
-      (!cursor ||
-        cursor.query !== query.query ||
-        cursor.entityType !== (query.entityType ?? null) ||
-        cursor.readiness !== (query.readiness ?? null))
-    ) {
-      throw this.invalidEntitiesCursor();
-    }
-
-    const scope = this.cursorScope(user, query);
-    if (cursor) {
-      const snapshot = this.cursorStore.read(cursor.snapshotId, scope);
-      if (!snapshot || cursor.offset >= snapshot.items.length) {
-        throw this.invalidEntitiesCursor();
-      }
-      return this.buildSnapshotPage(
-        user,
-        cursor.snapshotId,
-        snapshot,
-        cursor.offset,
-        query.limit,
-        scope,
-      );
-    }
-
-    const reusable = this.cursorStore.findReusable(scope);
-    if (reusable) {
-      return this.buildSnapshotPage(
-        user,
-        reusable.snapshotId,
-        reusable.snapshot,
-        0,
-        query.limit,
-        scope,
-      );
-    }
-
-    const entities = await this.loadScopedEntities(user, undefined, true);
-    const summary = this.summarizeEntities(entities);
-    const normalizedQuery = query.query.toLocaleLowerCase('ru-RU');
-    const filtered = entities.filter((entity) => {
-      if (query.entityType && entity.entityType !== query.entityType) {
-        return false;
-      }
-      if (
-        query.readiness &&
-        (query.readiness === 'ready' ? !entity.readiness.canPublish : entity.readiness.canPublish)
-      ) {
-        return false;
-      }
-      return (
-        normalizedQuery.length === 0 ||
-        `${entity.title} ${entity.id}`.toLocaleLowerCase('ru-RU').includes(normalizedQuery)
-      );
-    });
-
-    if (filtered.length <= query.limit) {
-      return publisherEntitiesCursorResponseSchema.parse({
-        items: filtered,
-        nextCursor: null,
-        filteredTotal: filtered.length,
-        summary,
-      });
-    }
-
-    const snapshotHandle = this.cursorStore.createOrReuse({
-      ...scope,
-      filteredTotal: filtered.length,
-      summary,
-      items: filtered.map((entity) => ({ id: entity.id, entityType: entity.entityType })),
-    });
-    if (!snapshotHandle) {
-      throw new ServiceUnavailableException('Список получателей слишком велик для пагинации.');
-    }
-    return this.buildSnapshotPage(
-      user,
-      snapshotHandle.snapshotId,
-      snapshotHandle.snapshot,
-      0,
-      query.limit,
-      scope,
-      entities,
+    if (!this.catalogQuery) throw new ServiceUnavailableException('Каталог временно недоступен.');
+    const page = await this.catalogQuery.page(
+      user.userId,
+      this.botRegistry.getPublisherBotDescriptor().id,
+      query,
+      await this.readinessService.isRuntimeAvailable(),
     );
-  }
-
-  private async buildSnapshotPage(
-    user: AuthUser,
-    snapshotId: string,
-    snapshot: PublisherEntitiesCursorSnapshot,
-    offset: number,
-    limit: number,
-    scope: PublisherEntitiesCursorScope,
-    availableEntities?: readonly PublisherEntity[],
-  ): Promise<PublisherEntitiesResponse> {
-    const endIndex = Math.min(offset + limit, snapshot.items.length);
-    const candidates = snapshot.items.slice(offset, endIndex);
-    const entities =
-      availableEntities ??
-      (await this.loadScopedEntities(
-        user,
-        [...new Set(candidates.map((candidate) => candidate.id))],
-        true,
-      ));
-    const entitiesByKey = new Map(
-      entities.map((entity) => [this.entityKey(entity.entityType, entity.id), entity]),
-    );
-    const items = candidates.flatMap((candidate) => {
-      const entity = entitiesByKey.get(this.entityKey(candidate.entityType, candidate.id));
-      return entity ? [entity] : [];
+    const entities = page.ids.length ? await this.loadScopedEntities(user, page.ids, true) : [];
+    const byId = new Map(entities.map((entity) => [entity.id, entity]));
+    return publisherEntitiesCursorResponseSchema.parse({
+      items: page.ids.flatMap((id) => {
+        const entity = byId.get(id);
+        if (
+          !entity ||
+          (query.readiness && (query.readiness === 'ready') !== entity.readiness.canPublish)
+        )
+          return [];
+        return [entity];
+      }),
+      nextCursor: page.nextCursor,
+      filteredTotal: page.filteredTotal,
+      summary: page.summary,
     });
-    const nextCursor =
-      endIndex < snapshot.items.length
-        ? encodePublisherEntitiesCursor({
-            v: 1,
-            snapshotId,
-            offset: endIndex,
-            query: scope.query,
-            entityType: scope.entityType,
-            readiness: scope.readiness,
-          })
-        : null;
-    const response = publisherEntitiesCursorResponseSchema.parse({
-      items,
-      nextCursor,
-      filteredTotal: snapshot.filteredTotal,
-      summary: snapshot.summary,
-    });
-    if (!nextCursor) {
-      this.cursorStore.complete(snapshotId, scope);
-    }
-    return response;
-  }
-
-  private cursorScope(
-    user: AuthUser,
-    query: PublisherEntitiesCursorQuery,
-  ): PublisherEntitiesCursorScope {
-    return {
-      userId: user.userId,
-      query: query.query,
-      entityType: query.entityType ?? null,
-      readiness: query.readiness ?? null,
-    };
-  }
-
-  private entityKey(entityType: ManagedEntityType, entityId: string): string {
-    return JSON.stringify([entityType, entityId]);
-  }
-
-  private summarizeEntities(entities: readonly PublisherEntity[]): {
-    total: number;
-    chat: number;
-    channel: number;
-    ready: number;
-    attention: number;
-  } {
-    let chat = 0;
-    let channel = 0;
-    let ready = 0;
-    for (const entity of entities) {
-      if (entity.entityType === 'channel') {
-        channel += 1;
-      } else {
-        chat += 1;
-      }
-      if (entity.readiness.canPublish) {
-        ready += 1;
-      }
-    }
-    return {
-      total: entities.length,
-      chat,
-      channel,
-      ready,
-      attention: entities.length - ready,
-    };
   }
 
   private compareEntities(left: PublisherEntity, right: PublisherEntity): number {
@@ -1302,13 +1188,6 @@ export class PublisherPolicyService {
       return undefined;
     }
     return (query as Record<string, unknown>).pagination;
-  }
-
-  private invalidEntitiesCursor(): BadRequestException {
-    return new BadRequestException({
-      message: 'Курсор списка получателей недействителен.',
-      code: PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
-    });
   }
 
   private policyConflict(): ConflictException {

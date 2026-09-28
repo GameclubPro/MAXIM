@@ -111,6 +111,7 @@ import { SupportRequestsService } from './support-requests.service';
 import { PublisherController } from './publisher.controller';
 import { PublisherEntityRefreshService } from './publisher-entity-refresh.service';
 import { PublisherPolicyService } from './publisher-policy.service';
+import { PublisherCatalogQueryService } from './publisher-catalog-query.service';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
 import { PublisherAutoReplyService } from './publisher-auto-reply.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
@@ -229,6 +230,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     PublisherPublicationWakeupQueueService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherPublicationWakeupProcessor] : []),
     PublisherPolicyService,
+    PublisherCatalogQueryService,
     PublisherSuggestionService,
     PublisherAutoReplyService,
     PublisherEntityRefreshService,

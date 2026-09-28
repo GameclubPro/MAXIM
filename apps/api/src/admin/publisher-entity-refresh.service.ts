@@ -7,7 +7,6 @@ import {
   type PublisherEntityRefreshResponse,
 } from '@maxim/contracts/publisher';
 import {
-  MAX_PUBLICATION_TARGETS,
   publicationTargetsRefreshResponseSchema,
   type PublicationTargetsRefreshResponse,
 } from '@maxim/contracts/publication';
@@ -65,15 +64,20 @@ export class PublisherEntityRefreshService {
     return this.serializeBulkRefresh(user.userId, () => this.executeBulkRefresh(user));
   }
 
+  getRefreshOperation(operationId: string, user: AuthUser) {
+    return this.refreshQueue.readOperation(
+      operationId,
+      user.userId,
+      this.botRegistry.getPublisherBotDescriptor().id,
+    );
+  }
+
   async requestAuthorizedEntitiesRefresh(
     entityIds: readonly string[],
     user: AuthUser,
   ): Promise<PublicationTargetsRefreshResponse> {
     this.admitBulkRefresh(user.userId);
-    const uniqueEntityIds = [...new Set(entityIds.map((id) => id.trim()).filter(Boolean))].slice(
-      0,
-      MAX_PUBLICATION_TARGETS,
-    );
+    const uniqueEntityIds = [...new Set(entityIds.map((id) => id.trim()).filter(Boolean))];
     return this.serializeBulkRefresh(user.userId, async () => {
       const requestedAt = new Date();
       const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
@@ -91,19 +95,23 @@ export class PublisherEntityRefreshService {
               userId: user.userId,
               botId: publisherBotId,
             });
-        if (!nomination) return false;
-        await this.refreshQueue.enqueue({
+        if (!nomination) return null;
+        return this.refreshQueue.enqueue({
           chatId,
           publisherBotId,
           candidateUserId: user.userId,
           reason: 'manual_recheck',
           ...nomination,
         });
-        return true;
       });
       return publicationTargetsRefreshResponseSchema.parse({
         accepted: true,
         queuedCount: queued.filter(Boolean).length,
+        operationId: await this.refreshQueue.saveOperation(
+          user.userId,
+          publisherBotId,
+          queued.filter((id): id is string => typeof id === 'string'),
+        ),
       });
     });
   }
@@ -134,9 +142,10 @@ export class PublisherEntityRefreshService {
     ].slice(0, MAX_PUBLISHER_BULK_REFRESH_TARGETS);
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
     const queuedEntityIds: string[] = [];
+    const jobIds: string[] = [];
     try {
       for (const chatId of entityIds) {
-        await this.refreshQueue.enqueue({
+        const jobId = await this.refreshQueue.enqueue({
           chatId,
           publisherBotId,
           candidateUserId: user.userId,
@@ -144,6 +153,7 @@ export class PublisherEntityRefreshService {
           requestedAt,
         });
         queuedEntityIds.push(chatId);
+        if (jobId) jobIds.push(jobId);
       }
     } finally {
       this.rememberBulkRotationSelection(user.userId, queuedEntityIds, requestedAt.getTime());
@@ -152,6 +162,7 @@ export class PublisherEntityRefreshService {
     return publisherEntitiesRefreshResponseSchema.parse({
       accepted: true,
       queuedCount: queuedEntityIds.length,
+      operationId: await this.refreshQueue.saveOperation(user.userId, publisherBotId, jobIds),
     });
   }
 

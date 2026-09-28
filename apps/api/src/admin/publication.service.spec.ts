@@ -3247,6 +3247,8 @@ describe('PublicationService', () => {
         status: true,
         contentRevision: { select: { revision: true } },
         _count: { select: { legacyBroadcasts: true } },
+        dispatchFirstBlockedAt: true,
+        dispatchBlockedAt: true,
       },
     });
   });
@@ -3900,7 +3902,11 @@ describe('PublicationService', () => {
         deliveries: { none: {} },
         contentRevisionId: 'content-current',
       },
-      data: { status: PublicationOccurrenceStatus.SCHEDULED },
+      data: {
+        status: PublicationOccurrenceStatus.SCHEDULED,
+        dispatchBlockerCode: 'PUBLISHER_EXPLICIT_RETRY',
+        dispatchBlockedAt: expect.any(Date),
+      },
     });
     expect(tx.managedBroadcast.findMany).not.toHaveBeenCalled();
     expect(tx.managedBroadcast.updateMany).not.toHaveBeenCalled();
@@ -4576,6 +4582,7 @@ describe('PublicationService', () => {
 
   it('marks an ambiguous delivery sent, completes its broadcast, and rolls state up before get', async () => {
     const tx = {
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
       $executeRaw: jest.fn().mockResolvedValue(1),
       managedBroadcastDelivery: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -4665,6 +4672,7 @@ describe('PublicationService', () => {
   it('repairs an interrupted manual resolution on replay and wakes its pending fanout', async () => {
     const occurrenceUpdatedAt = new Date('2026-09-04T09:00:00.000Z');
     const tx = {
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
       $executeRaw: jest.fn().mockResolvedValue(1),
       managedBroadcastDelivery: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -4932,6 +4940,7 @@ describe('PublicationService', () => {
 
   it('allows manual resolution of a legacy automated-absence FAILED delivery', async () => {
     const tx = {
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
       $executeRaw: jest.fn().mockResolvedValue(1),
       managedBroadcastDelivery: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -5014,6 +5023,7 @@ describe('PublicationService', () => {
 
   it('marks an ambiguous post-send delivery failed only after explicit resolution', async () => {
     const tx = {
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
       $executeRaw: jest.fn().mockResolvedValue(1),
       managedBroadcastDelivery: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -5070,6 +5080,19 @@ describe('PublicationService', () => {
       },
     });
     const resolutionData = tx.managedBroadcastDelivery.updateMany.mock.calls[0]?.[0]?.data;
+    expect(tx.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          actorUserId: 'user-1',
+          action: 'PUBLICATION_DELIVERY_RESOLVED',
+          payload: expect.objectContaining({
+            deliveryId: 'delivery-1',
+            resolution: 'mark_failed',
+            hadRemoteMessageId: true,
+          }),
+        }),
+      }),
+    );
     expect(resolutionData).not.toHaveProperty('remoteMessageId');
     expect(resolutionData).not.toHaveProperty('sentAt');
     expect(tx.managedBroadcast.updateMany).toHaveBeenCalledWith(
@@ -6199,7 +6222,7 @@ describe('PublicationService', () => {
     );
   });
 
-  it('rejects an expanded ALL audience above the 500 target limit', async () => {
+  it('resolves an expanded ALL audience above the former 500 target limit', async () => {
     const { managedEntitiesService, service } = createService();
     managedEntitiesService.listChats.mockResolvedValue(
       Array.from({ length: 501 }, (_, index) => ({
@@ -6217,7 +6240,7 @@ describe('PublicationService', () => {
         { userId: 'user-1', username: null, displayName: null },
         { selection: 'ALL_CHATS', mode: 'DYNAMIC', targets: [] },
       ),
-    ).rejects.toThrow('не больше 500');
+    ).resolves.toHaveLength(501);
   });
 
   it('bounds live audience access verification concurrency', async () => {

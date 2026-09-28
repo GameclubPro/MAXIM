@@ -229,10 +229,10 @@ test('publisher preview exposes and clears the access-required publication state
   assert.equal(before.delivery.total, 0);
   assert.equal(before.occurrences[0]?.delivery.total, 0);
 
-  assert.deepEqual(await refreshPublicationTargets(api, before.id), {
-    accepted: true,
-    queuedCount: 1,
-  });
+  const refresh = await refreshPublicationTargets(api, before.id);
+  assert.equal(refresh.accepted, true);
+  assert.equal(refresh.queuedCount, 1);
+  assert.ok(refresh.operationId);
   const after = await getPublication(api, before.id);
   assert.equal(after.dispatchIssue, null);
   assert.equal(after.occurrences[0]?.dispatchIssue, null);

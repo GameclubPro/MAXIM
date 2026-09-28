@@ -502,11 +502,31 @@ export function PublicationDetailsSheet({
                                 {revisionLabel}
                               </small>
                             ) : null}
+                            {occurrence.dispatchIssue && occurrence.dispatchBlockedSince ? (
+                              <small>
+                                Ожидает с{' '}
+                                {formatDateTime(
+                                  occurrence.dispatchBlockedSince,
+                                  details.schedule?.timezone,
+                                )}
+                              </small>
+                            ) : null}
+                            {occurrence.dispatchIssue && occurrence.dispatchCheckedAt ? (
+                              <small>
+                                Проверено{' '}
+                                {formatDateTime(
+                                  occurrence.dispatchCheckedAt,
+                                  details.schedule?.timezone,
+                                )}
+                              </small>
+                            ) : null}
                           </span>
                           <span className="publication-occurrences__actions">
                             <span className="publication-occurrences__status">
-                              {getPublicationDispatchIssuePresentation(occurrence.dispatchIssue)
-                                ?.label ?? OCCURRENCE_STATUS_LABELS[occurrence.status]}
+                              {getPublicationDispatchIssuePresentation(
+                                occurrence.dispatchIssue,
+                                occurrence.requiresScheduleDecision,
+                              )?.label ?? OCCURRENCE_STATUS_LABELS[occurrence.status]}
                             </span>
                             {occurrence.canRetry ? (
                               <button

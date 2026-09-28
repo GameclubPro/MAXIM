@@ -1,7 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useToast } from '../../components/ui/toast';
 import { refreshPublicationTargets } from '../../lib/api/publication-client';
+import { runOrResumePublisherRefresh } from '../../lib/api/publisher-client';
 import type { ApiTransport } from '../../lib/api/transport';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 
@@ -19,57 +20,64 @@ export function runPublicationTargetRecheck(
   );
 }
 
-const PUBLICATION_TARGET_RECHECK_SETTLE_MS = 15_500;
-
 export function usePublicationTargetRecheck(api: ApiTransport) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const [settlingPublicationId, setSettlingPublicationId] = useState<string | null>(null);
-  const settleTimerRef = useRef<number | null>(null);
+  const refreshAbort = useRef<AbortController | null>(null);
 
   useEffect(
     () => () => {
-      if (settleTimerRef.current !== null) {
-        window.clearTimeout(settleTimerRef.current);
-      }
+      refreshAbort.current?.abort();
     },
-    [],
+    [api],
   );
 
   const mutation = useMutation({
-    mutationFn: (publicationId: string) => refreshPublicationTargets(api, publicationId),
-    onSuccess: (result, publicationId) => {
-      setSettlingPublicationId(publicationId);
-      settleTimerRef.current = window.setTimeout(
-        () => {
-          void Promise.all([
-            queryClient.invalidateQueries({
-              queryKey: ['publications', 'details', publicationId],
-            }),
-            queryClient.invalidateQueries({ queryKey: ['publications', 'list'] }),
-            queryClient.invalidateQueries({ queryKey: ['publications', 'sources', 'publisher'] }),
-            queryClient.invalidateQueries({ queryKey: ['publisher', 'entity'] }),
-          ]).finally(() =>
-            setSettlingPublicationId((current) => (current === publicationId ? null : current)),
-          );
-        },
-        result.queuedCount > 0 ? PUBLICATION_TARGET_RECHECK_SETTLE_MS : 0,
+    mutationFn: async (publicationId: string) => {
+      const controller = new AbortController();
+      refreshAbort.current = controller;
+      await runOrResumePublisherRefresh(
+        api,
+        `publication:${publicationId}`,
+        () => refreshPublicationTargets(api, publicationId),
+        controller.signal,
       );
     },
-    onError: (error) =>
+    onSettled: (_data, _error, publicationId) => {
+      if (
+        refreshAbort.current?.signal.aborted ||
+        (_error instanceof Error && _error.name === 'AbortError')
+      )
+        return;
+      return Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ['publications', 'details', publicationId],
+        }),
+        queryClient.invalidateQueries({ queryKey: ['publications', 'list'] }),
+        queryClient.invalidateQueries({ queryKey: ['publications', 'sources', 'publisher'] }),
+        queryClient.invalidateQueries({ queryKey: ['publisher', 'entity'] }),
+      ]);
+    },
+    onError: (error) => {
+      if (
+        refreshAbort.current?.signal.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      )
+        return;
       pushToast({
         tone: 'danger',
         title: describeUserFacingError(error, 'Не удалось перепроверить получателей'),
-      }),
+      });
+    },
   });
 
   return {
-    isBusy: mutation.isPending || settlingPublicationId !== null,
+    isBusy: mutation.isPending,
     isRechecking(publicationId: string) {
-      return (mutation.isPending ? mutation.variables : settlingPublicationId) === publicationId;
+      return mutation.isPending && mutation.variables === publicationId;
     },
     recheck(publicationId: string) {
-      if (mutation.isPending || settlingPublicationId !== null) {
+      if (mutation.isPending) {
         return;
       }
       mutation.mutate(publicationId);

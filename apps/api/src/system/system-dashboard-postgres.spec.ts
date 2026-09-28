@@ -184,7 +184,8 @@ describePostgres('PostgreSQL system dashboard suggestion ledger audit', () => {
   }
 
   it('uses the exact partial composite index condition for the newest-first page', async () => {
-    await seedOrphanLedgerRows(2);
+    await seedOrphanLedgerRows(2000);
+    await pool.query('ANALYZE max_action_ledger');
     const service = createService(prisma);
     const subject = service as unknown as {
       buildSuggestionLedgerAuditPageQuery(params: {
@@ -214,7 +215,11 @@ describePostgres('PostgreSQL system dashboard suggestion ledger audit', () => {
       (node) => node['Index Name'] === 'max_action_ledger_suggestion_publish_updated_id_idx',
     );
 
-    expect(indexNode).toBeDefined();
+    expect(
+      collectExplainNodes(rows[0]?.['QUERY PLAN'])
+        .map((node) => node['Index Name'])
+        .filter(Boolean),
+    ).toContain('max_action_ledger_suggestion_publish_updated_id_idx');
     expect(indexNode?.['Scan Direction']).toBe('Backward');
     const indexCondition = String(indexNode?.['Index Cond'] ?? '').replaceAll('"', '');
     expect(indexCondition).toContain('updated_at <=');

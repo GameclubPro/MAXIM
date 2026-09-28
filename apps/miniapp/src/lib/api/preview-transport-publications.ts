@@ -39,6 +39,7 @@ import {
   PREVIEW_CHAT_TITLE,
 } from '../design-preview';
 import type { PreviewState } from './preview-transport-state';
+import { recordPreviewPublisherRefresh } from './preview-transport-publisher';
 import {
   PREVIEW_NOT_HANDLED,
   readPreviewClock,
@@ -364,7 +365,9 @@ export function syncPreviewPublication(
       ...occurrence,
       status,
       delivery,
-      canRetry: delivery.failed > 0,
+      canRetry:
+        delivery.failed > 0 ||
+        (occurrence.requiresScheduleDecision === true && status === 'FAILED'),
     };
   });
   const nextOccurrenceAt =
@@ -557,6 +560,8 @@ export function createPreviewPublications(
     if (occurrence) {
       occurrence.status = 'IN_PROGRESS';
       occurrence.dispatchIssue = 'actor_access_required';
+      occurrence.dispatchBlockedSince = addHours(now, -4).toISOString();
+      occurrence.dispatchCheckedAt = addHours(now, -1).toISOString();
       occurrence.delivery = emptyDelivery;
     }
   }
@@ -1222,6 +1227,7 @@ export function handlePublicationsRequest(
     return publicationTargetsRefreshResponseSchema.parse({
       accepted: true,
       queuedCount: publication.targets.length,
+      operationId: recordPreviewPublisherRefresh(state, publication.targets.length),
     });
   }
 

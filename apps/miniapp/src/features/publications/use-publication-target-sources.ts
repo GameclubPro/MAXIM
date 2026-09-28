@@ -1,16 +1,16 @@
 import { type PublisherEntitiesSummary, type PublisherEntity } from '@maxim/contracts/publisher';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   isInvalidPublisherEntitiesCursorError,
   listPublisherEntities,
   refreshPublisherEntities,
+  runOrResumePublisherRefresh,
 } from '../../lib/api/publisher-client';
 import type { ApiTransport } from '../../lib/api/transport';
 import { type PublicationEntityFilter, type PublicationTarget } from './publication-model';
 
 const PUBLISHER_TARGET_PAGE_SIZE = 30;
-const PUBLISHER_RECHECK_SETTLE_MS = 15_500;
 
 export { isInvalidPublisherEntitiesCursorError };
 
@@ -44,6 +44,14 @@ export function usePublicationTargetSources(api: ApiTransport, enabled: boolean)
   const [publisherEntityFilter, setPublisherEntityFilter] =
     useState<PublicationEntityFilter>('all');
   const [publisherRechecking, setPublisherRechecking] = useState(false);
+  const refreshAbort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setPublisherRechecking(false);
+    return () => {
+      refreshAbort.current?.abort();
+      refreshAbort.current = null;
+    };
+  }, [api, enabled]);
   const publisherSearchSettling = publisherInputQuery.trim() !== publisherQuery;
   const publisherEntityType = publisherEntityFilter === 'all' ? undefined : publisherEntityFilter;
   useEffect(() => {
@@ -123,22 +131,33 @@ export function usePublicationTargetSources(api: ApiTransport, enabled: boolean)
         return;
       }
       setPublisherRechecking(true);
+      const controller = new AbortController();
+      refreshAbort.current = controller;
       try {
-        const refresh = await refreshPublisherEntities(api);
-        window.setTimeout(
-          () => {
-            void Promise.all([
+        await runOrResumePublisherRefresh(
+          api,
+          'publication-target-catalog',
+          () => refreshPublisherEntities(api),
+          controller.signal,
+        );
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
+      } finally {
+        try {
+          if (!controller.signal.aborted) {
+            await Promise.all([
               queryClient.resetQueries({ queryKey: publisherQueryKey, exact: true }),
               queryClient.invalidateQueries({ queryKey: ['publisher', 'entity'] }),
               queryClient.invalidateQueries({ queryKey: ['publications', 'list'] }),
               queryClient.invalidateQueries({ queryKey: ['publications', 'details'] }),
-            ]).finally(() => setPublisherRechecking(false));
-          },
-          refresh.queuedCount > 0 ? PUBLISHER_RECHECK_SETTLE_MS : 0,
-        );
-      } catch (error) {
-        setPublisherRechecking(false);
-        throw error;
+            ]);
+          }
+        } finally {
+          if (refreshAbort.current === controller) {
+            refreshAbort.current = null;
+            setPublisherRechecking(false);
+          }
+        }
       }
     },
   };

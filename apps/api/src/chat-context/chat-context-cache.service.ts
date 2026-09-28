@@ -436,8 +436,10 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     return `chat:managed-refresh-backoff:v1:${entityType}:${userId}`;
   }
 
-  static managedRefreshSourceBackoffKey(): string {
-    return 'maxapi:managed-refresh-source-backoff:v1';
+  static managedRefreshSourceBackoffKey(botId?: string): string {
+    return botId
+      ? `maxapi:managed-refresh-source-backoff:v2:bot:${encodeURIComponent(botId)}`
+      : 'maxapi:managed-refresh-source-backoff:v1';
   }
 
   static managedEntitiesRefreshCursorKey(
@@ -1132,22 +1134,36 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async isManagedRefreshSourceBackoffActive(): Promise<boolean> {
-    const raw = await this.redis.get(ChatContextCacheService.managedRefreshSourceBackoffKey());
+  async isManagedRefreshSourceBackoffActive(botId?: string): Promise<boolean> {
+    const raw = await this.redis.get(ChatContextCacheService.managedRefreshSourceBackoffKey(botId));
     return typeof raw === 'string' && raw.length > 0;
   }
 
-  async getManagedRefreshSourceBackoffRemainingMs(): Promise<number> {
-    const ttlMs = await this.redis.pttl(ChatContextCacheService.managedRefreshSourceBackoffKey());
+  async readPublisherCatalogState(key: string): Promise<string | null> {
+    return this.redis.get(`publisher:catalog:v2:${key}`);
+  }
+
+  async storePublisherCatalogState(key: string, value: string, ttlSec: number): Promise<void> {
+    await this.redis.set(`publisher:catalog:v2:${key}`, value, 'EX', ttlSec);
+  }
+
+  async getManagedRefreshSourceBackoffRemainingMs(botId?: string): Promise<number> {
+    const ttlMs = await this.redis.pttl(
+      ChatContextCacheService.managedRefreshSourceBackoffKey(botId),
+    );
     return ttlMs > 0 ? ttlMs : 0;
   }
 
-  async activateManagedRefreshSourceBackoff(ttlSec: number): Promise<void> {
-    await this.redis.set(
-      ChatContextCacheService.managedRefreshSourceBackoffKey(),
-      '1',
-      'EX',
-      ttlSec,
+  async activateManagedRefreshSourceBackoff(ttlSec: number, botId?: string): Promise<void> {
+    const key = ChatContextCacheService.managedRefreshSourceBackoffKey(botId);
+    // FLAG: Concurrent shorter backoffs must not shorten an existing Retry-After.
+    await this.redis.eval(
+      `if redis.call('PTTL', KEYS[1]) < tonumber(ARGV[1]) then
+        redis.call('SET', KEYS[1], '1', 'PX', ARGV[1])
+      end; return 1`,
+      1,
+      key,
+      Math.max(1, Math.ceil(ttlSec * 1000)),
     );
   }
 

@@ -308,6 +308,37 @@ postgres('Publisher comment notification outbox on PostgreSQL', () => {
     ).toMatchObject({ completed: true });
   });
 
+  it('retains old uncertain receipts while cleaning terminal neighboring events', async () => {
+    const uncertain = await comment('author');
+    const terminal = await comment('author');
+    await db.publisherCommentNotificationEvent.updateMany({
+      where: { id: { in: [uncertain.id, terminal.id] } },
+      data: { completed: true, expiresAt: new Date(0) },
+    });
+    await db.publisherCommentNotificationDelivery.createMany({
+      data: [
+        {
+          eventId: uncertain.id,
+          userId: 'recipient',
+          status: 'UNKNOWN',
+          sendStartedAt: new Date(0),
+        },
+        { eventId: terminal.id, userId: 'recipient', status: 'SENT', messageId: 'confirmed' },
+      ],
+    });
+    await delivery.recoverOnce();
+    expect(
+      await db.publisherCommentNotificationEvent.findUnique({ where: { id: uncertain.id } }),
+    ).not.toBeNull();
+    expect(
+      await db.publisherCommentNotificationEvent.findUnique({ where: { id: terminal.id } }),
+    ).toBeNull();
+    expect(
+      await db.publisherCommentNotificationDelivery.findFirst({ where: { eventId: uncertain.id } }),
+    ).toMatchObject({ status: 'UNKNOWN' });
+    expect(sent).not.toHaveBeenCalled();
+  });
+
   it('never reads Major preferences or another Publisher bot subscription', async () => {
     await db.dialogNotificationSubscription.create({
       data: { chatId, entityType: 'CHAT', threadId: 'thread-1', userId: 'major-user', mode: 'ALL' },

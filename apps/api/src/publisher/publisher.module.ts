@@ -61,6 +61,7 @@ import { PublisherSuggestionAdminCallbackObserverService } from './publisher-sug
 import { PublisherVkBotReviewQueueService } from './publisher-vk-bot-review.queue';
 import { PUBLISHER_START_QUEUE, PublisherStartQueueService } from './publisher-start.queue';
 import { PublisherStartProcessor } from './publisher-start.processor';
+import { PublisherStartRecoveryService } from './publisher-start-recovery.service';
 import { PublisherPublicationPostActionsService } from './publisher-publication-post-actions.service';
 import {
   PUBLISHER_VIDEO_UPLOAD_QUEUE,
@@ -83,6 +84,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherAutoReplyAuthoringRecoveryService,
       PublisherAutoReplyContentCaptureService,
       PublisherStartProcessor,
+      PublisherStartRecoveryService,
       PublisherPublicationPostActionsService,
       PublisherVideoUploadProcessor,
     ]

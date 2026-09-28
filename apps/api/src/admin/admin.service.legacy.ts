@@ -1,4 +1,5 @@
 import { SuggestionSubscriptionService } from '../suggestions/suggestion-subscription.service';
+import { MaxMemberRestoreUnavailableError } from '../max/max-member-restore-capability';
 import {
   assertChannelMemberBanScope,
   describeManualBanResult,
@@ -9842,6 +9843,13 @@ export class AdminService implements OnModuleDestroy {
           });
           releaseStateConfirmed = true;
         } catch (error: unknown) {
+          if (error instanceof MaxMemberRestoreUnavailableError) {
+            throw new BadRequestException({
+              code: error.code,
+              message: error.message,
+              retryable: false,
+            });
+          }
           const remoteStateConfirmed = wasMaxMemberMutationConfirmed(error);
           if (remoteStateConfirmed) {
             releaseStateConfirmed = true;
@@ -22203,14 +22211,6 @@ export class AdminService implements OnModuleDestroy {
       );
     } catch {
       // Keep the in-process guard even when Redis is briefly unavailable.
-    }
-
-    try {
-      await this.chatContextCache.activateManagedRefreshSourceBackoff?.(
-        Math.max(1, Math.ceil(backoffMs / 1000)),
-      );
-    } catch {
-      return backoffMs;
     }
 
     return backoffMs;

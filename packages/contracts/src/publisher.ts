@@ -224,11 +224,21 @@ export const publisherEntitiesRefreshResponseSchema = z
   .object({
     accepted: z.literal(true),
     queuedCount: z.number().int().min(0).max(MAX_PUBLISHER_BULK_REFRESH_TARGETS),
+    operationId: z.string().uuid().optional(),
   })
   .strict();
 export type PublisherEntitiesRefreshResponse = z.infer<
   typeof publisherEntitiesRefreshResponseSchema
 >;
+
+export const publisherRefreshOperationSchema = z.object({
+  operationId: z.string().uuid(),
+  state: z.enum(['queued', 'running', 'complete', 'partial', 'unavailable']),
+  total: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+});
+export type PublisherRefreshOperation = z.infer<typeof publisherRefreshOperationSchema>;
 
 export const resolvePublisherEntitiesRequestSchema = z
   .object({

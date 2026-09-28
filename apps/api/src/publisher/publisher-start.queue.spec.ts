@@ -19,6 +19,12 @@ describe('PublisherStartQueueService', () => {
       {
         getPublisherBotDescriptor: () => ({ id: publisherBotId }),
       } as never,
+      {
+        publisherStartIntent: {
+          upsert: jest.fn(async ({ create }) => ({ ...create, status: 'PENDING' })),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+      } as never,
     );
     return { service, queue, client };
   }
@@ -47,7 +53,7 @@ describe('PublisherStartQueueService', () => {
     expect(queue.add).toHaveBeenCalledWith(
       'greet',
       {
-        version: 2,
+        version: 3,
         publisherBotId,
         privateChatId: '123',
         requestedAt: now.toISOString(),

@@ -7,6 +7,8 @@ import {
   listPublisherEntities,
   refreshPublisherEntities,
   refreshPublisherEntity,
+  waitForPublisherRefresh,
+  runOrResumePublisherRefresh,
   resolvePublisherEntities,
   updatePublisherPolicy,
   updatePublisherModules,
@@ -279,6 +281,127 @@ test('publisher entity hydration sends one bounded exact-target request', async 
   assert.equal(calls[0]?.path, '/publisher/entities/resolve');
   assert.equal(calls[0]?.init?.method, 'POST');
   assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), { targets });
+});
+
+test('publisher hydration batches all selected targets and stops after abort', async () => {
+  const targets = Array.from({ length: 1201 }, (_, index) => ({
+    id: `chat-${index}`,
+    entityType: 'chat' as const,
+  }));
+  const batches: number[] = [];
+  const api = {
+    request: async (_path: string, init?: RequestInit) => {
+      batches.push(JSON.parse(String(init?.body)).targets.length);
+      return { items: [] };
+    },
+  };
+  await resolvePublisherEntities(api as never, { targets });
+  assert.deepEqual(batches, [500, 500, 201]);
+  const controller = new AbortController();
+  let calls = 0;
+  await assert.rejects(
+    resolvePublisherEntities(
+      {
+        request: async () => {
+          calls++;
+          controller.abort();
+          return { items: [] };
+        },
+      } as never,
+      { targets },
+      { signal: controller.signal },
+    ),
+    { name: 'AbortError' },
+  );
+  assert.equal(calls, 1);
+});
+
+for (const duration of [1000, 20_000, 60_000]) {
+  test(`publisher recheck waits for a worker taking ${duration}ms`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+    let complete = false;
+    const operationId = 'af648401-415c-4ab8-b11b-3636887e9ea0';
+    const api = {
+      request: async () => ({
+        operationId,
+        state: Date.now() >= duration ? 'complete' : 'running',
+        total: 1,
+        completed: Date.now() >= duration ? 1 : 0,
+        failed: 0,
+      }),
+    };
+    const waiting = waitForPublisherRefresh(api as never, operationId).then(() => {
+      complete = true;
+    });
+    for (let elapsed = 0; elapsed < duration; elapsed += 500) {
+      await Promise.resolve();
+      await Promise.resolve();
+      assert.equal(complete, false);
+      t.mock.timers.tick(500);
+    }
+    for (let step = 0; step < 12 && !complete; step++) {
+      await Promise.resolve();
+      await Promise.resolve();
+      t.mock.timers.tick(500);
+    }
+    await waiting;
+    assert.equal(complete, true);
+  });
+}
+
+test('publisher recheck distinguishes partial failure, lost state and abort', async () => {
+  const operationId = 'af648401-415c-4ab8-b11b-3636887e9ea0';
+  for (const state of ['partial', 'unavailable']) {
+    await assert.rejects(
+      waitForPublisherRefresh(
+        {
+          request: async () => ({ operationId, state, total: 2, completed: 1, failed: 1 }),
+        } as never,
+        operationId,
+      ),
+    );
+  }
+  const controller = new AbortController();
+  await assert.rejects(
+    waitForPublisherRefresh(
+      {
+        request: async () => {
+          controller.abort();
+          return { operationId, state: 'complete', total: 1, completed: 1, failed: 0 };
+        },
+      } as never,
+      operationId,
+      controller.signal,
+    ),
+    { name: 'AbortError' },
+  );
+});
+
+test('publisher recheck resumes after navigation without enqueueing a second operation', async () => {
+  const operationId = 'af648401-415c-4ab8-b11b-3636887e9ea0';
+  const first = new AbortController();
+  let enqueued = 0;
+  const enqueue = async () => {
+    enqueued++;
+    return { operationId };
+  };
+  const api = {
+    request: async () => {
+      first.abort();
+      return { operationId, state: 'complete', total: 1, completed: 1, failed: 0 };
+    },
+  };
+  await assert.rejects(
+    runOrResumePublisherRefresh(api as never, 'publication:1', enqueue, first.signal),
+    { name: 'AbortError' },
+  );
+  await runOrResumePublisherRefresh(
+    api as never,
+    'publication:1',
+    enqueue,
+    new AbortController().signal,
+  );
+  assert.equal(enqueued, 1);
 });
 
 test('preview publisher list includes ready, setup, temporary, empty, and error states', async () => {

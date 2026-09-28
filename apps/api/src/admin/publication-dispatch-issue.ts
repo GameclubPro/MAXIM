@@ -1,10 +1,16 @@
 import type { PublicationDispatchIssue } from '@maxim/contracts/publication';
 
+export type InternalPublicationDispatchIssue = PublicationDispatchIssue | 'decision_required';
+
 export const PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE = 'PUBLISHER_ACTOR_ACCESS_REQUIRED';
+export const PUBLISHER_MISSED_WINDOW_BLOCKER_CODE = 'PUBLISHER_MISSED_WINDOW_REVIEW';
+export const PUBLISHER_EXPLICIT_RETRY_CODE = 'PUBLISHER_EXPLICIT_RETRY';
 
 const TARGET_SETUP_BLOCKERS = new Set([
   'POLICY_DISABLED',
   'BOT_NOT_CONNECTED',
+  'CATALOG_UNCONFIRMED',
+  'AUDIENCE_EMPTY',
   'BOT_ACCESS_UNCONFIRMED',
   'BOT_ACCESS_EXPIRED',
   'BOT_NOT_ADMIN',
@@ -21,8 +27,8 @@ export type PublicationDispatchBlockerRow = {
 };
 
 export type PublicationDispatchIssueIndex = {
-  byPublicationId: Map<string, PublicationDispatchIssue>;
-  byOccurrenceId: Map<string, PublicationDispatchIssue>;
+  byPublicationId: Map<string, InternalPublicationDispatchIssue>;
+  byOccurrenceId: Map<string, InternalPublicationDispatchIssue>;
 };
 
 export function emptyPublicationDispatchIssueIndex(): PublicationDispatchIssueIndex {
@@ -34,8 +40,11 @@ export function emptyPublicationDispatchIssueIndex(): PublicationDispatchIssueIn
 
 export function resolvePublicationDispatchIssue(
   blockerCodes: readonly (string | null | undefined)[],
-): PublicationDispatchIssue | null {
-  const normalized = blockerCodes.map((code) => code?.trim().toUpperCase() ?? '').filter(Boolean);
+): InternalPublicationDispatchIssue | null {
+  const normalized = blockerCodes
+    .map((code) => code?.trim().toUpperCase() ?? '')
+    .filter((code) => Boolean(code) && code !== PUBLISHER_EXPLICIT_RETRY_CODE);
+  if (normalized.includes(PUBLISHER_MISSED_WINDOW_BLOCKER_CODE)) return 'decision_required';
   if (normalized.includes(PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE)) {
     return 'actor_access_required';
   }

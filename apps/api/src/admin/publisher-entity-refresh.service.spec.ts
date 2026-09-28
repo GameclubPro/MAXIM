@@ -16,7 +16,10 @@ describe('PublisherEntityRefreshService', () => {
       }),
       listRefreshableEntityIds: jest.fn().mockResolvedValue(['channel-1', 'chat-2']),
     };
-    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const refreshQueue = {
+      enqueue: jest.fn(async (request) => `refresh-${request.chatId}`),
+      saveOperation: jest.fn().mockResolvedValue(undefined),
+    };
     const botRegistry = {
       getPublisherBotDescriptor: jest.fn().mockReturnValue({ id: 'publik-bot' }),
     };
@@ -112,23 +115,23 @@ describe('PublisherEntityRefreshService', () => {
   it('queues every exact publication target beyond the global fifty-entity page', async () => {
     const fixture = createFixture();
     const targetIds = [
-      ...Array.from({ length: 500 }, (_, index) => `target-${index}`),
+      ...Array.from({ length: 601 }, (_, index) => `target-${index}`),
       'target-0',
       'target-499',
     ];
 
     await expect(
       fixture.service.requestAuthorizedEntitiesRefresh(targetIds, user),
-    ).resolves.toEqual({ accepted: true, queuedCount: 500 });
+    ).resolves.toEqual({ accepted: true, queuedCount: 601 });
 
     expect(fixture.policyService.listRefreshableEntityIds).not.toHaveBeenCalled();
-    expect(fixture.refreshQueue.enqueue).toHaveBeenCalledTimes(500);
+    expect(fixture.refreshQueue.enqueue).toHaveBeenCalledTimes(601);
     expect(fixture.refreshQueue.enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId: 'target-499', candidateUserId: 'admin-1' }),
+      expect.objectContaining({ chatId: 'target-600', candidateUserId: 'admin-1' }),
     );
     expect(
       new Set(fixture.refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).size,
-    ).toBe(500);
+    ).toBe(601);
     expect(
       new Set(fixture.refreshQueue.enqueue.mock.calls.map(([request]) => request.requestedAt)).size,
     ).toBe(1);
@@ -237,7 +240,7 @@ describe('PublisherEntityRefreshService', () => {
       },
     );
     fixture.refreshQueue.enqueue
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce('refresh-chat-a')
       .mockRejectedValueOnce(new Error('redis unavailable'));
 
     await expect(fixture.service.requestBulkRefresh(user)).rejects.toThrow('redis unavailable');

@@ -1,3 +1,4 @@
+import { isMaxMemberRestoreAvailable } from '@maxim/contracts/max-capabilities';
 import type {
   LogsDashboardRange,
   LogsDashboardResponse,
@@ -748,7 +749,11 @@ function resolveReleaseAction(
 }
 
 function resolveReleaseLabel(action: Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'>): string {
-  return action === 'UNMUTE' ? 'Разрешить писать' : 'Снять блокировку';
+  return action === 'UNMUTE'
+    ? 'Разрешить писать'
+    : isMaxMemberRestoreAvailable()
+      ? 'Снять блокировку'
+      : 'Проверить снятие в MAX';
 }
 
 function normalizeActionErrorMessage(error: unknown): string {

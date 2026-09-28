@@ -1,6 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  MAX_PUBLICATION_TARGETS,
   type ListLegacyPublicationsQuery,
   type PublicationDetails,
   type PublicationOccurrenceSummary,
@@ -1070,12 +1069,6 @@ export function PublicationsPage({
         label: 'Получатели',
         onClick: () => focusEditorSection('targets', 'Выберите хотя бы одного получателя.'),
       });
-    } else if (draft.targets.length > MAX_PUBLICATION_TARGETS) {
-      issues.push({
-        label: 'Получатели',
-        onClick: () =>
-          focusEditorSection('targets', `Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей.`),
-      });
     } else if (selectedPublisherTargetUnavailable) {
       issues.push({
         label: 'Подключение',
@@ -1605,10 +1598,6 @@ export function PublicationsPage({
     }
     if (draft.targets.length === 0) {
       setFieldError('Выберите хотя бы одного получателя.');
-      return false;
-    }
-    if (draft.targets.length > MAX_PUBLICATION_TARGETS) {
-      setFieldError(`Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей.`);
       return false;
     }
     if (selectedPublisherTargetUnavailable) {
@@ -2546,12 +2535,6 @@ export function PublicationsPage({
               }
               disabled={isBusy || (!isPublisherProfile && sourcesLoading && targets.length === 0)}
               error={fieldError.includes('получател') ? fieldError : null}
-              onLimitReached={() =>
-                pushToast({
-                  tone: 'info',
-                  title: `Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей`,
-                })
-              }
               onChange={(nextTargets) => {
                 setDraft((current) => ({ ...current, targets: nextTargets }));
                 setFieldError('');

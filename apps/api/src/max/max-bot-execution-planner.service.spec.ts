@@ -743,7 +743,7 @@ describe('MaxBotExecutionPlannerService', () => {
     );
   });
 
-  it('uses stored snapshots without warning when managed_refresh source pressure defers refresh', async () => {
+  it('backs off only the throttled bot and still probes another bot', async () => {
     const fixture = createFixture();
     const warnSpy = jest.spyOn((fixture.service as any).logger, 'warn');
     const debugSpy = jest.spyOn((fixture.service as any).logger, 'debug');
@@ -775,7 +775,7 @@ describe('MaxBotExecutionPlannerService', () => {
       botId: 'id613002203036_5_bot',
     });
 
-    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(debugSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: 'chat-1',
@@ -788,7 +788,10 @@ describe('MaxBotExecutionPlannerService', () => {
       expect.anything(),
       'Failed to refresh bot access snapshot for execution planner',
     );
-    expect(fixture.chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(10);
+    expect(fixture.chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(
+      10,
+      'id613002203036_4_bot',
+    );
   });
 
   it('uses stored snapshots while a shared managed_refresh backoff is active', async () => {

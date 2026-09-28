@@ -17131,7 +17131,7 @@ describe('AdminService.listChats', () => {
       'channel',
       60,
     );
-    expect(chatContextCache.activateManagedRefreshSourceBackoff).toHaveBeenCalledWith(60);
+    expect(chatContextCache.activateManagedRefreshSourceBackoff).not.toHaveBeenCalled();
   });
 
   it('skips background header hydration while shared managed_refresh source backoff is active', async () => {

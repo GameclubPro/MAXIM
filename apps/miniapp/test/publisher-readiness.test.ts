@@ -92,21 +92,17 @@ test('an unavailable selected target can be removed from a stale draft', () => {
   assert.deepEqual(result.targets, []);
 });
 
-test('an unavailable target cannot be added and the target limit remains enforced', () => {
-  const ready = target('chat-ready', readiness(null));
+test('an unavailable target cannot be added and ready targets have no fixed count ceiling', () => {
+  const ready = Array.from({ length: 501 }, (_, index) => target(`chat-${index}`, readiness(null)));
   const unavailable = target('chat-unavailable', readiness('write_permission_missing'));
 
   assert.deepEqual(togglePublicationTargetSelection([], unavailable), {
     targets: [],
     outcome: 'blocked_unavailable',
   });
-  assert.deepEqual(
-    togglePublicationTargetSelection([ready], target('chat-2', readiness(null)), 1),
-    {
-      targets: [ready],
-      outcome: 'blocked_limit',
-    },
-  );
+  const result = togglePublicationTargetSelection(ready, target('chat-next', readiness(null)));
+  assert.equal(result.outcome, 'added');
+  assert.equal(result.targets.length, 502);
 });
 
 test('draft target hydration updates readiness and fails closed for a missing entity', () => {

@@ -1398,11 +1398,11 @@ describe('ChatContextCacheService', () => {
     ).resolves.toBe(45_000);
 
     await service.activateManagedRefreshSourceBackoff(15);
-    expect(redisInstance.set).toHaveBeenCalledWith(
+    expect((redisInstance as unknown as { eval: jest.Mock }).eval).toHaveBeenCalledWith(
+      expect.any(String),
+      1,
       ChatContextCacheService.managedRefreshSourceBackoffKey(),
-      '1',
-      'EX',
-      15,
+      15_000,
     );
 
     redisInstance.get.mockResolvedValueOnce('1');

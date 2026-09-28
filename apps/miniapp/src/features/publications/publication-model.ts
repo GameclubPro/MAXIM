@@ -125,8 +125,17 @@ export type PublicationDispatchIssuePresentation = {
 export const PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS = 30_000;
 
 export function getPublicationDispatchIssuePresentation(
-  issue: PublicationDispatchIssue | null,
+  issue: PublicationDispatchIssue | 'decision_required' | null,
+  requiresScheduleDecision = false,
 ): PublicationDispatchIssuePresentation | null {
+  if (issue === 'decision_required' || requiresScheduleDecision) {
+    return {
+      canRecheck: false,
+      description: 'Время отправки пропущено. Измените расписание или явно повторите этот запуск.',
+      label: 'Нужно решение',
+      title: 'Запуск пропущен',
+    };
+  }
   if (issue === 'actor_access_required') {
     return {
       canRecheck: true,
@@ -155,10 +164,11 @@ export function getPublicationDispatchIssuePresentation(
 }
 
 export function resolvePublicationDetailsDispatchIssue(
-  details: Pick<PublicationDetails, 'dispatchIssue'> | undefined,
-  summary: Pick<PublicationSummary, 'dispatchIssue'>,
-): PublicationDispatchIssue | null {
-  return details ? details.dispatchIssue : summary.dispatchIssue;
+  details: Pick<PublicationDetails, 'dispatchIssue' | 'requiresScheduleDecision'> | undefined,
+  summary: Pick<PublicationSummary, 'dispatchIssue' | 'requiresScheduleDecision'>,
+): PublicationDispatchIssue | 'decision_required' | null {
+  const source = details ?? summary;
+  return source.requiresScheduleDecision ? 'decision_required' : source.dispatchIssue;
 }
 
 export function getPublicationFeedStatusLabel(publication: PublicationSummary): string {
@@ -172,8 +182,10 @@ export function getPublicationFeedStatusLabel(publication: PublicationSummary): 
     return getPublicationLifecycleLabel(publication.lifecycle);
   }
   return (
-    getPublicationDispatchIssuePresentation(publication.dispatchIssue)?.label ??
-    getPublicationLifecycleLabel(publication.lifecycle)
+    getPublicationDispatchIssuePresentation(
+      publication.dispatchIssue,
+      publication.requiresScheduleDecision,
+    )?.label ?? getPublicationLifecycleLabel(publication.lifecycle)
   );
 }
 

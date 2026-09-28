@@ -7,6 +7,7 @@ import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { readMaxMemberActivity } from './max-member-activity.util';
+import { assertMaxMemberRestoreAvailable } from './max-member-restore-capability';
 import {
   refreshExistingInlineKeyboardText,
   type MaxInlineKeyboardTextRefresh,
@@ -2718,6 +2719,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async unbanMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
+    assertMaxMemberRestoreAvailable(Date.now() + Math.max(0, options?.delayMs ?? 0));
     await this.dispatchAction(
       {
         actionType: 'UNBAN_MEMBER',
@@ -3014,6 +3016,7 @@ export class MaxClientService implements OnModuleDestroy {
           if (!action.userId) {
             throw new Error('userId is required for UNBAN_MEMBER');
           }
+          assertMaxMemberRestoreAvailable();
           let memberMutationAttempted = false;
           try {
             await this.executeMutation(
@@ -3023,6 +3026,7 @@ export class MaxClientService implements OnModuleDestroy {
                   executionOptions.beforeMemberMutation,
                   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
                 );
+                assertMaxMemberRestoreAvailable();
                 memberMutationAttempted = true;
                 const response = await this.request('post', `/chats/${action.chatId}/members`, {
                   data: {
@@ -8159,7 +8163,12 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private assertSuccessfulMemberMutationResponse(payload: unknown): void {
-    if (this.asRecord(payload)?.success === true) {
+    const response = this.asRecord(payload);
+    const failures = [response?.failed_user_ids, response?.failed_user_details];
+    if (
+      response?.success === true &&
+      failures.every((value) => value == null || (Array.isArray(value) && value.length === 0))
+    ) {
       return;
     }
 

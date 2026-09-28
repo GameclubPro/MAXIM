@@ -53,6 +53,16 @@ import { PREVIEW_NOT_HANDLED, type PreviewRequestHandler } from './preview-trans
 import { parseJsonBody } from './preview-transport-shared';
 import type { PreviewState } from './preview-transport-state';
 
+const refreshOperations = new WeakMap<PreviewState, Map<string, number>>();
+
+export function recordPreviewPublisherRefresh(state: PreviewState, total: number): string {
+  const operations = refreshOperations.get(state) ?? new Map<string, number>();
+  refreshOperations.set(state, operations);
+  const operationId = crypto.randomUUID();
+  operations.set(operationId, total);
+  return operationId;
+}
+
 function getPreviewPublisherPolicies(
   state: PreviewState,
 ): Record<string, ManagedEntityPublicationPolicy> {
@@ -951,6 +961,12 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
           items: listPreviewPublisherEntities(state),
         });
   }
+  if (url.pathname.startsWith('/publisher/refresh-operations/') && method === 'GET') {
+    const operationId = url.pathname.split('/').at(-1)!;
+    const total = refreshOperations.get(state)?.get(operationId);
+    if (total === undefined) throw new ApiRequestError(404, '', 'Refresh operation unavailable');
+    return { operationId, state: 'complete', total, completed: total, failed: 0 };
+  }
   if (url.pathname === '/publisher/entities/refresh' && method === 'POST') {
     const entities = listPreviewPublisherEntities(state).slice(
       0,
@@ -975,6 +991,7 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     return publisherEntitiesRefreshResponseSchema.parse({
       accepted: true,
       queuedCount: entities.length,
+      operationId: recordPreviewPublisherRefresh(state, entities.length),
     });
   }
   if (url.pathname === '/publisher/entities/resolve' && method === 'POST') {

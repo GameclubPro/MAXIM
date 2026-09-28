@@ -59,8 +59,8 @@ export class PublisherStartProcessor extends WorkerHost {
     const { publisherBotId, privateChatId, requestedAt } = job.data;
     if (
       // FLAG: Legacy jobs can be restored from before their Redis-only dispatch fence.
-      // Only v2 producers belong to the durable-ledger delivery protocol.
-      job.data.version !== 2 ||
+      // Only v2/v3 producers belong to the durable-ledger delivery protocol.
+      (job.data.version !== 2 && job.data.version !== 3) ||
       !job.id ||
       publisherBotId !== this.botRegistry.getPublisherBotDescriptor().id ||
       !isPrivateDirectChatId(privateChatId)
@@ -100,6 +100,15 @@ export class PublisherStartProcessor extends WorkerHost {
               throw new UnrecoverableError('Publisher greeting already attempted');
             if (!isFreshPublisherStart(requestedAt))
               throw new UnrecoverableError('Publisher greeting expired');
+            if (
+              job.data.version === 3 &&
+              !(await this.startQueue.claimDurableDispatch(job.id!, job.data))
+            )
+              throw new UnrecoverableError(
+                'Publisher greeting intent already attempted or expired',
+              );
+            // FLAG: A crash from this point leaves ATTEMPTED, never a recoverable pending send.
+            dispatchClaimed = job.data.version === 3;
             if (!(await this.startQueue.claimDispatch(job.id!)))
               throw new UnrecoverableError('Publisher greeting dispatch already claimed');
             dispatchClaimed = true;
@@ -113,7 +122,10 @@ export class PublisherStartProcessor extends WorkerHost {
           ignoreFailureMetricStatuses: [403, 404],
         },
       );
+      if (job.data.version === 3) await this.startQueue.completeIntent(job.id, 'SENT');
     } catch (error: unknown) {
+      if (job.data.version === 3 && dispatchClaimed)
+        await this.startQueue.completeIntent(job.id, 'UNKNOWN');
       if (dispatchClaimed || job.data.dispatchStarted)
         throw new UnrecoverableError(
           'Publisher greeting dispatch claimed; automatic retry disabled',

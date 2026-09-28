@@ -80,7 +80,7 @@ jobs:
       - name: Check duplicate, interval and Publisher pause flows with Redis
         env:
           MAXIM_TEST_REDIS_URL: redis://127.0.0.1:6379
-        run: npm test --workspace @maxim/api -- 'message-duplicate|photo-duplicate-history.redis|rule-engine-media-cooldown.redis|traffic-protection.redis|publisher-dispatch-health.redis'
+        run: npm test --workspace @maxim/api -- 'message-duplicate|photo-duplicate-history.redis|rule-engine-media-cooldown.redis|traffic-protection.redis|publisher-dispatch-health.redis|chat-context-cache.redis|publisher-refresh-operation.redis'
 
   postgres-races:
     name: PostgreSQL Races
@@ -100,7 +100,17 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
+      MAXIM_TEST_REDIS_URL: redis://127.0.0.1:6379
       DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
       CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: postgresql://maxim_ci:maxim_ci@127.0.0.1:5432/race_test?schema=public
     steps:

@@ -1,4 +1,3 @@
-import { MAX_PUBLICATION_TARGETS } from '@maxim/contracts/publication';
 import { Check, NavArrowDown, Search, Xmark } from 'iconoir-react';
 import {
   type CSSProperties,
@@ -48,10 +47,8 @@ type PublicationTargetPickerProps = {
   disabled?: boolean;
   error?: string | null;
   notice?: string | null;
-  maxTargets?: number;
   compactSummary?: boolean;
   onChange: (targets: PublicationTarget[]) => void;
-  onLimitReached?: () => void;
 };
 
 const FILTERS: Array<{ value: PublicationEntityFilter; label: string }> = [
@@ -72,10 +69,8 @@ export function PublicationTargetPicker({
   disabled = false,
   error = null,
   notice = null,
-  maxTargets = MAX_PUBLICATION_TARGETS,
   compactSummary = false,
   onChange,
-  onLimitReached,
 }: PublicationTargetPickerProps) {
   const [localQuery, setLocalQuery] = useState('');
   const [localFilter, setLocalFilter] = useState<PublicationEntityFilter>('all');
@@ -294,11 +289,7 @@ export function PublicationTargetPicker({
   ]);
 
   function toggleTarget(target: PublicationTarget) {
-    const result = togglePublicationTargetSelection(value, target, maxTargets);
-    if (result.outcome === 'blocked_limit') {
-      onLimitReached?.();
-      return;
-    }
+    const result = togglePublicationTargetSelection(value, target);
     if (result.outcome === 'blocked_unavailable') {
       return;
     }
