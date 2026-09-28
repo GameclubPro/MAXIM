@@ -1,4 +1,4 @@
-import { syncPublisherAdminRoster } from './publisher-admin-roster';
+import { probePublisherAdminRoster, syncPublisherAdminRoster } from './publisher-admin-roster';
 
 describe('Publisher administrator discovery', () => {
   function fixture() {
@@ -118,4 +118,16 @@ describe('Publisher administrator discovery', () => {
     await expect(syncPublisherAdminRoster(f.params)).rejects.toThrow('incomplete roster');
     expect(f.prisma.$transaction).not.toHaveBeenCalled();
   });
+
+  it.each([{ chatId: 'another-chat' }, { publisherBotId: 'major' }, { probeStartedAtMs: 0 }])(
+    'rejects a prefetched roster from another entity, bot or probe: %j',
+    async (change) => {
+      const f = fixture();
+      const proof = await probePublisherAdminRoster(f.params);
+      await expect(syncPublisherAdminRoster(f.params, { ...proof, ...change })).resolves.toBe(
+        false,
+      );
+      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+    },
+  );
 });

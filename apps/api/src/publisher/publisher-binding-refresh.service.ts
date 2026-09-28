@@ -18,7 +18,7 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
-import { syncPublisherAdminRoster } from './publisher-admin-roster';
+import { probePublisherAdminRoster, syncPublisherAdminRoster } from './publisher-admin-roster';
 import {
   publisherAccessProbeLifecycleSuperseded,
   publisherAccessProbeLifecycleWhere,
@@ -62,6 +62,9 @@ const PUBLISHER_PENDING_CANDIDATE_RETRY_MS = 60_000;
 const PUBLISHER_DENIED_USER_ACCESS_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
 const PUBLISHER_ACTOR_EVIDENCE_LOOKBACK_MS = 30 * 24 * 60 * 60_000;
 const PUBLISHER_HANDSHAKE_REPLY_TIMEOUT_MS = 1_500;
+type RefreshTimingStage = 'botAccessMs' | 'catalogMs' | 'rosterMs' | 'userAccessMs';
+type RefreshTimings = Partial<Record<RefreshTimingStage, number>>;
+const REFRESH_TIMING_SAMPLE_INTERVAL_MS = 30_000;
 const PUBLISHER_FORWARDED_CANDIDATE_SOURCE = `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_forwarded`;
 const PUBLISHER_HOME_START_PARAM = `mr-${Buffer.from(
   JSON.stringify({ v: 1, k: 'route', r: '/' }),
@@ -89,6 +92,7 @@ type PublisherUserAccessRefreshCursor = { chatId: string; userId: string };
 export class PublisherBindingRefreshService {
   private readonly logger = new Logger(PublisherBindingRefreshService.name);
   private readonly publisherBotId: string;
+  private lastTimingSampleAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -103,7 +107,71 @@ export class PublisherBindingRefreshService {
     credentials.getRequiredActionToken(this.publisherBotId);
   }
 
-  async refresh(job: PublisherBindingRefreshJob): Promise<void> {
+  async refresh(
+    job: PublisherBindingRefreshJob,
+    execution: { retrying: boolean } = { retrying: false },
+  ): Promise<void> {
+    const startedAt = performance.now();
+    const requestedAt = Date.parse(job.requestedAt);
+    const requestedAgeMs = Number.isFinite(requestedAt)
+      ? Math.max(0, Date.now() - requestedAt)
+      : null;
+    const timings: RefreshTimings = {};
+    let outcome: 'returned' | 'threw' = 'threw';
+    try {
+      await this.refreshBinding(job, execution.retrying, timings);
+      outcome = 'returned';
+    } finally {
+      const now = Date.now();
+      if (now - this.lastTimingSampleAt >= REFRESH_TIMING_SAMPLE_INTERVAL_MS) {
+        this.lastTimingSampleAt = now;
+        const reason = [
+          'bot_added',
+          'webhook_observed',
+          'forwarded_private',
+          'historical_actor_recovery',
+          'bootstrap',
+          'stale_access',
+          'stale_user_access',
+          'manual_recheck',
+          'policy_enablement_recheck',
+          'send_access_lost',
+        ].includes(job.reason)
+          ? job.reason
+          : 'other';
+        this.logger.log(
+          {
+            reason,
+            outcome,
+            retrying: execution.retrying,
+            requestedAgeMs,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            ...timings,
+          },
+          'Publisher binding refresh timing sample',
+        );
+      }
+    }
+  }
+
+  private async measureStage<T>(
+    timings: RefreshTimings,
+    stage: RefreshTimingStage,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = performance.now();
+    try {
+      return await operation();
+    } finally {
+      timings[stage] = (timings[stage] ?? 0) + Math.round(performance.now() - startedAt);
+    }
+  }
+
+  private async refreshBinding(
+    job: PublisherBindingRefreshJob,
+    retrying: boolean,
+    timings: RefreshTimings,
+  ): Promise<void> {
     const candidateUserId = job.candidateUserId?.trim() ?? '';
     const candidateJob = candidateUserId.length > 0;
     const policyEnablementRecheckRequested = job.reason === 'policy_enablement_recheck';
@@ -166,6 +234,9 @@ export class PublisherBindingRefreshService {
         : Promise.resolve(null),
     ]);
     if (
+      // FLAG: A bot snapshot is only the first committed stage. A retry/stalled recovery
+      // must finish the catalog and roster even when its own earlier probe is newer.
+      !(retrying && job.reason === 'stale_access' && !candidateJob) &&
       this.isScheduledRefreshSuperseded(job, candidate?.publisherBinding ?? null, candidateEdge)
     ) {
       return;
@@ -202,16 +273,18 @@ export class PublisherBindingRefreshService {
     const forwardedCandidateNeedsMaterialization =
       hasExactStagedForwardedCandidate && !bindingHasRefreshEvidence;
     try {
-      botAccess = await this.maxClient.getCurrentChatMemberAccess(chatId, {
-        botId: this.publisherBotId,
-        trafficClass:
-          job.reason === 'manual_recheck' || job.reason === 'policy_enablement_recheck'
-            ? 'interactive'
-            : 'background',
-        sourceTag: 'publisher_readiness',
-        bypassCache: true,
-        timeoutMs: 5_000,
-      });
+      botAccess = await this.measureStage(timings, 'botAccessMs', () =>
+        this.maxClient.getCurrentChatMemberAccess(chatId, {
+          botId: this.publisherBotId,
+          trafficClass:
+            job.reason === 'manual_recheck' || job.reason === 'policy_enablement_recheck'
+              ? 'interactive'
+              : 'background',
+          sourceTag: 'publisher_readiness',
+          bypassCache: true,
+          timeoutMs: 5_000,
+        }),
+      );
       const checkedAt = new Date();
       const snapshot = buildBotAccessSnapshotPersistence(botAccess, {
         source: `publisher_refresh_${job.reason}`,
@@ -325,36 +398,61 @@ export class PublisherBindingRefreshService {
       return;
     }
 
-    const catalogRefresh = await this.refreshPublisherCatalog(
-      chatId,
-      publisherCatalog?.entityType ?? ChatEntityType.CHAT,
-      probeStartedAt,
-      committedBotAccessCheckedAt,
-      committedBotAccessState,
-      candidateJob,
-    );
+    const parallelRoster =
+      !candidateJob &&
+      (committedBotAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+        committedBotAccessState === ChatBotAccessState.CONFIRMED_OWNER);
+    // FLAG: Probe only after exact bot access is confirmed. Drain both independent reads
+    // before returning on any error; catalog/roster writes retain their existing fences.
+    const [catalogResult, rosterResult] = await Promise.allSettled([
+      this.measureStage(timings, 'catalogMs', () =>
+        this.refreshPublisherCatalog(
+          chatId,
+          publisherCatalog?.entityType ?? ChatEntityType.CHAT,
+          probeStartedAt,
+          committedBotAccessCheckedAt,
+          committedBotAccessState,
+          candidateJob,
+        ),
+      ),
+      parallelRoster
+        ? this.measureStage(timings, 'rosterMs', () =>
+            probePublisherAdminRoster({
+              maxClient: this.maxClient,
+              chatId,
+              publisherBotId: this.publisherBotId,
+              probeStartedAt,
+            }),
+          )
+        : Promise.resolve(null),
+    ]);
+    if (catalogResult.status === 'rejected') throw catalogResult.reason;
+    const catalogRefresh = catalogResult.value;
     if (!catalogRefresh.committed) {
       if (candidateJob) {
         throw new PublisherCandidateRefreshSupersededError();
       }
       return;
     }
+    if (rosterResult.status === 'rejected') throw rosterResult.reason;
     if (candidateJob) {
-      const accessResult = await this.refreshPublisherUserAccess({
-        chatId,
-        entityType: catalogRefresh.entityType,
-        userId: candidateUserId,
-        candidateVersion: job.candidateVersion?.trim() || null,
-        botAccess,
-        probeStartedAt,
-        committedBotAccessCheckedAt,
-        committedBotAccessState,
-        interactive:
-          job.reason === 'manual_recheck' ||
-          job.reason === 'bot_added' ||
-          job.reason === 'webhook_observed' ||
-          job.reason === 'forwarded_private',
-      });
+      const accessResult = await this.measureStage(timings, 'userAccessMs', () =>
+        this.refreshPublisherUserAccess({
+          chatId,
+          entityType: catalogRefresh.entityType,
+          userId: candidateUserId,
+          candidateVersion: job.candidateVersion?.trim() || null,
+          botAccess,
+          probeStartedAt,
+          committedBotAccessCheckedAt,
+          committedBotAccessState,
+          interactive:
+            job.reason === 'manual_recheck' ||
+            job.reason === 'bot_added' ||
+            job.reason === 'webhook_observed' ||
+            job.reason === 'forwarded_private',
+        }),
+      );
       if (!accessResult.committed) {
         throw new PublisherCandidateRefreshSupersededError();
       }
@@ -371,16 +469,21 @@ export class PublisherBindingRefreshService {
       (committedBotAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
         committedBotAccessState === ChatBotAccessState.CONFIRMED_OWNER)
     ) {
-      const committed = await syncPublisherAdminRoster({
-        prisma: this.prisma,
-        maxClient: this.maxClient,
-        chatId,
-        publisherBotId: this.publisherBotId,
-        entityType: catalogRefresh.entityType,
-        probeStartedAt,
-        botAccessCheckedAt: committedBotAccessCheckedAt,
-        botAccessState: committedBotAccessState,
-      });
+      const committed = await this.measureStage(timings, 'rosterMs', () =>
+        syncPublisherAdminRoster(
+          {
+            prisma: this.prisma,
+            maxClient: this.maxClient,
+            chatId,
+            publisherBotId: this.publisherBotId,
+            entityType: catalogRefresh.entityType,
+            probeStartedAt,
+            botAccessCheckedAt: committedBotAccessCheckedAt,
+            botAccessState: committedBotAccessState,
+          },
+          rosterResult.value ?? undefined,
+        ),
+      );
       if (!committed) throw new PublisherCandidateRefreshSupersededError();
     }
   }

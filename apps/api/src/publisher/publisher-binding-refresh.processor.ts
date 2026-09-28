@@ -36,7 +36,9 @@ export class PublisherBindingRefreshProcessor extends WorkerHost {
       await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
     }
     try {
-      await this.refreshService.refresh(job.data);
+      await this.refreshService.refresh(job.data, {
+        retrying: job.attemptsMade > 0 || job.attemptsStarted > 1,
+      });
     } catch (error: unknown) {
       if (error instanceof PublisherCandidateRefreshSupersededError) {
         return;

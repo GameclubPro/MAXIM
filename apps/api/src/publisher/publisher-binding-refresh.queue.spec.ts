@@ -121,10 +121,11 @@ describe('PublisherBindingRefreshQueueService', () => {
     const keptActor = { priority: 20, remove: jest.fn() };
     const keptNewActorVersion = { priority: 20, remove: jest.fn() };
     const manual = { remove: jest.fn() };
+    const createdAt = Date.now() - 1_000;
     const jobs = [
       {
         id: 'binding-old',
-        timestamp: 1,
+        timestamp: createdAt + 1,
         data: {
           version: 1,
           chatId: 'chat-1',
@@ -136,7 +137,7 @@ describe('PublisherBindingRefreshQueueService', () => {
       },
       {
         id: 'binding-new',
-        timestamp: 2,
+        timestamp: createdAt + 2,
         data: {
           version: 1,
           chatId: 'chat-1',
@@ -148,7 +149,7 @@ describe('PublisherBindingRefreshQueueService', () => {
       },
       {
         id: 'actor-old',
-        timestamp: 3,
+        timestamp: createdAt + 3,
         data: {
           version: 1,
           chatId: 'chat-1',
@@ -162,7 +163,7 @@ describe('PublisherBindingRefreshQueueService', () => {
       },
       {
         id: 'actor-new',
-        timestamp: 4,
+        timestamp: createdAt + 4,
         data: {
           version: 1,
           chatId: 'chat-1',
@@ -176,7 +177,7 @@ describe('PublisherBindingRefreshQueueService', () => {
       },
       {
         id: 'actor-new-version',
-        timestamp: 5,
+        timestamp: createdAt + 5,
         data: {
           version: 1,
           chatId: 'chat-1',
@@ -190,7 +191,7 @@ describe('PublisherBindingRefreshQueueService', () => {
       },
       {
         id: 'manual',
-        timestamp: 6,
+        timestamp: createdAt + 6,
         data: {
           version: 1,
           chatId: 'chat-1',

@@ -38,12 +38,16 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       })),
     });
     await prisma.moderationDeleteIntentReason.createMany({
-      data: Array.from({ length: 25 }, (_, index) => ({
-        id: `${chatId}-reason-${index}`,
-        intentId: `${chatId}-${index}`,
-        reasonKey: 'rule',
-        ruleCode: index === 0 ? 'OTHER_DELETE' : 'DUPLICATE_DELETE',
-      })),
+      // Exercise the nine-reason cap with enough rows for ordered access to matter.
+      // One reason per intent lets PostgreSQL legitimately prefer another exact-intent index.
+      data: Array.from({ length: 25 }, (_, index) =>
+        Array.from({ length: 32 }, (_, reasonIndex) => ({
+          id: `${chatId}-reason-${index}-${reasonIndex}`,
+          intentId: `${chatId}-${index}`,
+          reasonKey: `rule-${String(reasonIndex).padStart(2, '0')}`,
+          ruleCode: index === 0 ? 'OTHER_DELETE' : 'DUPLICATE_DELETE',
+        })),
+      ).flat(),
     });
     await prisma.moderationDeleteIntent.createMany({
       data: Array.from({ length: 2000 }, (_, index) => ({
@@ -54,6 +58,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         retryUntilAt: new Date(now + 3600000),
       })),
     });
+    await prisma.$executeRaw`ANALYZE moderation_delete_intents, moderation_delete_intent_reasons`;
     const database = {
       chatSettings: prisma.chatSettings,
       $transaction: (

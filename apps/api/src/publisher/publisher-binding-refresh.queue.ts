@@ -32,6 +32,7 @@ export type PublisherBindingRefreshJob = {
 
 const PUBLISHER_REFRESH_JOB_BUCKET_MS = 60_000;
 const PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS = 5_000;
+const PUBLISHER_ACTOR_REFRESH_AGING_MS = 60_000;
 const PUBLISHER_WEBHOOK_OBSERVED_DEDUPLICATION_MS = 60_000;
 const PUBLISHER_SCHEDULED_COMPACTION_PAGE_SIZE = 250;
 const PUBLISHER_SCHEDULED_COMPACTION_MAX_SCANNED = 5_000;
@@ -54,7 +55,7 @@ export type PublisherScheduledBacklogCompactionResult = {
   truncated: boolean;
 };
 
-function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
+function resolveRefreshPriority(reason: PublisherBindingRefreshReason, createdAt?: number): number {
   switch (reason) {
     case 'manual_recheck':
     case 'policy_enablement_recheck':
@@ -69,8 +70,15 @@ function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
     // refresh three-day grants and must not starve this prerequisite or interactive work.
     case 'stale_access':
       return 10;
-    case 'bootstrap':
     case 'stale_user_access':
+      // FLAG: Aged actor checks join the bot queue in FIFO order so future bot jobs
+      // cannot overtake them forever. Manual and lifecycle priorities remain ahead.
+      return createdAt !== undefined &&
+        Number.isFinite(createdAt) &&
+        Date.now() - createdAt >= PUBLISHER_ACTOR_REFRESH_AGING_MS
+        ? 10
+        : 20;
+    case 'bootstrap':
       return 20;
   }
 }
@@ -165,7 +173,7 @@ export class PublisherBindingRefreshQueueService {
         retained
           .slice(offset, offset + PUBLISHER_SCHEDULED_COMPACTION_REMOVE_CONCURRENCY)
           .map(async (job) => {
-            const priority = resolveRefreshPriority(job.data.reason);
+            const priority = resolveRefreshPriority(job.data.reason, job.timestamp);
             if (job.priority === priority) return;
             try {
               await job.changePriority({ priority });
@@ -307,6 +315,19 @@ export class PublisherBindingRefreshQueueService {
         },
       },
     );
+    if (params.reason === 'stale_user_access' && queued?.id && queued.id !== jobId) {
+      // FLAG: Queue.add returns the retained ID on deduplication but its local data
+      // describes the new request. Inspect only that exact persisted job for its age.
+      const retained = await this.queue.getJob(queued.id);
+      if (
+        retained &&
+        retained.data.reason === 'stale_user_access' &&
+        this.scheduledDeduplicationKey(retained.data) === scheduledDeduplicationKey
+      ) {
+        const priority = resolveRefreshPriority(retained.data.reason, retained.timestamp);
+        if (retained.priority > priority) await retained.changePriority({ priority });
+      }
+    }
     return queued?.id ?? jobId;
   }
 

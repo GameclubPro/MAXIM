@@ -87,8 +87,23 @@ describe('PublisherBindingRefreshProcessor', () => {
     await processor.process(job, 'worker-token');
 
     expect(runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(1);
-    expect(refresh).toHaveBeenCalledWith(candidateJob);
+    expect(refresh).toHaveBeenCalledWith(candidateJob, { retrying: false });
     expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { attemptsMade: 1, attemptsStarted: 2 },
+    { attemptsMade: 0, attemptsStarted: 2 },
+  ])('preserves incomplete work on a retry or stalled recovery: %j', async (attempts) => {
+    const refresh = jest.fn().mockResolvedValue(undefined);
+    const processor = new PublisherBindingRefreshProcessor(
+      { refresh } as never,
+      { assertDispatchEnabled: jest.fn() } as never,
+      { assertDispatchAllowed: jest.fn() } as never,
+    );
+    const data: PublisherBindingRefreshJob = { ...policyEnablementJob, reason: 'stale_access' };
+    await processor.process({ data, ...attempts } as Job<PublisherBindingRefreshJob>);
+    expect(refresh).toHaveBeenCalledWith(data, { retrying: true });
   });
 
   it('durably delays a policy enablement recheck without requiring a candidate user', async () => {
@@ -136,7 +151,7 @@ describe('PublisherBindingRefreshProcessor', () => {
 
     expect(runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(1);
     expect(dispatchHealth.assertDispatchAllowed).toHaveBeenCalledTimes(1);
-    expect(refresh).toHaveBeenCalledWith(policyEnablementJob);
+    expect(refresh).toHaveBeenCalledWith(policyEnablementJob, { retrying: false });
   });
 
   it('completes a superseded candidate refresh as a terminal no-op', async () => {
@@ -154,7 +169,7 @@ describe('PublisherBindingRefreshProcessor', () => {
 
     await expect(processor.process(job, 'worker-token')).resolves.toBeUndefined();
 
-    expect(refresh).toHaveBeenCalledWith(candidateJob);
+    expect(refresh).toHaveBeenCalledWith(candidateJob, { retrying: false });
     expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 

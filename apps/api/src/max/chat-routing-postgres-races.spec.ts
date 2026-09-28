@@ -14,7 +14,10 @@ import { ManagedEntityAccessLossService } from './managed-entity-access-loss.ser
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND } from './max-chat-admin-roster-sync.queue';
 import { ModerationDeleteIntentAccessWakeService } from './moderation-delete-intent-access-wake.service';
-import { syncPublisherAdminRoster } from '../publisher/publisher-admin-roster';
+import {
+  probePublisherAdminRoster,
+  syncPublisherAdminRoster,
+} from '../publisher/publisher-admin-roster';
 import { publisherAccessProbeLifecycleWhere } from '../publisher/publisher-access-probe-fence';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
@@ -153,9 +156,18 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
     await pool.end();
   });
 
-  it.each([ChatEntityType.CHAT, ChatEntityType.CHANNEL])(
-    'discovers Publisher %s admins without overwriting newer denials or Major edges',
-    async (entityType) => {
+  it.each(
+    [ChatEntityType.CHAT, ChatEntityType.CHANNEL].flatMap((entityType) =>
+      [false, true].map((prefetched) => ({ entityType, prefetched })),
+    ),
+  )(
+    'discovers Publisher $entityType admins without overwriting newer denials or Major edges (prefetched=$prefetched)',
+    async ({ entityType, prefetched }) => {
+      const sync = async (params: Parameters<typeof syncPublisherAdminRoster>[0]) =>
+        syncPublisherAdminRoster(
+          params,
+          prefetched ? await probePublisherAdminRoster(params) : undefined,
+        );
       const chatId = `publisher-roster-${randomUUID()}`;
       createdChatIds.push(chatId);
       const prisma = createPrismaClient(databaseUrl, { max: 1, statement_timeout: 10_000 });
@@ -220,7 +232,7 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
             },
           } as never,
         };
-        await expect(syncPublisherAdminRoster(params)).resolves.toBe(true);
+        await expect(sync(params)).resolves.toBe(true);
         const edges = await prisma.managedEntityAccessEdge.findMany({ where: { chatId } });
         expect(edges).toEqual(
           expect.arrayContaining([
@@ -247,7 +259,7 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
           },
         });
         await expect(
-          syncPublisherAdminRoster({
+          sync({
             ...params,
             maxClient: {
               getChatAdminAccesses: async () => [
@@ -285,7 +297,7 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
           data: { status: 'REMOVED', lifecycleEventAt: newer },
         });
         await expect(
-          syncPublisherAdminRoster({
+          sync({
             ...params,
             maxClient: {
               getChatAdminAccesses: async () => [

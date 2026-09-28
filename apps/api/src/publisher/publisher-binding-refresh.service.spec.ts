@@ -250,6 +250,106 @@ describe('PublisherBindingRefreshService', () => {
     requestedAt: '2026-08-26T12:00:00.000Z',
   } as const;
 
+  it('overlaps independent catalog and roster probes after confirming bot access', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const snapshot = await f.maxClient.getChatSnapshot();
+    f.maxClient.getChatSnapshot.mockClear();
+    let release!: () => void;
+    f.maxClient.getChatSnapshot.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(snapshot);
+        }),
+    );
+    const running = f.service.refresh({ ...job, reason: 'stale_access' });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(1);
+      expect(f.tx.managedEntityAccessEdge.createMany).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await running;
+    }
+  });
+
+  it('retries incomplete roster work even after the bot access snapshot was committed', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const scheduled = { ...job, reason: 'stale_access' as const };
+    f.maxClient.getChatAdminAccesses.mockRejectedValueOnce(new Error('roster unavailable'));
+    await expect(f.service.refresh(scheduled)).rejects.toThrow('roster unavailable');
+    expect(f.bindingState.botAccessCheckedAt).not.toBeNull();
+    await f.service.refresh(scheduled, { retrying: true });
+    expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains the catalog operation before exposing a parallel roster failure', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const snapshot = await f.maxClient.getChatSnapshot();
+    let release!: () => void;
+    f.maxClient.getChatSnapshot.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(snapshot);
+        }),
+    );
+    const failure = new Error('roster unavailable');
+    f.maxClient.getChatAdminAccesses.mockRejectedValueOnce(failure);
+    let settled = false;
+    const running = f.service.refresh({ ...job, reason: 'stale_access' }).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      expect(f.tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
+    expect(await running).toBe(failure);
+    expect(f.tx.managedBotChatCatalog.upsert).toHaveBeenCalledTimes(1);
+    expect(f.tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not revive a removed binding when recovering a partially completed refresh', async () => {
+    const f = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const chat = await f.prisma.chat.findUnique();
+    f.prisma.chat.findUnique.mockResolvedValue({
+      ...chat,
+      publisherBinding: { ...chat.publisherBinding!, status: ChatBotMembershipStatus.REMOVED },
+    });
+    await f.service.refresh({ ...job, reason: 'stale_access' }, { retrying: true });
+    expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+  });
+
   it('stages a missing publication actor edge before a version-fenced MAX verification', async () => {
     const f = createHarness({
       isAdmin: true,

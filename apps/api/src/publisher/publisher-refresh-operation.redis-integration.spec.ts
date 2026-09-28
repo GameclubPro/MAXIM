@@ -6,6 +6,112 @@ const redisUrl = process.env.MAXIM_TEST_REDIS_URL ?? '';
 const integration = redisUrl ? describe : describe.skip;
 
 integration('Publisher refresh operation Redis status', () => {
+  it('ages persisted delayed actor checks without changing their deadline or activating them', async () => {
+    const url = new URL(redisUrl);
+    if (!['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('Local Redis required');
+    const queue = new Queue('refresh-delayed-aging', {
+      prefix: `test-${randomUUID()}`,
+      connection: { host: url.hostname, port: Number(url.port) },
+    });
+    try {
+      const old = Date.now() - 120_000;
+      const job = await queue.add(
+        'refresh',
+        {
+          version: 1,
+          chatId: 'chat',
+          publisherBotId: 'publisher',
+          candidateUserId: 'actor',
+          reason: 'stale_user_access',
+          requestedAt: new Date(old).toISOString(),
+        },
+        { jobId: 'actor', timestamp: old, priority: 20, delay: 600_000 },
+      );
+      const deadline = job.timestamp + job.delay;
+      const service = new PublisherBindingRefreshQueueService(queue as never);
+      await expect(service.compactScheduledBacklog()).resolves.toMatchObject({
+        reprioritizedCount: 1,
+      });
+      const retained = (await queue.getJob('actor'))!;
+      expect(retained.priority).toBe(10);
+      expect(await retained.getState()).toBe('delayed');
+      expect(retained.timestamp + retained.delay).toBe(deadline);
+      await expect(service.compactScheduledBacklog()).resolves.toMatchObject({
+        reprioritizedCount: 0,
+      });
+    } finally {
+      await queue.obliterate({ force: true });
+      await queue.close();
+    }
+  });
+
+  it('promotes an aged actor on rediscovery without moving it behind newer bot jobs again', async () => {
+    const url = new URL(redisUrl);
+    if (!['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('Local Redis required');
+    const options = {
+      prefix: `test-${randomUUID()}`,
+      connection: { host: url.hostname, port: Number(url.port) },
+    };
+    const queue = new Queue('refresh-aging', options);
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+    let worker: Worker | undefined;
+    try {
+      await queue.pause();
+      const actor = {
+        chatId: 'actor-chat',
+        publisherBotId: 'publisher',
+        candidateUserId: 'actor',
+        reason: 'stale_user_access' as const,
+      };
+      const old = Date.now() - 120_000;
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(old);
+      let actorId: string | null;
+      try {
+        actorId = await service.enqueue({ ...actor, requestedAt: new Date(old) });
+      } finally {
+        clock.mockRestore();
+      }
+      await service.enqueue({
+        chatId: 'bot-before',
+        publisherBotId: 'publisher',
+        reason: 'stale_access',
+      });
+      expect(await service.enqueue(actor)).toBe(actorId!);
+      expect((await queue.getJob(actorId!))?.priority).toBe(10);
+      await service.enqueue({
+        chatId: 'bot-after',
+        publisherBotId: 'publisher',
+        reason: 'stale_access',
+      });
+      await service.enqueue(actor);
+      await service.enqueue({
+        chatId: 'manual',
+        publisherBotId: 'publisher',
+        reason: 'manual_recheck',
+      });
+      const order: string[] = [];
+      worker = new Worker(
+        'refresh-aging',
+        async (job) => {
+          order.push(job.data.chatId);
+        },
+        options,
+      );
+      const drained = new Promise<void>((resolve) =>
+        worker!.on('completed', () => {
+          if (order.length === 4) resolve();
+        }),
+      );
+      await queue.resume();
+      await drained;
+      expect(order).toEqual(['manual', 'bot-before', 'actor-chat', 'bot-after']);
+    } finally {
+      await worker?.close();
+      await queue.obliterate({ force: true });
+      await queue.close();
+    }
+  });
+
   it('serves bot access before scheduled actor checks in an existing paused backlog', async () => {
     const url = new URL(redisUrl);
     if (!['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('Local Redis required');
