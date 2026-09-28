@@ -1,10 +1,27 @@
 @layer workspace {
+  body[data-miniapp-profile='moderation'].chats-home-page-open .app-shell {
+    width: 100%;
+    max-width: none;
+    padding-inline: 0;
+  }
+
   body[data-miniapp-profile='moderation'] .chats-home {
+    max-width: none;
     gap: 8px;
   }
 
+  body[data-miniapp-profile='moderation'] .chats-home > :not(.chats-command),
+  body[data-miniapp-profile='moderation'] .chats-command > :not(.chats-command__identity) {
+    width: calc(100% - var(--app-page-gutter) * 2);
+    max-width: 760px;
+    margin-inline: auto;
+  }
+
   body[data-miniapp-profile='moderation'] .chats-command.glass-card {
-    padding-block: 8px 12px;
+    container: bot-header / inline-size;
+    width: 100%;
+    margin-inline: 0;
+    padding: 0 0 12px;
     gap: 8px;
     border: 0;
     border-bottom: 1px solid var(--major-border);
@@ -17,27 +34,22 @@
 
   body[data-miniapp-profile='moderation'] .chats-command__identity {
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr) 44px;
+    grid-template-columns: 40px minmax(0, 1fr) 44px;
     align-items: center;
     gap: 10px;
     min-height: 44px;
-    padding: 8px 6px;
-    margin: -8px -6px 0;
+    min-width: 0;
+    padding: 8px max(var(--app-page-gutter), calc((100% - 760px) / 2));
+    margin: 0;
     background: var(--major-display-surface);
   }
 
-  body[data-miniapp-profile='moderation'] .chats-command__mark {
-    display: grid;
-    place-items: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 4px;
-    background: var(--major-brand);
-    color: var(--major-on-brand);
-    font-size: 25px;
-    line-height: 1;
-    font-weight: 800;
-    clip-path: polygon(0 0, 100% 0, 100% 78%, 78% 100%, 0 100%);
+  body[data-miniapp-profile='moderation'] .chats-command__avatar {
+    width: 40px;
+    height: 40px;
+    border: 0;
+    border-radius: 50%;
+    box-shadow: none;
   }
 
   body[data-miniapp-profile='moderation'] .chats-command__brand {
@@ -49,7 +61,7 @@
   body[data-miniapp-profile='moderation'] .chats-command__brand h1 {
     margin: 0;
     color: var(--major-display-ink);
-    font-size: 1.0625rem;
+    font-size: min(1.0625rem, 20px);
     font-weight: 800;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -57,7 +69,7 @@
 
   body[data-miniapp-profile='moderation'] .chats-command__brand > span {
     color: var(--major-display-ink);
-    font-size: 0.75rem;
+    font-size: min(0.75rem, 14px);
     line-height: 1.3;
     font-weight: 550;
   }
@@ -70,6 +82,12 @@
     background: var(--major-accent);
     color: var(--major-on-accent);
     box-shadow: none;
+  }
+
+  @container bot-header (max-width: 16rem) {
+    body[data-miniapp-profile='moderation'] .chats-command__brand > span {
+      display: none;
+    }
   }
 
   body[data-miniapp-profile='moderation'] .chats-command__actions {
@@ -214,7 +232,7 @@
 
   body[data-miniapp-profile='moderation']
     .chats-home[data-design-variant='editorial']
-    .chats-command__mark {
+    .chats-command__avatar {
     display: none;
   }
 

@@ -15,6 +15,7 @@ import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
+import { PUBLIK_BRAND } from '../lib/bot-brand';
 import {
   getPublisherEntity,
   listPublisherEntities,
@@ -597,9 +598,12 @@ export function PublisherEntitiesPage({
     >
       <header className="publisher-entities-page__header">
         <div className="publisher-entities-page__brand">
-          <span className="publisher-entities-page__mark" aria-hidden="true">
-            П
-          </span>
+          <EntityAvatar
+            className="publisher-entities-page__avatar"
+            title={PUBLIK_BRAND.name}
+            avatarUrl={PUBLIK_BRAND.avatarUrl}
+            entityType="chat"
+          />
           <div className="publisher-entities-page__identity">
             <h1 id="publisher-catalog-title">Публик</h1>
             <small>

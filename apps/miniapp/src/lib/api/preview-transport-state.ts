@@ -849,7 +849,13 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
       profileUrl: buildPreviewProfileUrl('designer'),
       profileHandoffUrl: buildPreviewProfileHandoffUrl('preview-admin'),
-      botDialogUrl: publisherProfile ? 'https://max.ru/se14088825_bot' : 'https://max.ru/maxim-bot',
+      botDialogUrl: publisherProfile
+        ? 'https://max.ru/se14088825_bot'
+        : searchParams.get('previewBot') === 'maximova'
+          ? 'https://max.ru/id613070470872_5_bot'
+          : searchParams.get('previewBot') === 'rex'
+            ? 'https://max.ru/id613070470872_6_bot'
+            : 'https://max.ru/id613070470872_9_bot',
       canAccessSystem: !publisherProfile,
       profile: publisherProfile ? 'publisher' : 'moderation',
       capabilities: publisherProfile

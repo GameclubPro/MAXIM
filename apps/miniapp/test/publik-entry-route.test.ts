@@ -27,7 +27,7 @@ test('authenticated /publik entry redirects to the profile home and preserves se
   assert.doesNotMatch(authenticatedRoutes, /path="\/publik" element=\{<LazyPublikPage \/>\}/u);
   assert.match(
     authenticatedRoutes,
-    /const profileHomeRoute = me\.homeRoute;[\s\S]*?moderationProfile[\s\S]*?<Route path="\/" element=\{<LazyChatsPage[\s\S]*?<LazyPublisherEntitiesPage/u,
+    /const profileHomeRoute = me\.homeRoute;[\s\S]*?moderationProfile[\s\S]*?<Route\s+path="\/"\s+element=\{<LazyChatsPage[\s\S]*?<LazyPublisherEntitiesPage/u,
   );
   assert.match(authenticatedRoutes, /botDialogUrl=\{me\.botDialogUrl\}/u);
 });

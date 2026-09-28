@@ -70,7 +70,10 @@ function lazyPage<TProps>(loader: () => Promise<Record<string, unknown>>, export
 
 export const preloadChatsPage = () => import('./chats-page');
 
-export const LazyChatsPage = lazyPage<RoutedPageProps>(preloadChatsPage, 'ChatsPage');
+export const LazyChatsPage = lazyPage<RoutedPageProps & { botUrl: string | null }>(
+  preloadChatsPage,
+  'ChatsPage',
+);
 export const LazySettingsPage = lazyPage<RoutedPageProps>(preloadSettingsPage, 'SettingsPage');
 export const LazyChannelSettingsPage = lazyPage<RoutedPageProps>(
   preloadChannelSettingsPage,

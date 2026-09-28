@@ -35,6 +35,7 @@ import { useToast } from '../components/ui/toast';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
+import { resolveModerationBotBrand } from '../lib/bot-brand';
 import {
   HOME_ENTITY_FAVORITE_TYPES,
   type HomeEntityFavoriteLabelOverrides,
@@ -301,7 +302,8 @@ function readHomeSnapshotFromRouteState(
   return workspace?.entityType === entityType ? (workspace.homeSnapshot ?? null) : null;
 }
 
-export function ChatsPage({ api }: { api: ApiTransport }) {
+export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string | null }) {
+  const botBrand = resolveModerationBotBrand(botUrl);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const location = useLocation();
@@ -1862,11 +1864,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         elevated
       >
         <div className="chats-command__identity">
-          <span className="chats-command__mark" aria-hidden="true">
-            М
-          </span>
+          <EntityAvatar
+            className="chats-command__avatar"
+            title={botBrand.name}
+            avatarUrl={botBrand.avatarUrl}
+            entityType="chat"
+          />
           <div className="chats-command__brand">
-            <h1>Майор Максимов</h1>
+            <h1>{botBrand.name}</h1>
             <span>{tabLabel}</span>
           </div>
           {!categoryEditMode ? (

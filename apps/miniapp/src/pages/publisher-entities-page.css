@@ -51,24 +51,18 @@
   .publisher-entities-page__brand {
     min-width: 0;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr) 44px;
+    grid-template-columns: 40px minmax(0, 1fr) 44px;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
 
-  .publisher-entities-page__mark {
-    display: grid;
-    place-items: center;
-    width: 36px;
-    height: 36px;
-    background: var(--publisher-brand, var(--color-accent));
-    color: var(--publisher-on-brand, var(--color-on-accent));
-    border-radius: 4px;
-    font-size: 25px;
-    font-weight: 800;
-    line-height: 1;
-    clip-path: polygon(0 0, 100% 0, 100% 78%, 78% 100%, 0 100%);
+  .publisher-entities-page__avatar {
+    width: 40px;
+    height: 40px;
+    border: 0;
+    border-radius: 50%;
+    box-shadow: none;
   }
 
   .publisher-entities-page__identity {
@@ -79,18 +73,16 @@
 
   .publisher-entities-page__brand h1 {
     margin: 0;
-    overflow: hidden;
     color: var(--color-ink);
     font-family: var(--font-heading);
-    font-size: 1.3rem;
+    font-size: min(1.3rem, 24px);
     line-height: 1.1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
   .publisher-entities-page__brand small {
     color: var(--color-ink-muted);
-    font-size: 0.75rem;
+    font-size: min(0.75rem, 14px);
     font-weight: 720;
   }
 

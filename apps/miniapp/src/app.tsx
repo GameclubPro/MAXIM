@@ -521,7 +521,7 @@ function AppRoutes({
           }
         >
           {moderationProfile ? (
-            <Route path="/" element={<LazyChatsPage api={apiClient} />} />
+            <Route path="/" element={<LazyChatsPage api={apiClient} botUrl={me.botDialogUrl} />} />
           ) : (
             <Route
               path="/"
