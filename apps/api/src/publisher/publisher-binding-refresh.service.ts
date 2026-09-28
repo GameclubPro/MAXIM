@@ -46,6 +46,7 @@ import {
 } from './publisher-dispatch-health.service';
 
 const PUBLISHER_ACCESS_SNAPSHOT_TTL_MS = 15 * 60_000;
+const PUBLISHER_CATALOG_METADATA_MAX_AGE_MS = 30 * 60_000;
 const PUBLISHER_REFRESH_SCAN_INTERVAL_MS = 60_000;
 const PUBLISHER_READY_REFRESH_BATCH_SIZE = 200;
 const PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE = 25;
@@ -218,7 +219,7 @@ export class PublisherBindingRefreshService {
       }),
       this.prisma.managedBotChatCatalog.findUnique({
         where: { botId_chatId: { botId: this.publisherBotId, chatId } },
-        select: { entityType: true },
+        select: { entityType: true, title: true, status: true, source: true, lastSeenAt: true },
       }),
       candidateJob
         ? this.prisma.managedEntityAccessEdge.findUnique({
@@ -402,18 +403,34 @@ export class PublisherBindingRefreshService {
       !candidateJob &&
       (committedBotAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
         committedBotAccessState === ChatBotAccessState.CONFIRMED_OWNER);
+    // FLAG: Only scheduled bot checks may reuse exact-bot metadata from a recent MAX
+    // snapshot. Never advance its timestamp here or reuse bot/admin permission evidence.
+    // Webhook/manual/candidate flows still hydrate; lifecycle writes replace this source.
+    const catalogAgeMs = publisherCatalog?.lastSeenAt
+      ? probeStartedAt.getTime() - publisherCatalog.lastSeenAt.getTime()
+      : Number.NaN;
+    const reuseCatalog =
+      parallelRoster &&
+      job.reason === 'stale_access' &&
+      publisherCatalog?.source === 'publisher_targeted_snapshot' &&
+      publisherCatalog.status === 'ACTIVE' &&
+      Boolean(publisherCatalog.title?.trim()) &&
+      catalogAgeMs >= 0 &&
+      catalogAgeMs < PUBLISHER_CATALOG_METADATA_MAX_AGE_MS;
     // FLAG: Probe only after exact bot access is confirmed. Drain both independent reads
     // before returning on any error; catalog/roster writes retain their existing fences.
     const [catalogResult, rosterResult] = await Promise.allSettled([
       this.measureStage(timings, 'catalogMs', () =>
-        this.refreshPublisherCatalog(
-          chatId,
-          publisherCatalog?.entityType ?? ChatEntityType.CHAT,
-          probeStartedAt,
-          committedBotAccessCheckedAt,
-          committedBotAccessState,
-          candidateJob,
-        ),
+        reuseCatalog
+          ? Promise.resolve({ entityType: publisherCatalog!.entityType, committed: true })
+          : this.refreshPublisherCatalog(
+              chatId,
+              publisherCatalog?.entityType ?? ChatEntityType.CHAT,
+              probeStartedAt,
+              committedBotAccessCheckedAt,
+              committedBotAccessState,
+              candidateJob,
+            ),
       ),
       parallelRoster
         ? this.measureStage(timings, 'rosterMs', () =>

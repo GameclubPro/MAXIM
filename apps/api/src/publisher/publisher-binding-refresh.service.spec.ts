@@ -78,7 +78,16 @@ describe('PublisherBindingRefreshService', () => {
       },
       managedBotChatCatalog: {
         findUnique: jest
-          .fn<Promise<{ entityType: ChatEntityType } | null>, []>()
+          .fn<
+            Promise<{
+              entityType: ChatEntityType;
+              title?: string | null;
+              source?: string;
+              status?: string;
+              lastSeenAt?: Date;
+            } | null>,
+            []
+          >()
           .mockResolvedValue({ entityType: ChatEntityType.CHAT }),
       },
       publisherEntityBinding: {
@@ -249,6 +258,84 @@ describe('PublisherBindingRefreshService', () => {
     reason: 'bootstrap',
     requestedAt: '2026-08-26T12:00:00.000Z',
   } as const;
+
+  const adminAccess = {
+    isAdmin: true,
+    isOwner: false,
+    permissions: ['write'],
+    permissionsKnown: true,
+  };
+
+  const recentCatalog = () => ({
+    entityType: ChatEntityType.CHANNEL,
+    title: 'Publisher channel',
+    source: 'publisher_targeted_snapshot',
+    status: 'ACTIVE',
+    lastSeenAt: new Date(Date.now() - 11 * 60_000),
+  });
+
+  it('reuses recent scheduled metadata without extending its age or reusing permissions', async () => {
+    const { service, prisma, maxClient, tx } = createHarness(adminAccess);
+    prisma.managedBotChatCatalog.findUnique.mockResolvedValue(recentCatalog());
+    await service.refresh({ ...job, reason: 'stale_access' });
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ botId: 'publik_bot', bypassCache: true }),
+    );
+    expect(maxClient.getChatAdminAccesses).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ botId: 'publik_bot', bypassCache: true }),
+    );
+  });
+
+  it.each([
+    { source: 'publisher_webhook_chat_title_changed' },
+    { status: 'MISSING' },
+    { title: '  ' },
+    { lastSeenAt: new Date(Date.now() - 31 * 60_000) },
+    { lastSeenAt: new Date(Date.now() + 60_000) },
+  ])('hydrates scheduled metadata when its proof is unsuitable: %j', async (override) => {
+    const { service, prisma, maxClient } = createHarness(adminAccess);
+    prisma.managedBotChatCatalog.findUnique.mockResolvedValue({ ...recentCatalog(), ...override });
+    await service.refresh({ ...job, reason: 'stale_access' });
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['manual_recheck', 'policy_enablement_recheck', 'webhook_observed'] as const)(
+    'always hydrates metadata for %s',
+    async (reason) => {
+      const { service, prisma, maxClient } = createHarness(adminAccess);
+      prisma.managedBotChatCatalog.findUnique.mockResolvedValue(recentCatalog());
+      await service.refresh({ ...job, reason });
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('always hydrates metadata when refreshing a specific actor', async () => {
+    const { service, prisma, maxClient } = createHarness(adminAccess);
+    prisma.managedBotChatCatalog.findUnique.mockResolvedValue(recentCatalog());
+    await service.refresh({ ...job, reason: 'stale_user_access', candidateUserId: 'user-1' });
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      expect.objectContaining({ botId: 'publik_bot', bypassCache: true }),
+    );
+  });
+
+  it('keeps fresh metadata from bypassing lifecycle fencing on roster persistence', async () => {
+    const { service, prisma, maxClient, tx } = createHarness(adminAccess);
+    prisma.managedBotChatCatalog.findUnique.mockResolvedValue(recentCatalog());
+    tx.publisherEntityBinding.findUnique.mockResolvedValue(null);
+    await expect(service.refresh({ ...job, reason: 'stale_access' })).rejects.toBeInstanceOf(
+      PublisherCandidateRefreshSupersededError,
+    );
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(tx.managedEntityAccessEdge.createMany).not.toHaveBeenCalled();
+  });
 
   it('overlaps independent catalog and roster probes after confirming bot access', async () => {
     const f = createHarness({
