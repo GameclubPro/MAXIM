@@ -48,6 +48,11 @@ Interpret the report as follows:
   from PostgreSQL statistics are estimates and may lag or reset. Cumulative
   mutations and index scans need a second comparable observation before they
   can describe a rate; zero scans alone do not justify dropping an index.
+- Tuple mutation counters describe physical activity, including aborted work.
+  PostgreSQL 16 also increments the delete counter when aborting a speculative
+  insert during an `ON CONFLICT` race (`heap_abort_speculative` in `heapam.c`).
+  A positive claims delete delta alone does not prove that committed execution
+  evidence was removed; correlate receipt transitions and application paths.
 - Dead row counts are not a measurement of bloat or immediately recoverable disk
   space. Ordinary VACUUM normally makes internal space reusable. DELETE does not
   generally shrink relation files, and rewrites/reindexing require separate disk,

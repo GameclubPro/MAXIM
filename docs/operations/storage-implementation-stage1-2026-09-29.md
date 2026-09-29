@@ -3,6 +3,20 @@
 This implements the immediately safe portions of the current storage plan. It
 does not authorize body expiry, discard media or shorten product history.
 
+Released as API commit `b3ed5079920f768bf70fba64467810bf6c5d8eea` with manifest
+`release-20260929T204809Z-b3ed5079920f`. All 14 API roles and the OCR auxiliary
+passed the scoped smokes. Local API validation passed 13,363 tests; exact-SHA CI,
+PostgreSQL Races and CodeQL passed. Both receipt-cleanup switches are effectively
+false on the owning enqueue role.
+
+The attended live backup was stopped by its watchdog after queue lag crossed
+10 seconds (12.6 seconds observed during follow-up). Its PostgreSQL session and
+incomplete local archive were removed. This produced **no fresh verified backup
+or restore evidence**, so destructive database maintenance remains gated.
+Manifest-aware reclaim removed four unused MAXIM images outside the five saved
+releases; root free space was 7,477,870,592 bytes at 20:56 UTC, with healthy
+ingress/admin and zero queue lag. Public relations remained about 244.8 GiB.
+
 ## Changes
 
 - Three payload-only webhook preparation paths compare normalized JSON in the
