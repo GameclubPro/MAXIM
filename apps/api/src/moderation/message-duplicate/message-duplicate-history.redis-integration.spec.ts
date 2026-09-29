@@ -2,7 +2,10 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { RedisCounterService } from '../redis-counter.service';
-import { extractDuplicateMessageContent } from './message-duplicate-content';
+import {
+  digestDuplicateContent,
+  extractDuplicateMessageContent,
+} from './message-duplicate-content';
 import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
 import {
   MessageDuplicatePolicyService,
@@ -36,6 +39,8 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       });
   });
   afterEach(async () => {
+    await redis.deleteKeysByPattern(`dup:window:v1:${digestDuplicateContent(chatId)}:*`);
+    await redis.deleteKeysByPattern(`dup:window:v1:${digestDuplicateContent(`${chatId}-other`)}:*`);
     if (keys.size) await inspector.del(...keys);
     await inspector.quit();
     await redis.onModuleDestroy();
@@ -153,13 +158,59 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     mediaHashes: ['a'.repeat(64)],
   });
 
+  it.each(['SAME_AUTHOR', 'CHAT'] as const)(
+    'never chains image repeats into another window (%s)',
+    async (scope) => {
+      const input = {
+        ...imageInput(),
+        imageScope: scope,
+        settings: duplicateSettings({ duplicateWarnWindowSec: 86400 }),
+      };
+      await observe('original', 0, '', input);
+      const morning = await observe('morning', 21 * 3600000, '', input);
+      expect(morning?.binding.original?.messageId).toBe('original');
+      expect(await history.qualify(chatId, morning!.binding)).toBe(1);
+      expect(await observe('evening', 30 * 3600000, '', input)).toBeNull();
+      const next = await observe('next', 43 * 3600000, '', input);
+      expect(next?.binding.original?.messageId).toBe('evening');
+      expect(next?.binding.original?.expiresAtMs).toBe(start + 54 * 3600000);
+      expect(next?.hit.count).toBe(1);
+    },
+  );
+
+  it('keeps another author’s shared image original on a per-author reset', async () => {
+    const input = imageInput();
+    await observe('original', 0, '', input);
+    await redis.resetDuplicateWindow(chatId, '456');
+    const afterReset = Date.now() - start + 100;
+    const match = await observe('new-author', afterReset, '', { ...input, userId: '456' });
+    expect(match?.binding.original?.messageId).toBe('original');
+    expect(await history.qualify(chatId, match!.binding)).toBe(1);
+  });
+
+  it('does not promote a rejected message through an unmatched secondary fingerprint', async () => {
+    const override = {
+      settings: duplicateSettings({
+        duplicateDetectionPreset: 'CUSTOM',
+        duplicateIgnorePhonesEnabled: true,
+      }),
+    };
+    await observe('original', 0, 'one +7 (999) 123-45-67', override);
+    expect(await observe('rejected', 100, 'two +7 (999) 123-45-67', override)).not.toBeNull();
+    await history.remove(chatId, 'original');
+    expect(await observe('new', 200, 'two +7 (999) 123-45-67', override)).toBeNull();
+  });
+
   it('isolates author escalation while sharing exact-image matching and replay snapshots', async () => {
     const input = imageInput();
     expect(await observe('a1', 0, '', input)).toBeNull();
-    expect((await observe('a2', 100, '', input))?.hit.count).toBe(1);
-    expect((await observe('a3', 200, '', input))?.hit.count).toBe(2);
+    const a2 = await observe('a2', 100, '', input);
+    expect(await history.qualify(chatId, a2!.binding)).toBe(1);
+    const a3 = await observe('a3', 200, '', input);
+    expect(await history.qualify(chatId, a3!.binding)).toBe(2);
     const b = await observe('b1', 300, '', { ...input, userId: '456' });
     expect(b?.hit.count).toBe(1);
+    expect(await history.qualify(chatId, b!.binding)).toBe(1);
     expect(await history.stillMatches(chatId, b!.binding)).toBe(true);
     expect(await history.stillMatches(chatId, { ...b!.binding, requiredCount: 3 })).toBe(false);
     expect((await observe('a4', 400, '', input))?.hit.count).toBe(3);
@@ -262,6 +313,14 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await observe('c', 200, 'a', { userId: '456' })).toBeNull();
     expect(await observe('c', 200, 'a', { chatId: `${chatId}-other` })).toBeNull();
   });
+  it('does not revive an old action after content changes away and back', async () => {
+    await observe('original', 0);
+    const old = await observe('target', 100);
+    await observe('target', 200, 'different');
+    await observe('target', 300, 'a');
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+  });
+
   it('never lets a pending media observation downgrade an already verified revision', async () => {
     await observe('a', 0);
     const hit = await observe('b', 100);

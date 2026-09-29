@@ -65,6 +65,8 @@ export const MESSAGE_DUPLICATE_METRIC_COUNTERS = [
   'guard.message_duplicate_identity_changed',
   'guard.message_duplicate_content_changed',
   'guard.message_duplicate_history_changed',
+  'guard.message_duplicate_original_missing',
+  'guard.message_duplicate_original_changed',
   'guard.message_duplicate_policy_changed',
   'guard.message_duplicate_photo_policy_changed',
   'guard.message_duplicate_settings_changed',

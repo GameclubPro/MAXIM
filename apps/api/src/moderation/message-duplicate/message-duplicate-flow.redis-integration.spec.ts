@@ -1,3 +1,8 @@
+import { parseMessageDuplicateBinding } from './message-duplicate-state';
+import {
+  extractDuplicateMessageContent,
+  digestDuplicateContent,
+} from './message-duplicate-content';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
@@ -340,6 +345,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     return { update, receipt, id, time };
   };
   const ingest = async (item: ReturnType<typeof prepare>, actionEligible = true) => {
+    await service.observeLifecycle(item.update);
     await service.observe({
       update: item.update,
       webhookEventId: item.receipt,
@@ -357,6 +363,10 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   return {
     prepare,
     ingest,
+    service,
+    remote,
+    redis,
+    chatId,
     processor,
     settings,
     deleted,
@@ -374,6 +384,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     queue,
     ordering,
     async close() {
+      await redis.deleteKeysByPattern(`dup:window:v1:${digestDuplicateContent(chatId)}:*`);
       await queue.obliterate();
       await queue.close();
       if (keys.size) await inspector.del(...keys);
@@ -390,7 +401,162 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   () => {
     let flow: Awaited<ReturnType<typeof createFlow>>;
     afterEach(async () => {
+      jest.restoreAllMocks();
       await flow?.close();
+    });
+
+    it.each(['MESSAGE', 'TEXT'] as const)(
+      'anchors the 24-hour window to the accepted original (%s)',
+      async (mode) => {
+        flow = await createFlow({ duplicateCompareMode: mode, duplicateWarnWindowSec: 86400 });
+        let now = Date.now();
+        jest.spyOn(Date, 'now').mockImplementation(() => now);
+        const originalTime = now;
+        await flow.ingest(flow.prepare({ id: 'original', text: 'offer', time: now }));
+        now = originalTime + 21 * 3600000;
+        await flow.ingest(flow.prepare({ id: 'morning', text: 'offer', time: now }));
+        expect(flow.deleted).toEqual(['morning']);
+        now = originalTime + 30 * 3600000;
+        await flow.ingest(flow.prepare({ id: 'evening', text: 'offer', time: now }));
+        expect(flow.deleted).toEqual(['morning']);
+        now = originalTime + 43 * 3600000;
+        await flow.ingest(flow.prepare({ id: 'next-morning', text: 'offer', time: now }));
+        expect(flow.deleted).toEqual(['morning', 'next-morning']);
+        const evidence = parseMessageDuplicateBinding(
+          flow.records.get('intent:next-morning')!.input.event!.metadata,
+        )!;
+        expect(evidence.original!.messageId).toBe('evening');
+        expect(evidence.original!.expiresAtMs).toBe(originalTime + 54 * 3600000);
+      },
+    );
+
+    it('resumes the same sanction stage after deletion without counting the retry', async () => {
+      flow = await createFlow({ duplicateWarnEnabled: true, duplicateMuteEnabled: true });
+      await flow.ingest(flow.prepare({ text: 'offer' }));
+      const repeat = flow.prepare({ text: 'offer' });
+      await flow.ingest(repeat);
+      // The production executor deduplicates sanctions; this fixture verifies the immutable stage.
+      await flow.ingest(repeat);
+      expect(flow.sanctions.map((sanction) => sanction.action)).toEqual(['WARN', 'WARN']);
+      expect(flow.deleted).toEqual([repeat.id]);
+      const next = flow.prepare({ text: 'offer' });
+      await flow.ingest(next);
+      expect(flow.sanctions.at(-1)?.action).toBe('MUTE');
+    });
+
+    it('does not let protected attempts advance WARN to MUTE or BAN', async () => {
+      flow = await createFlow({
+        duplicateWarnEnabled: true,
+        duplicateMuteEnabled: true,
+        duplicateBanEnabled: true,
+      });
+      await flow.ingest(flow.prepare({ text: 'offer' }));
+      flow.immunity.consumeForMessage.mockResolvedValue('granted');
+      await flow.ingest(flow.prepare({ text: 'offer' }));
+      await flow.ingest(flow.prepare({ text: 'offer' }));
+      flow.immunity.consumeForMessage.mockResolvedValue('not_granted');
+      const repeat = flow.prepare({ text: 'offer' });
+      await flow.ingest(repeat);
+      expect(flow.sanctions).toEqual([{ messageId: repeat.id, action: 'WARN' }]);
+    });
+
+    it('requires a live original even when no removal webhook was delivered', async () => {
+      flow = await createFlow();
+      const first = flow.prepare({ text: 'offer' });
+      await flow.ingest(first);
+      flow.remote.delete(first.id);
+      await flow.ingest(flow.prepare({ text: 'offer' }));
+      expect(flow.deleted).toEqual([]);
+    });
+
+    it('never deletes the original after a cosmetic edit following a rejected duplicate', async () => {
+      flow = await createFlow();
+      const first = flow.prepare({ text: 'offer' });
+      await flow.ingest(first);
+      const second = flow.prepare({ text: 'offer' });
+      await flow.ingest(second);
+      await flow.ingest(
+        flow.prepare({
+          id: first.id,
+          text: '  offer  ',
+          time: second.time + 100,
+          editedFrom: first.time,
+        }),
+      );
+      expect(flow.deleted).toEqual([second.id]);
+    });
+
+    it('checks materially changed old content against a newer original', async () => {
+      flow = await createFlow();
+      const old = flow.prepare({ text: 'old unrelated text' });
+      await flow.ingest(old);
+      const original = flow.prepare({ text: 'offer' });
+      await flow.ingest(original);
+      await flow.ingest(
+        flow.prepare({
+          id: old.id,
+          text: 'offer',
+          time: original.time + 100,
+          editedFrom: old.time,
+        }),
+      );
+      expect(flow.deleted).toEqual([old.id]);
+    });
+
+    it('does not rejuvenate an old original when whitespace is edited', async () => {
+      flow = await createFlow({ duplicateWarnWindowSec: 86400 });
+      const now = Date.now();
+      const old = flow.prepare({ id: 'old', text: 'offer', time: now - 26 * 3600000 });
+      await flow.history.observe({
+        chatId: flow.chatId,
+        userId: '123',
+        messageId: old.id,
+        eventTimestampMs: old.time,
+        controlRevision: 1,
+        settings: flow.settings,
+        content: extractDuplicateMessageContent(old.update.raw),
+      });
+      await flow.ingest(
+        flow.prepare({ id: old.id, text: ' offer ', time: now - 1000, editedFrom: old.time }),
+      );
+      await flow.ingest(flow.prepare({ text: 'offer', time: now }));
+      expect(flow.deleted).toEqual([]);
+    });
+
+    it('invalidates evidence for an edit even when normal observation is bypassed', async () => {
+      flow = await createFlow();
+      const first = flow.prepare({ text: 'offer' });
+      await flow.ingest(first);
+      const edit = flow.prepare({
+        id: first.id,
+        text: 'different',
+        time: first.time + 100,
+        editedFrom: first.time,
+      });
+      await flow.service.observeLifecycle(edit.update);
+      await flow.ingest(flow.prepare({ text: 'offer', time: first.time + 200 }));
+      expect(flow.deleted).toEqual([]);
+    });
+
+    it('fails open on conflicting edits with the same event timestamp', async () => {
+      flow = await createFlow();
+      const first = flow.prepare({ text: 'offer' });
+      await flow.ingest(first);
+      await flow.ingest(
+        flow.prepare({ id: first.id, text: 'different', time: first.time, editedFrom: first.time }),
+      );
+      await flow.ingest(flow.prepare({ text: 'offer', time: first.time + 200 }));
+      expect(flow.deleted).toEqual([]);
+    });
+
+    it('fences pre-release originals and delayed media after a manual reset', async () => {
+      flow = await createFlow();
+      const first = flow.prepare({ text: 'offer' });
+      await flow.ingest(first);
+      await flow.redis.resetDuplicateWindow(flow.chatId, '123');
+      await flow.ingest(first);
+      await flow.ingest(flow.prepare({ text: 'offer', time: Date.now() + 100 }));
+      expect(flow.deleted).toEqual([]);
     });
 
     it('deletes the second photo-only message, even with a new ID and lossless encoding', async () => {

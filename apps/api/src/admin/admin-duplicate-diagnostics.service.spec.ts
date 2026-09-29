@@ -67,13 +67,38 @@ describe('duplicate diagnostics', () => {
     expect(sql.values).toContain(21);
     expect(sql.sql).toContain('ORDER BY created_at DESC');
     expect(sql.sql).toContain('ORDER BY reason_key ASC LIMIT 9');
-    expect(sql.sql).not.toMatch(/webhook_events|masked_excerpt|metadata|candidate_failures/);
+    expect(sql.sql).toContain("metadata->'messageDuplicate'->'original' AS original");
+    expect(sql.sql).not.toMatch(/webhook_events|masked_excerpt|candidate_failures/);
     expect(s.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       timeout: 3000,
       maxWait: 1000,
     });
     expect(JSON.stringify(result)).not.toMatch(/private-bot-id|chat-private|lastErrorCode/);
     expect(result.history.attempts[0]?.outcome).toBe('RETRYING');
+  });
+
+  it('exposes only original identity and fixed dates, without internal hashes or author IDs', async () => {
+    const original = {
+      member: 'a'.repeat(64),
+      author: 'b'.repeat(64),
+      messageId: 'original-id',
+      senderId: 'private-author',
+      publishedAtMs: now - 3600000,
+      observedAtMs: now - 3600000,
+      expiresAtMs: now + 23 * 3600000,
+      sourceDigest: 'c'.repeat(64),
+      contentDigest: 'd'.repeat(64),
+      mediaHashes: [],
+      epoch: 0,
+    };
+    const result = await setup([row({ original })]).service.read('chat');
+    expect(result.history.attempts[0]?.original).toEqual({
+      messageId: 'original-id',
+      publishedAt: new Date(original.publishedAtMs).toISOString(),
+      repeatAllowedAt: new Date(original.expiresAtMs).toISOString(),
+    });
+    expect(JSON.stringify(result)).not.toMatch(/private-author|sourceDigest|mediaHashes/);
+    expect(presentDuplicateDeletionAttempt(row(), now).original).toBeUndefined();
   });
 
   it('does not turn failed history reads into successful empty results', async () => {
@@ -147,8 +172,8 @@ describe('duplicate diagnostics', () => {
   });
 
   it.each([
-    ['off', 'LEGACY_TEXT'],
-    ['shadow', 'LEGACY_TEXT'],
+    ['off', 'OFF'],
+    ['shadow', 'OBSERVE'],
     ['delete_only', 'DELETE_ONLY'],
     ['full', 'FULL'],
   ])('separates saved enablement and mode %s', async (mode, expected) => {

@@ -1,3 +1,4 @@
+import { messageDuplicateOriginalSchema } from '../moderation/message-duplicate/message-duplicate-state';
 import { Injectable } from '@nestjs/common';
 import {
   duplicateDiagnosticsResponseSchema,
@@ -36,6 +37,7 @@ type AttemptRow = {
   lastErrorCode: string | null;
   duplicate: boolean;
   reasonsLimited: boolean;
+  original?: unknown;
 };
 
 export function presentDuplicateDeletionAttempt(
@@ -63,12 +65,24 @@ export function presentDuplicateDeletionAttempt(
     message_duplicate_content_changed: 'CONTENT_CHANGED',
     message_duplicate_identity_changed: 'CONTENT_CHANGED',
     message_duplicate_history_changed: 'CONTENT_CHANGED',
+    message_duplicate_original_missing: 'CONTENT_CHANGED',
+    message_duplicate_original_changed: 'CONTENT_CHANGED',
     message_duplicate_policy_changed: 'POLICY_CHANGED',
     message_duplicate_settings_changed: 'POLICY_CHANGED',
     message_duplicate_photo_policy_changed: 'POLICY_CHANGED',
     message_duplicate_manual_release: 'IMMUNITY',
   };
+  const original = messageDuplicateOriginalSchema.safeParse(row.original);
   return {
+    ...(original.success
+      ? {
+          original: {
+            messageId: original.data.messageId,
+            publishedAt: new Date(original.data.publishedAtMs).toISOString(),
+            repeatAllowedAt: new Date(original.data.expiresAtMs).toISOString(),
+          },
+        }
+      : {}),
     id: row.id,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -109,7 +123,9 @@ export class AdminDuplicateDiagnosticsService {
           ? 'FULL'
           : policy.mode === 'delete_only'
             ? 'DELETE_ONLY'
-            : 'LEGACY_TEXT';
+            : policy.mode === 'off'
+              ? 'OFF'
+              : 'OBSERVE';
     } catch {
       /* FLAG: Unknown runtime state must not promise enforcement. */
     }
@@ -130,7 +146,7 @@ export class AdminDuplicateDiagnosticsService {
           await tx.$executeRaw`SET LOCAL statement_timeout = '2000ms'`;
           return tx.$queryRaw<AttemptRow[]>(Prisma.sql`
           WITH statuses(status) AS (VALUES ${Prisma.join(STATUSES.map((status) => Prisma.sql`(CAST(${status} AS "ModerationDeleteIntentStatus"))`))})
-          SELECT recent.*, reason."duplicate", reason."reasonsLimited"
+          SELECT recent.*, reason."duplicate", reason."reasonsLimited", reason."original"
           FROM statuses
           CROSS JOIN LATERAL (
             SELECT id, status, created_at AS "createdAt", updated_at AS "updatedAt",
@@ -144,9 +160,11 @@ export class AdminDuplicateDiagnosticsService {
           ) recent
           CROSS JOIN LATERAL (
             SELECT COALESCE(bool_or(rule_code = 'DUPLICATE_DELETE'), false) AS "duplicate",
-              count(*) > 8 AS "reasonsLimited"
+              count(*) > 8 AS "reasonsLimited",
+              (array_agg(original) FILTER (WHERE rule_code = 'DUPLICATE_DELETE' AND original IS NOT NULL))[1] AS "original"
             FROM (
-              SELECT rule_code FROM moderation_delete_intent_reasons
+              SELECT rule_code, metadata->'messageDuplicate'->'original' AS original
+              FROM moderation_delete_intent_reasons
               WHERE intent_id = recent.id ORDER BY reason_key ASC LIMIT 9
             ) bounded_reasons
           ) reason

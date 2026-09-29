@@ -12,12 +12,16 @@ import {
   extractDuplicateMessageContent,
   exactImageSourceDigest,
 } from './message-duplicate-content';
-import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
+import {
+  duplicateSourceDigest,
+  MessageDuplicateHistoryService,
+} from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
 import {
   MESSAGE_DUPLICATE_SOURCE,
   messageDuplicateSettingsDigest,
+  messageDuplicateOriginalSchema,
   exactImageSettingsDigest,
   messageDuplicateSanctionSettingsDigest,
   parseMessageDuplicateBinding,
@@ -115,8 +119,19 @@ export class MessageDuplicateDeleteGuardService {
     }
   }
 
+  async qualify(params: MessageDuplicateGuardInput): Promise<number | null> {
+    // FLAG: Resume the immutable stage after our own deletion; the sanction guard still
+    // requires its exact durable receipt. Never reserve another stage on delivery retry.
+    const qualified = await this.history.qualified(params.chatId, params.binding);
+    if (qualified !== null) return qualified;
+    if ((await this.assertMessageStillActionable(params)) !== 'allowed') return null;
+    return this.history.qualify(params.chatId, params.binding);
+  }
+
   private async checkMessage(params: MessageDuplicateGuardInput): Promise<'allowed' | 'absent'> {
     const { binding } = params;
+    if (!binding.original)
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_binding_invalid');
     if (
       params.subjectUserId !== binding.senderId ||
       params.messageId !== binding.messageId ||
@@ -175,7 +190,9 @@ export class MessageDuplicateDeleteGuardService {
         recorded.eventTimestampMs !== binding.eventTimestampMs ||
         recorded.controlRevision !== binding.controlRevision ||
         recorded.settingsDigest !== binding.settingsDigest ||
-        JSON.stringify(recorded.sanction) !== JSON.stringify(binding.sanction)
+        JSON.stringify(recorded.sanction) !== JSON.stringify(binding.sanction) ||
+        JSON.stringify(recorded.original) !==
+          JSON.stringify(messageDuplicateOriginalSchema.parse(binding.original))
       ) {
         throw new MessageDuplicateGuardRejectedError('message_duplicate_unproven_absence');
       }
@@ -205,7 +222,48 @@ export class MessageDuplicateDeleteGuardService {
         throw new MessageDuplicateGuardRejectedError('message_duplicate_content_changed');
       }
     }
-    if (!(await this.history.stillMatches(params.chatId, binding))) {
+    const originalRaw = await this.max.getExactMessageRow(
+      params.chatId,
+      binding.original.messageId,
+      options,
+    );
+    if (!originalRaw) {
+      await this.history.remove(params.chatId, binding.original.messageId);
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_original_missing');
+    }
+    const originalMessage = this.parser.parse({
+      type: 'message_created',
+      updateId: 'message-duplicate-original-guard',
+      message: originalRaw,
+    }).message;
+    const originalContent = extractDuplicateMessageContent(originalRaw, false);
+    if (
+      !originalMessage ||
+      originalMessage.chatId !== params.chatId ||
+      originalMessage.messageId !== binding.original.messageId ||
+      originalMessage.senderId !== binding.original.senderId ||
+      originalMessage.entityType === 'channel' ||
+      duplicateSourceDigest(originalContent, binding.compareMode) !==
+        binding.original.sourceDigest ||
+      buildMessageDuplicateIdentity(
+        originalContent,
+        binding.compareMode,
+        binding.original.mediaHashes,
+      ) !== binding.original.contentDigest
+    ) {
+      // FLAG: A missed edit is not proof of removal. Revoke the observed evidence using its
+      // actual current content; never manufacture a new publication or penalty from this read.
+      await this.history.observeLifecycle({
+        chatId: params.chatId,
+        messageId: binding.original.messageId,
+        eventTimestampMs: Date.now(),
+        content: originalContent,
+      });
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_original_changed');
+    }
+    if (
+      !(await this.history.stillMatches(params.chatId, binding, Boolean(params.sanctionIntentId)))
+    ) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
     }
     const protection = await this.immunity.consumeForMessage({
@@ -235,7 +293,8 @@ export class MessageDuplicateDeleteGuardService {
       (requireFull && (binding.version !== 2 || !binding.sanction)) ||
       policy.revision !== binding.controlRevision ||
       binding.eventTimestampMs < policy.effectiveAtMs ||
-      Date.now() >= binding.eventTimestampMs + binding.windowSeconds * 1000 ||
+      !binding.original ||
+      Date.now() >= binding.original.expiresAtMs ||
       binding.eventTimestampMs > Date.now() + 60_000
     ) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_policy_changed');
@@ -267,10 +326,7 @@ export class MessageDuplicateDeleteGuardService {
       (binding.compareMode === 'IMAGE' &&
         (settings.duplicateCompareMode === 'TEXT' ||
           settings.duplicatePhotoScope !== binding.imageScope)) ||
-      Math.max(
-        resolveDuplicateFlowConfig(settings).allowedCount + 2,
-        (binding.sanction?.threshold ?? 0) + 1,
-      ) !== binding.requiredCount
+      resolveDuplicateFlowConfig(settings).allowedCount + 2 !== binding.requiredCount
     ) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_settings_changed');
     }

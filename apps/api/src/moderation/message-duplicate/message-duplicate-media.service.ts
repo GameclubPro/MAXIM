@@ -1,3 +1,4 @@
+import { duplicatePublicationTime } from './message-duplicate-publication-time';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
@@ -290,6 +291,7 @@ export class MessageDuplicateMediaService {
               userId: baselineMessage.senderId,
               messageId: baselineMessage.messageId,
               eventTimestampMs: baseline.eventTimestampMs,
+              publishedAtMs: duplicatePublicationTime(baseline.update) ?? 0,
               controlRevision: policy.revision,
               settings,
               mediaHashes: verified.hashes,
@@ -335,6 +337,7 @@ export class MessageDuplicateMediaService {
       userId: message.senderId,
       messageId: job.messageId,
       eventTimestampMs: job.eventTimestampMs,
+      publishedAtMs: duplicatePublicationTime(source.update) ?? 0,
       controlRevision: policy.revision,
       settings,
       mediaHashes: verified.hashes,

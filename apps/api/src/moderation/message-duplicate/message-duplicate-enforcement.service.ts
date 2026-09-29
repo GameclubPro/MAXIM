@@ -58,10 +58,24 @@ export class MessageDuplicateEnforcementService {
     }
     const full = policy.mode === 'full';
     const binding: MessageDuplicateBinding = { ...params.binding, ...(full ? { version: 2 } : {}) };
+    let repeatCount: number | null;
+    try {
+      repeatCount = await this.guard.qualify({
+        chatId: params.chatId,
+        messageId: binding.messageId,
+        subjectUserId: binding.senderId,
+        botId: params.botId,
+        binding,
+      });
+    } catch (error) {
+      if (error instanceof MessageDuplicateGuardRejectedError) return false;
+      throw error;
+    }
+    if (repeatCount === null) return false;
     const decision = full
       ? resolveDuplicateFlowOutcome({
           settings: params.settings,
-          repeatCount: params.hit.count,
+          repeatCount,
           hash: params.hit.hash,
           fingerprintType: params.hit.fingerprintType,
         }).decision
@@ -73,7 +87,6 @@ export class MessageDuplicateEnforcementService {
         threshold: decision.threshold,
         settingsDigest: messageDuplicateSanctionSettingsDigest(params.settings, imageOnly),
       };
-      binding.requiredCount = Math.max(binding.requiredCount, decision.threshold + 1);
     }
     if (full && (!params.update || !params.executeFullAction))
       throw new Error('Full message duplicate action executor unavailable');
@@ -100,9 +113,7 @@ export class MessageDuplicateEnforcementService {
       originBotId: params.botId,
       ruleCode: 'DUPLICATE_DELETE',
       reasonKey: `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}`,
-      retryUntilAt: new Date(
-        Math.min(policy.expiresAtMs, binding.eventTimestampMs + binding.windowSeconds * 1000),
-      ),
+      retryUntilAt: new Date(Math.min(policy.expiresAtMs, binding.original!.expiresAtMs)),
       event: {
         userId: binding.senderId,
         eventType: 'MESSAGE',
@@ -112,7 +123,7 @@ export class MessageDuplicateEnforcementService {
           duplicateSource: MESSAGE_DUPLICATE_SOURCE,
           messageDuplicate: binding,
           fingerprintType: params.hit.fingerprintType,
-          count: params.hit.count,
+          count: repeatCount,
           windowSec: binding.windowSeconds,
           reason: 'Repeated message content',
           enforcementScope: full ? 'full' : 'delete_only',
@@ -181,7 +192,10 @@ export class MessageDuplicateEnforcementService {
                   );
               },
             }
-          : { ...common, outcome: { kind: 'hit', hit: { ...params.hit, metadata } } },
+          : {
+              ...common,
+              outcome: { kind: 'hit', hit: { ...params.hit, count: repeatCount, metadata } },
+            },
       );
     }
     return result.claim !== 'blocked';

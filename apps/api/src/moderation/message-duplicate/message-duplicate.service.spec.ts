@@ -12,7 +12,7 @@ describe('message duplicate main-path admission', () => {
     );
     expect(await service.isAuthoritative('-123')).toBe(true);
     policy.resolve.mockResolvedValue({ mode: 'delete_only' });
-    expect(await service.isAuthoritative('-123')).toBe(false);
+    expect(await service.isAuthoritative('-123')).toBe(true);
   });
   function setup() {
     const policy = { resolve: jest.fn().mockResolvedValue({ mode: 'delete_only', revision: 1 }) };

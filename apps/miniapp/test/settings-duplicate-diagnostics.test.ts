@@ -1,3 +1,4 @@
+import type { DuplicateDeletionAttempt } from '@maxim/contracts/settings';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
@@ -28,6 +29,7 @@ test('settings summary uses the same message numbering as the controls and keeps
 function render(
   state: 'CONFIRMED' | 'MISSING' | 'UNKNOWN',
   options = { available: true, limited: false, failed: false },
+  attempts: DuplicateDeletionAttempt[] = [],
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const key = ['duplicate-diagnostics', 'user', 'chat'];
@@ -43,7 +45,7 @@ function render(
         since: time,
         sampledIntents: 0,
         limited: options.limited,
-        attempts: [],
+        attempts,
       },
     }),
   );
@@ -95,4 +97,26 @@ test('unknown and capped history do not claim there were no attempts', () => {
   const partial = render('CONFIRMED', { available: true, limited: true, failed: false });
   assert.match(partial, /Неполная выборка/);
   assert.doesNotMatch(partial, /Попыток удаления не было/);
+});
+
+test('shows the fixed original window without confusing it with delivery retries', () => {
+  const html = render('CONFIRMED', undefined, [
+    {
+      id: 'attempt',
+      createdAt: time,
+      updatedAt: time,
+      outcome: 'DELETED',
+      reason: null,
+      nextAttemptAt: null,
+      original: {
+        messageId: 'original-id',
+        publishedAt: time,
+        repeatAllowedAt: '2026-09-15T12:00:00.000Z',
+      },
+    },
+  ]);
+  assert.match(html, /Оригинал:/);
+  assert.match(html, /Повтор разрешён с/);
+  assert.match(html, /original-id/);
+  assert.doesNotMatch(html, /Следующая попытка:/);
 });

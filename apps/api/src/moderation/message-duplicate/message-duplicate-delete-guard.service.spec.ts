@@ -5,6 +5,7 @@ import {
 } from './message-duplicate-delete-guard.service';
 import {
   buildMessageDuplicateIdentity,
+  digestDuplicateContent,
   extractDuplicateMessageContent,
   exactImageSourceDigest,
 } from './message-duplicate-content';
@@ -42,6 +43,19 @@ function setup() {
     windowSeconds: 3600,
     requiredCount: 2,
   };
+  binding.original = {
+    member: digestDuplicateContent('m1'),
+    author: digestDuplicateContent('123'),
+    messageId: 'm1',
+    senderId: '123',
+    publishedAtMs: binding.eventTimestampMs - 1000,
+    observedAtMs: binding.eventTimestampMs - 1000,
+    expiresAtMs: binding.eventTimestampMs + 3599000,
+    sourceDigest: binding.sourceDigest,
+    contentDigest: binding.contentDigest,
+    mediaHashes: [],
+    epoch: 0,
+  };
   const policy = {
     resolve: jest.fn().mockResolvedValue({
       mode: 'delete_only',
@@ -70,6 +84,16 @@ function setup() {
       .mockResolvedValue({ userId: '123', isAdmin: false, isOwner: false }),
     getExactMessageRow: jest.fn().mockResolvedValue((update.raw as { message: unknown }).message),
   };
+  const targetLookup = max.getExactMessageRow;
+  const originalUpdate = duplicateUpdate('m1', binding.original.publishedAtMs);
+  const originalRaw = (originalUpdate.raw as { message: unknown }).message;
+  const guardedMax = {
+    ...max,
+    getExactMessageRow: async (chatId: string, messageId: string, options: unknown) =>
+      messageId === 'm1'
+        ? originalRaw
+        : (targetLookup as (...args: unknown[]) => Promise<unknown>)(chatId, messageId, options),
+  };
   const bots = { isKnownBotUserId: jest.fn().mockReturnValue(false) };
   const immunity = { consumeForMessage: jest.fn().mockResolvedValue('not_granted') };
   const photos = {
@@ -79,11 +103,15 @@ function setup() {
       controlRevision: 1,
     }),
   };
-  const history = { stillMatches: jest.fn().mockResolvedValue(true) };
+  const history = {
+    stillMatches: jest.fn().mockResolvedValue(true),
+    remove: jest.fn(),
+    observeLifecycle: jest.fn(),
+  };
   const metrics = { record: jest.fn(), recordGuardRejection: jest.fn() };
   const service = new MessageDuplicateDeleteGuardService(
     prisma as never,
-    max as never,
+    guardedMax as never,
     bots as never,
     immunity as never,
     policy as never,
@@ -100,6 +128,7 @@ function setup() {
   };
   return {
     service,
+    originalRaw,
     binding,
     params,
     settings,
@@ -174,6 +203,22 @@ describe('message duplicate final delete guard', () => {
     );
     expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
   });
+  it('does not execute delayed deletion after the original window expires', async () => {
+    const s = setup();
+    s.binding.original!.expiresAtMs = Date.now() - 1;
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow('policy_changed');
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('rejects historical rolling-window intents that lack original evidence', async () => {
+    const s = setup();
+    delete s.binding.original;
+    await expect(s.service.assertIntentStillActionable(s.params)).rejects.toThrow(
+      'binding_invalid',
+    );
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
   it('allows a renewed photo URL with verified content, but rejects a replacement photo', async () => {
     const s = setup();
     s.binding.version = 2;
@@ -199,6 +244,15 @@ describe('message duplicate final delete guard', () => {
       'IMAGE',
       s.binding.mediaHashes,
     )!;
+    const originalImage = (original.raw as { message: Record<string, unknown> }).message;
+    Object.assign(s.binding.original!, {
+      sourceDigest: s.binding.sourceDigest,
+      contentDigest: s.binding.contentDigest,
+      mediaHashes: s.binding.mediaHashes,
+    });
+    Object.assign(s.originalRaw as object, originalImage, {
+      body: { ...(originalImage.body as object), mid: 'm1' },
+    });
     const renewed = image('photo', 'https://i.oneme.ru/new');
     s.max.getExactMessageRow.mockResolvedValue((renewed.raw as { message: unknown }).message);
     await expect(s.service.assertIntentStillActionable(s.params)).resolves.toBe('allowed');

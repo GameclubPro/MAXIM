@@ -1,3 +1,8 @@
+import {
+  MESSAGE_DUPLICATE_WINDOW_SCRIPT,
+  type DuplicateWindowResult,
+} from './message-duplicate/message-duplicate-window.script';
+import { digestDuplicateContent } from './message-duplicate/message-duplicate-content';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
@@ -295,6 +300,26 @@ export class RedisCounterService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     await this.redis.quit();
+  }
+
+  async duplicateWindow(
+    chatId: string,
+    input: Record<string, unknown>,
+  ): Promise<DuplicateWindowResult> {
+    const raw = await this.redis.eval(
+      MESSAGE_DUPLICATE_WINDOW_SCRIPT,
+      1,
+      `dup:window:v1:${digestDuplicateContent(chatId)}:`,
+      JSON.stringify({ ...input, deadline: Date.now() + 250 }),
+    );
+    const result = JSON.parse(String(raw)) as DuplicateWindowResult;
+    if (result.kind === 'deadline_exceeded')
+      throw new Error('Message duplicate window deadline exceeded');
+    return result;
+  }
+
+  async resetDuplicateWindow(chatId: string, userId: string): Promise<void> {
+    await this.duplicateWindow(chatId, { op: 'reset', author: digestDuplicateContent(userId) });
   }
 
   async incrementWithTtl(key: string, ttlSeconds: number): Promise<number> {

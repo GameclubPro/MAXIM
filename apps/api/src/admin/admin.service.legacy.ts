@@ -13425,6 +13425,10 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async resetDuplicateModerationState(chatId: string, targetUserId: string): Promise<void> {
+    // FLAG: A per-author cutoff fences current history, queued media and immutable bindings.
+    // Shared IMAGE originals owned by other participants remain intact.
+    await this.redisCounter?.resetDuplicateWindow?.(chatId, targetUserId);
+
     const deleteKeysByPattern = (this.redisCounter as Partial<RedisCounterService> | undefined)
       ?.deleteKeysByPattern;
     if (typeof deleteKeysByPattern !== 'function') {

@@ -3,7 +3,8 @@
 ## Scope
 
 Message-v1 extends duplicate checks to nonempty short text, visible forwards and attachment
-captions. Full mode owns message matching instead of the legacy admission filter and applies
+captions. The registered message service owns duplicate admission in every runtime mode;
+OFF/shadow never fall back to the retired rolling text filter. Full mode applies
 the chat's configured explanation/WARN/MUTE/BAN ladder, per author and chat. Disabled reactions,
 mute duration, allowed repeats and comparison windows are preserved. Missing, expired or invalid
 runtime authority cannot authorize new actions. Fleet-wide rollout is an explicit product
@@ -27,6 +28,30 @@ proof. Old message bindings with photos are rejected; they cannot acquire the ne
 The separate perceptual/photo-only filter is retired, its authority is permanently OFF and its
 queue consumer only abandons old ordering entries. Never infer equality from media IDs or
 bypass content verification. Legacy storage fields remain for rollback-safe schema compatibility.
+
+## Fixed Publication Windows
+
+`dup:window:v1` stores a fixed window per verified fingerprint, anchored to an accepted original's
+MAX `Message.timestamp`. Deleted/rejected attempts never become originals or extend the window.
+A newly accepted publication after expiry starts a new window. Configured allowed copies and
+qualified violations are counted separately; immunity is checked before reserving a reaction stage.
+Each message can reserve only one stage, and delivery retries recover that same stage, including
+after a confirmed deletion. The final guard still rechecks authority before each action.
+
+Cosmetic edits preserve publication time; an observed material edit starts the clock for its new
+content at the edit timestamp, preventing old posts from bypassing matching. Changed content, conflicting edits with identical
+update timestamps and removal events revoke evidence before moderation's early returns. The final
+guard also reads the exact original from MAX, so missing removal webhooks cannot authorize deletion
+against an absent original. An unavailable MAX lookup retries; it never proves absence.
+Manual release advances a per-author Redis cutoff in constant time, fencing prior observations,
+bindings and delayed media without deleting another author's shared IMAGE original. Existing
+manual-release grace remains in effect.
+
+Each atomic history operation examines at most 16 fingerprints; records and counters expire after
+the bounded history retention. Lifecycle tombstones and reset cutoffs cover the maximum supported
+window. This logic does not change burst, quota or other rolling counters. The new settings digest
+and required original proof reject old queued evidence; no bulk Redis purge or database migration
+is needed. A deployment starts fresh duplicate history.
 
 ## Validation And Delivery
 
@@ -98,7 +123,7 @@ Replace example IDs/revisions with reviewed values. V2 accepts either a bounded 
 most 24 hours or explicit `--permanent`. Scope is either at most 1000 unique IDs or
 `--all-enabled-chats`; global scope requires no fleet enumeration or settings writes. Per-chat
 `antiDuplicateEnabled` remains mandatory. Every update, including permanent OFF, advances the
-CAS revision. New revisions/settings use separate fingerprint membership sets, so shadow or
+CAS revision. New revisions/settings use separate fingerprint groups, so shadow or
 pre-activation history cannot retrospectively escalate sanctions. Status output omits chat IDs
 and message contents. Do not change unrelated chat or photo settings.
 
@@ -113,15 +138,16 @@ request `POST /v1/chats/:chatId/duplicate-diagnostics/recheck`. GET uses existin
 snapshots; POST refreshes this chat through the shared multi-bot planner and its backoff.
 Neither endpoint sends messages, deletes content or changes chat policy. A stale/backoff-retained
 snapshot cannot confirm a requested live recheck. Saved enablement, runtime mode and permission
-proof are separate fields; message OFF/shadow still has the legacy text path and is not labelled
-as globally disabled enforcement.
+proof are separate fields. OFF stops duplicate actions; OBSERVE records matches without acting.
 
 History samples at most 20 recent intents per status from the existing chat/status/created-time
 index, inspecting at most 9 reason rows per candidate. It returns at most five duplicate entries
 created in the last 24 hours, without text, user/bot identities or free-form errors. Saturated
 samples are explicitly incomplete; a query timeout is unavailable history, not zero attempts.
 Only a persisted remote deletion receipt is labelled deleted; verified absence remains a separate
-outcome. The read query has a two-second statement deadline and a three-second transaction limit.
+outcome. New entries also expose the original message ID, publication time and fixed repeat-allowed
+time, selected only from these bounded reason rows. Historical entries can lack this evidence.
+The read query has a two-second statement deadline and a three-second transaction limit.
 
 ## Stop And Rollback
 

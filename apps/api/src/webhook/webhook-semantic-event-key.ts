@@ -1,3 +1,4 @@
+import { extractDuplicateMessageContent } from '../moderation/message-duplicate/message-duplicate-content';
 type RecordLike = Record<string, unknown>;
 
 function asRecord(value: unknown): RecordLike | null {
@@ -292,7 +293,10 @@ export function buildWebhookSemanticEventKey(payload: unknown): string | null {
 
   if (chatId && messageId && updateType === 'message_edited') {
     const eventAtIso = hasTrustedEventTimestamp ? readEventTimestampIso(row) : null;
-    return eventAtIso ? `message:${updateType}:${chatId}:${messageId}:${eventAtIso}` : null;
+    const content = extractDuplicateMessageContent(row.raw ?? row);
+    return eventAtIso
+      ? `message:${updateType}:${chatId}:${messageId}:${eventAtIso}:${content.sourceDigest}`
+      : null;
   }
 
   if (updateType === 'chat_title_changed') {

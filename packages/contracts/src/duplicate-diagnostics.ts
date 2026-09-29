@@ -24,12 +24,19 @@ export const duplicateDeletionAttemptSchema = z.object({
     .enum(['IMMUNITY', 'AUTHOR_LEFT', 'CONTENT_CHANGED', 'POLICY_CHANGED', 'UNKNOWN'])
     .nullable(),
   nextAttemptAt: z.iso.datetime().nullable(),
+  original: z
+    .object({
+      messageId: z.string().min(1).max(512),
+      publishedAt: z.iso.datetime(),
+      repeatAllowedAt: z.iso.datetime(),
+    })
+    .optional(),
 });
 
 export const duplicateDiagnosticsResponseSchema = z.object({
   generatedAt: z.iso.datetime(),
   enabled: z.boolean(),
-  mode: z.enum(['FULL', 'DELETE_ONLY', 'LEGACY_TEXT', 'UNKNOWN']),
+  mode: z.enum(['FULL', 'DELETE_ONLY', 'OFF', 'OBSERVE', 'LEGACY_TEXT', 'UNKNOWN']),
   capability: duplicateDeletionCapabilitySchema,
   history: z.object({
     available: z.boolean(),

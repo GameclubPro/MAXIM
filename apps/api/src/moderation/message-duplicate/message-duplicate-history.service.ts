@@ -2,7 +2,6 @@ import { Injectable, Optional } from '@nestjs/common';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { raceWithTimeout } from '../../common/promise-timeout.util';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
-import { resolveDuplicateHistoryRetentionSeconds } from '../duplicate-state';
 import { RedisCounterService } from '../redis-counter.service';
 import {
   RuleEngineDuplicateDetector,
@@ -18,10 +17,9 @@ import {
 } from './message-duplicate-content';
 import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
-  messageDuplicateKeys,
+  messageDuplicateOriginalSchema,
   messageDuplicateSettingsDigest,
   exactImageSettingsDigest,
-  exactImageKeys,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 
@@ -31,6 +29,7 @@ export type MessageDuplicateObservation = {
   userId: string;
   messageId: string;
   eventTimestampMs: number;
+  publishedAtMs?: number;
   controlRevision: number;
   settings: ChatSettings;
   mediaHashes?: readonly string[];
@@ -104,10 +103,6 @@ export class MessageDuplicateHistoryService {
     const mediaHashes = [...(input.mediaHashes ?? [])];
     const identity = buildMessageDuplicateIdentity(input.content, mode, mediaHashes);
     const flow = resolveDuplicateFlowConfig(input.settings);
-    const keys = input.imageScope
-      ? exactImageKeys(input.chatId, input.userId, input.messageId, '', input.imageScope)
-      : messageDuplicateKeys(input.chatId, input.userId, input.messageId, '');
-    const deadlineAtMs = Date.now() + 250;
     const parts: DuplicateFingerprint[] = identity
       ? mode === 'IMAGE'
         ? [{ type: input.content.media.length === 1 ? 'image' : 'image_set', value: identity }]
@@ -134,89 +129,57 @@ export class MessageDuplicateHistoryService {
             : [],
       }),
     }));
-    const memberships = patterns.map((pattern) =>
-      input.imageScope
-        ? exactImageKeys(
-            input.chatId,
-            input.userId,
-            input.messageId,
-            pattern.hash,
-            input.imageScope,
-          )
-        : messageDuplicateKeys(input.chatId, input.userId, input.messageId, pattern.hash),
-    );
-    const sharedImageKeys =
-      input.imageScope === 'CHAT' && patterns[0]
-        ? exactImageKeys(input.chatId, input.userId, input.messageId, patterns[0].hash, 'CHAT')
-        : null;
-    const revision = input.eventTimestampMs * 2 + (identity ? 1 : 0);
-    const mutation = await raceWithTimeout({
-      operation: () =>
-        this.redis.replaceRevisionedSetMembershipsBeforeDeadline({
-          stateKey: keys.stateKey,
-          member: keys.member,
-          revision,
-          scoreTimestampMs: input.eventTimestampMs,
-          membershipKeys: sharedImageKeys
-            ? [sharedImageKeys.membershipKey, sharedImageKeys.authorMembershipKey]
-            : memberships.map((entry) => entry.membershipKey),
-          ...(sharedImageKeys
-            ? {
-                sharedBaseline: {
-                  sharedKey: sharedImageKeys.membershipKey,
-                  authorKey: sharedImageKeys.authorMembershipKey,
-                },
-              }
-            : {}),
-          windowSeconds: flow.windowSec,
-          ttlSeconds: resolveDuplicateHistoryRetentionSeconds(flow.windowSec),
-          countLimit: 21,
-          deadlineAtMs,
-        }),
-      timeoutMs: 250,
-      onTimeout: () => {
-        throw new Error('Message duplicate history deadline exceeded');
-      },
-    }).catch((error: unknown) => {
-      this.metrics?.record('history.unavailable');
-      throw error;
+    const sourceDigest = duplicateSourceDigest(input.content, mode);
+    const mutation = await this.window(input.chatId, {
+      op: 'observe',
+      mode,
+      scope:
+        mode === 'IMAGE' && input.imageScope === 'CHAT'
+          ? 'chat'
+          : digestDuplicateContent(input.userId),
+      member: digestDuplicateContent(input.messageId),
+      author: digestDuplicateContent(input.userId),
+      messageId: input.messageId,
+      senderId: input.userId,
+      at: input.eventTimestampMs,
+      publishedAt: input.publishedAtMs ?? input.eventTimestampMs,
+      source: sourceDigest,
+      identity: identity ?? '',
+      mediaHashes,
+      fingerprints: patterns.map((pattern) => pattern.hash),
+      allowed: flow.allowedCount,
+      windowMs: flow.windowSec * 1000,
     });
-    if (mutation.kind === 'deadline_exceeded') {
-      this.metrics?.record('history.unavailable');
-      throw new Error('Message duplicate history deadline exceeded');
-    }
     if (mutation.kind === 'replayed') this.metrics?.record('history.replayed');
     if (!identity || mutation.kind === 'stale') {
       this.metrics?.record(identity ? 'history.stale' : 'history.unverified');
       return null;
     }
-    let selected: { part: DuplicateFingerprint; hash: string; count: number } | null = null;
-    patterns.forEach((pattern, index) => {
-      const count = sharedImageKeys
-        ? (mutation.counts[0] ?? 0) >= 2
-          ? (mutation.counts[1] ?? 0)
-          : 0
-        : (mutation.counts[index] ?? 0);
-      if (count > flow.allowedCount + 1 && (!selected || count > selected.count))
-        selected = { ...pattern, count };
-    });
-    if (!selected) {
+    const matches = Array.isArray(mutation.matches) ? mutation.matches : [];
+    const selected = matches.sort((a, b) => (b.qualified ?? b.count) - (a.qualified ?? a.count))[0];
+    const pattern = selected && patterns.find((part) => part.hash === selected.fingerprint);
+    if (!selected || !pattern) {
       this.metrics?.record('history.no_match_or_allowed');
       return null;
     }
     this.metrics?.record('history.matched');
-    const match = selected as { part: DuplicateFingerprint; hash: string; count: number };
+    const match = { ...pattern, count: selected.qualified ?? selected.count };
     const binding: MessageDuplicateBinding = {
       version: mode === 'IMAGE' ? 2 : 1,
+      original: messageDuplicateOriginalSchema.parse({
+        ...selected.original,
+        mediaHashes: Array.isArray(selected.original.mediaHashes)
+          ? selected.original.mediaHashes
+          : [],
+      }),
       senderId: input.userId,
       messageId: input.messageId,
-      eventTimestampMs: input.eventTimestampMs,
+      eventTimestampMs: mutation.observedAt ?? input.eventTimestampMs,
       controlRevision: input.controlRevision,
       compareMode: mode,
       ...(input.imageScope ? { imageScope: input.imageScope } : {}),
       settingsDigest,
-      sourceDigest:
-        mode === 'IMAGE' ? exactImageSourceDigest(input.content) : input.content.sourceDigest,
+      sourceDigest,
       contentDigest: identity,
       fingerprint: match.hash,
       mediaHashes,
@@ -229,7 +192,7 @@ export class MessageDuplicateHistoryService {
     return {
       binding,
       hit: {
-        count: match.count - 1,
+        count: match.count,
         windowSec: flow.windowSec,
         hash: match.hash,
         fingerprintType: match.part.type,
@@ -238,43 +201,84 @@ export class MessageDuplicateHistoryService {
     };
   }
 
-  async stillMatches(chatId: string, binding: MessageDuplicateBinding): Promise<boolean> {
-    const keys =
-      binding.compareMode === 'IMAGE' && binding.imageScope
-        ? exactImageKeys(
-            chatId,
-            binding.senderId,
-            binding.messageId,
-            binding.fingerprint,
-            binding.imageScope,
-          )
-        : messageDuplicateKeys(chatId, binding.senderId, binding.messageId, binding.fingerprint);
-    const count = await raceWithTimeout({
-      operation: () =>
-        this.redis.readRevisionedMembershipCount({
-          ...keys,
-          ...(binding.compareMode === 'IMAGE' && binding.imageScope === 'CHAT'
-            ? {
-                membershipKey: exactImageKeys(
-                  chatId,
-                  binding.senderId,
-                  binding.messageId,
-                  binding.fingerprint,
-                  'CHAT',
-                ).authorMembershipKey,
-                sharedBaselineKey: keys.membershipKey,
-              }
-            : {}),
-          revision: binding.eventTimestampMs * 2 + 1,
-          scoreTimestampMs: binding.eventTimestampMs,
-          windowSeconds: binding.windowSeconds,
-        }),
-      timeoutMs: 250,
-      onTimeout: () => {
-        throw new Error('Message duplicate history check timed out');
+  async observeLifecycle(input: {
+    chatId: string;
+    messageId: string;
+    eventTimestampMs: number;
+    content: DuplicateMessageContent;
+  }): Promise<void> {
+    await this.window(input.chatId, {
+      op: 'lifecycle',
+      member: digestDuplicateContent(input.messageId),
+      at: input.eventTimestampMs,
+      sources: {
+        TEXT: duplicateSourceDigest(input.content, 'TEXT'),
+        MESSAGE: duplicateSourceDigest(input.content, 'MESSAGE'),
+        IMAGE: duplicateSourceDigest(input.content, 'IMAGE'),
       },
     });
-    return count !== null && count >= binding.requiredCount;
+  }
+
+  async remove(chatId: string, messageId: string): Promise<void> {
+    await this.window(chatId, { op: 'remove', member: digestDuplicateContent(messageId) });
+  }
+
+  async stillMatches(
+    chatId: string,
+    binding: MessageDuplicateBinding,
+    afterDelete = false,
+  ): Promise<boolean> {
+    if (!binding.original) return false;
+    const result = await this.window(chatId, {
+      ...this.checkInput(binding),
+      op: 'check',
+      afterDelete,
+    });
+    return result.kind === 'ok' && (result.count ?? 0) >= binding.requiredCount - 1;
+  }
+
+  async qualified(chatId: string, binding: MessageDuplicateBinding): Promise<number | null> {
+    if (!binding.original) return null;
+    const result = await this.window(chatId, {
+      ...this.checkInput(binding),
+      op: 'check',
+      afterDelete: true,
+    });
+    return result.kind === 'ok' ? (result.qualified ?? null) : null;
+  }
+
+  async qualify(chatId: string, binding: MessageDuplicateBinding): Promise<number | null> {
+    if (!binding.original) return null;
+    const result = await this.window(chatId, { ...this.checkInput(binding), op: 'qualify' });
+    return result.kind === 'ok' ? (result.count ?? null) : null;
+  }
+
+  private checkInput(binding: MessageDuplicateBinding) {
+    return {
+      mode: binding.compareMode,
+      member: digestDuplicateContent(binding.messageId),
+      author: digestDuplicateContent(binding.senderId),
+      source: binding.sourceDigest,
+      identity: binding.contentDigest,
+      original: binding.original,
+      fingerprint: binding.fingerprint,
+      at: binding.eventTimestampMs,
+      allowed: binding.requiredCount - 2,
+      windowMs: binding.windowSeconds * 1000,
+    };
+  }
+
+  private async window(chatId: string, input: Record<string, unknown>) {
+    return raceWithTimeout({
+      operation: () => this.redis.duplicateWindow(chatId, input),
+      timeoutMs: 250,
+      onTimeout: () => {
+        throw new Error('Message duplicate history deadline exceeded');
+      },
+    }).catch((error: unknown) => {
+      this.metrics?.record('history.unavailable');
+      throw error;
+    });
   }
 
   private buildFingerprints(content: DuplicateMessageContent, settings: ChatSettings) {
@@ -291,4 +295,15 @@ export class MessageDuplicateHistoryService {
     if (parts.length === 0) parts.push({ type: 'exact', value: '' });
     return parts;
   }
+}
+
+export function duplicateSourceDigest(
+  content: DuplicateMessageContent,
+  mode: 'TEXT' | 'MESSAGE' | 'IMAGE',
+): string {
+  return mode === 'IMAGE'
+    ? exactImageSourceDigest(content)
+    : mode === 'TEXT'
+      ? (buildMessageDuplicateIdentity(content, 'TEXT') ?? content.sourceDigest)
+      : content.sourceDigest;
 }

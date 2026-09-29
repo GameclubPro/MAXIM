@@ -7,9 +7,26 @@ import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from '../photo-duplicate/photo-fi
 export const MESSAGE_DUPLICATE_SOURCE = 'message_v1';
 export const MESSAGE_DUPLICATE_MEDIA_VERSION = `sha256-v1:${PHOTO_FINGERPRINT_ALGORITHM_VERSION}`;
 export const MESSAGE_DUPLICATE_CLAIM_PREFIX = 'message-duplicate-action:v1:';
+export const messageDuplicateOriginalSchema = z
+  .object({
+    member: z.string().regex(/^[a-f0-9]{64}$/),
+    author: z.string().regex(/^[a-f0-9]{64}$/),
+    messageId: z.string().min(1).max(512),
+    senderId: z.string().min(1).max(160),
+    publishedAtMs: z.number().int().positive(),
+    observedAtMs: z.number().int().positive(),
+    expiresAtMs: z.number().int().positive(),
+    sourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    contentDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    mediaHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10),
+    epoch: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const messageDuplicateBindingSchema = z
   .object({
     version: z.union([z.literal(1), z.literal(2)]),
+    original: messageDuplicateOriginalSchema.optional(),
     sanction: z
       .object({
         action: z.enum(['WARN', 'MUTE', 'BAN']),
@@ -80,7 +97,7 @@ export function isBoundMessageDuplicateDelete(input: {
 export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const flow = resolveDuplicateFlowConfig(settings);
   return digestDuplicateContent({
-    version: 'text-evidence-v3',
+    version: 'text-fixed-window-v4',
     enabled: settings.antiDuplicateEnabled,
     mode: settings.duplicateCompareMode ?? 'MESSAGE',
     preset: settings.duplicateDetectionPreset,
@@ -107,44 +124,10 @@ export function messageDuplicateSanctionSettingsDigest(
 
 export function exactImageSettingsDigest(settings: ChatSettings): string {
   return digestDuplicateContent({
-    version: 'exact-image-v1',
+    version: 'exact-image-fixed-window-v2',
     enabled: settings.antiDuplicateEnabled && settings.duplicateCompareMode !== 'TEXT',
     scope: settings.duplicatePhotoScope,
     window: resolveDuplicateFlowConfig(settings).windowSec,
     allowed: resolveDuplicateFlowConfig(settings).allowedCount,
   });
-}
-
-export function exactImageKeys(
-  chatId: string,
-  userId: string,
-  messageId: string,
-  fingerprint: string,
-  scope: 'SAME_AUTHOR' | 'CHAT',
-) {
-  const namespace = `dup:image:v1:${digestDuplicateContent(chatId)}`;
-  const member = digestDuplicateContent(messageId);
-  const owner = digestDuplicateContent([scope, scope === 'CHAT' ? null : userId]);
-  return {
-    member,
-    stateKey: `${namespace}:message:${member}`,
-    membershipKey: `${namespace}:fingerprint:${owner}:${fingerprint}`,
-    authorMembershipKey: `${namespace}:author:${digestDuplicateContent(userId)}:${fingerprint}`,
-  };
-}
-
-export function messageDuplicateKeys(
-  chatId: string,
-  userId: string,
-  messageId: string,
-  fingerprint: string,
-) {
-  const owner = digestDuplicateContent([chatId, userId]);
-  const member = digestDuplicateContent(messageId);
-  const namespace = `dup:message:v1:${owner}`;
-  return {
-    member,
-    stateKey: `${namespace}:message:${member}`,
-    membershipKey: `${namespace}:fingerprint:${fingerprint}`,
-  };
 }

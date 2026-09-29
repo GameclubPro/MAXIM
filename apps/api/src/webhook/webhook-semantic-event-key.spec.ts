@@ -64,6 +64,21 @@ describe('buildWebhookSemanticEventKey', () => {
     );
   });
 
+  it('distinguishes conflicting edit content at the same timestamp while deduplicating mirrors', () => {
+    const edit = (text: string, botId = 'bot-1') => ({
+      type: 'message_edited',
+      botId,
+      timestamp: '2026-09-29T12:00:00.123Z',
+      message: { chatId: '-123', messageId: 'original', text },
+    });
+    expect(buildWebhookSemanticEventKey(edit('offer'))).not.toBe(
+      buildWebhookSemanticEventKey(edit('changed')),
+    );
+    expect(buildWebhookSemanticEventKey(edit('offer'))).toBe(
+      buildWebhookSemanticEventKey(edit('offer', 'bot-2')),
+    );
+  });
+
   it('does not deduplicate edits that have no event timestamp', () => {
     expect(
       buildWebhookSemanticEventKey({

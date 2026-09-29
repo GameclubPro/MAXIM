@@ -118,9 +118,13 @@ export default function SettingsDuplicateDiagnostics({
                   ? 'Действия по настройкам'
                   : data.mode === 'DELETE_ONLY'
                     ? 'Расширенная проверка: только удаление'
-                    : data.mode === 'LEGACY_TEXT'
-                      ? 'Основная проверка текста'
-                      : 'Не подтверждён'}
+                    : data.mode === 'OFF'
+                      ? 'Проверка остановлена'
+                      : data.mode === 'OBSERVE'
+                        ? 'Наблюдение без удаления'
+                        : data.mode === 'LEGACY_TEXT'
+                          ? 'Основная проверка текста'
+                          : 'Не подтверждён'}
               </dd>
             </div>
             <div>
@@ -154,6 +158,15 @@ export default function SettingsDuplicateDiagnostics({
                       <div>
                         <strong>{DUPLICATE_ATTEMPT_LABELS[attempt.outcome]}</strong>
                         {attempt.reason && <span>{REASON_LABELS[attempt.reason]}</span>}
+                        {attempt.original && (
+                          <>
+                            <span>Оригинал: {formatTime(attempt.original.publishedAt)}</span>
+                            <span>
+                              Повтор разрешён с {formatTime(attempt.original.repeatAllowedAt)}
+                            </span>
+                            <span>Номер оригинала: {attempt.original.messageId}</span>
+                          </>
+                        )}
                         {attempt.nextAttemptAt && (
                           <span>Следующая попытка: {formatTime(attempt.nextAttemptAt)}</span>
                         )}

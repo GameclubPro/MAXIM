@@ -1,3 +1,4 @@
+import { duplicatePublicationTime } from './message-duplicate-publication-time';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { ChatSettings } from '../../prisma/prisma-client';
@@ -27,8 +28,32 @@ export class MessageDuplicateService {
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
 
-  async isAuthoritative(chatId: string): Promise<boolean> {
-    return (await this.policy.resolve(chatId)).mode === 'full';
+  async isAuthoritative(_chatId: string): Promise<boolean> {
+    // FLAG: Off/shadow are real kill switches; never fall back to retired rolling evidence.
+    return true;
+  }
+
+  async observeLifecycle(update: MaxUpdate): Promise<void> {
+    const message = update.message;
+    if (!message || !['message_edited', 'message_removed'].includes(update.type)) return;
+    if (update.type === 'message_removed') {
+      await this.history.remove(message.chatId, message.messageId);
+      return;
+    }
+    const eventTimestampMs = Date.parse(message.createdAt);
+    if (
+      update.eventTimestampSource === 'ingress' ||
+      !Number.isSafeInteger(eventTimestampMs) ||
+      eventTimestampMs > Date.now() + 60_000 ||
+      eventTimestampMs < Date.now() - 1209661000
+    )
+      return;
+    await this.history.observeLifecycle({
+      chatId: message.chatId,
+      messageId: message.messageId,
+      eventTimestampMs,
+      content: extractDuplicateMessageContent(update.raw),
+    });
   }
 
   async observe(params: {
@@ -70,6 +95,8 @@ export class MessageDuplicateService {
       );
       return;
     }
+    const publishedAtMs = duplicatePublicationTime(params.update);
+    if (!publishedAtMs || publishedAtMs > eventTimestampMs + 60_000) return;
     const content = extractDuplicateMessageContent(params.update.raw);
     if (!content.complete) this.metrics?.recordContentRejection(content.reason);
     const hasPhotos = content.media.some((media) => media.kind === 'photo');
@@ -83,6 +110,7 @@ export class MessageDuplicateService {
       userId: message.senderId,
       messageId: message.messageId,
       eventTimestampMs,
+      publishedAtMs,
       controlRevision: policy.revision,
       settings: params.settings,
     });
@@ -96,6 +124,7 @@ export class MessageDuplicateService {
         userId: message.senderId,
         messageId: message.messageId,
         eventTimestampMs,
+        publishedAtMs,
         controlRevision: policy.revision,
         settings: params.settings,
       });

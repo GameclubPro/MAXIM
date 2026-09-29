@@ -46,6 +46,27 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
           intentId: `${chatId}-${index}`,
           reasonKey: `rule-${String(reasonIndex).padStart(2, '0')}`,
           ruleCode: index === 0 ? 'OTHER_DELETE' : 'DUPLICATE_DELETE',
+          ...(index === 1 && reasonIndex === 0
+            ? {
+                metadata: {
+                  messageDuplicate: {
+                    original: {
+                      member: 'a'.repeat(64),
+                      author: 'b'.repeat(64),
+                      messageId: 'original-id',
+                      senderId: 'private-author',
+                      publishedAtMs: now - 3600000,
+                      observedAtMs: now - 3600000,
+                      expiresAtMs: now + 23 * 3600000,
+                      sourceDigest: 'c'.repeat(64),
+                      contentDigest: 'd'.repeat(64),
+                      mediaHashes: [],
+                      epoch: 0,
+                    },
+                  },
+                },
+              }
+            : {}),
         })),
       ).flat(),
     });
@@ -103,6 +124,8 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       [1, 2, 3, 4, 5].map((id) => `${chatId}-${id}`),
     );
     expect(result.history.attempts.every((attempt) => attempt.outcome === 'PENDING')).toBe(true);
+    expect(result.history.attempts[0]?.original?.messageId).toBe('original-id');
+    expect(JSON.stringify(result)).not.toContain('private-author');
     expect(await prisma.moderationDeleteIntent.count({ where: { chatId } })).toBe(25);
   });
 

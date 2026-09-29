@@ -6,7 +6,47 @@ import { MessageDuplicateGuardRejectedError } from './message-duplicate-delete-g
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
+import { digestDuplicateContent } from './message-duplicate-content';
 import type { ModerationMessageActionClaimData } from '../moderation-message-action-claim';
+
+function windowResult(repeatCount: number) {
+  return jest.fn(
+    async (
+      _chatId: string,
+      input: {
+        fingerprints: string[];
+        author: string;
+        senderId: string;
+        at: number;
+        windowMs: number;
+        source: string;
+        identity: string;
+        mediaHashes: string[];
+      },
+    ) => ({
+      kind: 'ok',
+      matches: [
+        {
+          fingerprint: input.fingerprints[0],
+          count: repeatCount,
+          original: {
+            member: digestDuplicateContent('original'),
+            author: input.author,
+            messageId: 'original',
+            senderId: input.senderId,
+            publishedAtMs: input.at - 1000,
+            observedAtMs: input.at - 1000,
+            expiresAtMs: input.at + input.windowMs - 1000,
+            sourceDigest: input.source,
+            contentDigest: input.identity,
+            mediaHashes: input.mediaHashes,
+            epoch: 0,
+          },
+        },
+      ],
+    }),
+  );
+}
 
 describe('message duplicate delete-only action claims', () => {
   it.each(
@@ -41,9 +81,7 @@ describe('message duplicate delete-only action claims', () => {
           : [],
       );
       const history = new MessageDuplicateHistoryService({
-        replaceRevisionedSetMembershipsBeforeDeadline: jest
-          .fn()
-          .mockResolvedValue({ kind: 'applied', counts: [repeatCount + 1] }),
+        duplicateWindow: windowResult(repeatCount),
       } as never);
       const result = await history.observe({
         chatId: '-123',
@@ -70,7 +108,10 @@ describe('message duplicate delete-only action claims', () => {
           expiresAtMs: Number.MAX_SAFE_INTEGER,
         }),
       };
-      const guard = { assertMessageStillActionable: jest.fn().mockResolvedValue('allowed') };
+      const guard = {
+        qualify: jest.fn().mockResolvedValue(repeatCount),
+        assertMessageStillActionable: jest.fn().mockResolvedValue('allowed'),
+      };
       const executeFullAction = jest.fn();
       const service = new MessageDuplicateEnforcementService(
         intents as never,
@@ -98,9 +139,7 @@ describe('message duplicate delete-only action claims', () => {
       expect(request.deleteIntent.event.metadata.messageDuplicate.hasPhotos).toBe(kind === 'photo');
       expect(request.deleteIntent.event.metadata.enforcementScope).toBe('full');
       if (expected) {
-        expect(request.deleteIntent.event.metadata.messageDuplicate.requiredCount).toBe(
-          repeatCount + 1,
-        );
+        expect(request.deleteIntent.event.metadata.messageDuplicate.requiredCount).toBe(2);
         await expect(request.authorizeSanction()).resolves.toBe(true);
         expect(guard.assertMessageStillActionable).toHaveBeenLastCalledWith(
           expect.objectContaining({ sanctionIntentId: 'intent' }),
@@ -136,9 +175,7 @@ describe('message duplicate delete-only action claims', () => {
       duplicateMuteMaxCount: 1,
     });
     const history = new MessageDuplicateHistoryService({
-      replaceRevisionedSetMembershipsBeforeDeadline: jest
-        .fn()
-        .mockResolvedValue({ kind: 'applied', counts: [21] }),
+      duplicateWindow: windowResult(20),
     } as never);
     const result = await history.observe({
       chatId: '-123',
@@ -178,7 +215,7 @@ describe('message duplicate delete-only action claims', () => {
     const enforcement = new MessageDuplicateEnforcementService(
       intents as never,
       policy as never,
-      {} as never,
+      { qualify: jest.fn().mockResolvedValue(20) } as never,
     );
     const params = {
       ...result!,

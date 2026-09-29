@@ -470,6 +470,11 @@ export async function handleChatRequest(
         limited: false,
         attempts: ['DELETED', 'RETRYING', 'CANCELLED'].map((outcome, index) => ({
           id: `preview-duplicate-${index}`,
+          original: {
+            messageId: `preview-original-${index}`,
+            publishedAt: new Date(now - 3600000).toISOString(),
+            repeatAllowedAt: new Date(now + 23 * 3600000).toISOString(),
+          },
           createdAt: new Date(now - (index + 1) * 60000).toISOString(),
           updatedAt: new Date(now - index * 60000).toISOString(),
           outcome,

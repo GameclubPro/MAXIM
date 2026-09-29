@@ -1344,6 +1344,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // FLAG: Edits/removals revoke duplicate evidence even when later moderation exits early.
+    await this.messageDuplicateService?.observeLifecycle?.(update);
+
     if (this.isLifecycleNoopUpdate(update)) {
       return;
     }
