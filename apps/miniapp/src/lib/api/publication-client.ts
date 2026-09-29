@@ -32,10 +32,26 @@ import {
   type TestPublicationRequest,
   type UpdatePublicationRequest,
 } from '@maxim/contracts/publication';
+import {
+  resolvePublisherEntitiesRequestSchema,
+  type ResolvePublisherEntitiesRequest,
+} from '@maxim/contracts/publisher';
 import { tracePublicationApi, type PublicationApiOperation } from '../publication-api-trace';
 import type { ApiTransport } from './transport';
 
 export const PUBLICATION_MEDIA_MUTATION_TIMEOUT_MS = 5 * 60_000;
+
+export async function refreshSelectedPublicationTargets(
+  api: ApiTransport,
+  targets: ResolvePublisherEntitiesRequest['targets'],
+): Promise<PublicationTargetsRefreshResponse> {
+  const body = JSON.stringify(resolvePublisherEntitiesRequestSchema.parse({ targets }));
+  const response = await api.request('/publisher/entities/refresh-selected', {
+    method: 'POST',
+    body,
+  });
+  return publicationTargetsRefreshResponseSchema.parse(response);
+}
 
 function resolvePublicationMediaMutationTimeout(content: {
   media: ReadonlyArray<{ type: string; base64?: string }>;

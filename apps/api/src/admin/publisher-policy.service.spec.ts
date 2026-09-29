@@ -362,6 +362,52 @@ function createPolicyMutationFixture(
 }
 
 describe('PublisherPolicyService', () => {
+  it('authorizes a selected refresh with fresh exact-bot actor access even when bot readiness is stale', async () => {
+    const entity = createListEntity('chat-1', 'Чат', ChatEntityType.CHAT);
+    const { service, findMany, readiness } = createListFixture([entity]);
+    readiness.resolveReadiness.mockReturnValue({
+      state: 'setup_required',
+      canPublish: false,
+      canUseChatComments: false,
+      canUseChannelComments: false,
+      canPublishSuggestions: false,
+      blockerCode: 'bot_access_expired',
+      checkedAt: null,
+      retryAt: null,
+    });
+    await expect(
+      service.resolveDraftTargets(user, [{ chatId: 'chat-1', entityType: 'chat' }]),
+    ).resolves.toEqual([{ chatId: 'chat-1', entityType: 'chat' }]);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: { in: ['chat-1'] },
+          userId: user.userId,
+          botId: 'publik-bot',
+          state: ManagedEntityAccessState.GRANTED,
+          userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+          OR: [
+            { expiresAt: { gt: expect.any(Date) } },
+            { expiresAt: null, checkedAt: { gt: expect.any(Date) } },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it('rejects selected refresh authorization for a missing actor grant or mismatched entity type', async () => {
+    const { service, findMany } = createListFixture([
+      createListEntity('chat-1', 'Чат', ChatEntityType.CHAT),
+    ]);
+    await expect(
+      service.resolveDraftTargets(user, [{ chatId: 'chat-1', entityType: 'channel' }]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    findMany.mockResolvedValueOnce([]);
+    await expect(
+      service.resolveDraftTargets(user, [{ chatId: 'chat-1', entityType: 'chat' }]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('lists deduplicated entities from exact Publisher user access without Major membership', async () => {
     const chat = {
       id: 'chat-1',

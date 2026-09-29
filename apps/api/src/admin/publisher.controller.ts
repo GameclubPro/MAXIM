@@ -253,6 +253,12 @@ export class PublisherController {
     return this.entityRefreshService.requestBulkRefresh(user);
   }
 
+  @Post('entities/refresh-selected')
+  @HttpCode(HttpStatus.ACCEPTED)
+  refreshSelectedEntities(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.entityRefreshService.requestSelectedEntitiesRefresh(body, user);
+  }
+
   @Get('entities/:entityType/:entityId/policy')
   getPolicy(
     @Param('entityType') entityType: string,

@@ -196,6 +196,10 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     pattern: /^\/publisher\/entities\/resolve$/u,
   },
   {
+    method: 'POST',
+    pattern: /^\/publisher\/entities\/refresh-selected$/u,
+  },
+  {
     method: 'PUT',
     pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}$`),
   },

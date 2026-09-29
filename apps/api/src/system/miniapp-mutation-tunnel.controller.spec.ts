@@ -640,6 +640,7 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/publisher/entities/channel/channel-1/refresh'],
     ['POST', '/publisher/entities/refresh'],
     ['POST', '/publisher/entities/resolve'],
+    ['POST', '/publisher/entities/refresh-selected'],
     ['PUT', '/publications/publication-1'],
     ['DELETE', '/publications/publication-1'],
     ['POST', '/publications/publication-1/pause'],

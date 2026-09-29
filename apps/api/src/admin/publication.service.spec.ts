@@ -288,6 +288,64 @@ function createOriginalRetryService(
 }
 
 describe('PublicationService', () => {
+  it.each(['bot_access_expired', 'bot_access_unconfirmed'] as const)(
+    'rejects %s before either create or update prepares content, writes, or dispatches',
+    async (blocker) => {
+      const transaction = jest.fn();
+      const { service, contentService, publisherRouting, publisherPublicationWakeupQueue } =
+        createService({
+          publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+          publication: {
+            findFirst: jest.fn().mockResolvedValue({
+              id: 'draft-1',
+              actorUserId: 'user-1',
+              version: 2,
+              lifecycle: PublicationLifecycle.DRAFT,
+              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+              requiredBotId: 'publisher-bot',
+              audienceSelection: 'SELECTED',
+              audienceMode: 'SNAPSHOT',
+              targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+              schedule: null,
+            }),
+          },
+          $transaction: transaction,
+        });
+      const error = new PublisherSetupRequiredException(['chat-1'], blocker);
+      publisherRouting.assertTargetsReady.mockRejectedValue(error);
+      const prepare = jest.spyOn(contentService, 'prepareContentRevision');
+      const actor = { userId: 'user-1', username: null, displayName: null };
+      const content = { text: 'Текст', textFormat: 'plain', buttons: [], media: [] };
+      const schedule = { mode: 'now', timezone: 'Europe/Moscow' };
+      await expect(
+        service.create(actor, {
+          requestId: 'stale-access-create',
+          title: 'Пост',
+          content,
+          audience: {
+            selection: 'SELECTED',
+            mode: 'SNAPSHOT',
+            targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+          },
+          intent: 'publish',
+          schedule,
+        }),
+      ).rejects.toBe(error);
+      await expect(
+        service.update('draft-1', actor, {
+          requestId: 'stale-access-update',
+          expectedRevision: 2,
+          content,
+          intent: 'publish',
+          schedule,
+        }),
+      ).rejects.toBe(error);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(transaction).not.toHaveBeenCalled();
+      expect(publisherPublicationWakeupQueue.enqueueAfterCommittedMutation).not.toHaveBeenCalled();
+    },
+  );
+
   it('materializes and dispatches NOW publications and rolls up state while background work is paused', async () => {
     const { service } = createService();
     const backgroundRuntimeGovernorService = {

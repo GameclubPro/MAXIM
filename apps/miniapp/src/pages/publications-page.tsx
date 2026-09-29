@@ -154,6 +154,7 @@ import '../features/publications/publication-draft-resume.css';
 import '../features/publications/publication-workbench.css';
 import { PublicationPostPublishFields } from '../features/publications/publication-post-publish-fields';
 import { publicationPostPublishLabels } from '../features/publications/publication-post-actions-presentation';
+import { savePublicationWithAccessRefresh } from '../features/publications/publication-save-access-refresh';
 import { usePublicationCloudDraft } from '../features/publications/use-publication-cloud-draft';
 import { usePublicationAssetPreviews } from '../features/publications/use-publication-asset-previews';
 import {
@@ -297,6 +298,9 @@ export function PublicationsPage({
   const [mediaPreparing, setMediaPreparing] = useState(false);
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [editorClosePending, setEditorClosePending] = useState(false);
+  const [refreshingSaveAccess, setRefreshingSaveAccess] = useState(false);
+  const saveAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => saveAbort.current?.abort(), [api, userId]);
   const isEditor = isPublisherProfile && editorContext !== null;
   const isEditorKeyboardOpen = useKeyboardOpen(96, isEditor);
   const legacyRouteRequested = searchParams.get('legacy') === '1';
@@ -668,34 +672,53 @@ export function PublicationsPage({
   const legacyCurrentTotal = legacyListQuery.data?.pages[0]?.totalCount ?? null;
 
   const saveMutation = useMutation({
-    mutationFn: async ({ replaceConflicts }: { replaceConflicts: boolean }) => {
-      const snapshot = await cloudDraft.flush();
-      const context = snapshot.cloudDraft
-        ? {
-            kind: 'draft' as const,
-            publicationId: snapshot.cloudDraft.id,
-            expectedRevision: snapshot.cloudDraft.revision,
-          }
-        : (editorContext ?? { kind: 'create' as const });
-      const requestId = requestIds.resolveSaveRequestId(snapshot, context, replaceConflicts);
-      if (context.kind === 'edit' || context.kind === 'import' || context.kind === 'draft') {
-        return updatePublication(
-          api,
-          context.publicationId,
-          buildUpdatePublicationRequest(
+    mutationFn: async ({
+      replaceConflicts,
+      controller,
+    }: {
+      replaceConflicts: boolean;
+      controller: AbortController;
+    }) => {
+      try {
+        const snapshot = await cloudDraft.flush();
+        controller.signal.throwIfAborted();
+        const context = snapshot.cloudDraft
+          ? {
+              kind: 'draft' as const,
+              publicationId: snapshot.cloudDraft.id,
+              expectedRevision: snapshot.cloudDraft.revision,
+            }
+          : (editorContext ?? { kind: 'create' as const });
+        const requestId = requestIds.resolveSaveRequestId(snapshot, context, replaceConflicts);
+        let save: () => ReturnType<typeof createPublication>;
+        if (context.kind === 'edit' || context.kind === 'import' || context.kind === 'draft') {
+          const request = buildUpdatePublicationRequest(
             snapshot,
             context.expectedRevision,
             requestId,
             replaceConflicts,
-          ),
-        );
+          );
+          save = () => updatePublication(api, context.publicationId, request);
+        } else {
+          const request = buildCreatePublicationRequest(snapshot, requestId, { replaceConflicts });
+          save = () => createPublication(api, request);
+        }
+        return await savePublicationWithAccessRefresh({
+          api,
+          targets: snapshot.targets.map(({ id, entityType }) => ({ id, entityType })),
+          save,
+          signal: controller.signal,
+          onRefreshing: () => setRefreshingSaveAccess(true),
+        });
+      } finally {
+        if (saveAbort.current === controller) {
+          saveAbort.current = null;
+          if (!controller.signal.aborted) setRefreshingSaveAccess(false);
+        }
       }
-      return createPublication(
-        api,
-        buildCreatePublicationRequest(snapshot, requestId, { replaceConflicts }),
-      );
     },
-    onSuccess: async (publication) => {
+    onSuccess: async (publication, { controller }) => {
+      if (controller.signal.aborted) return;
       requestIds.confirmSaveSuccess();
       if (editorContext?.kind === 'import') {
         await postImport.finishPublishedImport();
@@ -719,6 +742,7 @@ export function PublicationsPage({
       }
     },
     onError: (error, variables) => {
+      if (variables.controller.signal.aborted) return;
       if (shouldReviewPublicationScheduleConflict(error, draft, variables.replaceConflicts)) {
         setPendingConflict(true);
         return;
@@ -1638,14 +1662,16 @@ export function PublicationsPage({
   }
 
   function submitPublication(replaceConflicts: boolean) {
-    if (mediaPreparing) {
+    if (mediaPreparing || saveAbort.current || saveMutation.isPending) {
       return;
     }
     if (!validateDraft()) {
       setPendingReview(false);
       return;
     }
-    saveMutation.mutate({ replaceConflicts });
+    const controller = new AbortController();
+    saveAbort.current = controller;
+    saveMutation.mutate({ replaceConflicts, controller });
   }
 
   function handlePrimaryAction() {
@@ -2641,9 +2667,11 @@ export function PublicationsPage({
             }
             primaryLabel={
               isBusy
-                ? saveMutation.isPending
-                  ? 'Сохраняем...'
-                  : 'Подождите...'
+                ? refreshingSaveAccess
+                  ? 'Проверяем доступ...'
+                  : saveMutation.isPending
+                    ? 'Сохраняем...'
+                    : 'Подождите...'
                 : draft.timingMode === 'once'
                   ? 'Проверить и отложить'
                   : draft.timingMode === 'schedule'

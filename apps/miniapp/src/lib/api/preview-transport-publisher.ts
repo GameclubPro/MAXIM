@@ -967,6 +967,23 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     if (total === undefined) throw new ApiRequestError(404, '', 'Refresh operation unavailable');
     return { operationId, state: 'complete', total, completed: total, failed: 0 };
   }
+  if (url.pathname === '/publisher/entities/refresh-selected' && method === 'POST') {
+    const request = resolvePublisherEntitiesRequestSchema.parse(parseJsonBody(init));
+    const entities = new Set(
+      listPreviewPublisherEntities(state).map((entity) => `${entity.entityType}:${entity.id}`),
+    );
+    const keys = [...new Set(request.targets.map((target) => `${target.entityType}:${target.id}`))];
+    if (keys.some((key) => !entities.has(key)))
+      throw new ApiRequestError(400, '', 'Получатель недоступен');
+    const refreshedAt = new Date(state.clock.now().getTime() + 1).toISOString();
+    const refreshes = getPreviewPublisherRefreshes(state);
+    for (const key of keys) refreshes[key] = refreshedAt;
+    return {
+      accepted: true,
+      queuedCount: keys.length,
+      operationId: recordPreviewPublisherRefresh(state, keys.length),
+    };
+  }
   if (url.pathname === '/publisher/entities/refresh' && method === 'POST') {
     const entities = listPreviewPublisherEntities(state).slice(
       0,

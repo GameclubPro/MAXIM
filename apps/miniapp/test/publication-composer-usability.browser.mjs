@@ -58,6 +58,31 @@ try {
             ? route.continue()
             : route.abort(),
         );
+        // FLAG: Inject a stale-access response only into the local preview transport.
+        // Hold its refresh operation open to exercise the real editor's waiting state.
+        await context.route('**/src/lib/api/preview-transport-runtime.ts', async (route) => {
+          const response = await route.fetch();
+          const source = await response.text();
+          const marker = 'for (const handler of handlers) {';
+          assert.ok(source.includes(marker));
+          const errorModule = new URL('src/lib/api-request-error.ts', base).pathname;
+          const body =
+            `import { ApiRequestError as AccessRefreshSmokeError } from '${errorModule}';\n` +
+            source.replace(
+              marker,
+              `
+            const smoke = window.__publicationAccessSmoke ??= { attempts: [], refreshes: [], released: false };
+            if (/^\\/publications\\/[^/]+$/.test(context.url.pathname) && context.method === 'PUT' && JSON.parse(context.init.body).intent === 'publish') {
+              smoke.attempts.push({ path: context.url.pathname, body: context.init.body });
+              if (smoke.attempts.length === 1) throw new AccessRefreshSmokeError(409, JSON.stringify({ code: 'PUBLISHER_SETUP_REQUIRED', blockerCode: 'bot_access_expired' }), 'Обновляется проверка доступа Публика. Повторите позже.');
+            }
+            if (context.url.pathname === '/publisher/entities/refresh-selected') smoke.refreshes.push(JSON.parse(context.init.body));
+            if (context.url.pathname.startsWith('/publisher/refresh-operations/') && !smoke.released) return { operationId: context.url.pathname.split('/').at(-1), state: 'running', total: 1, completed: 0, failed: 0 };
+            ${marker}
+          `,
+            );
+          await route.fulfill({ response, body });
+        });
         await installMaxBridgeShimInitScript(context, {}, { colorScheme });
         await installNativeVisualModeInitScript(context);
         await page.goto(`${base}publications?preview=1&profile=publisher`);
@@ -222,7 +247,28 @@ try {
         assert.equal(await editor.innerText(), authoredText);
         await primary.click();
         await review.getByRole('button', { name: 'Опубликовать', exact: true }).click();
+        const checking = page.getByRole('button', { name: 'Проверяем доступ...', exact: true });
+        await checking.waitFor();
+        await page.waitForFunction(() => window.__publicationAccessSmoke?.refreshes.length === 1);
+        assert.equal(await checking.isDisabled(), true);
+        await assertReachable(checking);
+        await checking.evaluate((element) => element.click());
+        assert.equal(await editor.innerText(), authoredText);
+        await page.screenshot({ path: `${output}/${name}-${colorScheme}-access-refresh.png` });
+        assert.equal(await page.evaluate(() => window.__publicationAccessSmoke.attempts.length), 1);
+        await page.evaluate(() => {
+          window.__publicationAccessSmoke.released = true;
+        });
         await page.locator('.publications-page:not(.is-editor)').waitFor();
+        const access = await page.evaluate(() => window.__publicationAccessSmoke);
+        assert.equal(access.attempts.length, 2);
+        assert.deepEqual(access.attempts[0], access.attempts[1]);
+        assert.equal(access.refreshes.length, 1);
+        const submitted = JSON.parse(access.attempts[0].body);
+        assert.deepEqual(
+          access.refreshes[0].targets,
+          submitted.audience.targets.map(({ chatId, entityType }) => ({ id: chatId, entityType })),
+        );
         assert.deepEqual(errors, []);
         console.log(
           `PASS ${name}-${colorScheme}: create, targets, long text, keyboard, options, review, preview publish`,

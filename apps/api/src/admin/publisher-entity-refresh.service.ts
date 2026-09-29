@@ -2,6 +2,7 @@ import {
   MAX_PUBLISHER_BULK_REFRESH_TARGETS,
   publisherEntitiesRefreshResponseSchema,
   publisherEntityRefreshResponseSchema,
+  resolvePublisherEntitiesRequestSchema,
   type ManagedEntityType,
   type PublisherEntitiesRefreshResponse,
   type PublisherEntityRefreshResponse,
@@ -10,7 +11,7 @@ import {
   publicationTargetsRefreshResponseSchema,
   type PublicationTargetsRefreshResponse,
 } from '@maxim/contracts/publication';
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { PublisherBindingRefreshQueueService } from '../publisher/publisher-binding-refresh.queue';
@@ -69,6 +70,25 @@ export class PublisherEntityRefreshService {
       operationId,
       user.userId,
       this.botRegistry.getPublisherBotDescriptor().id,
+    );
+  }
+
+  async requestSelectedEntitiesRefresh(
+    body: unknown,
+    user: AuthUser,
+  ): Promise<PublicationTargetsRefreshResponse> {
+    const parsed = resolvePublisherEntitiesRequestSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.format());
+    // FLAG: Unpersisted editor selections need exact Publisher actor authorization
+    // for every target before any job is queued. This check tolerates stale bot
+    // readiness, but neither grants access nor enables a disabled publication policy.
+    const targets = await this.policyService.resolveDraftTargets(
+      user,
+      parsed.data.targets.map(({ id, entityType }) => ({ chatId: id, entityType })),
+    );
+    return this.requestAuthorizedEntitiesRefresh(
+      targets.map((target) => target.chatId),
+      user,
     );
   }
 

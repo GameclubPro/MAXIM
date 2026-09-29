@@ -16,6 +16,11 @@ describe('PublisherController', () => {
       [PublisherController.prototype.listEntities, 'entities', RequestMethod.GET],
       [PublisherController.prototype.resolveEntities, 'entities/resolve', RequestMethod.POST],
       [PublisherController.prototype.refreshEntities, 'entities/refresh', RequestMethod.POST],
+      [
+        PublisherController.prototype.refreshSelectedEntities,
+        'entities/refresh-selected',
+        RequestMethod.POST,
+      ],
       [PublisherController.prototype.createPostImport, 'post-imports', RequestMethod.POST],
       [PublisherController.prototype.getPostImport, 'post-imports', RequestMethod.GET],
       [PublisherController.prototype.getActivePostImport, 'post-imports/active', RequestMethod.GET],

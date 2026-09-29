@@ -15,6 +15,7 @@ describe('PublisherEntityRefreshService', () => {
         entityType: 'channel',
       }),
       listRefreshableEntityIds: jest.fn().mockResolvedValue(['channel-1', 'chat-2']),
+      resolveDraftTargets: jest.fn(async (_user, targets) => targets),
     };
     const refreshQueue = {
       enqueue: jest.fn(async (request) => `refresh-${request.chatId}`),
@@ -59,6 +60,84 @@ describe('PublisherEntityRefreshService', () => {
       candidateUserId: 'admin-1',
       reason: 'manual_recheck',
     });
+  });
+
+  it('refreshes every authorized editor selection, independently of saved publication targets', async () => {
+    const { service, policyService, refreshQueue } = createFixture();
+    const targets = Array.from({ length: 500 }, (_, index) => ({
+      id: `target-${index}`,
+      entityType: index % 2 ? 'channel' : 'chat',
+    }));
+    refreshQueue.saveOperation.mockResolvedValue('a2681ca5-cb95-4600-a869-89bcc414be51');
+    await expect(service.requestSelectedEntitiesRefresh({ targets }, user)).resolves.toEqual({
+      accepted: true,
+      queuedCount: 500,
+      operationId: 'a2681ca5-cb95-4600-a869-89bcc414be51',
+    });
+    expect(policyService.resolveDraftTargets).toHaveBeenCalledWith(
+      user,
+      targets.map(({ id, entityType }) => ({ chatId: id, entityType })),
+    );
+    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(500);
+    expect(refreshQueue.enqueue).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        chatId: 'target-499',
+        publisherBotId: 'publik-bot',
+        candidateUserId: user.userId,
+        reason: 'manual_recheck',
+      }),
+    );
+  });
+
+  it('does not partially enqueue a selection containing an unauthorized entity', async () => {
+    const { service, policyService, refreshQueue } = createFixture();
+    policyService.resolveDraftTargets.mockRejectedValue(new BadRequestException());
+    await expect(
+      service.requestSelectedEntitiesRefresh(
+        {
+          targets: [
+            { id: 'channel-1', entityType: 'channel' },
+            { id: 'foreign-chat', entityType: 'chat' },
+          ],
+        },
+        user,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
+    expect(refreshQueue.saveOperation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { targets: [] },
+    { targets: [{ id: 'channel-1', entityType: 'invalid' }] },
+    { targets: [{ id: 'channel-1', entityType: 'channel' }], actorUserId: 'other-user' },
+    { targets: Array.from({ length: 501 }, (_, i) => ({ id: String(i), entityType: 'chat' })) },
+  ])(
+    'rejects invalid or oversized editor refresh input before resolving access: %#',
+    async (body) => {
+      const { service, policyService, refreshQueue } = createFixture();
+      await expect(service.requestSelectedEntitiesRefresh(body, user)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(policyService.resolveDraftTargets).not.toHaveBeenCalled();
+      expect(refreshQueue.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it('deduplicates selected recipients and applies the existing per-user bulk limit', async () => {
+    const { service, refreshQueue } = createFixture();
+    const body = {
+      targets: Array.from({ length: 2 }, () => ({ id: 'channel-1', entityType: 'channel' })),
+    };
+    for (let i = 0; i < 3; i += 1) {
+      await expect(service.requestSelectedEntitiesRefresh(body, user)).resolves.toMatchObject({
+        queuedCount: 1,
+      });
+    }
+    await expect(service.requestSelectedEntitiesRefresh(body, user)).rejects.toMatchObject({
+      status: 429,
+    });
+    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(3);
   });
 
   it('does not reveal or enqueue an entity outside the requesting user scope', async () => {
