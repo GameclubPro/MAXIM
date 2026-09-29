@@ -1,4 +1,51 @@
 @layer pages {
+  .duplicate-window {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .settings-drilldown__panel--duplicates .duplicate-window .settings-mode-segments {
+    display: grid;
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+  }
+
+  .duplicate-window__times {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 12px;
+  }
+
+  .duplicate-window__timezone,
+  .duplicate-window__timezone select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .duplicate-window__caption {
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .duplicate-trigger-count {
+    padding-block-start: 12px;
+    border-top: 1px solid var(--glass-border);
+  }
+
+  .duplicate-trigger-count > .duplicate-stage__field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(168px, 0.9fr);
+    align-items: center;
+    gap: 4px 12px;
+  }
+
+  .duplicate-trigger-count .field__hint {
+    grid-column: 1 / -1;
+  }
+
   .duplicate-diagnostics {
     min-width: 0;
     padding-block: 12px;

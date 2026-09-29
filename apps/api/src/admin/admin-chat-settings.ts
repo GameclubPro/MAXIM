@@ -831,6 +831,10 @@ export async function saveChatSettings(params: {
       duplicatePhotoScope: true,
       duplicateDetectionPreset: true,
       duplicateCompareMode: true,
+      duplicateWindowMode: true,
+      duplicateStartTimeMinutes: true,
+      duplicateEndTimeMinutes: true,
+      duplicateTimezone: true,
       duplicateIgnoreLinksEnabled: true,
       duplicateIgnorePhonesEnabled: true,
       duplicateNearMatchEnabled: true,
@@ -883,6 +887,18 @@ export async function saveChatSettings(params: {
       : currentSettings?.duplicateCompareMode === 'TEXT'
         ? ('TEXT' as const)
         : ('MESSAGE' as const),
+    duplicateWindowMode: hasOwnSetting(params.body, 'duplicateWindowMode')
+      ? parsed.data.duplicateWindowMode
+      : (currentSettings?.duplicateWindowMode ?? parsed.data.duplicateWindowMode),
+    duplicateStartTimeMinutes: hasOwnSetting(params.body, 'duplicateStartTimeMinutes')
+      ? parsed.data.duplicateStartTimeMinutes
+      : (currentSettings?.duplicateStartTimeMinutes ?? parsed.data.duplicateStartTimeMinutes),
+    duplicateEndTimeMinutes: hasOwnSetting(params.body, 'duplicateEndTimeMinutes')
+      ? parsed.data.duplicateEndTimeMinutes
+      : (currentSettings?.duplicateEndTimeMinutes ?? parsed.data.duplicateEndTimeMinutes),
+    duplicateTimezone: hasOwnSetting(params.body, 'duplicateTimezone')
+      ? parsed.data.duplicateTimezone
+      : (currentSettings?.duplicateTimezone ?? parsed.data.duplicateTimezone),
     duplicateIgnoreLinksEnabled: hasOwnSetting(params.body, 'duplicateIgnoreLinksEnabled')
       ? parsed.data.duplicateIgnoreLinksEnabled
       : (currentSettings?.duplicateIgnoreLinksEnabled ?? parsed.data.duplicateIgnoreLinksEnabled),
@@ -978,6 +994,7 @@ export async function saveChatSettings(params: {
         ? (readStopWordsPolicy(currentSettings) ?? undefined)
         : undefined,
       duplicateCompareMode: currentSettings?.duplicateCompareMode === 'TEXT' ? 'TEXT' : 'MESSAGE',
+      duplicateWindowMode: currentSettings?.duplicateWindowMode === 'DAILY' ? 'DAILY' : 'INTERVAL',
     },
     next: normalizedSettings,
     requestedSettings: params.body,

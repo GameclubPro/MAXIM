@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260928122000_add_publication_blocker_first_seen",
-  "baselineNamesSha256": "67d554f62164baaa475ac7226285b72cc1d7586579c67df528c7c127c29c1f8a",
-  "baselineContentsSha256": "19063f64c83ce9186aeb7c08d327e2f692da7a624324e0de2e0c316918a5b7e6",
+  "baselineThrough": "20260929120000_add_duplicate_daily_window",
+  "baselineNamesSha256": "f0cf66f930770a479e1f0d6fbea819cd6cf0f222b87b14424980dad56cce41f7",
+  "baselineContentsSha256": "ab00baa01003ceca10f8bbd0500d88bc18b16cac930b1258516c6283aa5a46d9",
   "approvedDestructive": {
     "20260919090000_add_participant_reports": {
       "reason": "Reviewed static additive policy revision trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL or destructive change is present.",

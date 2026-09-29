@@ -3,6 +3,7 @@ import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 export const MESSAGE_DUPLICATE_METRIC_COUNTERS = [
   'policy.unavailable',
   'admission.off',
+  'admission.schedule_closed',
   'admission.event_time_rejected',
   'admission.untracked',
   'admission.missing_receipt',
@@ -23,6 +24,7 @@ export const MESSAGE_DUPLICATE_METRIC_COUNTERS = [
   'history.unavailable',
   'media.first_candidate',
   'media.policy_changed',
+  'media.schedule_closed',
   'media.source_missing',
   'media.identity_rejected',
   'media.settings_rejected',
@@ -70,6 +72,7 @@ export const MESSAGE_DUPLICATE_METRIC_COUNTERS = [
   'guard.message_duplicate_policy_changed',
   'guard.message_duplicate_photo_policy_changed',
   'guard.message_duplicate_settings_changed',
+  'guard.message_duplicate_schedule_closed',
   'guard.message_duplicate_sanction_settings_changed',
   'guard.message_duplicate_manual_release',
 ] as const;

@@ -143,6 +143,43 @@ function setup() {
   };
 }
 
+describe('scheduled duplicate final action guard', () => {
+  it('rechecks the end boundary after external calls', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-29T14:59Z'));
+    try {
+      const s = setup();
+      s.settings.duplicateWindowMode = 'DAILY';
+      s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
+      s.binding.original!.expiresAtMs = Date.parse('2026-09-29T15:00Z');
+      s.immunity.consumeForMessage.mockImplementation(async () => {
+        clock.mockReturnValue(Date.parse('2026-09-29T15:00Z'));
+        return 'not_granted';
+      });
+      await expect(
+        s.service.assertMessageStillActionable({ ...s.params, binding: s.binding }),
+      ).rejects.toMatchObject({ code: 'message_duplicate_schedule_closed' });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it('rejects queued decisions after changing the timezone', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-29T10:00Z'));
+    try {
+      const s = setup();
+      s.settings.duplicateWindowMode = 'DAILY';
+      s.binding.settingsDigest = messageDuplicateSettingsDigest(s.settings);
+      s.binding.original!.expiresAtMs = Date.parse('2026-09-29T15:00Z');
+      s.settings.duplicateTimezone = 'Asia/Tokyo';
+      await expect(
+        s.service.assertMessageStillActionable({ ...s.params, binding: s.binding }),
+      ).rejects.toMatchObject({ code: 'message_duplicate_settings_changed' });
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
 describe('message duplicate final delete guard', () => {
   it('rejects queued thumbnail-era evidence before any MAX lookup', async () => {
     const s = setup();

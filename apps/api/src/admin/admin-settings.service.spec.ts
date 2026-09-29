@@ -1361,6 +1361,10 @@ describe('AdminSettingsService chat rules', () => {
       currentSettings: createPersistedChatSettings({
         duplicateDetectionPreset: 'CUSTOM',
         duplicateCompareMode: 'TEXT',
+        duplicateWindowMode: 'DAILY',
+        duplicateStartTimeMinutes: 1320,
+        duplicateEndTimeMinutes: 480,
+        duplicateTimezone: 'Asia/Tokyo',
         duplicateIgnoreLinksEnabled: true,
         duplicateIgnorePhonesEnabled: true,
         duplicateNearMatchEnabled: true,
@@ -1375,6 +1379,10 @@ describe('AdminSettingsService chat rules', () => {
       expect.objectContaining({
         duplicateDetectionPreset: 'CUSTOM',
         duplicateCompareMode: 'TEXT',
+        duplicateWindowMode: 'DAILY',
+        duplicateStartTimeMinutes: 1320,
+        duplicateEndTimeMinutes: 480,
+        duplicateTimezone: 'Asia/Tokyo',
         duplicateIgnoreLinksEnabled: true,
         duplicateIgnorePhonesEnabled: true,
         duplicateNearMatchEnabled: true,

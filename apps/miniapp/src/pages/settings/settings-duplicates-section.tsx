@@ -94,6 +94,9 @@ const LazySettingsDuplicateCustomControls = lazy(
 const LazySettingsDuplicateActionPreview = lazy(
   () => import('./settings-duplicate-action-preview'),
 );
+const LazySettingsDuplicateWindowControls = lazy(
+  () => import('./settings-duplicate-window-controls'),
+);
 const LazySettingsDuplicateDiagnostics = lazy(() => import('./settings-duplicate-diagnostics'));
 
 export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps) {
@@ -284,7 +287,6 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                   <LazySettingsDuplicatePhotoControls
                     moderationPolicy={photoPresentationPolicy}
                     scope={draft.duplicatePhotoScope}
-                    windowHours={duplicateSharedWindowHours}
                     onScopeChange={(value) => setFieldValue('duplicatePhotoScope', value)}
                   />
                 </Suspense>
@@ -303,54 +305,32 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                   >
                     <div className="duplicate-stage__top">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="duplicate-stage__title">Условия срабатывания</span>
+                        <span className="duplicate-stage__title">Период проверки</span>
                         <SettingsHintAnchor
                           hintKey="duplicateModerationStart"
                           openHintKey={openHintKey}
                           onToggleHint={toggleHint}
                           label="Пояснение для условий удаления дублей"
                         >
-                          Период начинается с публикации разрешённого оригинала. Удалённые повторы и
-                          правки не продлевают его. Лимит относится к повторам каждого участника
-                          отдельно.
+                          {draft.duplicateWindowMode === 'DAILY'
+                            ? 'Повторы учитываются только внутри выбранного периода. Каждый день история начинается заново. Время «По» не включается.'
+                            : 'Интервал начинается с разрешённого оригинала. Удалённые повторы и правки без изменения содержания не продлевают его.'}
                         </SettingsHintAnchor>
                       </div>
                     </div>
 
-                    <div className="duplicate-stage__controls">
-                      <label
-                        className={cn(
-                          'duplicate-stage__field',
-                          fieldErrors.duplicateWarnWindowSec && 'field--error',
-                        )}
-                      >
-                        <span className="duplicate-stage__field-label">Период проверки</span>
-                        <div className="duplicate-stage__input-wrap">
-                          <input
-                            type="number"
-                            min={1}
-                            max={168}
-                            step={1}
-                            inputMode="numeric"
-                            value={duplicateWindowInputValue ?? String(duplicateSharedWindowHours)}
-                            onChange={(event) =>
-                              handleDuplicateWindowHoursChange(event.target.value)
-                            }
-                            onBlur={handleDuplicateWindowHoursBlur}
-                            aria-label="Период проверки дублей, часы"
-                            aria-invalid={Boolean(fieldErrors.duplicateWarnWindowSec) || undefined}
-                            aria-describedby={
-                              fieldErrors.duplicateWarnWindowSec
-                                ? 'duplicate-window-hours-error'
-                                : undefined
-                            }
-                          />
-                          <span className="duplicate-stage__suffix" aria-hidden>
-                            часы
-                          </span>
-                        </div>
-                      </label>
-
+                    <Suspense fallback={null}>
+                      <LazySettingsDuplicateWindowControls
+                        draft={draft}
+                        setFieldValue={setFieldValue}
+                        fieldErrors={fieldErrors}
+                        windowHours={duplicateSharedWindowHours}
+                        inputValue={duplicateWindowInputValue}
+                        onHoursChange={handleDuplicateWindowHoursChange}
+                        onHoursBlur={handleDuplicateWindowHoursBlur}
+                      />
+                    </Suspense>
+                    <div className="duplicate-trigger-count">
                       <div
                         className={cn(
                           'duplicate-stage__field',
@@ -399,32 +379,14 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       </div>
                     </div>
 
-                    <SegmentedControl
-                      value={String(duplicateSharedWindowHours)}
-                      options={[
-                        { value: '1', label: '1 ч' },
-                        { value: '12', label: '12 ч' },
-                        { value: '24', label: '1 день' },
-                        { value: '72', label: '3 дня' },
-                        { value: '168', label: '7 дней' },
-                      ]}
-                      onChange={handleDuplicateWindowHoursChange}
-                      ariaLabel="Быстрый выбор периода проверки"
-                    />
-
-                    {fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount ? (
-                      <div className="duplicate-stage__errors" aria-live="polite">
-                        {fieldErrors.duplicateWarnWindowSec ? (
-                          <small id="duplicate-window-hours-error" className="field__hint">
-                            {fieldErrors.duplicateWarnWindowSec}
-                          </small>
-                        ) : null}
-                        {fieldErrors.duplicateWarnMaxCount ? (
-                          <small id="duplicate-allowed-count-error" className="field__hint">
-                            {fieldErrors.duplicateWarnMaxCount}
-                          </small>
-                        ) : null}
-                      </div>
+                    {fieldErrors.duplicateWarnMaxCount ? (
+                      <small
+                        id="duplicate-allowed-count-error"
+                        className="field__hint"
+                        role="alert"
+                      >
+                        {fieldErrors.duplicateWarnMaxCount}
+                      </small>
                     ) : null}
                   </article>
 

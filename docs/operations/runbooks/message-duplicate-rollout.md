@@ -39,7 +39,9 @@ Each message can reserve only one stage, and delivery retries recover that same 
 after a confirmed deletion. The final guard still rechecks authority before each action.
 
 Cosmetic edits preserve publication time; an observed material edit starts the clock for its new
-content at the edit timestamp, preventing old posts from bypassing matching. Changed content, conflicting edits with identical
+content at the edit timestamp, preventing old posts from bypassing matching. Media verification
+preserves that introduction time when promoting pending content. Returning an original to a prior
+text never revives its earlier revision's evidence. Changed content, conflicting edits with identical
 update timestamps and removal events revoke evidence before moderation's early returns. The final
 guard also reads the exact original from MAX, so missing removal webhooks cannot authorize deletion
 against an absent original. An unavailable MAX lookup retries; it never proves absence.
@@ -50,8 +52,29 @@ manual-release grace remains in effect.
 Each atomic history operation examines at most 16 fingerprints; records and counters expire after
 the bounded history retention. Lifecycle tombstones and reset cutoffs cover the maximum supported
 window. This logic does not change burst, quota or other rolling counters. The new settings digest
-and required original proof reject old queued evidence; no bulk Redis purge or database migration
-is needed. A deployment starts fresh duplicate history.
+and required original proof reject old queued evidence; no bulk Redis purge is needed.
+A deployment changing the digest starts fresh duplicate history.
+
+## Daily Time Periods
+
+`duplicateWindowMode` defaults to `INTERVAL`, preserving existing behavior. `DAILY` compares only
+content published within the same daily `[start, end)` period in `duplicateTimezone`. The start
+is included, the end is excluded; an end earlier than the start belongs to the following calendar
+day. Equal times are rejected. Outside the period, duplicates are allowed. Each new period starts
+with a new original and independent allowance/qualified-violation counts; stored interval hours
+are retained when switching modes.
+
+Admission, media candidate keys, history and final action guards share the same period. The original
+expires at its end, and delayed jobs/intents cannot cross that boundary or inherit another day's
+authority. Settings and timezone changes invalidate pending evidence. Unchanged edits of yesterday's
+messages never seed today's history. Daily manual-release grace is limited to the current period.
+Time boundaries use calendar days. On DST fallback the earliest start and latest end form one
+continuous period; nonexistent spring times advance by the gap, and a collapsed period is skipped.
+
+Migration `20260929120000_add_duplicate_daily_window` adds four columns with static defaults and
+bounded DDL timeouts. Existing rows remain in interval mode. Older settings clients preserve omitted
+schedule fields; section apply includes both the schedule and comparison mode. No rows are backfilled
+with message history. Validate and deploy all shared API roles before testing the new UI live.
 
 ## Validation And Delivery
 

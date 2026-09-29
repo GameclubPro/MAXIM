@@ -83,6 +83,11 @@ export function buildRulesTextItemsFromSettings(input: {
   }
 
   if (settings.antiDuplicateEnabled) {
+    if (settings.duplicateWindowMode === 'DAILY') {
+      items.push(
+        `Антидубль действует ежедневно с ${formatRulesTime(settings.duplicateStartTimeMinutes)} до ${formatRulesTime(settings.duplicateEndTimeMinutes)}${settings.duplicateStartTimeMinutes > settings.duplicateEndTimeMinutes ? ' следующего дня' : ''} (${settings.duplicateTimezone}). Вне этого периода повторы разрешены.`,
+      );
+    }
     const allowedCount = resolveRulesDuplicateAllowedCount(settings);
     const photoModerationEnforced = input.duplicatePhotoModerationMode === 'FULL';
     const subjects = resolveDuplicateTextRuleSubjects(settings);

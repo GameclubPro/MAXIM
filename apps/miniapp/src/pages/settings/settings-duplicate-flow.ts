@@ -92,3 +92,13 @@ export function normalizeDuplicateFlowSettings(settings: ChatSettings): ChatSett
 export function formatDuplicateAllowanceLabel(count: number): string {
   return `удаление с сообщения №${count + 2}`;
 }
+
+export function formatDuplicateClockTime(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+export function formatDuplicateWindowLabel(settings: ChatSettings, windowHours: number): string {
+  return settings.duplicateWindowMode === 'DAILY'
+    ? `${formatDuplicateClockTime(settings.duplicateStartTimeMinutes)}–${formatDuplicateClockTime(settings.duplicateEndTimeMinutes)}${settings.duplicateStartTimeMinutes > settings.duplicateEndTimeMinutes ? ' следующего дня' : ''}`
+    : `${windowHours} ч`;
+}

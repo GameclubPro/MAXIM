@@ -18,6 +18,7 @@ import {
 } from './message-duplicate-history.service';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import { isDuplicateScheduleOpen, resolveDuplicateDailyWindow } from './message-duplicate-schedule';
 import {
   MESSAGE_DUPLICATE_SOURCE,
   messageDuplicateSettingsDigest,
@@ -346,6 +347,15 @@ export class MessageDuplicateDeleteGuardService {
         throw new MessageDuplicateGuardRejectedError('message_duplicate_sanction_settings_changed');
       }
     }
+    const dailyWindow = resolveDuplicateDailyWindow(settings, binding.eventTimestampMs);
+    if (
+      !isDuplicateScheduleOpen(settings, binding.eventTimestampMs) ||
+      (dailyWindow &&
+        (!binding.original ||
+          binding.original.publishedAtMs < dailyWindow.startMs ||
+          binding.original.expiresAtMs !== dailyWindow.endMs))
+    )
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_schedule_closed');
     if (settings.chat.admins.some((admin) => admin.userId === binding.senderId)) {
       throw new MessageDuplicateGuardRejectedError('message_duplicate_author_immune');
     }
@@ -354,7 +364,9 @@ export class MessageDuplicateDeleteGuardService {
         chatId,
         userId: binding.senderId,
         ruleCode: { in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'] },
-        createdAt: { gte: new Date(Date.now() - binding.windowSeconds * 1000) },
+        createdAt: {
+          gte: new Date(dailyWindow?.startMs ?? Date.now() - binding.windowSeconds * 1000),
+        },
       },
       orderBy: { createdAt: 'desc' },
       select: { id: true },

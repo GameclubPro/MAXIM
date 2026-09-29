@@ -18,13 +18,17 @@ export type DuplicateFlowConfig = {
 };
 
 export function resolveDuplicateFlowConfig(settings: ChatSettings): DuplicateFlowConfig {
-  const windowSec = settings.duplicateWarnEnabled
+  const intervalSec = settings.duplicateWarnEnabled
     ? settings.duplicateWarnWindowSec
     : settings.duplicateMuteEnabled
       ? settings.duplicateMuteWindowSec
       : settings.duplicateBanEnabled
         ? settings.duplicateBanWindowSec
         : settings.duplicateWarnWindowSec;
+  const windowSec =
+    settings.duplicateWindowMode === 'DAILY'
+      ? ((settings.duplicateEndTimeMinutes - settings.duplicateStartTimeMinutes + 1440) % 1440) * 60
+      : intervalSec;
   const reactions: DuplicateReactionStage[] = [];
   if (settings.duplicateBotMessageEnabled) {
     reactions.push({ action: null });

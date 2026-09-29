@@ -128,6 +128,23 @@ function setup() {
 }
 
 describe('bounded message duplicate media analysis', () => {
+  it('expires scheduled media work before downloading or using history', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-29T14:59Z'));
+    try {
+      const s = setup();
+      s.settings.duplicateWindowMode = 'DAILY';
+      const job = s.job('scheduled', 0);
+      clock.mockReturnValue(Date.parse('2026-09-29T15:00Z'));
+      await s.service.process(job, s.lease);
+      expect(s.downloads).not.toHaveBeenCalled();
+      expect(s.history.observe).not.toHaveBeenCalled();
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith('media.schedule_closed');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it.each([false, true])(
     'resumes all candidates within the media budget (terminal baseline: %s)',
     async (terminal) => {

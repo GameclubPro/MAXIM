@@ -6,6 +6,7 @@ import type {
 } from '@maxim/contracts/settings';
 import {
   formatDuplicateAllowanceLabel,
+  formatDuplicateWindowLabel,
   resolveDuplicateAllowedCount,
 } from './settings-duplicate-flow';
 
@@ -16,7 +17,7 @@ export function formatDuplicateSettingsSummary(
   windowHours: number,
 ): string {
   if (!settings?.antiDuplicateEnabled) return 'Выключено';
-  return `${formatDuplicateAllowanceLabel(resolveDuplicateAllowedCount(settings))} • ${windowHours} ч${settings.duplicateCompareMode !== 'TEXT' ? ' • картинки' : ''}`;
+  return `${formatDuplicateAllowanceLabel(resolveDuplicateAllowedCount(settings))} • ${formatDuplicateWindowLabel(settings, windowHours)}${settings.duplicateCompareMode !== 'TEXT' ? ' • картинки' : ''}`;
 }
 
 export function resolveDuplicatePhotoPresentationPolicy(

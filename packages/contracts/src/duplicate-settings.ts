@@ -2,6 +2,31 @@ import { z } from 'zod';
 
 export const duplicateDetectionPresetSchema = z.enum(['STANDARD', 'STRICT', 'CUSTOM']);
 export const duplicateCompareModeSchema = z.enum(['MESSAGE', 'TEXT']);
+export const duplicateScheduleSettingsShape = {
+  duplicateWindowMode: z.enum(['INTERVAL', 'DAILY']).default('INTERVAL'),
+  duplicateStartTimeMinutes: z.number().int().min(0).max(1_439).default(540),
+  duplicateEndTimeMinutes: z.number().int().min(0).max(1_439).default(1080),
+};
+
+export function addDuplicateScheduleIssues(
+  value: {
+    duplicateWindowMode: string;
+    duplicateStartTimeMinutes: number;
+    duplicateEndTimeMinutes: number;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (
+    value.duplicateWindowMode === 'DAILY' &&
+    value.duplicateStartTimeMinutes === value.duplicateEndTimeMinutes
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['duplicateEndTimeMinutes'],
+      message: 'Начало и конец периода должны отличаться.',
+    });
+  }
+}
 export const duplicatePhotoMatchPresetSchema = z.enum(['SAME_IMAGE', 'MINOR_EDITS']);
 export const duplicatePhotoScopeSchema = z.enum(['SAME_AUTHOR', 'CHAT']);
 export const duplicatePhotoModerationModeSchema = z.enum(['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL']);

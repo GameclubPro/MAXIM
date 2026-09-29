@@ -2076,6 +2076,79 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-duplicates-daily',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await panel.getByRole('radio', { name: '3 дня', exact: true }).click();
+      await panel.getByRole('radio', { name: 'По времени', exact: true }).click();
+      const setTime = async (label, hour) => {
+        await panel.getByRole('button', { name: new RegExp(`^${label}:`) }).click();
+        const sheet = page.locator('.time-field-sheet__panel');
+        const option = sheet.locator(`[data-time-part="hour"][data-time-value="${hour}"]`);
+        await option.scrollIntoViewIfNeeded();
+        await option.click();
+        await sheet.getByRole('button', { name: 'Применить', exact: true }).click();
+      };
+      await setTime('С', 18);
+      await panel.getByText('Начало и конец должны отличаться.', { exact: true }).waitFor();
+      await setTime('С', 22);
+      await setTime('По', 8);
+      await panel
+        .getByRole('combobox', { name: 'Часовой пояс', exact: true })
+        .selectOption('Asia/Yekaterinburg');
+      const save = panel.getByRole('button', { name: 'Сохранить', exact: true });
+      await save.click();
+      await save.waitFor({ state: 'hidden' });
+      if (await panel.isVisible())
+        await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      await panel.getByRole('button', { name: 'С: 22:00', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'По: 08:00', exact: true }).waitFor();
+      if (
+        (await panel.getByRole('combobox', { name: 'Часовой пояс', exact: true }).inputValue()) !==
+        'Asia/Yekaterinburg'
+      )
+        throw new Error('Duplicate timezone was not saved');
+      await panel.getByRole('radio', { name: 'Интервал', exact: true }).click();
+      if (
+        (await panel
+          .getByRole('spinbutton', { name: 'Период проверки дублей, часы' })
+          .inputValue()) !== '72'
+      )
+        throw new Error('Switching duplicate modes lost the interval');
+      await panel.getByRole('radio', { name: 'По времени', exact: true }).click();
+      await panel
+        .locator('.duplicate-stage')
+        .first()
+        .evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      await page.getByRole('button', { name: 'Закрыть уведомление' }).evaluateAll((buttons) => {
+        for (const button of buttons) button.click();
+      });
+      const overflow = await panel
+        .locator('.duplicate-window, .duplicate-window__times, .duplicate-trigger-count')
+        .evaluateAll((elements) =>
+          elements.some((element) => element.scrollWidth > element.clientWidth + 1),
+        );
+      if (overflow) throw new Error('Duplicate schedule controls overflow');
+      const countOverlap = await panel.locator('.duplicate-count-stepper').evaluate((element) => {
+        const boxes = [...element.children].map((child) => child.getBoundingClientRect());
+        return boxes.some((box, index) => index > 0 && box.left < boxes[index - 1].right - 1);
+      });
+      if (countOverlap) throw new Error('Duplicate count controls overlap in daily mode');
+    },
+  },
+  {
+    name: 'chat-settings-duplicates-time-picker',
+    beforeShot: async (page) => {
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await panel.getByRole('radio', { name: 'По времени', exact: true }).click();
+      await panel.getByRole('button', { name: /^С:/u }).click();
+      await page.locator('.time-field-sheet__panel').waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'chat-settings-duplicates-threshold',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');

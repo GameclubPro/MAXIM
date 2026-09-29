@@ -3,6 +3,7 @@ import test from 'node:test';
 import { chatSettingsSchema } from '@maxim/contracts/settings';
 import {
   buildDuplicateFlowSettings,
+  formatDuplicateWindowLabel,
   normalizeDuplicateFlowSettings,
   resolveDuplicateAllowedCount,
   resolveDuplicateAllowedCountMax,
@@ -209,5 +210,23 @@ test('duplicate flow clamps the shared window without changing saturated thresho
       duplicateMuteMaxCount: 19,
       duplicateBanMaxCount: 20,
     },
+  );
+});
+
+test('daily mode preserves the interval and displays a period crossing midnight', () => {
+  const settings = normalizeDuplicateFlowSettings(
+    chatSettingsSchema.parse({
+      duplicateWindowMode: 'DAILY',
+      duplicateStartTimeMinutes: 1320,
+      duplicateEndTimeMinutes: 480,
+      duplicateWarnWindowSec: 86400,
+    }),
+  );
+  assert.equal(settings.duplicateWindowMode, 'DAILY');
+  assert.equal(settings.duplicateWarnWindowSec, 86400);
+  assert.equal(formatDuplicateWindowLabel(settings, 24), '22:00–08:00 следующего дня');
+  assert.equal(
+    formatDuplicateWindowLabel({ ...settings, duplicateWindowMode: 'INTERVAL' }, 24),
+    '24 ч',
   );
 });

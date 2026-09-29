@@ -49,8 +49,12 @@ export function buildPrivateSectionSummaryLines(
     case 'duplicates': {
       const duplicateWindowSec = resolvePrivateDuplicateSharedWindowSec(settings);
       const duplicateAllowedCount = resolvePrivateDuplicateAllowedCount(settings);
+      const period =
+        settings.duplicateWindowMode === 'DAILY'
+          ? `ежедневно ${formatPrivateControlTime(settings.duplicateStartTimeMinutes)}–${formatPrivateControlTime(settings.duplicateEndTimeMinutes)} (${settings.duplicateTimezone})`
+          : `окно ${duplicateWindowSec}с`;
       return [
-        `Антидубли: ${format.boolean(settings.antiDuplicateEnabled)} • ${duplicateAllowedCount === 0 ? 'с первого дубля' : `после ${duplicateAllowedCount} дубл.`} • окно ${duplicateWindowSec}с`,
+        `Антидубли: ${format.boolean(settings.antiDuplicateEnabled)} • ${duplicateAllowedCount === 0 ? 'с первого дубля' : `после ${duplicateAllowedCount} дубл.`} • ${period}`,
         `Одинаковые картинки: ${format.boolean(settings.duplicateCompareMode !== 'TEXT')} • ${formatPrivateControlEnumValue(settings.duplicatePhotoScope)} • общая цепочка действий`,
         `Этапы: объяснение ${format.boolean(settings.duplicateBotMessageEnabled)} • WARN ${format.boolean(settings.duplicateWarnEnabled)} • MUTE ${format.boolean(settings.duplicateMuteEnabled)} (${settings.duplicateMuteDurationHours}ч) • BAN ${format.boolean(settings.duplicateBanEnabled)}`,
         `Кнопка: ${format.boolean(settings.duplicateBotButtonEnabled)}`,

@@ -53,7 +53,8 @@ local function valid(evidence)
   if life and (life.conflict or life.source ~= evidence.sourceDigest) then return false end
   local state = read(stateKey(evidence.member))
   return state and state.epoch == evidence.epoch and state.source == evidence.sourceDigest
-    and state.identity == evidence.contentDigest
+    and state.identity == evidence.contentDigest and state.at == evidence.observedAtMs
+    and state.publishedAt == evidence.publishedAtMs
 end
 local function groupKey(fingerprint) return 'group:' .. p.scope .. ':' .. fingerprint end
 local function counterKey(fingerprint, original)
@@ -103,7 +104,7 @@ local previous = read(stateKey(p.member))
 local currentEpoch = epoch(p.author)
 if previous and previous.epoch == currentEpoch then
   if p.at < previous.at then return cjson.encode({ kind = 'stale' }) end
-  if previous.source == p.source and (previous.identity == p.identity or (p.identity == '' and p.at == previous.at)) then
+  if previous.context == p.context and previous.source == p.source and (previous.identity == p.identity or (p.identity == '' and p.at == previous.at)) then
     return cjson.encode({ kind = 'replayed', matches = previous.matches, observedAt = previous.at })
   end
 end
@@ -114,25 +115,32 @@ if previous then
     -- using the old message's age here would allow replacing any old post with fresh spam.
     publishedAt = p.at
   else
-    publishedAt = math.min(publishedAt, previous.publishedAt)
+    -- FLAG: Verified media promotes the same content revision. Preserve its observed
+    -- introduction time, including a material edit of an older message.
+    publishedAt = previous.publishedAt
   end
 end
-local state = { at = p.at, publishedAt = publishedAt, source = p.source, identity = p.identity,
+local state = { at = p.at, publishedAt = publishedAt, source = p.source, identity = p.identity, context = p.context,
   epoch = currentEpoch, matches = {} }
 write(stateKey(p.member), state)
 if p.identity == '' then return cjson.encode({ kind = 'ok', matches = {} }) end
+-- FLAG: An old post edited without a content change must never become today's original.
+if p.periodStart and (publishedAt < p.periodStart or publishedAt >= p.periodEnd) then
+  return cjson.encode({ kind = 'ok', matches = {} })
+end
 local writes = {}
 for _, fingerprint in ipairs(p.fingerprints) do
   local key = groupKey(fingerprint)
   local original = read(key)
-  if not valid(original) then original = nil end
+  if not valid(original) or (p.periodStart and original.publishedAtMs < p.periodStart) then original = nil end
   if not original or publishedAt >= original.expiresAtMs then
     -- FLAG: An old edit or delayed observation cannot start a fresh window at processing time.
     -- The publication clock is immutable, including for a newly verified media baseline.
-    if publishedAt + p.windowMs > p.at then
+    local expiresAt = p.periodEnd or (publishedAt + p.windowMs)
+    if expiresAt > p.at then
       original = { member = p.member, author = p.author, messageId = p.messageId,
         senderId = p.senderId, publishedAtMs = publishedAt, observedAtMs = p.at,
-        expiresAtMs = publishedAt + p.windowMs, sourceDigest = p.source,
+        expiresAtMs = expiresAt, sourceDigest = p.source,
         contentDigest = p.identity, mediaHashes = p.mediaHashes, epoch = currentEpoch }
       table.insert(writes, { key = key, value = original })
     end

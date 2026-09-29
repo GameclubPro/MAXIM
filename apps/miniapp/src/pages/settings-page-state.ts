@@ -270,6 +270,10 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
   ],
   duplicates: [
     'antiDuplicateEnabled',
+    'duplicateWindowMode',
+    'duplicateStartTimeMinutes',
+    'duplicateEndTimeMinutes',
+    'duplicateTimezone',
     'duplicateDetectionPreset',
     'duplicateCompareMode',
     'duplicatePhotoScope',

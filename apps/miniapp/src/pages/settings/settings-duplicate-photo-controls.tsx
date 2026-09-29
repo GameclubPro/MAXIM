@@ -8,12 +8,10 @@ import type { DuplicatePhotoPresentationPolicy } from './settings-duplicate-phot
 export default function SettingsDuplicatePhotoControls({
   moderationPolicy,
   scope,
-  windowHours,
   onScopeChange,
 }: {
   moderationPolicy: DuplicatePhotoPresentationPolicy;
   scope: DuplicatePhotoScope;
-  windowHours: number;
   onScopeChange: (value: DuplicatePhotoScope) => void;
 }) {
   return (
@@ -44,10 +42,6 @@ export default function SettingsDuplicatePhotoControls({
           />
         </div>
         <dl className="duplicate-diagnostics__facts">
-          <div>
-            <dt>Период проверки</dt>
-            <dd>{windowHours} ч</dd>
-          </div>
           <div>
             <dt>Подпись</dt>
             <dd>Не учитывается</dd>

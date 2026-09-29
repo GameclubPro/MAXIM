@@ -16,6 +16,7 @@ import {
   exactImageSettingsDigest,
 } from './message-duplicate-state';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import { isDuplicateScheduleOpen } from './message-duplicate-schedule';
 
 @Injectable()
 export class MessageDuplicateService {
@@ -79,13 +80,20 @@ export class MessageDuplicateService {
       return;
     }
     const eventTimestampMs = params.eventTimestampMs;
+    if (eventTimestampMs && !isDuplicateScheduleOpen(params.settings, eventTimestampMs)) {
+      this.metrics?.record('admission.schedule_closed');
+      return;
+    }
     if (
       !Number.isSafeInteger(eventTimestampMs) ||
       !eventTimestampMs ||
       eventTimestampMs < policy.effectiveAtMs ||
       classifyDuplicateEventTime({
         eventTimestampMs,
-        windowSec: resolveDuplicateFlowConfig(params.settings).windowSec,
+        windowSec:
+          params.settings.duplicateWindowMode === 'DAILY'
+            ? 172800
+            : resolveDuplicateFlowConfig(params.settings).windowSec,
       })
     ) {
       this.metrics?.record('admission.event_time_rejected');

@@ -33,6 +33,11 @@ describe('admin settings section apply', () => {
         'duplicatePhotoEnabled',
         'duplicatePhotoMatchPreset',
         'duplicatePhotoScope',
+        'duplicateCompareMode',
+        'duplicateWindowMode',
+        'duplicateStartTimeMinutes',
+        'duplicateEndTimeMinutes',
+        'duplicateTimezone',
       ]),
     );
   });

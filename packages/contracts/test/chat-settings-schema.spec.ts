@@ -27,6 +27,40 @@ describe('message duplicate comparison settings', () => {
   });
 });
 
+describe('duplicate daily schedule settings', () => {
+  it('preserves interval defaults and accepts daily and overnight periods', () => {
+    expect(chatSettingsSchema.parse({})).toMatchObject({
+      duplicateWindowMode: 'INTERVAL',
+      duplicateStartTimeMinutes: 540,
+      duplicateEndTimeMinutes: 1080,
+      duplicateTimezone: 'Europe/Moscow',
+    });
+    for (const [start, end] of [
+      [540, 1080],
+      [1320, 480],
+      [0, 1],
+    ]) {
+      expect(
+        updateSettingsRequestSchema.safeParse({
+          duplicateWindowMode: 'DAILY',
+          duplicateStartTimeMinutes: start,
+          duplicateEndTimeMinutes: end,
+        }).success,
+      ).toBe(true);
+    }
+  });
+  it.each([
+    { duplicateWindowMode: 'OTHER' },
+    { duplicateWindowMode: 'DAILY', duplicateStartTimeMinutes: 1080 },
+    { duplicateStartTimeMinutes: -1 },
+    { duplicateEndTimeMinutes: 1440 },
+    { duplicateStartTimeMinutes: 12.5 },
+    { duplicateTimezone: 'invalid/zone' },
+  ])('rejects ambiguous or invalid time settings %j', (input) => {
+    expect(updateSettingsRequestSchema.safeParse(input).success).toBe(false);
+  });
+});
+
 describe('night mode settings update validation', () => {
   it.each(['nightModeBotMessageEnabled', 'nightModeOpenMessageEnabled'] as const)(
     'keeps an equal-time legacy row readable but rejects saving it with %s',

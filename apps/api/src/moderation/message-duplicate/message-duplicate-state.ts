@@ -3,6 +3,7 @@ import type { ChatSettings } from '../../prisma/prisma-client';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
 import { digestDuplicateContent } from './message-duplicate-content';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from '../photo-duplicate/photo-fingerprint-version';
+import { duplicateScheduleDigestInput } from './message-duplicate-schedule';
 
 export const MESSAGE_DUPLICATE_SOURCE = 'message_v1';
 export const MESSAGE_DUPLICATE_MEDIA_VERSION = `sha256-v1:${PHOTO_FINGERPRINT_ALGORITHM_VERSION}`;
@@ -97,7 +98,8 @@ export function isBoundMessageDuplicateDelete(input: {
 export function messageDuplicateSettingsDigest(settings: ChatSettings): string {
   const flow = resolveDuplicateFlowConfig(settings);
   return digestDuplicateContent({
-    version: 'text-fixed-window-v4',
+    version: 'text-fixed-window-v5',
+    schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled,
     mode: settings.duplicateCompareMode ?? 'MESSAGE',
     preset: settings.duplicateDetectionPreset,
@@ -124,7 +126,8 @@ export function messageDuplicateSanctionSettingsDigest(
 
 export function exactImageSettingsDigest(settings: ChatSettings): string {
   return digestDuplicateContent({
-    version: 'exact-image-fixed-window-v2',
+    version: 'exact-image-fixed-window-v3',
+    schedule: duplicateScheduleDigestInput(settings),
     enabled: settings.antiDuplicateEnabled && settings.duplicateCompareMode !== 'TEXT',
     scope: settings.duplicatePhotoScope,
     window: resolveDuplicateFlowConfig(settings).windowSec,

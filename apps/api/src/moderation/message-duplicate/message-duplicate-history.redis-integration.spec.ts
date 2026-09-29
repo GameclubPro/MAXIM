@@ -321,6 +321,107 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
   });
 
+  it('does not revive old evidence when the original changes away and back', async () => {
+    await observe('original', 0);
+    const old = await observe('target', 100);
+    await observe('original', 200, 'different');
+    await observe('original', 300, 'a');
+    expect(await history.stillMatches(chatId, old!.binding)).toBe(false);
+    const next = await observe('next', 400);
+    expect(next?.binding.original?.publishedAtMs).toBe(start + 300);
+  });
+
+  it('re-evaluates unchanged content when its comparison settings change', async () => {
+    await observe('original', 0);
+    await observe('target', 100);
+    const changed = { settings: duplicateSettings({ duplicateWarnWindowSec: 3600 }) };
+    expect(await observe('target', 200, 'a', changed)).toBeNull();
+    const next = await observe('next', 300, 'a', changed);
+    expect(next?.binding.original?.messageId).toBe('target');
+    expect(next?.binding.original?.publishedAtMs).toBe(start + 100);
+  });
+
+  it('preserves material-edit time when pending media becomes verified', async () => {
+    const file = (url: string) =>
+      extractDuplicateMessageContent({
+        message: {
+          body: {
+            attachments: [{ type: 'file', payload: { url } }],
+          },
+        },
+      });
+    const oldTime = start - 2 * 86400_000;
+    await observe('old', oldTime - start, '', {
+      content: file('https://fd.oneme.ru/old'),
+      mediaHashes: ['a'.repeat(64)],
+    });
+    await observe('old', 0, '', {
+      content: file('https://fd.oneme.ru/new'),
+      publishedAtMs: oldTime,
+    });
+    await observe('old', 0, '', {
+      content: file('https://fd.oneme.ru/new'),
+      publishedAtMs: oldTime,
+      mediaHashes: ['b'.repeat(64)],
+    });
+    const repeated = await observe('repeat', 100, '', {
+      content: file('https://fd.oneme.ru/new'),
+      mediaHashes: ['b'.repeat(64)],
+    });
+    expect(repeated?.binding.original?.publishedAtMs).toBe(start);
+    expect(repeated?.binding.original?.messageId).toBe('old');
+  });
+
+  it.each(['TEXT', 'IMAGE'] as const)(
+    'resets %s evidence and sanctions at each daily period',
+    async (mode) => {
+      const dailySettings = duplicateSettings({
+        duplicateWindowMode: 'DAILY',
+        duplicateStartTimeMinutes: 540,
+        duplicateEndTimeMinutes: 1080,
+        duplicateCompareMode: mode === 'TEXT' ? 'TEXT' : 'MESSAGE',
+      });
+      const extra =
+        mode === 'IMAGE'
+          ? {
+              content: extractDuplicateMessageContent({
+                message: {
+                  body: {
+                    attachments: [{ type: 'image', payload: { url: 'https://i.oneme.ru/a' } }],
+                  },
+                },
+              }),
+              imageScope: 'CHAT' as const,
+              mediaHashes: ['a'.repeat(64)],
+            }
+          : {};
+      const at = (id: string, iso: string, overrides = {}) =>
+        observe(id, Date.parse(iso) - start, 'a', {
+          settings: dailySettings,
+          ...extra,
+          ...overrides,
+        });
+      expect(await at('outside', '2026-09-29T05:59Z')).toBeNull();
+      expect(await at('first', '2026-09-29T06:00Z')).toBeNull();
+      const repeat = await at('repeat', '2026-09-29T14:59Z');
+      expect(repeat?.binding.original?.messageId).toBe('first');
+      expect(repeat?.binding.original?.expiresAtMs).toBe(Date.parse('2026-09-29T15:00Z'));
+      expect(await history.qualify(chatId, repeat!.binding)).toBe(1);
+      expect(await at('closed', '2026-09-29T15:00Z')).toBeNull();
+      // Yesterday's unchanged original and rejected target cannot become today's evidence.
+      expect(
+        await at('first', '2026-09-30T06:00Z', { publishedAtMs: Date.parse('2026-09-29T06:00Z') }),
+      ).toBeNull();
+      expect(
+        await at('repeat', '2026-09-30T06:01Z', { publishedAtMs: Date.parse('2026-09-29T14:59Z') }),
+      ).toBeNull();
+      expect(await at('new-day', '2026-09-30T06:02Z')).toBeNull();
+      const next = await at('new-repeat', '2026-09-30T06:03Z');
+      expect(next?.binding.original?.messageId).toBe('new-day');
+      expect(await history.qualify(chatId, next!.binding)).toBe(1);
+    },
+  );
+
   it('never lets a pending media observation downgrade an already verified revision', async () => {
     await observe('a', 0);
     const hit = await observe('b', 100);

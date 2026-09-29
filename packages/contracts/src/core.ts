@@ -642,6 +642,8 @@ export const chatSettingsSchema = z
       duplicatePhotoScope: dupe.duplicatePhotoScopeSchema.default('SAME_AUTHOR'),
       duplicateDetectionPreset: dupe.duplicateDetectionPresetSchema.default('STRICT'),
       duplicateCompareMode: dupe.duplicateCompareModeSchema.default('MESSAGE'),
+      ...dupe.duplicateScheduleSettingsShape,
+      duplicateTimezone: broadcastScheduleTimezoneSchema,
       duplicateIgnoreLinksEnabled: z.boolean().default(false),
       duplicateIgnorePhonesEnabled: z.boolean().default(false),
       duplicateNearMatchEnabled: z.boolean().default(false),
@@ -1100,6 +1102,8 @@ export const chatSettingsSchema = z
         message: 'Укажите корректный часовой пояс.',
       });
     }
+
+    dupe.addDuplicateScheduleIssues(value, ctx);
 
     if (value.commercialAdsDeleteThreshold <= value.commercialAdsWarnThreshold) {
       ctx.addIssue({

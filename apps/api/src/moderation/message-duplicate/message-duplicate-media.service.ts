@@ -41,6 +41,7 @@ import {
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import { isDuplicateScheduleOpen, resolveDuplicateDailyWindow } from './message-duplicate-schedule';
 
 const requireFromHere = createRequire(__filename);
 const MAX_UNCACHED_MEDIA_PER_ATTEMPT = 20;
@@ -151,10 +152,18 @@ export class MessageDuplicateMediaService {
       return;
     }
     const flow = resolveDuplicateFlowConfig(settings);
+    if (!isDuplicateScheduleOpen(settings, job.eventTimestampMs)) {
+      this.metrics?.record('media.schedule_closed');
+      return;
+    }
+    const dailyWindow = resolveDuplicateDailyWindow(settings, job.eventTimestampMs);
+    const windowSec = dailyWindow
+      ? Math.ceil((dailyWindow.endMs - dailyWindow.startMs) / 1000)
+      : flow.windowSec;
     if (
       classifyDuplicateEventTime({
         eventTimestampMs: job.eventTimestampMs,
-        windowSec: flow.windowSec,
+        windowSec,
       })
     ) {
       this.metrics?.record('media.event_time_rejected');
@@ -176,6 +185,7 @@ export class MessageDuplicateMediaService {
       imageOnly && settings.duplicatePhotoScope === 'CHAT' ? null : message.senderId,
       job.controlRevision,
       job.settingsDigest,
+      dailyWindow?.startMs,
     ]);
     const candidateKeys = this.history
       .candidateKeys(content, settings, imageOnly)
@@ -197,7 +207,7 @@ export class MessageDuplicateMediaService {
           this.metrics?.record('media.late_event');
           return;
         }
-        if (ageMs < flow.windowSec * 1000) {
+        if (ageMs < windowSec * 1000) {
           if (ageMs === 0 && parsed.data.messageId === job.messageId) retryingCurrent = true;
           else {
             const previous = predecessors.get(parsed.data.messageId);
@@ -210,7 +220,7 @@ export class MessageDuplicateMediaService {
       }
       lease.assertOwned();
       if (raw !== null) {
-        await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
+        await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), windowSec);
       }
     }
     const currentCached = await this.readHashes(content, source.update);
@@ -220,7 +230,7 @@ export class MessageDuplicateMediaService {
     if (predecessors.size === 0 && !retryingCurrent && missingCurrentProof) {
       for (const key of candidateKeys) {
         lease.assertOwned();
-        await this.redis.setStringIfAbsentWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
+        await this.redis.setStringIfAbsentWithTtl(key, JSON.stringify(ownPointer), windowSec);
       }
       this.metrics?.record('media.first_candidate');
       return;
@@ -278,7 +288,7 @@ export class MessageDuplicateMediaService {
             const verified = await this.hashMedia(
               baselineContent,
               baseline.update,
-              flow.windowSec,
+              windowSec,
               deadlineAtMs,
               baseline.botId,
               undefined,
@@ -311,7 +321,7 @@ export class MessageDuplicateMediaService {
         // FLAG: Negative cache entries cannot prove equality. They only prevent a terminal,
         // receipt-scoped baseline from spending every resumed attempt's verification budget.
         lease.assertOwned();
-        await this.redis.setStringWithTtl(rejectedKey, 'rejected', flow.windowSec);
+        await this.redis.setStringWithTtl(rejectedKey, 'rejected', windowSec);
         this.metrics?.record('media.baseline_rejected');
         this.logger.debug(
           { chatId: job.chatId },
@@ -323,7 +333,7 @@ export class MessageDuplicateMediaService {
     const verified = await this.hashMedia(
       content,
       source.update,
-      flow.windowSec,
+      windowSec,
       deadlineAtMs,
       source.botId,
       currentCached,
@@ -345,7 +355,7 @@ export class MessageDuplicateMediaService {
     });
     for (const key of candidateKeys) {
       lease.assertOwned();
-      await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), flow.windowSec);
+      await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), windowSec);
     }
     if (result) {
       if (job.actionEligible !== true || !(await lease.resolveActionEligibility())) {

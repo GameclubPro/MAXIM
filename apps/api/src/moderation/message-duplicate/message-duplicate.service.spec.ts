@@ -39,6 +39,22 @@ describe('message duplicate main-path admission', () => {
     };
     return { service, params, policy, history, enforcement, queue, metrics };
   }
+  it('does not observe or queue content outside a daily period, including delayed events', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-29T15:00Z'));
+    try {
+      const s = setup();
+      s.params.settings.duplicateWindowMode = 'DAILY';
+      await s.service.observe(s.params);
+      s.params.eventTimestampMs = Date.parse('2026-09-29T14:59Z');
+      await s.service.observe(s.params);
+      expect(s.history.observe).not.toHaveBeenCalled();
+      expect(s.queue.enqueue).not.toHaveBeenCalled();
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+      expect(s.metrics.record).toHaveBeenCalledWith('admission.schedule_closed');
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it('admits short messages inline and never silently acknowledges state failures', async () => {
     const s = setup();
     await s.service.observe(s.params);

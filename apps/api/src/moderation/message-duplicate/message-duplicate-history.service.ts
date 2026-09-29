@@ -9,6 +9,7 @@ import {
 } from '../rule-engine-duplicate-detector';
 import type { DuplicateHit } from '../rule-engine.contract';
 import { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import { resolveDuplicateDailyWindow } from './message-duplicate-schedule';
 import {
   buildMessageDuplicateIdentity,
   digestDuplicateContent,
@@ -95,6 +96,8 @@ export class MessageDuplicateHistoryService {
   async observe(
     input: MessageDuplicateObservation,
   ): Promise<{ hit: DuplicateHit; binding: MessageDuplicateBinding } | null> {
+    const dailyWindow = resolveDuplicateDailyWindow(input.settings, input.eventTimestampMs);
+    if (dailyWindow === null) return null;
     const mode = input.imageScope
       ? 'IMAGE'
       : input.settings.duplicateCompareMode === 'TEXT'
@@ -103,6 +106,9 @@ export class MessageDuplicateHistoryService {
     const mediaHashes = [...(input.mediaHashes ?? [])];
     const identity = buildMessageDuplicateIdentity(input.content, mode, mediaHashes);
     const flow = resolveDuplicateFlowConfig(input.settings);
+    const windowSec = dailyWindow
+      ? Math.ceil((dailyWindow.endMs - dailyWindow.startMs) / 1000)
+      : flow.windowSec;
     const parts: DuplicateFingerprint[] = identity
       ? mode === 'IMAGE'
         ? [{ type: input.content.media.length === 1 ? 'image' : 'image_set', value: identity }]
@@ -148,7 +154,13 @@ export class MessageDuplicateHistoryService {
       mediaHashes,
       fingerprints: patterns.map((pattern) => pattern.hash),
       allowed: flow.allowedCount,
-      windowMs: flow.windowSec * 1000,
+      windowMs: windowSec * 1000,
+      context: digestDuplicateContent([
+        settingsDigest,
+        input.controlRevision,
+        dailyWindow?.startMs,
+      ]),
+      ...(dailyWindow ? { periodStart: dailyWindow.startMs, periodEnd: dailyWindow.endMs } : {}),
     });
     if (mutation.kind === 'replayed') this.metrics?.record('history.replayed');
     if (!identity || mutation.kind === 'stale') {
@@ -186,14 +198,14 @@ export class MessageDuplicateHistoryService {
       mediaVersion: MESSAGE_DUPLICATE_MEDIA_VERSION,
       hasPhotos: mode !== 'TEXT' && input.content.media.some((media) => media.kind === 'photo'),
       photoControlRevision: null,
-      windowSeconds: flow.windowSec,
+      windowSeconds: windowSec,
       requiredCount: flow.allowedCount + 2,
     };
     return {
       binding,
       hit: {
         count: match.count,
-        windowSec: flow.windowSec,
+        windowSec,
         hash: match.hash,
         fingerprintType: match.part.type,
         metadata: { duplicateSource: 'message_v1', messageDuplicate: binding },
