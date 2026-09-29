@@ -354,6 +354,7 @@ export class VkParsingPostImportRepository {
     // Freshness timestamps still advance on every observation; hash equality alone cannot
     // substitute for JSON equality (CDN URLs and raw counters can change independently).
     await database.$executeRaw(Prisma.sql`
+      /* storage:vk_import_upsert */
       INSERT INTO "vk_parsing_posts" (
         "id",
         "source_id",

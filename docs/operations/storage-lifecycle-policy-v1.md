@@ -9,7 +9,10 @@ does not enable a cleaner or shorten product history. It refines S2 of the
 Retain webhook identities, execution claims and full event bodies until every
 consumer below has a compatible replacement and a measured retention horizon.
 Unknown age/dependency/replay bounds mean **hold**, not permission to delete.
-`WEBHOOK_COMPLETED_RETENTION_ENABLED` remains false. The existing 7-day cleaner
+`WEBHOOK_COMPLETED_RETENTION_ENABLED` and `WEBHOOK_FAILED_RETENTION_ENABLED`
+default to false. FAILED alone does not prove absence of side effects; its former
+hourly cleanup also cascaded execution claims. Both receipt cleaners require the
+same lifecycle review before opt-in. The existing 7-day cleaner
 is not the implementation of this policy: it uses receipt creation time and
 deletes execution claims through the receipt FK.
 

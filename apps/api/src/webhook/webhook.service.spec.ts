@@ -523,6 +523,9 @@ describe('WebhookService', () => {
       where: {
         id: 'evt-shadow-membership-mirror',
         status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+        normalizedPayload: {
+          not: expect.objectContaining({ executionOwnerBotId: ownerBotId }),
+        },
       },
       data: {
         normalizedPayload: expect.objectContaining({ executionOwnerBotId: ownerBotId }),

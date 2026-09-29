@@ -30,6 +30,12 @@ test('storage inventory measures inaccessible application tables without reading
     assert.equal(report.largest_indexes[0].index_name, 'storage_fixture_pkey');
     assert.equal(report.largest_indexes[0].unique_index, true);
     assert.equal(report.largest_indexes[0].valid, true);
+    assert.equal(typeof relation.hot_updated_since_stats_reset, 'number');
+    assert.equal(typeof report.database_counters.temp_bytes, 'number');
+    assert.ok(Number.isFinite(Number(report.wal_counters.bytes)));
+    assert.equal(report.settings_metadata.shared_buffers.unit, '8kB');
+    assert.equal(report.settings_metadata.work_mem.unit, 'kB');
+    assert.ok(Number(report.settings.max_connections) > 0);
     assert.doesNotMatch(JSON.stringify(report), /payload|c4ca4238/u);
     const plan = await db.query(`EXPLAIN (FORMAT JSON) ${postgresStorageAuditSql}`);
     assert.doesNotMatch(JSON.stringify(plan), /"Relation Name":"storage_fixture"/u);

@@ -23,6 +23,16 @@ Measurement is limited to 512 ordinary public tables/materialized views and
 measurements as zero storage. Output includes aggregate bytes and the largest
 32 tables and 32 indexes, estimated live/dead row counts, cumulative mutations,
 vacuum/analyze timestamps, statistics reset time and selected storage settings.
+The catalog also reports HOT updates, database temp/I/O/transaction counters and
+cluster WAL counters, each with its own reset timestamp. Compare deltas only
+within an uninterrupted statistics window. WAL is cluster-wide, not attributable
+to one table. A HOT ratio describes observed updates, not index bloat.
+
+Memory settings include units and source/reset metadata. These are the **audit
+session's** settings: its forced `work_mem=1MB` and disabled query parallelism do
+not describe application sessions. `shared_buffers` uses 8 KiB blocks; `work_mem`
+and maintenance memory use KiB. Do not multiply `work_mem` by connections alone
+to claim actual RAM use; sorts/hashes and parallel workers matter too.
 It also reports up to 32 groups of valid/live indexes with identical access
 method, key/include columns, operator classes, collations, ordering, expressions
 and predicates. Uniqueness, constraint ownership, replica identity and clustering

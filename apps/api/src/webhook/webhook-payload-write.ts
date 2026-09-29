@@ -1,0 +1,17 @@
+import { Prisma, WebhookStatus } from '../prisma/prisma-client';
+
+// FLAG: This is only for payload-only preparation writes. Status transitions,
+// leases, dispatch markers and execution claims must never use the no-op guard.
+export function webhookPayloadChange(
+  id: string,
+  payload: Prisma.InputJsonValue,
+): Prisma.WebhookEventUpdateManyArgs {
+  return {
+    where: {
+      id,
+      status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+      normalizedPayload: { not: payload },
+    },
+    data: { normalizedPayload: payload },
+  };
+}

@@ -42,6 +42,7 @@ import {
   buildWebhookSemanticEventKey,
   readWebhookEventTimestamp,
 } from './webhook-semantic-event-key';
+import { webhookPayloadChange } from './webhook-payload-write';
 import { buildMembershipDenialEdgeAdvanceWhere } from './webhook-membership-transition.util';
 import {
   normalizeWebhookCanonicalCanaryPercent,
@@ -631,15 +632,9 @@ export class WebhookService implements OnModuleDestroy {
         }
         this.attachExecutionOwnerBotId(update, claim.executionBotId);
         await this.persistUserDisplayNameSnapshots(update);
-        await this.prisma.webhookEvent.updateMany({
-          where: {
-            id: webhookEventId,
-            status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-          },
-          data: {
-            normalizedPayload: this.sanitizeForJsonStorage(update),
-          },
-        });
+        await this.prisma.webhookEvent.updateMany(
+          webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),
+        );
         return {
           canonical: true,
           prepared: true,
@@ -1040,15 +1035,9 @@ export class WebhookService implements OnModuleDestroy {
   ): Promise<{ update: MaxUpdate; executionBotId: string | null }> {
     if (this.isPublisherUpdate(update)) {
       await this.observePublisherWebhook(update, webhookEventId, false);
-      await this.prisma.webhookEvent.updateMany({
-        where: {
-          id: webhookEventId,
-          status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-        },
-        data: {
-          normalizedPayload: this.sanitizeForJsonStorage(update),
-        },
-      });
+      await this.prisma.webhookEvent.updateMany(
+        webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),
+      );
       return { update, executionBotId: null };
     }
 
@@ -1074,15 +1063,9 @@ export class WebhookService implements OnModuleDestroy {
     // FLAG: bot_added only updates access/discovery; never publish onboarding hints to the entity.
     this.deferManagedEntityHandshake(update);
 
-    await this.prisma.webhookEvent.updateMany({
-      where: {
-        id: webhookEventId,
-        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-      },
-      data: {
-        normalizedPayload: this.sanitizeForJsonStorage(update),
-      },
-    });
+    await this.prisma.webhookEvent.updateMany(
+      webhookPayloadChange(webhookEventId, this.sanitizeForJsonStorage(update)),
+    );
 
     return {
       update,

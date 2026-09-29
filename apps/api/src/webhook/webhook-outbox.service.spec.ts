@@ -2444,7 +2444,8 @@ describe('WebhookOutboxService', () => {
     await (service as unknown as RetentionInternals).cleanupRetention();
 
     const queries = prisma.$executeRaw.mock.calls.map(([query]) => extractSql(query));
-    expect(queries).toHaveLength(5);
+    expect(queries).toHaveLength(4);
+    expect(queries.join(' ')).not.toContain('DELETE FROM "webhook_events"');
     expect(queries.join(' ')).not.toContain(`'PROCESSED'::"WebhookStatus"`);
     expect(queries.join(' ')).not.toContain(`'DUPLICATE'::"WebhookStatus"`);
   });
@@ -2455,6 +2456,7 @@ describe('WebhookOutboxService', () => {
         WEBHOOK_RETENTION_DAYS: 7,
         WEBHOOK_COMPLETED_RETENTION_ENABLED: true,
         WEBHOOK_FAILED_RETENTION_HOURS: 24,
+        WEBHOOK_FAILED_RETENTION_ENABLED: true,
         MODERATION_RETENTION_DAYS: 90,
         USER_DISPLAY_NAME_RETENTION_DAYS: 180,
       },
@@ -2532,7 +2534,7 @@ describe('WebhookOutboxService', () => {
 
     resolveFirstBatch(0);
     await cleanup;
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(6);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(5);
   });
 
   it('repeats full retention batches and stops after a partial batch', async () => {
@@ -2605,7 +2607,7 @@ describe('WebhookOutboxService', () => {
 
     await internals.cleanupRetention();
 
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(7);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(6);
     expect(internals.cleaning).toBe(false);
     expect(internals.retentionMaintenanceDue).toBe(false);
   });

@@ -658,7 +658,10 @@ WITH classified_activity AS MATERIALIZED (
       ELSE 'other'
     END AS query_family,
     CASE
-      WHEN state IS DISTINCT FROM 'active' OR query NOT LIKE '%audit_logs%' THEN 'not_applicable'
+      WHEN state IS DISTINCT FROM 'active' THEN 'not_applicable'
+      WHEN query LIKE '%/* storage:delete_lease_renew */%' THEN 'delete_lease_renew'
+      WHEN query LIKE '%/* storage:vk_import_upsert */%' THEN 'vk_import_upsert'
+      WHEN query NOT LIKE '%audit_logs%' THEN 'not_applicable'
       WHEN query LIKE '%/* FLAG: publisher_suggestion_legacy_migration */%' THEN 'publisher_legacy_migration'
       WHEN query LIKE '%/* FLAG: publisher_suggestion_publication_recovery */%' THEN 'publisher_publication_recovery'
       WHEN query LIKE '%/* FLAG: publisher_suggestion_terminal_cleanup */%' THEN 'publisher_terminal_cleanup'

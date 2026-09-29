@@ -5199,6 +5199,7 @@ export class ModerationDeleteIntentService {
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + this.leaseMs);
     const changed = await this.prisma.$executeRaw(Prisma.sql`
+      /* storage:delete_lease_renew */
       UPDATE "moderation_delete_intents"
       SET "lease_expires_at" = ${leaseExpiresAt}
       WHERE "id" = ${intentId}

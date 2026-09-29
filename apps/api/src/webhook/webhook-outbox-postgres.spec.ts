@@ -8,6 +8,7 @@ import {
   WebhookStatus,
 } from '../prisma/prisma-client';
 import { WebhookOutboxService } from './webhook-outbox.service';
+import { webhookPayloadChange } from './webhook-payload-write';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
 
@@ -113,6 +114,48 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
 
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it('skips identical prepared JSON without changing the heap tuple and persists a changed owner', async () => {
+    const id = `payload-noop-${randomUUID()}`;
+    createdEventIds.push(id);
+    const payload = { type: 'message_created', raw: { text: 'kept', attachments: [] } };
+    await prisma.webhookEvent.create({
+      data: {
+        id,
+        dedupKey: id,
+        rawPayload: {},
+        normalizedPayload: payload,
+      },
+    });
+    const tuple = () => prisma.$queryRaw<Array<{ version: string }>>`
+      SELECT xmin::text AS version FROM webhook_events WHERE id = ${id}
+    `;
+    const before = await tuple();
+    // JSONB equality is semantic, including object key ordering.
+    await expect(
+      prisma.webhookEvent.updateMany(
+        webhookPayloadChange(id, {
+          raw: { attachments: [], text: 'kept' },
+          type: 'message_created',
+        }),
+      ),
+    ).resolves.toEqual({ count: 0 });
+    expect(await tuple()).toEqual(before);
+    const changed = { ...payload, executionOwnerBotId: 'owner' };
+    await expect(
+      prisma.webhookEvent.updateMany(webhookPayloadChange(id, changed)),
+    ).resolves.toEqual({ count: 1 });
+    expect(
+      (await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).normalizedPayload,
+    ).toEqual(changed);
+    await prisma.webhookEvent.update({ where: { id }, data: { status: WebhookStatus.PROCESSED } });
+    await expect(
+      prisma.webhookEvent.updateMany(webhookPayloadChange(id, payload)),
+    ).resolves.toEqual({ count: 0 });
+    expect(
+      (await prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).normalizedPayload,
+    ).toEqual(changed);
   });
 
   it('executes the bulk ordered-head query and returns the oldest event per chat', async () => {

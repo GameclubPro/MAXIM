@@ -307,6 +307,7 @@ const envSchema = z.object({
   PARTICIPANT_REPORTS_MODE: z.enum(['off', 'canary', 'on']).default('off'),
   PARTICIPANT_REPORTS_CANARY_CHAT_IDS: z.string().default(''),
   WEBHOOK_COMPLETED_RETENTION_ENABLED: envBoolean(false),
+  WEBHOOK_FAILED_RETENTION_ENABLED: envBoolean(false),
   WEBHOOK_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
   WEBHOOK_FAILED_RETENTION_HOURS: z.coerce.number().int().positive().default(24),
   MODERATION_RETENTION_DAYS: z.coerce.number().int().positive().default(90),

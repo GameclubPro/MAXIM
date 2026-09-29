@@ -439,6 +439,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly enqueueConcurrency: number;
   private readonly maxEnqueueAttempts: number;
   private readonly webhookCompletedRetentionEnabled: boolean;
+  private readonly webhookFailedRetentionEnabled: boolean;
   private readonly webhookRetentionDays: number;
   private readonly webhookFailedRetentionHours: number;
   private readonly moderationRetentionDays: number;
@@ -490,6 +491,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       false,
     );
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
+    this.webhookFailedRetentionEnabled = this.configService.get<boolean>(
+      'WEBHOOK_FAILED_RETENTION_ENABLED',
+      false,
+    );
     this.webhookFailedRetentionHours = this.configService.get<number>(
       'WEBHOOK_FAILED_RETENTION_HOURS',
       24,
@@ -2151,12 +2156,16 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         });
       }
       if (runMaintenance) {
-        phases.push(
-          {
+        // FLAG: FAILED is not proof that no side effect occurred. Until body/proof
+        // retention is separated, its receipt and cascaded execution claims are held.
+        if (this.webhookFailedRetentionEnabled) {
+          phases.push({
             name: 'webhookFailedTerminal',
             maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
             deleteBatch: () => this.deleteTerminalFailedWebhookBatch(failedWebhookCutoff),
-          },
+          });
+        }
+        phases.push(
           {
             name: 'moderationEvents',
             maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
@@ -2201,6 +2210,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         {
           phases: cleanupSummary,
           webhookCompletedRetentionEnabled: this.webhookCompletedRetentionEnabled,
+          webhookFailedRetentionEnabled: this.webhookFailedRetentionEnabled,
           webhookRetentionDays: this.webhookRetentionDays,
           webhookFailedRetentionHours: this.webhookFailedRetentionHours,
           moderationRetentionDays: this.moderationRetentionDays,

@@ -19,6 +19,7 @@ WITH relations AS MATERIALIZED (
     s.n_live_tup AS estimated_live_rows, s.n_dead_tup AS estimated_dead_rows,
     s.n_tup_ins AS inserted_since_stats_reset,
     s.n_tup_upd AS updated_since_stats_reset,
+    s.n_tup_hot_upd AS hot_updated_since_stats_reset,
     s.n_tup_del AS deleted_since_stats_reset,
     s.last_vacuum, s.last_autovacuum, s.last_analyze, s.last_autoanalyze,
     s.vacuum_count, s.autovacuum_count
@@ -62,6 +63,16 @@ SELECT json_build_object(
   'schema_version', 1, 'audit', 'postgres_storage', 'sampled_at', clock_timestamp(),
   'postmaster_started_at', pg_postmaster_start_time(),
   'stats_reset_at', (SELECT stats_reset FROM pg_stat_database WHERE datname = current_database()),
+  'database_counters', (SELECT json_build_object(
+    'commits', xact_commit, 'rollbacks', xact_rollback,
+    'temp_files', temp_files, 'temp_bytes', temp_bytes,
+    'blocks_read', blks_read, 'blocks_hit', blks_hit,
+    'deadlocks', deadlocks, 'stats_reset_at', stats_reset
+  ) FROM pg_stat_database WHERE datname = current_database()),
+  'wal_counters', (SELECT json_build_object(
+    'records', wal_records, 'full_page_images', wal_fpi, 'bytes', wal_bytes,
+    'buffers_full', wal_buffers_full, 'stats_reset_at', stats_reset
+  ) FROM pg_stat_wal),
   'relation_limit_exceeded', (SELECT count(*) > 512 FROM relations),
   'index_limit_exceeded', (SELECT count(*) > 4096 FROM index_candidates),
   'relations_measured', (SELECT count(*) FROM measured),
@@ -76,12 +87,22 @@ SELECT json_build_object(
     'autovacuum_vacuum_insert_threshold', 'autovacuum_vacuum_insert_scale_factor',
     'autovacuum_analyze_threshold', 'autovacuum_analyze_scale_factor',
     'autovacuum_vacuum_cost_delay', 'autovacuum_vacuum_cost_limit',
-    'max_wal_size', 'min_wal_size', 'wal_keep_size', 'archive_mode'
+    'max_wal_size', 'min_wal_size', 'wal_keep_size', 'archive_mode',
+    'shared_buffers', 'work_mem', 'maintenance_work_mem', 'autovacuum_work_mem',
+    'effective_cache_size', 'max_connections', 'hash_mem_multiplier',
+    'max_worker_processes', 'max_parallel_workers', 'max_parallel_workers_per_gather'
+  )),
+  'settings_metadata', (SELECT json_object_agg(name, json_build_object(
+    'unit', unit, 'source', source, 'reset_value', reset_val
+  )) FROM pg_settings WHERE name IN (
+    'shared_buffers', 'work_mem', 'maintenance_work_mem', 'autovacuum_work_mem',
+    'effective_cache_size', 'max_connections', 'hash_mem_multiplier',
+    'max_worker_processes', 'max_parallel_workers', 'max_parallel_workers_per_gather'
   )),
   'largest_relations', (SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (
     SELECT relname AS table_name, total_bytes, table_bytes, indexes_bytes, toast_bytes,
       estimated_live_rows, estimated_dead_rows, inserted_since_stats_reset,
-      updated_since_stats_reset, deleted_since_stats_reset,
+      updated_since_stats_reset, hot_updated_since_stats_reset, deleted_since_stats_reset,
       last_vacuum, last_autovacuum, last_analyze, last_autoanalyze,
       vacuum_count, autovacuum_count, reloptions AS storage_options
     FROM measured ORDER BY total_bytes DESC, relname LIMIT 32

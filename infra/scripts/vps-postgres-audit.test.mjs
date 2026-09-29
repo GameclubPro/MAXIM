@@ -500,6 +500,21 @@ test('activity query classification emits only fixed labels, including for sensi
     'publisher_legacy_migration',
   );
   assert.doesNotMatch(JSON.stringify(markedReport), /secret_payload|api-publisher/u);
+  for (const [marker, table] of [
+    ['delete_lease_renew', 'moderation_delete_intents'],
+    ['vk_import_upsert', 'vk_parsing_posts'],
+  ]) {
+    await database.query(
+      `UPDATE fixture_activity SET query = $1 WHERE application_name = 'api-publisher'`,
+      [`/* storage:${marker} */ UPDATE ${table} SET private_field = 'secret_payload'`],
+    );
+    const sampled = await database.query(
+      statement.replace('FROM pg_stat_activity', 'FROM fixture_activity'),
+    );
+    const data = JSON.parse(Object.values(sampled.rows[0])[0]);
+    assert.equal(data.rows.find((row) => row.workload === 'publisher').query_shape, marker);
+    assert.doesNotMatch(JSON.stringify(data), /secret_payload|private_field/u);
+  }
 });
 
 test('queue oldest-state diagnostics remain bounded and never emit raw errors', async (t) => {

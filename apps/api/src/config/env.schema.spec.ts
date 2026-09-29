@@ -126,6 +126,11 @@ describe('validateEnv boolean parsing', () => {
 
   it('keeps completed webhook retention disabled unless explicitly enabled', () => {
     expect(validateEnv(createValidEnv()).WEBHOOK_COMPLETED_RETENTION_ENABLED).toBe(false);
+    expect(validateEnv(createValidEnv()).WEBHOOK_FAILED_RETENTION_ENABLED).toBe(false);
+    expect(
+      validateEnv(createValidEnv({ WEBHOOK_FAILED_RETENTION_ENABLED: 'true' }))
+        .WEBHOOK_FAILED_RETENTION_ENABLED,
+    ).toBe(true);
     expect(
       validateEnv(createValidEnv({ WEBHOOK_COMPLETED_RETENTION_ENABLED: 'true' }))
         .WEBHOOK_COMPLETED_RETENTION_ENABLED,
