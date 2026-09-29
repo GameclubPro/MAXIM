@@ -24,20 +24,12 @@ import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entit
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
-import {
-  MAX_API_SOURCE_TAGS,
-  MaxClientService,
-  type MaxChatMemberAccess,
-} from '../max/max-client.service';
+import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
-import {
-  ManagedEntityHandshakeService,
-  MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
-  MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
-} from '../max/managed-entity-handshake.service';
+import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import { WebhookIngressMetricsService } from '../system/webhook-ingress-metrics.service';
@@ -203,8 +195,6 @@ const BOT_SELF_ACCESS_BACKOFF_MS = 30 * 1_000;
 const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
 const BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1_000;
 const EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS = 30 * 1_000;
-const BOT_ADDED_START_HINT_SEND_TIMEOUT_MS = 1_500;
-const BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
 const MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS = 100;
@@ -217,9 +207,7 @@ const DEFAULT_MEMBERSHIP_DENIAL_CACHE_MAX_IN_FLIGHT = 64;
 const BOT_REMOVED_CACHE_PUBLICATION_WAIT_MS = 100;
 const WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const WEBHOOK_PREPARATION_LEASE_MS = 30_000;
-const MANAGED_ENTITY_ONBOARDING_EPOCH_MS = 15 * 60_000;
 const EXECUTION_CLAIM_KIND = 'EXECUTION';
-const ONBOARDING_HINT_CLAIM_KIND = 'ONBOARDING_HINT';
 const MEMBERSHIP_ACTIVITY_TIMESTAMP_GRANULARITY_MS = 1_000;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
@@ -1083,9 +1071,7 @@ export class WebhookService implements OnModuleDestroy {
       update,
     );
     this.schedulePendingExecutionOwnerFailoverRecheck(bindingSync.pendingExecutionOwnerRecheck);
-    if (await this.claimManagedEntityOnboardingHint(webhookEventId, update)) {
-      this.deferBotAddedStartHint(update);
-    }
+    // FLAG: bot_added only updates access/discovery; never publish onboarding hints to the entity.
     this.deferManagedEntityHandshake(update);
 
     await this.prisma.webhookEvent.updateMany({
@@ -1102,39 +1088,6 @@ export class WebhookService implements OnModuleDestroy {
       update,
       executionBotId: bindingSync.executionOwnerBotId ?? update.executionOwnerBotId?.trim() ?? null,
     };
-  }
-
-  private async claimManagedEntityOnboardingHint(
-    webhookEventId: string,
-    update: MaxUpdate,
-  ): Promise<boolean> {
-    if (update.type.trim().toLowerCase() !== 'bot_added') {
-      return false;
-    }
-
-    const chatId = update.message?.chatId?.trim() ?? '';
-    if (!chatId) {
-      return false;
-    }
-
-    const claimModel = this.getWebhookExecutionClaimModel();
-    if (!claimModel) {
-      return true;
-    }
-
-    const occurredAtMs = (readWebhookEventTimestamp(update) ?? new Date()).getTime();
-    const onboardingEpoch = Math.floor(occurredAtMs / MANAGED_ENTITY_ONBOARDING_EPOCH_MS);
-    const result = await claimModel.createMany({
-      data: [
-        {
-          kind: ONBOARDING_HINT_CLAIM_KIND,
-          semanticKey: `${chatId}:${onboardingEpoch}`,
-          webhookEventId,
-        },
-      ],
-      skipDuplicates: true,
-    });
-    return result.count > 0;
   }
 
   private async markMirroredReceiptDuplicate(webhookEventId: string): Promise<void> {
@@ -1304,122 +1257,6 @@ export class WebhookService implements OnModuleDestroy {
       'managed entity handshake',
       update,
     );
-  }
-
-  private deferBotAddedStartHint(update: MaxUpdate): void {
-    if (!this.maxClient) {
-      return;
-    }
-
-    if (update.type.trim().toLowerCase() !== 'bot_added') {
-      return;
-    }
-
-    const chatId = update.message?.chatId?.trim() ?? '';
-    const botId = update.botId?.trim() ?? '';
-    const entityType = this.readWebhookChatEntityType(update);
-    if (
-      !chatId ||
-      !botId ||
-      !entityType ||
-      this.isUnsupportedManagedRosterSyncChat(chatId, update.message?.entityType)
-    ) {
-      return;
-    }
-    this.deferBackgroundTask(
-      async () => {
-        await this.sendBotAddedStartHint(update, chatId, botId, entityType);
-      },
-      'bot added start hint',
-      update,
-    );
-  }
-
-  private async sendBotAddedStartHint(
-    update: MaxUpdate,
-    chatId: string,
-    botId: string,
-    entityType: ChatEntityType,
-  ): Promise<void> {
-    if (!this.maxClient) {
-      return;
-    }
-
-    const entityLabel = entityType === ChatEntityType.CHANNEL ? 'Канал' : 'Чат';
-    try {
-      await this.maxClient.sendMessageImmediateWithId(
-        chatId,
-        `${entityLabel} почти подключен. Назначьте бота администратором, затем нажмите кнопку ниже. После проверки ${entityType === ChatEntityType.CHANNEL ? 'канал' : 'чат'} появится в мини-приложении.`,
-        {
-          buttons: [
-            [
-              {
-                type: 'callback',
-                text: MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
-                payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
-                intent: 'positive',
-              },
-            ],
-          ],
-          debugContext: {
-            screen: 'managed_entity_handshake',
-            action: 'bot_added_hint',
-          },
-        },
-        {
-          botId,
-          trafficClass: 'interactive',
-          actionHealthLane: 'background',
-          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
-          timeoutMs: BOT_ADDED_START_HINT_SEND_TIMEOUT_MS,
-          ignoreFailureMetricStatuses: BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES,
-        },
-      );
-      this.logger.log(
-        {
-          updateId: update.updateId,
-          chatId,
-          botId,
-          entityType,
-        },
-        'Managed entity handshake start hint sent',
-      );
-    } catch (error: unknown) {
-      if (this.isExpectedBotAddedStartHintSendFailure(error)) {
-        this.logger.debug(
-          {
-            updateId: update.updateId,
-            chatId,
-            botId,
-            status: this.extractStatusCode(error),
-            maxCode: this.extractMaxErrorCode(error),
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Skipped managed entity start hint after bot_added webhook because chat is not yet reachable',
-        );
-        return;
-      }
-
-      this.logger.warn(
-        {
-          updateId: update.updateId,
-          chatId,
-          botId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to send managed entity start hint after bot_added webhook',
-      );
-    }
-  }
-
-  private isExpectedBotAddedStartHintSendFailure(error: unknown): boolean {
-    const status = this.extractStatusCode(error);
-    if (BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES.some((expected) => expected === status)) {
-      return true;
-    }
-
-    const code = this.extractMaxErrorCode(error);
-    return code === 'chat.denied' || code === 'chat.not.found';
   }
 
   private readManagedEntityPendingBootstrapUserId(update: MaxUpdate): string | null {
