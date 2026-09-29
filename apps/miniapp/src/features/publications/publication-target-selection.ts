@@ -5,6 +5,20 @@ export type PublicationTargetToggleResult = {
   outcome: 'added' | 'removed' | 'blocked_unavailable';
 };
 
+export function canPreparePublisherPublicationTarget(
+  target: Pick<PublicationTarget, 'readiness'>,
+): boolean {
+  const readiness = target.readiness;
+  // FLAG: Selecting a stale target only permits preparation. Submission still
+  // requires the server's fresh actor/bot checks after the explicit access refresh.
+  return (
+    readiness?.canPublish === true ||
+    (readiness?.state === 'setup_required' &&
+      (readiness.blockerCode === 'bot_access_expired' ||
+        readiness.blockerCode === 'bot_access_unconfirmed'))
+  );
+}
+
 export function togglePublicationTargetSelection(
   current: readonly PublicationTarget[],
   target: PublicationTarget,
@@ -18,7 +32,7 @@ export function togglePublicationTargetSelection(
       outcome: 'removed',
     };
   }
-  if (target.readiness && !target.readiness.canPublish) {
+  if (target.readiness && !canPreparePublisherPublicationTarget(target)) {
     return { targets: [...current], outcome: 'blocked_unavailable' };
   }
   return { targets: [...current, target], outcome: 'added' };

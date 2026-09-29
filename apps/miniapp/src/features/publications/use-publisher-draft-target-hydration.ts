@@ -9,6 +9,7 @@ import {
   type PublicationTarget,
 } from './publication-model';
 import { publisherEntityToPublicationTarget } from './use-publication-target-sources';
+import { canPreparePublisherPublicationTarget } from './publication-target-selection';
 
 export function mergePublisherResolvedTargets(
   currentTargets: PublicationTarget[],
@@ -53,7 +54,7 @@ export function hasUnavailablePublisherDraftTargets(options: {
     const current = options.currentTargets.find(
       (target) => getPublicationTargetKey(target) === getPublicationTargetKey(selected),
     );
-    return !(current ?? selected).readiness?.canPublish;
+    return !canPreparePublisherPublicationTarget(current ?? selected);
   });
 }
 

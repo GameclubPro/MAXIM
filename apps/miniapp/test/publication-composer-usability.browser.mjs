@@ -81,7 +81,20 @@ try {
             ${marker}
           `,
             );
-          await route.fulfill({ response, body });
+          const resultMarker = 'const result = await handler(context);';
+          assert.ok(body.includes(resultMarker));
+          const withStaleCatalog = body.replace(
+            resultMarker,
+            `${resultMarker}
+            if (context.url.pathname.startsWith('/publisher/entities') && result?.items) {
+              if (context.url.searchParams.get('readiness') === 'ready') throw new Error('Stale recipients must remain visible');
+              for (const entity of result.items) if (entity.readiness?.canPublish) {
+                entity.readiness = { ...entity.readiness, state: 'setup_required', canPublish: false, blockerCode: 'bot_access_expired' };
+              }
+            }
+          `,
+          );
+          await route.fulfill({ response, body: withStaleCatalog });
         });
         await installMaxBridgeShimInitScript(context, {}, { colorScheme });
         await installNativeVisualModeInitScript(context);
@@ -112,6 +125,7 @@ try {
         await page.locator('.publication-target-picker__summary').click();
         const picker = page.getByRole('dialog', { name: 'Получатели', exact: true });
         await picker.waitFor();
+        await picker.getByText('Доступ нужно обновить', { exact: true }).first().waitFor();
         await page.waitForFunction(() =>
           document.activeElement?.matches('.publication-target-picker__editor.is-sheet'),
         );

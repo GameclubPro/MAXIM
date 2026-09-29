@@ -1,4 +1,7 @@
-import type { ResolvePublisherEntitiesRequest } from '@maxim/contracts/publisher';
+import {
+  MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS,
+  type ResolvePublisherEntitiesRequest,
+} from '@maxim/contracts/publisher';
 import { refreshSelectedPublicationTargets } from '../../lib/api/publication-client';
 import { runOrResumePublisherRefresh } from '../../lib/api/publisher-client';
 import type { ApiTransport } from '../../lib/api/transport';
@@ -36,12 +39,23 @@ export async function savePublicationWithAccessRefresh<T>(options: {
   const scope = JSON.stringify(
     [...new Set(targets.map(({ id, entityType }) => `${entityType}:${id}`))].sort(),
   );
-  await runOrResumePublisherRefresh(
-    api,
-    `publication-save:${scope}`,
-    () => refreshSelectedPublicationTargets(api, targets),
-    signal,
+  // Match the existing entity-resolution batch bound without limiting publication audiences.
+  const orderedTargets = [...targets].sort((left, right) =>
+    `${left.entityType}:${left.id}`.localeCompare(`${right.entityType}:${right.id}`),
   );
+  for (
+    let offset = 0;
+    offset < orderedTargets.length;
+    offset += MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS
+  ) {
+    const batch = orderedTargets.slice(offset, offset + MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS);
+    await runOrResumePublisherRefresh(
+      api,
+      `publication-save:${scope}:${offset}`,
+      () => refreshSelectedPublicationTargets(api, batch),
+      signal,
+    );
+  }
   signal.throwIfAborted();
   // FLAG: Reuse the caller's frozen request, revision and idempotency key exactly
   // once. The server must still recheck fresh bot/user rights and publication policy.

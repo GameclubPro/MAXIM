@@ -80,7 +80,7 @@ for (const blocker of ['bot_access_expired', 'bot_access_unconfirmed']) {
     assert.deepEqual(attempts, [request, request]);
     assert.deepEqual(f.calls[0], {
       path: '/publisher/entities/refresh-selected',
-      body: { targets: f.targets },
+      body: { targets: [f.targets[1], f.targets[0]] },
     });
     assert.equal(f.refreshing, 1);
   });
@@ -137,6 +137,34 @@ test('fresh denial or repeated expiry after recheck ends recovery without a loop
     assert.equal(attempts, 2);
     assert.equal(f.calls.filter((call) => call.path.endsWith('/refresh-selected')).length, 1);
   }
+});
+
+test('large audiences refresh in bounded batches and submit only after every batch completes', async () => {
+  const f = fixture();
+  const targets = Array.from({ length: 601 }, (_, i) => ({
+    id: `chat-${i}`,
+    entityType: 'chat' as const,
+  }));
+  let attempts = 0;
+  await savePublicationWithAccessRefresh({
+    ...f.options,
+    targets,
+    save: async () => {
+      attempts += 1;
+      if (attempts === 1) throw stale();
+      assert.equal(f.calls.filter((call) => call.path.includes('/refresh-operations/')).length, 2);
+      return 'saved';
+    },
+  });
+  const batches = f.calls
+    .filter((call) => call.path.endsWith('/refresh-selected'))
+    .map((call) => (call.body as { targets: typeof targets }).targets);
+  assert.deepEqual(
+    batches.map((batch) => batch.length),
+    [500, 101],
+  );
+  assert.equal(new Set(batches.flat().map((target) => target.id)).size, 601);
+  assert.equal(attempts, 2);
 });
 
 test('closing during refresh prevents deferred publication and retains the operation for resuming', async () => {

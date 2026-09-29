@@ -128,7 +128,7 @@ test('unavailable targets are truly disabled unless already selected for removal
 });
 
 test('next-page retry preserves pages and expired cursors reseed the query', () => {
-  assert.match(targetSourcesSource, /readiness: 'ready'/u);
+  assert.doesNotMatch(targetSourcesSource, /readiness: 'ready'/u);
   assert.match(targetSourcesSource, /const result = await publisher\.fetchNextPage\(\)/u);
   assert.match(targetSourcesSource, /isInvalidPublisherEntitiesCursorError\(result\.error\)/u);
   assert.match(

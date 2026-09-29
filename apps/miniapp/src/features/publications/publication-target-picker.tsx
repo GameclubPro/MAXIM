@@ -25,7 +25,10 @@ import {
   type PublicationEntityFilter,
   type PublicationTarget,
 } from './publication-model';
-import { togglePublicationTargetSelection } from './publication-target-selection';
+import {
+  canPreparePublisherPublicationTarget,
+  togglePublicationTargetSelection,
+} from './publication-target-selection';
 import './publication-target-picker.css';
 
 type PublicationTargetPickerProps = {
@@ -356,7 +359,7 @@ export function PublicationTargetPicker({
 
   function renderChoice(choice: PublicationTarget, renderedIndex: number) {
     const selected = selectedKeys.has(getPublicationTargetKey(choice));
-    const unavailable = Boolean(choice.readiness && !choice.readiness.canPublish);
+    const unavailable = Boolean(choice.readiness && !canPreparePublisherPublicationTarget(choice));
     const absoluteIndex = shouldVirtualize
       ? virtualRange.startIndex + renderedIndex
       : renderedIndex;

@@ -77,7 +77,7 @@ test('publisher readiness presents every server blocker as a specific user-facin
 test('publisher readiness exposes required permissions and quarantine recovery time', () => {
   assert.match(
     getPublisherReadinessPresentation(readiness('write_permission_missing')).detail,
-    /доступ ко всем сообщениям/u,
+    /отправлять сообщения/u,
   );
   const quarantined = readiness('route_quarantined');
   quarantined.retryAt = '2026-08-27T12:30:00.000Z';
@@ -170,7 +170,7 @@ test('a direct publisher target already present on the first page skips the disa
   );
 });
 
-test('direct publisher routes select only ready targets', () => {
+test('direct publisher routes select ready targets and reject proven permission failures', () => {
   assert.equal(
     canSelectInitialPublicationRouteTarget(true, target('ready', readiness(null))),
     true,
@@ -189,6 +189,45 @@ test('direct publisher routes select only ready targets', () => {
     }),
     true,
   );
+});
+
+for (const blocker of ['bot_access_expired', 'bot_access_unconfirmed'] as const) {
+  test(`${blocker} permits selection, restored-draft validation and direct entry for access recovery`, () => {
+    const stale = target('stale', readiness(blocker));
+    assert.equal(togglePublicationTargetSelection([], stale).outcome, 'added');
+    assert.equal(canSelectInitialPublicationRouteTarget(true, stale), true);
+    assert.equal(
+      hasUnavailablePublisherDraftTargets({
+        selectedTargets: [stale],
+        currentTargets: [stale],
+        hydrationFailed: false,
+      }),
+      false,
+    );
+    assert.equal(stale.readiness?.canPublish, false);
+  });
+}
+
+test('missing metadata, disabled features and denied rights still block draft submission', () => {
+  for (const state of [
+    null,
+    readiness('policy_disabled'),
+    readiness('bot_not_admin'),
+    readiness('write_permission_missing'),
+    readiness('bot_not_connected'),
+    readiness('route_quarantined'),
+  ]) {
+    const unavailable = { ...target('target', readiness(null)), readiness: state };
+    assert.equal(
+      hasUnavailablePublisherDraftTargets({
+        selectedTargets: [unavailable],
+        currentTargets: [unavailable],
+        hydrationFailed: false,
+      }),
+      true,
+    );
+    assert.equal(canSelectInitialPublicationRouteTarget(true, unavailable), false);
+  }
 });
 
 test('direct publisher route failures distinguish persistent and retryable requests', () => {

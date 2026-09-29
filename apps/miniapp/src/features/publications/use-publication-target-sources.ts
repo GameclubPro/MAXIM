@@ -63,7 +63,7 @@ export function usePublicationTargetSources(api: ApiTransport, enabled: boolean)
     'sources',
     'publisher',
     'cursor',
-    { query: publisherQuery, entityType: publisherEntityType ?? null, readiness: 'ready' },
+    { query: publisherQuery, entityType: publisherEntityType ?? null, readiness: null },
   ] as const;
   const publisher = useInfiniteQuery({
     queryKey: publisherQueryKey,
@@ -73,7 +73,6 @@ export function usePublicationTargetSources(api: ApiTransport, enabled: boolean)
         limit: PUBLISHER_TARGET_PAGE_SIZE,
         query: publisherQuery,
         entityType: publisherEntityType,
-        readiness: 'ready',
         cursor: pageParam,
         signal,
       }),

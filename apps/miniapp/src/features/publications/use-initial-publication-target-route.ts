@@ -18,6 +18,7 @@ import {
   type PublicationTarget,
 } from './publication-model';
 import { publisherEntityToPublicationTarget } from './use-publication-target-sources';
+import { canPreparePublisherPublicationTarget } from './publication-target-selection';
 
 function normalizeRouteEntityType(value: string | null): 'chat' | 'channel' | null {
   return value === 'chat' || value === 'channel' ? value : null;
@@ -51,7 +52,7 @@ export function canSelectInitialPublicationRouteTarget(
   publisherProfile: boolean,
   target: Pick<PublicationTarget, 'readiness'>,
 ): boolean {
-  return !publisherProfile || target.readiness?.canPublish === true;
+  return !publisherProfile || canPreparePublisherPublicationTarget(target);
 }
 
 export function getRouteBoundInitialPublicationTargetFailure(

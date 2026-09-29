@@ -37,7 +37,7 @@ const BLOCKER_PRESENTATION: Record<
     tone: 'setup',
   },
   write_permission_missing: {
-    detail: 'Включите доступ ко всем сообщениям и право отправлять сообщения.',
+    detail: 'Разрешите Публику отправлять сообщения в этом чате или канале.',
     tone: 'setup',
   },
   route_quarantined: {
