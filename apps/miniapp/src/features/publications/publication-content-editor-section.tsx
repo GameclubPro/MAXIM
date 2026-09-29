@@ -238,8 +238,11 @@ export function PublicationContentEditorSection({
         buttonsActive={customButtonCount > 0}
         buttonsError={hasButtonErrors}
         showButtonsLabel={showButtonsLabel}
+        showToolLabels
+        toolbarPosition="top"
         additionalMediaAction={
           <PublicationVideoTool
+            showLabel
             active={draft.mediaType === 'video' || retainedVideo}
             disabled={isBusy || videoPreparing}
             preparing={videoPreparing}

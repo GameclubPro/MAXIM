@@ -213,8 +213,8 @@ test('preview transport exposes a ready import, durable draft, and private image
 });
 
 test('publication import stays isolated and reloadable without replacing the manual draft', () => {
-  assert.match(createSheetSource, />Написать</u);
-  assert.match(createSheetSource, /'Переслать'/u);
+  assert.match(createSheetSource, /aria-label="Написать"/u);
+  assert.match(createSheetSource, /aria-label="Переслать"/u);
   assert.doesNotMatch(createSheetSource, />Вставить</u);
   assert.match(
     pageSource,

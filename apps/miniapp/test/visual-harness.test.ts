@@ -630,7 +630,7 @@ test('keyboard capture reduces geometry and exercises the Publik focus flow', ()
     /const cycles = keyboardProfile\?\.flow === 'publisher-composer' \? 3 : 1/u,
   );
   assert.match(captureSource, /assertPublisherEditorFullBleed/u);
-  assert.match(captureSource, /assertPublisherComposerActionInFlow/u);
+  assert.match(captureSource, /assertPublisherComposerViewportAction/u);
   assert.match(
     captureSource,
     /forceKeyboardFlag:\s*keyboardProfile === null \|\| keyboardProfile\.flow === 'publisher-auto-reply-editor'/u,

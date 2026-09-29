@@ -70,6 +70,7 @@ export type BroadcastContentComposerProps = {
   textPlaceholder?: string;
   textAriaLabel?: string;
   showToolLabels?: boolean;
+  toolbarPosition?: 'top' | 'bottom';
   showButtonsLabel?: boolean;
   additionalMediaAction?: ReactNode;
   onTextChange: (value: string) => void;
@@ -106,6 +107,7 @@ export function BroadcastContentComposer({
   textPlaceholder = 'Текст',
   textAriaLabel = textPlaceholder,
   showToolLabels = false,
+  toolbarPosition = 'bottom',
   showButtonsLabel = false,
   additionalMediaAction,
   onTextChange,
@@ -392,6 +394,194 @@ export function BroadcastContentComposer({
     richTextEditorRef.current?.applyTool(tool);
   }
 
+  const toolbar = (
+    <div className="broadcast-content-composer__toolbar">
+      <div className="broadcast-content-composer__bar">
+        <div
+          className="broadcast-content-composer__media-actions"
+          role="group"
+          aria-label="Инструменты сообщения"
+        >
+          <button
+            type="button"
+            className={cn(
+              'broadcast-content-composer__tool',
+              'broadcast-content-composer__tool--format',
+              showToolLabels && 'has-label',
+              formatToolsOpen && 'is-active',
+            )}
+            onClick={() => setFormatToolsOpen((current) => !current)}
+            disabled={isBusy}
+            aria-expanded={formatToolsOpen}
+            aria-label="Форматирование"
+            title="Форматирование"
+          >
+            A
+            {showToolLabels ? (
+              <span className="broadcast-content-composer__tool-label">Формат</span>
+            ) : null}
+          </button>
+          {useNativeTapFileInput ? (
+            <label
+              className={cn(
+                'broadcast-content-composer__tool',
+                'broadcast-content-composer__tool--native-file',
+                showToolLabels && 'has-label',
+                imagePreviewItems.length > 0 && 'is-active',
+                (!allowImages || isBusy || imagePreviewItems.length >= maxImageCount) &&
+                  'is-disabled',
+              )}
+              aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+              title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+              aria-disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
+              onPointerDown={rememberImagePickerReturn}
+            >
+              <IconoirCamera aria-hidden focusable="false" />
+              {showToolLabels ? (
+                <span className="broadcast-content-composer__tool-label">Фото</span>
+              ) : null}
+              <input
+                ref={imageInputRef}
+                className="broadcast-content-composer__file-input broadcast-content-composer__file-input--native"
+                type="file"
+                accept="image/*"
+                aria-invalid={Boolean(imageError) || undefined}
+                aria-describedby={imageError ? imageErrorId : undefined}
+                multiple={maxImageCount > 1}
+                disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
+                onChange={(event) => void handleImageFiles(event.currentTarget.files)}
+                aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+              />
+            </label>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={cn(
+                  'broadcast-content-composer__tool',
+                  showToolLabels && 'has-label',
+                  imagePreviewItems.length > 0 && 'is-active',
+                )}
+                onPointerDown={rememberImagePickerReturn}
+                onClick={openImagePicker}
+                disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
+                aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+                title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+              >
+                <IconoirCamera aria-hidden focusable="false" />
+                {showToolLabels ? (
+                  <span className="broadcast-content-composer__tool-label">Фото</span>
+                ) : null}
+              </button>
+              <input
+                ref={imageInputRef}
+                className="broadcast-content-composer__file-input"
+                type="file"
+                accept="image/*"
+                aria-invalid={Boolean(imageError) || undefined}
+                aria-describedby={imageError ? imageErrorId : undefined}
+                multiple={maxImageCount > 1}
+                disabled={!allowImages || isBusy}
+                onChange={(event) => void handleImageFiles(event.currentTarget.files)}
+                tabIndex={-1}
+              />
+            </>
+          )}
+          {additionalMediaAction}
+          {onOpenButtons ? (
+            <button
+              type="button"
+              className={cn(
+                'broadcast-content-composer__tool',
+                'broadcast-content-composer__tool--buttons',
+                (showToolLabels || showButtonsLabel) && 'has-label',
+                buttonsActive && 'is-active',
+                buttonsError && 'is-danger',
+              )}
+              onClick={onOpenButtons}
+              disabled={isBusy}
+              aria-label={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
+              title={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
+            >
+              <IconoirLink aria-hidden focusable="false" />
+              {showToolLabels || showButtonsLabel ? (
+                <span className="broadcast-content-composer__tool-label">
+                  {buttonsActive && previewButtons.length > 0
+                    ? `Кнопки · ${previewButtons.length}`
+                    : 'Кнопка'}
+                </span>
+              ) : null}
+            </button>
+          ) : null}
+        </div>
+
+        <span className="broadcast-content-composer__asset-strip">
+          {isPreparingImage ? (
+            <button
+              type="button"
+              className="broadcast-content-composer__tool"
+              onClick={cancelImagePreparation}
+              aria-label="Отменить подготовку фото"
+              title="Отменить подготовку фото"
+            >
+              <IconoirXmark aria-hidden focusable="false" />
+            </button>
+          ) : null}
+          {isPreparingImage || previewImageCount > 0 || videoLabel ? (
+            <span className="broadcast-content-composer__media-label" aria-live="polite">
+              {isPreparingImage
+                ? `${preparingImages.done}/${preparingImages.total}`
+                : previewImageCount > 1
+                  ? `${previewImageCount} фото`
+                  : previewImageCount === 1
+                    ? '1 фото'
+                    : videoLabel}
+            </span>
+          ) : null}
+          {onOpenButtons && buttonsActive && !showToolLabels && !showButtonsLabel ? (
+            <button
+              type="button"
+              className={cn(
+                'broadcast-content-composer__button-label',
+                buttonsError && 'is-danger',
+              )}
+              onClick={onOpenButtons}
+              disabled={isBusy}
+              title={openButtonsLabel}
+            >
+              {previewButtonCount > 0 ? previewButtonLabel : buttonsStatusLabel}
+            </button>
+          ) : null}
+        </span>
+      </div>
+
+      {formatToolsOpen ? (
+        <div className="broadcast-content-composer__modifier-row" aria-label="Форматирование">
+          {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
+            <button
+              key={tool.id}
+              type="button"
+              className={cn(
+                'broadcast-content-composer__modifier',
+                tool.id === 'italic' && 'is-italic',
+                tool.id === 'code' && 'is-code',
+              )}
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={() => applyTextModifier(tool.id)}
+              disabled={isBusy}
+              title={tool.title}
+              aria-label={tool.title}
+            >
+              {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <div
       ref={composerRootRef}
@@ -413,6 +603,7 @@ export function BroadcastContentComposer({
         )}
       >
         <div className="broadcast-content-composer__editor broadcast-content-composer__editor--rich">
+          {toolbarPosition === 'top' ? toolbar : null}
           {showTextCounter ? (
             <div className="broadcast-content-composer__editor-head">
               <span
@@ -543,191 +734,7 @@ export function BroadcastContentComposer({
             </div>
           </div>
 
-          <div className="broadcast-content-composer__bar">
-            <div
-              className="broadcast-content-composer__media-actions"
-              role="group"
-              aria-label="Инструменты сообщения"
-            >
-              <button
-                type="button"
-                className={cn(
-                  'broadcast-content-composer__tool',
-                  'broadcast-content-composer__tool--format',
-                  showToolLabels && 'has-label',
-                  formatToolsOpen && 'is-active',
-                )}
-                onClick={() => setFormatToolsOpen((current) => !current)}
-                disabled={isBusy}
-                aria-expanded={formatToolsOpen}
-                aria-label="Форматирование"
-                title="Форматирование"
-              >
-                A
-                {showToolLabels ? (
-                  <span className="broadcast-content-composer__tool-label">Формат</span>
-                ) : null}
-              </button>
-              {useNativeTapFileInput ? (
-                <label
-                  className={cn(
-                    'broadcast-content-composer__tool',
-                    'broadcast-content-composer__tool--native-file',
-                    showToolLabels && 'has-label',
-                    imagePreviewItems.length > 0 && 'is-active',
-                    (!allowImages || isBusy || imagePreviewItems.length >= maxImageCount) &&
-                      'is-disabled',
-                  )}
-                  aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-                  title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-                  aria-disabled={
-                    !allowImages || isBusy || imagePreviewItems.length >= maxImageCount
-                  }
-                  onPointerDown={rememberImagePickerReturn}
-                >
-                  <IconoirCamera aria-hidden focusable="false" />
-                  {showToolLabels ? (
-                    <span className="broadcast-content-composer__tool-label">Фото</span>
-                  ) : null}
-                  <input
-                    ref={imageInputRef}
-                    className="broadcast-content-composer__file-input broadcast-content-composer__file-input--native"
-                    type="file"
-                    accept="image/*"
-                    aria-invalid={Boolean(imageError) || undefined}
-                    aria-describedby={imageError ? imageErrorId : undefined}
-                    multiple={maxImageCount > 1}
-                    disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
-                    onChange={(event) => void handleImageFiles(event.currentTarget.files)}
-                    aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-                  />
-                </label>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className={cn(
-                      'broadcast-content-composer__tool',
-                      showToolLabels && 'has-label',
-                      imagePreviewItems.length > 0 && 'is-active',
-                    )}
-                    onPointerDown={rememberImagePickerReturn}
-                    onClick={openImagePicker}
-                    disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
-                    aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-                    title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-                  >
-                    <IconoirCamera aria-hidden focusable="false" />
-                    {showToolLabels ? (
-                      <span className="broadcast-content-composer__tool-label">Фото</span>
-                    ) : null}
-                  </button>
-                  <input
-                    ref={imageInputRef}
-                    className="broadcast-content-composer__file-input"
-                    type="file"
-                    accept="image/*"
-                    aria-invalid={Boolean(imageError) || undefined}
-                    aria-describedby={imageError ? imageErrorId : undefined}
-                    multiple={maxImageCount > 1}
-                    disabled={!allowImages || isBusy}
-                    onChange={(event) => void handleImageFiles(event.currentTarget.files)}
-                    tabIndex={-1}
-                  />
-                </>
-              )}
-              {additionalMediaAction}
-              {onOpenButtons ? (
-                <button
-                  type="button"
-                  className={cn(
-                    'broadcast-content-composer__tool',
-                    'broadcast-content-composer__tool--buttons',
-                    (showToolLabels || showButtonsLabel) && 'has-label',
-                    buttonsActive && 'is-active',
-                    buttonsError && 'is-danger',
-                  )}
-                  onClick={onOpenButtons}
-                  disabled={isBusy}
-                  aria-label={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
-                  title={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
-                >
-                  <IconoirLink aria-hidden focusable="false" />
-                  {showToolLabels || showButtonsLabel ? (
-                    <span className="broadcast-content-composer__tool-label">
-                      {buttonsActive && previewButtons.length > 0
-                        ? `Кнопки · ${previewButtons.length}`
-                        : 'Кнопка'}
-                    </span>
-                  ) : null}
-                </button>
-              ) : null}
-            </div>
-
-            <span className="broadcast-content-composer__asset-strip">
-              {isPreparingImage ? (
-                <button
-                  type="button"
-                  className="broadcast-content-composer__tool"
-                  onClick={cancelImagePreparation}
-                  aria-label="Отменить подготовку фото"
-                  title="Отменить подготовку фото"
-                >
-                  <IconoirXmark aria-hidden focusable="false" />
-                </button>
-              ) : null}
-              {isPreparingImage || previewImageCount > 0 || videoLabel ? (
-                <span className="broadcast-content-composer__media-label" aria-live="polite">
-                  {isPreparingImage
-                    ? `${preparingImages.done}/${preparingImages.total}`
-                    : previewImageCount > 1
-                      ? `${previewImageCount} фото`
-                      : previewImageCount === 1
-                        ? '1 фото'
-                        : videoLabel}
-                </span>
-              ) : null}
-              {onOpenButtons && buttonsActive && !showToolLabels && !showButtonsLabel ? (
-                <button
-                  type="button"
-                  className={cn(
-                    'broadcast-content-composer__button-label',
-                    buttonsError && 'is-danger',
-                  )}
-                  onClick={onOpenButtons}
-                  disabled={isBusy}
-                  title={openButtonsLabel}
-                >
-                  {previewButtonCount > 0 ? previewButtonLabel : buttonsStatusLabel}
-                </button>
-              ) : null}
-            </span>
-          </div>
-
-          {formatToolsOpen ? (
-            <div className="broadcast-content-composer__modifier-row" aria-label="Форматирование">
-              {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
-                <button
-                  key={tool.id}
-                  type="button"
-                  className={cn(
-                    'broadcast-content-composer__modifier',
-                    tool.id === 'italic' && 'is-italic',
-                    tool.id === 'code' && 'is-code',
-                  )}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                  }}
-                  onClick={() => applyTextModifier(tool.id)}
-                  disabled={isBusy}
-                  title={tool.title}
-                  aria-label={tool.title}
-                >
-                  {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
+          {toolbarPosition === 'bottom' ? toolbar : null}
         </div>
       </div>
 

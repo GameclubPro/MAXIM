@@ -2221,7 +2221,7 @@ export function PublicationsPage({
           {(
             [
               { value: 'now', label: 'Сейчас' },
-              { value: 'once', label: 'Один раз' },
+              { value: 'once', label: 'Отложить' },
               { value: 'schedule', label: 'Расписание' },
             ] as Array<{ value: PublicationTimingMode; label: string }>
           ).map((option) => (
@@ -2608,38 +2608,38 @@ export function PublicationsPage({
               {fieldError}
             </p>
           ) : null}
+        </div>
 
-          <div className="publications-publish-bar">
-            <BroadcastPublishBar
-              title={
-                editScope === 'retry'
-                  ? 'Версия для повтора'
-                  : editScope === 'future'
-                    ? 'Будущие отправки'
-                    : draft.timingMode === 'schedule'
-                      ? 'Расписание'
-                      : 'Публикация'
-              }
-              meta={formatTargetSummary(draft.targets)}
-              issues={validationStarted ? validationIssues : []}
-              busy={isBusy}
-              showTest={!isPublisherProfile}
-              testLabel="Отправить себе"
-              compactTestLabel="Тест"
-              testAriaLabel="Отправить публикацию себе"
-              testDisabled={
-                isBusy ||
-                !hasContent ||
-                videoNeedsReselection ||
-                draft.targets.length === 0 ||
-                hasButtonErrors
-              }
-              primaryLabel={primaryLabel}
-              primaryDisabled={isBusy}
-              onTest={handleTest}
-              onPrimary={handlePrimaryAction}
-            />
-          </div>
+        <div className="publications-publish-bar">
+          <BroadcastPublishBar
+            title={
+              editScope === 'retry'
+                ? 'Версия для повтора'
+                : editScope === 'future'
+                  ? 'Будущие отправки'
+                  : draft.timingMode === 'schedule'
+                    ? 'Расписание'
+                    : 'Публикация'
+            }
+            meta={formatTargetSummary(draft.targets)}
+            issues={validationStarted ? validationIssues : []}
+            busy={isBusy}
+            showTest={!isPublisherProfile}
+            testLabel="Отправить себе"
+            compactTestLabel="Тест"
+            testAriaLabel="Отправить публикацию себе"
+            testDisabled={
+              isBusy ||
+              !hasContent ||
+              videoNeedsReselection ||
+              draft.targets.length === 0 ||
+              hasButtonErrors
+            }
+            primaryLabel="Проверить пост"
+            primaryDisabled={isBusy}
+            onTest={handleTest}
+            onPrimary={handlePrimaryAction}
+          />
         </div>
 
         <PublicationButtonsSheet

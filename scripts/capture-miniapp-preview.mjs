@@ -102,7 +102,7 @@ const KEYBOARD_SCENARIO_PROFILES = Object.freeze({
     focusReport: 'publisher-rich-text-editor',
     actionBarSelector: '.publications-publish-bar',
     primarySelector: '.broadcast-publish-bar__primary',
-    allowActionBelowViewport: true,
+    allowActionBelowViewport: false,
     expectPageKeyboardState: true,
     pickerSheetSelector: '.publication-target-picker__editor.is-sheet',
     focusFailure: 'Publisher keyboard scenario did not finish with focus in the rich-text editor.',
@@ -1099,6 +1099,7 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       const section = page.locator('.publication-post-publish');
       await section.waitFor({ state: 'visible' });
+      await section.getByRole('button', { name: /После публикации/u }).click();
       await section.getByRole('switch', { name: 'Закрепить пост', exact: true }).check();
       const notify = section.getByRole('switch', { name: 'С уведомлением', exact: true });
       if (!(await notify.isChecked())) throw new Error('New pins must notify by default.');
@@ -1188,7 +1189,7 @@ const scenarioBehaviors = [
       await page.getByText('Сохранено', { exact: true }).waitFor();
       await page
         .locator('.publications-publish-bar')
-        .getByRole('button', { name: 'Опубликовать', exact: true })
+        .getByRole('button', { name: 'Проверить пост', exact: true })
         .click();
       const sheet = page.getByRole('dialog', { name: 'Проверка публикации', exact: true });
       await sheet.waitFor();
@@ -1535,7 +1536,7 @@ const scenarioBehaviors = [
       );
       const viewport = page.locator('.publications-editor');
       await viewport.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
-      await viewport.locator('.publications-publish-bar').waitFor({ state: 'visible' });
+      await page.locator('.publications-publish-bar').waitFor({ state: 'visible' });
     },
   },
   {
@@ -3642,7 +3643,7 @@ async function simulateKeyboardViewport(page, scenario) {
               ?.classList.contains('is-keyboard-open'),
         );
         const actionDisplay = await page
-          .locator('.publications-editor > .publications-publish-bar')
+          .locator('.publications-page.is-editor > .publications-publish-bar')
           .evaluate((element) => getComputedStyle(element).display);
         if (actionDisplay === 'none') {
           throw new Error(`Publisher action did not return after keyboard cycle ${cycle + 1}.`);
@@ -3692,7 +3693,7 @@ async function assertConfiguredChecks(page, scenario) {
     await assertViewportBounds(page, scenario);
     await assertNoUnexpectedHorizontalOverflow(page, scenario);
     await assertPublisherEditorFullBleed(page, scenario);
-    await assertPublisherComposerActionInFlow(page, scenario);
+    await assertPublisherComposerViewportAction(page, scenario);
     await assertVkSourceSummariesSeparated(page, scenario);
     await assertFavoriteCategoryIndicatorsContained(page, scenario);
     await assertCompactTextContained(page, scenario);
@@ -3794,9 +3795,10 @@ async function assertPublisherEditorFullBleed(page, scenario) {
     const pageRect = pageRoot.getBoundingClientRect();
     const headerRect = header.getBoundingClientRect();
     const tolerance = 2;
+    const expectedInset = window.innerWidth >= 768 ? Math.max(0, (window.innerWidth - 800) / 2) : 0;
     if (
-      Math.abs(pageRect.left) > tolerance ||
-      Math.abs(pageRect.right - window.innerWidth) > tolerance ||
+      Math.abs(pageRect.left - expectedInset) > tolerance ||
+      Math.abs(pageRect.right - (window.innerWidth - expectedInset)) > tolerance ||
       Math.abs(pageRect.top) > tolerance ||
       Math.abs(headerRect.top) > tolerance
     ) {
@@ -3826,7 +3828,7 @@ async function assertPublisherEditorFullBleed(page, scenario) {
   }
 }
 
-async function assertPublisherComposerActionInFlow(page, scenario) {
+async function assertPublisherComposerViewportAction(page, scenario) {
   if (
     !scenario.name.startsWith('publications-publisher-compose') ||
     shouldSimulateKeyboardScenario(scenario)
@@ -3837,9 +3839,11 @@ async function assertPublisherComposerActionInFlow(page, scenario) {
   const result = await page.evaluate(
     (requireNoScroll) => {
       const editor = document.querySelector('.publications-page.is-editor > .publications-editor');
-      const dock = editor?.querySelector(':scope > .publications-publish-bar');
+      const dock = document.querySelector(
+        '.publications-page.is-editor > .publications-publish-bar',
+      );
       if (!(editor instanceof HTMLElement) || !(dock instanceof HTMLElement)) {
-        return { ok: false, reason: 'editor or in-flow action is missing' };
+        return { ok: false, reason: 'editor or viewport action is missing' };
       }
 
       const dockRect = dock.getBoundingClientRect();
@@ -3861,10 +3865,10 @@ async function assertPublisherComposerActionInFlow(page, scenario) {
           reason: `content bottom ${previousRect.bottom.toFixed(1)} crosses action top ${dockRect.top.toFixed(1)}`,
         };
       }
-      if (editor.scrollHeight <= editor.clientHeight + 2 && dockRect.bottom > viewportBottom + 2) {
+      if (dockRect.bottom > viewportBottom + 2) {
         return {
           ok: false,
-          reason: `in-flow action bottom ${dockRect.bottom.toFixed(1)} leaves non-scrolling viewport ${viewportBottom.toFixed(1)}`,
+          reason: `viewport action bottom ${dockRect.bottom.toFixed(1)} leaves viewport ${viewportBottom.toFixed(1)}`,
         };
       }
       if (requireNoScroll && editor.scrollHeight > editor.clientHeight + 2) {

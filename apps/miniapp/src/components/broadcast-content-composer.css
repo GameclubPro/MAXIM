@@ -1,4 +1,8 @@
 @layer pages {
+  .broadcast-content-composer__toolbar {
+    display: contents;
+  }
+
   .broadcast-content-composer {
     --broadcast-preview-button-bg: rgba(255, 255, 255, 0.82);
     --broadcast-preview-button-ink: #0a6fa5;

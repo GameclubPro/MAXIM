@@ -100,13 +100,25 @@ export function PublicationCreateSheet({
           </button>
         </header>
         <div className="publication-create-sheet__actions">
-          <button ref={firstActionRef} type="button" onClick={onWrite} disabled={busy}>
+          <button
+            ref={firstActionRef}
+            type="button"
+            onClick={onWrite}
+            disabled={busy}
+            aria-label="Написать"
+          >
             <EditPencil aria-hidden />
-            <span>Написать</span>
+            <span>
+              <strong>Написать пост</strong>
+              <small>Текст, фото, видео и кнопки</small>
+            </span>
           </button>
-          <button type="button" onClick={onForward} disabled={busy}>
+          <button type="button" onClick={onForward} disabled={busy} aria-label="Переслать">
             <Forward aria-hidden />
-            <span>{busy ? 'Открываю...' : 'Переслать'}</span>
+            <span>
+              <strong>{busy ? 'Открываю...' : 'Переслать из MAX'}</strong>
+              <small>Взять за основу готовый пост</small>
+            </span>
           </button>
         </div>
       </section>

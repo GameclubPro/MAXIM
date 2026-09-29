@@ -78,7 +78,7 @@ try {
       await page.goto(`${base}publications?preview=1&profile=publisher&compose=1`);
       await page.getByRole('group', { name: 'Время публикации', exact: true }).waitFor();
       await applyNativeVisualMode(page, profile);
-      await page.getByRole('button', { name: 'Один раз', exact: true }).click();
+      await page.getByRole('button', { name: 'Отложить', exact: true }).click();
       await page.locator('.publication-once-fields .time-field__button').click();
       const dialog = page.locator('.time-field-sheet__panel');
       const hour = dialog.getByRole('textbox', { name: 'Часы', exact: true });

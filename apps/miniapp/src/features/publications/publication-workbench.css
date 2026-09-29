@@ -95,7 +95,7 @@
     height: 100%;
     min-height: 0;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     padding: 0;
     overflow: hidden;
   }
@@ -106,7 +106,7 @@
     flex-direction: column;
     overflow-y: auto;
     overscroll-behavior-y: contain;
-    scroll-padding-block: 12px 20px;
+    scroll-padding-block: 88px 20px;
     scrollbar-width: none;
     touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
@@ -116,16 +116,21 @@
     display: none;
   }
 
-  .publications-page.is-editor .publications-editor > .publications-publish-bar {
+  .publications-page.is-editor > .publications-publish-bar {
     position: static;
     flex: 0 0 auto;
     width: 100%;
-    margin-top: auto;
+    min-width: 0;
     transform: none;
   }
 
-  .publications-page.is-editor.is-keyboard-open .publications-editor > .publications-publish-bar {
-    display: none;
+  .publications-page.is-publisher.is-editor.is-keyboard-open > .publications-publish-bar {
+    padding-block: 6px;
+  }
+
+  .publications-page.is-publisher.is-editor.is-keyboard-open .broadcast-publish-bar,
+  .publications-page.is-publisher.is-editor.is-keyboard-open .broadcast-publish-bar__primary {
+    min-height: 44px;
   }
 
   .publications-editor,
@@ -135,6 +140,7 @@
   }
 
   .publications-page.is-publisher.is-editor {
+    --publisher-editor-action-shadow: color-mix(in srgb, var(--color-accent) 20%, transparent);
     --publisher-editor-action-border: color-mix(
       in srgb,
       var(--color-accent) 34%,
@@ -310,9 +316,9 @@
     .publication-content-composer
     .broadcast-content-composer__editor {
     gap: 0;
-    overflow: hidden;
+    overflow: visible;
     border: 1px solid var(--color-border-strong);
-    border-radius: 8px;
+    border-radius: 14px;
     background: var(--color-surface);
     box-shadow: none;
   }
@@ -364,63 +370,112 @@
 
   .publications-page.is-publisher.is-editor
     .publication-content-composer
+    .broadcast-content-composer__toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: block;
+    border-bottom: 1px solid var(--color-border);
+    border-radius: 13px 13px 0 0;
+    background: var(--color-surface);
+  }
+
+  .publications-page.is-publisher.is-editor
+    .publication-content-composer
     .broadcast-content-composer__bar {
-    min-height: 56px;
-    gap: 6px;
-    padding: 6px 8px;
-    border-top: 1px solid var(--color-border);
-    background: var(--color-surface-muted);
+    min-height: 64px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
   }
 
   .publications-page.is-publisher.is-editor
     .publication-content-composer
     .broadcast-content-composer__media-actions {
     min-width: 0;
-    gap: 6px;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
   }
 
   .publications-page.is-publisher.is-editor
     .publication-content-composer
     .broadcast-content-composer__tool {
-    flex: 0 0 44px;
-    width: 44px;
-    height: 44px;
+    width: 100%;
+    min-width: 0;
+    height: 52px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 4px 2px;
     border: 0;
-    border-radius: 8px;
-    background: transparent;
+    border-radius: 9px;
+    background: var(--color-surface-muted);
     color: var(--color-ink-muted);
   }
 
   .publications-page.is-publisher.is-editor
     .publication-content-composer
-    .broadcast-content-composer__tool--buttons.has-label {
-    flex-basis: auto;
-    width: auto;
-    min-width: 92px;
-    border: 1px solid var(--publisher-editor-action-border);
+    .broadcast-content-composer__tool--buttons.has-label,
+  .publications-page.is-publisher.is-editor
+    .publication-content-composer
+    .broadcast-content-composer__tool.is-active {
+    min-width: 0;
     background: var(--color-accent-soft);
     color: var(--color-accent);
-    padding-inline: 10px;
   }
 
   .publications-page.is-publisher.is-editor
     .publication-content-composer
     .broadcast-content-composer__tool-label {
-    font-size: 0.74rem;
-    font-weight: 820;
+    font-size: 0.7rem;
+    font-weight: 800;
   }
 
   .publications-page.is-publisher.is-editor
     .publication-content-composer
     .broadcast-content-composer__asset-strip {
-    max-width: 78px;
+    max-width: 100%;
     margin-left: auto;
   }
 
   .publications-page.is-publisher.is-editor
     .publication-content-composer
+    .broadcast-content-composer__asset-strip:empty {
+    display: none;
+  }
+
+  .publications-page.is-publisher.is-editor
+    .publication-content-composer
     .broadcast-content-composer__media-label {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
+  }
+
+  .publications-page.is-publisher.is-editor
+    .publication-content-composer
+    .broadcast-content-composer__modifier-row {
+    padding: 4px 6px 8px;
+    background: var(--color-surface);
+  }
+
+  .publications-page.is-publisher.is-editor
+    .publication-content-composer
+    .broadcast-content-composer__modifier {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .publications-page.is-publisher.is-editor
+    .publication-content-composer
+    .broadcast-message-card__media-remove {
+    width: 44px;
+    height: 44px;
   }
 
   .publications-page.is-publisher.is-editor .publication-timing-tabs {
@@ -456,8 +511,8 @@
   .publications-page.is-publisher.is-editor .broadcast-publish-bar__primary {
     min-height: 52px;
     border: 0;
-    border-radius: 8px;
-    box-shadow: none;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px var(--publisher-editor-action-shadow);
   }
 
   html[data-max-theme='dark'] .publications-page.is-publisher.is-editor {
@@ -471,6 +526,14 @@
     --publication-ui-ink-subtle: #8f9e96;
     --publication-ui-border: #2b342f;
     --publication-ui-border-strong: #3a4640;
+  }
+
+  @media (min-width: 768px) {
+    body.publications-editor-open .app-shell:has(.publications-page.is-editor) {
+      max-width: 800px;
+      margin-inline: auto;
+      border-inline: 1px solid var(--color-border);
+    }
   }
 
   @media (max-width: 360px) {
@@ -490,13 +553,6 @@
       .publication-content-composer
       .broadcast-content-composer__media-actions {
       gap: 3px;
-    }
-
-    .publications-page.is-publisher.is-editor
-      .publication-content-composer
-      .broadcast-content-composer__tool--buttons.has-label {
-      min-width: 84px;
-      padding-inline: 7px;
     }
   }
 

@@ -224,7 +224,7 @@ export function PublicationTargetPicker({
     };
   }, [sheetOpen]);
 
-  useDialogFocusTrap(sheetOpen, editorRef, searchInputRef);
+  useDialogFocusTrap(sheetOpen, editorRef, editorRef);
   useNativeBackHandler(
     () => {
       setExpanded(false);
@@ -455,6 +455,7 @@ export function PublicationTargetPicker({
           id={editorId}
           className={cn('publication-target-picker__editor', remoteSource && 'is-sheet')}
           style={remoteSource ? sheetStyle : undefined}
+          tabIndex={-1}
           role={remoteSource ? 'dialog' : 'region'}
           aria-modal={remoteSource ? 'true' : undefined}
           aria-labelledby={remoteSource ? editorTitleId : undefined}
@@ -474,10 +475,10 @@ export function PublicationTargetPicker({
                   setExpanded(false);
                   setShouldRevealEditor(false);
                 }}
-                aria-label="Завершить выбор получателей"
-                title="Готово"
+                aria-label="Закрыть выбор получателей"
+                title="Закрыть"
               >
-                <Check aria-hidden />
+                <Xmark aria-hidden />
               </button>
             </header>
           ) : null}
@@ -612,6 +613,19 @@ export function PublicationTargetPicker({
               </div>
             ) : null}
           </div>
+          {remoteSource ? (
+            <button
+              type="button"
+              className="publication-target-picker__done"
+              aria-label="Завершить выбор получателей"
+              onClick={() => {
+                setExpanded(false);
+                setShouldRevealEditor(false);
+              }}
+            >
+              {value.length > 0 ? `Готово · ${value.length}` : 'Готово'}
+            </button>
+          ) : null}
         </div>
       ) : null}
 

@@ -2,6 +2,51 @@
   .publication-post-publish {
     min-width: 0;
   }
+  .publication-post-publish__summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 48px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--color-ink);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+  .publication-post-publish__summary > span {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .publication-post-publish__summary strong {
+    font-size: 0.875rem;
+  }
+  .publication-post-publish__summary small {
+    color: var(--color-ink-muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+  .publication-post-publish__summary > svg {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+  }
+  .publication-post-publish__summary[aria-expanded='true'] > svg {
+    transform: rotate(180deg);
+  }
+  .publication-post-publish__summary:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  .publication-post-publish__fields[hidden] {
+    display: none;
+  }
   .publication-post-publish__toggle {
     position: relative;
     display: grid;

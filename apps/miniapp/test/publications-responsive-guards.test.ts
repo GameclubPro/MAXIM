@@ -38,14 +38,14 @@ test('publication editor grid tracks stay contained on narrow native viewports',
   );
 });
 
-test('publication editor is full bleed and keeps its action in normal scroll flow', () => {
+test('publication editor reserves a viewport track for its primary action', () => {
   assert.match(
     publicationWorkbenchCss,
     /body\.publications-editor-open \.app-shell:has\(\.publications-page\.is-editor\) \{[\s\S]*?width: 100%;[\s\S]*?max-width: none;[\s\S]*?padding: 0;[\s\S]*?overflow: hidden;/u,
   );
   assert.match(
     publicationWorkbenchCss,
-    /\.publications-page\.is-editor \{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\);[\s\S]*?padding: 0;[\s\S]*?overflow: hidden;/u,
+    /\.publications-page\.is-editor \{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\) auto;[\s\S]*?padding: 0;[\s\S]*?overflow: hidden;/u,
   );
   assert.match(
     publicationWorkbenchCss,
@@ -53,7 +53,7 @@ test('publication editor is full bleed and keeps its action in normal scroll flo
   );
   assert.match(
     publicationWorkbenchCss,
-    /\.publications-page\.is-editor \.publications-editor > \.publications-publish-bar \{[\s\S]*?position: static;[\s\S]*?margin-top: auto;[\s\S]*?transform: none;/u,
+    /\.publications-page\.is-editor > \.publications-publish-bar \{[\s\S]*?position: static;[\s\S]*?transform: none;/u,
   );
   assert.doesNotMatch(
     publicationWorkbenchCss,

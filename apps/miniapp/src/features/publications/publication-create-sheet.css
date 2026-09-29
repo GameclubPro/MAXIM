@@ -105,10 +105,22 @@
     text-align: left;
   }
 
-  .publication-create-sheet__actions > button:last-child {
+  .publication-create-sheet__actions > button:first-child {
     border-color: var(--color-accent);
     background: var(--color-accent-soft);
     color: var(--color-accent);
+  }
+
+  .publication-create-sheet__actions > button > span {
+    display: grid;
+    gap: 4px;
+  }
+
+  .publication-create-sheet__actions small {
+    color: var(--color-ink-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.4;
   }
 
   .publication-create-sheet__actions svg,

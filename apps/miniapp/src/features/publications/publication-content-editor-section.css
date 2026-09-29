@@ -27,7 +27,7 @@
   .publication-editor-section__preview-target {
     min-width: 0;
     max-width: min(58%, 240px);
-    min-height: 34px;
+    min-height: 44px;
     margin-left: auto;
     padding: 0 9px;
     overflow: hidden;

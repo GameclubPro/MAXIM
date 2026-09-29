@@ -525,12 +525,12 @@
 
   @container publik-header (max-width: 340px) {
     body[data-miniapp-profile='publisher'] .publications-header > .publications-primary {
-      width: 44px;
-      flex: 0 0 44px;
+      width: auto;
+      flex: 0 0 auto;
       padding: 10px;
     }
     body[data-miniapp-profile='publisher'] .publications-header > .publications-primary span {
-      display: none;
+      display: inline;
     }
   }
 }

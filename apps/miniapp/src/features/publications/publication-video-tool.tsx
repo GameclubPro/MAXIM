@@ -6,6 +6,7 @@ import './publication-video-tool.css';
 
 type PublicationVideoToolProps = {
   active: boolean;
+  showLabel?: boolean;
   disabled: boolean;
   preparing: boolean;
   needsReselection: boolean;
@@ -17,6 +18,7 @@ type PublicationVideoToolProps = {
 
 export function PublicationVideoTool({
   active,
+  showLabel = false,
   disabled,
   preparing,
   needsReselection,
@@ -40,6 +42,7 @@ export function PublicationVideoTool({
       className={cn(
         'broadcast-content-composer__tool',
         'publication-video-tool',
+        showLabel && 'has-label',
         active && 'is-active',
         (needsReselection || errorId) && 'is-danger',
         interactionBlocked && 'is-blocked',
@@ -49,6 +52,7 @@ export function PublicationVideoTool({
       title={`${label}. Максимум ${PUBLICATION_VIDEO_MAX_SIZE_MB} МБ`}
     >
       <VideoCamera aria-hidden focusable="false" />
+      {showLabel ? <span className="broadcast-content-composer__tool-label">Видео</span> : null}
       {preparing || needsReselection || errorId ? (
         <span
           className={cn(
