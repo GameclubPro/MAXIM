@@ -59,6 +59,9 @@ test('all Publisher schedule payloads preserve exact user-selected minutes', () 
   const draft = createEmptyPublicationDraft();
   const at = '2030-01-01T06:17:00.000Z';
   draft.timingMode = 'once';
+  draft.scheduleTimezone = 'Europe/Moscow';
+  draft.onceDate = '2030-01-01';
+  draft.onceTime = '09:17';
   draft.scheduledSlots = [at];
   assert.equal((buildPublicationSchedule(draft) as { at: string }).at, at);
   draft.timingMode = 'schedule';

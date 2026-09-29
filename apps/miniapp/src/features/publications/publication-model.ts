@@ -1055,7 +1055,7 @@ export function buildPublicationSchedule(
     return {
       mode: 'once',
       timezone: draft.scheduleTimezone,
-      at: draft.scheduledSlots[0] ?? '',
+      at: getPublicationOnceSlot(draft) ?? '',
       replaceConflicts,
     };
   }
@@ -1245,6 +1245,55 @@ export function hasFuturePublicationSlot(slots: readonly string[], nowMs = Date.
     const parsed = new Date(slot).getTime();
     return Number.isFinite(parsed) && parsed >= minTime;
   });
+}
+
+export function getPublicationOnceSlot(
+  draft: Pick<PublicationDraft, 'onceDate' | 'onceTime' | 'scheduleTimezone' | 'scheduledSlots'>,
+): string | null {
+  const at = draft.scheduledSlots[0];
+  if (!at || !draft.onceDate || !draft.onceTime) return null;
+  // FLAG: Never submit a cached calendar slot that disagrees with the visible one-time fields.
+  return formatPublicationScheduleField(at, draft.scheduleTimezone) ===
+    `${draft.onceDate}T${draft.onceTime}`
+    ? at
+    : null;
+}
+
+export function getPublicationTimingIssue(
+  draft: PublicationDraft,
+  nowMs = Date.now(),
+): { field: 'date' | 'time' | 'schedule'; label: string; message: string } | null {
+  if (draft.timingMode === 'once') {
+    if (!draft.onceDate)
+      return { field: 'date', label: 'Дата', message: 'Выберите дату публикации.' };
+    if (!draft.onceTime)
+      return { field: 'time', label: 'Время', message: 'Выберите время публикации.' };
+    const at = getPublicationOnceSlot(draft);
+    if (!at)
+      return {
+        field: 'time',
+        label: 'Время',
+        message:
+          'Заново выберите дату и время публикации: они не соответствуют выбранному часовому поясу.',
+      };
+    if (hasFuturePublicationSlot([at], nowMs)) return null;
+    return {
+      field: 'time',
+      label: 'Время',
+      message: 'Выберите время минимум на 2 минуты позже текущего.',
+    };
+  }
+  if (
+    draft.timingMode === 'schedule' &&
+    draft.scheduleKind === 'slots' &&
+    !hasFuturePublicationSlot(draft.scheduledSlots, nowMs)
+  )
+    return {
+      field: 'schedule',
+      label: 'Время',
+      message: 'Добавьте дату и время минимум на 2 минуты позже текущего.',
+    };
+  return null;
 }
 
 export function matchesPublicationSearch(

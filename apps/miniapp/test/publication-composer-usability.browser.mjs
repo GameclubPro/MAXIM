@@ -76,7 +76,10 @@ try {
         await editor.waitFor();
         await assertReachable(primary);
         await primary.click();
-        await page.getByText('Добавьте текст, фото или видео.', { exact: true }).waitFor();
+        await page
+          .locator('.publication-submit-feedback')
+          .getByText('Добавьте текст, фото или видео.', { exact: true })
+          .waitFor();
         assert.equal(await editor.getAttribute('aria-invalid'), 'true');
 
         const postActions = page.getByRole('button', { name: /После публикации/u });

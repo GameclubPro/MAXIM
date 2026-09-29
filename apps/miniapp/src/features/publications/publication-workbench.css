@@ -497,6 +497,14 @@
     background: var(--color-surface);
   }
 
+  .publications-page.is-editor .publication-submit-feedback {
+    margin: 0 0 8px;
+    color: var(--publication-warning-ink);
+    font-size: 0.8rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
   .publications-page.is-publisher.is-editor .broadcast-publish-bar {
     min-height: 52px;
     padding: 0;

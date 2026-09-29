@@ -7,6 +7,7 @@ import {
 import type { PublicationFeedTone } from './publication-feed-card';
 import {
   getPublicationActionableDelivery,
+  getPublicationOnceSlot,
   getPublicationTargetTitle,
   type PublicationDraft,
   type PublicationTarget,
@@ -109,7 +110,7 @@ export function formatDraftTiming(draft: PublicationDraft): string {
   }
   if (draft.timingMode === 'once') {
     return (
-      formatDateTime(draft.scheduledSlots[0] ?? null, draft.scheduleTimezone) || 'Время не выбрано'
+      formatDateTime(getPublicationOnceSlot(draft), draft.scheduleTimezone) || 'Время не выбрано'
     );
   }
   if (draft.scheduleKind === 'recurrence') {

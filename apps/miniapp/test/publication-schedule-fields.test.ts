@@ -5,12 +5,82 @@ import {
   formatPublicationScheduleField,
   getNextPublicationRecurrenceTime,
 } from '../src/features/publications/publication-time-presentation';
-import { createEmptyPublicationDraft } from '../src/features/publications/publication-model';
+import {
+  buildPublicationSchedule,
+  createEmptyPublicationDraft,
+  getPublicationTimingIssue,
+} from '../src/features/publications/publication-model';
 import {
   formatDraftTiming,
   formatPublicationSchedule,
 } from '../src/features/publications/publication-page-formatters';
 import type { PublicationSummary } from '@maxim/contracts/publication';
+
+test('one-time validation identifies the missing field and explains the scheduling margin', () => {
+  const draft = createEmptyPublicationDraft();
+  draft.timingMode = 'once';
+  draft.scheduleTimezone = 'Europe/Moscow';
+  const now = Date.parse('2030-01-01T06:00:00Z');
+  draft.onceTime = '09:17';
+  assert.deepEqual(getPublicationTimingIssue(draft, now), {
+    field: 'date',
+    label: 'Дата',
+    message: 'Выберите дату публикации.',
+  });
+  draft.onceDate = '2030-01-01';
+  draft.onceTime = '';
+  assert.equal(getPublicationTimingIssue(draft, now)?.message, 'Выберите время публикации.');
+  for (const time of ['08:59', '09:00', '09:01']) {
+    draft.onceTime = time;
+    draft.scheduledSlots = [
+      parsePublicationScheduleField(`2030-01-01T${time}`, draft.scheduleTimezone)!,
+    ];
+    assert.equal(
+      getPublicationTimingIssue(draft, now)?.message,
+      'Выберите время минимум на 2 минуты позже текущего.',
+    );
+  }
+  draft.onceTime = '09:02';
+  draft.scheduledSlots = ['2030-01-01T06:02:00.000Z'];
+  assert.equal(getPublicationTimingIssue(draft, now), null);
+  assert.equal(getPublicationTimingIssue(draft, now + 1)?.field, 'time');
+});
+
+test('one-time payload and review reject calendar slots that disagree with visible fields', () => {
+  const draft = createEmptyPublicationDraft();
+  draft.timingMode = 'once';
+  draft.scheduleTimezone = 'Asia/Kathmandu';
+  draft.onceDate = '2030-01-01';
+  draft.onceTime = '23:59';
+  draft.scheduledSlots = ['2030-02-02T06:00:00.000Z'];
+  assert.equal((buildPublicationSchedule(draft) as { at: string }).at, '');
+  assert.equal(formatDraftTiming(draft), 'Время не выбрано');
+  draft.scheduledSlots = ['2030-01-01T18:14:00.000Z'];
+  assert.deepEqual(buildPublicationSchedule(draft), {
+    mode: 'once',
+    timezone: 'Asia/Kathmandu',
+    at: '2030-01-01T18:14:00.000Z',
+    replaceConflicts: false,
+  });
+  assert.match(formatDraftTiming(draft), /1 янв., 23:59/u);
+  draft.onceDate = '';
+  assert.equal((buildPublicationSchedule(draft) as { at: string }).at, '');
+  assert.equal(formatDraftTiming(draft), 'Время не выбрано');
+});
+
+test('one-time validation rejects a nonexistent time without sending a cached slot', () => {
+  const draft = createEmptyPublicationDraft();
+  draft.timingMode = 'once';
+  draft.scheduleTimezone = 'Europe/Berlin';
+  draft.onceDate = '2030-03-31';
+  draft.onceTime = '02:30';
+  draft.scheduledSlots = ['2030-03-31T02:30:00.000Z'];
+  assert.match(
+    getPublicationTimingIssue(draft, Date.parse('2030-01-01'))!.message,
+    /Заново выберите дату и время/u,
+  );
+  assert.equal((buildPublicationSchedule(draft) as { at: string }).at, '');
+});
 
 test('single calendar slot keeps the saved zone in the final review', () => {
   const draft = createEmptyPublicationDraft();

@@ -144,7 +144,11 @@ test('next-page retry preserves pages and expired cursors reseed the query', () 
 test('direct-target errors stay actionable and validation issues persist after submit', () => {
   assert.match(targetNoticesSource, /Получатель из ссылки пока не готов/u);
   assert.match(targetNoticesSource, /initialRoute\.retry/u);
-  assert.match(publicationsSource, /issues=\{validationStarted \? validationIssues : \[\]\}/u);
+  assert.match(
+    publicationsSource,
+    /issues=\{validationStarted && !fieldError \? validationIssues : \[\]\}/u,
+  );
+  assert.match(publicationsSource, /className="publication-submit-feedback" role="alert"/u);
   assert.match(initialTargetSource, /routeFailure\?\.routeKey === routeKey/u);
   assert.match(initialTargetSource, /appliedRouteRef\.current === routeKey/u);
 });

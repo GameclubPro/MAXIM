@@ -67,7 +67,7 @@ import {
   getPublicationTargetKey,
   hasSamePublicationTargetMetadata,
   hasPublicationDraftChanges,
-  hasFuturePublicationSlot,
+  getPublicationTimingIssue,
   isIsolatedPublicationEditor,
   isPublicationOccurrenceContentStale,
   isPublicationRevisionConflictError,
@@ -373,6 +373,7 @@ export function PublicationsPage({
   const videoUploadAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => videoUploadAbortRef.current?.abort(), []);
   const [pendingReview, setPendingReview] = useState(false);
+  const [timingPreparing, setTimingPreparing] = useState(false);
   const [pendingConflict, setPendingConflict] = useState(false);
   const [pendingEditorClose, setPendingEditorClose] = useState(false);
   const [pendingDraftClear, setPendingDraftClear] = useState(false);
@@ -1033,11 +1034,13 @@ export function PublicationsPage({
     refreshEditedPublicationMutation.isPending ||
     initialTargetRoute.pending ||
     publisherDraftHydration.isPending ||
+    timingPreparing ||
     videoPreparing ||
     editorClosePending;
   const isBusy = operationBusy || mediaPreparing;
   const anyBusy = isBusy || resolveAmbiguousMutation.isPending;
   const recurrenceError = getRecurrenceError(draft);
+  const timingIssue = getPublicationTimingIssue(draft);
   const explicitSlotsLimitFeedback = getPublicationExplicitSlotsLimitFeedback(draft);
   const validationIssues = useMemo<BroadcastPublishIssueAction[]>(() => {
     const issues: BroadcastPublishIssueAction[] = [];
@@ -1084,14 +1087,10 @@ export function PublicationsPage({
         label: 'Расписание',
         onClick: () => focusEditorSection('timing', explicitSlotsLimitFeedback.title),
       });
-    } else if (
-      (draft.timingMode === 'once' ||
-        (draft.timingMode === 'schedule' && draft.scheduleKind === 'slots')) &&
-      !hasFuturePublicationSlot(draft.scheduledSlots)
-    ) {
+    } else if (timingIssue) {
       issues.push({
-        label: 'Время',
-        onClick: () => focusEditorSection('timing', 'Выберите будущее время.'),
+        label: timingIssue.label,
+        onClick: () => focusEditorSection('timing', timingIssue.message),
       });
     }
     if (draft.timingMode === 'schedule' && draft.scheduleKind === 'recurrence' && recurrenceError) {
@@ -1118,6 +1117,7 @@ export function PublicationsPage({
     imagesNeedReselection,
     recurrenceError,
     selectedPublisherTargetUnavailable,
+    timingIssue,
     videoNeedsReselection,
   ]);
 
@@ -1383,11 +1383,13 @@ export function PublicationsPage({
           ? targetsSectionRef.current
           : timingSectionRef.current;
     window.requestAnimationFrame(() => {
-      const focusTarget = target?.querySelector<HTMLElement>(
-        '[aria-invalid="true"], textarea:not(:disabled), input:not(:disabled), button:not(:disabled)',
-      );
+      const focusTarget =
+        target?.querySelector<HTMLElement>('[aria-invalid="true"]') ??
+        target?.querySelector<HTMLElement>(
+          'textarea:not(:disabled), input:not(:disabled), button:not(:disabled)',
+        );
       focusTarget?.focus({ preventScroll: true });
-      target?.scrollIntoView({
+      (focusTarget ?? target)?.scrollIntoView({
         behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
         block: 'center',
       });
@@ -1571,57 +1573,50 @@ export function PublicationsPage({
 
   function validateDraft(options: { ignoreSchedule?: boolean } = {}): boolean {
     setValidationStarted(true);
+    const reject = (section: 'content' | 'targets' | 'timing', message: string) => {
+      focusEditorSection(section, message);
+      return false;
+    };
     const nextButtonErrors = validateBroadcastLinkButtons(draft.buttons);
     if (mediaPreparing) {
-      setFieldError('Дождитесь завершения подготовки фото.');
-      return false;
+      return reject('content', 'Дождитесь завершения подготовки фото.');
     }
     if (imagesNeedReselection) {
-      setFieldError('Добавьте фото снова или выберите «Без фото».');
-      return false;
+      return reject('content', 'Добавьте фото снова или выберите «Без фото».');
     }
     if (videoNeedsReselection) {
-      setFieldError('Выберите видео снова.');
-      return false;
+      return reject('content', 'Выберите видео снова.');
     }
     if (!hasContent) {
-      setFieldError('Добавьте текст, фото или видео.');
-      return false;
+      return reject('content', 'Добавьте текст, фото или видео.');
     }
     if (draft.text.length > PUBLICATION_TEXT_MAX_LENGTH) {
-      setFieldError(`Максимум ${PUBLICATION_TEXT_MAX_LENGTH} символов.`);
-      return false;
+      return reject('content', `Максимум ${PUBLICATION_TEXT_MAX_LENGTH} символов.`);
     }
     if (draft.buttonEnabled && hasBroadcastLinkButtonErrors(nextButtonErrors)) {
       setButtonsOpen(true);
-      return false;
+      return reject('content', 'Проверьте текст и ссылку кнопки.');
     }
     if (draft.targets.length === 0) {
-      setFieldError('Выберите хотя бы одного получателя.');
-      return false;
+      return reject('targets', 'Выберите хотя бы одного получателя.');
     }
     if (selectedPublisherTargetUnavailable) {
-      setFieldError('Выбранный получатель пока не готов к публикации через Публик.');
-      return false;
+      return reject('targets', 'Выбранный получатель пока не готов к публикации через Публик.');
     }
     if (!options.ignoreSchedule) {
       if (reportExplicitSlotsLimit()) {
         return false;
       }
-      const needsFutureSlots =
-        draft.timingMode === 'once' ||
-        (draft.timingMode === 'schedule' && draft.scheduleKind === 'slots');
-      if (needsFutureSlots && !hasFuturePublicationSlot(draft.scheduledSlots)) {
-        setFieldError('Выберите будущее время.');
-        return false;
+      const currentTimingIssue = getPublicationTimingIssue(draft);
+      if (currentTimingIssue) {
+        return reject('timing', currentTimingIssue.message);
       }
       if (
         draft.timingMode === 'schedule' &&
         draft.scheduleKind === 'recurrence' &&
         recurrenceError
       ) {
-        setFieldError(recurrenceError);
-        return false;
+        return reject('timing', recurrenceError);
       }
     }
     setFieldError('');
@@ -1646,7 +1641,8 @@ export function PublicationsPage({
     if (mediaPreparing) {
       return;
     }
-    if (reportExplicitSlotsLimit()) {
+    if (!validateDraft()) {
+      setPendingReview(false);
       return;
     }
     saveMutation.mutate({ replaceConflicts });
@@ -1660,7 +1656,6 @@ export function PublicationsPage({
       setPendingReview(true);
       return;
     }
-    validationIssues[0]?.onClick();
   }
 
   function handleTest() {
@@ -1672,9 +1667,6 @@ export function PublicationsPage({
       testMutation.mutate();
       return;
     }
-    validationIssues
-      .find((issue) => issue.label !== 'Время' && issue.label !== 'Повтор')
-      ?.onClick();
   }
 
   function updateOnceSlot(onceDate: string, onceTime: string, scheduledAt: string | null) {
@@ -2205,6 +2197,35 @@ export function PublicationsPage({
     );
   }
 
+  async function changeTimingMode(mode: PublicationTimingMode) {
+    if (isBusy || draft.timingMode === mode) return;
+    setFieldError('');
+    if (mode !== 'once' || !draft.onceDate || !draft.onceTime) {
+      setDraft((current) => ({
+        ...current,
+        timingMode: mode,
+        ...(mode === 'once' ? { scheduledSlots: [] } : {}),
+      }));
+      return;
+    }
+    setTimingPreparing(true);
+    try {
+      const { parsePublicationScheduleField } =
+        await import('../features/publications/publication-schedule-fields');
+      setDraft((current) => {
+        const at = parsePublicationScheduleField(
+          `${current.onceDate}T${current.onceTime}`,
+          current.scheduleTimezone,
+        );
+        return { ...current, timingMode: 'once', scheduledSlots: at ? [at] : [] };
+      });
+    } catch {
+      focusEditorSection('timing', 'Не удалось открыть выбор времени. Попробуйте ещё раз.');
+    } finally {
+      setTimingPreparing(false);
+    }
+  }
+
   function renderTiming() {
     const onceDate = draft.onceDate;
     const onceTime = draft.onceTime;
@@ -2230,25 +2251,7 @@ export function PublicationsPage({
               type="button"
               aria-pressed={draft.timingMode === option.value}
               className={cn(draft.timingMode === option.value && 'is-active')}
-              onClick={() => {
-                setDraft((current) => {
-                  if (current.timingMode === option.value) {
-                    return current;
-                  }
-                  if (option.value === 'once') {
-                    const hasExplicitOnceTime = Boolean(current.onceDate && current.onceTime);
-                    return {
-                      ...current,
-                      timingMode: 'once',
-                      scheduledSlots: hasExplicitOnceTime ? current.scheduledSlots.slice(0, 1) : [],
-                      onceDate: hasExplicitOnceTime ? current.onceDate : '',
-                      onceTime: hasExplicitOnceTime ? current.onceTime : '',
-                    };
-                  }
-                  return { ...current, timingMode: option.value };
-                });
-                setFieldError('');
-              }}
+              onClick={() => void changeTimingMode(option.value)}
               disabled={isBusy}
             >
               {option.label}
@@ -2276,6 +2279,12 @@ export function PublicationsPage({
               time={onceTime}
               timezone={draft.scheduleTimezone}
               disabled={isBusy}
+              dateError={
+                validationStarted && timingIssue?.field === 'date' ? timingIssue.message : undefined
+              }
+              timeError={
+                validationStarted && timingIssue?.field === 'time' ? timingIssue.message : undefined
+              }
               onChange={updateOnceSlot}
             />
           </Suspense>
@@ -2598,19 +2607,14 @@ export function PublicationsPage({
             disabled={isBusy}
             onChange={(postPublish) => setDraft((current) => ({ ...current, postPublish }))}
           />
-
-          {fieldError &&
-          !fieldError.includes('получател') &&
-          !fieldError.includes('текст') &&
-          !fieldError.includes('фото') &&
-          !fieldError.includes('видео') ? (
-            <p className="publication-field-error publication-field-error--page" role="alert">
-              {fieldError}
-            </p>
-          ) : null}
         </div>
 
         <div className="publications-publish-bar">
+          {fieldError ? (
+            <p className="publication-submit-feedback" role="alert">
+              {fieldError}
+            </p>
+          ) : null}
           <BroadcastPublishBar
             title={
               editScope === 'retry'
@@ -2622,7 +2626,7 @@ export function PublicationsPage({
                     : 'Публикация'
             }
             meta={formatTargetSummary(draft.targets)}
-            issues={validationStarted ? validationIssues : []}
+            issues={validationStarted && !fieldError ? validationIssues : []}
             busy={isBusy}
             showTest={!isPublisherProfile}
             testLabel="Отправить себе"
@@ -2635,7 +2639,17 @@ export function PublicationsPage({
               draft.targets.length === 0 ||
               hasButtonErrors
             }
-            primaryLabel="Проверить пост"
+            primaryLabel={
+              isBusy
+                ? saveMutation.isPending
+                  ? 'Сохраняем...'
+                  : 'Подождите...'
+                : draft.timingMode === 'once'
+                  ? 'Проверить и отложить'
+                  : draft.timingMode === 'schedule'
+                    ? 'Проверить расписание'
+                    : 'Проверить пост'
+            }
             primaryDisabled={isBusy}
             onTest={handleTest}
             onPrimary={handlePrimaryAction}
@@ -2658,7 +2672,22 @@ export function PublicationsPage({
         />
 
         {pendingReview ? (
-          <Suspense fallback={null}>
+          <Suspense
+            fallback={
+              <ActionConfirmSheet
+                id="publication-review-loading"
+                open
+                title="Загрузка проверки публикации"
+                summary="Подготавливаем предпросмотр..."
+                confirmLabel="Загрузка..."
+                confirmDisabled
+                cancelLabel="Назад"
+                tone="accent"
+                onClose={() => setPendingReview(false)}
+                onConfirm={() => undefined}
+              />
+            }
+          >
             <LazyPublicationReviewSheet
               open={pendingReview}
               draft={draft}

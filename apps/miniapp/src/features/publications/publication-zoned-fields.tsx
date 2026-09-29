@@ -36,12 +36,16 @@ export function PublicationOnceFields({
   time,
   timezone,
   disabled,
+  dateError,
+  timeError,
   onChange,
 }: {
   date: string;
   time: string;
   timezone: string;
   disabled: boolean;
+  dateError?: string;
+  timeError?: string;
   onChange: (date: string, time: string, at: string | null) => void;
 }) {
   return (
@@ -49,6 +53,7 @@ export function PublicationOnceFields({
       <DateField
         label="Дата"
         value={date}
+        error={dateError}
         disabled={disabled}
         onChange={(nextDate) =>
           onChange(nextDate, time, parsePublicationScheduleField(`${nextDate}T${time}`, timezone))
@@ -57,6 +62,7 @@ export function PublicationOnceFields({
       <TimeField
         label="Время"
         value={time}
+        error={timeError}
         allowEmpty
         precise
         disabled={disabled}
