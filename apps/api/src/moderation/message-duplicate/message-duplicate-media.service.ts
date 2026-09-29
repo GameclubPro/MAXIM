@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import type { MaxUpdate } from '@maxim/contracts';
 import { z } from 'zod';
 import { UnrecoverableError } from 'bullmq';
+import { extractHttpStatusCode } from '../../common/http-error.util';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -539,13 +540,22 @@ export class MessageDuplicateMediaService {
     const message = update.message!;
     const timeoutMs = Math.min(5000, deadlineAtMs - Date.now());
     if (timeoutMs <= 0) throw new Error('Message media verification deadline exceeded');
-    const raw = await this.max.getExactMessageRow(message.chatId, message.messageId, {
-      botId,
-      timeoutMs,
-      bypassCache: true,
-      trafficClass: 'background',
-      sourceTag: 'message_duplicate_media',
-    });
+    let raw: Record<string, unknown> | null;
+    try {
+      raw = await this.max.getExactMessageRow(message.chatId, message.messageId, {
+        botId,
+        timeoutMs,
+        bypassCache: true,
+        trafficClass: 'background',
+        sourceTag: 'message_duplicate_media',
+      });
+    } catch (error: unknown) {
+      const status = extractHttpStatusCode(error);
+      if (status !== 403 && status !== 404) throw error;
+      // FLAG: An inaccessible source proves neither absence nor equality. Reject this receipt's
+      // evidence so an old baseline cannot block later verified media; never authorize an action.
+      throw new UnrecoverableError('Photo message source could not be verified');
+    }
     const current = raw
       ? new WebhookParser().parse({
           type: 'message_created',

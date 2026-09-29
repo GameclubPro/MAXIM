@@ -435,6 +435,85 @@ describe('bounded message duplicate media analysis', () => {
     },
   );
 
+  it.each([403, 404])(
+    'advances past an unverifiable photo baseline when MAX refresh returns %s',
+    async (status) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('a', 0), s.lease);
+      s.photos.fingerprintAlbum.mockResolvedValueOnce({
+        kind: 'incomplete',
+        reason: 'missing_download_url',
+      });
+      s.max.getExactMessageRow.mockRejectedValueOnce({ response: { status } });
+
+      await s.service.process(s.photoJob('b', 100, 'https://i.oneme.ru/b'), s.lease);
+
+      expect(s.history.observe).toHaveBeenCalledTimes(1);
+      expect(s.history.observe).toHaveBeenLastCalledWith(
+        expect.objectContaining({ messageId: 'b', mediaHashes: ['a'.repeat(64)] }),
+      );
+      expect(s.metrics.record).toHaveBeenCalledWith('media.baseline_rejected');
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+
+      s.history.observe.mockResolvedValueOnce(null).mockResolvedValueOnce({ hit: {}, binding: {} });
+      await s.service.process(s.photoJob('c', 200, 'https://i.oneme.ru/c'), s.lease);
+      expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(1);
+      expect(s.history.observe).toHaveBeenLastCalledWith(
+        expect.objectContaining({ messageId: 'c' }),
+      );
+      expect(s.enforcement.enqueue).toHaveBeenCalledTimes(1);
+      expect(s.enforcement.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            message: expect.objectContaining({ messageId: 'c' }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([403, 404])(
+    'rejects unverified current photo evidence after MAX refresh returns %s',
+    async (status) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('a', 0, 'https://i.oneme.ru/a'), s.lease);
+      s.photos.fingerprintAlbum
+        .mockResolvedValueOnce(s.complete)
+        .mockResolvedValueOnce({ kind: 'incomplete', reason: 'missing_download_url' });
+      s.max.getExactMessageRow.mockRejectedValueOnce({ response: { status } });
+
+      await expect(s.service.process(s.photoJob('b', 100), s.lease)).rejects.toBeInstanceOf(
+        UnrecoverableError,
+      );
+      expect(s.history.observe).toHaveBeenCalledTimes(1);
+      expect(s.history.observe).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'a' }));
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([401, 429, 500, undefined])(
+    'preserves retry of photo baseline refresh failures with status %s',
+    async (status) => {
+      const s = photoSetup();
+      await s.service.process(s.photoJob('a', 0), s.lease);
+      s.photos.fingerprintAlbum.mockResolvedValueOnce({
+        kind: 'incomplete',
+        reason: 'missing_download_url',
+      });
+      const error = Object.assign(new Error('MAX lookup unavailable'), {
+        response: status ? { status } : undefined,
+      });
+      s.max.getExactMessageRow.mockRejectedValueOnce(error);
+
+      await expect(
+        s.service.process(s.photoJob('b', 100, 'https://i.oneme.ru/b'), s.lease),
+      ).rejects.toBe(error);
+      expect(s.history.observe).not.toHaveBeenCalled();
+      expect(s.metrics.record).not.toHaveBeenCalledWith('media.baseline_rejected');
+      expect(s.enforcement.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
   it('retries a not-yet-processed baseline instead of losing its first occurrence', async () => {
     const s = setup();
     await s.service.process(s.job('a', 0), s.lease);
